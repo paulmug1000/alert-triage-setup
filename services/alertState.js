@@ -692,7 +692,8 @@ export async function handleGetProactiveAlerts(req, res, sheets) {
       "childRowNum","clientJobStr","pipelineRow","likelihood","copiedToConf","jobType",
       "possibleMatchInvoiceNo","possibleMatchAmount","possibleMatchSentDate","possibleMatchConfidence","possibleMatchConfirmedRow","possibleMatchVatAmount","possibleMatchStatus","possibleMatchCase",
       "uninvoicedAmount","projectCode","draftCount","draftTotal","stableJobKey","isRetainer","tab",
-      "directCosts","unreceivedAmount","placeholderCount","placeholderTotal"
+      "directCosts","unreceivedAmount","placeholderCount","placeholderTotal",
+      "categoryName","cleanName","quarantineRow"
     ];
       
     let active = all
@@ -700,7 +701,7 @@ export async function handleGetProactiveAlerts(req, res, sheets) {
       .map(r => {
         let alert = {};
         try { alert = JSON.parse(r.dataSnapshot || "{}"); } catch (e) { alert = {}; }
-        const metadata = {};
+        const metadata = { ...(alert.metadata || {}) };
         for (const f of metaFields) { if (alert[f] !== undefined) metadata[f] = alert[f]; }
         return {
           ...alert,

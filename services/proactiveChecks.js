@@ -1,7 +1,9 @@
+import { createHash } from "crypto";
 import { isPlaceholderInvoice, isPlaceholderExpense } from "../utils/helpers.js";
 import { withRetry, colIndexToLetter } from "./sheetsClient.js";
 import { getClientWebAppUrl, getAllClients } from "./workspaces.js";
 import { redisClient } from "./redisClient.js";
+import { ensureAlertMemoryTab, readAlertMemory, updateAlertMemoryRow, findMemoryRow } from "./alertMemory.js";
 
 export function parseConfirmedDate_(val) {
   if (!val) return null;
@@ -1674,6 +1676,9 @@ export async function checkQuarantinedPLCategories_(clientName, masterSheetId, s
         category: "Expenses",
         heading: `Unmapped P&L category: "${catName}"`,
         title: `Unmapped P&L category: "${catName}"`,
+        categoryName: catName,
+        cleanName: catName,
+        quarantineRow: q.rowNum,
         detail: `The nominal account "${catName}" was detected in the P&L report but has not yet been classified. It has been temporarily quarantined in PLComp!B${q.rowNum} to protect Outgoings from unverified expenses. Please choose how this account should be classified.`,
         clientName,
         timestamp: tsStr,
@@ -1704,6 +1709,16 @@ export async function handleClassifyPLCategory(sheets, {
   if (!clientName || !categoryName || !classification) {
     throw new Error("Missing clientName, categoryName, or classification");
   }
+
+  // Sanitize category name if a formatted heading was passed
+  let cleanCategory = String(categoryName || "").trim();
+  const headingMatch = cleanCategory.match(/Unmapped P&L (?:category|Account):\s*["“]?([^"”]+)["”]?/i);
+  if (headingMatch) {
+    cleanCategory = headingMatch[1].trim();
+  }
+  cleanCategory = cleanCategory.replace(/^["“]+|["”]+$/g, "").trim();
+  categoryName = cleanCategory;
+
   if (categoryName.startsWith("#") || categoryName.toLowerCase().includes("#n/a")) {
     throw new Error(`Cannot classify invalid error value as category: "${categoryName}"`);
   }
@@ -1906,7 +1921,7 @@ export async function handleClassifyPLCategory(sheets, {
     }
   }
 
-  // 6. Auto-resolve the alert in redis cache
+  // 6. Auto-resolve the alert in redis cache & AlertMemory
   const alertKey = `unmapped_pl_category|${clientName}|${categoryName}`;
   if (redisClient?.isOpen) {
     try {
@@ -1921,6 +1936,28 @@ export async function handleClassifyPLCategory(sheets, {
       }
     } catch (re) {
       console.warn("Could not prune resolved alert from redis:", re.message);
+    }
+  }
+
+  if (automationCommanderSheetId && sheets) {
+    try {
+      const fp = createHash("sha256").update(alertKey).digest("hex").substring(0, 16);
+      await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
+      const memoryRows = await readAlertMemory(sheets, automationCommanderSheetId);
+      const row = findMemoryRow(memoryRows, fp) || memoryRows.find(r =>
+        r.alertType === "unmapped_pl_category" &&
+        r.clientName === clientName &&
+        (r.alertSummary.toLowerCase().includes(cleanName.toLowerCase()) || r.alertSummary.toLowerCase().includes(categoryName.toLowerCase()))
+      );
+      if (row) {
+        await updateAlertMemoryRow(sheets, automationCommanderSheetId, row.rowIndex, {
+          ...row,
+          status: "accepted",
+          lastRechecked: new Date().toISOString()
+        });
+      }
+    } catch (amErr) {
+      console.warn("Could not update AlertMemory row for classified category:", amErr.message);
     }
   }
 

@@ -116,21 +116,21 @@ export default function CashflowBreakdownView({
       return matching.reduce((sum, r) => sum + parseMoney(r.rollingValues?.[selectedMonthIdx]), 0);
     };
 
-    if (activeCategory === "cashConfInc") return sumRows(["confirmed cash incoming"], [47]);
+    if (activeCategory === "cashConfInc") return sumRows(["confirmed cash incoming", "cash incoming adjustment", "incoming cash adjustment"], [6, 7, 47, 49]);
     if (activeCategory === "cashPipeInc") return sumRows(["pipeline cash incoming"], [48]);
-    if (activeCategory === "cashDirCosts") return sumRows(["direct costs outgoing", "direct costs adjustment"], [56, 57]);
+    if (activeCategory === "cashDirCosts") return sumRows(["direct costs outgoing", "direct costs adjustment"], [14, 15, 56, 57]);
     if (activeCategory === "cashSalaries") {
-      const salVal = sumRows(["salaries outgoing", "salaries adjustment"], [50, 51]);
-      const divVal = sumRows(["dividends as salary outgoing", "dividends as salary adjustment"], [52, 53]);
+      const salVal = sumRows(["salaries outgoing", "salaries adjustment"], [8, 9, 50, 51]);
+      const divVal = sumRows(["dividends as salary outgoing", "dividends as salary adjustment"], [10, 11, 52, 53]);
       return salVal + divVal;
     }
     if (activeCategory === "cashContractors") {
       if (isNotesMode) return null;
-      return sumRows(["contractors outgoing", "contractors adjustment"], [54, 55]);
+      return sumRows(["contractors outgoing", "contractors adjustment"], [12, 13, 54, 55]);
     }
-    if (activeCategory === "cashOutgoings") return sumRows(["other expenses outgoing", "other expenses adjustment"], [58, 59]);
-    if (activeCategory === "cashTaxes") return sumRows(["corporation tax", "corporation tax adjustment", "vat", "vat adjustment"], [61, 62, 63, 64]);
-    if (activeCategory === "cashOther") return sumRows(["non-operating income", "non-operating expenses", "other cash movements", "other adjustments"], [66, 67, 68, 69, 71, 72]);
+    if (activeCategory === "cashOutgoings") return sumRows(["other expenses outgoing", "other expenses adjustment"], [16, 17, 58, 59]);
+    if (activeCategory === "cashTaxes") return sumRows(["corporation tax", "corporation tax adjustment", "vat", "vat adjustment"], [19, 20, 21, 22, 61, 62, 63, 64]);
+    if (activeCategory === "cashOther") return sumRows(["non-operating income", "non-operating expenses", "other cash movements", "other adjustments"], [24, 25, 26, 27, 29, 30, 66, 67, 68, 69, 71, 72]);
     return null;
   }, [data, activeCategory, selectedMonthIdx, rollingMonths, isNotesMode]);
 
@@ -357,8 +357,57 @@ export default function CashflowBreakdownView({
   }, [activeCategory, invoicesSentData, listData]);
 
   // Final Total to display: Use sheet target if available, otherwise computed sum
-  const finalDisplayTotal = sheetTargetTotal !== null && !isNaN(sheetTargetTotal) ? sheetTargetTotal : computedSum;
   const manualAdjustment = finalDisplayTotal - computedSum;
+
+  const manualAdjustmentLabel = useMemo(() => {
+    const inclRows = data?.includingPipeline || [];
+    const exclRows = data?.excludingPipeline || [];
+
+    // Map activeCategory to target row indices (checking adjustment row first, then base row)
+    const categoryRowMap = {
+      cashConfInc: { incl: [49, 47], excl: [7, 6] },
+      cashPipeInc: { incl: [48], excl: [] },
+      cashSalaries: { incl: [51, 53, 50, 52], excl: [9, 11, 8, 10] },
+      cashContractors: { incl: [55, 54], excl: [13, 12] },
+      cashDirCosts: { incl: [57, 56], excl: [15, 14] },
+      cashOutgoings: { incl: [59, 58], excl: [17, 16] },
+      cashTaxes: { incl: [62, 64, 61, 63], excl: [20, 22, 19, 21] },
+      cashOther: { incl: [67, 69, 72, 66, 68, 71], excl: [25, 27, 30, 24, 26, 29] },
+    };
+
+    const targetIndices = categoryRowMap[activeCategory];
+    let note = "";
+    if (targetIndices) {
+      // 1. Check inclRows
+      for (const rIdx of targetIndices.incl) {
+        const r = inclRows.find((row) => row.rowIndex === rIdx);
+        const cellNote = r?.rollingNotes?.[selectedMonthIdx];
+        if (cellNote && cellNote.trim()) {
+          note = cellNote.trim();
+          break;
+        }
+      }
+      // 2. Fall back to exclRows
+      if (!note) {
+        for (const rIdx of targetIndices.excl) {
+          const r = exclRows.find((row) => row.rowIndex === rIdx);
+          const cellNote = r?.rollingNotes?.[selectedMonthIdx];
+          if (cellNote && cellNote.trim()) {
+            note = cellNote.trim();
+            break;
+          }
+        }
+      }
+    }
+
+    if (note) {
+      const match = note.match(/\[Note:\s*([^\]]+)\]/i);
+      if (match && match[1]?.trim()) {
+        return `Manual adjustment (${match[1].trim()})`;
+      }
+    }
+    return "Manual adjustment";
+  }, [data, activeCategory, selectedMonthIdx]);
 
   const isTableLayout = ["cashConfInc", "cashPipeInc", "cashDirCosts"].includes(activeCategory);
 
@@ -418,7 +467,7 @@ export default function CashflowBreakdownView({
       const totNet = listData.reduce((s, i) => s + (i.amountNet || 0), 0);
       const totVat = listData.reduce((s, i) => s + (i.vatAmount || 0), 0);
       if (Math.abs(manualAdjustment) > 2) {
-        rows.push(["", "Manual adjustment", "", "", "", manualAdjustment, "", ""]);
+        rows.push(["", manualAdjustmentLabel, "", "", "", manualAdjustment, "", ""]);
       }
       rows.push(["", "", "Total", totNet, totVat, finalDisplayTotal, "", ""]);
     } else if (isTableLayout) {
@@ -435,7 +484,7 @@ export default function CashflowBreakdownView({
         ]);
       });
       if (Math.abs(manualAdjustment) > 2) {
-        rows.push(["", "Manual adjustment", "", "", "", manualAdjustment, ""]);
+        rows.push(["", manualAdjustmentLabel, "", "", "", manualAdjustment, ""]);
       }
       rows.push(["", "", "", "", "Total", finalDisplayTotal, ""]);
     } else {
@@ -444,7 +493,7 @@ export default function CashflowBreakdownView({
         rows.push([item.client || item.name, item.desc, item.amount]);
       });
       if (Math.abs(manualAdjustment) > 2) {
-        rows.push(["Manual adjustment", "", manualAdjustment]);
+        rows.push([manualAdjustmentLabel, "", manualAdjustment]);
       }
       rows.push(["Total", "", finalDisplayTotal]);
     }
@@ -814,7 +863,7 @@ export default function CashflowBreakdownView({
                 {Math.abs(manualAdjustment) > 2 && (
                   <tr style={{ borderTop: "1px dashed #e2e8f0", background: "#fafafa" }}>
                     <td colSpan={5} style={{ padding: "12px 10px 12px 0", color: "#64748b" }}>
-                      <em>Manual adjustment</em>
+                      <em>{manualAdjustmentLabel}</em>
                     </td>
                     <td style={{ padding: "12px 10px", textAlign: "right", fontWeight: 700, color: "#0047AB" }}>
                       {formatMoney(manualAdjustment)}
@@ -886,7 +935,7 @@ export default function CashflowBreakdownView({
                 {Math.abs(manualAdjustment) > 2 && (
                   <tr style={{ borderTop: "1px dashed #e2e8f0", background: "#fafafa" }}>
                     <td colSpan={5} style={{ padding: "12px 10px 12px 0", color: "#64748b" }}>
-                      <em>Manual adjustment</em>
+                      <em>{manualAdjustmentLabel}</em>
                     </td>
                     <td style={{ padding: "12px 10px", textAlign: "right", fontWeight: 700, color: "#0047AB" }}>
                       {formatMoney(manualAdjustment)}
@@ -940,7 +989,7 @@ export default function CashflowBreakdownView({
                 {Math.abs(manualAdjustment) > 2 && (
                   <tr style={{ borderTop: "1px dashed #e2e8f0", background: "#fafafa" }}>
                     <td style={{ padding: "12px 48px 12px 0", fontSize: "14px", color: "#64748b", fontStyle: "italic", textAlign: "left" }}>
-                      Manual adjustment
+                      {manualAdjustmentLabel}
                     </td>
                     <td style={{ padding: "12px 0", fontSize: "15px", fontWeight: 700, color: "#0047AB", textAlign: "right", whiteSpace: "nowrap" }}>
                       {formatMoney(manualAdjustment)}

@@ -615,6 +615,7 @@ export default function PerformanceBreakdownView({
             items.map((item, idx) => {
               const isAdjustment =
                 item.name === "Manual adjustment" ||
+                String(item.name || "").startsWith("Manual adjustment") ||
                 item.name === "Rounding adjustment" ||
                 item.name === "Scenario adjustment" ||
                 item.name === "Manual scenario adjustment";

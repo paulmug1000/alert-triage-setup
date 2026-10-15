@@ -64,7 +64,8 @@ export default function CashflowReconTab({
 
   // Note editor modal
   const [noteModal, setNoteModal] = useState(null);
-  const [noteDraft, setNoteDraft] = useState("");
+  const [generalNoteDraft, setGeneralNoteDraft] = useState("");
+  const [pulseNoteDraft, setPulseNoteDraft] = useState("");
   const [savingNote, setSavingNote] = useState(false);
 
   // Auto-restore or sync client
@@ -291,7 +292,7 @@ export default function CashflowReconTab({
 
     if (itemType === "confirmed_cash") {
       reconVal = recon.revenue || 0;
-      targetAdjustmentRow = row.targetAdjustmentRow || 30; // Other adjustments row
+      targetAdjustmentRow = row.targetAdjustmentRow || 7; // Incoming cash adjustment row
       formula = `=${reconVal.toFixed(2)}-${cellRef}`;
     } else if (itemType === "salaries") {
       reconVal = recon.salaries || 0;
@@ -484,20 +485,45 @@ export default function CashflowReconTab({
 
   // Cell Note Editor
   const handleOpenNote = (row, cell) => {
+    const rawNote = cell.note || "";
+    const match = rawNote.match(/\[Note:\s*([^\]]+)\]/i);
+    let pulseDraft = "";
+    let generalDraft = rawNote;
+    if (match) {
+      pulseDraft = match[1].trim();
+      generalDraft = rawNote.replace(match[0], "").replace(/\n\s*\n/g, "\n").trim();
+    }
+
+    setGeneralNoteDraft(generalDraft);
+    setPulseNoteDraft(pulseDraft);
     setNoteModal({
       sheetRow: row.sheetRow,
       colIdx: cell.colIdx,
       colLetter: cell.colLetter,
       label: row.label,
-      currentNote: cell.note || ""
+      currentNote: rawNote,
+      isAdjustmentRow: Boolean(row.isAdjustmentRow || (row.label && row.label.toLowerCase().includes("adjustment")))
     });
-    setNoteDraft(cell.note || "");
   };
 
   const handleSaveNote = async () => {
     if (!noteModal || !currentClientInfo || !reconData) return;
     setSavingNote(true);
     setError("");
+
+    const g = generalNoteDraft.trim();
+    const p = pulseNoteDraft.trim();
+    let finalNote = "";
+    if (g && p) {
+      finalNote = `${g}\n[Note: ${p}]`;
+    } else if (p) {
+      finalNote = `[Note: ${p}]`;
+    } else if (g) {
+      finalNote = g;
+    } else {
+      finalNote = "";
+    }
+
     try {
       const resp = await fetch("/api/triage", {
         method: "POST",
@@ -508,7 +534,7 @@ export default function CashflowReconTab({
           cashTabSheetId: reconData.cashTabSheetId,
           sheetRow: noteModal.sheetRow,
           colIdx: noteModal.colIdx,
-          note: noteDraft,
+          note: finalNote,
           clientName: selectedClient,
           automationCommanderSheetId
         })
@@ -523,7 +549,7 @@ export default function CashflowReconTab({
           if (r.sheetRow !== noteModal.sheetRow) return r;
           const newCells = r.cells.map(c => {
             if (c.colIdx !== noteModal.colIdx) return c;
-            return { ...c, note: noteDraft };
+            return { ...c, note: finalNote };
           });
           return { ...r, cells: newCells };
         });
@@ -1814,7 +1840,7 @@ export default function CashflowReconTab({
               color: "#334155"
             }}>
               <ul style={{ margin: 0, paddingLeft: "18px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "4px" }}>
-                <li>Confirmed cash incoming (to Other adj)</li>
+                <li>Confirmed cash incoming (to Incoming cash adj)</li>
                 <li>Salaries outgoing</li>
                 <li>Dividends as salary</li>
                 <li>Contractors</li>
@@ -1903,22 +1929,51 @@ export default function CashflowReconTab({
               Cell: <strong>Cash!{noteModal.colLetter}{noteModal.sheetRow}</strong>
             </p>
 
-            <textarea
-              value={noteDraft}
-              onChange={e => setNoteDraft(e.target.value)}
-              placeholder="Enter note text (leave blank to remove)..."
-              rows={4}
-              style={{
-                width: "100%",
-                padding: "8px 12px",
-                border: "1px solid #cbd5e1",
-                borderRadius: "6px",
-                fontSize: "13px",
-                boxSizing: "border-box",
-                marginBottom: "16px",
-                fontFamily: "inherit"
-              }}
-            />
+            <div style={{ marginBottom: "14px" }}>
+              <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#334155", marginBottom: "4px" }}>
+                General notes <span style={{ fontWeight: "400", color: "#64748b", fontSize: "11px" }}>(internal only, not shown in Pulse)</span>
+              </label>
+              <textarea
+                value={generalNoteDraft}
+                onChange={e => setGeneralNoteDraft(e.target.value)}
+                placeholder="Enter internal notes, audit memos, or reconciliation comments..."
+                rows={3}
+                style={{
+                  width: "100%",
+                  padding: "8px 12px",
+                  border: "1px solid #cbd5e1",
+                  borderRadius: "6px",
+                  fontSize: "13px",
+                  boxSizing: "border-box",
+                  fontFamily: "inherit"
+                }}
+              />
+            </div>
+
+            <div style={{ marginBottom: "16px" }}>
+              <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#0047AB", marginBottom: "4px" }}>
+                Note that will describe adjustment in Pulse cashflow table <span style={{ fontWeight: "400", color: "#64748b", fontSize: "11px" }}>(client-facing)</span>
+              </label>
+              <textarea
+                value={pulseNoteDraft}
+                onChange={e => setPulseNoteDraft(e.target.value)}
+                placeholder="e.g. Partial payment of invoice 1045 made in September, remainder to be paid in October"
+                rows={3}
+                style={{
+                  width: "100%",
+                  padding: "8px 12px",
+                  border: "1px solid #93c5fd",
+                  borderRadius: "6px",
+                  fontSize: "13px",
+                  boxSizing: "border-box",
+                  fontFamily: "inherit",
+                  background: "#f0f7ff"
+                }}
+              />
+              <p style={{ margin: "4px 0 0", fontSize: "11px", color: "#64748b" }}>
+                💡 Saved with <code>[Note: ...]</code> wrapper for display in Pulse popovers and monthly breakdown pages.
+              </p>
+            </div>
 
             <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px" }}>
               <button

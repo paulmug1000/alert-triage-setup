@@ -1,7 +1,7 @@
 import React from "react";
 import Spinner from "./Spinner";
 import TruncatedCode from "./TruncatedCode";
-import { stripRowInfo, parseUnreceivedExpensesDetail, parseStaleExpenseDetail, filterAnalysisResultsForAlert } from "../utils/helpers";
+import { stripRowInfo, parseUnreceivedExpensesDetail, parseStaleExpenseDetail, filterAnalysisResultsForAlert, getCleanPLCategoryName } from "../utils/helpers";
 
 export default function NonAdminAlertListView({
   styles,
@@ -37,7 +37,7 @@ export default function NonAdminAlertListView({
   const handleApplyPLClassification = async (alert) => {
     const alertKey = alert.alertKey;
     const classification = selectedClassifications[alertKey] || "delivery_expense";
-    const categoryName = alert.metadata?.categoryName || alert.metadata?.cleanName || alert.heading;
+    const categoryName = getCleanPLCategoryName(alert);
     setApplyingClassification(prev => ({ ...prev, [alertKey]: true }));
     setClassificationMsg(prev => ({ ...prev, [alertKey]: "" }));
     try {
@@ -655,15 +655,10 @@ export default function NonAdminAlertListView({
 
                       return (
                         <div style={{ backgroundColor: "#fbfaff", border: "1px solid #ddd6fe", borderRadius: "8px", padding: "12px", marginBottom: "10px" }}>
-                          <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
-                            <span style={{ fontSize: "16px" }}>🏷️</span>
-                            <div>
-                              <div style={{ fontSize: "13px", fontWeight: "700", color: "#4c1d95" }}>
-                                Unmapped P&L Account: <span style={{ color: "#7c3aed" }}>&ldquo;{catName}&rdquo;</span>
-                              </div>
-                              <div style={{ fontSize: "11px", color: "#6b7280" }}>
-                                This account is currently not being counted, to ensure unverified expenses are not included. Select how it should be mapped:
-                              </div>
+                          <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px" }}>
+                            <span style={{ fontSize: "15px" }}>🏷️</span>
+                            <div style={{ fontSize: "12px", color: "#4b5563", lineHeight: "1.4" }}>
+                              This account is currently quarantined to ensure unverified expenses are not included. Select how it should be mapped:
                             </div>
                           </div>
 

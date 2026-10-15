@@ -433,3 +433,27 @@ export function downloadCsv(filename, content) {
   URL.revokeObjectURL(url);
 }
 
+/**
+ * Extracts a clean P&L category/account name from an alert object or raw title,
+ * safely unwrapping any heading prefix or quotes.
+ */
+export function getCleanPLCategoryName(alertOrRaw) {
+  let name = "";
+  if (typeof alertOrRaw === "string") {
+    name = alertOrRaw;
+  } else if (alertOrRaw && typeof alertOrRaw === "object") {
+    name = alertOrRaw.metadata?.categoryName ||
+           alertOrRaw.metadata?.cleanName ||
+           alertOrRaw.categoryName ||
+           alertOrRaw.cleanName ||
+           alertOrRaw.heading ||
+           "";
+  }
+  name = String(name || "").trim();
+  const match = name.match(/Unmapped P&L (?:category|Account):\s*["“]?([^"”]+)["”]?/i);
+  if (match) {
+    name = match[1].trim();
+  }
+  return name.replace(/^["“]+|["”]+$/g, "").trim();
+}
+

@@ -86,27 +86,29 @@ export default async function handler(req, res) {
   // 2. Fetch fresh data from Google Sheets API
   try {
     const resp = await withRetry(() =>
-      sheets.spreadsheets.values.batchGet({
+      sheets.spreadsheets.get({
         spreadsheetId: clientSheetId,
         ranges: ["Cash!A1:AZ80", "AppData!G59"],
-        valueRenderOption: "FORMATTED_VALUE",
+        fields: "sheets(properties.title,data.rowData.values(formattedValue,note))",
       })
     );
 
-    const rows = resp.data?.valueRanges?.[0]?.values || [];
-    const g59Val = String(resp.data?.valueRanges?.[1]?.values?.[0]?.[0] || "").trim().toLowerCase();
+    const cashSheet = resp.data?.sheets?.find((s) => s.properties?.title === "Cash");
+    const appDataSheet = resp.data?.sheets?.find((s) => s.properties?.title === "AppData");
+    const rawRows = cashSheet?.data?.[0]?.rowData || [];
+    const g59Val = String(appDataSheet?.data?.[0]?.rowData?.[0]?.values?.[0]?.formattedValue || "").trim().toLowerCase();
     const showChart = g59Val === "yes";
 
-    if (!rows.length) {
+    if (!rawRows.length) {
       return res.status(404).json({ success: false, error: "Cash sheet is empty or not found" });
     }
 
-    const headerRow = rows[0] || [];
+    const headerRow = rawRows[0]?.values || [];
     const monthCols = [];
 
     // Parse month columns from row 1
     for (let c = 1; c < headerRow.length; c++) {
-      const h = String(headerRow[c] || "").trim();
+      const h = String(headerRow[c]?.formattedValue || "").trim();
       if (!h) continue;
       const parsedDate = parseMonthYear(h);
       monthCols.push({
@@ -136,32 +138,48 @@ export default async function handler(req, res) {
     const windowEndIdx = Math.min(monthCols.length, windowStartIdx + 7);
     const rollingMonthCols = monthCols.slice(windowStartIdx, windowEndIdx);
 
-    // Build line items for Table 1 (Excluding pipeline: rows 3 to 36 -> indices 2 to 35)
-    // and Table 2 (Including pipeline: rows 44 to 75 -> indices 43 to 74)
+    // Build line items for Table 1 (Excluding pipeline: rows 3 to 38 -> indices 2 to 37)
+    // and Table 2 (Including pipeline: rows 44 to 78 -> indices 43 to 77)
     const parseTableSection = (startRowIdx, endRowIdx) => {
       const sectionRows = [];
       for (let r = startRowIdx; r <= endRowIdx; r++) {
-        const row = rows[r] || [];
-        const label = String(row[0] || "").trim();
+        const rowCells = rawRows[r]?.values || [];
+        const label = String(rowCells[0]?.formattedValue || "").trim();
         if (!label) continue;
 
-        // Extract values for rolling 7 months
+        // Extract values and notes for rolling 7 months
         const rollingValues = rollingMonthCols.map((m) => {
-          const val = row[m.colIndex];
-          return val !== undefined ? String(val).trim() : "£0";
+          const cell = rowCells[m.colIndex];
+          const val = cell?.formattedValue;
+          return val !== undefined && val !== null ? String(val).trim() : "£0";
+        });
+
+        const rollingNotes = rollingMonthCols.map((m) => {
+          const cell = rowCells[m.colIndex];
+          const note = cell?.note;
+          return note !== undefined && note !== null ? String(note).trim() : "";
         });
 
         // Also extract all months for full-year/historical viewing
         const allValues = monthCols.map((m) => {
-          const val = row[m.colIndex];
-          return val !== undefined ? String(val).trim() : "£0";
+          const cell = rowCells[m.colIndex];
+          const val = cell?.formattedValue;
+          return val !== undefined && val !== null ? String(val).trim() : "£0";
+        });
+
+        const allNotes = monthCols.map((m) => {
+          const cell = rowCells[m.colIndex];
+          const note = cell?.note;
+          return note !== undefined && note !== null ? String(note).trim() : "";
         });
 
         sectionRows.push({
           rowIndex: r + 1,
           label,
           rollingValues,
+          rollingNotes,
           allValues,
+          allNotes,
         });
       }
       return sectionRows;

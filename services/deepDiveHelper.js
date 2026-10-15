@@ -1198,6 +1198,15 @@ export function getDeepDiveType(rowLabel = "") {
   return null;
 }
 
+export function formatAdjustmentLabel(defaultLabel = "Manual adjustment", note = "") {
+  if (!note) return defaultLabel;
+  const match = String(note).match(/\[Note:\s*([^\]]+)\]/i);
+  if (match && match[1]?.trim()) {
+    return `${defaultLabel} (${match[1].trim()})`;
+  }
+  return defaultLabel;
+}
+
 export function buildDeepDiveData({
   ddType,
   periodLabel,
@@ -1211,6 +1220,7 @@ export function buildDeepDiveData({
   isRestricted = false,
   isScenarioView = false,
   scenariosConfig = null,
+  cellNote = "",
 }) {
   if (!keyData) {
     return {
@@ -1948,7 +1958,7 @@ export function buildDeepDiveData({
 
     if (Math.abs(drift) > 2) {
       items.push({
-        name: "Manual adjustment",
+        name: formatAdjustmentLabel("Manual adjustment", cellNote),
         amount: drift,
       });
     }
@@ -1983,7 +1993,7 @@ export function buildDeepDiveData({
 
     if (Math.abs(drift) > 2) {
       items.push({
-        name: "Manual adjustment",
+        name: formatAdjustmentLabel("Manual adjustment", cellNote),
         amount: drift,
       });
     }
@@ -2022,7 +2032,7 @@ export function buildDeepDiveData({
     const drift = Math.round(targetCellVal - total);
     if (Math.abs(drift) > 2) {
       items.push({
-        name: "Manual adjustment",
+        name: formatAdjustmentLabel("Manual adjustment", cellNote),
         amount: drift,
       });
     }
@@ -2045,7 +2055,7 @@ export function buildDeepDiveData({
 
     if (Math.abs(drift) > 2) {
       list.push({
-        name: "Manual adjustment",
+        name: formatAdjustmentLabel("Manual adjustment", cellNote),
         amount: drift,
       });
     }
@@ -2080,7 +2090,7 @@ export function buildDeepDiveData({
 
     if (Math.abs(drift) > 2) {
       items.push({
-        name: "Manual adjustment",
+        name: formatAdjustmentLabel("Manual adjustment", cellNote),
         amount: drift,
       });
     }
@@ -2103,7 +2113,7 @@ export function buildDeepDiveData({
 
     if (Math.abs(drift) > 2) {
       list.push({
-        name: "Manual adjustment",
+        name: formatAdjustmentLabel("Manual adjustment", cellNote),
         amount: drift,
       });
     }

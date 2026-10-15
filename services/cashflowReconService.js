@@ -237,6 +237,7 @@ export async function getCashflowReconData({
   }
 
   // Pre-scan row labels to locate adjustment rows dynamically across different client layouts
+  let incomingCashAdjRow = 7;
   let otherAdjustmentsRow = 30;
   let salariesAdjRow = 9;
   let dividendsAdjRow = 11;
@@ -252,6 +253,7 @@ export async function getCashflowReconData({
     const lbl = String(rowData[r]?.values?.[0]?.formattedValue || "").toLowerCase().trim();
     const sheetNum = r + 1;
     if (lbl.includes("other adjustment")) otherAdjustmentsRow = sheetNum;
+    else if ((lbl.includes("cash incoming") || lbl.includes("incoming cash")) && lbl.includes("adjustment")) incomingCashAdjRow = sheetNum;
     else if (lbl.includes("salaries adjustment")) salariesAdjRow = sheetNum;
     else if (lbl.includes("dividends as salary adjustment")) dividendsAdjRow = sheetNum;
     else if (lbl.includes("contractors adjustment")) contractorsAdjRow = sheetNum;
@@ -296,7 +298,7 @@ export async function getCashflowReconData({
     let targetAdjustmentRow = null;
     if (isConfirmedCash) {
       mappedItemType = "confirmed_cash";
-      targetAdjustmentRow = otherAdjustmentsRow; // Other adjustments row (row 30)
+      targetAdjustmentRow = incomingCashAdjRow; // Incoming cash adjustment row (row 7)
     } else if (isSalaries) {
       mappedItemType = "salaries";
       targetAdjustmentRow = salariesAdjRow; // Salaries adjustment

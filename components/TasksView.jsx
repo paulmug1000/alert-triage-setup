@@ -182,6 +182,9 @@ export default function TasksView({
       const data = await res.json();
       if (data.success) {
         if (selectedTask?.fingerprintHash === fingerprintHash) setSelectedTask(null);
+        if (tasksFilter !== "resolved") {
+          setTasks(prev => prev.filter(t => t.fingerprintHash !== fingerprintHash));
+        }
         await loadTasks(tasksFilter, true);
         refreshTaskCount?.(true);
       } else setTaskActionError(data.error || "Failed to resolve task");
@@ -199,6 +202,9 @@ export default function TasksView({
       const data = await res.json();
       if (data.success) {
         if (selectedTask?.fingerprintHash === fingerprintHash) setSelectedTask(null);
+        if (tasksFilter !== "resolved") {
+          setTasks(prev => prev.filter(t => t.fingerprintHash !== fingerprintHash));
+        }
         refreshTriage();
         await loadTasks(tasksFilter, true);
         refreshTaskCount?.(true);
@@ -307,18 +313,23 @@ export default function TasksView({
     try {
       setBulkActionLoading(true);
       setTaskActionError("");
+      const hashes = Array.from(selectedTaskHashes);
       const res = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "resolve_task",
-          fingerprintHashes: Array.from(selectedTaskHashes),
+          fingerprintHashes: hashes,
           automationCommanderSheetId,
         }),
       });
       const data = await res.json();
       if (data.success) {
+        const removedSet = new Set(hashes);
         setSelectedTaskHashes(new Set());
+        if (tasksFilter !== "resolved") {
+          setTasks(prev => prev.filter(t => !removedSet.has(t.fingerprintHash)));
+        }
         await loadTasks(tasksFilter, true);
         refreshTaskCount?.(true);
       } else {

@@ -12,8 +12,9 @@ import { ADMIN_ONLY_ALERT_TYPES } from "../utils/helpers";
 let _tasksMemoryCache = null;
 let _tasksCachedAt = 0;
 
-export async function updateTaskInCache(updatedTaskRow, remove = false) {
-  if (!updatedTaskRow || !updatedTaskRow.fingerprintHash) return;
+export async function updateTasksInCache(taskRows, remove = false) {
+  const rows = Array.isArray(taskRows) ? taskRows : [taskRows];
+  if (rows.length === 0) return;
   const now = Date.now();
   let tasks = _tasksMemoryCache;
   if (!tasks && redisClient?.isOpen) {
@@ -23,15 +24,18 @@ export async function updateTaskInCache(updatedTaskRow, remove = false) {
     } catch (e) {}
   }
   if (!tasks) tasks = [];
-  
-  const idx = tasks.findIndex(t => t.fingerprintHash === updatedTaskRow.fingerprintHash);
-  if (remove) {
-    if (idx !== -1) tasks.splice(idx, 1);
-  } else {
-    if (idx !== -1) {
-      tasks[idx] = { ...tasks[idx], ...updatedTaskRow };
+
+  for (const updatedTaskRow of rows) {
+    if (!updatedTaskRow || !updatedTaskRow.fingerprintHash) continue;
+    const idx = tasks.findIndex(t => t.fingerprintHash === updatedTaskRow.fingerprintHash);
+    if (remove) {
+      if (idx !== -1) tasks.splice(idx, 1);
     } else {
-      tasks.push(updatedTaskRow);
+      if (idx !== -1) {
+        tasks[idx] = { ...tasks[idx], ...updatedTaskRow };
+      } else {
+        tasks.push(updatedTaskRow);
+      }
     }
   }
   _tasksMemoryCache = tasks;
@@ -43,10 +47,18 @@ export async function updateTaskInCache(updatedTaskRow, remove = false) {
   }
 }
 
-export function invalidateTasksCache() {
+export async function updateTaskInCache(updatedTaskRow, remove = false) {
+  return updateTasksInCache([updatedTaskRow], remove);
+}
+
+export async function invalidateTasksCache() {
   _tasksMemoryCache = null;
   _tasksCachedAt = 0;
-  // NOTE: We keep Redis triage_tasks_cache warm for fast page loads rather than deleting it.
+  if (redisClient?.isOpen) {
+    try {
+      await redisClient.del("triage_tasks_cache");
+    } catch (e) {}
+  }
 }
 
 export async function handleBulkCreateTasks(req, res, sheets) {
@@ -65,6 +77,7 @@ export async function handleBulkCreateTasks(req, res, sheets) {
     await ensureAlertMemoryTab(sheets, acId);
     const memoryRows = await readAlertMemory(sheets, acId);
     const results = [];
+    const createdTaskRows = [];
 
     for (const alert of alertsToTask) {
       try {
@@ -103,15 +116,23 @@ export async function handleBulkCreateTasks(req, res, sheets) {
         if (snoozedUntil) {
           const freshRows = await readAlertMemory(sheets, acId);
           const taskMemRow = findMemoryRow(freshRows, fingerprintHash);
-          if (taskMemRow) await updateAlertMemoryRow(sheets, acId, taskMemRow.rowIndex, { ...taskMemRow, snoozedUntil });
+          if (taskMemRow) {
+            await updateAlertMemoryRow(sheets, acId, taskMemRow.rowIndex, { ...taskMemRow, snoozedUntil });
+            taskRow.snoozedUntil = snoozedUntil;
+          }
         }
+        createdTaskRows.push(taskRow);
         results.push({ fingerprintHash, taskKey });
       } catch (alertErr) {
         results.push({ fingerprintHash: null, error: alertErr.message });
       }
     }
 
-    invalidateTasksCache();
+    if (createdTaskRows.length > 0) {
+      await updateTasksInCache(createdTaskRows);
+    } else {
+      await invalidateTasksCache();
+    }
 
     const createdCount = results.filter(r => r.taskKey).length;
     if (createdCount > 0) {
@@ -196,15 +217,17 @@ export async function handleCreateTask(req, res, sheets) {
     };
 
     if (memoryRow) {
-      await updateAlertMemoryRow(sheets, acId, memoryRow.rowIndex, {
+      const updatedRow = {
         ...memoryRow,
         status: "task",
         ignoreReason: "",
         cachedOptionsJSON,
         dataSnapshot: JSON.stringify({ ...JSON.parse(memoryRow.dataSnapshot || "{}"), ...alertFieldsSnapshot, ...taskMeta }),
-      });
+      };
+      await updateAlertMemoryRow(sheets, acId, memoryRow.rowIndex, updatedRow);
+      await updateTaskInCache(updatedRow);
     } else {
-      await appendAlertMemoryRow(sheets, acId, {
+      const createdRow = {
         fingerprintHash,
         alertType: alertType || "alert",
         clientName: alert.clientName || "",
@@ -214,10 +237,10 @@ export async function handleCreateTask(req, res, sheets) {
         ignoreReason: "",
         category: isProactive ? "proactive" : (isInfo ? "informational" : "discrepancy"),
         dataSnapshot: JSON.stringify({ ...alertFieldsSnapshot, ...taskMeta }),
-      });
+      };
+      await appendAlertMemoryRow(sheets, acId, createdRow);
+      await updateTaskInCache(createdRow);
     }
-
-    invalidateTasksCache();
 
     const taskCat = (() => {
       const t = String(alert.type || alert.flagType || alert.alertType || "").toLowerCase();
@@ -244,7 +267,7 @@ export async function handleCreateTask(req, res, sheets) {
 }
 
 export async function handleGetTasks(req, res, sheets) {
-  const { automationCommanderSheetId: acId, filter, bypassCache, clientName } = req.body;
+  const { automationCommanderSheetId: acId, filter, bypassCache, clientName, forceRefresh } = req.body;
   if (!acId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
 
   const sessionUser = getSessionUser(req);
@@ -258,9 +281,10 @@ export async function handleGetTasks(req, res, sheets) {
   try {
     let allTasks = null;
     const nowMs = Date.now();
-    if (!bypassCache && _tasksMemoryCache && (nowMs - _tasksCachedAt < 300000)) {
+    const isForceRefresh = !!forceRefresh;
+    if (!isForceRefresh && !bypassCache && _tasksMemoryCache && (nowMs - _tasksCachedAt < 300000)) {
       allTasks = _tasksMemoryCache;
-    } else if (redisClient?.isOpen) {
+    } else if (!isForceRefresh && redisClient?.isOpen) {
       try {
         const cached = await redisClient.get(TASK_CACHE_KEY);
         if (cached) allTasks = JSON.parse(cached);
@@ -426,8 +450,9 @@ export async function handleAddTaskNote(req, res, sheets) {
     notes.push({ text: noteText, timestamp: new Date().toISOString() });
     taskMeta.furtherNotes = notes;
 
-    await updateAlertMemoryRow(sheets, acId, memoryRow.rowIndex, { ...memoryRow, dataSnapshot: JSON.stringify(taskMeta) });
-    invalidateTasksCache();
+    const updatedRow = { ...memoryRow, dataSnapshot: JSON.stringify(taskMeta) };
+    await updateAlertMemoryRow(sheets, acId, memoryRow.rowIndex, updatedRow);
+    await updateTaskInCache(updatedRow);
 
     logPmaActivity(sheets, {
       automationCommanderSheetId: acId,
@@ -480,15 +505,16 @@ export async function handleSnoozeTask(req, res, sheets) {
         if (alertData) taskMeta.alertData = alertData;
       }
 
+      const updatedRow = {
+        ...memoryRow,
+        cachedOptionsJSON: updateCachedOptions && newCachedOptionsJSON ? newCachedOptionsJSON : memoryRow.cachedOptionsJSON,
+        dataSnapshot: JSON.stringify(taskMeta),
+      };
       batchUpdates.push({
         rowIndex: memoryRow.rowIndex,
-        updates: {
-          ...memoryRow,
-          cachedOptionsJSON: updateCachedOptions && newCachedOptionsJSON ? newCachedOptionsJSON : memoryRow.cachedOptionsJSON,
-          dataSnapshot: JSON.stringify(taskMeta),
-        }
+        updates: updatedRow,
       });
-      snoozedTasks.push(memoryRow);
+      snoozedTasks.push(updatedRow);
     }
 
     if (batchUpdates.length === 0) {
@@ -496,7 +522,7 @@ export async function handleSnoozeTask(req, res, sheets) {
     }
 
     await updateAlertMemoryRowsBatch(sheets, acId, batchUpdates);
-    invalidateTasksCache();
+    await updateTasksInCache(snoozedTasks);
 
     if (snoozedTasks.length === 1) {
       logPmaActivity(sheets, {
@@ -550,7 +576,7 @@ export async function handleRevertTaskToAlert(req, res, sheets) {
     }
 
     await updateAlertMemoryRow(sheets, acId, memoryRow.rowIndex, { ...memoryRow, status: "cached" });
-    invalidateTasksCache();
+    await updateTaskInCache({ fingerprintHash }, true);
     return res.status(200).json({ success: true });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
@@ -588,11 +614,12 @@ export async function handleResolveTask(req, res, sheets) {
       }
       taskMeta.resolvedAt = new Date().toISOString();
 
+      const updatedRow = { ...memoryRow, status: "task_resolved", dataSnapshot: JSON.stringify(taskMeta) };
       batchUpdates.push({
         rowIndex: memoryRow.rowIndex,
-        updates: { ...memoryRow, status: "task_resolved", dataSnapshot: JSON.stringify(taskMeta) }
+        updates: updatedRow
       });
-      resolvedTasks.push(memoryRow);
+      resolvedTasks.push(updatedRow);
     }
 
     if (batchUpdates.length === 0) {
@@ -600,7 +627,7 @@ export async function handleResolveTask(req, res, sheets) {
     }
 
     await updateAlertMemoryRowsBatch(sheets, acId, batchUpdates);
-    invalidateTasksCache();
+    await updateTasksInCache(resolvedTasks);
 
     if (resolvedTasks.length === 1) {
       logPmaActivity(sheets, {
@@ -643,8 +670,9 @@ export async function handleUpdateTask(req, res, sheets) {
     if (unsnooze) taskMeta.snoozedUntil = "";
     if (newAlertData) taskMeta.alertData = newAlertData;
 
-    await updateAlertMemoryRow(sheets, acId, memoryRow.rowIndex, { ...memoryRow, cachedOptionsJSON: newCachedOptionsJSON || memoryRow.cachedOptionsJSON, dataSnapshot: JSON.stringify(taskMeta) });
-    invalidateTasksCache();
+    const updatedRow = { ...memoryRow, cachedOptionsJSON: newCachedOptionsJSON || memoryRow.cachedOptionsJSON, dataSnapshot: JSON.stringify(taskMeta) };
+    await updateAlertMemoryRow(sheets, acId, memoryRow.rowIndex, updatedRow);
+    await updateTaskInCache(updatedRow);
     return res.status(200).json({ success: true });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });

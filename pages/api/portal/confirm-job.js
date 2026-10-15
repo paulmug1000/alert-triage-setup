@@ -149,8 +149,10 @@ export default async function handler(req, res) {
     // Parent row A:AM (cols 1-39, index 0-38)
     const parentA_AM = parentData.slice(0, 39);
     while (parentA_AM.length < 39) parentA_AM.push("");
-    // Set Date Confirmed (Column 4, index 3) to today's date formatted YYYY-MM-DD
-    const todayStr = new Date().toISOString().split("T")[0];
+    // Set Date Confirmed (Column 4, index 3) to today's date formatted d-MMM-yy (e.g. 7-Aug-26)
+    const now = new Date();
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const todayStr = `${now.getDate()}-${months[now.getMonth()]}-${String(now.getFullYear()).slice(-2)}`;
     parentA_AM[3] = todayStr;
 
     confirmedBatchData.push({
@@ -231,6 +233,44 @@ export default async function handler(req, res) {
         },
       })
     );
+
+    // Format Date Confirmed cell (Column D) with d-mmm-yy format and italics
+    try {
+      await withRetry(() =>
+        sheets.spreadsheets.batchUpdate({
+          spreadsheetId: clientSheetId,
+          requestBody: {
+            requests: [
+              {
+                repeatCell: {
+                  range: {
+                    sheetId: confirmedSheetId,
+                    startRowIndex: targetParentRow - 1,
+                    endRowIndex: targetParentRow,
+                    startColumnIndex: 3,
+                    endColumnIndex: 4,
+                  },
+                  cell: {
+                    userEnteredFormat: {
+                      numberFormat: {
+                        type: "DATE",
+                        pattern: "d-mmm-yy",
+                      },
+                      textFormat: {
+                        italic: true,
+                      },
+                    },
+                  },
+                  fields: "userEnteredFormat.numberFormat,userEnteredFormat.textFormat.italic",
+                },
+              },
+            ],
+          },
+        })
+      );
+    } catch (fmtErr) {
+      console.warn("⚠️ Formatting Date Conf in Confirmed warning (non-fatal):", fmtErr.message);
+    }
 
     // 7. Group child rows in Confirmed sheet under targetParentRow
     if (confirmedChildRows.length > 0) {

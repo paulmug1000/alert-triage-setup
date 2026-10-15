@@ -393,24 +393,89 @@ export default function TriageAnalysisView({
               const isDash = ft.includes("Dash");
               const sd = alert.data?.sheetData || [];
               const cd = alert.data?.crmData || [];
-              // App discr sheetData (EF:ER):    [0]=client, [1]=job, [2]=code, [3]=revenue, [4]=dirCosts, [5]=start, [6]=end, [7]=likelihood
-              // Dash discr sheetData (AO:AW):    [0]=code, [1]=client, [2]=job, [3]=revenue, [4]=dirCosts, [5]=start, [6]=end, [7]=likelihood
-              // crmData (both):                  [0]=client, [1]=job, [2]=code, [3]=revenue, [4]=dirCosts, [5]=start, [6]=end, [7]=likelihood
-              const client = (isDash ? sd[1] : sd[0]) || cd[0] || "";
-              const job    = (isDash ? sd[2] : sd[1]) || cd[1] || "";
-              const code   = (isDash ? sd[0] : sd[2]) || cd[2] || "";
 
-              // Per-field CRM vs sheet values, in the same order/index as MISMATCH_FIELD_NAMES
-              // server-side: Client name, Job name, Revenue, Direct costs, Start date, End date, % Likelihood
-              const sdField = (dashIdx, appIdx) => isDash ? sd[dashIdx] : sd[appIdx];
+              // Helpers for formatting
+              const formatCurrency = (val) => {
+                if (val === null || val === undefined || String(val).trim() === "") return "£0";
+                const clean = String(val).replace(/[£$€,\s]/g, "");
+                const num = parseFloat(clean);
+                if (isNaN(num)) return String(val);
+                return "£" + num.toLocaleString("en-GB", { minimumFractionDigits: Number.isInteger(num) ? 0 : 2, maximumFractionDigits: 2 });
+              };
+
+              const formatLikelihood = (val) => {
+                if (val === null || val === undefined || String(val).trim() === "") return "-";
+                const s = String(val).trim();
+                if (s.endsWith("%")) return s;
+                const num = parseFloat(s);
+                if (isNaN(num)) return s;
+                const pct = num <= 1 ? Math.round(num * 100) : Math.round(num);
+                return `${pct}%`;
+              };
+
+              // Safely pull job type from options if available
+              let optionJobType = "";
+              try {
+                const parsed = JSON.parse(claudeAnalysis);
+                if (Array.isArray(parsed)) {
+                  const withType = parsed.find(o => o.jobRowsData?.[0]?.projectRetainer || o.newJobData?.projectRetainer || o.matchingDetails?.unmatchedJobSummary?.projectRetainer);
+                  if (withType?.jobRowsData?.[0]?.projectRetainer) optionJobType = withType.jobRowsData[0].projectRetainer;
+                  else if (withType?.newJobData?.projectRetainer) optionJobType = withType.newJobData.projectRetainer;
+                }
+              } catch (e) {}
+
+              // Column mapping:
+              // Dash discrepancy:
+              //   CRM (X:AJ):   [0]=client, [1]=job, [2]=code, [3]=revenue, [4]=dirCosts, [5]=start, [6]=end, [7]=likelihood, [8]=status, [9]=type
+              //   Sheet (AO:AW): [0]=code, [1]=client, [2]=job, [3]=revenue, [4]=dirCosts, [5]=start, [6]=end, [7]=likelihood, [8]=type
+              // App discrepancy:
+              //   Sheet (EF:ER): [0]=client, [1]=job, [2]=code, [3]=revenue, [4]=dirCosts, [5]=start, [6]=end, [7]=likelihood
+              //   CRM (EU:FD):   [0]=code, [1]=client, [2]=job, [3]=revenue, [4]=dirCosts, [5]=start, [6]=end, [7]=likelihood, [8]=status, [9]=type
+
+              const crmClient = isDash ? cd[0] : cd[1];
+              const crmJob    = isDash ? cd[1] : cd[2];
+              const crmCode   = isDash ? cd[2] : cd[0];
+              const crmRev    = cd[3];
+              const crmCosts  = cd[4];
+              const crmStart  = cd[5];
+              const crmEnd    = cd[6];
+              const crmLikely = cd[7];
+              const crmType   = cd[9];
+
+              const shtClient = isDash ? sd[1] : sd[0];
+              const shtJob    = isDash ? sd[2] : sd[1];
+              const shtCode   = isDash ? sd[0] : sd[2];
+              const shtRev    = sd[3];
+              const shtCosts  = sd[4];
+              const shtStart  = sd[5];
+              const shtEnd    = sd[6];
+              const shtLikely = sd[7];
+              const shtType   = (isDash ? sd[8] : optionJobType) || cd[9] || optionJobType || "";
+
+              const pickVal = (v1, v2) => (v1 !== null && v1 !== undefined && String(v1).trim() !== "") ? v1 : v2;
+
+              // Top title values
+              const displayClient = (isDash ? (crmClient || shtClient) : (shtClient || crmClient)) || "";
+              const displayJob    = (isDash ? (crmJob || shtJob) : (shtJob || crmJob)) || "";
+              const displayCode   = (isDash ? (crmCode || shtCode) : (shtCode || crmCode)) || "";
+
+              // Full details values (for missing job or summary grid)
+              const displayRev    = isDash ? pickVal(crmRev, shtRev) : pickVal(shtRev, crmRev);
+              const displayCosts  = isDash ? pickVal(crmCosts, shtCosts) : pickVal(shtCosts, crmCosts);
+              const displayStart  = isDash ? pickVal(crmStart, shtStart) : pickVal(shtStart, crmStart);
+              const displayEnd    = isDash ? pickVal(crmEnd, shtEnd) : pickVal(shtEnd, crmEnd);
+              const displayLikely = isDash ? pickVal(crmLikely, shtLikely) : pickVal(shtLikely, crmLikely);
+              const displayType   = isDash ? pickVal(crmType, shtType) : pickVal(shtType, crmType);
+
+              // Field mismatch definitions
               const FIELD_DEFS = [
-                { name: "Client name",  crm: cd[0], sheet: sdField(1, 0), fmt: v => v || "(blank)" },
-                { name: "Job name",     crm: cd[1], sheet: sdField(2, 1), fmt: v => v || "(blank)" },
-                { name: "Revenue",      crm: cd[3], sheet: sd[3], fmt: v => v ? `£${v}` : "£0" },
-                { name: "Direct costs", crm: cd[4], sheet: sd[4], fmt: v => v ? `£${v}` : "£0" },
-                { name: "Start date",   crm: cd[5], sheet: sd[5], fmt: v => v || "(blank)" },
-                { name: "End date",     crm: cd[6], sheet: sd[6], fmt: v => v || "(blank)" },
-                { name: "% Likelihood", crm: cd[7], sheet: sd[7], fmt: v => v ? `${(parseFloat(v) * 100).toFixed(0)}%` : "0%" },
+                { name: "Client name",  crm: crmClient, sheet: shtClient, fmt: v => v || "(blank)" },
+                { name: "Job name",     crm: crmJob,    sheet: shtJob,    fmt: v => v || "(blank)" },
+                { name: "Revenue",      crm: crmRev,    sheet: shtRev,    fmt: formatCurrency },
+                { name: "Direct costs", crm: crmCosts,  sheet: shtCosts,  fmt: formatCurrency },
+                { name: "Start date",   crm: crmStart,  sheet: shtStart,  fmt: v => v || "(blank)" },
+                { name: "End date",     crm: crmEnd,    sheet: shtEnd,    fmt: v => v || "(blank)" },
+                { name: "% Likelihood", crm: crmLikely, sheet: shtLikely, fmt: formatLikelihood },
               ];
               const mismatchedFieldNames = alert.mismatchFields || [];
               const mismatchedFields = FIELD_DEFS.filter(f => mismatchedFieldNames.includes(f.name));
@@ -426,14 +491,60 @@ export default function TriageAnalysisView({
                   <div style={{ fontSize: "17px", fontWeight: "700", color: "#5b21b6", marginBottom: "8px" }}>
                     ⚠ {subHeader}
                   </div>
-                  <div style={{ fontSize: "14px", fontWeight: "600", color: "#1a1a1a", marginBottom: isMismatch ? "10px" : "0" }}>
-                    {client}{job ? ` - ${job}` : ""}{code ? ` (${code})` : ""}
+                  <div style={{ fontSize: "15px", fontWeight: "600", color: "#1a1a1a", marginBottom: "12px" }}>
+                    {displayClient}{displayJob ? ` - ${displayJob}` : ""}{displayCode ? ` (${displayCode})` : ""}
                   </div>
+
+                  {/* Full Job Details Grid */}
+                  <div style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+                    gap: "8px 16px",
+                    backgroundColor: "rgba(255, 255, 255, 0.75)",
+                    border: "1px solid #e9d5ff",
+                    borderRadius: "6px",
+                    padding: "10px 14px",
+                    fontSize: "13px",
+                    color: "#374151"
+                  }}>
+                    <div>
+                      <span style={{ color: "#6b7280", fontWeight: "500" }}>Revenue: </span>
+                      <strong style={{ color: "#111827" }}>{formatCurrency(displayRev)}</strong>
+                    </div>
+                    <div>
+                      <span style={{ color: "#6b7280", fontWeight: "500" }}>Direct costs: </span>
+                      <strong style={{ color: "#111827" }}>{formatCurrency(displayCosts)}</strong>
+                    </div>
+                    <div>
+                      <span style={{ color: "#6b7280", fontWeight: "500" }}>Retainer / Project: </span>
+                      <strong style={{ color: "#111827" }}>{displayType || "Project"}</strong>
+                    </div>
+                    <div>
+                      <span style={{ color: "#6b7280", fontWeight: "500" }}>Start date: </span>
+                      <strong style={{ color: "#111827" }}>{displayStart || "(blank)"}</strong>
+                    </div>
+                    <div>
+                      <span style={{ color: "#6b7280", fontWeight: "500" }}>End date: </span>
+                      <strong style={{ color: "#111827" }}>{displayEnd || "(blank)"}</strong>
+                    </div>
+                    {isPipeline && (
+                      <div>
+                        <span style={{ color: "#6b7280", fontWeight: "500" }}>Likelihood: </span>
+                        <strong style={{ color: "#111827" }}>{formatLikelihood(displayLikely)}</strong>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Field Mismatch Callout */}
                   {isMismatch && (
-                    <div style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "13px", color: "#333" }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "6px", fontSize: "13px", color: "#374151", marginTop: "12px", paddingTop: "12px", borderTop: "1px solid #e9d5ff" }}>
+                      <div style={{ fontWeight: "600", color: "#6d28d9", marginBottom: "2px" }}>Mismatched fields:</div>
                       {mismatchedFields.map(f => (
-                        <div key={f.name}>
-                          {f.name} in CRM: <strong>{f.fmt(f.crm)}</strong>. {f.name} in Pulse {tabLabel.toLowerCase()} jobs: <strong>{f.fmt(f.sheet)}</strong>.
+                        <div key={f.name} style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                          <span style={{ color: "#b45309", fontWeight: "600" }}>⚠ {f.name}:</span>
+                          <span>CRM: <strong>{f.fmt(f.crm)}</strong></span>
+                          <span style={{ color: "#9ca3af" }}>•</span>
+                          <span>Pulse {tabLabel.toLowerCase()} jobs: <strong>{f.fmt(f.sheet)}</strong></span>
                         </div>
                       ))}
                     </div>

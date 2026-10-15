@@ -662,7 +662,7 @@ export default function NonAdminAlertListView({
                                 Unmapped P&L Account: <span style={{ color: "#7c3aed" }}>&ldquo;{catName}&rdquo;</span>
                               </div>
                               <div style={{ fontSize: "11px", color: "#6b7280" }}>
-                                This account is currently quarantined in PLComp!B to protect Outgoings from unverified expenses. Select how it should be mapped:
+                                This account is currently not being counted, to ensure unverified expenses are not included. Select how it should be mapped:
                               </div>
                             </div>
                           </div>

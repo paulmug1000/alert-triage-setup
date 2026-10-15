@@ -1629,7 +1629,12 @@ export async function checkQuarantinedPLCategories_(clientName, masterSheetId, s
     const quarantinedCats = [];
     rows.forEach((r, idx) => {
       const val = String(r[0] || "").trim();
-      if (val && val.toLowerCase() !== "extra ignore") {
+      const lower = val.toLowerCase();
+      const isInvalid = !val || val.startsWith("#") || lower.includes("#n/a") ||
+                        lower.includes("#ref!") || lower.includes("#value!") ||
+                        lower.includes("#name?") || lower.includes("#error!") ||
+                        lower === "extra ignore";
+      if (!isInvalid) {
         quarantinedCats.push({ name: val, rowNum: 180 + idx });
       }
     });
@@ -1698,6 +1703,9 @@ export async function handleClassifyPLCategory(sheets, {
 }) {
   if (!clientName || !categoryName || !classification) {
     throw new Error("Missing clientName, categoryName, or classification");
+  }
+  if (categoryName.startsWith("#") || categoryName.toLowerCase().includes("#n/a")) {
+    throw new Error(`Cannot classify invalid error value as category: "${categoryName}"`);
   }
 
   // 1. Resolve masterSheetId

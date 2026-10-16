@@ -11,11 +11,11 @@ export default function Document() {
         <meta name="description" content="Pulse - the agency finance dashboard" />
         <meta property="og:type" content="website" />
         <meta property="og:site_name" content="Pulse" />
-        <meta property="og:title" content="Pulse - the agency finance dashboard" />
-        <meta property="og:description" content="Pulse - the agency finance dashboard" />
+        <meta property="og:title" content="Pulse" />
+        <meta property="og:description" content="The agency finance dashboard" />
         <meta name="twitter:card" content="summary" />
-        <meta name="twitter:title" content="Pulse - the agency finance dashboard" />
-        <meta name="twitter:description" content="Pulse - the agency finance dashboard" />
+        <meta name="twitter:title" content="Pulse" />
+        <meta name="twitter:description" content="The agency finance dashboard" />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
         <link

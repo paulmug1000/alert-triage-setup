@@ -66,7 +66,11 @@
       "description": "Client Financial Dashboard and Reports"
     }
   ],
-  "categories": ["business", "finance", "productivity"],
+  "categories": [
+    "business",
+    "finance",
+    "productivity"
+  ],
   "pulse_ecosystem_directory": {
     "version": "4.82",
     "areas": {
@@ -88,7 +92,12 @@
             "url": "/pma/alerts",
             "alias_url": "/pma?nav=alerts",
             "query_param": "nav=alerts",
-            "sub_screens": ["clientSelection", "alertSelection", "triageAnalysis", "ignoredAlerts"],
+            "sub_screens": [
+              "clientSelection",
+              "alertSelection",
+              "triageAnalysis",
+              "ignoredAlerts"
+            ],
             "description": "Anomaly detection, automated health check alerts, and triage action flows."
           },
           {

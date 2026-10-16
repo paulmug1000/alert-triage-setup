@@ -4,12 +4,14 @@ import TruncatedCode from "./TruncatedCode";
 import RetainerAlertResolutionModal from "./RetainerAlertResolutionModal";
 import RetainerSplitInvoiceModal from "./RetainerSplitInvoiceModal";
 import NonAdminAlertListView from "./NonAdminAlertListView";
+import JobDetailModal from "./JobDetailModal";
+import OutgoingsDetailModal from "./OutgoingsDetailModal";
 import { useBulkActions } from "../hooks/useBulkActions";
 import { useTasks } from "../contexts/TaskContext";
 import { useTriage } from "../contexts/TriageContext";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useAuth } from "../hooks/useAuth";
-import { ADMIN_ONLY_ALERT_TYPES, stripRowInfo, parseUnreceivedExpensesDetail, parseStaleExpenseDetail, filterAnalysisResultsForAlert, getCleanPLCategoryName } from "../utils/helpers";
+import { ADMIN_ONLY_ALERT_TYPES, stripRowInfo, parseUnreceivedExpensesDetail, parseStaleExpenseDetail, parseInfoAlertDetail, filterAnalysisResultsForAlert, getCleanPLCategoryName, getAlertJobTarget } from "../utils/helpers";
 
 const RICH_NOACTION_FLAG_GROUP = {
   crmCopiedConfChecked: "crm",
@@ -19,6 +21,26 @@ const RICH_NOACTION_FLAG_GROUP = {
   retainerInvoicesDeleted: "invoice",
   invoiceStaleUnsentChanges: "invoice",
 };
+
+const KNOWN_PROACTIVE_TYPES = new Set([
+  "retainer_invoice",
+  "uninvoiced_new_job",
+  "uninvoiced_revenue",
+  "unreceived_expenses",
+  "stale_unrecon_gap",
+  "retroactive_outgoings_update",
+  "unmapped_pl_category",
+  "crm_wipe",
+  "revenue_mismatch",
+  "direct_costs_mismatch",
+  "pipeline_confirmed_overlap",
+  "retainer_shrink_blocked",
+  "autolog_error",
+  "infinite_loop",
+  "deleted_invoice",
+  "deleted_expense",
+  "job_structure_error",
+]);
 
 function AdminBadge({ style = {}, show = true }) {
   if (!show) return null;
@@ -50,6 +72,7 @@ function AdminBadge({ style = {}, show = true }) {
 export default function AlertSelectionView({
   styles, setScreen, getFlagName, getAlertSummary,
   PROACTIVE_TYPE_LABELS, openCreateTaskModal, setActiveNav,
+  onNavInvoices, onNavOutgoings,
   isAdmin: propIsAdmin, user,
   managedClient, onClearManagedClient
 }) {
@@ -64,6 +87,17 @@ export default function AlertSelectionView({
   const [selectedClassifications, setSelectedClassifications] = useState({});
   const [applyingClassification, setApplyingClassification] = useState({});
   const [classificationMsg, setClassificationMsg] = useState({});
+  const [viewingJobTarget, setViewingJobTarget] = useState(null);
+  const [viewingOutgoingsTarget, setViewingOutgoingsTarget] = useState(null);
+
+  const handleViewJobOrExpense = (target) => {
+    if (!target) return;
+    if (target.isOutgoings) {
+      setViewingOutgoingsTarget(target);
+    } else {
+      setViewingJobTarget(target);
+    }
+  };
 
   const { setNavTaskCount, setSnoozedTaskCount, refreshTaskCount } = useTasks();
   const { allClientsMap, automationCommanderSheetId } = useAppGlobals();
@@ -789,6 +823,7 @@ export default function AlertSelectionView({
   };
 
   const renderAlertContent = (alert) => {
+    const detailSub = getActionableDetail(alert);
     const alertDates = (alert.firstSeen || alert.lastSeen) ? (
       <div style={{ fontSize: "10px", color: "#aaa", marginTop: "6px" }}>
         {alert.firstSeen ? `First seen: ${alert.firstSeen.split("T")[0]}` : ""}
@@ -876,7 +911,72 @@ export default function AlertSelectionView({
       );
     }
 
-    const detailSub = getActionableDetail(alert);
+    if (ft === "invoiceDashboardDiscr" || alert.type === "invoice") {
+      const inv = alert.summary || {};
+      const invNo = inv.invoiceNo || inv.reference || alert.data?.accounting?.[5] || "?";
+      const clientName = inv.client || alert.data?.accounting?.[0] || "";
+      const invDesc = inv.job || inv.description || alert.data?.accounting?.[1] || "";
+      const sentDate = inv.sentDate || alert.data?.accounting?.[6] || "";
+      const status = inv.status || alert.data?.accounting?.[9] || "";
+      const amount = typeof inv.amount === "number" ? inv.amount : parseFloat(String(inv.amount || "0").replace(/[^\d.-]/g, "")) || 0;
+      const vatLabel = inv.vatIncluded && inv.vatIncluded > 0 ? " +VAT" : " (no VAT)";
+      const isDraft = String(status).toLowerCase() === "draft";
+      const isPaid = String(status).toLowerCase() === "paid";
+
+      const statusBadge = status ? (
+        <span style={{
+          display: "inline-block",
+          padding: "2px 8px",
+          borderRadius: "12px",
+          fontSize: "11px",
+          fontWeight: "600",
+          backgroundColor: isDraft ? "#fef3c7" : isPaid ? "#dcfce7" : "#e0f2fe",
+          color: isDraft ? "#92400e" : isPaid ? "#166534" : "#0284c7",
+          border: `1px solid ${isDraft ? "#fde68a" : isPaid ? "#bbf7d0" : "#bae6fd"}`,
+          marginLeft: "8px"
+        }}>
+          {status}
+        </span>
+      ) : null;
+
+      return (
+        <div style={{ pointerEvents: "none", width: "100%" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+            <div style={{ fontWeight: "700", fontSize: "14px", color: "#1e293b", display: "flex", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
+              <span>Invoice #{invNo} · £{amount.toFixed(2)}{vatLabel}</span>
+              {statusBadge}
+              {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(ft) && <AdminBadge show={clientHasManager} />}
+            </div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "8px 14px", fontSize: "12px", color: "#475569", marginTop: "6px", background: "#f8fafc", padding: "8px 12px", borderRadius: "6px", border: "1px solid #e2e8f0" }}>
+            {clientName && (
+              <div>
+                <strong style={{ color: "#334155" }}>Client:</strong> {clientName}
+              </div>
+            )}
+            {invDesc && (
+              <div>
+                <strong style={{ color: "#334155" }}>Description:</strong> {invDesc}
+              </div>
+            )}
+            {sentDate && (
+              <div>
+                <strong style={{ color: "#334155" }}>Sent date:</strong> {sentDate}
+              </div>
+            )}
+            {status && (
+              <div>
+                <strong style={{ color: "#334155" }}>Status:</strong> {status}
+              </div>
+            )}
+          </div>
+          {detailSub && <div style={{ fontSize: "11px", fontWeight: "600", color: "#d97706", marginTop: "6px" }}>⚠ {detailSub}</div>}
+          {ignoreBanner}
+          {alertDates}
+        </div>
+      );
+    }
+
     return (
       <div style={{ pointerEvents: "none" }}>
         <div style={{ fontWeight: "600", color: "#333", display: "flex", alignItems: "center" }}>
@@ -972,8 +1072,11 @@ export default function AlertSelectionView({
             setRetainerSplitInvoice={setRetainerSplitInvoice}
             acknowledgeProactiveAlert={acknowledgeProactiveAlert}
             acknowledgingKey={acknowledgingKey}
+            onNavInvoices={onNavInvoices}
+            onNavOutgoings={onNavOutgoings}
             freqLabel={freqLabel}
             totalVisibleAlertsCount={totalVisibleAlertsCount}
+            onViewJob={handleViewJobOrExpense}
           />
         ) : (
           <>
@@ -1016,30 +1119,32 @@ export default function AlertSelectionView({
                               const nonDrafts = groupAlerts.filter(a => (a.summary?.status || "").toLowerCase() !== "draft")
                                 .sort((a, b) => parseInt(a.summary?.invoiceNo || 0) - parseInt(b.summary?.invoiceNo || 0));
                               const renderGroup = (alerts, label, globalOffset) => alerts.length === 0 ? null : (
-                                <div key={label}>
-                                  <div style={{ fontSize: "11px", fontWeight: "700", color: "#888", textTransform: "uppercase", letterSpacing: "0.05em", padding: "6px 0 4px" }}>{label}</div>
-                                  {alerts.map((alert, localIdx) => {
-                                    const selKey = alert.fingerprintHash || `${alert.flagType || alert.type}-${alert.sheetName}-${alert.rowNumber}`;
-                                    const isChecked = bulkSelected.has(selKey);
+                                <div key={label} style={{ marginBottom: "16px", width: "100%" }}>
+                                  <div style={{ fontSize: "11px", fontWeight: "700", color: "#888", textTransform: "uppercase", letterSpacing: "0.05em", padding: "6px 0 6px" }}>{label}</div>
+                                  <div style={{ display: "flex", flexDirection: "column", gap: "10px", width: "100%" }}>
+                                    {alerts.map((alert, localIdx) => {
+                                      const selKey = alert.fingerprintHash || `${alert.flagType || alert.type}-${alert.sheetName}-${alert.rowNumber}`;
+                                      const isChecked = bulkSelected.has(selKey);
 
-                                    return bulkMode ? (
-                                      <div key={selKey} onClick={() => {
-                                        const newSel = new Set(bulkSelected);
-                                        if (isChecked) newSel.delete(selKey); else newSel.add(selKey);
-                                        setBulkSelected(newSel);
-                                      }} style={{ display: "flex", alignItems: "flex-start", gap: "10px", padding: "12px", border: `1px solid ${isChecked ? "#7c3aed" : "#e0e0e0"}`, borderRadius: "4px", cursor: "pointer", backgroundColor: isChecked ? "#ede9fe" : "#fff", fontSize: "13px" }}>
-                                        <input type="checkbox" checked={isChecked} onChange={() => { }} style={{ marginTop: "2px", accentColor: "#7c3aed", flexShrink: 0 }} />
-                                        <div style={{ flex: 1 }}>{renderAlertContent(alert)}</div>
-                                      </div>
-                                    ) : (
-                                      <button className="triage-btn" key={selKey} onClick={() => selectAlert(alert)}
-                                        style={{ ...styles.optionButton, textAlign: "left", padding: "12px", border: "1px solid #e0e0e0", borderRadius: "4px", cursor: "pointer", backgroundColor: "#fff", fontSize: "13px", transition: "all 0.2s" }}
-                                        onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "#f5f5f5"; e.currentTarget.style.borderColor = "#2196f3"; }}
-                                        onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "#fff"; e.currentTarget.style.borderColor = "#e0e0e0"; }}>
-                                        {renderAlertContent(alert)}
-                                      </button>
-                                    );
-                                  })}
+                                      return bulkMode ? (
+                                        <div key={selKey} onClick={() => {
+                                          const newSel = new Set(bulkSelected);
+                                          if (isChecked) newSel.delete(selKey); else newSel.add(selKey);
+                                          setBulkSelected(newSel);
+                                        }} style={{ display: "flex", alignItems: "flex-start", gap: "12px", padding: "14px 16px", border: `1px solid ${isChecked ? "#7c3aed" : "#cbd5e1"}`, borderRadius: "8px", cursor: "pointer", backgroundColor: isChecked ? "#ede9fe" : "#fff", fontSize: "13px", width: "100%", boxSizing: "border-box" }}>
+                                          <input type="checkbox" checked={isChecked} onChange={() => { }} style={{ marginTop: "3px", accentColor: "#7c3aed", flexShrink: 0 }} />
+                                          <div style={{ flex: 1, width: "100%" }}>{renderAlertContent(alert)}</div>
+                                        </div>
+                                      ) : (
+                                        <button className="triage-btn" key={selKey} onClick={() => selectAlert(alert)}
+                                          style={{ ...styles.optionButton, display: "block", width: "100%", boxSizing: "border-box", textAlign: "left", padding: "14px 16px", border: "1px solid #cbd5e1", borderRadius: "8px", cursor: "pointer", backgroundColor: "#fff", fontSize: "13px", transition: "all 0.2s" }}
+                                          onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "#f8fafc"; e.currentTarget.style.borderColor = "#2563eb"; }}
+                                          onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "#fff"; e.currentTarget.style.borderColor = "#cbd5e1"; }}>
+                                          {renderAlertContent(alert)}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
                                 </div>
                               );
 
@@ -1050,7 +1155,7 @@ export default function AlertSelectionView({
                                   {selectedClient && (
                                     <div style={{ display: "flex", justifyContent: "flex-start", marginTop: "8px" }}>
                                       <button className="triage-btn"
-                                        onClick={() => setActiveNav("invoices")}
+                                        onClick={() => onNavInvoices ? onNavInvoices(selectedClient) : setActiveNav("invoices")}
                                         style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 14px", color: "#ea580c", borderColor: "#fdba74" }}>
                                         📥 Assign Invoices
                                       </button>
@@ -1087,7 +1192,7 @@ export default function AlertSelectionView({
                               ? [...alertBtns, (
                                 <div key="assign-btn-exp" style={{ display: "flex", justifyContent: "flex-start", marginTop: "4px" }}>
                                   <button className="triage-btn"
-                                    onClick={() => setActiveNav("outgoings")}
+                                    onClick={() => onNavOutgoings ? onNavOutgoings(selectedClient) : setActiveNav("outgoings")}
                                     style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 14px", color: "#059669", borderColor: "#6ee7b7" }}>
                                     📤 Assign Expense
                                   </button>
@@ -1097,7 +1202,7 @@ export default function AlertSelectionView({
                                 ? [...alertBtns, (
                                   <div key="assign-btn-inv" style={{ display: "flex", justifyContent: "flex-start", marginTop: "4px" }}>
                                     <button className="triage-btn"
-                                      onClick={() => setActiveNav("invoices")}
+                                      onClick={() => onNavInvoices ? onNavInvoices(selectedClient) : setActiveNav("invoices")}
                                       style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 14px", color: "#ea580c", borderColor: "#fdba74" }}>
                                       📥 Assign Invoices
                                     </button>
@@ -1217,94 +1322,114 @@ export default function AlertSelectionView({
                               }
                             };
 
-                            if (isRichFlag && !isResolved) {
-                              const overallOk = analysis?.overallOk;
-                              const borderColor = !analysis ? "#e0e0e0" : "#bae6fd";
-                              const bgColor = !analysis ? "#fff" : "#f0f9ff";
+                              const clientInfo = (clientsWithFlags || []).find(c => c.clientName === selectedClient?.clientName) || allClientsMap[selectedClient?.clientName] || selectedClient;
+                              const parsed = parseInfoAlertDetail(na.flagType, na.flagDetail);
+                              const isBulkSelected = infoBulkSelected.has(alertId);
+
+                              let cardTitle = getFlagName(na.flagType) || na.flagName;
+                              if (na.flagType === "expenseUnreconGaps") {
+                                cardTitle = parsed?.tab === "Outgoings"
+                                  ? (parsed.contractor ? `Stale placeholder expense date moved (${parsed.contractor})` : "Stale placeholder expense date moved")
+                                  : (parsed?.client ? `Stale placeholder expense date moved (${parsed.client})` : "Stale placeholder expense date moved");
+                              } else if (na.flagType === "invoiceStaleUnsentChanges") {
+                                cardTitle = parsed?.client ? `Stale unsent invoice send date changed (${parsed.client})` : "Stale unsent invoice send date changed";
+                              }
 
                               return (
-                                <div key={alertId} style={{ border: `1px solid ${borderColor}`, borderRadius: "6px", background: bgColor, padding: "12px" }}>
-                                  {infoBulkMode && (
-                                    <label style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px", cursor: "pointer", fontSize: "12px", fontWeight: "600", color: "#5b21b6" }}>
-                                      <input type="checkbox" checked={infoBulkSelected.has(alertId)} onChange={() => {
-                                        setInfoBulkSelected(prev => {
-                                          const next = new Set(prev);
-                                          if (next.has(alertId)) next.delete(alertId); else next.add(alertId);
-                                          return next;
-                                        });
-                                      }} style={{ accentColor: "#7c3aed", cursor: "pointer" }} />
-                                      Select for bulk action
-                                    </label>
-                                  )}
-                                  <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: analysis ? "10px" : "0", flexWrap: "wrap", gap: "8px" }}>
-                                    <div style={{ flexShrink: 1, minWidth: 0 }}>
-                                      <div style={{ fontSize: "13px", fontWeight: "600", color: "#444", display: "flex", alignItems: "center" }}>
-                                        <span>{getFlagName(na.flagType) || na.flagName}</span>
-                                        {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(na.flagType) && <AdminBadge show={clientHasManager} />}
-                                      </div>
-                                      {na.flagDetail && (
-                                        <div style={{ fontSize: "12px", color: "#666", marginTop: "4px", lineHeight: "1.4" }}>
-                                          {na.flagDetail}
-                                        </div>
+                                <div key={alertId} style={{
+                                  padding: "14px",
+                                  borderRadius: "6px",
+                                  border: isResolved ? "1px solid #c8e6c9" : (infoBulkMode && isBulkSelected ? "1px solid #7c3aed" : "1px solid #ddd"),
+                                  background: isResolved ? "#f1f8f2" : (infoBulkMode && isBulkSelected ? "#ede9fe" : "#fafafa"),
+                                  display: "flex",
+                                  flexDirection: "column",
+                                  gap: "8px",
+                                }}>
+                                  <div style={{
+                                    fontWeight: "600",
+                                    fontSize: "14px",
+                                    color: isResolved ? "#2e7d32" : "#1a1a1a",
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: "space-between",
+                                    flexWrap: "wrap",
+                                    gap: "8px",
+                                  }}>
+                                    <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", minWidth: 0 }}>
+                                      {infoBulkMode && !isResolved && (
+                                        <input type="checkbox" checked={isBulkSelected} onChange={() => {
+                                          setInfoBulkSelected(prev => {
+                                            const next = new Set(prev);
+                                            if (next.has(alertId)) next.delete(alertId); else next.add(alertId);
+                                            return next;
+                                          });
+                                        }} style={{ accentColor: "#7c3aed", cursor: "pointer", flexShrink: 0 }} />
                                       )}
-                                      {(na.firstSeen || na.lastSeen) && (
-                                        <div style={{ fontSize: "10px", color: "#aaa", marginTop: "6px" }}>
-                                          {na.firstSeen ? `First seen: ${na.firstSeen.split("T")[0]}` : ""}
-                                          {na.firstSeen && na.lastSeen ? " · " : ""}
-                                          {na.lastSeen ? `Last seen: ${na.lastSeen.split("T")[0]}` : ""}
-                                        </div>
-                                      )}
+                                      <span style={{ textDecoration: isResolved ? "line-through" : "none" }}>{cardTitle}</span>
+                                      {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(na.flagType) && <AdminBadge show={clientHasManager} />}
                                     </div>
-                                    <div style={{ display: "flex", gap: "6px", flexShrink: 0, flexWrap: "wrap" }}>
-                                      {isAdmin && selectedClient?.clientSheetId && (
-                                        <button className="triage-btn"
-                                          onClick={() => {
-                                            if (selectedClient.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${selectedClient.clientSheetId}/edit`, "_blank");
-                                            if (selectedClient.masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${selectedClient.masterSheetId}/edit`, "_blank");
-                                          }}
-                                          style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px", color: "#1d4ed8", borderColor: "#93c5fd" }}
-                                        >
-                                          📊 Open Sheets
-                                        </button>
-                                      )}
-                                      {!analysis && !isLoading && (
-                                        <button className="triage-btn"
-                                          onClick={() => analyzeNoActionFlag(na)}
-                                          style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px" }}
-                                        >
-                                          🔍 Analyse
-                                        </button>
-                                      )}
-                                      {isLoading && (
-                                        <span style={{ fontSize: "12px", color: "#888", padding: "5px 10px", display: "inline-flex", alignItems: "center" }}><Spinner size={12} />Analysing…</span>
-                                      )}
-                                      {analysis && !isLoading && (
-                                        <button className="triage-btn"
-                                          onClick={() => analyzeNoActionFlag(na)}
-                                          style={{ ...styles.buttonSecondary, fontSize: "11px", padding: "4px 8px" }}
-                                        >
-                                          ↻ Re-run
-                                        </button>
-                                      )}
-                                      <button className="triage-btn"
-                                        onClick={() => openCreateTaskModal(na, false, true)}
-                                        style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px", color: "#7c3aed", borderColor: "#c4b5fd" }}
-                                      >
-                                        📋 Create Task
-                                      </button>
-                                      <button className="triage-btn"
-                                        onClick={handleMarkResolved}
-                                        style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px" }}
-                                      >
-                                        ✓ Mark resolved
-                                      </button>
-                                    </div>
+                                    {isResolved && (
+                                      <span style={{ fontSize: "12px", color: "#2e7d32", fontWeight: "600", whiteSpace: "nowrap" }}>✓ Resolved</span>
+                                    )}
                                   </div>
-                                  {analysis && !isLoading && (
-                                    <div>
+
+                                  <div style={{
+                                    fontSize: "12px",
+                                    color: "#555",
+                                    backgroundColor: "#ffffff",
+                                    border: `1px solid ${isResolved ? "#c8e6c9" : "#bae6fd"}`,
+                                    borderRadius: "4px",
+                                    padding: "8px 10px",
+                                    display: "flex",
+                                    flexDirection: "column",
+                                    gap: "3px",
+                                  }}>
+                                    {parsed.tab && <div><strong>Tab:</strong> {parsed.tab}{parsed.slot ? ` (Slot ${parsed.slot})` : ""}</div>}
+                                    {parsed.month && <div><strong>Month:</strong> {parsed.month}</div>}
+                                    {parsed.client && <div><strong>End client:</strong> {parsed.client}</div>}
+                                    {parsed.contractor && <div><strong>{parsed.tab === "Outgoings" ? "Vendor:" : "Contractor:"}</strong> {parsed.contractor}</div>}
+                                    {parsed.job && <div><strong>Job:</strong> {parsed.job}{parsed.projectCode ? ` [${parsed.projectCode}]` : ""}</div>}
+                                    {isAdmin && parsed.confirmedRow && <div><strong>Confirmed tab row:</strong> {parsed.confirmedRow}</div>}
+                                    {isAdmin && parsed.pipelineRow && <div><strong>Pipeline tab row:</strong> {parsed.pipelineRow}</div>}
+                                    {isAdmin && parsed.rowNum && !parsed.confirmedRow && !parsed.pipelineRow && (
+                                      <div><strong>{parsed.tab ? `${parsed.tab} tab row:` : "Row:"}</strong> {parsed.rowNum}</div>
+                                    )}
+                                    {parsed.amount && <div><strong>Amount:</strong> {parsed.amount}</div>}
+                                    {parsed.changes && parsed.changes.length > 0 && (
+                                      <div style={{ marginTop: "3px" }}>
+                                        <strong style={{ display: "block", marginBottom: "3px" }}>Date updates:</strong>
+                                        <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                                          {parsed.changes.map((ch, ci) => (
+                                            <span key={ci} style={{
+                                              padding: "2px 7px", borderRadius: "4px", fontSize: "11px", fontWeight: "600",
+                                              background: isResolved ? "#f1f8f2" : "#ffffff",
+                                              color: isResolved ? "#2e7d32" : "#0369a1",
+                                              border: `1px solid ${isResolved ? "#bbf7d0" : "#bae6fd"}`,
+                                            }}>
+                                              {ch.label}
+                                            </span>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    )}
+                                    {parsed.highlight && (
+                                      <div style={{ marginTop: "4px", fontWeight: "700", color: isResolved ? "#2e7d32" : "#0369a1" }}>
+                                        {parsed.highlight}
+                                      </div>
+                                    )}
+                                    {parsed.rawText && (
+                                      <div style={{ marginTop: "3px", color: isResolved ? "#2e7d32" : "#666", lineHeight: "1.4" }}>
+                                        {isAdmin ? parsed.rawText : stripRowInfo(parsed.rawText)}
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  {analysis && !isLoading && !isResolved && (
+                                    <div style={{ marginTop: "2px" }}>
                                       <div style={{
                                         padding: "6px 10px", borderRadius: "4px", marginBottom: "8px", fontSize: "12px", fontWeight: "600",
                                         background: overallOk ? "#e8f5e9" : "#fbe9e7", color: overallOk ? "#2e7d32" : "#bf360c",
+                                        border: `1px solid ${overallOk ? "#c8e6c9" : "#ffccbc"}`
                                       }}>
                                         {overallOk ? "✓ Everything looks correct" : "⚠ Issues found - review below"}
                                       </div>
@@ -1312,7 +1437,7 @@ export default function AlertSelectionView({
                                         <div key={ri} style={{
                                           marginBottom: "8px", padding: "8px 10px", borderRadius: "4px",
                                           border: `1px solid ${r.status === "ok" ? "#c8e6c9" : r.status === "issue" ? "#ffccbc" : "#e0e0e0"}`,
-                                          background: r.status === "ok" ? "#f9fef9" : r.status === "issue" ? "#fff8f6" : "#fafafa",
+                                          background: "#ffffff",
                                         }}>
                                           {(r.jobName || r.projectCode || r.contractor) && (
                                             <div style={{ fontSize: "12px", fontWeight: "600", color: "#333", marginBottom: "4px" }}>
@@ -1321,8 +1446,8 @@ export default function AlertSelectionView({
                                               {r.jobName || r.projectCode}
                                               {r.projectCode && r.jobName && <TruncatedCode code={r.projectCode} />}
                                               {r.periodLabel && <span style={{ fontWeight: "400", color: "#666", marginLeft: "6px" }}> - {r.periodLabel}</span>}
-                                              {r.parentSheetRow && <span style={{ fontWeight: "400", color: "#aaa", marginLeft: "6px", fontSize: "11px" }}>{r.tab || "Confirmed"} row {r.parentSheetRow}</span>}
-                                              {(r.pipelineRow || r.confirmedRow) && (
+                                              {isAdmin && r.parentSheetRow && <span style={{ fontWeight: "400", color: "#aaa", marginLeft: "6px", fontSize: "11px" }}>{r.tab || "Confirmed"} row {r.parentSheetRow}</span>}
+                                              {isAdmin && (r.pipelineRow || r.confirmedRow) && (
                                                 <span style={{ fontWeight: "400", color: "#aaa", marginLeft: "6px", fontSize: "11px" }}>
                                                   {r.pipelineRow ? `Pipeline row ${r.pipelineRow}` : ""}
                                                   {r.pipelineRow && r.confirmedRow ? " · " : ""}
@@ -1355,131 +1480,9 @@ export default function AlertSelectionView({
                                       ))}
                                     </div>
                                   )}
-                                  {analysis && !analysis.success && (
-                                    <div style={{ fontSize: "12px", color: "#c62828", marginTop: "6px" }}>Error: {analysis.error}</div>
+                                  {analysis && !analysis.success && !isResolved && (
+                                    <div style={{ fontSize: "12px", color: "#c62828", marginTop: "4px" }}>Error: {analysis.error}</div>
                                   )}
-                                </div>
-                              );
-                            }
-
-                            if (na.flagType === "expenseUnreconGaps") {
-                              const parsed = parseStaleExpenseDetail(na.flagDetail);
-                              const clientInfo = (clientsWithFlags || []).find(c => c.clientName === selectedClient?.clientName) || allClientsMap[selectedClient?.clientName] || selectedClient;
-                              const cardTitle = parsed?.tab === "Outgoings"
-                                ? (parsed.contractor ? `Stale placeholder expense date moved (${parsed.contractor})` : "Stale placeholder expense date moved")
-                                : (parsed?.client ? `Stale placeholder expense date moved (${parsed.client})` : (getFlagName(na.flagType) || na.flagName || "Stale placeholder expense date moved"));
-
-                              return (
-                                <div key={alertId} style={{
-                                  padding: "14px",
-                                  borderRadius: "6px",
-                                  border: isResolved ? "1px solid #c8e6c9" : (infoBulkMode && infoBulkSelected.has(alertId) ? "1px solid #7c3aed" : "1px solid #ddd"),
-                                  background: isResolved ? "#f1f8f2" : (infoBulkMode && infoBulkSelected.has(alertId) ? "#ede9fe" : "#fafafa"),
-                                  display: "flex",
-                                  flexDirection: "column",
-                                  gap: "8px",
-                                }}>
-                                  <div style={{
-                                    fontWeight: "600",
-                                    fontSize: "14px",
-                                    color: isResolved ? "#2e7d32" : "#1a1a1a",
-                                    display: "flex",
-                                    alignItems: "center",
-                                    justifyContent: "space-between",
-                                    flexWrap: "wrap",
-                                    gap: "8px",
-                                  }}>
-                                    <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", minWidth: 0 }}>
-                                      {infoBulkMode && (
-                                        <input type="checkbox" checked={infoBulkSelected.has(alertId)} onChange={() => {
-                                          setInfoBulkSelected(prev => {
-                                            const next = new Set(prev);
-                                            if (next.has(alertId)) next.delete(alertId); else next.add(alertId);
-                                            return next;
-                                          });
-                                        }} style={{ accentColor: "#7c3aed", cursor: "pointer", flexShrink: 0 }} />
-                                      )}
-                                      <span style={{ textDecoration: isResolved ? "line-through" : "none" }}>{cardTitle}</span>
-                                      {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(na.flagType) && <AdminBadge show={clientHasManager} />}
-                                    </div>
-                                    {isResolved && (
-                                      <span style={{ fontSize: "12px", color: "#2e7d32", fontWeight: "600", whiteSpace: "nowrap" }}>✓ Resolved</span>
-                                    )}
-                                  </div>
-
-                                  <div style={{
-                                    fontSize: "12px",
-                                    color: "#555",
-                                    backgroundColor: isResolved ? "#ffffff" : "#f0f9ff",
-                                    border: `1px solid ${isResolved ? "#c8e6c9" : "#bae6fd"}`,
-                                    borderRadius: "4px",
-                                    padding: "8px 10px",
-                                    display: "flex",
-                                    flexDirection: "column",
-                                    gap: "3px",
-                                  }}>
-                                    {parsed ? (
-                                      parsed.tab === "Outgoings" ? (
-                                        <>
-                                          <div><strong>Tab:</strong> Outgoings</div>
-                                          {parsed.month && <div><strong>Month:</strong> {parsed.month}</div>}
-                                          {parsed.contractor && <div><strong>Vendor:</strong> {parsed.contractor}</div>}
-                                          {isAdmin && parsed.rowNum && <div><strong>Outgoings tab row:</strong> {parsed.rowNum}</div>}
-                                          {parsed.amount && <div><strong>Amount:</strong> {parsed.amount}</div>}
-                                          {parsed.changes && parsed.changes.length > 0 && (
-                                            <div style={{ marginTop: "3px" }}>
-                                              <strong style={{ display: "block", marginBottom: "3px" }}>Date updates:</strong>
-                                              <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
-                                                {parsed.changes.map((ch, ci) => (
-                                                  <span key={ci} style={{
-                                                    padding: "2px 7px", borderRadius: "4px", fontSize: "11px", fontWeight: "600",
-                                                    background: isResolved ? "#f1f8f2" : "#e0f2fe",
-                                                    color: isResolved ? "#2e7d32" : "#0369a1",
-                                                    border: `1px solid ${isResolved ? "#bbf7d0" : "#bae6fd"}`,
-                                                  }}>
-                                                    {ch.label}
-                                                  </span>
-                                                ))}
-                                              </div>
-                                            </div>
-                                          )}
-                                          <div style={{ marginTop: "4px", fontWeight: "700", color: isResolved ? "#2e7d32" : "#0369a1" }}>
-                                            Stale unreceived expense dates moved forward to current month.
-                                          </div>
-                                        </>
-                                      ) : (
-                                        <>
-                                          <div><strong>Tab:</strong> Confirmed{parsed.slot ? ` (Slot ${parsed.slot})` : ""}</div>
-                                          {parsed.client && <div><strong>End client:</strong> {parsed.client}</div>}
-                                          {parsed.job && <div><strong>Job:</strong> {parsed.job}</div>}
-                                          {isAdmin && parsed.rowNum && <div><strong>Confirmed tab row:</strong> {parsed.rowNum}</div>}
-                                          {parsed.amount && <div><strong>Amount:</strong> {parsed.amount}</div>}
-                                          {parsed.changes && parsed.changes.length > 0 && (
-                                            <div style={{ marginTop: "3px" }}>
-                                              <strong style={{ display: "block", marginBottom: "3px" }}>Date updates:</strong>
-                                              <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
-                                                {parsed.changes.map((ch, ci) => (
-                                                  <span key={ci} style={{
-                                                    padding: "2px 7px", borderRadius: "4px", fontSize: "11px", fontWeight: "600",
-                                                    background: isResolved ? "#f1f8f2" : "#e0f2fe",
-                                                    color: isResolved ? "#2e7d32" : "#0369a1",
-                                                    border: `1px solid ${isResolved ? "#bbf7d0" : "#bae6fd"}`,
-                                                  }}>
-                                                    {ch.label}
-                                                  </span>
-                                                ))}
-                                              </div>
-                                            </div>
-                                          )}
-                                          <div style={{ marginTop: "4px", fontWeight: "700", color: isResolved ? "#2e7d32" : "#0369a1" }}>
-                                            Stale unreceived expense receive date moved forward to current month.
-                                          </div>
-                                        </>
-                                      )
-                                    ) : (
-                                      <div>{isAdmin ? na.flagDetail : stripRowInfo(na.flagDetail)}</div>
-                                    )}
-                                  </div>
 
                                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", marginTop: "4px" }}>
                                     <div style={{ fontSize: "11px", color: "#aaa" }}>
@@ -1488,12 +1491,45 @@ export default function AlertSelectionView({
                                       {na.lastSeen ? `Last seen: ${na.lastSeen.split("T")[0]}` : ""}
                                     </div>
                                     {!isResolved && (
-                                      <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                                      <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+                                        {(() => {
+                                          const jobTarget = getAlertJobTarget(na, true, clientInfo);
+                                          if (!jobTarget) return null;
+                                          return (
+                                            <button
+                                              className="triage-btn"
+                                              onClick={() => handleViewJobOrExpense(jobTarget)}
+                                              style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#0284c7", borderColor: "#bae6fd" }}
+                                              title={jobTarget.isOutgoings ? "View Outgoings expense details" : "View and edit job details in pop-up"}
+                                            >
+                                              {jobTarget.isOutgoings ? "🔍 View expense" : "🔍 View job"}
+                                            </button>
+                                          );
+                                        })()}
                                         {isAdmin && clientInfo && (clientInfo.clientSheetId || clientInfo.masterSheetId) && (
                                           <button className="triage-btn" onClick={() => {
                                             if (clientInfo.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.clientSheetId}/edit`, "_blank");
                                             if (clientInfo.masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.masterSheetId}/edit`, "_blank");
                                           }} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#1d4ed8", borderColor: "#93c5fd" }}>📊 Open Sheets</button>
+                                        )}
+                                        {isRichFlag && !analysis && !isLoading && (
+                                          <button className="triage-btn"
+                                            onClick={() => analyzeNoActionFlag(na)}
+                                            style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px" }}
+                                          >
+                                            🔍 Analyse
+                                          </button>
+                                        )}
+                                        {isRichFlag && isLoading && (
+                                          <span style={{ fontSize: "12px", color: "#888", padding: "4px 12px", display: "inline-flex", alignItems: "center", gap: "6px" }}><Spinner size={12} />Analysing…</span>
+                                        )}
+                                        {isRichFlag && analysis && !isLoading && (
+                                          <button className="triage-btn"
+                                            onClick={() => analyzeNoActionFlag(na)}
+                                            style={{ ...styles.buttonSecondary, fontSize: "11px", padding: "4px 8px" }}
+                                          >
+                                            ↻ Re-run
+                                          </button>
                                         )}
                                         <button className="triage-btn"
                                           onClick={() => openCreateTaskModal(na, false, true)}
@@ -1512,61 +1548,7 @@ export default function AlertSelectionView({
                                   </div>
                                 </div>
                               );
-                            }
-
-                            return (
-                              <div key={alertId} style={{
-                                display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 12px", borderRadius: "4px",
-                                border: `1px solid ${isResolved ? "#c8e6c9" : "#e0e0e0"}`, background: isResolved ? "#f1f8f2" : "#fff", gap: "12px",
-                              }}>
-                                {infoBulkMode && (
-                                  <input type="checkbox" checked={infoBulkSelected.has(alertId)} onChange={() => {
-                                    setInfoBulkSelected(prev => {
-                                      const next = new Set(prev);
-                                      if (next.has(alertId)) next.delete(alertId); else next.add(alertId);
-                                      return next;
-                                    });
-                                  }} style={{ accentColor: "#7c3aed", cursor: "pointer", flexShrink: 0 }} />
-                                )}
-                                <div style={{ flex: 1, minWidth: 0 }}>
-                                  <div style={{ fontSize: "13px", fontWeight: "600", color: isResolved ? "#2e7d32" : "#555", textDecoration: isResolved ? "line-through" : "none", display: "flex", alignItems: "center" }}>
-                                    <span>{getFlagName(na.flagType) || na.flagName}</span>
-                                    {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(na.flagType) && <AdminBadge show={clientHasManager} />}
-                                  </div>
-                                  {na.flagDetail && (
-                                    <div style={{ fontSize: "12px", color: isResolved ? "#2e7d32" : "#888", marginTop: "4px", textDecoration: isResolved ? "line-through" : "none", lineHeight: "1.4" }}>
-                                      {na.flagDetail}
-                                    </div>
-                                  )}
-                                  {(na.firstSeen || na.lastSeen) && (
-                                    <div style={{ fontSize: "10px", color: "#aaa", marginTop: "6px" }}>
-                                      {na.firstSeen ? `First seen: ${na.firstSeen.split("T")[0]}` : ""}
-                                      {na.firstSeen && na.lastSeen ? " · " : ""}
-                                      {na.lastSeen ? `Last seen: ${na.lastSeen.split("T")[0]}` : ""}
-                                    </div>
-                                  )}
-                                </div>
-                                {isResolved ? (
-                                  <span style={{ fontSize: "12px", color: "#2e7d32", fontWeight: "600", whiteSpace: "nowrap" }}>✓ Resolved</span>
-                                ) : (
-                                  <div style={{ display: "flex", gap: "6px", flexShrink: 0 }}>
-                                    <button className="triage-btn"
-                                      onClick={() => openCreateTaskModal(na, false, true)}
-                                      style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px", color: "#7c3aed", borderColor: "#c4b5fd", whiteSpace: "nowrap" }}
-                                    >
-                                      📋 Create Task
-                                    </button>
-                                    <button className="triage-btn"
-                                      onClick={handleMarkResolved}
-                                      style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px", whiteSpace: "nowrap" }}
-                                    >
-                                      Mark resolved
-                                    </button>
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          })}
+                            })}
                         </div>
                       </div>
                     );
@@ -1699,12 +1681,8 @@ export default function AlertSelectionView({
                                   <span>{alert.heading}</span>
                                   {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(alert.alertType) && <AdminBadge show={clientHasManager} />}
                                 </div>
-                                <div style={{ fontSize: "13px", color: "#444", lineHeight: "1.6", marginBottom: "8px" }}>
-                                  {alert.alertType === "revenue_mismatch" || alert.alertType === "direct_costs_mismatch" || alert.alertType === "pipeline_confirmed_overlap" || alert.alertType === "retainer_shrink_blocked" || alert.alertType === "uninvoiced_new_job" || alert.alertType === "uninvoiced_revenue" || alert.alertType === "unreceived_expenses" || alert.alertType === "stale_unrecon_gap" || alert.alertType === "retroactive_outgoings_update" || alert.alertType === "unmapped_pl_category" ? null : alert.detail}
-                                </div>
-
                                 {alert.alertType === "retainer_invoice" && (
-                                  <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                  <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
                                     {m.endClientName && <div><strong>End client:</strong> {m.endClientName}</div>}
                                     {m.jobName && <div><strong>Job:</strong> {m.jobName}</div>}
                                     {m.confirmedRow && <div><strong>Confirmed tab row:</strong> {m.confirmedRow}</div>}
@@ -1716,12 +1694,12 @@ export default function AlertSelectionView({
                                     {m.possibleMatchInvoiceNo && (
                                       <div style={{ marginTop: "8px", paddingTop: "8px", borderTop: "1px solid #bae6fd" }}>
                                         {m.possibleMatchCase === "changed" && (
-                                          <div style={{ display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", marginBottom: "6px", background: m.possibleMatchConfidence === "high" ? "#fee2e2" : "#fef9c3", color: m.possibleMatchConfidence === "high" ? "#991b1b" : "#713f12", border: `1px solid ${m.possibleMatchConfidence === "high" ? "#fca5a5" : "#fde047"}` }}>
+                                          <div style={{ display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", marginBottom: "6px", background: "#ffffff", color: m.possibleMatchConfidence === "high" ? "#991b1b" : "#713f12", border: `1px solid ${m.possibleMatchConfidence === "high" ? "#fca5a5" : "#fde047"}` }}>
                                             Possible retainer change - {m.possibleMatchConfidence === "high" ? "high" : "medium"} confidence
                                           </div>
                                         )}
                                         {m.possibleMatchCase === "draft" && (
-                                          <div style={{ display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", marginBottom: "6px", background: "#e0f2fe", color: "#075985", border: "1px solid #7dd3fc" }}>
+                                          <div style={{ display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", marginBottom: "6px", background: "#ffffff", color: "#075985", border: "1px solid #7dd3fc" }}>
                                             Draft invoice found nearby
                                           </div>
                                         )}
@@ -1757,7 +1735,7 @@ export default function AlertSelectionView({
                                 )}
 
                                 {alert.alertType === "uninvoiced_new_job" && (
-                                  <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                  <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
                                     {m.endClientName && <div><strong>End client:</strong> {m.endClientName}</div>}
                                     {m.jobName && <div><strong>Job:</strong> {m.jobName}{m.projectCode ? ` [${m.projectCode}]` : ""}</div>}
                                     {m.confirmedRow && <div><strong>Confirmed tab row:</strong> {m.confirmedRow}</div>}
@@ -1768,14 +1746,14 @@ export default function AlertSelectionView({
                                 )}
 
                                 {alert.alertType === "uninvoiced_revenue" && (
-                                  <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                  <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
                                     {m.endClientName && <div><strong>End client:</strong> {m.endClientName}</div>}
                                     {m.jobName && <div><strong>Job:</strong> {m.jobName}{m.projectCode ? ` [${m.projectCode}]` : ""}</div>}
                                     {m.confirmedRow && <div><strong>Confirmed tab row:</strong> {m.confirmedRow}</div>}
                                     {m.endDate && <div><strong>Job ended:</strong> {m.endDate}</div>}
                                     {m.revenue && <div><strong>Revenue:</strong> £{parseFloat(m.revenue).toFixed(2)}</div>}
                                     {m.uninvoicedAmount && <div style={{ marginTop: "6px", fontWeight: "700", color: "#0369a1" }}>£{parseFloat(m.uninvoicedAmount).toFixed(2)} uninvoiced (placeholders and drafts excluded)</div>}
-                                    {m.draftCount && parseInt(m.draftCount) > 0 && <div style={{ marginTop: "6px", padding: "6px 8px", background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: "4px", color: "#0369a1" }}>{m.draftCount} invoice{parseInt(m.draftCount) > 1 ? "s" : ""} totalling £{parseFloat(m.draftTotal || 0).toFixed(2)} {parseInt(m.draftCount) > 1 ? "have" : "has"} a reference but {parseInt(m.draftCount) > 1 ? "are" : "is"} still <strong>Draft</strong> (not yet sent) - not counted as invoiced above.</div>}
+                                    {m.draftCount && parseInt(m.draftCount) > 0 && <div style={{ marginTop: "6px", padding: "6px 8px", background: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", color: "#0369a1" }}>{m.draftCount} invoice{parseInt(m.draftCount) > 1 ? "s" : ""} totalling £{parseFloat(m.draftTotal || 0).toFixed(2)} {parseInt(m.draftCount) > 1 ? "have" : "has"} a reference but {parseInt(m.draftCount) > 1 ? "are" : "is"} still <strong>Draft</strong> (not yet sent) - not counted as invoiced above.</div>}
                                   </div>
                                 )}
 
@@ -1792,7 +1770,7 @@ export default function AlertSelectionView({
                                   const pTotal = parseFloat(m.placeholderTotal || alert.placeholderTotal || parsed.placeholderTotal || "0");
 
                                   return (
-                                    <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                    <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
                                       {clientName && <div><strong>End client:</strong> {clientName}</div>}
                                       {jName && <div><strong>Job:</strong> {jName}{pCode ? ` [${pCode}]` : ""}</div>}
                                       {confRow && <div><strong>Confirmed tab row:</strong> {confRow}</div>}
@@ -1800,7 +1778,7 @@ export default function AlertSelectionView({
                                       {dCosts && <div><strong>Direct cost budget:</strong> £{parseFloat(dCosts).toFixed(2)}</div>}
                                       {unrecAmt && <div style={{ marginTop: "6px", fontWeight: "700", color: "#0369a1" }}>£{parseFloat(unrecAmt).toFixed(2)} unreceived (placeholders and estimates excluded)</div>}
                                       {pCount > 0 && (
-                                        <div style={{ marginTop: "6px", padding: "6px 8px", background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: "4px", color: "#0369a1" }}>
+                                        <div style={{ marginTop: "6px", padding: "6px 8px", background: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", color: "#0369a1" }}>
                                           {pCount} expense{pCount > 1 ? "s" : ""} totalling £{pTotal.toFixed(2)} {pCount > 1 ? "are placeholders - not counted as received above." : "is a placeholder - not counted as received above."}
                                         </div>
                                       )}
@@ -1820,7 +1798,7 @@ export default function AlertSelectionView({
                                   const desc = m.description || alert.description;
 
                                   return (
-                                    <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#fffbeb", border: "1px solid #fde68a", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                    <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #fde68a", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
                                       {contractor && <div><strong>Contractor:</strong> {contractor}</div>}
                                       <div><strong>Location:</strong> Outgoings tab{month ? ` (${month})` : ""}{cellCoord ? `, Cell ${cellCoord}` : ""}</div>
                                       {appId && <div><strong>App ID:</strong> {appId}</div>}
@@ -1833,7 +1811,7 @@ export default function AlertSelectionView({
                                 })()}
 
                                 {alert.alertType === "retroactive_outgoings_update" && (
-                                  <div style={{ fontSize: "12px", color: "#334155", backgroundColor: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: "6px", padding: "10px 12px", marginBottom: "8px" }}>
+                                  <div style={{ fontSize: "12px", color: "#334155", backgroundColor: "#ffffff", border: "1px solid #cbd5e1", borderRadius: "6px", padding: "10px 12px", marginBottom: "8px" }}>
                                     <div style={{ whiteSpace: "pre-line", lineHeight: "1.5" }}>{alert.detail || alert.detailsSnippet || m.details}</div>
                                   </div>
                                 )}
@@ -1859,7 +1837,7 @@ export default function AlertSelectionView({
                                   ];
 
                                   return (
-                                    <div style={{ backgroundColor: "#fbfaff", border: "1px solid #ddd6fe", borderRadius: "8px", padding: "12px", marginBottom: "10px" }}>
+                                    <div style={{ backgroundColor: "#ffffff", border: "1px solid #ddd6fe", borderRadius: "8px", padding: "12px", marginBottom: "10px" }}>
                                       <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px" }}>
                                         <span style={{ fontSize: "15px" }}>🏷️</span>
                                         <div style={{ fontSize: "12px", color: "#4b5563", lineHeight: "1.4" }}>
@@ -1922,7 +1900,7 @@ export default function AlertSelectionView({
                                 })()}
 
                                 {alert.alertType === "crm_wipe" && (
-                                  <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                  <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
                                     {m.timestamp && <div><strong>Log timestamp:</strong> {m.timestamp}</div>}
                                     {m.sequenceType && <div><strong>Sequence:</strong> {m.sequenceType}</div>}
                                     {m.summary && <div><strong>Summary:</strong> {m.summary}</div>}
@@ -1932,7 +1910,7 @@ export default function AlertSelectionView({
                                 )}
 
                                 {alert.alertType === "revenue_mismatch" && (
-                                  <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                  <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
                                     {(() => {
                                       const detail = alert.detail || "";
                                       const mismatchIdx = detail.indexOf("Mismatched rows:");
@@ -1957,8 +1935,8 @@ export default function AlertSelectionView({
                                 )}
 
                                 {alert.alertType === "direct_costs_mismatch" && (
-                                  <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
-                                    {alert.metadata?.tab && <span style={{ display: "inline-block", marginBottom: "6px", padding: "2px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", background: "#f0f9ff", color: "#0369a1", border: "1px solid #bae6fd" }}>{alert.metadata.tab} tab</span>}
+                                  <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                    {alert.metadata?.tab && <span style={{ display: "inline-block", marginBottom: "6px", padding: "2px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", background: "#ffffff", color: "#0369a1", border: "1px solid #bae6fd" }}>{alert.metadata.tab} tab</span>}
                                     {(() => {
                                       const detail = alert.detail || "";
                                       const mismatchIdx = detail.indexOf("Mismatched rows:");
@@ -1985,7 +1963,7 @@ export default function AlertSelectionView({
                                 {alert.alertType === "pipeline_confirmed_overlap" && (() => {
                                   const md = alert.metadata || {};
                                   return (
-                                    <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                    <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
                                       <div style={{ fontWeight: "600", marginBottom: "6px" }}>Job exists in both tabs but Pipeline is not closed out</div>
                                       <div style={{ marginBottom: "4px" }}><strong>Confirmed tab</strong></div>
                                       {md.confirmedRow && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Row: {md.confirmedRow}</div>}
@@ -2010,7 +1988,7 @@ export default function AlertSelectionView({
                                 {alert.alertType === "retainer_shrink_blocked" && (() => {
                                   const md = alert.metadata || {};
                                   return (
-                                    <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                    <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
                                       <div style={{ fontWeight: "600", marginBottom: "6px" }}>Retainer contract shrunk - excess child row could not be removed automatically</div>
                                       {md.clientJobStr && <div style={{ marginBottom: "2px" }}><strong>Job:</strong> {md.clientJobStr}</div>}
                                       {md.childRowNum && <div style={{ marginBottom: "2px" }}><strong>Blocked child row:</strong> {md.childRowNum}</div>}
@@ -2023,14 +2001,14 @@ export default function AlertSelectionView({
                                 {alert.alertType === "autolog_error" && (() => {
                                   const md = alert.metadata || {};
                                   return (
-                                    <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                    <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
                                       {md.category && <div style={{ marginBottom: "2px" }}><strong>Category / Step:</strong> {md.category}</div>}
                                       {md.occurrenceCount && <div style={{ marginBottom: "2px" }}><strong>Occurrences (last 100 log rows):</strong> {md.occurrenceCount}</div>}
                                       {md.timestamp && <div style={{ marginBottom: "2px" }}><strong>Last seen in log:</strong> {md.timestamp}</div>}
                                       {md.errorSnippet && (
                                         <div style={{ marginTop: "6px" }}>
                                           <strong>Extracted error:</strong>
-                                          <div style={{ fontFamily: "monospace", fontSize: "11px", color: "#0369a1", backgroundColor: "#fff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "6px 8px", marginTop: "3px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                                          <div style={{ fontFamily: "monospace", fontSize: "11px", color: "#0369a1", backgroundColor: "#fafafa", border: "1px solid #e2e8f0", borderRadius: "4px", padding: "6px 8px", marginTop: "3px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
                                             {md.errorSnippet}
                                           </div>
                                         </div>
@@ -2038,7 +2016,7 @@ export default function AlertSelectionView({
                                       {md.rawSnippet && md.rawSnippet !== md.errorSnippet && (
                                         <div style={{ marginTop: "6px" }}>
                                           <strong>AutoLog context:</strong>
-                                          <div style={{ fontFamily: "monospace", fontSize: "11px", color: "#666", backgroundColor: "#fff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "6px 8px", marginTop: "3px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                                          <div style={{ fontFamily: "monospace", fontSize: "11px", color: "#666", backgroundColor: "#fafafa", border: "1px solid #e2e8f0", borderRadius: "4px", padding: "6px 8px", marginTop: "3px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
                                             {md.rawSnippet}
                                           </div>
                                         </div>
@@ -2050,8 +2028,8 @@ export default function AlertSelectionView({
                                 {alert.alertType === "infinite_loop" && (() => {
                                   const md = alert.metadata || {};
                                   return (
-                                    <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
-                                      <div style={{ display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", marginBottom: "6px", background: "#f0f9ff", color: "#0369a1", border: "1px solid #bae6fd" }}>
+                                    <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                      <div style={{ display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", marginBottom: "6px", background: "#ffffff", color: "#0369a1", border: "1px solid #bae6fd" }}>
                                         {md.conflictType === "intra_run_oscillation" ? "Within-run oscillation" : "Multi-run flip-flop"}
                                       </div>
                                       {md.invoiceNo && <div style={{ marginBottom: "2px" }}><strong>Invoice:</strong> {md.invoiceNo}</div>}
@@ -2059,7 +2037,7 @@ export default function AlertSelectionView({
                                       {(md.transition1 || md.transition2) && (
                                         <div style={{ marginTop: "6px" }}>
                                           <strong>Conflicting transitions:</strong>
-                                          <div style={{ fontFamily: "monospace", fontSize: "11px", color: "#0369a1", backgroundColor: "#fff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "6px 8px", marginTop: "3px" }}>
+                                          <div style={{ fontFamily: "monospace", fontSize: "11px", color: "#0369a1", backgroundColor: "#fafafa", border: "1px solid #e2e8f0", borderRadius: "4px", padding: "6px 8px", marginTop: "3px" }}>
                                             {md.transition1 && <div>1. {md.transition1}</div>}
                                             {md.transition2 && <div>2. {md.transition2}</div>}
                                           </div>
@@ -2073,7 +2051,7 @@ export default function AlertSelectionView({
                                       {md.rawSnippet && (
                                         <div style={{ marginTop: "6px" }}>
                                           <strong>AutoLog context:</strong>
-                                          <div style={{ fontFamily: "monospace", fontSize: "11px", color: "#666", backgroundColor: "#fff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "6px 8px", marginTop: "3px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                                          <div style={{ fontFamily: "monospace", fontSize: "11px", color: "#666", backgroundColor: "#fafafa", border: "1px solid #e2e8f0", borderRadius: "4px", padding: "6px 8px", marginTop: "3px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
                                             {md.rawSnippet}
                                           </div>
                                         </div>
@@ -2082,13 +2060,74 @@ export default function AlertSelectionView({
                                   );
                                 })()}
 
+                                {alert.alertType === "deleted_invoice" && (
+                                  <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                    {(m.endClientName || alert.endClientName) && <div><strong>End client:</strong> {m.endClientName || alert.endClientName}</div>}
+                                    {(m.jobName || alert.jobName) && <div><strong>Job:</strong> {m.jobName || alert.jobName}{(m.projectCode || alert.projectCode) ? ` [${m.projectCode || alert.projectCode}]` : ""}</div>}
+                                    {(m.confirmedRow || alert.confirmedRow) && <div><strong>Confirmed tab row:</strong> {m.confirmedRow || alert.confirmedRow}</div>}
+                                    {(m.stableJobKey || alert.stableJobKey) && <div><strong>Invoice ref:</strong> {m.stableJobKey || alert.stableJobKey}</div>}
+                                    <div style={{ marginTop: "4px", color: "#0369a1", fontStyle: "italic" }}>
+                                      Invoice reference appears on Confirmed tab but was not found in the accounting system (it may have been deleted or voided in Xero).
+                                    </div>
+                                  </div>
+                                )}
+
+                                {alert.alertType === "deleted_expense" && (
+                                  <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                    {(m.endClientName || alert.endClientName) && <div><strong>End client:</strong> {m.endClientName || alert.endClientName}</div>}
+                                    {(m.jobName || alert.jobName) && <div><strong>Job:</strong> {m.jobName || alert.jobName}</div>}
+                                    {(m.confirmedRow || alert.confirmedRow) && <div><strong>Confirmed tab row:</strong> {m.confirmedRow || alert.confirmedRow}</div>}
+                                    {(m.stableJobKey || alert.stableJobKey) && <div><strong>Expense ID / Ref:</strong> {m.stableJobKey || alert.stableJobKey}</div>}
+                                    <div style={{ marginTop: "4px", color: "#0369a1", fontStyle: "italic" }}>
+                                      Expense reference appears on Confirmed tab but was not found in the accounting system (it may have been deleted or voided in Xero).
+                                    </div>
+                                  </div>
+                                )}
+
+                                {alert.alertType === "job_structure_error" && (
+                                  <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                    {(m.endClientName || alert.endClientName) && <div><strong>End client:</strong> {m.endClientName || alert.endClientName}</div>}
+                                    {(m.jobName || alert.jobName) && <div><strong>Job:</strong> {m.jobName || alert.jobName}{(m.projectCode || alert.projectCode) ? ` [${m.projectCode || alert.projectCode}]` : ""}</div>}
+                                    {(m.confirmedRow || alert.confirmedRow) && <div><strong>Confirmed tab row:</strong> {m.confirmedRow || alert.confirmedRow}</div>}
+                                    {alert.detail && (
+                                      <div style={{ marginTop: "4px", color: "#c2410c", fontWeight: "500" }}>
+                                        {isAdmin ? alert.detail : stripRowInfo(alert.detail)}
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+
+                                {!KNOWN_PROACTIVE_TYPES.has(alert.alertType) && (
+                                  <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                    {(m.endClientName || alert.endClientName) && <div><strong>End client:</strong> {m.endClientName || alert.endClientName}</div>}
+                                    {(m.jobName || alert.jobName) && <div><strong>Job:</strong> {m.jobName || alert.jobName}{(m.projectCode || alert.projectCode) ? ` [${m.projectCode || alert.projectCode}]` : ""}</div>}
+                                    {(m.confirmedRow || alert.confirmedRow) && <div><strong>Confirmed tab row:</strong> {m.confirmedRow || alert.confirmedRow}</div>}
+                                    {alert.detail && (
+                                      <div style={{ marginTop: "4px", color: "#444" }}>
+                                        {isAdmin ? alert.detail : stripRowInfo(alert.detail)}
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+
                                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                                   <div style={{ fontSize: "11px", color: "#aaa" }}>First seen: {alert.firstSeen} · Last seen: {alert.lastSeen}</div>
-                                  <div style={{ display: "flex", gap: "8px" }}>
+                                  <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
                                     {(() => {
                                       const clientInfo = (clientsWithFlags || []).find(c => c.clientName === selectedClient.clientName) || allClientsMap[selectedClient.clientName] || selectedClient;
+                                      const jobTarget = getAlertJobTarget(alert, false, clientInfo);
                                       return (
                                         <>
+                                          {jobTarget && (
+                                            <button
+                                              className="triage-btn"
+                                              onClick={() => handleViewJobOrExpense(jobTarget)}
+                                              style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#0284c7", borderColor: "#bae6fd" }}
+                                              title={jobTarget.isOutgoings ? "View Outgoings expense details" : "View and edit job details in pop-up"}
+                                            >
+                                              {jobTarget.isOutgoings ? "🔍 View expense" : "🔍 View job"}
+                                            </button>
+                                          )}
                                           {isAdmin && (clientInfo?.clientSheetId || clientInfo?.masterSheetId) && (
                                             <button className="triage-btn" onClick={() => {
                                               if (clientInfo.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.clientSheetId}/edit`, "_blank");
@@ -2096,10 +2135,10 @@ export default function AlertSelectionView({
                                             }} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#1d4ed8", borderColor: "#93c5fd" }}>📊 Open Sheets</button>
                                           )}
                                           {alert.alertType === "expenseDashboardDiscr" && clientInfo && (
-                                            <button className="triage-btn" onClick={() => setActiveNav("outgoings")} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#059669", borderColor: "#6ee7b7" }}>📤 Assign Expense</button>
+                                            <button className="triage-btn" onClick={() => onNavOutgoings ? onNavOutgoings(selectedClient || clientInfo) : setActiveNav("outgoings")} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#059669", borderColor: "#6ee7b7" }}>📤 Assign Expense</button>
                                           )}
                                           {alert.alertType === "invoiceDashboardDiscr" && clientInfo && (
-                                            <button className="triage-btn" onClick={() => setActiveNav("invoices")} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#ea580c", borderColor: "#fdba74" }}>📥 Assign Invoices</button>
+                                            <button className="triage-btn" onClick={() => onNavInvoices ? onNavInvoices(selectedClient || clientInfo) : setActiveNav("invoices")} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#ea580c", borderColor: "#fdba74" }}>📥 Assign Invoices</button>
                                           )}
                                         </>
                                       );
@@ -2308,6 +2347,23 @@ export default function AlertSelectionView({
           masterSheetId={retainerSplitInvoice.masterSheetId}
           onClose={() => setRetainerSplitInvoice(null)}
           onResolved={() => loadProactiveAlerts()}
+        />
+      )}
+
+      {viewingJobTarget && (
+        <JobDetailModal
+          isOpen={Boolean(viewingJobTarget)}
+          target={viewingJobTarget}
+          onClose={() => setViewingJobTarget(null)}
+        />
+      )}
+
+      {viewingOutgoingsTarget && (
+        <OutgoingsDetailModal
+          isOpen={Boolean(viewingOutgoingsTarget)}
+          target={viewingOutgoingsTarget}
+          onClose={() => setViewingOutgoingsTarget(null)}
+          isAdmin={isAdmin}
         />
       )}
     </div>

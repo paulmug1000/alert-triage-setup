@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import Spinner from "./Spinner";
 import { stripCurrency } from "../utils/helpers";
 import { useAuth } from "../hooks/useAuth";
+import DateInput from "./DateInput";
 
 export default function InvoicesEditModal({ 
   editSlot, 
@@ -125,7 +126,7 @@ export default function InvoicesEditModal({
           </div>
           <div>
             <label style={labelStyle}>Sent date</label>
-            <input style={inputStyle} value={sentDate} onChange={e => setSentDate(e.target.value)} placeholder="DD-Mon-YY" />
+            <DateInput style={inputStyle} value={sentDate} onChange={e => setSentDate(e.target.value)} />
           </div>
           <div>
             <label style={labelStyle}>Status</label>

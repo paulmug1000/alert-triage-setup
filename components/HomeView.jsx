@@ -360,7 +360,7 @@ export default function HomeView({
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
               <h2 style={{ margin: 0, fontSize: "16px", fontWeight: "700", color: "#0F172A" }}>
-                Setup Status
+                Setup status
               </h2>
               {clientsPendingSetup.length > 0 && (
                 <span style={{ background: "#FEF3C7", color: "#B45309", border: "1px solid #FCD34D", padding: "1px 8px", borderRadius: "12px", fontSize: "11px", fontWeight: "700" }}>
@@ -488,7 +488,7 @@ export default function HomeView({
               </span>
             </div>
             <p style={{ margin: "4px 0 0 0", fontSize: "13px", color: "#64748B" }}>
-              Compact overview of all clients you have access to, active alerts, and integration health.
+              Overview of all clients, active alerts, and integrations status.
             </p>
           </div>
 

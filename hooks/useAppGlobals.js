@@ -71,18 +71,28 @@ export function AppGlobalsProvider({ children }) {
   }, [automationCommanderSheetId]);
 
   const addAssignedAppId = (id, clientName) => {
+    if (id === null || id === undefined || id === "") return;
+    const rawId = String(id).trim();
+    const cleanId = rawId.replace(/^#/, "");
     setAssignedAppIds(prev => {
-      const next = new Set([...prev, id]);
+      const next = new Set(prev);
+      next.add(id);
+      next.add(rawId);
+      next.add(cleanId);
+      if (!isNaN(Number(cleanId)) && cleanId !== "") next.add(Number(cleanId));
       try { localStorage.setItem("pulse_assignedAppIds", JSON.stringify([...next])); } catch {}
       return next;
     });
     if (clientName) {
+      const cKey = String(clientName).trim();
       setAssignedByClient(prev => {
-        const clientSet = new Set([...(prev[clientName] || []), id]);
-        return { ...prev, [clientName]: clientSet };
+        const existing = prev[cKey] || prev[clientName] || [];
+        const clientSet = new Set([...existing, id, rawId, cleanId]);
+        if (!isNaN(Number(cleanId)) && cleanId !== "") clientSet.add(Number(cleanId));
+        return { ...prev, [cKey]: clientSet };
       });
       fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "mark_expense_assigned", automationCommanderSheetId, clientName, appId: id }) })
+        body: JSON.stringify({ action: "mark_expense_assigned", automationCommanderSheetId, clientName: cKey, appId: cleanId }) })
         .catch(e => console.error("mark_expense_assigned error:", e));
     }
   };

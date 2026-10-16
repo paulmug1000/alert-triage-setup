@@ -2,6 +2,7 @@ import React, { useState, useMemo, useRef } from "react";
 import Spinner from "./Spinner";
 import SplitMonthCard from "./SplitMonthCard";
 import { formatSplitString } from "../services/splitHelper";
+import DateInput from "./DateInput";
 
 export default function JobsNewJobModal({
   jobsClient,
@@ -618,8 +619,7 @@ export default function JobsNewJobModal({
                 <label style={labelStyle}>
                   {status === "Confirmed" ? "Date Confirmed" : "Date Added"}
                 </label>
-                <input
-                  type="date"
+                <DateInput
                   style={inputStyle}
                   value={dateConfirmed}
                   onChange={(e) => setDateConfirmed(e.target.value)}
@@ -631,8 +631,7 @@ export default function JobsNewJobModal({
             <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "12px" }}>
               <div>
                 <label style={labelStyle}>Start Date</label>
-                <input
-                  type="date"
+                <DateInput
                   style={inputStyle}
                   value={startDate}
                   onChange={(e) => setStartDate(e.target.value)}
@@ -641,11 +640,11 @@ export default function JobsNewJobModal({
 
               <div>
                 <label style={labelStyle}>End Date</label>
-                <input
-                  type="date"
+                <DateInput
                   style={inputStyle}
                   value={endDate}
                   onChange={(e) => setEndDate(e.target.value)}
+                  min={startDate || undefined}
                 />
               </div>
 
@@ -957,8 +956,7 @@ export default function JobsNewJobModal({
                     <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1.5fr auto", gap: "10px", alignItems: "flex-end" }}>
                       <div>
                         <label style={labelStyle}>Sent Date</label>
-                        <input
-                          type="date"
+                        <DateInput
                           style={inputStyle}
                           value={currentInvoice.sentDate}
                           onChange={e => updateInvoice(activeInvoiceSlot, "sentDate", e.target.value)}
@@ -1127,8 +1125,7 @@ export default function JobsNewJobModal({
                     <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr 1fr 1fr auto", gap: "10px", alignItems: "flex-end" }}>
                       <div>
                         <label style={labelStyle}>Date</label>
-                        <input
-                          type="date"
+                        <DateInput
                           style={inputStyle}
                           value={currentExpense.date}
                           onChange={e => updateExpense(activeExpenseSlot, "date", e.target.value)}

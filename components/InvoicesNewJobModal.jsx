@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { stripCurrency } from "../utils/helpers";
+import DateInput from "./DateInput";
 
 export default function InvoicesNewJobModal({ 
   newJobData, 
@@ -109,11 +110,11 @@ export default function InvoicesNewJobModal({
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
             <div>
               <label style={labelStyle}>Start date (AL)</label>
-              <input style={inputStyle} value={startDate} onChange={e => setStartDate(e.target.value)} placeholder="DD-Mon-YY" />
+              <DateInput style={inputStyle} value={startDate} onChange={e => setStartDate(e.target.value)} />
             </div>
             <div>
               <label style={labelStyle}>End date (AM)</label>
-              <input style={inputStyle} value={endDate} onChange={e => setEndDate(e.target.value)} placeholder="DD-Mon-YY" />
+              <DateInput style={inputStyle} value={endDate} onChange={e => setEndDate(e.target.value)} min={startDate || undefined} />
             </div>
           </div>
         </div>

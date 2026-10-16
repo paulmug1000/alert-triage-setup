@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import Spinner from "./Spinner";
 import { stripCurrency } from "../utils/helpers";
 import { useAuth } from "../hooks/useAuth";
+import DateInput from "./DateInput";
 
 export default function DirectCostsEditModal({
   editSlot,
@@ -127,7 +128,7 @@ export default function DirectCostsEditModal({
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
             <div>
               <label style={labelStyle}>Date</label>
-              <input style={inputStyle} value={date} onChange={e => setDate(e.target.value)} placeholder="DD-Mon-YY" />
+              <DateInput style={inputStyle} value={date} onChange={e => setDate(e.target.value)} />
             </div>
             <div>
               <label style={labelStyle}>Days to pay</label>

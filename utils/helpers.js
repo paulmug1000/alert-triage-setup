@@ -399,6 +399,192 @@ export function parseStaleExpenseDetail(detail = "") {
 }
 
 /**
+ * Parses any informational alert detail string into a structured summary card object.
+ * Returns consistent fields: tab, client, job, projectCode, contractor, rowNum,
+ * confirmedRow, pipelineRow, outgoingsRow, month, amount, changes, highlight, rawText.
+ */
+export function parseInfoAlertDetail(flagType, detail = "") {
+  if (!detail || typeof detail !== "string") return { rawText: String(detail || "") };
+  const clean = detail.trim();
+
+  // 1. Stale Invoices
+  if (flagType === "invoiceStaleUnsentChanges" || clean.includes("Stale Invoice")) {
+    const res = { tab: "Confirmed" };
+    const confMatch = clean.match(/\[([A-Za-z]+)\]\s*(?:Stale Invoice\s*[-–:]\s*)?(?:Row\s*(\d+),\s*)?([^|]+)\|\s*([^,]+),\s*Slot\s*(\d+):\s*Date moved\s*([\d\-A-Za-z]+)\s*->\s*([\d\-A-Za-z]+)/i);
+    if (confMatch) {
+      res.tab = confMatch[1] || "Confirmed";
+      res.rowNum = confMatch[2] ? parseInt(confMatch[2], 10) : null;
+      res.confirmedRow = res.rowNum;
+      res.client = confMatch[3] ? confMatch[3].trim() : "";
+      res.job = confMatch[4] ? confMatch[4].trim() : "";
+      res.slot = confMatch[5] ? parseInt(confMatch[5], 10) : null;
+      res.changes = [{
+        type: "Send",
+        from: confMatch[6] ? confMatch[6].trim() : "",
+        to: confMatch[7] ? confMatch[7].trim() : "",
+        label: `Send Date: ${confMatch[6] ? confMatch[6].trim() : ""} → ${confMatch[7] ? confMatch[7].trim() : ""}`
+      }];
+      res.highlight = "Stale unsent invoice send date moved forward to current month.";
+      return res;
+    }
+  }
+
+  // 2. Stale Expenses / Unrecon Gaps
+  if (flagType === "expenseUnreconGaps" || clean.includes("Updated stale placeholder") || clean.includes("Rec Date updated")) {
+    const exp = parseStaleExpenseDetail(clean);
+    if (exp) {
+      return {
+        tab: exp.tab || (clean.includes("[Outgoings]") ? "Outgoings" : "Confirmed"),
+        month: exp.month,
+        contractor: exp.contractor,
+        rowNum: exp.rowNum,
+        confirmedRow: exp.tab === "Confirmed" ? exp.rowNum : null,
+        outgoingsRow: exp.tab === "Outgoings" ? exp.rowNum : null,
+        client: exp.client,
+        job: exp.job,
+        slot: exp.slot,
+        amount: exp.amount,
+        changes: exp.changes,
+        highlight: exp.tab === "Outgoings"
+          ? "Stale unreceived expense dates moved forward to current month."
+          : "Stale unreceived expense receive date moved forward to current month.",
+        rawText: exp.rawText
+      };
+    }
+  }
+
+  // 3. Retainer Invoices Created
+  if (flagType === "retainerInvoicesCreated" || (clean.includes("Added") && clean.includes("child row"))) {
+    const m = clean.match(/(?:\[Retainers\s*-\s*(Confirmed|Pipeline)\]\s*)?Added\s+(\d+)\s+child\s+rows?\(s?\)\s*(?:\(Parent\s+Row:\s*(\d+)\)\s*)?(?:for\s+([^|]+)\|\s*([^[\n]+))?/i);
+    if (m) {
+      const tab = m[1] || "Confirmed";
+      const rowNum = m[3] ? parseInt(m[3], 10) : null;
+      return {
+        tab,
+        rowNum,
+        confirmedRow: tab === "Confirmed" ? rowNum : null,
+        pipelineRow: tab === "Pipeline" ? rowNum : null,
+        client: m[4] ? m[4].trim() : "",
+        job: m[5] ? m[5].trim() : "",
+        highlight: `Added ${m[2]} future monthly billing row${parseInt(m[2], 10) > 1 ? "s" : ""} for retainer contract.`
+      };
+    }
+    const mOld = clean.match(/(?:Row\s*(\d+),\s*)?([^,]+),\s*([^:]+):\s*Added\s+(\d+)\s+invoice rows/i);
+    if (mOld) {
+      const rowNum = mOld[1] ? parseInt(mOld[1], 10) : null;
+      return {
+        tab: "Confirmed",
+        rowNum,
+        confirmedRow: rowNum,
+        client: mOld[2] ? mOld[2].trim() : "",
+        job: mOld[3] ? mOld[3].trim() : "",
+        highlight: `Added ${mOld[4]} future monthly billing row${parseInt(mOld[4], 10) > 1 ? "s" : ""} for retainer contract.`
+      };
+    }
+  }
+
+  // 4. Retainer Invoices Deleted / Trimmed
+  if (flagType === "retainerInvoicesDeleted" || (clean.includes("Trimmed") && clean.includes("child row"))) {
+    const m = clean.match(/(?:\[Retainers\s*-\s*(Confirmed|Pipeline)\]\s*)?Trimmed\s+(\d+)\s+child\s+rows?\(s?\)\s*(?:\(Parent\s+Row:\s*(\d+)\)\s*)?(?:for\s+([^|]+)\|\s*([^[\n]+))?/i);
+    if (m) {
+      const tab = m[1] || "Confirmed";
+      const rowNum = m[3] ? parseInt(m[3], 10) : null;
+      return {
+        tab,
+        rowNum,
+        confirmedRow: tab === "Confirmed" ? rowNum : null,
+        pipelineRow: tab === "Pipeline" ? rowNum : null,
+        client: m[4] ? m[4].trim() : "",
+        job: m[5] ? m[5].trim() : "",
+        highlight: `Trimmed ${m[2]} excess child row${parseInt(m[2], 10) > 1 ? "s" : ""} after retainer contract end date.`
+      };
+    }
+  }
+
+  // 5. CRM Copied to Confirmed (Checked)
+  if (flagType === "crmCopiedConfChecked" || clean.includes("Copied Pipeline Project") || clean.includes("Converted Pipeline Job")) {
+    const m = clean.match(/(?:Copied Pipeline Project (?:to Confirmed|\(with[^)]*\))|Converted Pipeline Job to Confirmed Retainer):\s*([^|]+)\|\s*([^[\n]+)(?:\s*\[([^\]]+)\])?(?:\s*\(Pipeline\s+row\s+(\d+)\s*->\s*Confirmed\s+row\s+(\d+)\))?/i);
+    if (m) {
+      return {
+        tab: "Confirmed",
+        client: m[1] ? m[1].trim() : "",
+        job: m[2] ? m[2].trim() : "",
+        projectCode: m[3] ? m[3].trim() : "",
+        pipelineRow: m[4] ? parseInt(m[4], 10) : null,
+        confirmedRow: m[5] ? parseInt(m[5], 10) : null,
+        highlight: clean.includes("Converted")
+          ? "Converted Pipeline job to Confirmed Retainer."
+          : "Pipeline project copied to Confirmed tab (Copied box checked)."
+      };
+    }
+  }
+
+  // 6. CRM Copied Unchecked
+  if (flagType === "crmCopiedConfUnchecked" || clean.includes("Copied Status: 'Yes' -> 'No'")) {
+    const m = clean.match(/Copied Status:\s*'Yes'\s*->\s*'No'\s*\(Reverted by Source\):\s*([^|]+)\|\s*([^[\n]+)(?:\s*\[([^\]]+)\])?(?:\s*\(Pipeline\s+row\s+(\d+)\))?/i);
+    if (m) {
+      return {
+        tab: "Pipeline",
+        client: m[1] ? m[1].trim() : "",
+        job: m[2] ? m[2].trim() : "",
+        projectCode: m[3] ? m[3].trim() : "",
+        pipelineRow: m[4] ? parseInt(m[4], 10) : null,
+        highlight: "Copied status reverted back from Yes to No by CRM source."
+      };
+    }
+  }
+
+  // 7. CRM Copied Delete
+  if (flagType === "crmCopiedConfDelete" || clean.includes("Deleted Confirmed Job")) {
+    const m = clean.match(/Deleted Confirmed Job:\s*(?:Row\s*(\d+),\s*)?([^|]+)\|\s*([^[\n]+)(?:\s*\[([^\]]+)\])?/i);
+    if (m) {
+      return {
+        tab: "Confirmed",
+        confirmedRow: m[1] ? parseInt(m[1], 10) : null,
+        client: m[2] ? m[2].trim() : "",
+        job: m[3] ? m[3].trim() : "",
+        projectCode: m[4] ? m[4].trim() : "",
+        highlight: "Confirmed job removed because CRM deal was deleted or moved."
+      };
+    }
+  }
+
+  // 8. Expense Added
+  if (flagType === "expenseAdded" || clean.includes("Created New Row")) {
+    const m = clean.match(/Created New Row:\s*(?:\[([^\]]+)\]\s*)?(?:([A-Za-z]{3}\s*\d{2})\s*[-–]\s*)?([^:]+)(?::\s*£?([0-9.,]+))?/i);
+    if (m) {
+      return {
+        tab: m[1] || "Outgoings",
+        month: m[2] ? m[2].trim() : null,
+        contractor: m[3] ? m[3].trim() : "",
+        amount: m[4] ? `£${m[4].trim()}` : null,
+        highlight: "New expense row created in spreadsheet."
+      };
+    }
+  }
+
+  // 9. Generic Fallback
+  const res = {};
+  if (clean.includes("[Confirmed]")) res.tab = "Confirmed";
+  else if (clean.includes("[Pipeline]")) res.tab = "Pipeline";
+  else if (clean.includes("[Outgoings]")) res.tab = "Outgoings";
+
+  const pipeIdx = clean.indexOf("|");
+  if (pipeIdx > 0) {
+    const before = clean.substring(0, pipeIdx).replace(/\[[^\]]+\]/g, "").replace(/Row\s*\d+,?/gi, "").trim();
+    const after = clean.substring(pipeIdx + 1).split(/,|\(|\[/)[0].trim();
+    if (before && before.length < 50) res.client = before;
+    if (after && after.length < 60) res.job = after;
+  }
+
+  const rowMatch = clean.match(/\bRow\s+(\d+)\b/i);
+  if (rowMatch) res.rowNum = parseInt(rowMatch[1], 10);
+
+  res.rawText = clean.replace(/^\[[^\]]+\]\s*/, "");
+  return res;
+}
+
+/**
  * Safely downloads a CSV file on the client with UTF-8 BOM (\uFEFF)
  * so that Excel / Windows opens the file without showing weird characters (e.g. Â£ instead of £).
  * Accepts either a pre-formatted CSV string or a 2D array of rows.
@@ -456,4 +642,211 @@ export function getCleanPLCategoryName(alertOrRaw) {
   }
   return name.replace(/^["“]+|["”]+$/g, "").trim();
 }
+
+/**
+ * Parses any date format (ISO YYYY-MM-DD, d-Mmm-yy, DD/MM/YYYY, etc.) into a Date object.
+ */
+export function parseSheetDate(dStr) {
+  if (!dStr) return null;
+  if (dStr instanceof Date) return isNaN(dStr.getTime()) ? null : dStr;
+  const s = String(dStr).trim();
+  if (!s || s === "-" || s === "(blank)") return null;
+
+  const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+
+  // 1. ISO format: YYYY-MM-DD
+  const isoMatch = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (isoMatch) {
+    const yr = parseInt(isoMatch[1], 10);
+    const mIdx = parseInt(isoMatch[2], 10) - 1;
+    const day = parseInt(isoMatch[3], 10);
+    return new Date(yr, mIdx, day);
+  }
+
+  // 2. DD-Mon-YY or DD-Mon-YYYY (e.g. 15-Oct-26 or 1-Jan-2025)
+  const m = s.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
+  if (m) {
+    const mIdx = months[m[2].toLowerCase()];
+    if (mIdx !== undefined) {
+      let yr = parseInt(m[3], 10);
+      if (yr < 100) yr += (yr <= 69 ? 2000 : 1900);
+      return new Date(yr, mIdx, parseInt(m[1], 10));
+    }
+  }
+
+  // 3. Mon-YY or Mon-YYYY
+  const myMatch = s.match(/^([A-Za-z]{3})[-/\s](\d{2,4})$/);
+  if (myMatch) {
+    const mIdx = months[myMatch[1].toLowerCase()];
+    if (mIdx !== undefined) {
+      let yr = parseInt(myMatch[2], 10);
+      if (yr < 100) yr += (yr <= 69 ? 2000 : 1900);
+      return new Date(yr, mIdx, 1);
+    }
+  }
+
+  // 4. DD/MM/YYYY
+  const slashMatch = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (slashMatch) {
+    let yr = parseInt(slashMatch[3], 10);
+    if (yr < 100) yr += (yr <= 69 ? 2000 : 1900);
+    return new Date(yr, parseInt(slashMatch[2], 10) - 1, parseInt(slashMatch[1], 10));
+  }
+
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * Converts any date representation to ISO "YYYY-MM-DD" for calendar inputs.
+ */
+export function toInputDateFormat(dStr) {
+  if (!dStr) return "";
+  const d = parseSheetDate(dStr);
+  if (!d) return "";
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/**
+ * Converts any date representation to "d-Mmm-yy" (e.g. "1-Jan-25", "15-Oct-26").
+ */
+export function toSheetDateFormat(dStr) {
+  if (!dStr) return "";
+  const d = parseSheetDate(dStr);
+  if (!d) return String(dStr).trim();
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const day = d.getDate();
+  const mmm = months[d.getMonth()];
+  const yy = String(d.getFullYear()).slice(-2);
+  return `${day}-${mmm}-${yy}`;
+}
+
+/**
+ * Extracts target job or outgoings expense information for supported alert types:
+ * - expenseUnreconGaps
+ * - invoiceStaleUnsentChanges
+ * - uninvoiced_new_job
+ * - uninvoiced_revenue
+ * - unreceived_expenses
+ * - revenue_mismatch
+ * - direct_costs_mismatch
+ * - stale_unrecon_gap
+ */
+export function getAlertJobTarget(alertOrNa, isInfo = false, clientInfo = null) {
+  if (!alertOrNa) return null;
+
+  if (isInfo) {
+    const flagType = alertOrNa.flagType;
+    if (flagType !== "expenseUnreconGaps" && flagType !== "invoiceStaleUnsentChanges") {
+      return null;
+    }
+    const parsed = parseInfoAlertDetail(flagType, alertOrNa.flagDetail);
+    if (!parsed) return null;
+
+    if (flagType === "expenseUnreconGaps" && parsed.tab === "Outgoings") {
+      return {
+        isOutgoings: true,
+        client: clientInfo,
+        contractor: parsed.contractor,
+        month: parsed.month,
+        rowNum: parsed.rowNum,
+        amount: parsed.amount,
+        changes: parsed.changes,
+        rawText: parsed.rawText,
+        appId: parsed.appId || "UNRECON-GAP"
+      };
+    }
+
+    return {
+      isOutgoings: false,
+      client: clientInfo,
+      rowNum: parsed.confirmedRow || parsed.rowNum,
+      tabName: "Confirmed",
+      jobName: parsed.job,
+      endClientName: parsed.client,
+      projectCode: parsed.projectCode
+    };
+  }
+
+  // Proactive alert
+  const alertType = alertOrNa.alertType;
+  const m = alertOrNa.metadata || {};
+
+  if (alertType === "stale_unrecon_gap") {
+    return {
+      isOutgoings: true,
+      client: clientInfo,
+      contractor: m.contractor || alertOrNa.contractor,
+      cellCoord: m.cellCoord || alertOrNa.cellCoord,
+      month: m.month || alertOrNa.month,
+      amount: m.amount || alertOrNa.amount,
+      recDate: m.recDate || alertOrNa.recDate,
+      payDate: m.payDate || alertOrNa.payDate,
+      weeksAgo: m.weeksAgo || alertOrNa.weeksAgo,
+      appId: m.appId || alertOrNa.appId,
+      description: m.description || alertOrNa.description,
+      rowNum: m.rowNum || alertOrNa.rowNum
+    };
+  }
+
+  if (alertType === "uninvoiced_new_job" || alertType === "uninvoiced_revenue") {
+    const rowNum = m.confirmedRow || alertOrNa.confirmedRow || (alertOrNa.detail && alertOrNa.detail.match(/Row\s*(\d+)/i)?.[1]);
+    return {
+      isOutgoings: false,
+      client: clientInfo,
+      rowNum,
+      tabName: "Confirmed",
+      jobName: m.jobName || alertOrNa.jobName,
+      endClientName: m.endClientName || alertOrNa.endClientName,
+      projectCode: m.projectCode || alertOrNa.projectCode
+    };
+  }
+
+  if (alertType === "unreceived_expenses") {
+    const parsed = (!m.directCosts && !alertOrNa.directCosts && alertOrNa.detail) ? parseUnreceivedExpensesDetail(alertOrNa.detail) : {};
+    const rowNum = m.confirmedRow || alertOrNa.confirmedRow || parsed.confirmedRow || (alertOrNa.detail && alertOrNa.detail.match(/Row\s*(\d+)/i)?.[1]);
+    return {
+      isOutgoings: false,
+      client: clientInfo,
+      rowNum,
+      tabName: "Confirmed",
+      jobName: m.jobName || alertOrNa.jobName || parsed.jobName,
+      endClientName: m.endClientName || alertOrNa.endClientName || parsed.endClientName,
+      projectCode: m.projectCode || alertOrNa.projectCode || parsed.projectCode
+    };
+  }
+
+  if (alertType === "revenue_mismatch") {
+    const rowNum = m.confirmedRow || alertOrNa.confirmedRow || (alertOrNa.detail && alertOrNa.detail.match(/Row\s*(\d+)/i)?.[1]);
+    return {
+      isOutgoings: false,
+      client: clientInfo,
+      rowNum,
+      tabName: "Confirmed",
+      jobName: m.jobName || alertOrNa.jobName,
+      endClientName: m.endClientName || alertOrNa.endClientName,
+      projectCode: m.projectCode || alertOrNa.projectCode
+    };
+  }
+
+  if (alertType === "direct_costs_mismatch") {
+    const tabName = m.tab || (alertOrNa.detail && alertOrNa.detail.includes("Pipeline tab") ? "Pipeline" : "Confirmed");
+    const rowNum = m.confirmedRow || alertOrNa.confirmedRow || alertOrNa.sheetRow || (alertOrNa.detail && alertOrNa.detail.match(/Row\s*(\d+)/i)?.[1]);
+    return {
+      isOutgoings: false,
+      client: clientInfo,
+      rowNum,
+      tabName,
+      jobName: m.jobName || alertOrNa.jobName,
+      endClientName: m.endClientName || alertOrNa.endClientName,
+      projectCode: m.projectCode || alertOrNa.projectCode
+    };
+  }
+
+  return null;
+}
+
 

@@ -575,11 +575,11 @@ export default function CashflowReconTab({
     );
   }, [eomAllTasks, selectedClient]);
 
-  // Check if linked task is already marked done (only applies to current EoM work month)
+  // Check if linked task is already marked done
   const isLinkedTaskDone = useMemo(() => {
-    if (!linkedTask || monthDelta !== 0) return false;
+    if (!linkedTask) return false;
     return (eomStatusOverrides || []).find(s => s.clientName === selectedClient && s.taskId === linkedTask.taskId)?.status === "done";
-  }, [eomStatusOverrides, selectedClient, linkedTask, monthDelta]);
+  }, [eomStatusOverrides, selectedClient, linkedTask]);
 
   const handleShiftMonth = (delta) => {
     setReconData(null);
@@ -736,22 +736,18 @@ export default function CashflowReconTab({
         background: "#ffffff",
         border: "1px solid #cbd5e1",
         borderRadius: "12px",
-        padding: "16px 20px",
+        padding: "14px 20px",
         marginBottom: "16px",
         boxShadow: "0 1px 3px rgba(0,0,0,0.04)"
       }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "16px" }}>
-          <div>
-            <h3 style={{ margin: 0, fontSize: "20px", fontWeight: "700", color: "#0f172a" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "12px" }}>
+          {/* Left: Title + Client Dropdown (acts as client label) + Month pill + Month arrows */}
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+            <h3 style={{ margin: 0, fontSize: "18px", fontWeight: "700", color: "#0f172a" }}>
               Cashflow recon
             </h3>
-          </div>
 
-          {/* Client Selector Dropdown */}
-          <div style={{ minWidth: "260px", flex: "0 1 300px" }}>
-            <label style={{ display: "block", fontSize: "11px", fontWeight: "700", textTransform: "uppercase", color: "#64748b", marginBottom: "4px", letterSpacing: "0.5px" }}>
-              Select client
-            </label>
+            {/* Client selector dropdown: acts as client label (replaces client name entirely) */}
             <select
               value={selectedClient}
               onChange={e => {
@@ -759,14 +755,13 @@ export default function CashflowReconTab({
                 setReconData(null);
               }}
               style={{
-                width: "100%",
-                padding: "8px 12px",
-                border: "1px solid #cbd5e1",
-                borderRadius: "8px",
                 fontSize: "14px",
-                fontWeight: "600",
+                fontWeight: "700",
+                background: "#f1f5f9",
                 color: "#1e293b",
-                background: "#f8fafc",
+                padding: "5px 12px",
+                borderRadius: "8px",
+                border: "1px solid #cbd5e1",
                 outline: "none",
                 cursor: "pointer"
               }}
@@ -778,173 +773,125 @@ export default function CashflowReconTab({
                 </option>
               ))}
             </select>
+
+            {/* Target Month pill: light grey like the client name */}
+            {selectedClient && reconData?.targetMonthLabel && (
+              <span style={{
+                fontSize: "14px",
+                fontWeight: "700",
+                background: "#f1f5f9",
+                color: "#1e293b",
+                border: "1px solid #e2e8f0",
+                padding: "5px 12px",
+                borderRadius: "8px"
+              }}>
+                {reconData.targetMonthLabel}
+              </span>
+            )}
+
+            {/* Month selector arrows (without Reset button) */}
+            {selectedClient && (
+              <div style={{ display: "flex", alignItems: "center", background: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: "8px", padding: "2px 4px", gap: "2px" }}>
+                <button
+                  onClick={() => handleShiftMonth(-1)}
+                  title="Previous month"
+                  style={{ padding: "4px 8px", background: "none", border: "none", cursor: "pointer", fontSize: "13px", color: "#475569" }}
+                >
+                  ◀
+                </button>
+                <button
+                  onClick={() => handleShiftMonth(1)}
+                  title="Next month"
+                  style={{ padding: "4px 8px", background: "none", border: "none", cursor: "pointer", fontSize: "13px", color: "#475569" }}
+                >
+                  ▶
+                </button>
+              </div>
+            )}
           </div>
-        </div>
 
-        {/* Selected Client Toolbar & Month Controls (only rendered when data is loaded & ready) */}
-        {selectedClient && !loading && reconData && (
-          <div style={{
-            marginTop: "14px",
-            paddingTop: "14px",
-            borderTop: "1px solid #f1f5f9",
-            display: "flex",
-            flexDirection: "column",
-            gap: "12px"
-          }}>
-            {/* Top row: Client pill, Month pill, Month selector (left), Links (right) */}
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "12px" }}>
-              {/* Left: Eleven pill, October 2026 pill, Month selector */}
-              <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
-                {/* Client pill: 15% smaller (15px) */}
-                <span style={{
-                  fontSize: "15px",
-                  fontWeight: "700",
-                  background: "#f1f5f9",
-                  color: "#1e293b",
-                  padding: "4px 12px",
-                  borderRadius: "8px",
-                  border: "1px solid #e2e8f0"
-                }}>
-                  {selectedClient}
-                </span>
+          {/* Right: EoM task complete button and Sheet links */}
+          {selectedClient && (
+            <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+              {linkedTask && onTaskMarkedDone && (
+                <button
+                  onClick={() => onTaskMarkedDone(selectedClient, linkedTask.taskId)}
+                  style={{
+                    padding: "6px 12px",
+                    background: isLinkedTaskDone ? "#f0fdf4" : "#ecfdf5",
+                    border: isLinkedTaskDone ? "1px solid #86efac" : "1px solid #a7f3d0",
+                    color: isLinkedTaskDone ? "#166534" : "#059669",
+                    borderRadius: "6px",
+                    fontSize: "12px",
+                    fontWeight: "600",
+                    cursor: "pointer"
+                  }}
+                >
+                  {isLinkedTaskDone ? "✓ EoM task marked complete" : "Mark EoM task complete"}
+                </button>
+              )}
 
-                {/* Target Month pill: 15% smaller (15px), sits next to Client pill */}
-                {reconData?.targetMonthLabel && (
-                  <span style={{
-                    fontSize: "15px",
-                    fontWeight: "700",
-                    background: "#dcfce7",
-                    color: "#166534",
-                    border: "1px solid #bbf7d0",
-                    padding: "4px 12px",
-                    borderRadius: "8px"
-                  }}>
-                    {reconData.targetMonthLabel}
-                  </span>
-                )}
+              {isAdmin && currentClientInfo?.clientSheetId && (
+                <a
+                  href={`https://docs.google.com/spreadsheets/d/${currentClientInfo.clientSheetId}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ fontSize: "12px", color: "#0284c7", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: "4px", fontWeight: "600" }}
+                >
+                  📊 Client sheet ↗
+                </a>
+              )}
 
-                {/* Month selector: sits next to October 2026 pill */}
-                <div style={{ display: "flex", alignItems: "center", background: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: "8px", padding: "2px 4px", gap: "2px" }}>
-                  <button
-                    onClick={() => handleShiftMonth(-1)}
-                    title="Previous month"
-                    style={{ padding: "4px 8px", background: "none", border: "none", cursor: "pointer", fontSize: "13px", color: "#475569" }}
-                  >
-                    ◀
-                  </button>
-                  <button
-                    onClick={() => handleShiftMonth(1)}
-                    title="Next month"
-                    style={{ padding: "4px 8px", background: "none", border: "none", cursor: "pointer", fontSize: "13px", color: "#475569" }}
-                  >
-                    ▶
-                  </button>
-                  {monthDelta !== 0 && (
-                    <button
-                      onClick={handleResetMonth}
-                      style={{ fontSize: "11px", color: "#0284c7", background: "none", border: "none", cursor: "pointer", padding: "0 6px", fontWeight: "600" }}
-                    >
-                      Reset
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* Right: Client sheet and Recon sheet links */}
-              <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
-                {linkedTask && onTaskMarkedDone && monthDelta === 0 && (
-                  <button
-                    onClick={() => onTaskMarkedDone(selectedClient, linkedTask.taskId)}
-                    style={{
-                      padding: "5px 12px",
-                      background: isLinkedTaskDone ? "#f0fdf4" : "#ecfdf5",
-                      border: isLinkedTaskDone ? "1px solid #86efac" : "1px solid #a7f3d0",
-                      color: isLinkedTaskDone ? "#166534" : "#059669",
-                      borderRadius: "6px",
-                      fontSize: "12px",
-                      fontWeight: "600",
-                      cursor: "pointer"
-                    }}
-                  >
-                    {isLinkedTaskDone ? "✓ Month marked as complete" : "Mark month as complete"}
-                  </button>
-                )}
-
-                {isAdmin && currentClientInfo?.clientSheetId && (
-                  <a
-                    href={`https://docs.google.com/spreadsheets/d/${currentClientInfo.clientSheetId}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    style={{ fontSize: "12px", color: "#0284c7", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: "4px", fontWeight: "600" }}
-                  >
-                    📊 Client sheet ↗
-                  </a>
-                )}
-
-                {isAdmin && currentClientInfo?.reconSheetId && (
-                  <a
-                    href={`https://docs.google.com/spreadsheets/d/${currentClientInfo.reconSheetId}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    style={{ fontSize: "12px", color: "#0284c7", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: "4px", fontWeight: "600" }}
-                  >
-                    📑 Recon sheet ↗
-                  </a>
-                )}
-              </div>
+              {isAdmin && currentClientInfo?.reconSheetId && (
+                <a
+                  href={`https://docs.google.com/spreadsheets/d/${currentClientInfo.reconSheetId}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ fontSize: "12px", color: "#0284c7", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: "4px", fontWeight: "600" }}
+                >
+                  📑 Recon sheet ↗
+                </a>
+              )}
             </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
-      {/* Dedicated Sub-bar: Transaction Recon / Cashflow Finalisation Selector */}
+      {/* Dedicated Tabs: Transaction Recon / Cashflow Finalisation (styled like By month / By job tabs on Contractors screen) */}
       {selectedClient && reconData && (
-        <div style={{
-          background: "#ffffff",
-          border: "1px solid #cbd5e1",
-          borderRadius: "10px",
-          padding: "7px 14px",
-          marginBottom: "16px",
-          display: "flex",
-          alignItems: "center",
-          boxShadow: "0 1px 2px rgba(0,0,0,0.03)"
-        }}>
-          <div style={{ display: "inline-flex", gap: "4px", background: "#f1f5f9", padding: "3px", borderRadius: "8px", border: "1px solid #cbd5e1" }}>
-            <button
-              onClick={() => setViewMode("workbench")}
-              title="Transaction recon: Bank transactions alongside breakdowns and P&L additions"
-              style={{
-                padding: "6px 16px",
-                fontSize: "14px",
-                fontWeight: viewMode === "workbench" ? "700" : "500",
-                background: viewMode === "workbench" ? "#ffffff" : "transparent",
-                color: viewMode === "workbench" ? "#0284c7" : "#64748b",
-                border: "none",
-                borderRadius: "6px",
-                cursor: "pointer",
-                boxShadow: viewMode === "workbench" ? "0 1px 2px rgba(0,0,0,0.06)" : "none"
-              }}
-            >
-              ⚡ Transaction recon
-            </button>
-            <button
-              onClick={() => setViewMode("matrix")}
-              title="Cashflow finalisation: Client cashflow forecast and variance resolution"
-              style={{
-                padding: "6px 16px",
-                fontSize: "14px",
-                fontWeight: viewMode === "matrix" ? "700" : "500",
-                background: viewMode === "matrix" ? "#ffffff" : "transparent",
-                color: viewMode === "matrix" ? "#0284c7" : "#64748b",
-                border: "none",
-                borderRadius: "6px",
-                cursor: "pointer",
-                boxShadow: viewMode === "matrix" ? "0 1px 2px rgba(0,0,0,0.06)" : "none"
-              }}
-            >
-              📋 Cashflow finalisation
-            </button>
-          </div>
+        <div style={{ display: "flex", gap: "8px", marginBottom: "16px", borderBottom: "1px solid #e0e0e0" }}>
+          <button
+            onClick={() => setViewMode("workbench")}
+            title="Transaction recon: Bank transactions alongside breakdowns and P&L additions"
+            style={{
+              padding: "8px 16px",
+              background: "none",
+              border: "none",
+              borderBottom: viewMode === "workbench" ? "2px solid #0066cc" : "2px solid transparent",
+              color: viewMode === "workbench" ? "#0066cc" : "#666666",
+              fontWeight: viewMode === "workbench" ? "700" : "500",
+              fontSize: "14px",
+              cursor: "pointer"
+            }}
+          >
+            ⚡ Transaction recon
+          </button>
+          <button
+            onClick={() => setViewMode("matrix")}
+            title="Cashflow finalisation: Client cashflow forecast and variance resolution"
+            style={{
+              padding: "8px 16px",
+              background: "none",
+              border: "none",
+              borderBottom: viewMode === "matrix" ? "2px solid #0066cc" : "2px solid transparent",
+              color: viewMode === "matrix" ? "#0066cc" : "#666666",
+              fontWeight: viewMode === "matrix" ? "700" : "500",
+              fontSize: "14px",
+              cursor: "pointer"
+            }}
+          >
+            📋 Cashflow finalisation
+          </button>
         </div>
       )}
 

@@ -67,12 +67,36 @@ export default function ClientSelectionView({
     "crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr",
   ];
 
+  const getValidAssignedCounts = (client) => {
+    if (!client) return { validAssignedExp: 0, validAssignedInv: 0 };
+    const normClient = String(client.clientName || "").trim().toLowerCase();
+    let assignedSet = new Set();
+    for (const [k, s] of Object.entries(assignedByClient || {})) {
+      if (String(k).trim().toLowerCase() === normClient) {
+        assignedSet = s;
+        break;
+      }
+    }
+    const isIdMatch = (id) => {
+      if (id === null || id === undefined || id === "") return false;
+      const s = String(id).trim();
+      const clean = s.replace(/^#/, "");
+      if (assignedSet.has(id) || assignedSet.has(s) || assignedSet.has(clean)) return true;
+      if (!isNaN(Number(clean)) && clean !== "" && assignedSet.has(Number(clean))) return true;
+      if (assignedAppIds.has(id) || assignedAppIds.has(s) || assignedAppIds.has(clean)) return true;
+      if (!isNaN(Number(clean)) && clean !== "" && assignedAppIds.has(Number(clean))) return true;
+      return false;
+    };
+    const expenseIds = client.activeExpenseIds || [];
+    const invoiceIds = client.activeInvoiceIds || [];
+    return {
+      validAssignedExp: expenseIds.filter(isIdMatch).length,
+      validAssignedInv: invoiceIds.filter(isIdMatch).length,
+    };
+  };
+
   const totalAlertsCount = authorizedClientsWithFlags.reduce((total, c) => {
-    const assignedSet = assignedByClient[c.clientName] || new Set();
-    const expenseIds = c.activeExpenseIds || [];
-    const invoiceIds = c.activeInvoiceIds || [];
-    const validAssignedExp = expenseIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
-    const validAssignedInv = invoiceIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
+    const { validAssignedExp, validAssignedInv } = getValidAssignedCounts(c);
     let clientTotal = 0;
     Object.entries(c.flags || {}).forEach(([flagKey, isSet]) => {
       if (!isSet || !isFlagVisible(flagKey)) return;
@@ -178,11 +202,7 @@ export default function ClientSelectionView({
               ].filter(c => isUserAuthorizedForClient(currentUser, c.clientName));
               return combinedClientList;
             })().filter(client => {
-              const assignedSet = assignedByClient[client.clientName] || new Set();
-              const expenseIds = client.activeExpenseIds || [];
-              const invoiceIds = client.activeInvoiceIds || [];
-              const validAssignedExp = expenseIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
-              const validAssignedInv = invoiceIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
+              const { validAssignedExp, validAssignedInv } = getValidAssignedCounts(client);
 
               const hasVisibleActionable = ACTIONABLE_FLAG_KEYS.some(key => {
                 if (!client.flags?.[key] || !isFlagVisible(key)) return false;
@@ -194,11 +214,7 @@ export default function ClientSelectionView({
               const hasInfoFlags = Object.entries(client.flags || {}).some(([key, val]) => val && isFlagVisible(key) && !ACTIONABLE_FLAG_KEYS.includes(key) && (client.alertCounts?.[key] || 0) > 0);
               return hasVisibleActionable || hasInfoFlags || (authorizedProactiveCountsByClient[client.clientName] || 0) > 0;
             }).map((client, idx) => {
-              const assignedSet = assignedByClient[client.clientName] || new Set();
-              const expenseIds = client.activeExpenseIds || [];
-              const invoiceIds = client.activeInvoiceIds || [];
-              const validAssignedExp = expenseIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
-              const validAssignedInv = invoiceIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
+              const { validAssignedExp, validAssignedInv } = getValidAssignedCounts(client);
 
               const actionableLines = ACTIONABLE_FLAG_KEYS
                 .filter(key => client.flags?.[key] && isFlagVisible(key))

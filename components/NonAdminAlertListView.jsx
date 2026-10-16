@@ -1,7 +1,27 @@
 import React from "react";
 import Spinner from "./Spinner";
 import TruncatedCode from "./TruncatedCode";
-import { stripRowInfo, parseUnreceivedExpensesDetail, parseStaleExpenseDetail, filterAnalysisResultsForAlert, getCleanPLCategoryName } from "../utils/helpers";
+import { stripRowInfo, parseUnreceivedExpensesDetail, parseStaleExpenseDetail, parseInfoAlertDetail, filterAnalysisResultsForAlert, getCleanPLCategoryName, getAlertJobTarget } from "../utils/helpers";
+
+const KNOWN_PROACTIVE_TYPES = new Set([
+  "retainer_invoice",
+  "uninvoiced_new_job",
+  "uninvoiced_revenue",
+  "unreceived_expenses",
+  "stale_unrecon_gap",
+  "retroactive_outgoings_update",
+  "unmapped_pl_category",
+  "crm_wipe",
+  "revenue_mismatch",
+  "direct_costs_mismatch",
+  "pipeline_confirmed_overlap",
+  "retainer_shrink_blocked",
+  "autolog_error",
+  "infinite_loop",
+  "deleted_invoice",
+  "deleted_expense",
+  "job_structure_error",
+]);
 
 export default function NonAdminAlertListView({
   styles,
@@ -15,6 +35,8 @@ export default function NonAdminAlertListView({
   selectAlert,
   selectedClient,
   setActiveNav,
+  onNavInvoices,
+  onNavOutgoings,
   resolvedNoActionFlags,
   noActionAnalysis,
   noActionAnalysisLoading,
@@ -28,7 +50,8 @@ export default function NonAdminAlertListView({
   acknowledgeProactiveAlert,
   acknowledgingKey,
   freqLabel,
-  totalVisibleAlertsCount
+  totalVisibleAlertsCount,
+  onViewJob
 }) {
   const [selectedClassifications, setSelectedClassifications] = React.useState({});
   const [applyingClassification, setApplyingClassification] = React.useState({});
@@ -89,34 +112,37 @@ export default function NonAdminAlertListView({
                     .filter(a => (a.summary?.status || "").toLowerCase() !== "draft")
                     .sort((a, b) => parseInt(a.summary?.invoiceNo || 0) - parseInt(b.summary?.invoiceNo || 0));
                   const renderSubList = (alerts, label) => alerts.length === 0 ? null : (
-                    <div key={label}>
-                      <div style={{ fontSize: "11px", fontWeight: "700", color: "#888", textTransform: "uppercase", letterSpacing: "0.05em", padding: "6px 0 4px" }}>
+                    <div key={label} style={{ marginBottom: "16px", width: "100%" }}>
+                      <div style={{ fontSize: "11px", fontWeight: "700", color: "#888", textTransform: "uppercase", letterSpacing: "0.05em", padding: "6px 0 6px" }}>
                         {label}
                       </div>
-                      {alerts.map((alert, idx) => (
-                        <button
-                          className="triage-btn"
-                          key={idx}
-                          onClick={() => selectAlert(alert)}
-                          style={{
-                            ...styles.optionButton,
-                            textAlign: "left",
-                            padding: "12px",
-                            border: "1px solid #e0e0e0",
-                            borderRadius: "4px",
-                            cursor: "pointer",
-                            backgroundColor: "#fff",
-                            fontSize: "13px",
-                            transition: "all 0.2s",
-                            marginBottom: "8px",
-                            width: "100%"
-                          }}
-                          onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "#f5f5f5"; e.currentTarget.style.borderColor = "#1976d2"; }}
-                          onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "#fff"; e.currentTarget.style.borderColor = "#e0e0e0"; }}
-                        >
-                          {renderAlertContent(alert)}
-                        </button>
-                      ))}
+                      <div style={{ display: "flex", flexDirection: "column", gap: "10px", width: "100%" }}>
+                        {alerts.map((alert, idx) => (
+                          <button
+                            className="triage-btn"
+                            key={idx}
+                            onClick={() => selectAlert(alert)}
+                            style={{
+                              ...styles.optionButton,
+                              display: "block",
+                              width: "100%",
+                              boxSizing: "border-box",
+                              textAlign: "left",
+                              padding: "14px 16px",
+                              border: "1px solid #cbd5e1",
+                              borderRadius: "8px",
+                              cursor: "pointer",
+                              backgroundColor: "#fff",
+                              fontSize: "13px",
+                              transition: "all 0.2s"
+                            }}
+                            onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "#f8fafc"; e.currentTarget.style.borderColor = "#2563eb"; }}
+                            onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "#fff"; e.currentTarget.style.borderColor = "#cbd5e1"; }}
+                          >
+                            {renderAlertContent(alert)}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                   );
                   return (
@@ -124,10 +150,10 @@ export default function NonAdminAlertListView({
                       {renderSubList(nonDrafts, "Sent / non-draft")}
                       {renderSubList(drafts, "Draft")}
                       {selectedClient && (
-                        <div style={{ display: "flex", justifyContent: "flex-start", marginTop: "4px" }}>
+                        <div style={{ display: "flex", justifyContent: "flex-start", marginTop: "8px" }}>
                           <button
                             className="triage-btn"
-                            onClick={() => setActiveNav("invoices")}
+                            onClick={() => onNavInvoices ? onNavInvoices(selectedClient) : setActiveNav("invoices")}
                             style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 14px", color: "#ea580c", borderColor: "#fdba74" }}
                           >
                             📥 Assign Invoices
@@ -168,7 +194,7 @@ export default function NonAdminAlertListView({
                       <div style={{ display: "flex", justifyContent: "flex-start", marginTop: "4px" }}>
                         <button
                           className="triage-btn"
-                          onClick={() => setActiveNav("outgoings")}
+                          onClick={() => onNavOutgoings ? onNavOutgoings(selectedClient) : setActiveNav("outgoings")}
                           style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 14px", color: "#059669", borderColor: "#6ee7b7" }}
                         >
                           📤 Assign Expense
@@ -179,7 +205,7 @@ export default function NonAdminAlertListView({
                       <div style={{ display: "flex", justifyContent: "flex-start", marginTop: "4px" }}>
                         <button
                           className="triage-btn"
-                          onClick={() => setActiveNav("invoices")}
+                          onClick={() => onNavInvoices ? onNavInvoices(selectedClient) : setActiveNav("invoices")}
                           style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 14px", color: "#ea580c", borderColor: "#fdba74" }}
                         >
                           📥 Assign Invoices
@@ -215,266 +241,182 @@ export default function NonAdminAlertListView({
                   : (rawAnalysis?.overallOk ?? true);
                 const analysis = rawAnalysis ? { ...rawAnalysis, results: displayedResults, overallOk } : null;
 
-                if (isRichFlag && !isResolved) {
-                  const overallOk = analysis?.overallOk;
-                  return (
-                    <div key={alertId} style={{ border: "1px solid #e0e0e0", borderRadius: "4px", background: "#fff", padding: "12px" }}>
-                      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: analysis ? "10px" : "0", flexWrap: "wrap", gap: "8px" }}>
-                        <div style={{ flexShrink: 1, minWidth: 0 }}>
-                          <div style={{ fontSize: "13px", fontWeight: "600", color: "#333" }}>
-                            {getFlagName(na.flagType) || na.flagName}
-                          </div>
-                          {na.flagDetail && (
-                            <div style={{ fontSize: "12px", color: "#666", marginTop: "4px", lineHeight: "1.4" }}>
-                              {stripRowInfo(na.flagDetail)}
-                            </div>
-                          )}
-                          {(na.firstSeen || na.lastSeen) && (
-                            <div style={{ fontSize: "10px", color: "#aaa", marginTop: "6px" }}>
-                              {na.firstSeen ? `First seen: ${na.firstSeen.split("T")[0]}` : ""}
-                              {na.firstSeen && na.lastSeen ? " · " : ""}
-                              {na.lastSeen ? `Last seen: ${na.lastSeen.split("T")[0]}` : ""}
-                            </div>
-                          )}
-                        </div>
-                        <div style={{ display: "flex", gap: "6px", flexShrink: 0, flexWrap: "wrap" }}>
-                          {!analysis && !isLoading && (
-                            <button className="triage-btn" onClick={() => analyzeNoActionFlag(na)} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px" }}>
-                              🔍 Analyse
-                            </button>
-                          )}
-                          {isLoading && (
-                            <span style={{ fontSize: "12px", color: "#888", padding: "5px 10px", display: "inline-flex", alignItems: "center" }}><Spinner size={12} />Analysing…</span>
-                          )}
-                          {analysis && !isLoading && (
-                            <button className="triage-btn" onClick={() => analyzeNoActionFlag(na)} style={{ ...styles.buttonSecondary, fontSize: "11px", padding: "4px 8px" }}>
-                              ↻ Re-run
-                            </button>
-                          )}
-                          <button className="triage-btn" onClick={() => openCreateTaskModal(na, false, true)} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px", color: "#7c3aed", borderColor: "#c4b5fd" }}>
-                            📋 Create Task
-                          </button>
-                          <button className="triage-btn" onClick={() => handleMarkNoActionResolved(na)} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px" }}>
-                            ✓ Mark resolved
-                          </button>
-                        </div>
-                      </div>
-                      {analysis && !isLoading && (
-                        <div>
-                          <div style={{
-                            padding: "6px 10px", borderRadius: "4px", marginBottom: "8px", fontSize: "12px", fontWeight: "600",
-                            background: "#f0f9ff", color: "#0369a1", border: "1px solid #bae6fd"
-                          }}>
-                            {overallOk ? "✓ Everything looks correct" : "⚠ Issues found - review below"}
-                          </div>
-                          {(analysis.results || []).map((r, ri) => (
-                            <div key={ri} style={{
-                              marginBottom: "8px", padding: "8px 10px", borderRadius: "4px",
-                              border: "1px solid #e0e0e0", background: "#f9fafb",
-                            }}>
-                              {(r.jobName || r.projectCode || r.contractor) && (
-                                <div style={{ fontSize: "12px", fontWeight: "600", color: "#333", marginBottom: "4px" }}>
-                                  {r.clientName && <span style={{ fontWeight: "400", color: "#666" }}>{r.clientName} - </span>}
-                                  {r.contractor && !r.jobName && <span style={{ fontWeight: "600", color: "#333" }}>{r.contractor}</span>}
-                                  {r.jobName || r.projectCode}
-                                  {r.projectCode && r.jobName && <TruncatedCode code={r.projectCode} />}
-                                  {r.periodLabel && <span style={{ fontWeight: "400", color: "#666", marginLeft: "6px" }}> - {r.periodLabel}</span>}
-                                </div>
-                              )}
-                              {r.message && (!r.checks || r.checks.length === 0) && (
-                                <div style={{ fontSize: "12px", color: "#666" }}>{stripRowInfo(r.message)}</div>
-                              )}
-                              {(r.checks || []).map((chk, ci) => (
-                                <div key={ci} style={{ fontSize: "12px", color: chk.ok ? "#2e7d32" : "#c62828", marginTop: "2px" }}>
-                                  {stripRowInfo(chk.message || "")}
-                                </div>
-                              ))}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  );
-                }
-
-                if (na.flagType === "expenseUnreconGaps") {
-                  const parsed = parseStaleExpenseDetail(na.flagDetail);
-                  const clientInfo = (clientsWithFlags || []).find(c => c.clientName === selectedClient?.clientName) || allClientsMap[selectedClient?.clientName] || selectedClient;
-                  const cardTitle = parsed?.tab === "Outgoings"
-                    ? (parsed.contractor ? `Stale placeholder expense date moved (${parsed.contractor})` : "Stale placeholder expense date moved")
-                    : (parsed?.client ? `Stale placeholder expense date moved (${parsed.client})` : (getFlagName(na.flagType) || na.flagName || "Stale placeholder expense date moved"));
-
-                  return (
-                    <div key={alertId} style={{
-                      padding: "14px",
-                      borderRadius: "6px",
-                      border: isResolved ? "1px solid #c8e6c9" : "1px solid #ddd",
-                      background: isResolved ? "#f1f8f2" : "#fafafa",
-                      display: "flex",
-                      flexDirection: "column",
-                      gap: "8px",
-                    }}>
-                      <div style={{
-                        fontWeight: "600",
-                        fontSize: "14px",
-                        color: isResolved ? "#2e7d32" : "#1a1a1a",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        flexWrap: "wrap",
-                        gap: "8px",
-                      }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", minWidth: 0 }}>
-                          <span style={{ textDecoration: isResolved ? "line-through" : "none" }}>{cardTitle}</span>
-                        </div>
-                        {isResolved && (
-                          <span style={{ fontSize: "12px", color: "#2e7d32", fontWeight: "600", whiteSpace: "nowrap" }}>✓ Resolved</span>
-                        )}
-                      </div>
-
-                      <div style={{
-                        fontSize: "12px",
-                        color: "#555",
-                        backgroundColor: isResolved ? "#ffffff" : "#f0f9ff",
-                        border: `1px solid ${isResolved ? "#c8e6c9" : "#bae6fd"}`,
-                        borderRadius: "4px",
-                        padding: "8px 10px",
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: "3px",
-                      }}>
-                        {parsed ? (
-                          parsed.tab === "Outgoings" ? (
-                            <>
-                              <div><strong>Tab:</strong> Outgoings</div>
-                              {parsed.month && <div><strong>Month:</strong> {parsed.month}</div>}
-                              {parsed.contractor && <div><strong>Vendor:</strong> {parsed.contractor}</div>}
-                              {parsed.amount && <div><strong>Amount:</strong> {parsed.amount}</div>}
-                              {parsed.changes && parsed.changes.length > 0 && (
-                                <div style={{ marginTop: "3px" }}>
-                                  <strong style={{ display: "block", marginBottom: "3px" }}>Date updates:</strong>
-                                  <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
-                                    {parsed.changes.map((ch, ci) => (
-                                      <span key={ci} style={{
-                                        padding: "2px 7px", borderRadius: "4px", fontSize: "11px", fontWeight: "600",
-                                        background: isResolved ? "#f1f8f2" : "#e0f2fe",
-                                        color: isResolved ? "#2e7d32" : "#0369a1",
-                                        border: `1px solid ${isResolved ? "#bbf7d0" : "#bae6fd"}`,
-                                      }}>
-                                        {ch.label}
-                                      </span>
-                                    ))}
-                                  </div>
-                                </div>
-                              )}
-                              <div style={{ marginTop: "4px", fontWeight: "700", color: isResolved ? "#2e7d32" : "#0369a1" }}>
-                                Stale unreceived expense dates moved forward to current month.
-                              </div>
-                            </>
-                          ) : (
-                            <>
-                              <div><strong>Tab:</strong> Confirmed{parsed.slot ? ` (Slot ${parsed.slot})` : ""}</div>
-                              {parsed.client && <div><strong>End client:</strong> {parsed.client}</div>}
-                              {parsed.job && <div><strong>Job:</strong> {parsed.job}</div>}
-                              {parsed.amount && <div><strong>Amount:</strong> {parsed.amount}</div>}
-                              {parsed.changes && parsed.changes.length > 0 && (
-                                <div style={{ marginTop: "3px" }}>
-                                  <strong style={{ display: "block", marginBottom: "3px" }}>Date updates:</strong>
-                                  <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
-                                    {parsed.changes.map((ch, ci) => (
-                                      <span key={ci} style={{
-                                        padding: "2px 7px", borderRadius: "4px", fontSize: "11px", fontWeight: "600",
-                                        background: isResolved ? "#f1f8f2" : "#e0f2fe",
-                                        color: isResolved ? "#2e7d32" : "#0369a1",
-                                        border: `1px solid ${isResolved ? "#bbf7d0" : "#bae6fd"}`,
-                                      }}>
-                                        {ch.label}
-                                      </span>
-                                    ))}
-                                  </div>
-                                </div>
-                              )}
-                              <div style={{ marginTop: "4px", fontWeight: "700", color: isResolved ? "#2e7d32" : "#0369a1" }}>
-                                Stale unreceived expense receive date moved forward to current month.
-                              </div>
-                            </>
-                          )
-                        ) : (
-                          <div>{stripRowInfo(na.flagDetail)}</div>
-                        )}
-                      </div>
-
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", marginTop: "4px" }}>
-                        <div style={{ fontSize: "11px", color: "#aaa" }}>
-                          {na.firstSeen ? `First seen: ${na.firstSeen.split("T")[0]}` : ""}
-                          {na.firstSeen && na.lastSeen ? " · " : ""}
-                          {na.lastSeen ? `Last seen: ${na.lastSeen.split("T")[0]}` : ""}
-                        </div>
-                        {!isResolved && (
-                          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                            <button
-                              className="triage-btn"
-                              onClick={() => openCreateTaskModal(na, false, true)}
-                              style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#7c3aed", borderColor: "#c4b5fd" }}
-                            >
-                              📋 Create Task
-                            </button>
-                            <button
-                              className="triage-btn"
-                              onClick={() => handleMarkNoActionResolved(na)}
-                              style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px" }}
-                            >
-                              ✓ Mark resolved
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  );
-                }
+                const parsed = parseInfoAlertDetail(na.flagType, na.flagDetail);
+                const cardTitle = parsed?.tab === "Outgoings"
+                  ? (parsed.contractor ? `Stale placeholder expense date moved (${parsed.contractor})` : "Stale placeholder expense date moved")
+                  : (parsed?.client ? `${getFlagName(na.flagType) || na.flagName || "Alert"} (${parsed.client})` : (getFlagName(na.flagType) || na.flagName || "Alert"));
 
                 return (
                   <div key={alertId} style={{
-                    display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 12px", borderRadius: "4px",
-                    border: `1px solid ${isResolved ? "#c8e6c9" : "#e0e0e0"}`, background: isResolved ? "#f1f8f2" : "#fff", gap: "12px",
+                    padding: "14px",
+                    borderRadius: "6px",
+                    border: isResolved ? "1px solid #c8e6c9" : "1px solid #ddd",
+                    background: isResolved ? "#f1f8f2" : "#fafafa",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "8px",
                   }}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: "13px", fontWeight: "600", color: isResolved ? "#2e7d32" : "#333", textDecoration: isResolved ? "line-through" : "none" }}>
-                        {getFlagName(na.flagType) || na.flagName}
+                    <div style={{
+                      fontWeight: "600",
+                      fontSize: "14px",
+                      color: isResolved ? "#2e7d32" : "#1a1a1a",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      flexWrap: "wrap",
+                      gap: "8px",
+                    }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", minWidth: 0 }}>
+                        <span style={{ textDecoration: isResolved ? "line-through" : "none" }}>{cardTitle}</span>
                       </div>
-                      {na.flagDetail && (
-                        <div style={{ fontSize: "12px", color: isResolved ? "#2e7d32" : "#666", marginTop: "4px", textDecoration: isResolved ? "line-through" : "none", lineHeight: "1.4" }}>
-                          {stripRowInfo(na.flagDetail)}
+                      {isResolved && (
+                        <span style={{ fontSize: "12px", color: "#2e7d32", fontWeight: "600", whiteSpace: "nowrap" }}>✓ Resolved</span>
+                      )}
+                    </div>
+
+                    <div style={{
+                      fontSize: "12px",
+                      color: "#555",
+                      backgroundColor: "#ffffff",
+                      border: `1px solid ${isResolved ? "#c8e6c9" : "#bae6fd"}`,
+                      borderRadius: "4px",
+                      padding: "8px 10px",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: "3px",
+                    }}>
+                      {parsed.tab && <div><strong>Tab:</strong> {parsed.tab}{parsed.slot ? ` (Slot ${parsed.slot})` : ""}</div>}
+                      {parsed.month && <div><strong>Month:</strong> {parsed.month}</div>}
+                      {parsed.client && <div><strong>End client:</strong> {parsed.client}</div>}
+                      {parsed.contractor && <div><strong>{parsed.tab === "Outgoings" ? "Vendor:" : "Contractor:"}</strong> {parsed.contractor}</div>}
+                      {parsed.job && <div><strong>Job:</strong> {parsed.job}{parsed.projectCode ? ` [${parsed.projectCode}]` : ""}</div>}
+                      {parsed.amount && <div><strong>Amount:</strong> {parsed.amount}</div>}
+                      {parsed.changes && parsed.changes.length > 0 && (
+                        <div style={{ marginTop: "3px" }}>
+                          <strong style={{ display: "block", marginBottom: "3px" }}>Date updates:</strong>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                            {parsed.changes.map((ch, ci) => (
+                              <span key={ci} style={{
+                                padding: "2px 7px", borderRadius: "4px", fontSize: "11px", fontWeight: "600",
+                                background: isResolved ? "#f1f8f2" : "#ffffff",
+                                color: isResolved ? "#2e7d32" : "#0369a1",
+                                border: `1px solid ${isResolved ? "#bbf7d0" : "#bae6fd"}`,
+                              }}>
+                                {ch.label}
+                              </span>
+                            ))}
+                          </div>
                         </div>
                       )}
-                      {(na.firstSeen || na.lastSeen) && (
-                        <div style={{ fontSize: "10px", color: "#aaa", marginTop: "6px" }}>
-                          {na.firstSeen ? `First seen: ${na.firstSeen.split("T")[0]}` : ""}
-                          {na.firstSeen && na.lastSeen ? " · " : ""}
-                          {na.lastSeen ? `Last seen: ${na.lastSeen.split("T")[0]}` : ""}
+                      {parsed.highlight && (
+                        <div style={{ marginTop: "4px", fontWeight: "700", color: isResolved ? "#2e7d32" : "#0369a1" }}>
+                          {parsed.highlight}
+                        </div>
+                      )}
+                      {parsed.rawText && (
+                        <div style={{ marginTop: "3px", color: isResolved ? "#2e7d32" : "#666", lineHeight: "1.4" }}>
+                          {stripRowInfo(parsed.rawText)}
                         </div>
                       )}
                     </div>
-                    {isResolved ? (
-                      <span style={{ fontSize: "12px", color: "#2e7d32", fontWeight: "600", whiteSpace: "nowrap" }}>✓ Resolved</span>
-                    ) : (
-                      <div style={{ display: "flex", gap: "6px", flexShrink: 0 }}>
-                        <button
-                          className="triage-btn"
-                          onClick={() => openCreateTaskModal(na, false, true)}
-                          style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px", color: "#7c3aed", borderColor: "#c4b5fd", whiteSpace: "nowrap" }}
-                        >
-                          📋 Create Task
-                        </button>
-                        <button
-                          className="triage-btn"
-                          onClick={() => handleMarkNoActionResolved(na)}
-                          style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px", whiteSpace: "nowrap" }}
-                        >
-                          Mark resolved
-                        </button>
+
+                    {analysis && !isLoading && !isResolved && (
+                      <div style={{ marginTop: "2px" }}>
+                        <div style={{
+                          padding: "6px 10px", borderRadius: "4px", marginBottom: "8px", fontSize: "12px", fontWeight: "600",
+                          background: overallOk ? "#e8f5e9" : "#fbe9e7", color: overallOk ? "#2e7d32" : "#bf360c",
+                          border: `1px solid ${overallOk ? "#c8e6c9" : "#ffccbc"}`
+                        }}>
+                          {overallOk ? "✓ Everything looks correct" : "⚠ Issues found - review below"}
+                        </div>
+                        {(analysis.results || []).map((r, ri) => (
+                          <div key={ri} style={{
+                            marginBottom: "8px", padding: "8px 10px", borderRadius: "4px",
+                            border: `1px solid ${r.status === "ok" ? "#c8e6c9" : r.status === "issue" ? "#ffccbc" : "#e0e0e0"}`,
+                            background: "#ffffff",
+                          }}>
+                            {(r.jobName || r.projectCode || r.contractor) && (
+                              <div style={{ fontSize: "12px", fontWeight: "600", color: "#333", marginBottom: "4px" }}>
+                                {r.clientName && <span style={{ fontWeight: "400", color: "#666" }}>{r.clientName} - </span>}
+                                {r.contractor && !r.jobName && <span style={{ fontWeight: "600", color: "#333" }}>{r.contractor}</span>}
+                                {r.jobName || r.projectCode}
+                                {r.projectCode && r.jobName && <TruncatedCode code={r.projectCode} />}
+                                {r.periodLabel && <span style={{ fontWeight: "400", color: "#666", marginLeft: "6px" }}> - {r.periodLabel}</span>}
+                              </div>
+                            )}
+                            {r.message && (!r.checks || r.checks.length === 0) && (
+                              <div style={{ fontSize: "12px", color: "#666" }}>{stripRowInfo(r.message)}</div>
+                            )}
+                            {(r.checks || []).map((chk, ci) => (
+                              <div key={ci} style={{ fontSize: "12px", color: chk.ok ? "#2e7d32" : "#c62828", marginTop: "2px" }}>
+                                {stripRowInfo(chk.message || "")}
+                              </div>
+                            ))}
+                          </div>
+                        ))}
                       </div>
                     )}
+                    {analysis && !analysis.success && !isResolved && (
+                      <div style={{ fontSize: "12px", color: "#c62828", marginTop: "4px" }}>Error: {analysis.error}</div>
+                    )}
+
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", marginTop: "4px" }}>
+                      <div style={{ fontSize: "11px", color: "#aaa" }}>
+                        {na.firstSeen ? `First seen: ${na.firstSeen.split("T")[0]}` : ""}
+                        {na.firstSeen && na.lastSeen ? " · " : ""}
+                        {na.lastSeen ? `Last seen: ${na.lastSeen.split("T")[0]}` : ""}
+                      </div>
+                      {!isResolved && (
+                        <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+                          {isRichFlag && !analysis && !isLoading && (
+                            <button className="triage-btn"
+                              onClick={() => analyzeNoActionFlag(na)}
+                              style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px" }}
+                            >
+                              🔍 Analyse
+                            </button>
+                          )}
+                          {isRichFlag && isLoading && (
+                            <span style={{ fontSize: "12px", color: "#888", padding: "4px 12px", display: "inline-flex", alignItems: "center", gap: "6px" }}><Spinner size={12} />Analysing…</span>
+                          )}
+                          {isRichFlag && analysis && !isLoading && (
+                            <button className="triage-btn"
+                              onClick={() => analyzeNoActionFlag(na)}
+                              style={{ ...styles.buttonSecondary, fontSize: "11px", padding: "4px 8px" }}
+                            >
+                              ↻ Re-run
+                            </button>
+                          )}
+                          {(() => {
+                            const clientInfo = (clientsWithFlags || []).find(c => c.clientName === selectedClient?.clientName) || allClientsMap[selectedClient?.clientName] || selectedClient;
+                            const jobTarget = getAlertJobTarget(na, true, clientInfo);
+                            if (!jobTarget || !onViewJob) return null;
+                            return (
+                              <button
+                                className="triage-btn"
+                                onClick={() => onViewJob(jobTarget)}
+                                style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#0284c7", borderColor: "#bae6fd" }}
+                                title={jobTarget.isOutgoings ? "View Outgoings expense details" : "View and edit job details in pop-up"}
+                              >
+                                {jobTarget.isOutgoings ? "🔍 View expense" : "🔍 View job"}
+                              </button>
+                            );
+                          })()}
+                          <button className="triage-btn"
+                            onClick={() => openCreateTaskModal(na, false, true)}
+                            style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#7c3aed", borderColor: "#c4b5fd" }}
+                          >
+                            📋 Create Task
+                          </button>
+                          <button className="triage-btn"
+                            onClick={() => handleMarkNoActionResolved(na)}
+                            style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px" }}
+                          >
+                            ✓ Mark resolved
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 );
               })}
@@ -495,16 +437,13 @@ export default function NonAdminAlertListView({
               {groupAlerts.map((alert, idx) => {
                 const m = alert.metadata || {};
                 return (
-                  <div key={idx} style={{ border: "1px solid #e0e0e0", borderRadius: "4px", padding: "14px", backgroundColor: "#fff" }}>
+                  <div key={idx} style={{ border: "1px solid #ddd", borderRadius: "6px", padding: "14px", backgroundColor: "#fafafa" }}>
                     <div style={{ fontWeight: "600", fontSize: "14px", color: "#1a1a1a", marginBottom: "6px" }}>
                       {alert.heading}
                     </div>
-                    <div style={{ fontSize: "13px", color: "#444", lineHeight: "1.6", marginBottom: "8px" }}>
-                      {alert.alertType === "revenue_mismatch" || alert.alertType === "direct_costs_mismatch" || alert.alertType === "pipeline_confirmed_overlap" || alert.alertType === "retainer_shrink_blocked" || alert.alertType === "uninvoiced_new_job" || alert.alertType === "uninvoiced_revenue" || alert.alertType === "unreceived_expenses" || alert.alertType === "stale_unrecon_gap" || alert.alertType === "retroactive_outgoings_update" || alert.alertType === "unmapped_pl_category" ? null : stripRowInfo(alert.detail)}
-                    </div>
 
                     {alert.alertType === "retainer_invoice" && (
-                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
                         {m.endClientName && <div><strong>End client:</strong> {m.endClientName}</div>}
                         {m.jobName && <div><strong>Job:</strong> {m.jobName}</div>}
                         {m.revenue && <div><strong>Monthly revenue:</strong> {m.revenue}</div>}
@@ -515,12 +454,12 @@ export default function NonAdminAlertListView({
                         {m.possibleMatchInvoiceNo && (
                           <div style={{ marginTop: "8px", paddingTop: "8px", borderTop: "1px solid #bae6fd" }}>
                             {m.possibleMatchCase === "changed" && (
-                              <div style={{ display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", marginBottom: "6px", background: "#f0f9ff", color: "#0369a1", border: "1px solid #bae6fd" }}>
+                              <div style={{ display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", marginBottom: "6px", background: "#ffffff", color: "#991b1b", border: "1px solid #fca5a5" }}>
                                 Possible retainer change - {m.possibleMatchConfidence === "high" ? "high" : "medium"} confidence
                               </div>
                             )}
                             {m.possibleMatchCase === "draft" && (
-                              <div style={{ display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", marginBottom: "6px", background: "#f0f9ff", color: "#0369a1", border: "1px solid #bae6fd" }}>
+                              <div style={{ display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", marginBottom: "6px", background: "#ffffff", color: "#075985", border: "1px solid #7dd3fc" }}>
                                 Draft invoice found nearby
                               </div>
                             )}
@@ -556,7 +495,7 @@ export default function NonAdminAlertListView({
                     )}
 
                     {alert.alertType === "uninvoiced_new_job" && (
-                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
                         {m.endClientName && <div><strong>End client:</strong> {m.endClientName}</div>}
                         {m.jobName && <div><strong>Job:</strong> {m.jobName}{m.projectCode ? ` [${m.projectCode}]` : ""}</div>}
                         {m.startDate && <div><strong>Job started:</strong> {m.startDate}</div>}
@@ -566,13 +505,13 @@ export default function NonAdminAlertListView({
                     )}
 
                     {alert.alertType === "uninvoiced_revenue" && (
-                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
                         {m.endClientName && <div><strong>End client:</strong> {m.endClientName}</div>}
                         {m.jobName && <div><strong>Job:</strong> {m.jobName}{m.projectCode ? ` [${m.projectCode}]` : ""}</div>}
                         {m.endDate && <div><strong>Job ended:</strong> {m.endDate}</div>}
                         {m.revenue && <div><strong>Revenue:</strong> £{parseFloat(m.revenue).toFixed(2)}</div>}
                         {m.uninvoicedAmount && <div style={{ marginTop: "6px", fontWeight: "700", color: "#0369a1" }}>£{parseFloat(m.uninvoicedAmount).toFixed(2)} uninvoiced (placeholders and drafts excluded)</div>}
-                        {m.draftCount && parseInt(m.draftCount) > 0 && <div style={{ marginTop: "6px", padding: "6px 8px", background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: "4px", color: "#0369a1" }}>{m.draftCount} invoice{parseInt(m.draftCount) > 1 ? "s" : ""} totalling £{parseFloat(m.draftTotal || 0).toFixed(2)} {parseInt(m.draftCount) > 1 ? "have" : "has"} a reference but {parseInt(m.draftCount) > 1 ? "are" : "is"} still <strong>Draft</strong> (not yet sent) - not counted as invoiced above.</div>}
+                        {m.draftCount && parseInt(m.draftCount) > 0 && <div style={{ marginTop: "6px", padding: "6px 8px", background: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", color: "#0369a1" }}>{m.draftCount} invoice{parseInt(m.draftCount) > 1 ? "s" : ""} totalling £{parseFloat(m.draftTotal || 0).toFixed(2)} {parseInt(m.draftCount) > 1 ? "have" : "has"} a reference but {parseInt(m.draftCount) > 1 ? "are" : "is"} still <strong>Draft</strong> (not yet sent) - not counted as invoiced above.</div>}
                       </div>
                     )}
 
@@ -588,14 +527,14 @@ export default function NonAdminAlertListView({
                       const pTotal = parseFloat(m.placeholderTotal || alert.placeholderTotal || parsed.placeholderTotal || "0");
 
                       return (
-                        <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                        <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
                           {clientName && <div><strong>End client:</strong> {clientName}</div>}
                           {jName && <div><strong>Job:</strong> {jName}{pCode ? ` [${pCode}]` : ""}</div>}
                           {eDate && <div><strong>Job ended:</strong> {eDate}</div>}
                           {dCosts && <div><strong>Direct cost budget:</strong> £{parseFloat(dCosts).toFixed(2)}</div>}
                           {unrecAmt && <div style={{ marginTop: "6px", fontWeight: "700", color: "#0369a1" }}>£{parseFloat(unrecAmt).toFixed(2)} unreceived (placeholders and estimates excluded)</div>}
                           {pCount > 0 && (
-                            <div style={{ marginTop: "6px", padding: "6px 8px", background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: "4px", color: "#0369a1" }}>
+                            <div style={{ marginTop: "6px", padding: "6px 8px", background: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", color: "#0369a1" }}>
                               {pCount} expense{pCount > 1 ? "s" : ""} totalling £{pTotal.toFixed(2)} {pCount > 1 ? "are placeholders - not counted as received above." : "is a placeholder - not counted as received above."}
                             </div>
                           )}
@@ -615,7 +554,7 @@ export default function NonAdminAlertListView({
                       const desc = m.description || alert.description;
 
                       return (
-                        <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#fffbeb", border: "1px solid #fde68a", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                        <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #fde68a", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
                           {contractor && <div><strong>Contractor:</strong> {contractor}</div>}
                           <div><strong>Location:</strong> Outgoings tab{month ? ` (${month})` : ""}{cellCoord ? `, Cell ${cellCoord}` : ""}</div>
                           {appId && <div><strong>App ID:</strong> {appId}</div>}
@@ -628,7 +567,7 @@ export default function NonAdminAlertListView({
                     })()}
 
                     {alert.alertType === "retroactive_outgoings_update" && (
-                      <div style={{ fontSize: "12px", color: "#334155", backgroundColor: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: "6px", padding: "10px 12px", marginBottom: "8px" }}>
+                      <div style={{ fontSize: "12px", color: "#334155", backgroundColor: "#ffffff", border: "1px solid #cbd5e1", borderRadius: "6px", padding: "10px 12px", marginBottom: "8px" }}>
                         <div style={{ whiteSpace: "pre-line", lineHeight: "1.5" }}>{alert.detail || alert.detailsSnippet || m.details}</div>
                       </div>
                     )}
@@ -654,7 +593,7 @@ export default function NonAdminAlertListView({
                       ];
 
                       return (
-                        <div style={{ backgroundColor: "#fbfaff", border: "1px solid #ddd6fe", borderRadius: "8px", padding: "12px", marginBottom: "10px" }}>
+                        <div style={{ backgroundColor: "#ffffff", border: "1px solid #ddd6fe", borderRadius: "8px", padding: "12px", marginBottom: "10px" }}>
                           <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px" }}>
                             <span style={{ fontSize: "15px" }}>🏷️</span>
                             <div style={{ fontSize: "12px", color: "#4b5563", lineHeight: "1.4" }}>
@@ -716,8 +655,18 @@ export default function NonAdminAlertListView({
                       );
                     })()}
 
+                    {alert.alertType === "crm_wipe" && (
+                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                        {m.timestamp && <div><strong>Log timestamp:</strong> {m.timestamp}</div>}
+                        {m.sequenceType && <div><strong>Sequence:</strong> {m.sequenceType}</div>}
+                        {m.summary && <div><strong>Summary:</strong> {m.summary}</div>}
+                        {m.jobInfo && <div><strong>Job:</strong> {m.jobInfo}</div>}
+                        {m.detailsSnippet && <div style={{ marginTop: "4px" }}><strong>AutoLog details:</strong><div style={{ fontFamily: "monospace", fontSize: "11px", color: "#666", marginTop: "2px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{m.detailsSnippet}</div></div>}
+                      </div>
+                    )}
+
                     {alert.alertType === "revenue_mismatch" && (
-                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
                         {(() => {
                           const detail = stripRowInfo(alert.detail || "");
                           const mismatchIdx = detail.indexOf("Mismatched entries:");
@@ -742,8 +691,8 @@ export default function NonAdminAlertListView({
                     )}
 
                     {alert.alertType === "direct_costs_mismatch" && (
-                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
-                        {alert.metadata?.tab && <span style={{ display: "inline-block", marginBottom: "6px", padding: "2px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", background: "#f0f9ff", color: "#0369a1", border: "1px solid #bae6fd" }}>{alert.metadata.tab} tab</span>}
+                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                        {alert.metadata?.tab && <span style={{ display: "inline-block", marginBottom: "6px", padding: "2px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", background: "#ffffff", color: "#0369a1", border: "1px solid #bae6fd" }}>{alert.metadata.tab} tab</span>}
                         {(() => {
                           const detail = stripRowInfo(alert.detail || "");
                           const mismatchIdx = detail.indexOf("Mismatched entries:");
@@ -767,18 +716,143 @@ export default function NonAdminAlertListView({
                       </div>
                     )}
 
+                    {alert.alertType === "pipeline_confirmed_overlap" && (() => {
+                      const md = alert.metadata || {};
+                      return (
+                        <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                          <div style={{ fontWeight: "600", marginBottom: "6px" }}>Job exists in both tabs but Pipeline is not closed out</div>
+                          <div style={{ marginBottom: "4px" }}><strong>Confirmed tab</strong></div>
+                          {md.endClientName && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Client: {md.endClientName}</div>}
+                          {md.jobName && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Job: {md.jobName}</div>}
+                          {md.projectCode && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Project code: {md.projectCode}</div>}
+                          {md.jobType && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Job type: {md.jobType}</div>}
+                          <div style={{ marginBottom: "4px", marginTop: "6px" }}><strong>Pipeline tab</strong></div>
+                          <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Likelihood: <strong>{md.likelihood ? (parseFloat(md.likelihood) * 100).toFixed(0) + "%" : "(blank)"}</strong></div>
+                          <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>&quot;Copied to confirmed?&quot;: <strong>{md.copiedToConf || "(blank)"}</strong></div>
+                          <div style={{ marginTop: "6px", color: "#0369a1", fontStyle: "italic" }}>Expected fix: set Pipeline likelihood to 0% or mark &quot;Copied to confirmed?&quot; as Yes.</div>
+                        </div>
+                      );
+                    })()}
+
+                    {alert.alertType === "retainer_shrink_blocked" && (() => {
+                      const md = alert.metadata || {};
+                      return (
+                        <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                          <div style={{ fontWeight: "600", marginBottom: "6px" }}>Retainer contract shrunk - excess child row could not be removed automatically</div>
+                          {md.clientJobStr && <div style={{ marginBottom: "2px" }}><strong>Job:</strong> {md.clientJobStr}</div>}
+                          {md.childRowNum && <div style={{ marginBottom: "2px" }}><strong>Blocked child row:</strong> {md.childRowNum}</div>}
+                          {md.timestamp && <div style={{ marginBottom: "6px" }}><strong>First detected:</strong> {String(md.timestamp).slice(0, 10)}</div>}
+                          <div style={{ color: "#0369a1", fontStyle: "italic" }}>Row {md.childRowNum} falls outside the new contract period but contains actuals (invoices or expenses) so cannot be auto-removed. Manual review required.</div>
+                        </div>
+                      );
+                    })()}
+
+                    {alert.alertType === "autolog_error" && (() => {
+                      const md = alert.metadata || {};
+                      return (
+                        <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                          {md.category && <div style={{ marginBottom: "2px" }}><strong>Category / Step:</strong> {md.category}</div>}
+                          {md.occurrenceCount && <div style={{ marginBottom: "2px" }}><strong>Occurrences (last 100 log rows):</strong> {md.occurrenceCount}</div>}
+                          {md.timestamp && <div style={{ marginBottom: "2px" }}><strong>Last seen in log:</strong> {md.timestamp}</div>}
+                          {md.errorSnippet && (
+                            <div style={{ marginTop: "6px" }}>
+                              <strong>Extracted error:</strong>
+                              <div style={{ fontFamily: "monospace", fontSize: "11px", color: "#0369a1", backgroundColor: "#fafafa", border: "1px solid #e2e8f0", borderRadius: "4px", padding: "6px 8px", marginTop: "3px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                                {md.errorSnippet}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+
+                    {alert.alertType === "infinite_loop" && (() => {
+                      const md = alert.metadata || {};
+                      return (
+                        <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                          <div style={{ display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", marginBottom: "6px", background: "#ffffff", color: "#0369a1", border: "1px solid #bae6fd" }}>
+                            {md.conflictType === "intra_run_oscillation" ? "Within-run oscillation" : "Multi-run flip-flop"}
+                          </div>
+                          {md.invoiceNo && <div style={{ marginBottom: "2px" }}><strong>Invoice:</strong> {md.invoiceNo}</div>}
+                          {md.fieldName && <div style={{ marginBottom: "2px" }}><strong>Conflicting field:</strong> {md.fieldName}</div>}
+                          {md.suggestion && (
+                            <div style={{ marginTop: "6px", color: "#0369a1", fontStyle: "italic" }}>
+                              💡 {md.suggestion}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+
+                    {alert.alertType === "deleted_invoice" && (
+                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                        {(m.endClientName || alert.endClientName) && <div><strong>End client:</strong> {m.endClientName || alert.endClientName}</div>}
+                        {(m.jobName || alert.jobName) && <div><strong>Job:</strong> {m.jobName || alert.jobName}{(m.projectCode || alert.projectCode) ? ` [${m.projectCode || alert.projectCode}]` : ""}</div>}
+                        {(m.stableJobKey || alert.stableJobKey) && <div><strong>Invoice ref:</strong> {m.stableJobKey || alert.stableJobKey}</div>}
+                        <div style={{ marginTop: "4px", color: "#0369a1", fontStyle: "italic" }}>
+                          Invoice reference appears on Confirmed tab but was not found in the accounting system (it may have been deleted or voided in Xero).
+                        </div>
+                      </div>
+                    )}
+
+                    {alert.alertType === "deleted_expense" && (
+                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                        {(m.endClientName || alert.endClientName) && <div><strong>End client:</strong> {m.endClientName || alert.endClientName}</div>}
+                        {(m.jobName || alert.jobName) && <div><strong>Job:</strong> {m.jobName || alert.jobName}</div>}
+                        {(m.stableJobKey || alert.stableJobKey) && <div><strong>Expense ID / Ref:</strong> {m.stableJobKey || alert.stableJobKey}</div>}
+                        <div style={{ marginTop: "4px", color: "#0369a1", fontStyle: "italic" }}>
+                          Expense reference appears on Confirmed tab but was not found in the accounting system (it may have been deleted or voided in Xero).
+                        </div>
+                      </div>
+                    )}
+
+                    {alert.alertType === "job_structure_error" && (
+                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                        {(m.endClientName || alert.endClientName) && <div><strong>End client:</strong> {m.endClientName || alert.endClientName}</div>}
+                        {(m.jobName || alert.jobName) && <div><strong>Job:</strong> {m.jobName || alert.jobName}{(m.projectCode || alert.projectCode) ? ` [${m.projectCode || alert.projectCode}]` : ""}</div>}
+                        {alert.detail && (
+                          <div style={{ marginTop: "4px", color: "#c2410c", fontWeight: "500" }}>
+                            {stripRowInfo(alert.detail)}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {!KNOWN_PROACTIVE_TYPES.has(alert.alertType) && (
+                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                        {(m.endClientName || alert.endClientName) && <div><strong>End client:</strong> {m.endClientName || alert.endClientName}</div>}
+                        {(m.jobName || alert.jobName) && <div><strong>Job:</strong> {m.jobName || alert.jobName}{(m.projectCode || alert.projectCode) ? ` [${m.projectCode || alert.projectCode}]` : ""}</div>}
+                        {alert.detail && (
+                          <div style={{ marginTop: "4px", color: "#444" }}>
+                            {stripRowInfo(alert.detail)}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                       <div style={{ fontSize: "11px", color: "#aaa" }}>First seen: {alert.firstSeen} · Last seen: {alert.lastSeen}</div>
                       <div style={{ display: "flex", gap: "8px" }}>
                         {(() => {
                           const clientInfo = (clientsWithFlags || []).find(c => c.clientName === selectedClient.clientName) || allClientsMap[selectedClient.clientName] || selectedClient;
+                          const jobTarget = getAlertJobTarget(alert, false, clientInfo);
                           return (
                             <>
+                              {jobTarget && onViewJob && (
+                                <button
+                                  className="triage-btn"
+                                  onClick={() => onViewJob(jobTarget)}
+                                  style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#0284c7", borderColor: "#bae6fd" }}
+                                  title={jobTarget.isOutgoings ? "View Outgoings expense details" : "View and edit job details in pop-up"}
+                                >
+                                  {jobTarget.isOutgoings ? "🔍 View expense" : "🔍 View job"}
+                                </button>
+                              )}
                               {alert.alertType === "expenseDashboardDiscr" && clientInfo && (
-                                <button className="triage-btn" onClick={() => setActiveNav("outgoings")} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#059669", borderColor: "#6ee7b7" }}>📤 Assign Expense</button>
+                                <button className="triage-btn" onClick={() => onNavOutgoings ? onNavOutgoings(selectedClient || clientInfo) : setActiveNav("outgoings")} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#059669", borderColor: "#6ee7b7" }}>📤 Assign Expense</button>
                               )}
                               {alert.alertType === "invoiceDashboardDiscr" && clientInfo && (
-                                <button className="triage-btn" onClick={() => setActiveNav("invoices")} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#ea580c", borderColor: "#fdba74" }}>📥 Assign Invoices</button>
+                                <button className="triage-btn" onClick={() => onNavInvoices ? onNavInvoices(selectedClient || clientInfo) : setActiveNav("invoices")} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#ea580c", borderColor: "#fdba74" }}>📥 Assign Invoices</button>
                               )}
                             </>
                           );

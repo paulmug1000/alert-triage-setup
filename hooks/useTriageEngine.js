@@ -641,11 +641,29 @@ export function useTriageEngine({
 
   const groupedAlerts = useMemo(() => {
     const g = {};
+    const isAssigned = (id, clientName) => {
+      if (id === null || id === undefined || id === "") return false;
+      const s = String(id).trim();
+      const clean = s.replace(/^#/, "");
+      if (assignedAppIds.has(id) || assignedAppIds.has(s) || assignedAppIds.has(clean)) return true;
+      if (!isNaN(Number(clean)) && clean !== "" && assignedAppIds.has(Number(clean))) return true;
+      if (clientName) {
+        const normClient = String(clientName).trim().toLowerCase();
+        for (const [k, set] of Object.entries(assignedByClient || {})) {
+          if (String(k).trim().toLowerCase() === normClient) {
+            if (set.has(id) || set.has(s) || set.has(clean)) return true;
+            if (!isNaN(Number(clean)) && clean !== "" && set.has(Number(clean))) return true;
+          }
+        }
+      }
+      return false;
+    };
+
     const filteredAlerts = (clientAlerts || []).filter(alert => {
-      const txId = alert.summary?.transactionId || alert.summary?.appId;
-      if (txId && (assignedAppIds.has(txId) || assignedByClient[selectedClient?.clientName]?.has(txId))) return false;
-      const invNo = alert.summary?.invoiceNo;
-      if (invNo && (assignedAppIds.has(invNo) || assignedByClient[selectedClient?.clientName]?.has(invNo))) return false;
+      const txId = alert.summary?.transactionId || alert.summary?.appId || alert.summary?.reference || alert.summary?.id;
+      if (txId && isAssigned(txId, selectedClient?.clientName)) return false;
+      const invNo = alert.summary?.invoiceNo || alert.summary?.reference || alert.summary?.id || alert.data?.accounting?.[5];
+      if (invNo && isAssigned(invNo, selectedClient?.clientName)) return false;
       return true;
     });
     filteredAlerts.forEach(alert => {
@@ -665,11 +683,29 @@ export function useTriageEngine({
     const INVOICE_TYPES = new Set(["invoiceDashboardDiscr"]);
 
     return clientsWithFlags.reduce((total, c) => {
-      const assignedSet = assignedByClient[c.clientName] || new Set();
+      const normClient = String(c.clientName || "").trim().toLowerCase();
+      let assignedSet = new Set();
+      for (const [k, s] of Object.entries(assignedByClient || {})) {
+        if (String(k).trim().toLowerCase() === normClient) {
+          assignedSet = s;
+          break;
+        }
+      }
+      const isIdMatch = (id) => {
+        if (id === null || id === undefined || id === "") return false;
+        const s = String(id).trim();
+        const clean = s.replace(/^#/, "");
+        if (assignedSet.has(id) || assignedSet.has(s) || assignedSet.has(clean)) return true;
+        if (!isNaN(Number(clean)) && clean !== "" && assignedSet.has(Number(clean))) return true;
+        if (assignedAppIds.has(id) || assignedAppIds.has(s) || assignedAppIds.has(clean)) return true;
+        if (!isNaN(Number(clean)) && clean !== "" && assignedAppIds.has(Number(clean))) return true;
+        return false;
+      };
+
       const expenseIds = c.activeExpenseIds || [];
       const invoiceIds = c.activeInvoiceIds || [];
-      const validAssignedExp = expenseIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
-      const validAssignedInv = invoiceIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
+      const validAssignedExp = expenseIds.filter(isIdMatch).length;
+      const validAssignedInv = invoiceIds.filter(isIdMatch).length;
       
       let clientTotal = 0;
 
@@ -699,14 +735,32 @@ export function useTriageEngine({
     const client = (clientsWithFlags || []).find(c => c.clientName === clientName);
     if (!client) return 0; 
     
-    const assignedSet = assignedByClient[clientName] || new Set();
+    const normClient = String(clientName || "").trim().toLowerCase();
+    let assignedSet = new Set();
+    for (const [k, s] of Object.entries(assignedByClient || {})) {
+      if (String(k).trim().toLowerCase() === normClient) {
+        assignedSet = s;
+        break;
+      }
+    }
+    const isIdMatch = (id) => {
+      if (id === null || id === undefined || id === "") return false;
+      const s = String(id).trim();
+      const clean = s.replace(/^#/, "");
+      if (assignedSet.has(id) || assignedSet.has(s) || assignedSet.has(clean)) return true;
+      if (!isNaN(Number(clean)) && clean !== "" && assignedSet.has(Number(clean))) return true;
+      if (assignedAppIds.has(id) || assignedAppIds.has(s) || assignedAppIds.has(clean)) return true;
+      if (!isNaN(Number(clean)) && clean !== "" && assignedAppIds.has(Number(clean))) return true;
+      return false;
+    };
+
     let validAssignedExp = 0;
     let validAssignedInv = 0;
     if (client.activeExpenseIds && Array.isArray(client.activeExpenseIds)) {
-      validAssignedExp = client.activeExpenseIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
+      validAssignedExp = client.activeExpenseIds.filter(isIdMatch).length;
     }
     if (client.activeInvoiceIds && Array.isArray(client.activeInvoiceIds)) {
-      validAssignedInv = client.activeInvoiceIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
+      validAssignedInv = client.activeInvoiceIds.filter(isIdMatch).length;
     }
 
     const categories = (categoriesStr || "").split(",").filter(Boolean);

@@ -32,17 +32,78 @@ const rowHasInvoice = (r) => r.invoiceSlots && r.invoiceSlots.some(s => {
   return hasRef || hasAmt;
 });
 
+const parseDateString = (dStr) => {
+  if (!dStr) return null;
+  const s = String(dStr).trim();
+  if (!s || s === "-") return null;
+
+  // Try YYYY-MM-DD
+  const isoMatch = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (isoMatch) {
+    const d = new Date(parseInt(isoMatch[1], 10), parseInt(isoMatch[2], 10) - 1, parseInt(isoMatch[3], 10));
+    if (!isNaN(d.getTime())) return d;
+  }
+
+  // Try DD-Mon-YY or DD-Mon-YYYY (e.g. 15-Jan-25 or 15-Jan-2025)
+  const dmyMatch = s.match(/^(\d{1,2})[-\/ ]([A-Za-z]{3})[-\/ ](\d{2,4})$/);
+  if (dmyMatch) {
+    const months = { jan:0, feb:1, mar:2, apr:3, may:4, jun:5, jul:6, aug:7, sep:8, oct:9, nov:10, dec:11 };
+    const mIdx = months[dmyMatch[2].toLowerCase()];
+    if (mIdx !== undefined) {
+      const yr = dmyMatch[3].length === 2 ? 2000 + parseInt(dmyMatch[3], 10) : parseInt(dmyMatch[3], 10);
+      const d = new Date(yr, mIdx, parseInt(dmyMatch[1], 10));
+      if (!isNaN(d.getTime())) return d;
+    }
+  }
+
+  // Fallback to Date constructor
+  const native = new Date(s);
+  if (!isNaN(native.getTime())) return native;
+
+  return null;
+};
+
+const formatDisplayDate = (dateObj) => {
+  if (!dateObj || isNaN(dateObj.getTime())) return "-";
+  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const day = String(dateObj.getDate()).padStart(2, "0");
+  const month = months[dateObj.getMonth()];
+  const year = dateObj.getFullYear();
+  return `${day}-${month}-${year}`;
+};
+
+const calculateExpectedPaymentDate = (sentDateStr, daysToPay) => {
+  const sent = parseDateString(sentDateStr);
+  if (!sent) return "-";
+  const days = parseInt(String(daysToPay).replace(/[^\d.-]/g, ""), 10);
+  const addDays = (!isNaN(days) && days > 0) ? days : 30;
+  const payDate = new Date(sent.getTime() + addDays * 86400000);
+  return formatDisplayDate(payDate);
+};
+
+const INVOICE_SORT_OPTIONS = [
+  { value: "inv_desc", label: "Invoice no. (descending)" },
+  { value: "inv_asc", label: "Invoice no. (ascending)" },
+  { value: "client_name", label: "Client name" },
+  { value: "sent_desc", label: "Sent date (descending)" },
+  { value: "sent_asc", label: "Sent date (ascending)" },
+  { value: "pay_desc", label: "Payment date (descending)" },
+  { value: "pay_asc", label: "Payment date (ascending)" },
+  { value: "status", label: "Status" },
+];
+
 export default function InvoicesView({
   allOutgoingsClients,
   styles,
   isAdmin: propIsAdmin,
   managedClient,
-  onClearManagedClient
+  onClearManagedClient,
+  initialClient
 }) {
   const auth = useAuth();
   const isAdmin = propIsAdmin !== undefined ? propIsAdmin : (!auth.user?.isReadOnly && !!(auth.user?.isAdmin || auth.user?.role === "Admin"));
 
-  const { assignedAppIds, setAssignedAppIds, outgoingsPullPendingRef } = useAppGlobals();
+  const { assignedAppIds, setAssignedAppIds, outgoingsPullPendingRef, addAssignedAppId } = useAppGlobals();
   const { clientsWithFlags, setClientsWithFlags } = useTriage();
 
   const {
@@ -57,7 +118,8 @@ export default function InvoicesView({
     loadInvoicesInbox, loadInvoicesJobs
   } = useInvoices(assignedAppIds);
 
-  // Auto-select managedClient when in manage mode, or clear when manage mode cancelled
+  const prevInitialClientRef = React.useRef(null);
+  // Auto-select managedClient when in manage mode, or initialClient when passed, or clear when cancelled
   useEffect(() => {
     if (managedClient) {
       const clientObj = (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === managedClient.clientName?.toLowerCase()) || managedClient;
@@ -65,18 +127,31 @@ export default function InvoicesView({
       loadInvoicesInbox(clientObj);
       loadInvoicesJobs(clientObj, false);
       setInvoicesShowAll(false);
-    } else {
+    } else if (initialClient && initialClient !== prevInitialClientRef.current) {
+      prevInitialClientRef.current = initialClient;
+      const clientObj = (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === initialClient.clientName?.toLowerCase()) || initialClient;
+      setInvoicesClient(clientObj);
+      loadInvoicesInbox(clientObj);
+      loadInvoicesJobs(clientObj, false);
+      setInvoicesShowAll(false);
+    } else if (!managedClient && !initialClient) {
       setInvoicesClient(null);
       setInvoicesInbox([]);
       setInvoicesJobs(null);
     }
-  }, [managedClient, allOutgoingsClients]);
+  }, [managedClient, initialClient, allOutgoingsClients]);
 
   const [viewMode, setViewMode] = useState("modern");
+  const [invoicesSubTab, setInvoicesSubTab] = useState("byJob"); // "byJob" | "byInvoiceNo"
+  const [jobsSearchTerm, setJobsSearchTerm] = useState("");
+  const [invoiceSearchTerm, setInvoiceSearchTerm] = useState("");
+  const [invoiceSortOrder, setInvoiceSortOrder] = useState("inv_desc");
   const [expandedRetainerKeys, setExpandedRetainerKeys] = useState(() => new Set());
   const [invoicesEditSlot, setInvoicesEditSlot] = useState(null);
   const [invoicesNewJob, setInvoicesNewJob] = useState(null);
   const [clientMismatchPrompt, setClientMismatchPrompt] = useState(null);
+  const [updateJobNameChecked, setUpdateJobNameChecked] = useState(false);
+  const [newJobNameInput, setNewJobNameInput] = useState("");
 
   const toggleRetainerExpand = (key) => {
     setExpandedRetainerKeys(prev => {
@@ -87,17 +162,141 @@ export default function InvoicesView({
     });
   };
 
-  const executePlacement = async (promptData, shouldUpdateClientName) => {
+  const filteredInvoicesJobs = React.useMemo(() => {
+    const list = invoicesJobs || [];
+    if (!jobsSearchTerm.trim()) return list;
+    const q = jobsSearchTerm.toLowerCase().trim();
+    return list.filter(j => {
+      const matchClient = (j.client || "").toLowerCase().includes(q);
+      const matchJob = (j.jobName || "").toLowerCase().includes(q);
+      const matchCode = (j.projectCode || "").toLowerCase().includes(q);
+      const matchSlots = (j.rows || []).some(r =>
+        (r.invoiceSlots || []).some(s => (s.ref || "").toLowerCase().includes(q))
+      );
+      return matchClient || matchJob || matchCode || matchSlots;
+    });
+  }, [invoicesJobs, jobsSearchTerm]);
+
+  const allInvoices = React.useMemo(() => {
+    if (!invoicesJobs || !Array.isArray(invoicesJobs)) return [];
+    const list = [];
+    invoicesJobs.forEach(job => {
+      (job.rows || []).forEach(r => {
+        (r.invoiceSlots || []).forEach(slot => {
+          const hasRef = !!(slot.ref && String(slot.ref).trim() !== "");
+          const hasAmt = !!(slot.amount && parseFloat(String(slot.amount).replace(/[£$€,\s]/g, "")) > 0);
+          if (hasRef || hasAmt) {
+            const sentDateStr = slot.sentDate || "";
+            const expectedPaymentDate = calculateExpectedPaymentDate(sentDateStr, slot.daysToPay);
+            const sentDateObj = parseDateString(sentDateStr);
+            const expectedPayDateObj = parseDateString(expectedPaymentDate);
+
+            list.push({
+              id: `${r.rowNum}-${slot.slotNum}-${slot.ref || ""}`,
+              rowNum: r.rowNum,
+              slotNum: slot.slotNum,
+              client: r.client || job.client || "",
+              jobName: r.jobName || job.jobName || "",
+              projectCode: r.projectCode || job.projectCode || "",
+              invoiceNo: String(slot.ref || "").trim(),
+              amount: slot.amount || 0,
+              description: slot.description || "",
+              sentDate: sentDateStr,
+              sentDateObj,
+              daysToPay: slot.daysToPay,
+              expectedPaymentDate,
+              expectedPayDateObj,
+              status: slot.status || "",
+              slot,
+            });
+          }
+        });
+      });
+    });
+    return list;
+  }, [invoicesJobs]);
+
+  const filteredAndSortedInvoices = React.useMemo(() => {
+    let list = allInvoices;
+    if (invoiceSearchTerm.trim()) {
+      const q = invoiceSearchTerm.toLowerCase().trim();
+      list = list.filter(inv =>
+        (inv.invoiceNo || "").toLowerCase().includes(q) ||
+        (inv.client || "").toLowerCase().includes(q) ||
+        (inv.jobName || "").toLowerCase().includes(q) ||
+        (inv.projectCode || "").toLowerCase().includes(q) ||
+        (inv.description || "").toLowerCase().includes(q) ||
+        (inv.status || "").toLowerCase().includes(q) ||
+        (inv.sentDate || "").toLowerCase().includes(q) ||
+        (inv.expectedPaymentDate || "").toLowerCase().includes(q) ||
+        String(inv.amount || "").toLowerCase().includes(q)
+      );
+    }
+
+    return [...list].sort((a, b) => {
+      switch (invoiceSortOrder) {
+        case "inv_desc":
+          return String(b.invoiceNo || "").localeCompare(String(a.invoiceNo || ""), undefined, { numeric: true, sensitivity: "base" });
+        case "inv_asc":
+          return String(a.invoiceNo || "").localeCompare(String(b.invoiceNo || ""), undefined, { numeric: true, sensitivity: "base" });
+        case "client_name": {
+          const cComp = String(a.client || "").localeCompare(String(b.client || ""), undefined, { sensitivity: "base" });
+          if (cComp !== 0) return cComp;
+          return String(b.invoiceNo || "").localeCompare(String(a.invoiceNo || ""), undefined, { numeric: true, sensitivity: "base" });
+        }
+        case "sent_desc": {
+          const ta = a.sentDateObj ? a.sentDateObj.getTime() : -Infinity;
+          const tb = b.sentDateObj ? b.sentDateObj.getTime() : -Infinity;
+          if (ta !== tb) return tb - ta;
+          return String(b.invoiceNo || "").localeCompare(String(a.invoiceNo || ""), undefined, { numeric: true, sensitivity: "base" });
+        }
+        case "sent_asc": {
+          const ta = a.sentDateObj ? a.sentDateObj.getTime() : Infinity;
+          const tb = b.sentDateObj ? b.sentDateObj.getTime() : Infinity;
+          if (ta !== tb) return ta - tb;
+          return String(a.invoiceNo || "").localeCompare(String(b.invoiceNo || ""), undefined, { numeric: true, sensitivity: "base" });
+        }
+        case "pay_desc": {
+          const ta = a.expectedPayDateObj ? a.expectedPayDateObj.getTime() : -Infinity;
+          const tb = b.expectedPayDateObj ? b.expectedPayDateObj.getTime() : -Infinity;
+          if (ta !== tb) return tb - ta;
+          return String(b.invoiceNo || "").localeCompare(String(a.invoiceNo || ""), undefined, { numeric: true, sensitivity: "base" });
+        }
+        case "pay_asc": {
+          const ta = a.expectedPayDateObj ? a.expectedPayDateObj.getTime() : Infinity;
+          const tb = b.expectedPayDateObj ? b.expectedPayDateObj.getTime() : Infinity;
+          if (ta !== tb) return ta - tb;
+          return String(a.invoiceNo || "").localeCompare(String(b.invoiceNo || ""), undefined, { numeric: true, sensitivity: "base" });
+        }
+        case "status": {
+          const sComp = String(a.status || "").localeCompare(String(b.status || ""), undefined, { sensitivity: "base" });
+          if (sComp !== 0) return sComp;
+          return String(b.invoiceNo || "").localeCompare(String(a.invoiceNo || ""), undefined, { numeric: true, sensitivity: "base" });
+        }
+        default:
+          return String(b.invoiceNo || "").localeCompare(String(a.invoiceNo || ""), undefined, { numeric: true, sensitivity: "base" });
+      }
+    });
+  }, [allInvoices, invoiceSearchTerm, invoiceSortOrder]);
+
+  const executePlacement = async (promptData, shouldUpdateClientName, shouldUpdateJobName = false, customJobName = "") => {
     const { job, inv, isNewRow, rowNum, slotNum, jobLastRow, savingKey } = promptData;
     setClientMismatchPrompt(null);
     setInvoicesPlacing(null);
     setInvoicesSavingCell(savingKey);
 
-    setAssignedAppIds(prevSet => {
-      const next = new Set(prevSet); next.add(inv.invoiceNo);
-      try { localStorage.setItem("pulse_assignedAppIds", JSON.stringify([...next])); } catch {}
-      return next;
-    });
+    if (addAssignedAppId) {
+      addAssignedAppId(inv.invoiceNo, invoicesClient?.clientName);
+      if (inv.reference && inv.reference !== inv.invoiceNo) {
+        addAssignedAppId(inv.reference, invoicesClient?.clientName);
+      }
+    } else {
+      setAssignedAppIds(prevSet => {
+        const next = new Set(prevSet); next.add(inv.invoiceNo);
+        try { localStorage.setItem("pulse_assignedAppIds", JSON.stringify([...next])); } catch { }
+        return next;
+      });
+    }
     setInvoicesInbox(prev => prev.filter(e => e.invoiceNo !== inv.invoiceNo));
 
     setClientsWithFlags(prev => prev.map(c => {
@@ -109,6 +308,7 @@ export default function InvoicesView({
 
     const jobRowNums = job?.rows ? job.rows.map(r => r.rowNum) : (rowNum ? [rowNum] : []);
     const effectiveClientName = shouldUpdateClientName ? String(inv.client || "").trim() : job.client;
+    const effectiveJobName = shouldUpdateJobName && customJobName ? String(customJobName).trim() : job.jobName;
 
     try {
       if (isNewRow) {
@@ -126,6 +326,8 @@ export default function InvoicesView({
             invoice: inv,
             updateClientName: shouldUpdateClientName,
             newClientName: shouldUpdateClientName ? effectiveClientName : undefined,
+            updateJobName: shouldUpdateJobName && !!customJobName,
+            newJobName: effectiveJobName,
             jobRowNums,
           }),
         });
@@ -151,6 +353,8 @@ export default function InvoicesView({
             jobName: job.jobName,
             updateClientName: shouldUpdateClientName,
             newClientName: shouldUpdateClientName ? effectiveClientName : undefined,
+            updateJobName: shouldUpdateJobName && !!customJobName,
+            newJobName: effectiveJobName,
             jobRowNums,
           }),
         });
@@ -163,18 +367,24 @@ export default function InvoicesView({
         if (invoicesClient?.masterSheetId) {
           outgoingsPullPendingRef.current = invoicesClient.masterSheetId;
         }
-        if (data.rowShifted) {
-          // If rows shifted on the sheet, reload the live jobs list to guarantee 100% accurate row numbers
+        if (data.rowShifted || (shouldUpdateJobName && effectiveJobName !== job.jobName)) {
+          // If rows shifted on the sheet or job name changed, reload the live jobs list
           await loadInvoicesJobs(invoicesClient, invoicesShowAll);
         } else {
           setInvoicesJobs(prev => prev && prev.map(j => {
             if (j.jobName !== job.jobName || j.client !== job.client) return j;
             const updatedClient = shouldUpdateClientName ? effectiveClientName : j.client;
+            const updatedJob = shouldUpdateJobName && effectiveJobName ? effectiveJobName : j.jobName;
             return {
               ...j,
               client: updatedClient,
+              jobName: updatedJob,
               rows: j.rows.map(r => {
-                const baseR = shouldUpdateClientName ? { ...r, client: updatedClient } : r;
+                const baseR = {
+                  ...r,
+                  client: shouldUpdateClientName ? updatedClient : r.client,
+                  jobName: shouldUpdateJobName && effectiveJobName ? updatedJob : r.jobName,
+                };
                 if (r.rowNum !== rowNum) return baseR;
                 return {
                   ...baseR,
@@ -191,7 +401,7 @@ export default function InvoicesView({
           }));
         }
       }
-    } catch(e) {
+    } catch (e) {
       console.error("assign_invoice_to_job error:", e);
     } finally {
       setInvoicesSavingCell(null);
@@ -225,20 +435,58 @@ export default function InvoicesView({
                 <strong style={{ color: "#2563eb" }}>{clientMismatchPrompt.invoiceClientName}</strong>
               </div>
             </div>
-            <div style={{ fontSize: "12px", color: "#64748b", marginBottom: "18px" }}>
+            <div style={{ fontSize: "12px", color: "#64748b", marginBottom: "14px" }}>
               {isAdmin
                 ? "Updating will change the client name across all rows for this job in the Confirmed sheet."
                 : "Updating will change the client name for this job in the Confirmed sheet."}
             </div>
+
+            <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "6px", padding: "12px", marginBottom: "16px" }}>
+              <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", fontWeight: "600", color: "#1e293b", cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={updateJobNameChecked}
+                  onChange={e => setUpdateJobNameChecked(e.target.checked)}
+                  style={{ accentColor: "#2563eb", cursor: "pointer" }}
+                />
+                Also update job name
+              </label>
+              {updateJobNameChecked && (
+                <div style={{ marginTop: "8px" }}>
+                  <div style={{ fontSize: "11px", color: "#64748b", marginBottom: "4px" }}>
+                    Current sheet name: <strong>{clientMismatchPrompt.job.jobName}</strong>
+                    {clientMismatchPrompt.inv.job && clientMismatchPrompt.inv.job !== clientMismatchPrompt.job.jobName && (
+                      <span> · Invoice suggests: <strong>{clientMismatchPrompt.inv.job}</strong></span>
+                    )}
+                  </div>
+                  <input
+                    type="text"
+                    value={newJobNameInput}
+                    onChange={e => setNewJobNameInput(e.target.value)}
+                    placeholder="Enter new job name"
+                    style={{
+                      width: "100%",
+                      padding: "7px 10px",
+                      border: "1px solid #cbd5e1",
+                      borderRadius: "6px",
+                      fontSize: "13px",
+                      boxSizing: "border-box",
+                      backgroundColor: "#ffffff"
+                    }}
+                  />
+                </div>
+              )}
+            </div>
+
             <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
               <button className="triage-btn"
-                onClick={() => executePlacement(clientMismatchPrompt, true)}
+                onClick={() => executePlacement(clientMismatchPrompt, true, updateJobNameChecked, newJobNameInput)}
                 style={{ background: "#2563eb", color: "white", border: "none", padding: "10px 14px", borderRadius: "6px", fontWeight: "600", fontSize: "13px", cursor: "pointer" }}
               >
                 ✓ Update sheet to &ldquo;{clientMismatchPrompt.invoiceClientName}&rdquo;
               </button>
               <button className="triage-btn"
-                onClick={() => executePlacement(clientMismatchPrompt, false)}
+                onClick={() => executePlacement(clientMismatchPrompt, false, updateJobNameChecked, newJobNameInput)}
                 style={{ ...styles.buttonSecondary, padding: "10px 14px", fontSize: "13px", textAlign: "center" }}
               >
                 Keep existing name &ldquo;{clientMismatchPrompt.sheetClientName}&rdquo;
@@ -254,7 +502,7 @@ export default function InvoicesView({
         </div>
       )}
       {invoicesEditSlot && (
-        <InvoicesEditModal 
+        <InvoicesEditModal
           editSlot={invoicesEditSlot}
           invoicesClient={invoicesClient}
           isAdmin={isAdmin}
@@ -272,17 +520,24 @@ export default function InvoicesView({
         />
       )}
       {invoicesNewJob && (
-        <InvoicesNewJobModal 
+        <InvoicesNewJobModal
           newJobData={invoicesNewJob}
           invoicesClient={invoicesClient}
           onClose={() => setInvoicesNewJob(null)}
           onMarkPullPending={(masterId) => outgoingsPullPendingRef.current = masterId}
           onSuccess={async (inv) => {
-            setAssignedAppIds(prevSet => {
-              const next = new Set(prevSet); next.add(inv.invoiceNo);
-              try { localStorage.setItem("pulse_assignedAppIds", JSON.stringify([...next])); } catch {}
-              return next;
-            });
+            if (addAssignedAppId) {
+              addAssignedAppId(inv.invoiceNo, invoicesClient?.clientName);
+              if (inv.reference && inv.reference !== inv.invoiceNo) {
+                addAssignedAppId(inv.reference, invoicesClient?.clientName);
+              }
+            } else {
+              setAssignedAppIds(prevSet => {
+                const next = new Set(prevSet); next.add(inv.invoiceNo);
+                try { localStorage.setItem("pulse_assignedAppIds", JSON.stringify([...next])); } catch { }
+                return next;
+              });
+            }
             setInvoicesInbox(prev => prev.filter(e => e.invoiceNo !== inv.invoiceNo));
             setClientsWithFlags(prev => prev.map(c => {
               if (c.clientName !== invoicesClient?.clientName) return c;
@@ -294,7 +549,7 @@ export default function InvoicesView({
           }}
         />
       )}
-      
+
       <div style={{ padding: "20px" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
           <h2 style={{ margin: 0, fontSize: "20px", fontWeight: "700" }}>
@@ -329,8 +584,8 @@ export default function InvoicesView({
                 loadInvoicesInbox(invoicesClient);
                 loadInvoicesJobs(invoicesClient, invoicesShowAll);
               }}
-              style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px" }}
-              title="Refresh jobs and invoices from live sheets">
+                style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px" }}
+                title="Refresh jobs and invoices from live sheets">
                 ↻ Refresh
               </button>
               <button className="triage-btn" onClick={() => {
@@ -351,7 +606,7 @@ export default function InvoicesView({
 
         {noInvClient && (
           <div style={{ background: "#fff", borderRadius: "12px", border: "1px solid #e0e0e0", padding: "24px" }}>
-            <p style={{ margin: "0 0 16px", fontSize: "14px", color: "#666" }}>Select a client to place unmatched invoices:</p>
+            <p style={{ margin: "0 0 16px", fontSize: "14px", color: "#666" }}>Select a client to view invoices:</p>
             {(() => {
               const allClients = allOutgoingsClients || [];
               const clientsWithInbox = allClients.filter(c =>
@@ -367,9 +622,11 @@ export default function InvoicesView({
                     loadInvoicesJobs(c, false);
                     setInvoicesShowAll(false);
                   }}
-                  style={{ padding: "10px 16px", background: "#fff8e1",
+                  style={{
+                    padding: "10px 16px", background: "#fff8e1",
                     border: "1px solid #ffe082",
-                    borderRadius: "8px", cursor: "pointer", textAlign: "left", fontSize: "14px", fontWeight: "500", width: "100%" }}>
+                    borderRadius: "8px", cursor: "pointer", textAlign: "left", fontSize: "14px", fontWeight: "500", width: "100%"
+                  }}>
                   {c.clientName}
                 </button>
               );
@@ -404,130 +661,213 @@ export default function InvoicesView({
 
         {!noInvClient && (
           <>
-            <div style={{ background: "#fff", border: `1px solid ${invoicesInbox.length > 0 ? "#ffc107" : "#e0e0e0"}`, borderRadius: "10px", padding: "14px 16px", marginBottom: "16px" }}>
-              <div style={{ fontSize: "13px", fontWeight: "700", color: invoicesInbox.length > 0 ? "#e65100" : "#888", marginBottom: invoicesInbox.length > 0 ? "6px" : "0" }}>
-                {invoicesInboxLoading ? "Loading..." : invoicesInbox.length > 0
-                  ? `Unmatched invoices (${invoicesInbox.length}) - click to select, then click a slot to place`
-                  : "No unmatched invoices"}
-              </div>
-              {invoicesInbox.length > 0 && (
-                <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
-                  {invoicesInbox.map(inv => {
-                    const isPlacing = invoicesPlacing?.invoiceNo === inv.invoiceNo;
-                    return (
-                      <div key={inv.invoiceNo}
-                        style={{ padding: "8px 12px", borderRadius: "8px",
-                          background: isPlacing ? "#1a56db" : "#fff8e1",
-                          color: isPlacing ? "#fff" : "#333",
-                          border: `1px solid ${isPlacing ? "#1a56db" : "#ffe082"}`,
-                          fontSize: "12px", minWidth: "160px" }}>
-                        <div onClick={() => setInvoicesPlacing(isPlacing ? null : inv)} style={{ cursor: "pointer" }}>
-                          <div style={{ fontWeight: "700" }}>#{inv.invoiceNo} - £{inv.amount.toFixed(2)}</div>
-                          <div style={{ opacity: 0.85 }}>{inv.client}{inv.job ? ` - ${inv.job}` : ""}</div>
-                          <div style={{ opacity: 0.7 }}>{inv.sentDate}{inv.status ? ` · ${inv.status}` : ""}</div>
-                        </div>
-                        <button onClick={e => { e.stopPropagation(); setInvoicesNewJob({ inv }); }}
-                          title="Create new job for this invoice"
-                          style={{ marginTop: "6px", fontSize: "10px", padding: "2px 8px",
-                            background: isPlacing ? "rgba(255,255,255,0.2)" : "#f0f0f0",
-                            border: `1px solid ${isPlacing ? "rgba(255,255,255,0.4)" : "#ccc"}`,
-                            borderRadius: "4px", cursor: "pointer",
-                            color: isPlacing ? "#fff" : "#555", whiteSpace: "nowrap" }}>
-                          + New job
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
+            {/* Subtabs: By job / By invoice no. */}
+            <div style={{ display: "flex", gap: "8px", marginBottom: "16px", borderBottom: "1px solid #e0e0e0" }}>
+              <button
+                type="button"
+                onClick={() => setInvoicesSubTab("byJob")}
+                style={{
+                  padding: "8px 16px",
+                  background: "none",
+                  border: "none",
+                  borderBottom: invoicesSubTab === "byJob" ? "2px solid #0066cc" : "2px solid transparent",
+                  color: invoicesSubTab === "byJob" ? "#0066cc" : "#666",
+                  fontWeight: invoicesSubTab === "byJob" ? "700" : "500",
+                  fontSize: "14px",
+                  cursor: "pointer"
+                }}
+              >
+                By job
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setInvoicesSubTab("byInvoiceNo");
+                  setInvoicesPlacing(null);
+                  if (!invoicesShowAll && invoicesClient) {
+                    setInvoicesShowAll(true);
+                    loadInvoicesJobs(invoicesClient, true);
+                  }
+                }}
+                style={{
+                  padding: "8px 16px",
+                  background: "none",
+                  border: "none",
+                  borderBottom: invoicesSubTab === "byInvoiceNo" ? "2px solid #0066cc" : "2px solid transparent",
+                  color: invoicesSubTab === "byInvoiceNo" ? "#0066cc" : "#666",
+                  fontWeight: invoicesSubTab === "byInvoiceNo" ? "700" : "500",
+                  fontSize: "14px",
+                  cursor: "pointer"
+                }}
+              >
+                By invoice no.
+              </button>
             </div>
+
+            {invoicesSubTab === "byJob" && (
+              <div style={{ background: "#fff", border: `1px solid ${invoicesInbox.length > 0 ? "#ffc107" : "#e0e0e0"}`, borderRadius: "10px", padding: "14px 16px", marginBottom: "16px" }}>
+                <div style={{ fontSize: "13px", fontWeight: "700", color: invoicesInbox.length > 0 ? "#e65100" : "#888", marginBottom: invoicesInbox.length > 0 ? "6px" : "0" }}>
+                  {invoicesInboxLoading ? "Loading..." : invoicesInbox.length > 0
+                    ? `Unmatched invoices (${invoicesInbox.length}) - click to select, then click a slot to place`
+                    : "No unmatched invoices"}
+                </div>
+                {invoicesInbox.length > 0 && (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+                    {invoicesInbox.map(inv => {
+                      const isPlacing = invoicesPlacing?.invoiceNo === inv.invoiceNo;
+                      return (
+                        <div key={inv.invoiceNo}
+                          style={{
+                            padding: "8px 12px", borderRadius: "8px",
+                            background: isPlacing ? "#1a56db" : "#fff8e1",
+                            color: isPlacing ? "#fff" : "#333",
+                            border: `1px solid ${isPlacing ? "#1a56db" : "#ffe082"}`,
+                            fontSize: "12px", minWidth: "160px"
+                          }}>
+                          <div onClick={() => setInvoicesPlacing(isPlacing ? null : inv)} style={{ cursor: "pointer" }}>
+                            <div style={{ fontWeight: "700" }}>#{inv.invoiceNo} - £{inv.amount.toFixed(2)}</div>
+                            <div style={{ opacity: 0.85 }}>{inv.client}{inv.job ? ` - ${inv.job}` : ""}</div>
+                            <div style={{ opacity: 0.7 }}>{inv.sentDate}{inv.status ? ` · ${inv.status}` : ""}</div>
+                          </div>
+                          <button onClick={e => { e.stopPropagation(); setInvoicesNewJob({ inv }); }}
+                            title="Create new job for this invoice"
+                            style={{
+                              marginTop: "6px", fontSize: "10px", padding: "2px 8px",
+                              background: isPlacing ? "rgba(255,255,255,0.2)" : "#f0f0f0",
+                              border: `1px solid ${isPlacing ? "rgba(255,255,255,0.4)" : "#ccc"}`,
+                              borderRadius: "4px", cursor: "pointer",
+                              color: isPlacing ? "#fff" : "#555", whiteSpace: "nowrap"
+                            }}>
+                            + New job
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
 
             {invoicesJobsLoading && (
               <div style={{ textAlign: "center", color: "#999", padding: "24px" }}>Loading jobs...</div>
             )}
             {!invoicesJobsLoading && invoicesJobs && (
               <>
-                {/* Description Banner & Toggle */}
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    flexWrap: "wrap",
-                    gap: "10px",
-                    padding: "10px 16px",
-                    background: invoicesShowAll ? "#f8fafc" : "#eff6ff",
-                    border: `1px solid ${invoicesShowAll ? "#e2e8f0" : "#bfdbfe"}`,
-                    borderRadius: "8px",
-                    marginBottom: "14px"
-                  }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", color: invoicesShowAll ? "#334155" : "#1e40af" }}>
-                    <span style={{ fontSize: "15px" }}>ℹ️</span>
-                    <span>
-                      {invoicesShowAll ? (
-                        <>Showing <strong>all confirmed jobs</strong> ({invoicesJobs.length} jobs). Jobs that have already been fully invoiced are visible.</>
-                      ) : (
-                        <>By default showing jobs with <strong>revenue left to invoice</strong> ({invoicesJobs.length} jobs). Fully invoiced jobs are hidden.</>
-                      )}
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const next = !invoicesShowAll;
-                      setInvoicesShowAll(next);
-                      loadInvoicesJobs(invoicesClient, next);
-                    }}
-                    disabled={invoicesJobsLoading}
-                    style={{
-                      padding: "5px 12px",
-                      background: "#ffffff",
-                      border: "1px solid #cbd5e1",
-                      borderRadius: "6px",
-                      fontSize: "12px",
-                      fontWeight: "600",
-                      color: "#1e293b",
-                      cursor: "pointer",
-                      boxShadow: "0 1px 2px rgba(0,0,0,0.05)",
-                      transition: "all 0.15s ease"
-                    }}
-                  >
-                    {invoicesShowAll ? "Show only uninvoiced jobs" : "Show all jobs"}
-                  </button>
-                </div>
+                {invoicesSubTab === "byJob" && (
+                  <>
+                    {/* Description Banner & Toggle */}
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        flexWrap: "wrap",
+                        gap: "10px",
+                        padding: "10px 16px",
+                        background: invoicesShowAll ? "#f8fafc" : "#eff6ff",
+                        border: `1px solid ${invoicesShowAll ? "#e2e8f0" : "#bfdbfe"}`,
+                        borderRadius: "8px",
+                        marginBottom: "12px"
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", color: invoicesShowAll ? "#334155" : "#1e40af" }}>
+                        <span style={{ fontSize: "15px" }}>ℹ️</span>
+                        <span>
+                          {invoicesShowAll ? (
+                            <>Showing <strong>all confirmed jobs</strong> ({invoicesJobs.length} jobs). Jobs that have already been fully invoiced are visible.</>
+                          ) : (
+                            <>By default showing jobs with <strong>revenue left to invoice</strong> ({invoicesJobs.length} jobs). Fully invoiced jobs are hidden.</>
+                          )}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = !invoicesShowAll;
+                          setInvoicesShowAll(next);
+                          loadInvoicesJobs(invoicesClient, next);
+                        }}
+                        disabled={invoicesJobsLoading}
+                        style={{
+                          padding: "5px 12px",
+                          background: "#ffffff",
+                          border: "1px solid #cbd5e1",
+                          borderRadius: "6px",
+                          fontSize: "12px",
+                          fontWeight: "600",
+                          color: "#1e293b",
+                          cursor: "pointer",
+                          boxShadow: "0 1px 2px rgba(0,0,0,0.05)",
+                          transition: "all 0.15s ease"
+                        }}
+                      >
+                        {invoicesShowAll ? "Show only uninvoiced jobs" : "Show all jobs"}
+                      </button>
+                    </div>
 
-                {/* ========================================================================= */}
-                {/* MODERN VIEW                                                               */}
-                {/* ========================================================================= */}
-                {viewMode === "modern" && (
-                  <div style={{ background: "#ffffff", borderRadius: "10px", border: "1px solid #e2e8f0", boxShadow: "0 1px 3px rgba(0,0,0,0.04)", overflowX: "auto" }}>
-                    <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "12px", minWidth: "1200px" }}>
-                      <thead>
-                        <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0", color: "#475569", fontSize: "11px", fontWeight: "600", textTransform: "uppercase", letterSpacing: "0.03em" }}>
-                          <th style={{ padding: "10px 10px", width: "36px", textAlign: "center" }}></th>
-                          <th style={{ padding: "10px 12px", width: "160px", textAlign: "left" }}>Client</th>
-                          <th style={{ padding: "10px 12px", width: "200px", textAlign: "left" }}>Job Name</th>
-                          <th style={{ padding: "10px 10px", width: "80px", textAlign: "left" }}>Code</th>
-                          <th style={{ padding: "10px 10px", width: "110px", textAlign: "left" }}>Type</th>
-                          <th style={{ padding: "10px 10px", width: "110px", textAlign: "left" }}>Revenue</th>
-                          <th style={{ padding: "10px 10px", width: "100px", textAlign: "left" }}>Direct Costs</th>
-                          <th style={{ padding: "10px 10px", width: "150px", textAlign: "left" }}>Dates</th>
-                          <th style={{ padding: "10px 10px", width: "170px", textAlign: "left" }}>Slot 1</th>
-                          <th style={{ padding: "10px 10px", width: "170px", textAlign: "left" }}>Slot 2</th>
-                          <th style={{ padding: "10px 10px", width: "170px", textAlign: "left" }}>Slot 3</th>
-                          <th style={{ padding: "10px 8px", width: "40px", textAlign: "center" }}></th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {invoicesJobs.length === 0 ? (
-                          <tr>
-                            <td colSpan={12} style={{ padding: "36px", textAlign: "center", color: "#64748b" }}>
-                              No matching jobs found.
-                            </td>
-                          </tr>
-                        ) : (
-                          invoicesJobs.map((job) => {
+                    {/* Search Bar for Jobs */}
+                    <div style={{ marginBottom: "14px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "10px" }}>
+                      <div style={{ position: "relative", width: "100%", maxWidth: "340px" }}>
+                        <span style={{ position: "absolute", left: "10px", top: "50%", transform: "translateY(-50%)", color: "#94a3b8", fontSize: "14px", pointerEvents: "none" }}>🔍</span>
+                        <input
+                          type="text"
+                          placeholder="Search jobs..."
+                          value={jobsSearchTerm}
+                          onChange={e => setJobsSearchTerm(e.target.value)}
+                          style={{
+                            width: "100%",
+                            padding: "7px 10px 7px 32px",
+                            borderRadius: "6px",
+                            border: "1px solid #cbd5e1",
+                            fontSize: "13px",
+                            outline: "none",
+                            boxSizing: "border-box",
+                            backgroundColor: "#ffffff",
+                          }}
+                        />
+                        {jobsSearchTerm && (
+                          <button
+                            type="button"
+                            onClick={() => setJobsSearchTerm("")}
+                            style={{ position: "absolute", right: "8px", top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "#94a3b8", cursor: "pointer", fontSize: "14px" }}
+                          >
+                            ✕
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* ========================================================================= */}
+                    {/* MODERN VIEW                                                               */}
+                    {/* ========================================================================= */}
+                    {viewMode === "modern" && (
+                      <div style={{ background: "#ffffff", borderRadius: "10px", border: "1px solid #e2e8f0", boxShadow: "0 1px 3px rgba(0,0,0,0.04)", overflowX: "auto" }}>
+                        <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "12px", minWidth: "1200px" }}>
+                          <thead>
+                            <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0", color: "#475569", fontSize: "11px", fontWeight: "600", textTransform: "uppercase", letterSpacing: "0.03em" }}>
+                              <th style={{ padding: "10px 10px", width: "36px", textAlign: "center" }}></th>
+                              <th style={{ padding: "10px 12px", width: "160px", textAlign: "left" }}>Client</th>
+                              <th style={{ padding: "10px 12px", width: "200px", textAlign: "left" }}>Job Name</th>
+                              <th style={{ padding: "10px 10px", width: "80px", textAlign: "left" }}>Code</th>
+                              <th style={{ padding: "10px 10px", width: "110px", textAlign: "left" }}>Type</th>
+                              <th style={{ padding: "10px 10px", width: "110px", textAlign: "left" }}>Revenue</th>
+                              <th style={{ padding: "10px 10px", width: "100px", textAlign: "left" }}>Direct Costs</th>
+                              <th style={{ padding: "10px 10px", width: "150px", textAlign: "left" }}>Dates</th>
+                              <th style={{ padding: "10px 10px", width: "170px", textAlign: "left" }}>Slot 1</th>
+                              <th style={{ padding: "10px 10px", width: "170px", textAlign: "left" }}>Slot 2</th>
+                              <th style={{ padding: "10px 10px", width: "170px", textAlign: "left" }}>Slot 3</th>
+                              <th style={{ padding: "10px 8px", width: "40px", textAlign: "center" }}></th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {filteredInvoicesJobs.length === 0 ? (
+                              <tr>
+                                <td colSpan={12} style={{ padding: "36px", textAlign: "center", color: "#64748b" }}>
+                                  No matching jobs found.
+                                </td>
+                              </tr>
+                            ) : (
+                              filteredInvoicesJobs.map((job) => {
                             const jobKey = `${job.client}|||${job.jobName}`;
                             const isRetainer = String(job.rows?.[0]?.projectRetainer || "").toLowerCase().includes("retainer");
                             const hasMultipleRows = job.rows && job.rows.length > 1;
@@ -726,6 +1066,8 @@ export default function InvoicesView({
                                               savingKey: cellSavingKey,
                                             };
                                             if (hasMismatch) {
+                                              setUpdateJobNameChecked(!!(inv.job && inv.job.trim().toLowerCase() !== (job.jobName || "").trim().toLowerCase()));
+                                              setNewJobNameInput(inv.job || job.jobName || "");
                                               setClientMismatchPrompt(promptPayload);
                                             } else {
                                               executePlacement(promptPayload, false);
@@ -752,15 +1094,15 @@ export default function InvoicesView({
                                             background: isSaving
                                               ? "#f8fafc"
                                               : (isPlacing && isEmpty)
-                                              ? "#eff6ff"
-                                              : isGenuinelyBlank
-                                              ? "transparent"
-                                              : "#ffffff",
+                                                ? "#eff6ff"
+                                                : isGenuinelyBlank
+                                                  ? "transparent"
+                                                  : "#ffffff",
                                             border: (isPlacing && isEmpty && !isSaving)
                                               ? "1.5px dashed #2563eb"
                                               : isGenuinelyBlank
-                                              ? "1px dashed #e2e8f0"
-                                              : "1px solid #e2e8f0",
+                                                ? "1px dashed #e2e8f0"
+                                                : "1px solid #e2e8f0",
                                             boxShadow: (!isGenuinelyBlank && !isSaving) ? "0 1px 2px rgba(0,0,0,0.03)" : "none"
                                           }}
                                         >
@@ -847,6 +1189,8 @@ export default function InvoicesView({
                                             savingKey,
                                           };
                                           if (hasMismatch) {
+                                            setUpdateJobNameChecked(!!(inv.job && inv.job.trim().toLowerCase() !== (job.jobName || "").trim().toLowerCase()));
+                                            setNewJobNameInput(inv.job || job.jobName || "");
                                             setClientMismatchPrompt(promptPayload);
                                           } else {
                                             executePlacement(promptPayload, false);
@@ -904,14 +1248,21 @@ export default function InvoicesView({
                       </colgroup>
                       <thead>
                         <tr style={{ background: "#f5f6fa" }}>
-                          {["Row","Client","Job name","Code","Revenue","Direct costs","Type","Start","End",
-                            "InvSlot1","InvSlot2","InvSlot3",""].map(h => (
-                            <th key={h} style={{ padding: "8px 10px", textAlign: "left", borderBottom: "2px solid #ddd", whiteSpace: "nowrap" }}>{h}</th>
-                          ))}
+                          {["Row", "Client", "Job name", "Code", "Revenue", "Direct costs", "Type", "Start", "End",
+                            "InvSlot1", "InvSlot2", "InvSlot3", ""].map(h => (
+                              <th key={h} style={{ padding: "8px 10px", textAlign: "left", borderBottom: "2px solid #ddd", whiteSpace: "nowrap" }}>{h}</th>
+                            ))}
                         </tr>
                       </thead>
                       <tbody>
-                        {invoicesJobs.flatMap((job, jobIdx) => {
+                        {filteredInvoicesJobs.length === 0 ? (
+                          <tr>
+                            <td colSpan={13} style={{ padding: "36px", textAlign: "center", color: "#64748b" }}>
+                              No matching jobs found.
+                            </td>
+                          </tr>
+                        ) : (
+                          filteredInvoicesJobs.flatMap((job, jobIdx) => {
                           const jobTotalInvoiced = job.rows.reduce((sum, r) => sum + r.invoiceSlots.reduce((s, slot) => {
                             const isReal = slot.ref && !isPlaceholderInvoice(slot.ref);
                             return s + (isReal ? (parseFloat(String(slot.amount).replace(/[£$€,\s]/g, "")) || 0) : 0);
@@ -920,133 +1271,332 @@ export default function InvoicesView({
                           const uninvoiced = jobRevenue - jobTotalInvoiced;
                           const jobHasEmptySlot = job.rows.some(jr => jr.invoiceSlots.some(s => (!s.ref || String(s.ref).trim() === "") && !s.amount));
                           const jobLastRow = job.rows[job.rows.length - 1].rowNum;
-                          
+
                           return job.rows.map((jr, rIdx) => {
                             const isLastRowOfJob = rIdx === job.rows.length - 1;
                             return (
-                          <tr key={jr.rowNum} style={{ background: jobIdx % 2 === 0 ? "#fff" : "#f1f5f9" }}>
-                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", color: "#888" }}>{jr.rowNum}</td>
-                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>{rIdx === 0 ? jr.client : ""}</td>
-                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>{rIdx === 0 ? jr.jobName : ""}</td>
-                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>{rIdx === 0 ? jr.projectCode : ""}</td>
-                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
-                              {rIdx === 0 ? (
-                                <>
-                                  <div>{jr.revenue}</div>
-                                  {uninvoiced > 0 && <div style={{ fontSize: "11px", color: "#ef4444", marginTop: "4px" }}>£{uninvoiced.toLocaleString("en-GB", {minimumFractionDigits: 2})} rem.</div>}
-                                </>
-                              ) : ""}
-                            </td>
-                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>{rIdx === 0 ? jr.directCosts : ""}</td>
-                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{jr.projectRetainer}</td>
-                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", whiteSpace: "nowrap" }}>{jr.startDate}</td>
-                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", whiteSpace: "nowrap" }}>{jr.endDate}</td>
-                            {jr.invoiceSlots.map(s => {
-                              const isManualEntry = isPlaceholderInvoice(s.ref);
-                              const isBlankRef = !s.ref || String(s.ref).trim() === "";
-                              const isGenuinelyBlank = isBlankRef && !s.amount;
-                              const isPlaceholder = isBlankRef && !!s.amount;
-                              const isEmpty = isBlankRef || isManualEntry;
-                              const isPlacing = !!invoicesPlacing;
-                              const cellSavingKey = `${jr.rowNum}-${s.slotNum}`;
-                              const isSaving = invoicesSavingCell === cellSavingKey;
-                              return (
-                                <td key={s.slotNum}
-                                  onClick={async () => {
-                                    if (isSaving) return;
-                                    if (isPlacing && isEmpty) {
-                                      const inv = invoicesPlacingRef.current;
-                                      if (!inv) return;
-                                      const sheetClient = String(job.client || "").trim();
-                                      const invClient = String(inv.client || "").trim();
-                                      const hasMismatch = !!(sheetClient && invClient && sheetClient.toLowerCase() !== invClient.toLowerCase());
-                                      const promptPayload = {
-                                        job, inv, isNewRow: false, rowNum: jr.rowNum, slotNum: s.slotNum,
-                                        sheetClientName: sheetClient, invoiceClientName: invClient,
-                                        savingKey: cellSavingKey,
-                                      };
-                                      if (hasMismatch) {
-                                        setClientMismatchPrompt(promptPayload);
-                                      } else {
-                                        executePlacement(promptPayload, false);
-                                      }
-                                    } else if (!isPlacing && !isGenuinelyBlank) {
-                                      setInvoicesEditSlot({ rowNum: jr.rowNum, slotNum: s.slotNum, slot: s, jobClient: job.client, jobName: job.jobName });
-                                    }
-                                  }}
-                                  style={{ padding: "7px 10px", borderBottom: "1px solid #eee",
-                                    cursor: (isSaving) ? "default" : (isPlacing && isEmpty) ? "pointer" : (!isPlacing && !isGenuinelyBlank) ? "pointer" : "default",
-                                    background: isSaving ? "#f5f5f5" : (isPlacing && isEmpty) ? "#e8f0fe" : "transparent",
-                                    border: (isPlacing && isEmpty && !isSaving) ? "1.5px solid #1a56db" : "none" }}>
-                                  {isSaving ? (
-                                    <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#666" }}>
-                                      <Spinner size={12} color="#1a56db" /> Saving...
+                              <tr key={jr.rowNum} style={{ background: jobIdx % 2 === 0 ? "#fff" : "#f1f5f9" }}>
+                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", color: "#888" }}>{jr.rowNum}</td>
+                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>{rIdx === 0 ? jr.client : ""}</td>
+                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>{rIdx === 0 ? jr.jobName : ""}</td>
+                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>{rIdx === 0 ? jr.projectCode : ""}</td>
+                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
+                                  {rIdx === 0 ? (
+                                    <>
+                                      <div>{jr.revenue}</div>
+                                      {uninvoiced > 0 && <div style={{ fontSize: "11px", color: "#ef4444", marginTop: "4px" }}>£{uninvoiced.toLocaleString("en-GB", { minimumFractionDigits: 2 })} rem.</div>}
+                                    </>
+                                  ) : ""}
+                                </td>
+                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>{rIdx === 0 ? jr.directCosts : ""}</td>
+                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{jr.projectRetainer}</td>
+                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", whiteSpace: "nowrap" }}>{jr.startDate}</td>
+                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", whiteSpace: "nowrap" }}>{jr.endDate}</td>
+                                {jr.invoiceSlots.map(s => {
+                                  const isManualEntry = isPlaceholderInvoice(s.ref);
+                                  const isBlankRef = !s.ref || String(s.ref).trim() === "";
+                                  const isGenuinelyBlank = isBlankRef && !s.amount;
+                                  const isPlaceholder = isBlankRef && !!s.amount;
+                                  const isEmpty = isBlankRef || isManualEntry;
+                                  const isPlacing = !!invoicesPlacing;
+                                  const cellSavingKey = `${jr.rowNum}-${s.slotNum}`;
+                                  const isSaving = invoicesSavingCell === cellSavingKey;
+                                  return (
+                                    <td key={s.slotNum}
+                                      onClick={async () => {
+                                        if (isSaving) return;
+                                        if (isPlacing && isEmpty) {
+                                          const inv = invoicesPlacingRef.current;
+                                          if (!inv) return;
+                                          const sheetClient = String(job.client || "").trim();
+                                          const invClient = String(inv.client || "").trim();
+                                          const hasMismatch = !!(sheetClient && invClient && sheetClient.toLowerCase() !== invClient.toLowerCase());
+                                          const promptPayload = {
+                                            job, inv, isNewRow: false, rowNum: jr.rowNum, slotNum: s.slotNum,
+                                            sheetClientName: sheetClient, invoiceClientName: invClient,
+                                            savingKey: cellSavingKey,
+                                          };
+                                          if (hasMismatch) {
+                                            setUpdateJobNameChecked(!!(inv.job && inv.job.trim().toLowerCase() !== (job.jobName || "").trim().toLowerCase()));
+                                            setNewJobNameInput(inv.job || job.jobName || "");
+                                            setClientMismatchPrompt(promptPayload);
+                                          } else {
+                                            executePlacement(promptPayload, false);
+                                          }
+                                        } else if (!isPlacing && !isGenuinelyBlank) {
+                                          setInvoicesEditSlot({ rowNum: jr.rowNum, slotNum: s.slotNum, slot: s, jobClient: job.client, jobName: job.jobName });
+                                        }
+                                      }}
+                                      style={{
+                                        padding: "7px 10px", borderBottom: "1px solid #eee",
+                                        cursor: (isSaving) ? "default" : (isPlacing && isEmpty) ? "pointer" : (!isPlacing && !isGenuinelyBlank) ? "pointer" : "default",
+                                        background: isSaving ? "#f5f5f5" : (isPlacing && isEmpty) ? "#e8f0fe" : "transparent",
+                                        border: (isPlacing && isEmpty && !isSaving) ? "1.5px solid #1a56db" : "none"
+                                      }}>
+                                      {isSaving ? (
+                                        <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#666" }}>
+                                          <Spinner size={12} color="#1a56db" /> Saving...
+                                        </div>
+                                      ) : isGenuinelyBlank ? (
+                                        isPlacing ? <span style={{ color: "#1a56db", fontWeight: "700" }}>Click to place</span> : <span style={{ color: "#ccc" }}>-</span>
+                                      ) : (
+                                        <div>
+                                          <div style={{ fontWeight: "600", color: isManualEntry ? "#9333ea" : "inherit" }}>
+                                            {(isManualEntry || isPlaceholder) && "(placeholder) "}{s.ref}
+                                          </div>
+                                          <div style={{ color: "#888" }}>{/^[£$€]/.test(String(s.amount)) ? s.amount : `£${s.amount}`} · {s.sentDate}{s.status ? ` · ${s.status}` : ""}</div>
+                                          {(isManualEntry || isPlaceholder) && isPlacing && (
+                                            <div style={{ color: "#1a56db", fontWeight: "700", marginTop: "2px" }}>Click to overwrite</div>
+                                          )}
+                                          {!isPlacing && (
+                                            <div style={{ color: "#1a56db", fontSize: "10px", marginTop: "2px" }}>Click to edit</div>
+                                          )}
+                                        </div>
+                                      )}
+                                    </td>
+                                  );
+                                })}
+                                <td style={{ padding: "0", borderBottom: "1px solid #eee", textAlign: "center" }}>
+                                  {invoicesSavingCell === `newrow-${job.client}|||${job.jobName}` ? (
+                                    <div style={{ height: "100%", minHeight: "36px", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                                      <Spinner size={12} color="#1a56db" />
                                     </div>
-                                  ) : isGenuinelyBlank ? (
-                                    isPlacing ? <span style={{ color: "#1a56db", fontWeight: "700" }}>Click to place</span> : <span style={{ color: "#ccc" }}>-</span>
-                                  ) : (
-                                    <div>
-                                      <div style={{ fontWeight: "600", color: isManualEntry ? "#9333ea" : "inherit" }}>
-                                        {(isManualEntry || isPlaceholder) && "(placeholder) "}{s.ref}
-                                      </div>
-                                      <div style={{ color: "#888" }}>{/^[£$€]/.test(String(s.amount)) ? s.amount : `£${s.amount}`} · {s.sentDate}{s.status ? ` · ${s.status}` : ""}</div>
-                                      {(isManualEntry || isPlaceholder) && isPlacing && (
-                                        <div style={{ color: "#1a56db", fontWeight: "700", marginTop: "2px" }}>Click to overwrite</div>
-                                      )}
-                                      {!isPlacing && (
-                                        <div style={{ color: "#1a56db", fontSize: "10px", marginTop: "2px" }}>Click to edit</div>
-                                      )}
+                                  ) : isLastRowOfJob && !jobHasEmptySlot && isPlacing && (
+                                    <div
+                                      title="No spare invoice slot - click to add a new row for this job"
+                                      onClick={async () => {
+                                        const inv = invoicesPlacingRef.current;
+                                        if (!inv) return;
+                                        const savingKey = `newrow-${job.client}|||${job.jobName}`;
+                                        const sheetClient = String(job.client || "").trim();
+                                        const invClient = String(inv.client || "").trim();
+                                        const hasMismatch = !!(sheetClient && invClient && sheetClient.toLowerCase() !== invClient.toLowerCase());
+                                        const promptPayload = {
+                                          job, inv, isNewRow: true, jobLastRow,
+                                          sheetClientName: sheetClient, invoiceClientName: invClient,
+                                          savingKey,
+                                        };
+                                        if (hasMismatch) {
+                                          setUpdateJobNameChecked(!!(inv.job && inv.job.trim().toLowerCase() !== (job.jobName || "").trim().toLowerCase()));
+                                          setNewJobNameInput(inv.job || job.jobName || "");
+                                          setClientMismatchPrompt(promptPayload);
+                                        } else {
+                                          executePlacement(promptPayload, false);
+                                        }
+                                      }}
+                                      style={{
+                                        cursor: "pointer", background: "#e8f0fe", border: "1.5px solid #1a56db",
+                                        height: "100%", minHeight: "36px", display: "flex", alignItems: "center", justifyContent: "center",
+                                        color: "#1a56db", fontWeight: "700", fontSize: "16px"
+                                      }}>
+                                      +
                                     </div>
                                   )}
                                 </td>
-                              );
-                            })}
-                            <td style={{ padding: "0", borderBottom: "1px solid #eee", textAlign: "center" }}>
-                              {invoicesSavingCell === `newrow-${job.client}|||${job.jobName}` ? (
-                                <div style={{ height: "100%", minHeight: "36px", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                                  <Spinner size={12} color="#1a56db" />
-                                </div>
-                              ) : isLastRowOfJob && !jobHasEmptySlot && isPlacing && (
-                                <div
-                                  title="No spare invoice slot - click to add a new row for this job"
-                                  onClick={async () => {
-                                    const inv = invoicesPlacingRef.current;
-                                    if (!inv) return;
-                                    const savingKey = `newrow-${job.client}|||${job.jobName}`;
-                                    const sheetClient = String(job.client || "").trim();
-                                    const invClient = String(inv.client || "").trim();
-                                    const hasMismatch = !!(sheetClient && invClient && sheetClient.toLowerCase() !== invClient.toLowerCase());
-                                    const promptPayload = {
-                                      job, inv, isNewRow: true, jobLastRow,
-                                      sheetClientName: sheetClient, invoiceClientName: invClient,
-                                      savingKey,
-                                    };
-                                    if (hasMismatch) {
-                                      setClientMismatchPrompt(promptPayload);
-                                    } else {
-                                      executePlacement(promptPayload, false);
-                                    }
-                                  }}
-                                  style={{ cursor: "pointer", background: "#e8f0fe", border: "1.5px solid #1a56db",
-                                    height: "100%", minHeight: "36px", display: "flex", alignItems: "center", justifyContent: "center",
-                                    color: "#1a56db", fontWeight: "700", fontSize: "16px" }}>
-                                  +
-                                </div>
-                              )}
-                            </td>
-                          </tr>
-                          );
+                              </tr>
+                            );
                           });
-                        })}
+                        }))}
                       </tbody>
                     </table>
                   </div>
                 )}
               </>
             )}
+
+            {invoicesSubTab === "byInvoiceNo" && (
+              <div>
+                {/* Controls Bar: Search & Sort */}
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "12px", marginBottom: "14px" }}>
+                  <div style={{ position: "relative", width: "100%", maxWidth: "340px" }}>
+                    <span style={{ position: "absolute", left: "10px", top: "50%", transform: "translateY(-50%)", color: "#94a3b8", fontSize: "14px", pointerEvents: "none" }}>🔍</span>
+                    <input
+                      type="text"
+                      placeholder="Search invoices..."
+                      value={invoiceSearchTerm}
+                      onChange={e => setInvoiceSearchTerm(e.target.value)}
+                      style={{
+                        width: "100%",
+                        padding: "7px 10px 7px 32px",
+                        borderRadius: "6px",
+                        border: "1px solid #cbd5e1",
+                        fontSize: "13px",
+                        outline: "none",
+                        boxSizing: "border-box",
+                        backgroundColor: "#ffffff",
+                      }}
+                    />
+                    {invoiceSearchTerm && (
+                      <button
+                        type="button"
+                        onClick={() => setInvoiceSearchTerm("")}
+                        style={{ position: "absolute", right: "8px", top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "#94a3b8", cursor: "pointer", fontSize: "14px" }}
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                    <span style={{ fontSize: "13px", color: "#475569", fontWeight: "600" }}>Sort by:</span>
+                    <select
+                      value={invoiceSortOrder}
+                      onChange={e => setInvoiceSortOrder(e.target.value)}
+                      style={{
+                        padding: "6px 12px",
+                        borderRadius: "6px",
+                        border: "1px solid #cbd5e1",
+                        background: "#ffffff",
+                        fontSize: "13px",
+                        color: "#1e293b",
+                        fontWeight: "500",
+                        cursor: "pointer",
+                        outline: "none",
+                      }}
+                    >
+                      {INVOICE_SORT_OPTIONS.map(opt => (
+                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                      ))}
+                    </select>
+                    <span style={{ fontSize: "12px", color: "#64748b", marginLeft: "4px" }}>
+                      ({filteredAndSortedInvoices.length} {filteredAndSortedInvoices.length === 1 ? "invoice" : "invoices"})
+                    </span>
+                  </div>
+                </div>
+
+                {/* Invoices List Table */}
+                <div style={{ background: "#ffffff", borderRadius: "8px", border: "1px solid #e2e8f0", overflowX: "auto", boxShadow: "0 1px 3px rgba(0,0,0,0.04)" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px", textAlign: "left" }}>
+                    <thead>
+                      <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0", color: "#475569", fontSize: "12px", fontWeight: "600" }}>
+                        <th style={{ padding: "10px 12px", whiteSpace: "nowrap" }}>Invoice No.</th>
+                        <th style={{ padding: "10px 12px", whiteSpace: "nowrap" }}>Client Name</th>
+                        <th style={{ padding: "10px 12px", whiteSpace: "nowrap" }}>Job Name</th>
+                        <th style={{ padding: "10px 12px", whiteSpace: "nowrap" }}>Project Code</th>
+                        <th style={{ padding: "10px 12px", textAlign: "right", whiteSpace: "nowrap" }}>Amount</th>
+                        <th style={{ padding: "10px 12px", minWidth: "160px" }}>Description</th>
+                        <th style={{ padding: "10px 12px", whiteSpace: "nowrap" }}>Sent Date</th>
+                        <th style={{ padding: "10px 12px", whiteSpace: "nowrap" }}>Expected Pay Date</th>
+                        <th style={{ padding: "10px 12px", textAlign: "center", whiteSpace: "nowrap" }}>Status</th>
+                        <th style={{ padding: "10px 12px", textAlign: "center", whiteSpace: "nowrap" }}>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredAndSortedInvoices.length === 0 ? (
+                        <tr>
+                          <td colSpan={10} style={{ padding: "36px", textAlign: "center", color: "#94a3b8" }}>
+                            {invoiceSearchTerm ? `No invoices match "${invoiceSearchTerm}"` : "No invoices found for this client."}
+                          </td>
+                        </tr>
+                      ) : (
+                        filteredAndSortedInvoices.map((inv, idx) => {
+                          const isPlaceholder = isPlaceholderInvoice(inv.invoiceNo, inv.status);
+                          return (
+                            <tr
+                              key={inv.id || idx}
+                              style={{
+                                borderBottom: "1px solid #f1f5f9",
+                                backgroundColor: idx % 2 === 0 ? "#ffffff" : "#fafafa",
+                                transition: "background 0.15s ease",
+                              }}
+                              onMouseEnter={e => { e.currentTarget.style.backgroundColor = "#f0f7ff"; }}
+                              onMouseLeave={e => { e.currentTarget.style.backgroundColor = idx % 2 === 0 ? "#ffffff" : "#fafafa"; }}
+                            >
+                              {/* Invoice No. */}
+                              <td style={{ padding: "10px 12px", fontWeight: "700", color: isPlaceholder ? "#9333ea" : "#1e293b", whiteSpace: "nowrap" }}>
+                                {isPlaceholder
+                                  ? (isAdmin && inv.invoiceNo ? `⚠️ ${inv.invoiceNo.startsWith("#") ? inv.invoiceNo : `#${inv.invoiceNo}`}` : "⚠️ Placeholder")
+                                  : (inv.invoiceNo ? (inv.invoiceNo.startsWith("#") ? inv.invoiceNo : `#${inv.invoiceNo}`) : "-")}
+                              </td>
+
+                              {/* Client Name */}
+                              <td style={{ padding: "10px 12px", color: "#334155", fontWeight: "500", whiteSpace: "nowrap" }}>
+                                {inv.client || "-"}
+                              </td>
+
+                              {/* Job Name */}
+                              <td style={{ padding: "10px 12px", color: "#0f172a", fontWeight: "600" }}>
+                                {inv.jobName || "-"}
+                              </td>
+
+                              {/* Project Code */}
+                              <td style={{ padding: "10px 12px", color: "#64748b", fontFamily: "monospace", fontSize: "12px", whiteSpace: "nowrap" }}>
+                                {inv.projectCode || "-"}
+                              </td>
+
+                              {/* Invoice Amount */}
+                              <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: "700", color: "#0f172a", whiteSpace: "nowrap" }}>
+                                {formatCurrency(inv.amount) || (inv.amount ? `£${inv.amount}` : "£0.00")}
+                              </td>
+
+                              {/* Description */}
+                              <td style={{ padding: "10px 12px", color: "#475569", fontSize: "12px", maxWidth: "240px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={inv.description}>
+                                {inv.description || "-"}
+                              </td>
+
+                              {/* Sent Date */}
+                              <td style={{ padding: "10px 12px", color: "#475569", fontSize: "12px", whiteSpace: "nowrap" }}>
+                                {inv.sentDate || "-"}
+                              </td>
+
+                              {/* Expected Pay Date */}
+                              <td style={{ padding: "10px 12px", color: "#475569", fontSize: "12px", whiteSpace: "nowrap" }}>
+                                {inv.expectedPaymentDate || "-"}
+                              </td>
+
+                              {/* Status */}
+                              <td style={{ padding: "10px 12px", textAlign: "center", whiteSpace: "nowrap" }}>
+                                {inv.status ? (
+                                  <span style={{ ...getStatusPill(inv.status), padding: "2px 8px", borderRadius: "12px", fontSize: "11px", fontWeight: "600" }}>
+                                    {inv.status}
+                                  </span>
+                                ) : (
+                                  <span style={{ color: "#94a3b8", fontSize: "12px" }}>-</span>
+                                )}
+                              </td>
+
+                              {/* Action */}
+                              <td style={{ padding: "10px 12px", textAlign: "center", whiteSpace: "nowrap" }}>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setInvoicesEditSlot({
+                                      rowNum: inv.rowNum,
+                                      slotNum: inv.slotNum,
+                                      slot: inv.slot,
+                                      jobClient: inv.client,
+                                      jobName: inv.jobName,
+                                    });
+                                  }}
+                                  style={{
+                                    padding: "4px 10px",
+                                    borderRadius: "5px",
+                                    background: "#eff6ff",
+                                    border: "1px solid #bfdbfe",
+                                    color: "#1d4ed8",
+                                    fontSize: "11px",
+                                    fontWeight: "600",
+                                    cursor: "pointer",
+                                  }}
+                                  title="Edit invoice details"
+                                >
+                                  Edit
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
           </>
         )}
-      </div>
-    </>
+      </>
+    )}
+  </div>
+</>
   );
 }

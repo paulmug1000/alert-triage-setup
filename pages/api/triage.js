@@ -37,7 +37,7 @@ import {
   handleGetInvoiceJobs, handleGetAllClientJobs, handleUpdateJobField, handleUpdateJobFields,
   handleAssignExpenseToJob, handleUpdateExpenseSlot, handleAssignInvoiceToJob,
   handleUpdateInvoiceSlot, handleCreateJobFromInvoice, handleAddNewJob, handleUpdateOutgoingNote,
-  handleFireOutgoingsPull, handleMarkPipelineCopied, getClientWebAppUrl
+  handleFireOutgoingsPull, handleMarkPipelineCopied, handleDeleteDirectJob, handleMarkPipelineAlreadyConfirmed, getClientWebAppUrl
 } from "../../services/workspaces";
 import {
   handleGetRetainerJobs, handleRenameRetainerJob, handleChangeRetainerStartDate, handleChangeRetainerEndDate,
@@ -374,6 +374,10 @@ export default async function handler(req, res) {
       return await handleAddNewJob(req, res, sheets);
     } else if (action === "mark_pipeline_copied") {
       return await handleMarkPipelineCopied(req, res, sheets);
+    } else if (action === "mark_pipeline_already_confirmed") {
+      return await handleMarkPipelineAlreadyConfirmed(req, res, sheets);
+    } else if (action === "delete_direct_job") {
+      return await handleDeleteDirectJob(req, res, sheets);
     } else if (action === "get_retainer_jobs") {
       return await handleGetRetainerJobs(req, res, sheets);
     } else if (action === "rename_retainer_job") {
@@ -851,17 +855,23 @@ export default async function handler(req, res) {
             alertCountsByClientAndFlag[key][flagKey] = (alertCountsByClientAndFlag[key][flagKey] || 0) + 1;
             
             if (flagKey === "expenseDashboardDiscr") {
-             const txId = alert.summary?.transactionId || alert.summary?.appId;
-             if (txId) {
+             const txId = alert.summary?.transactionId || alert.summary?.appId || alert.summary?.reference || alert.summary?.id;
+             if (txId !== undefined && txId !== null && txId !== "") {
                 if (!activeExpenseIdsByClient[key]) activeExpenseIdsByClient[key] = [];
-                activeExpenseIdsByClient[key].push(txId);
+                const s = String(txId).trim();
+                const clean = s.replace(/^#/, "");
+                activeExpenseIdsByClient[key].push(s);
+                if (clean !== s) activeExpenseIdsByClient[key].push(clean);
              }
           }
             if (flagKey === "invoiceDashboardDiscr") {
-             const invNo = alert.summary?.invoiceNo;
-             if (invNo) {
+             const invNo = alert.summary?.invoiceNo || alert.summary?.reference || alert.summary?.id;
+             if (invNo !== undefined && invNo !== null && invNo !== "") {
                 if (!activeInvoiceIdsByClient[key]) activeInvoiceIdsByClient[key] = [];
-                activeInvoiceIdsByClient[key].push(invNo);
+                const s = String(invNo).trim();
+                const clean = s.replace(/^#/, "");
+                activeInvoiceIdsByClient[key].push(s);
+                if (clean !== s) activeInvoiceIdsByClient[key].push(clean);
              }
           }
         }

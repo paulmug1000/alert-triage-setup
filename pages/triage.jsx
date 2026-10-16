@@ -52,7 +52,7 @@ function TriageSystemWithGlobals({ onBack, initialNav }) {
   return (
     <>
       <Head>
-        <title>PMA - Pulse Management Area</title>
+        <title>Pulse - the agency finance dashboard</title>
       </Head>
       <TaskProvider automationCommanderSheetId={appGlobals.automationCommanderSheetId} managedClient={appGlobals.managedClient}>
         <TriageSystemContent onBack={onBack} appGlobals={appGlobals} initialNav={initialNav} />
@@ -120,6 +120,18 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
     }
     return "";
   });
+  const [invoicesInitialClient, setInvoicesInitialClient] = useState(null);
+  const [outgoingsInitialClient, setOutgoingsInitialClient] = useState(null);
+
+  const handleNavInvoicesForClient = (client) => {
+    setInvoicesInitialClient(client);
+    setActiveNav("invoices");
+  };
+
+  const handleNavOutgoingsForClient = (client) => {
+    setOutgoingsInitialClient(client);
+    setActiveNav("outgoings");
+  };
 
   const {
     navTaskCount, setNavTaskCount, snoozedTaskCount, setSnoozedTaskCount,
@@ -586,6 +598,8 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
             PROACTIVE_TYPE_LABELS={PROACTIVE_TYPE_LABELS}
             openCreateTaskModal={openCreateTaskModal}
             setActiveNav={setActiveNav}
+            onNavInvoices={handleNavInvoicesForClient}
+            onNavOutgoings={handleNavOutgoingsForClient}
             isAdmin={isAdmin}
             user={user}
             managedClient={managedClient}
@@ -639,6 +653,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
           isAdmin={isAdmin}
           managedClient={managedClient}
           onClearManagedClient={handleClearManagedClient}
+          initialClient={outgoingsInitialClient}
         />
       );
     }
@@ -652,6 +667,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
           isAdmin={isAdmin}
           managedClient={managedClient}
           onClearManagedClient={handleClearManagedClient}
+          initialClient={invoicesInitialClient}
         />
       );
     }

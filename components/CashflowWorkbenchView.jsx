@@ -865,7 +865,7 @@ export default function CashflowWorkbenchView({
   const [groupByAccount, setGroupByAccount] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
   const [activeRightTab, setActiveRightTab] = useState("variance");
-  const [selectedUploadAccount, setSelectedUploadAccount] = useState("");
+  const [selectedUploadAccount, setSelectedUploadAccount] = useState(reconData?.trackedBankAccounts?.[0] || "");
 
   // Ingestion & Sync states
   const [fetchingApi, setFetchingApi] = useState(false);
@@ -1004,6 +1004,9 @@ export default function CashflowWorkbenchView({
     }
     if (reconData?.isReconciledComplete !== undefined) {
       setIsReconciledComplete(Boolean(reconData.isReconciledComplete));
+    }
+    if (reconData?.trackedBankAccounts?.length) {
+      setSelectedUploadAccount(prev => prev || reconData.trackedBankAccounts[0]);
     }
   }, [reconData, defaultAccount]);
 
@@ -1683,12 +1686,39 @@ export default function CashflowWorkbenchView({
     setPasteRawText("");
     setParsedPreview(null);
     setParsedItems([]);
+
+    // Find next bank account if any (cash accounts first, then non-cash)
+    const cashAccs = reconData?.trackedBankAccounts || [];
+    const nonCashAccs = (reconData?.trackedNonCashBankAccounts || []).map(a => a?.name || a);
+    const allAccs = [...cashAccs, ...nonCashAccs];
+    const currentIdx = allAccs.indexOf(selectedUploadAccount);
+    const nextAcc = (currentIdx !== -1 && currentIdx + 1 < allAccs.length)
+      ? allAccs[currentIdx + 1]
+      : (allAccs.length > 0 ? allAccs[0] : "");
+
+    // Auto-select Unreconciled / P&L additions tab (Item 8)
+    setActiveRightTab("unreconciled");
+
     setCustomModal({
       title: "Unreconciled items added",
       message: isNonCash
         ? `✓ Added ${selectedItems.length} unreconciled statement line${selectedItems.length > 1 ? "s" : ""} to Unreconciled P&L additions (Non-cash account).`
         : `✓ Added ${selectedItems.length} unreconciled statement line${selectedItems.length > 1 ? "s" : ""} to the workbench register and auto-saved to sheet.`,
-      type: "success"
+      type: "success",
+      secondaryAction: {
+        label: "Add unreconciled items from another account",
+        onClick: () => {
+          if (nextAcc) {
+            setSelectedUploadAccount(nextAcc);
+          }
+          setPasteRawText("");
+          setParsedPreview(null);
+          setParsedItems([]);
+          setShowSkippedAccordion(false);
+          setShowPasteModal(true);
+        }
+      },
+      confirmText: "Done"
     });
   };
 
@@ -1923,7 +1953,12 @@ export default function CashflowWorkbenchView({
           </button>
 
           <button
-            onClick={() => setShowPasteModal(true)}
+            onClick={() => {
+              if (reconData?.trackedBankAccounts?.length && !selectedUploadAccount) {
+                setSelectedUploadAccount(reconData.trackedBankAccounts[0]);
+              }
+              setShowPasteModal(true);
+            }}
             style={{
               padding: "6px 14px",
               background: "#f8fafc",
@@ -1938,7 +1973,7 @@ export default function CashflowWorkbenchView({
               gap: "6px"
             }}
           >
-            📋 Paste / upload unreconciled
+            📋 Paste / upload unreconciled transactions
           </button>
         </div>
 
@@ -2723,17 +2758,17 @@ export default function CashflowWorkbenchView({
                           minWidth: "200px"
                         }}
                       >
-                        <option value="">(All / unspecified account)</option>
-                        {(reconData?.trackedNonCashBankAccounts || []).map(acc => (
-                          <option key={acc.name || acc} value={acc.name || acc}>
-                            💳 {acc.name || acc} (Non-cash)
-                          </option>
-                        ))}
                         {(reconData?.trackedBankAccounts || []).map(acc => (
                           <option key={acc} value={acc}>
                             🏦 {acc}
                           </option>
                         ))}
+                        {(reconData?.trackedNonCashBankAccounts || []).map(acc => (
+                          <option key={acc.name || acc} value={acc.name || acc}>
+                            💳 {acc.name || acc} (Non-cash)
+                          </option>
+                        ))}
+                        <option value="">(All / unspecified account)</option>
                       </select>
                     </div>
                   </div>
@@ -2861,17 +2896,17 @@ export default function CashflowWorkbenchView({
                           cursor: "pointer"
                         }}
                       >
-                        <option value="">(All / unspecified account)</option>
-                        {(reconData?.trackedNonCashBankAccounts || []).map(acc => (
-                          <option key={acc.name || acc} value={acc.name || acc}>
-                            💳 {acc.name || acc} (Non-cash)
-                          </option>
-                        ))}
                         {(reconData?.trackedBankAccounts || []).map(acc => (
                           <option key={acc} value={acc}>
                             🏦 {acc}
                           </option>
                         ))}
+                        {(reconData?.trackedNonCashBankAccounts || []).map(acc => (
+                          <option key={acc.name || acc} value={acc.name || acc}>
+                            💳 {acc.name || acc} (Non-cash)
+                          </option>
+                        ))}
+                        <option value="">(All / unspecified account)</option>
                       </select>
                     </div>
 
@@ -3229,7 +3264,9 @@ export default function CashflowWorkbenchView({
               borderTop: "1px solid #e2e8f0",
               display: "flex",
               justifyContent: "flex-end",
-              gap: "8px"
+              alignItems: "center",
+              gap: "8px",
+              flexWrap: "wrap"
             }}>
               {customModal.isConfirm && (
                 <button
@@ -3247,6 +3284,28 @@ export default function CashflowWorkbenchView({
                   }}
                 >
                   Cancel
+                </button>
+              )}
+              {customModal.secondaryAction && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const fn = customModal.secondaryAction.onClick;
+                    setCustomModal(null);
+                    if (fn) fn();
+                  }}
+                  style={{
+                    padding: "7px 16px",
+                    background: "#ffffff",
+                    color: "#0284c7",
+                    border: "1px solid #0284c7",
+                    borderRadius: "6px",
+                    fontSize: "13px",
+                    fontWeight: "600",
+                    cursor: "pointer"
+                  }}
+                >
+                  {customModal.secondaryAction.label}
                 </button>
               )}
               <button

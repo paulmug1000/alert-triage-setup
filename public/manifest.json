@@ -1,7 +1,7 @@
 {
-  "name": "Pulse Management Ecosystem",
+  "name": "Pulse - the agency finance dashboard",
   "short_name": "Pulse",
-  "description": "Unified Financial Intelligence & Management Platform for Agencies",
+  "description": "Pulse - the agency finance dashboard",
   "start_url": "/pma",
   "scope": "/",
   "display": "standalone",

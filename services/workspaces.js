@@ -1,10 +1,11 @@
 import { getSheetsClient, withRetry, extractSheetIdFromUrl, colLetterToNum, colIndexToLetter, getSheetGid, getSheetId } from "./sheetsClient";
 import { setMasterSwitch, checkAllGASLocks, fetchJobRowsForDisplay } from "./sharedHelpers";
 import { logPmaActivity, DEFAULT_AC_SHEET_ID } from "./pmaLogger";
-import { isPlaceholderInvoice } from "../utils/helpers";
+import { isPlaceholderInvoice, toSheetDateFormat } from "../utils/helpers";
 import { getSessionUser } from "./authService";
 import { isUserAuthorizedForClient, matchesClientName, sanitizeFormulaInput, getClientManagerClientMap } from "./userPermissions";
 import { redisClient } from "./redisClient";
+import { memoryCache } from "./cacheService";
 
 let _allClientsMemoryCache = null;
 let _allClientsCachedAt = 0;
@@ -1511,23 +1512,13 @@ export async function handleUpdateExpenseSlot(req, res, sheets) {
         requestBody: { values: [[""]] },
       });
     } else if (expense.date) {
-      const parsedExpenseDate = (() => {
-        if (!expense.date) return null;
-        const m = String(expense.date).match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
-        if (!m) return null;
-        const months = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
-        const mIdx = months[m[2].toLowerCase()];
-        if (mIdx === undefined) return null;
-        const yr = m[3].length === 2 ? 2000 + parseInt(m[3]) : parseInt(m[3]);
-        return new Date(yr, mIdx, parseInt(m[1]));
-      })();
-      if (parsedExpenseDate) {
-        const fmt = (d) => { const ms = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]; return d.getDate() + "-" + ms[d.getMonth()] + "-" + d.getFullYear(); };
+      const formattedDate = toSheetDateFormat(expense.date);
+      if (formattedDate) {
         await sheets.spreadsheets.values.update({
           spreadsheetId: sheetIdClean,
           range: `${targetTab}!${slotCols.dt}${rowNum}`,
           valueInputOption: "USER_ENTERED",
-          requestBody: { values: [[fmt(parsedExpenseDate)]] },
+          requestBody: { values: [[formattedDate]] },
         });
       }
     }
@@ -1585,7 +1576,8 @@ export async function handleUpdateExpenseSlot(req, res, sheets) {
 export async function handleAssignInvoiceToJob(req, res, sheets) {
   const {
     clientSheetId, masterSheetId, rowNum, slotNum, invoice, createNewRow,
-    jobLastRow, jobClient, jobName, updateClientName, newClientName, jobRowNums
+    jobLastRow, jobClient, jobName, updateClientName, newClientName, jobRowNums,
+    updateJobName, newJobName
   } = req.body;
   if (!clientSheetId || !invoice) return res.status(400).json({ success: false, error: "Missing clientSheetId or invoice" });
   if (!createNewRow && (!rowNum || !slotNum)) return res.status(400).json({ success: false, error: "Missing rowNum or slotNum" });
@@ -1598,6 +1590,7 @@ export async function handleAssignInvoiceToJob(req, res, sheets) {
     };
 
     const effectiveClientName = (updateClientName && newClientName) ? newClientName : (jobClient || "");
+    const effectiveJobName = (updateJobName && newJobName) ? newJobName : (jobName || "");
 
     const metaResp = await sheets.spreadsheets.get({
       spreadsheetId: sheetIdClean,
@@ -1740,7 +1733,7 @@ export async function handleAssignInvoiceToJob(req, res, sheets) {
           valueInputOption: "RAW",
           data: [
             { range: `Confirmed!A${targetRowNum}`, values: [[effectiveClientName]] },
-            { range: `Confirmed!B${targetRowNum}`, values: [[jobName || ""]] },
+            { range: `Confirmed!B${targetRowNum}`, values: [[effectiveJobName]] },
             { range: `Confirmed!AI${targetRowNum}`, values: [[vatVal]] },
           ],
         },
@@ -1793,6 +1786,26 @@ export async function handleAssignInvoiceToJob(req, res, sheets) {
           requestBody: {
             valueInputOption: "RAW",
             data: clientUpdates,
+          },
+        });
+      }
+    }
+
+    if (updateJobName && newJobName) {
+      const rowsToUpdate = new Set(matchingRowIndices.length > 0 ? matchingRowIndices : (Array.isArray(jobRowNums) ? jobRowNums : []));
+      if (rowNum) rowsToUpdate.add(rowNum);
+      if (targetRowNum) rowsToUpdate.add(targetRowNum);
+
+      if (rowsToUpdate.size > 0) {
+        const jobUpdates = Array.from(rowsToUpdate).map(r => ({
+          range: `Confirmed!B${r}`,
+          values: [[newJobName]]
+        }));
+        await sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: sheetIdClean,
+          requestBody: {
+            valueInputOption: "RAW",
+            data: jobUpdates,
           },
         });
       }
@@ -1973,23 +1986,13 @@ export async function handleUpdateInvoiceSlot(req, res, sheets) {
         requestBody: { values: [[""]] },
       });
     } else if (invoice.sentDate) {
-      const parsedSentDate = (() => {
-        if (!invoice.sentDate) return null;
-        const m = String(invoice.sentDate).match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
-        if (!m) return null;
-        const months = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
-        const mIdx = months[m[2].toLowerCase()];
-        if (mIdx === undefined) return null;
-        const yr = m[3].length === 2 ? 2000 + parseInt(m[3]) : parseInt(m[3]);
-        return new Date(yr, mIdx, parseInt(m[1]));
-      })();
-      if (parsedSentDate) {
-        const fmt = (d) => { const ms = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]; return d.getDate() + "-" + ms[d.getMonth()] + "-" + d.getFullYear(); };
+      const formattedSentDate = toSheetDateFormat(invoice.sentDate);
+      if (formattedSentDate) {
         await sheets.spreadsheets.values.update({
           spreadsheetId: sheetIdClean,
           range: `${targetTab}!${slotCols.sent}${actualRowNum}`,
           valueInputOption: "USER_ENTERED",
-          requestBody: { values: [[fmt(parsedSentDate)]] },
+          requestBody: { values: [[formattedSentDate]] },
         });
       }
     }
@@ -2106,18 +2109,9 @@ export async function handleCreateJobFromInvoice(req, res, sheets) {
     const dateWriteData = [];
     for (const f of dateFieldsToWrite) {
       if (!f.raw) continue;
-      const parsed = (() => {
-        const m = String(f.raw).match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
-        if (!m) return null;
-        const months = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
-        const mIdx = months[m[2].toLowerCase()];
-        if (mIdx === undefined) return null;
-        const yr = m[3].length === 2 ? 2000 + parseInt(m[3]) : parseInt(m[3]);
-        return new Date(yr, mIdx, parseInt(m[1]));
-      })();
-      if (parsed) {
-        const fmt = (d) => { const ms = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]; return d.getDate() + "-" + ms[d.getMonth()] + "-" + d.getFullYear(); };
-        dateWriteData.push({ range: `Confirmed!${f.col}${newRow}`, values: [[fmt(parsed)]] });
+      const formatted = toSheetDateFormat(f.raw);
+      if (formatted) {
+        dateWriteData.push({ range: `Confirmed!${f.col}${newRow}`, values: [[formatted]] });
       }
     }
     if (dateWriteData.length > 0) {
@@ -2215,19 +2209,7 @@ export async function handleAddNewJob(req, res, sheets) {
       }
     }
 
-    const formatSheetDate = (dStr) => {
-      if (!dStr) return "";
-      const s = String(dStr).trim();
-      const isoMatch = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
-      if (isoMatch) {
-        const yr = isoMatch[1].slice(-2);
-        const mIdx = parseInt(isoMatch[2], 10) - 1;
-        const day = parseInt(isoMatch[3], 10);
-        const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-        return `${day}-${months[mIdx]}-${yr}`;
-      }
-      return s;
-    };
+    const formatSheetDate = (dStr) => toSheetDateFormat(dStr);
 
     const updateData = [
       { range: `${targetTab}!A${targetRow}`,  values: [[sanitizeFormulaInput(jobData.client || "")]] },
@@ -2503,6 +2485,229 @@ export async function handleMarkPipelineCopied(req, res, sheets) {
     return res.status(200).json({ success: true });
   } catch (err) {
     console.error("❌ mark_pipeline_copied error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function handleDeleteDirectJob(req, res, sheets) {
+  const { clientSheetId, tabName, rowNums, clientName, jobName, endClientName } = req.body;
+  if (!clientSheetId || !rowNums || !Array.isArray(rowNums) || rowNums.length === 0) {
+    return res.status(400).json({ success: false, error: "Missing clientSheetId or rowNums" });
+  }
+
+  const targetTab = tabName ? String(tabName).trim() : "Confirmed";
+  const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+
+  try {
+    // Exact column ranges to blank out while preserving all formula columns:
+    // [1, 7]: A:G (Client, Job, Code, Date, Lead Source, etc.)
+    // [31, 31]: AE (Uneven splits)
+    // [33, 39]: AG:AM (Revenue, Direct Costs, VAT, Type, Product Line, Start Date, End Date)
+    // [40, 40]: AN (Likelihood)
+    // [42, 60]: AP:BH (Invoice slots)
+    // [76, 96]: BX:CR (Direct cost slots)
+    // [108, 108]: DD (Copied to Confirmed?)
+    const colRanges = [
+      [1, 7],     // A:G
+      [31, 31],   // AE
+      [33, 39],   // AG:AM
+      [40, 40],   // AN
+      [42, 60],   // AP:BH
+      [76, 96],   // BX:CR
+      [108, 108], // DD
+    ];
+
+    const clearRanges = [];
+    for (const rNum of rowNums) {
+      const r = parseInt(rNum, 10);
+      if (isNaN(r) || r < 2) continue;
+      for (const [startCol, endCol] of colRanges) {
+        const startLetter = colIndexToLetter(startCol);
+        const endLetter = colIndexToLetter(endCol);
+        clearRanges.push(`${targetTab}!${startLetter}${r}:${endLetter}${r}`);
+      }
+    }
+
+    if (clearRanges.length > 0) {
+      await withRetry(() =>
+        sheets.spreadsheets.values.batchClear({
+          spreadsheetId: sheetIdClean,
+          requestBody: { ranges: clearRanges },
+        })
+      );
+    }
+
+    // Clean up dimension groups if child rows were grouped
+    if (rowNums.length > 1) {
+      try {
+        const metaResp = await withRetry(() =>
+          sheets.spreadsheets.get({
+            spreadsheetId: sheetIdClean,
+            fields: "sheets(properties,rowGroups)",
+          })
+        );
+        const sheetMetaList = metaResp.data?.sheets || [];
+        const sheetObj = sheetMetaList.find(s => s.properties?.title === targetTab);
+        if (sheetObj && sheetObj.rowGroups) {
+          const sortedRows = [...rowNums].map(Number).sort((a, b) => a - b);
+          const childStartIndex = sortedRows[1] - 1;
+          const childEndIndex = sortedRows[sortedRows.length - 1];
+          const matchingGroup = (sheetObj.rowGroups || []).find(
+            g => g.range?.startIndex <= childStartIndex && g.range?.endIndex >= childEndIndex
+          );
+          if (matchingGroup) {
+            await withRetry(() =>
+              sheets.spreadsheets.batchUpdate({
+                spreadsheetId: sheetIdClean,
+                requestBody: {
+                  requests: [
+                    {
+                      deleteDimensionGroup: {
+                        range: {
+                          sheetId: sheetObj.properties.sheetId,
+                          dimension: "ROWS",
+                          startIndex: matchingGroup.range.startIndex,
+                          endIndex: matchingGroup.range.endIndex,
+                        },
+                      },
+                    },
+                  ],
+                },
+              })
+            );
+          }
+        }
+      } catch (groupErr) {
+        console.warn("⚠️ Group cleanup non-fatal warning in delete job:", groupErr.message);
+      }
+    }
+
+    // Invalidate caches
+    memoryCache.del(`pulse:portal:*:${sheetIdClean}*`);
+    try {
+      const keys = await redisClient.keys(`pulse:portal:*:${sheetIdClean}*`);
+      if (keys.length > 0) await redisClient.del(...keys);
+    } catch (e) {}
+
+    // Log activity
+    const tenantClient = clientName || (await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId));
+    logPmaActivity(sheets, {
+      automationCommanderSheetId: req.body.automationCommanderSheetId,
+      clientName: tenantClient,
+      category: "JOBS",
+      action: "JOB_DELETED",
+      summary: `Deleted job "${endClientName ? `${endClientName} - ` : ""}${jobName || "Job"}" from ${targetTab} (cleared ${rowNums.length} row${rowNums.length === 1 ? "" : "s"}: ${rowNums.join(", ")})`,
+      details: {
+        jobName,
+        endClientName,
+        tabName: targetTab,
+        clearedRows: rowNums,
+      }
+    }).catch(e => console.error("PMA log failed:", e));
+
+    return res.status(200).json({ success: true });
+  } catch (err) {
+    console.error("❌ handleDeleteDirectJob error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function handleMarkPipelineAlreadyConfirmed(req, res, sheets) {
+  const { clientSheetId, rowNum, clientName, jobName, endClientName, updates } = req.body;
+  if (!clientSheetId || !rowNum) {
+    return res.status(400).json({ success: false, error: "Missing clientSheetId or rowNum" });
+  }
+
+  const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+  const pRow = parseInt(rowNum, 10);
+  if (isNaN(pRow) || pRow < 2) {
+    return res.status(400).json({ success: false, error: "Invalid rowNum" });
+  }
+
+  try {
+    let likelihoodCol = "AN";
+    let copiedStatusCol = "DD";
+    try {
+      const pHeaderResp = await withRetry(() =>
+        sheets.spreadsheets.values.get({
+          spreadsheetId: sheetIdClean,
+          range: "Pipeline!1:2",
+          valueRenderOption: "FORMATTED_VALUE",
+        })
+      );
+      const rows = pHeaderResp.data?.values || [];
+      const headerRow = rows[1] && rows[1].length > 10 ? rows[1] : (rows[0] || []);
+      const lIdx = headerRow.findIndex((h) => {
+        const s = String(h || "").trim().toLowerCase();
+        return s === "% likel." || s === "% likelihood" || s === "% likely" || s === "likelihood";
+      });
+      if (lIdx !== -1) likelihoodCol = colIndexToLetter(lIdx + 1);
+      const cIdx = headerRow.findIndex((h) => {
+        const s = String(h || "").trim().toLowerCase();
+        return s.includes("copied") || s.includes("conf?");
+      });
+      if (cIdx !== -1) copiedStatusCol = colIndexToLetter(cIdx + 1);
+    } catch (e) {
+      console.warn("⚠️ Failed to detect pipeline header columns, falling back to AN & DD:", e.message);
+    }
+
+    const batchData = [
+      {
+        range: `Pipeline!${likelihoodCol}${pRow}`,
+        values: [["100%"]],
+      },
+      {
+        range: `Pipeline!${copiedStatusCol}${pRow}`,
+        values: [["Yes"]],
+      },
+    ];
+
+    if (Array.isArray(updates) && updates.length > 0) {
+      for (const u of updates) {
+        if (u.cellRef && u.value !== undefined) {
+          batchData.push({
+            range: `Pipeline!${u.cellRef}`,
+            values: [[u.value]],
+          });
+        }
+      }
+    }
+
+    await withRetry(() =>
+      sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: sheetIdClean,
+        requestBody: {
+          valueInputOption: "USER_ENTERED",
+          data: batchData,
+        },
+      })
+    );
+
+    // Invalidate caches
+    memoryCache.del(`pulse:portal:*:${sheetIdClean}*`);
+    try {
+      const keys = await redisClient.keys(`pulse:portal:*:${sheetIdClean}*`);
+      if (keys.length > 0) await redisClient.del(...keys);
+    } catch (e) {}
+
+    // Log activity
+    const tenantClient = clientName || (await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId));
+    logPmaActivity(sheets, {
+      automationCommanderSheetId: req.body.automationCommanderSheetId,
+      clientName: tenantClient,
+      category: "JOBS",
+      action: "JOB_MARKED_ALREADY_CONFIRMED",
+      summary: `Marked job "${endClientName ? `${endClientName} - ` : ""}${jobName || "Job"}" as already confirmed (Pipeline Row ${pRow}: Likelihood = 100%, Copied = Yes)`,
+      details: {
+        jobName,
+        endClientName,
+        rowNum: pRow,
+      }
+    }).catch(e => console.error("PMA log failed:", e));
+
+    return res.status(200).json({ success: true });
+  } catch (err) {
+    console.error("❌ handleMarkPipelineAlreadyConfirmed error:", err);
     return res.status(500).json({ success: false, error: err.message });
   }
 }

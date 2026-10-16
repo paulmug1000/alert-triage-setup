@@ -257,6 +257,9 @@ export default function JobsView({
   // Loading / saving states
   const [savingJobKeys, setSavingJobKeys] = useState(() => new Set());
   const [confirmingJobKeys, setConfirmingJobKeys] = useState(() => new Set());
+  const [markingAlreadyConfirmedKeys, setMarkingAlreadyConfirmedKeys] = useState(() => new Set());
+  const [deletingJobKeys, setDeletingJobKeys] = useState(() => new Set());
+  const [deletingJob, setDeletingJob] = useState(null);
   const [recentlySavedKeys, setRecentlySavedKeys] = useState(() => new Set());
   const [actionError, setActionError] = useState(null);
 
@@ -562,6 +565,156 @@ export default function JobsView({
       setActionError(`Failed to unconfirm ${job.jobName || "job"}: ${err.message}`);
     } finally {
       setConfirmingJobKeys((prev) => {
+        const next = new Set(prev);
+        next.delete(jobKey);
+        return next;
+      });
+    }
+  };
+
+  // Mark a Pipeline job as already confirmed (sets likelihood to 100% and Copied to confirmed to Yes)
+  const handleMarkAlreadyConfirmed = async (job) => {
+    const jobKey = getJobKey(job);
+    const parentRow = job?.rows?.[0];
+    if (!parentRow || !jobsClient?.clientSheetId) return;
+
+    const pipelineRowNum = parentRow.rowNum;
+    if (!pipelineRowNum || pipelineRowNum < 2) return;
+
+    setMarkingAlreadyConfirmedKeys((prev) => new Set(prev).add(jobKey));
+    setActionError(null);
+
+    try {
+      // Collect any pending non-likelihood draft edits on this job to save along with marking confirmed
+      const currentDraft = draftEdits[jobKey] || {};
+      const updates = [];
+      const FIELD_MAP = {
+        client: { colLetter: "A" },
+        jobName: { colLetter: "B" },
+        projectCode: { colLetter: "C" },
+        dateConf: { colLetter: "D", isDate: true },
+        leadSrc: { colLetter: "E" },
+        revenue: { colLetter: "AG" },
+        directCosts: { colLetter: "AH" },
+        vat: { colLetter: "AI" },
+        projectRetainer: { colLetter: "AJ" },
+        prodLine: { colLetter: "AK" },
+        startDate: { colLetter: "AL", isDate: true },
+        endDate: { colLetter: "AM", isDate: true },
+      };
+
+      Object.keys(currentDraft).forEach((fieldKey) => {
+        if (fieldKey === "likelihood") return;
+        const meta = FIELD_MAP[fieldKey];
+        if (!meta) return;
+        let val = currentDraft[fieldKey];
+        if (meta.isDate && val) val = toSheetDateFormat(val);
+        updates.push({
+          cellRef: `${meta.colLetter}${pipelineRowNum}`,
+          value: val,
+        });
+      });
+
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "mark_pipeline_already_confirmed",
+          clientSheetId: jobsClient.clientSheetId,
+          clientName: jobsClient.clientName || jobsClient.name || "",
+          jobName: currentDraft.jobName || parentRow.jobName || job.jobName,
+          endClientName: currentDraft.client || parentRow.client || job.client,
+          rowNum: pipelineRowNum,
+          updates,
+        }),
+      });
+
+      const resData = await res.json();
+      if (!resData.success) {
+        throw new Error(resData.error || "Failed to mark job as already confirmed");
+      }
+
+      // Clear draft for this job
+      setDraftEdits((prev) => {
+        const next = { ...prev };
+        delete next[jobKey];
+        return next;
+      });
+
+      // Reload jobs data
+      await loadJobsData(jobsClient, "All");
+    } catch (err) {
+      console.error("Mark already confirmed error:", err);
+      setActionError(`Failed to mark ${job.jobName || "job"} as already confirmed: ${err.message}`);
+    } finally {
+      setMarkingAlreadyConfirmedKeys((prev) => {
+        const next = new Set(prev);
+        next.delete(jobKey);
+        return next;
+      });
+    }
+  };
+
+  // Delete a job entirely by clearing the relevant cells on the row
+  const handleDeleteJobDirect = async (job) => {
+    if (!job || !jobsClient?.clientSheetId) return;
+    const jobKey = getJobKey(job);
+    const parentRow = job?.rows?.[0];
+    const rowNums = (job.rows && job.rows.length > 0)
+      ? job.rows.map((r) => r.rowNum).filter((n) => n && n >= 2)
+      : [parentRow?.rowNum].filter((n) => n && n >= 2);
+
+    if (rowNums.length === 0) return;
+
+    const tabName = job.tabName || parentRow?.tabName || (filterType === "pipeline" ? "Pipeline" : "Confirmed");
+
+    setDeletingJobKeys((prev) => new Set(prev).add(jobKey));
+    setActionError(null);
+
+    try {
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "delete_direct_job",
+          clientSheetId: jobsClient.clientSheetId,
+          clientName: jobsClient.clientName || jobsClient.name || "",
+          tabName,
+          rowNums,
+          jobName: parentRow?.jobName || job.jobName || "",
+          endClientName: parentRow?.client || job.client || "",
+        }),
+      });
+
+      const resData = await res.json();
+      if (!resData.success) {
+        throw new Error(resData.error || "Failed to delete job");
+      }
+
+      // Close modal
+      setDeletingJob(null);
+
+      // Remove from expanded set
+      setExpandedJobIds((prev) => {
+        const next = new Set(prev);
+        next.delete(jobKey);
+        return next;
+      });
+
+      // Clear draft edits
+      setDraftEdits((prev) => {
+        const next = { ...prev };
+        delete next[jobKey];
+        return next;
+      });
+
+      // Reload jobs data
+      await loadJobsData(jobsClient, "All");
+    } catch (err) {
+      console.error("Delete job error:", err);
+      setActionError(`Failed to delete ${job.jobName || "job"}: ${err.message}`);
+    } finally {
+      setDeletingJobKeys((prev) => {
         const next = new Set(prev);
         next.delete(jobKey);
         return next;
@@ -1292,6 +1445,121 @@ export default function JobsView({
   return (
     <>
       {/* Modals reused across views */}
+      {deletingJob && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.55)",
+            zIndex: 2000,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "16px"
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !deletingJobKeys.has(getJobKey(deletingJob))) {
+              setDeletingJob(null);
+            }
+          }}
+        >
+          <div
+            style={{
+              background: "#ffffff",
+              borderRadius: "12px",
+              padding: "24px",
+              width: "min(92vw, 480px)",
+              maxHeight: "85vh",
+              overflowY: "auto",
+              boxShadow: "0 20px 60px rgba(0,0,0,0.3)"
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "14px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <span style={{ fontSize: "20px" }}>🗑️</span>
+                <h3 style={{ margin: 0, fontSize: "17px", fontWeight: "700", color: "#991b1b" }}>
+                  Delete Job
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDeletingJob(null)}
+                disabled={deletingJobKeys.has(getJobKey(deletingJob))}
+                style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}
+              >
+                ×
+              </button>
+            </div>
+
+            <p style={{ fontSize: "14px", color: "#334155", lineHeight: "1.5", marginTop: 0, marginBottom: "14px" }}>
+              Are you sure you want to delete <strong>&ldquo;{deletingJob.jobName || "this job"}&rdquo;</strong>?
+            </p>
+
+            <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "8px", padding: "12px 14px", marginBottom: "16px", fontSize: "12.5px" }}>
+              <div style={{ marginBottom: "6px" }}>
+                <span style={{ color: "#7f1d1d", fontWeight: "600", display: "inline-block", width: "70px" }}>Client:</span>
+                <strong style={{ color: "#1e293b" }}>{deletingJob.client || "—"}</strong>
+              </div>
+              <div style={{ marginBottom: "6px" }}>
+                <span style={{ color: "#7f1d1d", fontWeight: "600", display: "inline-block", width: "70px" }}>Tab:</span>
+                <span style={{ fontWeight: "600", color: "#0f172a" }}>{deletingJob.tabName || (filterType === "pipeline" ? "Pipeline" : "Confirmed")}</span>
+              </div>
+              <div>
+                <span style={{ color: "#7f1d1d", fontWeight: "600", display: "inline-block", width: "70px" }}>Rows:</span>
+                <span style={{ color: "#475569" }}>
+                  {deletingJob.rows?.map(r => `Row ${r.rowNum}`).join(", ") || `Row ${deletingJob.rows?.[0]?.rowNum || "—"}`}
+                </span>
+              </div>
+            </div>
+
+            <div style={{ fontSize: "12px", color: "#64748b", lineHeight: "1.45", marginBottom: "20px" }}>
+              ⚠️ The job will be removed entirely from the sheet by clearing the relevant cells on the row (preserving all formula columns, formatting, and surrounding structure). This action cannot be undone.
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
+              <button
+                type="button"
+                onClick={() => setDeletingJob(null)}
+                disabled={deletingJobKeys.has(getJobKey(deletingJob))}
+                style={{
+                  padding: "8px 16px",
+                  background: "#ffffff",
+                  border: "1px solid #cbd5e1",
+                  borderRadius: "6px",
+                  fontSize: "13px",
+                  fontWeight: "600",
+                  color: "#475569",
+                  cursor: "pointer"
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDeleteJobDirect(deletingJob)}
+                disabled={deletingJobKeys.has(getJobKey(deletingJob))}
+                style={{
+                  padding: "8px 20px",
+                  background: "#dc2626",
+                  border: "none",
+                  borderRadius: "6px",
+                  fontSize: "13px",
+                  fontWeight: "600",
+                  color: "#ffffff",
+                  cursor: deletingJobKeys.has(getJobKey(deletingJob)) ? "wait" : "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  opacity: deletingJobKeys.has(getJobKey(deletingJob)) ? 0.75 : 1
+                }}
+              >
+                {deletingJobKeys.has(getJobKey(deletingJob)) ? <><Spinner size={12} color="#ffffff" /> Deleting...</> : "Yes, Delete Job"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {jobsEditSplit && (
         <UnevenSplitModal
           editSplit={jobsEditSplit}
@@ -2853,11 +3121,69 @@ export default function JobsView({
                                       </div>
 
                                       {/* Bottom Save Bar for Expanded Row */}
-                                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: "1px solid #e2e8f0", paddingTop: "12px" }}>
-                                        <div style={{ fontSize: "12px", color: isDirty ? "#b45309" : "#64748b", fontWeight: isDirty ? "600" : "400" }}>
-                                          {isDirty ? "⚠️ Unsaved changes to this job." : "✓ All job details saved to spreadsheet."}
+                                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: "1px solid #e2e8f0", paddingTop: "12px", flexWrap: "wrap", gap: "10px" }}>
+                                        <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                                          <button
+                                            type="button"
+                                            onClick={() => setDeletingJob({ ...job, tabName })}
+                                            disabled={isSaving || isConfirming || markingAlreadyConfirmedKeys.has(jobKey) || deletingJobKeys.has(jobKey)}
+                                            style={{
+                                              background: "#ffffff",
+                                              border: "1px solid #fecaca",
+                                              color: "#dc2626",
+                                              padding: "6px 12px",
+                                              borderRadius: "6px",
+                                              fontSize: "12px",
+                                              fontWeight: "600",
+                                              cursor: "pointer",
+                                              display: "inline-flex",
+                                              alignItems: "center",
+                                              gap: "5px",
+                                              transition: "all 0.15s ease"
+                                            }}
+                                            onMouseEnter={(e) => { e.currentTarget.style.background = "#fef2f2"; }}
+                                            onMouseLeave={(e) => { e.currentTarget.style.background = "#ffffff"; }}
+                                            title="Delete job entirely from sheet"
+                                          >
+                                            <span>🗑️ Delete job</span>
+                                          </button>
+
+                                          {/* Mark job as already confirmed (Pipeline only) - sits next to Delete job */}
+                                          {!isConfirmed && (
+                                            <button
+                                              type="button"
+                                              onClick={() => handleMarkAlreadyConfirmed(job)}
+                                              disabled={isSaving || isConfirming || markingAlreadyConfirmedKeys.has(jobKey) || deletingJobKeys.has(jobKey)}
+                                              style={{
+                                                background: "#f0f7ff",
+                                                border: "1px solid #bae6fd",
+                                                color: "#0369a1",
+                                                padding: "6px 12px",
+                                                borderRadius: "6px",
+                                                fontSize: "12px",
+                                                fontWeight: "600",
+                                                cursor: markingAlreadyConfirmedKeys.has(jobKey) ? "wait" : "pointer",
+                                                display: "inline-flex",
+                                                alignItems: "center",
+                                                gap: "6px",
+                                                opacity: markingAlreadyConfirmedKeys.has(jobKey) ? 0.7 : 1,
+                                                transition: "all 0.15s ease"
+                                              }}
+                                              onMouseEnter={(e) => { e.currentTarget.style.background = "#e0f2fe"; }}
+                                              onMouseLeave={(e) => { e.currentTarget.style.background = "#f0f7ff"; }}
+                                              title="Sets likelihood to 100% and puts Yes into 'Copied to confirmed tab' column"
+                                            >
+                                              {markingAlreadyConfirmedKeys.has(jobKey) ? <Spinner size={12} color="#0369a1" /> : null}
+                                              <span>{markingAlreadyConfirmedKeys.has(jobKey) ? "Marking..." : "Mark job as already confirmed"}</span>
+                                            </button>
+                                          )}
                                         </div>
-                                        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+
+                                        <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
+                                          <div style={{ fontSize: "12px", color: isDirty ? "#b45309" : "#64748b", fontWeight: isDirty ? "600" : "400" }}>
+                                            {isDirty ? "⚠️ Unsaved changes to this job." : "✓ All job details saved"}
+                                          </div>
+
                                           {/* Confirm / Unconfirm Button */}
                                           {isConfirmed ? (
                                             <button

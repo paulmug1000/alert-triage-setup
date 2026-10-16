@@ -1,6 +1,8 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import Spinner from "./Spinner";
 import { formatCurrency, JobDateInput, toSheetDateFormat } from "./JobsView";
+import { useAppGlobals } from "../hooks/useAppGlobals";
+import { stripRowInfo } from "../utils/helpers";
 
 export default function OutgoingsDetailModal({
   isOpen,
@@ -8,12 +10,65 @@ export default function OutgoingsDetailModal({
   onClose,
   isAdmin = false
 }) {
+  const { allClientsMap } = useAppGlobals();
   const [description, setDescription] = useState("");
   const [amountVal, setAmountVal] = useState("");
   const [recDateVal, setRecDateVal] = useState("");
   const [payDateVal, setPayDateVal] = useState("");
+  const [appIdVal, setAppIdVal] = useState("UNRECON-GAP");
+  const [resolvedColLetter, setResolvedColLetter] = useState("");
+  const [resolvedSheetRow, setResolvedSheetRow] = useState(null);
+  const [existingBlocks, setExistingBlocks] = useState([]);
+  const [loadingCellData, setLoadingCellData] = useState(false);
   const [saving, setSaving] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
+  const [userEdited, setUserEdited] = useState(false);
+
+  const resolvedClientInfo = useMemo(() => {
+    let client = (target?.client && typeof target.client === "object") ? { ...target.client } : {};
+    let clientSheetId =
+      target?.clientSheetId ||
+      client?.clientSheetId ||
+      client?.sheetId ||
+      client?.client_sheet_id ||
+      null;
+
+    const candidateNames = [
+      target?.clientName,
+      client?.clientName,
+      client?.name
+    ].filter(Boolean);
+
+    if (!clientSheetId && allClientsMap && Object.keys(allClientsMap).length > 0) {
+      for (const name of candidateNames) {
+        const trimmed = String(name).trim();
+        if (allClientsMap[trimmed]) {
+          const matched = allClientsMap[trimmed];
+          clientSheetId = matched.clientSheetId || matched.sheetId || null;
+          client = { ...(matched || {}), ...(client || {}), clientSheetId, clientName: trimmed };
+          break;
+        }
+        const lower = trimmed.toLowerCase();
+        const foundKey = Object.keys(allClientsMap).find((k) => k.toLowerCase() === lower);
+        if (foundKey && allClientsMap[foundKey]) {
+          const matched = allClientsMap[foundKey];
+          clientSheetId = matched.clientSheetId || matched.sheetId || null;
+          client = { ...(matched || {}), ...(client || {}), clientSheetId, clientName: foundKey };
+          break;
+        }
+      }
+    } else if (clientSheetId) {
+      client.clientSheetId = clientSheetId;
+      if (!client.clientName && target?.clientName) {
+        client.clientName = target.clientName;
+      }
+      if (!client.masterSheetId && target?.clientName && allClientsMap?.[target.clientName]) {
+        client.masterSheetId = allClientsMap[target.clientName].masterSheetId;
+      }
+    }
+
+    return { client, clientSheetId };
+  }, [target, allClientsMap]);
 
   useEffect(() => {
     if (!isOpen || !target) {
@@ -21,16 +76,152 @@ export default function OutgoingsDetailModal({
       setAmountVal("");
       setRecDateVal("");
       setPayDateVal("");
+      setAppIdVal("UNRECON-GAP");
+      setResolvedColLetter("");
+      setResolvedSheetRow(null);
+      setExistingBlocks([]);
+      setLoadingCellData(false);
       setSavedSuccess(false);
+      setUserEdited(false);
       return;
     }
 
-    setDescription(target.description || target.contractor || "");
-    setAmountVal(target.amount || "");
-    setRecDateVal(target.recDate || "");
-    setPayDateVal(target.payDate || "");
+    const initDesc = target.description || target.contractor || "";
+    const rawAmt = target.amount ? String(target.amount).replace(/^[£$€]\s*/, "").trim() : "";
+    const initRec = target.recDate || "";
+    const initPay = target.payDate || "";
+    const initAppId = target.appId || "UNRECON-GAP";
+
+    setDescription(initDesc);
+    setAmountVal(rawAmt);
+    setRecDateVal(initRec);
+    setPayDateVal(initPay);
+    setAppIdVal(initAppId);
     setSavedSuccess(false);
+    setUserEdited(false);
+
+    // Initial column & row determination
+    let col = "";
+    let row = target.rowNum ? parseInt(target.rowNum, 10) : null;
+    if (target.cellCoord) {
+      const match = String(target.cellCoord).match(/^([A-Za-z]+)(\d+)$/);
+      if (match) {
+        col = match[1].toUpperCase();
+        row = parseInt(match[2], 10);
+      }
+    }
+    setResolvedColLetter(col);
+    setResolvedSheetRow(row);
   }, [isOpen, target]);
+
+  // Hydrate cell information (column letter, existing note blocks, dates) from Outgoings sheet
+  useEffect(() => {
+    if (!isOpen || !target || !resolvedClientInfo.clientSheetId) return;
+
+    let cancelled = false;
+
+    const hydrateFromSheet = async () => {
+      setLoadingCellData(true);
+      try {
+        const res = await fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "get_outgoings",
+            clientSheetId: resolvedClientInfo.clientSheetId
+          })
+        });
+        const data = await res.json();
+        if (cancelled || !data.success) return;
+
+        const months = data.months || [];
+        const contractors = data.contractors || [];
+
+        // 1. Resolve column letter from month
+        let col = resolvedColLetter;
+        if (!col && target.month && months.length > 0) {
+          const cleanTargetMonth = String(target.month).replace(/[-_,\s]/g, "").toLowerCase();
+          const matchedMonth = months.find(m => {
+            const cleanLabel = String(m.label || "").replace(/[-_,\s]/g, "").toLowerCase();
+            const cleanIso = String(m.isoMonth || "").replace(/[-_,\s]/g, "").toLowerCase();
+            return cleanLabel === cleanTargetMonth || cleanIso === cleanTargetMonth ||
+                   cleanLabel.includes(cleanTargetMonth) || cleanTargetMonth.includes(cleanLabel);
+          });
+          if (matchedMonth) {
+            col = matchedMonth.colLetter;
+            setResolvedColLetter(col);
+          }
+        }
+
+        // 2. Resolve contractor and sheet row
+        const targetRow = resolvedSheetRow || (target.rowNum ? parseInt(target.rowNum, 10) : null);
+        const targetContractor = String(target.contractor || "").trim().toLowerCase();
+
+        let matchedContractor = null;
+        if (targetRow) {
+          matchedContractor = contractors.find(c => c.sheetRow === targetRow);
+        }
+        if (!matchedContractor && targetContractor) {
+          matchedContractor = contractors.find(c => {
+            const cName = String(c.name || "").trim().toLowerCase();
+            return cName === targetContractor || cName.includes(targetContractor) || targetContractor.includes(cName);
+          });
+        }
+
+        if (matchedContractor) {
+          if (!resolvedSheetRow) {
+            setResolvedSheetRow(matchedContractor.sheetRow);
+          }
+
+          // 3. Inspect cell in contractor row
+          if (col && matchedContractor.cells && matchedContractor.cells[col]) {
+            const cellInfo = matchedContractor.cells[col];
+            const blocks = cellInfo.blocks || [];
+            setExistingBlocks(blocks);
+
+            // Find matching block
+            const targetAppId = target.appId;
+            const targetAmountNum = parseFloat(String(target.amount || "").replace(/[£$€,\s]/g, ""));
+            let matchedBlock = null;
+            if (targetAppId && targetAppId !== "UNRECON-GAP") {
+              matchedBlock = blocks.find(b => b.appId === targetAppId);
+            }
+            if (!matchedBlock && !isNaN(targetAmountNum) && targetAmountNum > 0) {
+              matchedBlock = blocks.find(b => Math.abs(b.amount - targetAmountNum) < 0.05);
+            }
+            if (!matchedBlock && blocks.length > 0) {
+              matchedBlock = blocks[0];
+            }
+
+            if (matchedBlock) {
+              if (matchedBlock.appId) setAppIdVal(matchedBlock.appId);
+              if (!userEdited) {
+                if (matchedBlock.description) setDescription(matchedBlock.description);
+                if (matchedBlock.amount && (!amountVal || amountVal === "0.00" || amountVal === "0")) {
+                  setAmountVal(String(matchedBlock.amount));
+                }
+                if (matchedBlock.recDate && !recDateVal) setRecDateVal(matchedBlock.recDate);
+                if (matchedBlock.payDate && !payDateVal) setPayDateVal(matchedBlock.payDate);
+              }
+            } else if (cellInfo.value && (!amountVal || amountVal === "0.00" || amountVal === "0") && !userEdited) {
+              const parsedVal = parseFloat(String(cellInfo.value).replace(/[£$€,\s]/g, ""));
+              if (!isNaN(parsedVal)) setAmountVal(String(parsedVal));
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Failed to hydrate outgoings cell data:", err);
+      } finally {
+        if (!cancelled) setLoadingCellData(false);
+      }
+    };
+
+    hydrateFromSheet();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, target, resolvedClientInfo.clientSheetId, resolvedColLetter, resolvedSheetRow]);
 
   // Handle Escape key
   useEffect(() => {
@@ -45,12 +236,11 @@ export default function OutgoingsDetailModal({
 
   if (!isOpen || !target) return null;
 
-  const cellCoord = target.cellCoord || (target.rowNum ? `Row ${target.rowNum}` : "");
-  const colLetterMatch = String(cellCoord).match(/^([A-Za-z]+)(\d+)$/);
-  const colLetter = colLetterMatch ? colLetterMatch[1].toUpperCase() : "";
-  const sheetRow = colLetterMatch ? parseInt(colLetterMatch[2], 10) : (target.rowNum ? parseInt(target.rowNum, 10) : null);
+  const colLetter = resolvedColLetter;
+  const sheetRow = resolvedSheetRow || (target.rowNum ? parseInt(target.rowNum, 10) : null);
+  const cellCoordDisplay = colLetter && sheetRow ? `Cell ${colLetter}${sheetRow}` : (target.cellCoord || (sheetRow ? `Row ${sheetRow}` : ""));
 
-  const canSave = Boolean(target.client?.clientSheetId && colLetter && sheetRow);
+  const canSave = Boolean(resolvedClientInfo.clientSheetId && colLetter && sheetRow);
 
   const handleSaveOutgoings = async () => {
     if (!canSave) return;
@@ -62,29 +252,51 @@ export default function OutgoingsDetailModal({
       const formattedRec = recDateVal ? toSheetDateFormat(recDateVal) : "";
       const formattedPay = payDateVal ? toSheetDateFormat(payDateVal) : "";
 
-      const blocks = [
-        {
-          appId: target.appId || "UNRECON-GAP",
-          amount: parsedAmount,
-          description: description.trim() || target.contractor || "Expense",
-          recDate: formattedRec,
-          payDate: formattedPay,
-          status: "pending"
-        }
-      ];
+      let blocks;
+      if (existingBlocks && existingBlocks.length > 0) {
+        const curAppId = appIdVal || target.appId;
+        const matchIdx = existingBlocks.findIndex(b => curAppId && b.appId === curAppId);
+        const idxToUpdate = matchIdx >= 0 ? matchIdx : 0;
+        blocks = existingBlocks.map((b, i) => {
+          if (i === idxToUpdate) {
+            return {
+              ...b,
+              appId: b.appId || curAppId || "UNRECON-GAP",
+              amount: parsedAmount,
+              description: description.trim() || target.contractor || "Expense",
+              recDate: formattedRec,
+              payDate: formattedPay,
+              status: b.status || "pending"
+            };
+          }
+          return b;
+        });
+      } else {
+        blocks = [
+          {
+            appId: appIdVal || target.appId || "UNRECON-GAP",
+            amount: parsedAmount,
+            description: description.trim() || target.contractor || "Expense",
+            recDate: formattedRec,
+            payDate: formattedPay,
+            status: "pending"
+          }
+        ];
+      }
 
       const res = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "update_outgoing_note",
-          clientSheetId: target.client.clientSheetId,
-          clientName: target.client.clientName || target.client.name || "",
+          clientSheetId: resolvedClientInfo.clientSheetId,
+          clientName: resolvedClientInfo.client?.clientName || target.client?.clientName || target.clientName || "",
+          contractorName: target.contractor || description,
+          masterSheetId: resolvedClientInfo.client?.masterSheetId || target.client?.masterSheetId || "",
           cellRef: `${colLetter}${sheetRow}`,
           colLetter,
           sheetRow,
           cellTotal: parsedAmount,
-          contractorName: target.contractor || description,
           blocks
         })
       });
@@ -154,15 +366,31 @@ export default function OutgoingsDetailModal({
                   border: "1px solid #fde68a"
                 }}
               >
-                Outgoings Entry
+                {isAdmin ? "Outgoings Entry" : "Expense Entry"}
               </span>
               <h2 style={{ margin: 0, fontSize: "17px", fontWeight: "700", color: "#0f172a" }}>
                 {target.contractor || "Contractor / Overhead Expense"}
               </h2>
             </div>
-            <div style={{ fontSize: "12px", color: "#64748b", marginTop: "3px" }}>
-              Outgoings tab{target.month ? ` · ${target.month}` : ""}{cellCoord ? ` · ${cellCoord.includes("Cell") ? cellCoord : `Cell ${cellCoord}`}` : ""}
-              {target.client?.clientName ? ` (${target.client.clientName})` : ""}
+            <div style={{ fontSize: "12px", color: "#64748b", marginTop: "3px", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+              <span>
+                {isAdmin ? (
+                  <>
+                    Outgoings tab{target.month ? ` · ${target.month}` : ""}{cellCoordDisplay ? ` · ${cellCoordDisplay}` : ""}
+                    {resolvedClientInfo.client?.clientName || target.client?.clientName || target.clientName ? ` (${resolvedClientInfo.client?.clientName || target.client?.clientName || target.clientName})` : ""}
+                  </>
+                ) : (
+                  <>
+                    {target.month || "Expense"}
+                    {resolvedClientInfo.client?.clientName || target.client?.clientName || target.clientName ? ` (${resolvedClientInfo.client?.clientName || target.client?.clientName || target.clientName})` : ""}
+                  </>
+                )}
+              </span>
+              {loadingCellData && (
+                <span style={{ color: "#0284c7", fontSize: "11px", display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                  <Spinner size={10} color="#0284c7" /> {isAdmin ? "Loading cell details…" : "Loading expense details…"}
+                </span>
+              )}
             </div>
           </div>
 
@@ -264,7 +492,10 @@ export default function OutgoingsDetailModal({
                 <input
                   type="text"
                   value={description}
-                  onChange={(e) => setDescription(e.target.value)}
+                  onChange={(e) => {
+                    setDescription(e.target.value);
+                    setUserEdited(true);
+                  }}
                   style={{
                     width: "100%", padding: "6px 8px", borderRadius: "5px",
                     border: "1px solid #cbd5e1", fontSize: "13px", fontWeight: "500",
@@ -280,7 +511,10 @@ export default function OutgoingsDetailModal({
                 <input
                   type="text"
                   value={amountVal}
-                  onChange={(e) => setAmountVal(e.target.value)}
+                  onChange={(e) => {
+                    setAmountVal(e.target.value);
+                    setUserEdited(true);
+                  }}
                   placeholder="0.00"
                   style={{
                     width: "100%", padding: "6px 8px", borderRadius: "5px",
@@ -296,7 +530,10 @@ export default function OutgoingsDetailModal({
                 </label>
                 <JobDateInput
                   value={recDateVal}
-                  onChange={(val) => setRecDateVal(val)}
+                  onChange={(val) => {
+                    setRecDateVal(val);
+                    setUserEdited(true);
+                  }}
                   defaultBorder="1px solid #cbd5e1"
                   defaultBg="#ffffff"
                   style={{ width: "100%", padding: "6px 8px", boxSizing: "border-box" }}
@@ -309,7 +546,10 @@ export default function OutgoingsDetailModal({
                 </label>
                 <JobDateInput
                   value={payDateVal}
-                  onChange={(val) => setPayDateVal(val)}
+                  onChange={(val) => {
+                    setPayDateVal(val);
+                    setUserEdited(true);
+                  }}
                   defaultBorder="1px solid #cbd5e1"
                   defaultBg="#ffffff"
                   style={{ width: "100%", padding: "6px 8px", boxSizing: "border-box" }}
@@ -317,16 +557,20 @@ export default function OutgoingsDetailModal({
               </div>
             </div>
 
-            {target.appId && (
+            {(appIdVal || target.appId) && (
               <div style={{ marginTop: "12px", paddingTop: "10px", borderTop: "1px solid #f1f5f9", fontSize: "11px", color: "#64748b" }}>
                 <strong>App ID / Identifier:</strong>{" "}
-                <span style={{ fontFamily: "monospace", color: "#334155" }}>{target.appId}</span>
+                <span style={{ fontFamily: "monospace", color: "#334155" }}>{appIdVal || target.appId}</span>
               </div>
             )}
 
             {target.rawText && (
               <div style={{ marginTop: "8px", fontSize: "11px", color: "#64748b" }}>
-                <strong>Original Note:</strong> {target.rawText}
+                <strong>Alert Log Entry:</strong>{" "}
+                {(() => {
+                  const cleaned = String(target.rawText).replace(/\s*[-–]\s*$/, "").trim();
+                  return isAdmin ? cleaned : stripRowInfo(cleaned);
+                })()}
               </div>
             )}
           </div>
@@ -348,21 +592,23 @@ export default function OutgoingsDetailModal({
           <div>
             {savedSuccess ? (
               <span style={{ fontSize: "12px", color: "#16a34a", fontWeight: "700" }}>
-                ✓ Outgoings cell updated successfully
+                {isAdmin ? "✓ Outgoings cell updated successfully" : "✓ Expense updated successfully"}
               </span>
             ) : (
               <span style={{ fontSize: "12px", color: "#64748b" }}>
-                {canSave ? "Edit fields above and click Save to update Outgoings sheet" : "Viewing expense record"}
+                {canSave
+                  ? (isAdmin ? "Edit fields above and click Save to update Outgoings sheet" : "Edit fields above and click Save to update expense")
+                  : "Viewing expense record"}
               </span>
             )}
           </div>
 
           <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-            {target.client?.clientSheetId && (
+            {isAdmin && resolvedClientInfo.clientSheetId && (
               <button
                 type="button"
                 onClick={() => {
-                  window.open(`https://docs.google.com/spreadsheets/d/${target.client.clientSheetId}/edit`, "_blank");
+                  window.open(`https://docs.google.com/spreadsheets/d/${resolvedClientInfo.clientSheetId}/edit`, "_blank");
                 }}
                 style={{
                   padding: "6px 12px",

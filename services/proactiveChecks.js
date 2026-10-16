@@ -1,6 +1,6 @@
 import { createHash } from "crypto";
 import { isPlaceholderInvoice, isPlaceholderExpense } from "../utils/helpers.js";
-import { withRetry, colIndexToLetter } from "./sheetsClient.js";
+import { withRetry, colIndexToLetter, applySheetFontFormat } from "./sheetsClient.js";
 import { getClientWebAppUrl, getAllClients } from "./workspaces.js";
 import { redisClient } from "./redisClient.js";
 import { ensureAlertMemoryTab, readAlertMemory, updateAlertMemoryRow, findMemoryRow } from "./alertMemory.js";
@@ -1699,11 +1699,350 @@ export async function checkQuarantinedPLCategories_(clientName, masterSheetId, s
   return alerts;
 }
 
+/**
+ * Pushes historical and forecast P&L amounts for a category directly from Master Sheet (PLFromApp / PLComp)
+ * to the newly created row on Outgoings (Columns G onwards).
+ */
+export async function pushCategoryPLAmountsToOutgoings_(sheets, masterSheetId, clientSheetId, categoryName, targetSheetRow) {
+  if (!masterSheetId || !clientSheetId || !categoryName || !targetSheetRow) return;
+  const normClean = categoryName.replace(/^\d+\s*[-–]\s*/, "").trim().toLowerCase();
+
+  // Helper to parse header labels into standardized 'YYYY-MM'
+  function parseHeaderToMonthKey(str) {
+    if (!str) return null;
+    const s = String(str).trim();
+    // 1. Match 'Jul 26' or 'Jul-26'
+    const m = s.match(/^([A-Za-z]{3})[\s\-_]*(\d{2})$/);
+    if (m) {
+      const monthNames = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+      const mIdx = monthNames.indexOf(m[1].toLowerCase());
+      if (mIdx !== -1) {
+        const yr = 2000 + parseInt(m[2], 10);
+        return `${yr}-${String(mIdx + 1).padStart(2, '0')}`;
+      }
+    }
+    // 2. Match 'July 2026' or 'July 26'
+    const mLong = s.match(/^([A-Za-z]+)[\s\-_]*(\d{2,4})$/);
+    if (mLong) {
+      const monthNamesLong = ['january','february','march','april','may','june','july','august','september','october','november','december'];
+      const mIdx = monthNamesLong.indexOf(mLong[1].toLowerCase());
+      if (mIdx !== -1) {
+        let yr = parseInt(mLong[2], 10);
+        if (yr < 100) yr += 2000;
+        return `${yr}-${String(mIdx + 1).padStart(2, '0')}`;
+      }
+    }
+    // 3. Fallback standard Date
+    const d = new Date(s);
+    if (!isNaN(d.getTime()) && d.getFullYear() > 2010) {
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    }
+    return null;
+  }
+
+  const monthlyAmounts = new Map(); // 'YYYY-MM' -> number
+
+  // 1. Read PLFromApp (historical P&L report actuals)
+  try {
+    const plAppRes = await withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: masterSheetId,
+      range: "PLFromApp!A1:AZ100"
+    }));
+    const plAppRows = plAppRes.data.values || [];
+    const plAppHeaders = plAppRows[0] || [];
+    const plAppCatRow = plAppRows.find(r => {
+      const name = String(r[0] || "").replace(/^\d+\s*[-–]\s*/, "").trim().toLowerCase();
+      return name === normClean || name.includes(normClean) || normClean.includes(name);
+    });
+
+    if (plAppCatRow) {
+      for (let c = 1; c < plAppHeaders.length; c++) {
+        const mKey = parseHeaderToMonthKey(plAppHeaders[c]);
+        if (mKey) {
+          const val = parseFloat(String(plAppCatRow[c] || "0").replace(/[£$€,\s]/g, "")) || 0;
+          monthlyAmounts.set(mKey, val);
+        }
+      }
+    }
+  } catch (e) {
+    console.warn("[P&L Amount Push] Could not read PLFromApp:", e.message);
+  }
+
+  // 2. Read PLComp (Master calculation & comparison sheet)
+  try {
+    const plCompRes = await withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: masterSheetId,
+      range: "PLComp!A1:AZ200"
+    }));
+    const plCompRows = plCompRes.data.values || [];
+    const plCompHeaders = plCompRows[0] || [];
+    const plCompCatRow = plCompRows.find(r => {
+      const bVal = String(r[1] || "").replace(/^\d+\s*[-–]\s*/, "").trim().toLowerCase();
+      const eVal = String(r[4] || "").replace(/^\d+\s*[-–]\s*/, "").trim().toLowerCase();
+      return bVal === normClean || eVal === normClean || bVal.includes(normClean) || eVal.includes(normClean);
+    });
+
+    if (plCompCatRow) {
+      for (let c = 5; c < plCompHeaders.length; c++) {
+        const hStr = plCompHeaders[c];
+        if (!hStr) continue;
+        const mKey = parseHeaderToMonthKey(hStr);
+        if (mKey) {
+          const val = parseFloat(String(plCompCatRow[c] || "0").replace(/[£$€,\s]/g, "")) || 0;
+          if (val !== 0 || !monthlyAmounts.has(mKey)) {
+            monthlyAmounts.set(mKey, val);
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.warn("[P&L Amount Push] Could not read PLComp:", e.message);
+  }
+
+  // 3. Read Outgoings Row 1 month headers & template row formulas (Row 126)
+  const [outHRes, tmplRes] = await Promise.all([
+    withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: clientSheetId,
+      range: "Outgoings!1:1"
+    })),
+    withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: clientSheetId,
+      range: "Outgoings!126:126",
+      valueRenderOption: "FORMULA"
+    }))
+  ]);
+
+  const outHeaders = outHRes.data.values?.[0] || [];
+  const templateRow = tmplRes.data.values?.[0] || [];
+  if (outHeaders.length <= 6) return;
+
+  const maxCols = Math.max(outHeaders.length, templateRow.length, 50);
+  const rowValues = [];
+  const decimalColIndices = [];
+
+  for (let c = 6; c < maxCols; c++) {
+    const tmplVal = templateRow[c] !== undefined ? String(templateRow[c]).trim() : "";
+    const headerStr = outHeaders[c] !== undefined ? String(outHeaders[c]).trim() : "";
+
+    // A. If template row has a formula (e.g. "=SUM(G126:S126)"), adapt and preserve it
+    if (tmplVal.startsWith("=")) {
+      const adaptedFormula = tmplVal.replace(/(?<=[A-Za-z])126(?!\d)/g, String(targetSheetRow));
+      rowValues.push(adaptedFormula);
+      continue;
+    }
+
+    // B. If column header is empty/spacer or not a month, keep it completely blank ("")
+    const mKey = parseHeaderToMonthKey(headerStr);
+    if (!mKey) {
+      rowValues.push("");
+      continue;
+    }
+
+    // C. Valid month column: if an amount exists from P&L, write it; otherwise keep blank ("")
+    const amount = monthlyAmounts.get(mKey);
+    if (amount !== undefined && amount !== 0) {
+      rowValues.push(amount);
+      if (Math.abs(amount % 1) > 0.001) {
+        decimalColIndices.push(c);
+      }
+    } else {
+      rowValues.push("");
+    }
+  }
+
+  // Helper to convert 1-indexed column number to A1 notation column letter
+  function colIndexToA1(colIdx) {
+    let temp = colIdx;
+    let letter = "";
+    while (temp > 0) {
+      let rem = (temp - 1) % 26;
+      letter = String.fromCharCode(65 + rem) + letter;
+      temp = Math.floor((temp - 1) / 26);
+    }
+    return letter;
+  }
+
+  const startColLetter = "G";
+  const endColLetter = colIndexToA1(6 + rowValues.length);
+
+  await withRetry(() => sheets.spreadsheets.values.update({
+    spreadsheetId: clientSheetId,
+    range: `Outgoings!${startColLetter}${targetSheetRow}:${endColLetter}${targetSheetRow}`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: [rowValues] }
+  }));
+
+  // 4. If any cells have fractional pence (e.g. £5.94), ensure they format with 2 decimals
+  if (decimalColIndices.length > 0) {
+    try {
+      const meta = await withRetry(() => sheets.spreadsheets.get({
+        spreadsheetId: clientSheetId,
+        fields: "sheets.properties"
+      }));
+      const outSheet = meta.data.sheets?.find(s => s.properties.title === "Outgoings");
+      if (outSheet) {
+        const outSheetId = outSheet.properties.sheetId;
+        const requests = decimalColIndices.map(colIdx => ({
+          repeatCell: {
+            range: {
+              sheetId: outSheetId,
+              startRowIndex: targetSheetRow - 1,
+              endRowIndex: targetSheetRow,
+              startColumnIndex: colIdx,
+              endColumnIndex: colIdx + 1
+            },
+            cell: {
+              userEnteredFormat: {
+                numberFormat: {
+                  type: "CURRENCY",
+                  pattern: "\"£\"#,##0.00"
+                },
+                textFormat: {
+                  fontFamily: "Arial",
+                  fontSize: 9
+                }
+              }
+            },
+            fields: "userEnteredFormat.numberFormat,userEnteredFormat.textFormat.fontFamily,userEnteredFormat.textFormat.fontSize"
+          }
+        }));
+
+        await withRetry(() => sheets.spreadsheets.batchUpdate({
+          spreadsheetId: clientSheetId,
+          requestBody: { requests }
+        }));
+      }
+    } catch (fmtErr) {
+      console.warn("[P&L Amount Push] Could not apply decimal number formatting:", fmtErr.message);
+    }
+  }
+
+  const nonZeroCount = rowValues.filter(v => typeof v === "number" && v !== 0).length;
+  console.log(`[P&L Amount Push] Successfully populated row ${targetSheetRow} (${nonZeroCount} actual months, formulas preserved, spacers blank) into Outgoings!${startColLetter}${targetSheetRow}:${endColLetter}${targetSheetRow} for "${categoryName}".`);
+}
+
+export async function ensureCategoryInOutgoings_(sheets, clientSheetId, categoryName, isDeliveryExpense = false, masterSheetId = null) {
+  if (!clientSheetId || !categoryName) return null;
+  const cleanName = categoryName.replace(/^\d+\s*[-–]\s*/, "").trim();
+  const normClean = cleanName.toLowerCase();
+
+  const MIN_CATEGORY_ROW = 126;
+  const MAX_CATEGORY_ROW = 223; // Fixed: Last usable row of the Other expenses section is Row 223
+
+  // Read Outgoings!A124:A225 to inspect existing categories
+  const res = await withRetry(() => sheets.spreadsheets.values.get({
+    spreadsheetId: clientSheetId,
+    range: `Outgoings!A124:A${MAX_CATEGORY_ROW + 2}`
+  }));
+  const rows = res.data.values || [];
+
+  const existingCats = new Set();
+  const populatedCategoryRows = [];
+
+  // Gather existing populated categories strictly within rows 126 up to 223
+  for (let r = MIN_CATEGORY_ROW; r <= MAX_CATEGORY_ROW; r++) {
+    const raw = String(rows[r - 124]?.[0] || "").trim();
+    const lower = raw.toLowerCase();
+
+    if (raw && !raw.startsWith("#") && !lower.includes("#n/a") && !lower.startsWith("total") && !lower.startsWith("---") && !lower.startsWith("===") && lower !== "other expenses") {
+      const norm = raw.replace(/^\d+\s*[-–]\s*/, "").toLowerCase().trim();
+      existingCats.add(norm);
+      populatedCategoryRows.push(r);
+    }
+  }
+
+  // If already exists on Outgoings, nothing to do
+  if (existingCats.has(normClean)) {
+    console.log(`[Outgoings Provision] Category "${cleanName}" already exists on Outgoings tab.`);
+    return { alreadyExisted: true };
+  }
+
+  // Target row: strictly the first blank row UNDERNEATH ALL EXISTING CATEGORIES.
+  // We take Math.max of all populated category rows across the entire expense section (both overheads and direct expenses).
+  // This guarantees we never place it into row 125 or any intermediate gap within "Other expenses".
+  const maxUsedCategoryRow = populatedCategoryRows.length > 0 ? Math.max(...populatedCategoryRows) : (MIN_CATEGORY_ROW - 1);
+  const targetSheetRow = maxUsedCategoryRow + 1;
+
+  if (targetSheetRow > MAX_CATEGORY_ROW) {
+    console.warn(`[Outgoings Provision] Cannot insert "${cleanName}": row ${targetSheetRow} exceeds maximum usable category row ${MAX_CATEGORY_ROW}.`);
+    return null;
+  }
+
+  // Determine VAT setting:
+  // Default to "Yes". If actual transactions exist in JnlsFromApp for this category, base on them:
+  // - If any matching transaction has VAT > 0, set "Yes".
+  // - If matching transactions exist and all have VAT == 0, set "No".
+  // - If no matching transactions exist, default to "Yes".
+  let vatSetting = "Yes";
+  if (masterSheetId) {
+    try {
+      const jnlsRes = await withRetry(() => sheets.spreadsheets.values.get({
+        spreadsheetId: masterSheetId,
+        range: "JnlsFromApp!A2:G500"
+      }));
+      const jnlsRows = jnlsRes.data.values || [];
+      const matchingTxns = jnlsRows.filter(r => {
+        const acc = String(r[6] || "").replace(/^\d+\s*[-–]\s*/, "").trim().toLowerCase();
+        const desc = String(r[1] || "").toLowerCase();
+        return acc === normClean || acc.includes(normClean) || desc.includes(normClean);
+      });
+
+      if (matchingTxns.length > 0) {
+        const hasVat = matchingTxns.some(r => {
+          const v = parseFloat(String(r[3] || "0").replace(/[£$€,\s]/g, "")) || 0;
+          return Math.abs(v) > 0.001;
+        });
+        vatSetting = hasVat ? "Yes" : "No";
+        console.log(`[Outgoings Provision] Determined VAT setting "${vatSetting}" from ${matchingTxns.length} matching transaction(s) in JnlsFromApp for "${cleanName}".`);
+      } else {
+        console.log(`[Outgoings Provision] No transactions in JnlsFromApp for "${cleanName}". Defaulting VAT to "Yes".`);
+      }
+    } catch (jnlErr) {
+      console.warn(`[Outgoings Provision] Error checking JnlsFromApp for VAT: ${jnlErr.message}. Defaulting VAT to "Yes".`);
+    }
+  }
+
+  const defaults = [
+    vatSetting,
+    "Curr",
+    "Curr",
+    isDeliveryExpense ? "100%" : "0%",
+    "100%"
+  ];
+
+  const payload = [[cleanName, ...defaults]];
+
+  // Write header metadata (Columns A through F)
+  await withRetry(() => sheets.spreadsheets.values.update({
+    spreadsheetId: clientSheetId,
+    range: `Outgoings!A${targetSheetRow}:F${targetSheetRow}`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: payload }
+  }));
+
+  // Match and preserve the sheet's existing font family and size (e.g. Arial 9pt from Row 126)
+  await applySheetFontFormat(sheets, clientSheetId, "Outgoings", targetSheetRow - 1, targetSheetRow, 0, 50, "Outgoings!A126");
+
+  // P&L Amount Push: Extract monthly amounts from PLFromApp and PLComp on Master Sheet and write to Columns G onwards
+  if (masterSheetId) {
+    try {
+      await pushCategoryPLAmountsToOutgoings_(sheets, masterSheetId, clientSheetId, cleanName, targetSheetRow);
+    } catch (plErr) {
+      console.warn(`[Outgoings Provision] Could not push P&L amounts for "${cleanName}":`, plErr.message);
+    }
+  }
+
+  console.log(`[Outgoings Provision] Successfully inserted "${cleanName}" into Outgoings!Row ${targetSheetRow} (${isDeliveryExpense ? "CoS" : "Overhead"}, VAT: ${vatSetting}).`);
+  return { targetSheetRow, cleanName, vatSetting };
+}
+
 export async function handleClassifyPLCategory(sheets, {
   clientName,
   categoryName,
   classification,
   automationCommanderSheetId,
+  masterSheetId,
+  clientSheetId,
   userEmail
 }) {
   if (!clientName || !categoryName || !classification) {
@@ -1723,12 +2062,28 @@ export async function handleClassifyPLCategory(sheets, {
     throw new Error(`Cannot classify invalid error value as category: "${categoryName}"`);
   }
 
-  // 1. Resolve masterSheetId
-  const clientsData = await getAllClients(sheets, { isAdmin: true }, false, automationCommanderSheetId);
-  const clientObj = clientsData?.clientsObj?.[clientName];
-  const masterSheetId = clientObj?.masterSheetId;
-  if (!masterSheetId) {
+  // 1. Resolve masterSheetId and clientSheetId
+  let targetMasterSheetId = masterSheetId;
+  let targetClientSheetId = clientSheetId;
+  if (!targetMasterSheetId || !targetClientSheetId) {
+    const clientsData = await getAllClients(sheets, { isAdmin: true }, false, automationCommanderSheetId);
+    const clientObj = clientsData?.clientsObj?.[clientName];
+    if (!targetMasterSheetId) targetMasterSheetId = clientObj?.masterSheetId;
+    if (!targetClientSheetId) targetClientSheetId = clientObj?.clientSheetId;
+  }
+  if (!targetMasterSheetId) {
     throw new Error(`Could not find Master Sheet ID for client "${clientName}"`);
+  }
+  masterSheetId = targetMasterSheetId;
+
+  if (!targetClientSheetId) {
+    try {
+      const x28Res = await withRetry(() => sheets.spreadsheets.values.get({
+        spreadsheetId: masterSheetId,
+        range: "KeyInfo!X28"
+      }));
+      targetClientSheetId = String(x28Res.data.values?.[0]?.[0] || "").trim();
+    } catch (e) {}
   }
 
   const cleanName = categoryName.replace(/^\d+\s*[-–]\s*/, "").trim();
@@ -1791,7 +2146,10 @@ export async function handleClassifyPLCategory(sheets, {
     }));
 
   } else if (classification === "non_delivery_expense") {
-    // Non-delivery expense: Simply cleared from PLComp quarantine, naturally flows to PLComp!E89 Overheads.
+    // Non-delivery expense: Auto-provision as Overhead on Client Sheet Outgoings tab
+    if (targetClientSheetId) {
+      await ensureCategoryInOutgoings_(sheets, targetClientSheetId, cleanName, false, masterSheetId);
+    }
   } else {
     // Target sections in KeyInfo!AZ -> KeyInfo!BA
     const SECTION_MAPPING = {
@@ -1861,6 +2219,11 @@ export async function handleClassifyPLCategory(sheets, {
       valueInputOption: "USER_ENTERED",
       requestBody: { values: [[cleanName]] }
     }));
+
+    // If classified as Delivery expense (Other costs of sale), auto-provision onto Outgoings tab as CoS
+    if (classification === "delivery_expense" && targetClientSheetId) {
+      await ensureCategoryInOutgoings_(sheets, targetClientSheetId, cleanName, true, masterSheetId);
+    }
   }
 
   // 3. Clear from quarantine in PLComp!B180:B229
@@ -1903,25 +2266,7 @@ export async function handleClassifyPLCategory(sheets, {
     console.warn("⚠️ Could not write classification to AutoLog:", logErr.message);
   }
 
-  // 5. Trigger Master Sheet Full Sync via webAppUrl
-  let syncResult = null;
-  const webAppUrl = await getClientWebAppUrl(sheets, clientName, automationCommanderSheetId);
-  if (webAppUrl) {
-    try {
-      const secret = process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "triage-cron-2026-AY4K2LDMXBV8DS7";
-      const gasResp = await fetch(webAppUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ secret, action: "sync_expense_breakdown", clientName })
-      });
-      const gasText = await gasResp.text();
-      try { syncResult = JSON.parse(gasText); } catch (e) { syncResult = gasText; }
-    } catch (syncErr) {
-      console.warn("⚠️ Master WebApp sync error:", syncErr.message);
-    }
-  }
-
-  // 6. Auto-resolve the alert in redis cache & AlertMemory
+  // 5. Auto-resolve the alert in redis cache & AlertMemory
   const alertKey = `unmapped_pl_category|${clientName}|${categoryName}`;
   if (redisClient?.isOpen) {
     try {
@@ -1961,9 +2306,31 @@ export async function handleClassifyPLCategory(sheets, {
     }
   }
 
+  // 6. Trigger Master Sheet Full Sync via webAppUrl in background (non-blocking)
+  // Fires push_outgoings (to execute pushOutgoingsToClientSheet) and sync_expense_breakdown
+  // (to execute syncExpenseTransactionBreakdownToClientSheet_ for row 300 / rows 304-305).
+  const webAppUrl = await getClientWebAppUrl(sheets, clientName, automationCommanderSheetId);
+  if (webAppUrl) {
+    const secret = process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "triage-cron-2026-AY4K2LDMXBV8DS7";
+    fetch(webAppUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ secret, action: "push_outgoings", clientName })
+    }).catch(err => {
+      console.warn("⚠️ Master WebApp push_outgoings error:", err.message);
+    });
+
+    fetch(webAppUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ secret, action: "sync_expense_breakdown", clientName })
+    }).catch(syncErr => {
+      console.warn("⚠️ Master WebApp sync_expense_breakdown error:", syncErr.message);
+    });
+  }
+
   return {
     success: true,
-    message: `Successfully classified "${cleanName}" as ${classificationLabel} and synchronized Outgoings.`,
-    syncResult
+    message: `Successfully classified "${cleanName}" as ${classificationLabel} and triggered Outgoings sync.`
   };
 }

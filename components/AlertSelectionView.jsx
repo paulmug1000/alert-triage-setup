@@ -196,6 +196,10 @@ export default function AlertSelectionView({
     const alertKey = alert.alertKey;
     const classification = selectedClassifications[alertKey] || "delivery_expense";
     const categoryName = getCleanPLCategoryName(alert);
+    const clientName = alert.clientName || selectedClient?.clientName;
+    const clientInfo = (clientsWithFlags || []).find(c => c.clientName === clientName) || (allClientsMap && allClientsMap[clientName]);
+    const targetMasterSheetId = alert.metadata?.masterSheetId || clientInfo?.masterSheetId || selectedClient?.masterSheetId;
+    const targetClientSheetId = alert.metadata?.clientSheetId || clientInfo?.clientSheetId || selectedClient?.clientSheetId;
     setApplyingClassification(prev => ({ ...prev, [alertKey]: true }));
     setClassificationMsg(prev => ({ ...prev, [alertKey]: "" }));
     try {
@@ -204,10 +208,12 @@ export default function AlertSelectionView({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "classify_pl_category",
-          clientName: alert.clientName || selectedClient?.clientName,
+          clientName,
           categoryName,
           classification,
-          automationCommanderSheetId
+          automationCommanderSheetId,
+          masterSheetId: targetMasterSheetId,
+          clientSheetId: targetClientSheetId
         })
       });
       const data = await res.json();
@@ -1322,7 +1328,8 @@ export default function AlertSelectionView({
                               }
                             };
 
-                              const clientInfo = (clientsWithFlags || []).find(c => c.clientName === selectedClient?.clientName) || allClientsMap[selectedClient?.clientName] || selectedClient;
+                              const cName = na.clientName || selectedClient?.clientName;
+                              const clientInfo = (clientsWithFlags || []).find(c => c.clientName === cName) || (allClientsMap && (allClientsMap[cName] || Object.values(allClientsMap).find(cl => cl.clientName?.toLowerCase() === cName?.toLowerCase()))) || selectedClient;
                               const parsed = parseInfoAlertDetail(na.flagType, na.flagDetail);
                               const isBulkSelected = infoBulkSelected.has(alertId);
 
@@ -2114,7 +2121,8 @@ export default function AlertSelectionView({
                                   <div style={{ fontSize: "11px", color: "#aaa" }}>First seen: {alert.firstSeen} · Last seen: {alert.lastSeen}</div>
                                   <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
                                     {(() => {
-                                      const clientInfo = (clientsWithFlags || []).find(c => c.clientName === selectedClient.clientName) || allClientsMap[selectedClient.clientName] || selectedClient;
+                                      const cName = alert.clientName || selectedClient?.clientName;
+                                      const clientInfo = (clientsWithFlags || []).find(c => c.clientName === cName) || (allClientsMap && (allClientsMap[cName] || Object.values(allClientsMap).find(cl => cl.clientName?.toLowerCase() === cName?.toLowerCase()))) || selectedClient;
                                       const jobTarget = getAlertJobTarget(alert, false, clientInfo);
                                       return (
                                         <>

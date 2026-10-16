@@ -740,121 +740,168 @@ export default function CashflowReconTab({
         marginBottom: "16px",
         boxShadow: "0 1px 3px rgba(0,0,0,0.04)"
       }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "12px" }}>
-          {/* Left: Title + Client Dropdown (acts as client label) + Month pill + Month arrows */}
-          <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
-            <h3 style={{ margin: 0, fontSize: "18px", fontWeight: "700", color: "#0f172a" }}>
+        {/* Title row */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "16px" }}>
+          <div>
+            <h3 style={{ margin: 0, fontSize: "20px", fontWeight: "700", color: "#0f172a" }}>
               Cashflow recon
             </h3>
-
-            {/* Client selector dropdown: acts as client label (replaces client name entirely) */}
-            <select
-              value={selectedClient}
-              onChange={e => {
-                setSelectedClient(e.target.value);
-                setReconData(null);
-              }}
-              style={{
-                fontSize: "14px",
-                fontWeight: "700",
-                background: "#f1f5f9",
-                color: "#1e293b",
-                padding: "5px 12px",
-                borderRadius: "8px",
-                border: "1px solid #cbd5e1",
-                outline: "none",
-                cursor: "pointer"
-              }}
-            >
-              <option value="">Choose a client...</option>
-              {allOutgoingsClients.map(c => (
-                <option key={c.clientName} value={c.clientName}>
-                  {c.clientName}
-                </option>
-              ))}
-            </select>
-
-            {/* Target Month pill: light grey like the client name */}
-            {selectedClient && reconData?.targetMonthLabel && (
-              <span style={{
-                fontSize: "14px",
-                fontWeight: "700",
-                background: "#f1f5f9",
-                color: "#1e293b",
-                border: "1px solid #e2e8f0",
-                padding: "5px 12px",
-                borderRadius: "8px"
-              }}>
-                {reconData.targetMonthLabel}
-              </span>
-            )}
-
-            {/* Month selector arrows (without Reset button) */}
-            {selectedClient && (
-              <div style={{ display: "flex", alignItems: "center", background: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: "8px", padding: "2px 4px", gap: "2px" }}>
-                <button
-                  onClick={() => handleShiftMonth(-1)}
-                  title="Previous month"
-                  style={{ padding: "4px 8px", background: "none", border: "none", cursor: "pointer", fontSize: "13px", color: "#475569" }}
-                >
-                  ◀
-                </button>
-                <button
-                  onClick={() => handleShiftMonth(1)}
-                  title="Next month"
-                  style={{ padding: "4px 8px", background: "none", border: "none", cursor: "pointer", fontSize: "13px", color: "#475569" }}
-                >
-                  ▶
-                </button>
-              </div>
-            )}
           </div>
 
-          {/* Right: EoM task complete button and Sheet links */}
-          {selectedClient && (
-            <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
-              {linkedTask && onTaskMarkedDone && (
-                <button
-                  onClick={() => onTaskMarkedDone(selectedClient, linkedTask.taskId)}
-                  style={{
-                    padding: "6px 12px",
-                    background: isLinkedTaskDone ? "#f0fdf4" : "#ecfdf5",
-                    border: isLinkedTaskDone ? "1px solid #86efac" : "1px solid #a7f3d0",
-                    color: isLinkedTaskDone ? "#166534" : "#059669",
-                    borderRadius: "6px",
-                    fontSize: "12px",
-                    fontWeight: "600",
-                    cursor: "pointer"
-                  }}
-                >
-                  {isLinkedTaskDone ? "✓ EoM task marked complete" : "Mark EoM task complete"}
-                </button>
-              )}
-
-              {isAdmin && currentClientInfo?.clientSheetId && (
-                <a
-                  href={`https://docs.google.com/spreadsheets/d/${currentClientInfo.clientSheetId}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  style={{ fontSize: "12px", color: "#0284c7", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: "4px", fontWeight: "600" }}
-                >
-                  📊 Client sheet ↗
-                </a>
-              )}
-
-              {isAdmin && currentClientInfo?.reconSheetId && (
-                <a
-                  href={`https://docs.google.com/spreadsheets/d/${currentClientInfo.reconSheetId}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  style={{ fontSize: "12px", color: "#0284c7", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: "4px", fontWeight: "600" }}
-                >
-                  📑 Recon sheet ↗
-                </a>
-              )}
+          {!selectedClient && (
+            <div style={{ minWidth: "260px", flex: "0 1 300px" }}>
+              <label style={{ display: "block", fontSize: "11px", fontWeight: "700", textTransform: "uppercase", color: "#64748b", marginBottom: "4px", letterSpacing: "0.5px" }}>
+                Select client
+              </label>
+              <select
+                value={selectedClient}
+                onChange={e => {
+                  setSelectedClient(e.target.value);
+                  setReconData(null);
+                }}
+                style={{
+                  width: "100%",
+                  padding: "8px 12px",
+                  border: "1px solid #cbd5e1",
+                  borderRadius: "8px",
+                  fontSize: "14px",
+                  fontWeight: "600",
+                  color: "#1e293b",
+                  background: "#f8fafc",
+                  outline: "none",
+                  cursor: "pointer"
+                }}
+              >
+                <option value="">Choose a client...</option>
+                {allOutgoingsClients.map(c => (
+                  <option key={c.clientName} value={c.clientName}>
+                    {c.clientName}
+                  </option>
+                ))}
+              </select>
             </div>
           )}
         </div>
+
+        {/* Selected Client Toolbar & Month Controls */}
+        {selectedClient && (
+          <div style={{
+            marginTop: "14px",
+            paddingTop: "14px",
+            borderTop: "1px solid #f1f5f9",
+            display: "flex",
+            flexDirection: "column",
+            gap: "12px"
+          }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "12px" }}>
+              {/* Left: Client selector replacing client name pill in its exact location + Month pill + Month arrows */}
+              <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                {/* Client selector dropdown: acts as client label (replaces client name pill in its exact current location) */}
+                <select
+                  value={selectedClient}
+                  onChange={e => {
+                    setSelectedClient(e.target.value);
+                    setReconData(null);
+                  }}
+                  style={{
+                    fontSize: "15px",
+                    fontWeight: "700",
+                    background: "#f1f5f9",
+                    color: "#1e293b",
+                    padding: "4px 12px",
+                    borderRadius: "8px",
+                    border: "1px solid #e2e8f0",
+                    outline: "none",
+                    cursor: "pointer"
+                  }}
+                >
+                  <option value="">Choose a client...</option>
+                  {allOutgoingsClients.map(c => (
+                    <option key={c.clientName} value={c.clientName}>
+                      {c.clientName}
+                    </option>
+                  ))}
+                </select>
+
+                {/* Target Month pill: light grey like the client name */}
+                {reconData?.targetMonthLabel && (
+                  <span style={{
+                    fontSize: "15px",
+                    fontWeight: "700",
+                    background: "#f1f5f9",
+                    color: "#1e293b",
+                    border: "1px solid #e2e8f0",
+                    padding: "4px 12px",
+                    borderRadius: "8px"
+                  }}>
+                    {reconData.targetMonthLabel}
+                  </span>
+                )}
+
+                {/* Month selector arrows (without Reset button) */}
+                <div style={{ display: "flex", alignItems: "center", background: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: "8px", padding: "2px 4px", gap: "2px" }}>
+                  <button
+                    onClick={() => handleShiftMonth(-1)}
+                    title="Previous month"
+                    style={{ padding: "4px 8px", background: "none", border: "none", cursor: "pointer", fontSize: "13px", color: "#475569" }}
+                  >
+                    ◀
+                  </button>
+                  <button
+                    onClick={() => handleShiftMonth(1)}
+                    title="Next month"
+                    style={{ padding: "4px 8px", background: "none", border: "none", cursor: "pointer", fontSize: "13px", color: "#475569" }}
+                  >
+                    ▶
+                  </button>
+                </div>
+              </div>
+
+              {/* Right: EoM task complete button and Sheet links */}
+              <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+                {linkedTask && onTaskMarkedDone && (
+                  <button
+                    onClick={() => onTaskMarkedDone(selectedClient, linkedTask.taskId)}
+                    style={{
+                      padding: "6px 12px",
+                      background: isLinkedTaskDone ? "#f0fdf4" : "#f1f5f9",
+                      border: isLinkedTaskDone ? "1px solid #86efac" : "1px solid #cbd5e1",
+                      color: isLinkedTaskDone ? "#166534" : "#475569",
+                      borderRadius: "6px",
+                      fontSize: "12px",
+                      fontWeight: "600",
+                      cursor: "pointer"
+                    }}
+                  >
+                    {isLinkedTaskDone ? "✓ EoM task marked complete" : "Mark EoM task complete"}
+                  </button>
+                )}
+
+                {isAdmin && currentClientInfo?.clientSheetId && (
+                  <a
+                    href={`https://docs.google.com/spreadsheets/d/${currentClientInfo.clientSheetId}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{ fontSize: "12px", color: "#0284c7", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: "4px", fontWeight: "600" }}
+                  >
+                    📊 Client sheet ↗
+                  </a>
+                )}
+
+                {isAdmin && currentClientInfo?.reconSheetId && (
+                  <a
+                    href={`https://docs.google.com/spreadsheets/d/${currentClientInfo.reconSheetId}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{ fontSize: "12px", color: "#0284c7", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: "4px", fontWeight: "600" }}
+                  >
+                    📑 Recon sheet ↗
+                  </a>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Dedicated Tabs: Transaction Recon / Cashflow Finalisation (styled like By month / By job tabs on Contractors screen) */}
@@ -874,7 +921,7 @@ export default function CashflowReconTab({
               cursor: "pointer"
             }}
           >
-            ⚡ Transaction recon
+            Transaction recon
           </button>
           <button
             onClick={() => setViewMode("matrix")}
@@ -890,7 +937,7 @@ export default function CashflowReconTab({
               cursor: "pointer"
             }}
           >
-            📋 Cashflow finalisation
+            Cashflow finalisation
           </button>
         </div>
       )}

@@ -741,7 +741,7 @@ export default async function handler(req, res) {
 
     } else if (action === "classify_pl_category") {
       try {
-        const { clientName, categoryName, classification, automationCommanderSheetId } = req.body;
+        const { clientName, categoryName, classification, automationCommanderSheetId, masterSheetId, clientSheetId } = req.body;
         if (!sessionUser?.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
           return res.status(403).json({ success: false, error: "Access denied to this client" });
         }
@@ -750,6 +750,8 @@ export default async function handler(req, res) {
           categoryName,
           classification,
           automationCommanderSheetId,
+          masterSheetId,
+          clientSheetId,
           userEmail: sessionUser?.email
         });
         return res.status(200).json(result);

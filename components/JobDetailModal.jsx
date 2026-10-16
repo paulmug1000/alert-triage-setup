@@ -12,6 +12,7 @@ import {
   parseLikelihoodValue
 } from "./JobsView";
 import { isPlaceholderInvoice, isPlaceholderExpense } from "../utils/helpers";
+import { useAppGlobals } from "../hooks/useAppGlobals";
 
 export default function JobDetailModal({
   isOpen,
@@ -19,6 +20,9 @@ export default function JobDetailModal({
   onClose,
   onMarkPullPending
 }) {
+  const { allClientsMap } = useAppGlobals();
+  const [internalClientsMap, setInternalClientsMap] = useState(null);
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [job, setJob] = useState(null);
@@ -33,49 +37,115 @@ export default function JobDetailModal({
   const [directCostsEditSlot, setDirectCostsEditSlot] = useState(null);
   const [jobsEditSplit, setJobsEditSplit] = useState(null);
 
+  // Combine global map and fallback loaded map
+  const activeClientsMap = useMemo(() => {
+    return { ...(allClientsMap || {}), ...(internalClientsMap || {}) };
+  }, [allClientsMap, internalClientsMap]);
+
+  // Helper to find clientSheetId and client object across target properties and activeClientsMap
+  const resolvedClientInfo = useMemo(() => {
+    let client = (target?.client && typeof target.client === "object") ? { ...target.client } : {};
+    let clientSheetId =
+      target?.clientSheetId ||
+      client?.clientSheetId ||
+      client?.sheetId ||
+      client?.client_sheet_id ||
+      null;
+
+    const candidateNames = [
+      target?.clientName,
+      client?.clientName,
+      client?.name,
+      target?.endClientName
+    ].filter(Boolean);
+
+    if (!clientSheetId && activeClientsMap && Object.keys(activeClientsMap).length > 0) {
+      for (const name of candidateNames) {
+        const trimmed = String(name).trim();
+        // 1. Direct match
+        if (activeClientsMap[trimmed]) {
+          const matched = activeClientsMap[trimmed];
+          clientSheetId = matched.clientSheetId || matched.sheetId || null;
+          client = { ...(matched || {}), ...(client || {}), clientSheetId, clientName: trimmed };
+          break;
+        }
+        // 2. Case-insensitive match
+        const lower = trimmed.toLowerCase();
+        const foundKey = Object.keys(activeClientsMap).find((k) => k.toLowerCase() === lower);
+        if (foundKey && activeClientsMap[foundKey]) {
+          const matched = activeClientsMap[foundKey];
+          clientSheetId = matched.clientSheetId || matched.sheetId || null;
+          client = { ...(matched || {}), ...(client || {}), clientSheetId, clientName: foundKey };
+          break;
+        }
+      }
+    } else if (clientSheetId) {
+      client.clientSheetId = clientSheetId;
+      if (!client.clientName && target?.clientName) {
+        client.clientName = target.clientName;
+      }
+    }
+
+    return { client, clientSheetId };
+  }, [target, activeClientsMap]);
+
   // Fetch job details on-demand when opened
   useEffect(() => {
-    if (!isOpen || !target?.client?.clientSheetId) {
+    if (!isOpen) {
       setJob(null);
       setDraftEdits({});
       setError(null);
+      setLoading(false);
       return;
     }
 
     let isMounted = true;
-    setLoading(true);
-    setError(null);
-    setJob(null);
-    setDraftEdits({});
+    let { clientSheetId } = resolvedClientInfo;
 
-    fetch("/api/triage", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        action: "get_all_client_jobs",
-        clientSheetId: target.client.clientSheetId,
-        tabName: "All"
-      })
-    })
-      .then((res) => res.json())
-      .then((data) => {
+    const executeFetch = async (sheetId) => {
+      setLoading(true);
+      setError(null);
+      setJob(null);
+      setDraftEdits({});
+
+      try {
+        const res = await fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "get_all_client_jobs",
+            clientSheetId: sheetId,
+            tabName: "All"
+          })
+        });
+        const data = await res.json();
         if (!isMounted) return;
+
         if (data.success && Array.isArray(data.jobs)) {
           if (data.productLines) setProductLines(data.productLines);
           if (data.leadSources) setLeadSources(data.leadSources);
 
-          const targetRow = target.rowNum ? Number(target.rowNum) : null;
+          const targetRow = target?.rowNum ? Number(target.rowNum) : null;
           let found = null;
 
-          // 1. Try matching by row number in rows array
+          // 1. Match by row number in rows array (checking preferred tab first)
           if (targetRow) {
-            found = data.jobs.find((j) => (j.rows || []).some((r) => Number(r.rowNum) === targetRow));
+            if (target?.tabName) {
+              found = data.jobs.find(
+                (j) =>
+                  String(j.tabName || "").toLowerCase() === String(target.tabName).toLowerCase() &&
+                  (j.rows || []).some((r) => Number(r.rowNum) === targetRow)
+              );
+            }
+            if (!found) {
+              found = data.jobs.find((j) => (j.rows || []).some((r) => Number(r.rowNum) === targetRow));
+            }
           }
 
           // 2. Fallback matching by job name and client name
-          if (!found && target.jobName) {
+          if (!found && target?.jobName) {
             const qJob = String(target.jobName).toLowerCase().trim();
-            const qClient = String(target.endClientName || target.client?.clientName || "").toLowerCase().trim();
+            const qClient = String(target.endClientName || target.clientName || target.client?.clientName || "").toLowerCase().trim();
 
             found = data.jobs.find((j) => {
               const jName = String(j.jobName || j.rows?.[0]?.jobName || "").toLowerCase().trim();
@@ -89,23 +159,84 @@ export default function JobDetailModal({
           if (found) {
             setJob(found);
           } else {
-            setError(`Job ${targetRow ? `on row ${targetRow}` : ""} "${target.jobName || ""}" could not be found in the client sheet.`);
+            setError(`Job ${targetRow ? `on row ${targetRow}` : ""} "${target?.jobName || ""}" could not be found in the client sheet.`);
           }
         } else {
           setError(data.error || "Failed to load job details from spreadsheet.");
         }
-      })
-      .catch((err) => {
+      } catch (err) {
         if (isMounted) setError(err.message || "Failed to fetch job details.");
-      })
-      .finally(() => {
+      } finally {
         if (isMounted) setLoading(false);
-      });
+      }
+    };
+
+    const resolveAndFetch = async () => {
+      if (clientSheetId) {
+        await executeFetch(clientSheetId);
+        return;
+      }
+
+      // If clientSheetId wasn't in activeClientsMap and activeClientsMap is empty, try fetching all clients dynamically
+      if (!activeClientsMap || Object.keys(activeClientsMap).length === 0) {
+        setLoading(true);
+        let dynamicSheetId = null;
+        try {
+          const clientsRes = await fetch("/api/triage", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "get_all_clients" })
+          });
+          const clientsData = await clientsRes.json();
+          if (clientsData.success && clientsData.clientsMap) {
+            if (isMounted) setInternalClientsMap(clientsData.clientsMap);
+            const candidateNames = [
+              target?.clientName,
+              target?.client?.clientName,
+              target?.client?.name,
+              target?.endClientName
+            ].filter(Boolean);
+
+            for (const name of candidateNames) {
+              const trimmed = String(name).trim();
+              if (clientsData.clientsMap[trimmed]) {
+                const matched = clientsData.clientsMap[trimmed];
+                dynamicSheetId = matched.clientSheetId || matched.sheetId || null;
+                break;
+              }
+              const lower = trimmed.toLowerCase();
+              const foundKey = Object.keys(clientsData.clientsMap).find((k) => k.toLowerCase() === lower);
+              if (foundKey && clientsData.clientsMap[foundKey]) {
+                const matched = clientsData.clientsMap[foundKey];
+                dynamicSheetId = matched.clientSheetId || matched.sheetId || null;
+                break;
+              }
+            }
+          }
+        } catch (_) {}
+
+        if (dynamicSheetId) {
+          await executeFetch(dynamicSheetId);
+          return;
+        }
+      }
+
+      // If still no sheet ID found
+      if (isMounted) {
+        setLoading(false);
+        setJob(null);
+        setDraftEdits({});
+        const name = target?.clientName || target?.client?.clientName || target?.endClientName || "this client";
+        setError(`Client spreadsheet not found for "${name}". Please ensure the client has a valid Client Sheet URL configured in PMA.`);
+      }
+    };
+
+    resolveAndFetch();
 
     return () => {
       isMounted = false;
     };
-  }, [isOpen, target]);
+  }, [isOpen, target, resolvedClientInfo, activeClientsMap]);
 
   // Close on Escape key if no sub-modal is open
   useEffect(() => {
@@ -373,7 +504,8 @@ export default function JobDetailModal({
 
   // Save changes handler
   const handleSaveJob = async () => {
-    if (!job || !isDirty || !target?.client?.clientSheetId) return;
+    const { clientSheetId, client } = resolvedClientInfo;
+    if (!job || !isDirty || !clientSheetId) return;
 
     const parentRowNum = parentRow.rowNum;
     const FIELD_MAP = {
@@ -428,8 +560,8 @@ export default function JobDetailModal({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "update_job_fields",
-          clientSheetId: target.client.clientSheetId,
-          clientName: target.client.clientName || target.client.name || "",
+          clientSheetId,
+          clientName: client?.clientName || target?.clientName || "",
           tabName,
           rowNum: parentRowNum,
           endClientName: draftEdits.client || parentRow.client || job.client,
@@ -478,7 +610,7 @@ export default function JobDetailModal({
       {invoicesEditSlot && (
         <InvoicesEditModal
           editSlot={invoicesEditSlot}
-          invoicesClient={target.client}
+          invoicesClient={resolvedClientInfo.client || target.client}
           onClose={() => setInvoicesEditSlot(null)}
           onMarkPullPending={(masterId) => onMarkPullPending && onMarkPullPending(masterId)}
           onUpdateInvoiceJobs={(rNum, sNum, newData) => {
@@ -503,7 +635,7 @@ export default function JobDetailModal({
       {directCostsEditSlot && (
         <DirectCostsEditModal
           editSlot={directCostsEditSlot}
-          client={target.client}
+          client={resolvedClientInfo.client || target.client}
           onClose={() => setDirectCostsEditSlot(null)}
           onMarkPullPending={(masterId) => onMarkPullPending && onMarkPullPending(masterId)}
           onUpdateJobs={(rNum, sNum, newData) => {
@@ -528,7 +660,7 @@ export default function JobDetailModal({
       {jobsEditSplit && (
         <UnevenSplitModal
           editSplit={jobsEditSplit}
-          client={target.client}
+          client={resolvedClientInfo.client || target.client}
           tabName={jobsEditSplit.tabName || tabName}
           onClose={() => setJobsEditSplit(null)}
           onUpdateJobsData={(rNum, splitStr, updatedFields) => {

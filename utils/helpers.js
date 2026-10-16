@@ -331,9 +331,9 @@ export function parseStaleExpenseDetail(detail = "") {
   // e.g. "[Outgoings] Aug 26 - Toby Stickland (Row 13): Updated stale placeholder date - Pay: 28-Sep-26->28-Oct-26"
   // or non-admin: "[Outgoings] Aug 26 - Toby Stickland: Updated stale placeholder date - Pay: 28-Sep-26->28-Oct-26"
   // or legacy: "[Outgoings] Row 13, Toby Stickland: Updated stale Placeholder/Gap date (Rec: ...)"
-  if (clean.includes("[Outgoings]")) {
+  if (clean.includes("[Outgoings]") || clean.toLowerCase().includes("updated stale placeholder") || clean.toLowerCase().includes("placeholder/gap date") || clean.toLowerCase().includes("unrecon-gap")) {
     const res = { tab: "Outgoings" };
-    const newMatch = clean.match(/\[Outgoings\]\s*(?:([A-Za-z]{3}\s*\d{2})\s*[-–]\s*)?(.+?)(?:\s*\((?:Row\s*)?(\d+)\))?:\s*(?:£([0-9.,]+)\s*[-–]\s*)?Updated stale placeholder date\s*[-–]\s*(.+)/i);
+    const newMatch = clean.match(/(?:\[Outgoings\]\s*)?(?:([A-Za-z]{3}\s*\d{2})\s*[-–]\s*)?(.+?)(?:\s*\((?:Row\s*)?(\d+)\))?:\s*(?:£([0-9.,]+)\s*[-–]\s*)?Updated stale placeholder date(?:\s*[-–]\s*(.*))?$/i);
     if (newMatch) {
       res.month = newMatch[1] ? newMatch[1].trim() : null;
       res.contractor = newMatch[2] ? newMatch[2].trim() : "";
@@ -341,7 +341,7 @@ export function parseStaleExpenseDetail(detail = "") {
       res.amount = newMatch[4] ? `£${newMatch[4].trim()}` : null;
       res.changeText = newMatch[5] ? newMatch[5].trim() : "";
     } else {
-      const legMatch = clean.match(/\[Outgoings\]\s*(?:Row\s*(\d+),\s*)?(.+?):\s*Updated stale Placeholder\/Gap date\s*\((.+)\)/i);
+      const legMatch = clean.match(/(?:\[Outgoings\]\s*)?(?:Row\s*(\d+),\s*)?(.+?):\s*Updated stale Placeholder\/Gap date\s*(?:\((.*)\))?/i);
       if (legMatch) {
         res.rowNum = legMatch[1] ? parseInt(legMatch[1], 10) : null;
         res.contractor = legMatch[2] ? legMatch[2].trim() : "";
@@ -350,20 +350,48 @@ export function parseStaleExpenseDetail(detail = "") {
         res.rawText = clean.replace(/\[Outgoings\]\s*/i, "");
       }
     }
+
+    // Fallback extraction for any missing fields:
+    if (!res.month) {
+      const mMatch = clean.match(/\b([A-Za-z]{3}\s*\d{2})\b/);
+      if (mMatch) res.month = mMatch[1].trim();
+    }
+    if (!res.rowNum) {
+      const rMatch = clean.match(/\bRow\s*(\d+)\b/i);
+      if (rMatch) res.rowNum = parseInt(rMatch[1], 10);
+    }
+    if (!res.amount) {
+      const aMatch = clean.match(/£([0-9.,]+)/);
+      if (aMatch) res.amount = `£${aMatch[1].trim()}`;
+    }
+    if (!res.contractor) {
+      const cMatch = clean.match(/(?:(?:[A-Za-z]{3}\s*\d{2}\s*[-–]\s*)|(?:\[Outgoings\]\s*))([^(:]+?)(?:\s*\(Row|\s*:)/i);
+      if (cMatch) res.contractor = cMatch[1].trim();
+    }
+
     if (res.changeText) {
       const parts = res.changeText.split(/,\s*/);
       res.changes = parts.map(p => {
         const arrowMatch = p.match(/(Rec|Pay):\s*([A-Za-z0-9-]+)\s*->\s*([A-Za-z0-9-]+)/i);
         if (arrowMatch) {
+          const type = arrowMatch[1];
+          const from = arrowMatch[2];
+          const to = arrowMatch[3];
+          if (type.toLowerCase() === "rec") res.recDate = to;
+          if (type.toLowerCase() === "pay") res.payDate = to;
           return {
-            type: arrowMatch[1],
-            from: arrowMatch[2],
-            to: arrowMatch[3],
-            label: `${arrowMatch[1].toLowerCase() === "pay" ? "Pay Date" : "Receive Date"}: ${arrowMatch[2]} → ${arrowMatch[3]}`
+            type,
+            from,
+            to,
+            label: `${type.toLowerCase() === "pay" ? "Pay Date" : "Receive Date"}: ${from} → ${to}`
           };
         }
         return { label: p.replace(/->/g, " → ") };
-      });
+      }).filter(c => Boolean(c.label && c.label.trim()));
+    }
+
+    if (!res.rawText) {
+      res.rawText = clean.replace(/^\[Outgoings\]\s*/i, "").replace(/\s*[-–]\s*$/, "").trim();
     }
     return res;
   }
@@ -434,7 +462,7 @@ export function parseInfoAlertDetail(flagType, detail = "") {
     const exp = parseStaleExpenseDetail(clean);
     if (exp) {
       return {
-        tab: exp.tab || (clean.includes("[Outgoings]") ? "Outgoings" : "Confirmed"),
+        tab: exp.tab || (clean.includes("[Outgoings]") || clean.toLowerCase().includes("updated stale placeholder") ? "Outgoings" : "Confirmed"),
         month: exp.month,
         contractor: exp.contractor,
         rowNum: exp.rowNum,
@@ -444,11 +472,13 @@ export function parseInfoAlertDetail(flagType, detail = "") {
         job: exp.job,
         slot: exp.slot,
         amount: exp.amount,
+        recDate: exp.recDate,
+        payDate: exp.payDate,
         changes: exp.changes,
         highlight: exp.tab === "Outgoings"
           ? "Stale unreceived expense dates moved forward to current month."
           : "Stale unreceived expense receive date moved forward to current month.",
-        rawText: exp.rawText
+        rawText: exp.rawText || clean.replace(/^\[[^\]]+\]\s*/, "")
       };
     }
   }
@@ -738,6 +768,11 @@ export function toSheetDateFormat(dStr) {
 export function getAlertJobTarget(alertOrNa, isInfo = false, clientInfo = null) {
   if (!alertOrNa) return null;
 
+  const m = alertOrNa.metadata || {};
+  const cName = alertOrNa.clientName || clientInfo?.clientName || m.clientName || "";
+  const cSheetId = alertOrNa.clientSheetId || alertOrNa.clientId || clientInfo?.clientSheetId || clientInfo?.sheetId || null;
+  const effectiveClient = clientInfo || (cName ? { clientName: cName, clientSheetId: cSheetId } : null);
+
   if (isInfo) {
     const flagType = alertOrNa.flagType;
     if (flagType !== "expenseUnreconGaps" && flagType !== "invoiceStaleUnsentChanges") {
@@ -746,14 +781,18 @@ export function getAlertJobTarget(alertOrNa, isInfo = false, clientInfo = null) 
     const parsed = parseInfoAlertDetail(flagType, alertOrNa.flagDetail);
     if (!parsed) return null;
 
-    if (flagType === "expenseUnreconGaps" && parsed.tab === "Outgoings") {
+    if (flagType === "expenseUnreconGaps" && (parsed.tab === "Outgoings" || (!parsed.tab && (parsed.contractor || parsed.outgoingsRow)))) {
       return {
         isOutgoings: true,
-        client: clientInfo,
+        client: effectiveClient,
+        clientName: cName,
+        clientSheetId: cSheetId,
         contractor: parsed.contractor,
         month: parsed.month,
-        rowNum: parsed.rowNum,
+        rowNum: parsed.rowNum || parsed.outgoingsRow,
         amount: parsed.amount,
+        recDate: parsed.recDate,
+        payDate: parsed.payDate,
         changes: parsed.changes,
         rawText: parsed.rawText,
         appId: parsed.appId || "UNRECON-GAP"
@@ -762,7 +801,9 @@ export function getAlertJobTarget(alertOrNa, isInfo = false, clientInfo = null) 
 
     return {
       isOutgoings: false,
-      client: clientInfo,
+      client: effectiveClient,
+      clientName: cName,
+      clientSheetId: cSheetId,
       rowNum: parsed.confirmedRow || parsed.rowNum,
       tabName: "Confirmed",
       jobName: parsed.job,
@@ -773,22 +814,24 @@ export function getAlertJobTarget(alertOrNa, isInfo = false, clientInfo = null) 
 
   // Proactive alert
   const alertType = alertOrNa.alertType;
-  const m = alertOrNa.metadata || {};
 
   if (alertType === "stale_unrecon_gap") {
+    const parsedFromDetail = alertOrNa.detail ? parseStaleExpenseDetail(alertOrNa.detail) : null;
     return {
       isOutgoings: true,
-      client: clientInfo,
-      contractor: m.contractor || alertOrNa.contractor,
+      client: effectiveClient,
+      clientName: cName,
+      clientSheetId: cSheetId,
+      contractor: m.contractor || alertOrNa.contractor || parsedFromDetail?.contractor,
       cellCoord: m.cellCoord || alertOrNa.cellCoord,
-      month: m.month || alertOrNa.month,
-      amount: m.amount || alertOrNa.amount,
-      recDate: m.recDate || alertOrNa.recDate,
-      payDate: m.payDate || alertOrNa.payDate,
+      month: m.month || alertOrNa.month || parsedFromDetail?.month,
+      amount: m.amount || alertOrNa.amount || parsedFromDetail?.amount,
+      recDate: m.recDate || alertOrNa.recDate || parsedFromDetail?.recDate,
+      payDate: m.payDate || alertOrNa.payDate || parsedFromDetail?.payDate,
       weeksAgo: m.weeksAgo || alertOrNa.weeksAgo,
-      appId: m.appId || alertOrNa.appId,
+      appId: m.appId || alertOrNa.appId || "UNRECON-GAP",
       description: m.description || alertOrNa.description,
-      rowNum: m.rowNum || alertOrNa.rowNum
+      rowNum: m.rowNum || alertOrNa.rowNum || parsedFromDetail?.rowNum
     };
   }
 
@@ -796,7 +839,9 @@ export function getAlertJobTarget(alertOrNa, isInfo = false, clientInfo = null) 
     const rowNum = m.confirmedRow || alertOrNa.confirmedRow || (alertOrNa.detail && alertOrNa.detail.match(/Row\s*(\d+)/i)?.[1]);
     return {
       isOutgoings: false,
-      client: clientInfo,
+      client: effectiveClient,
+      clientName: cName,
+      clientSheetId: cSheetId,
       rowNum,
       tabName: "Confirmed",
       jobName: m.jobName || alertOrNa.jobName,
@@ -810,7 +855,9 @@ export function getAlertJobTarget(alertOrNa, isInfo = false, clientInfo = null) 
     const rowNum = m.confirmedRow || alertOrNa.confirmedRow || parsed.confirmedRow || (alertOrNa.detail && alertOrNa.detail.match(/Row\s*(\d+)/i)?.[1]);
     return {
       isOutgoings: false,
-      client: clientInfo,
+      client: effectiveClient,
+      clientName: cName,
+      clientSheetId: cSheetId,
       rowNum,
       tabName: "Confirmed",
       jobName: m.jobName || alertOrNa.jobName || parsed.jobName,
@@ -823,7 +870,9 @@ export function getAlertJobTarget(alertOrNa, isInfo = false, clientInfo = null) 
     const rowNum = m.confirmedRow || alertOrNa.confirmedRow || (alertOrNa.detail && alertOrNa.detail.match(/Row\s*(\d+)/i)?.[1]);
     return {
       isOutgoings: false,
-      client: clientInfo,
+      client: effectiveClient,
+      clientName: cName,
+      clientSheetId: cSheetId,
       rowNum,
       tabName: "Confirmed",
       jobName: m.jobName || alertOrNa.jobName,
@@ -837,7 +886,9 @@ export function getAlertJobTarget(alertOrNa, isInfo = false, clientInfo = null) 
     const rowNum = m.confirmedRow || alertOrNa.confirmedRow || alertOrNa.sheetRow || (alertOrNa.detail && alertOrNa.detail.match(/Row\s*(\d+)/i)?.[1]);
     return {
       isOutgoings: false,
-      client: clientInfo,
+      client: effectiveClient,
+      clientName: cName,
+      clientSheetId: cSheetId,
       rowNum,
       tabName,
       jobName: m.jobName || alertOrNa.jobName,

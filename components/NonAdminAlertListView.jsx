@@ -61,6 +61,9 @@ export default function NonAdminAlertListView({
     const alertKey = alert.alertKey;
     const classification = selectedClassifications[alertKey] || "delivery_expense";
     const categoryName = getCleanPLCategoryName(alert);
+    const clientName = alert.clientName || selectedClient?.clientName;
+    const targetMasterSheetId = alert.metadata?.masterSheetId || selectedClient?.masterSheetId;
+    const targetClientSheetId = alert.metadata?.clientSheetId || selectedClient?.clientSheetId;
     setApplyingClassification(prev => ({ ...prev, [alertKey]: true }));
     setClassificationMsg(prev => ({ ...prev, [alertKey]: "" }));
     try {
@@ -69,9 +72,11 @@ export default function NonAdminAlertListView({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "classify_pl_category",
-          clientName: alert.clientName || selectedClient?.clientName,
+          clientName,
           categoryName,
-          classification
+          classification,
+          masterSheetId: targetMasterSheetId,
+          clientSheetId: targetClientSheetId
         })
       });
       const data = await res.json();
@@ -388,7 +393,8 @@ export default function NonAdminAlertListView({
                             </button>
                           )}
                           {(() => {
-                            const clientInfo = (clientsWithFlags || []).find(c => c.clientName === selectedClient?.clientName) || allClientsMap[selectedClient?.clientName] || selectedClient;
+                            const cName = na.clientName || selectedClient?.clientName;
+                            const clientInfo = (clientsWithFlags || []).find(c => c.clientName === cName) || (allClientsMap && (allClientsMap[cName] || Object.values(allClientsMap).find(cl => cl.clientName?.toLowerCase() === cName?.toLowerCase()))) || selectedClient || { clientName: cName };
                             const jobTarget = getAlertJobTarget(na, true, clientInfo);
                             if (!jobTarget || !onViewJob) return null;
                             return (
@@ -834,7 +840,8 @@ export default function NonAdminAlertListView({
                       <div style={{ fontSize: "11px", color: "#aaa" }}>First seen: {alert.firstSeen} · Last seen: {alert.lastSeen}</div>
                       <div style={{ display: "flex", gap: "8px" }}>
                         {(() => {
-                          const clientInfo = (clientsWithFlags || []).find(c => c.clientName === selectedClient.clientName) || allClientsMap[selectedClient.clientName] || selectedClient;
+                          const cName = alert.clientName || selectedClient?.clientName;
+                          const clientInfo = (clientsWithFlags || []).find(c => c.clientName === cName) || (allClientsMap && (allClientsMap[cName] || Object.values(allClientsMap).find(cl => cl.clientName?.toLowerCase() === cName?.toLowerCase()))) || selectedClient || { clientName: cName };
                           const jobTarget = getAlertJobTarget(alert, false, clientInfo);
                           return (
                             <>

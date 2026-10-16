@@ -13,11 +13,9 @@ export default function Document() {
         <meta property="og:site_name" content="Pulse" />
         <meta property="og:title" content="Pulse - the agency finance dashboard" />
         <meta property="og:description" content="Pulse - the agency finance dashboard" />
-        <meta property="og:image" content="https://app.pulsedashboard.co.uk/pulselogo.png" />
         <meta name="twitter:card" content="summary" />
         <meta name="twitter:title" content="Pulse - the agency finance dashboard" />
         <meta name="twitter:description" content="Pulse - the agency finance dashboard" />
-        <meta name="twitter:image" content="https://app.pulsedashboard.co.uk/pulselogo.png" />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
         <link

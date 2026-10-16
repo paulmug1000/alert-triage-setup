@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import { extractSheetIdFromUrl, withRetry, getSheetsClient, getSheetId, colIndexToLetter } from "./sheetsClient.js";
+import { extractSheetIdFromUrl, withRetry, getSheetsClient, getSheetId, colIndexToLetter, applySheetFontFormat } from "./sheetsClient.js";
 import { 
   buildAlertFingerprint, buildAlertFingerprintLegacy, ensureAlertMemoryTab, readAlertMemory, 
   readHandledAlertHashes, findMemoryRow, appendAlertMemoryRow, updateAlertMemoryRow, 
@@ -21,8 +21,7 @@ import {
 import { redisClient } from "./redisClient";
 import { logPmaActivity } from "./pmaLogger";
 import { logPrecomputeRun, logFlagSweepRun, logBuildOptionsRun } from "./systemLogs";
-import { anthropic } from "./claudeClient";
-import { isPlaceholderInvoice, isPlaceholderExpense } from "../utils/helpers";
+import { isPlaceholderInvoice, isPlaceholderExpense, parseStaleExpenseDetail } from "../utils/helpers";
 import { getSessionUser } from "./authService";
 import { matchesClientName, getClientManagerClientMap } from "./userPermissions";
 
@@ -1505,7 +1504,7 @@ export async function isExpensePlaceholderStillActive_(line, clientSheetId, shar
 
   // 2. Outgoings tab check:
   if (line.includes("[Outgoings]")) {
-    const oMatch = line.match(/\[Outgoings\]\s*(?:(?:[A-Za-z]{3}\s*\d{2}\s*[-–]\s*)?(.+?)(?:\s*\((?:Row\s*)?(\d+)\))?:\s*Updated stale placeholder date|(?:Row\s*(\d+),\s*)?([^:]+):\s*Updated stale Placeholder\/Gap date)/i);
+    const oMatch = line.match(/\[Outgoings\]\s*(?:(?:[A-Za-z]{3}\s*\d{2}\s*[-–]\s*)?(.+?)(?:\s*\((?:Row\s*)?(\d+)\))?:\s*(?:£[0-9.,]+\s*[-–]\s*)?Updated stale placeholder date|(?:Row\s*(\d+),\s*)?([^:]+):\s*Updated stale Placeholder\/Gap date)/i);
     if (!oMatch) return true;
     const contractor = (oMatch[1] || oMatch[4] || "").trim().toLowerCase();
     const rowNum = parseInt(oMatch[2] || oMatch[3] || "0", 10);
@@ -2640,6 +2639,7 @@ async function writeOutgoingsExpense(sheets, clientSheetId, outgoingsData) {
       valueInputOption: "USER_ENTERED",
       requestBody: { values: [[categoryName, vatCharged || "No", "Next", "Next", "100%", "100%"]] },
     });
+    await applySheetFontFormat(sheets, clientSheetId, "Outgoings", sheetRow - 1, sheetRow, 0, 50, "Outgoings!A14");
     console.log(`  ✅ New vendor row written: ${categoryName}`);
   }
 
@@ -8092,7 +8092,7 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
             const confirmedPattern = /\[Confirmed\]\s*(?:Stale Expense\s*[-–]\s*)?(?:Row\s*(\d+),\s*)?([^|]+)\|\s*([^,\n]+),\s*Slot\s*(\d+):\s*(?:£[0-9.,]+\s*[-–]\s*)?Rec Date updated\s*([\d\-A-Za-z]+)\s*->\s*([\d\-A-Za-z]+)/gi;
 
             // Pattern for Outgoings tab expenses:
-            const outgoingsPattern = /\[Outgoings\]\s*(?:(?:[A-Za-z]{3}\s*\d{2}\s*[-–]\s*)?([^:(]+?)(?:\s*\((?:Row\s*)?(\d+)\))?:\s*Updated stale placeholder date\s*[-–]\s*(.+)|(?:Stale Expense\s*[-–]\s*)?Row\s*(\d+),\s*([^:]+):\s*Updated stale Placeholder\/Gap date\s*\(Rec:\s*([\d\-A-Za-z]+)\s*->\s*([\d\-A-Za-z]+),\s*Pay:\s*([\d\-A-Za-z]+)\s*->\s*([\d\-A-Za-z]+)\))/gi;
+            const outgoingsPattern = /\[Outgoings\]\s*(?:(?:[A-Za-z]{3}\s*\d{2}\s*[-–]\s*)?([^:(]+?)(?:\s*\((?:Row\s*)?(\d+)\))?:\s*(?:£[0-9.,]+\s*[-–]\s*)?Updated stale placeholder date(?:\s*[-–]\s*(.+))?|(?:Stale Expense\s*[-–]\s*)?Row\s*(\d+),\s*([^:]+):\s*Updated stale Placeholder\/Gap date\s*\(Rec:\s*([\d\-A-Za-z]+)\s*->\s*([\d\-A-Za-z]+),\s*Pay:\s*([\d\-A-Za-z]+)\s*->\s*([\d\-A-Za-z]+)\))/gi;
 
             for (const entry of entriesToUse) {
               const details = String(entry[3] || "");
@@ -8231,12 +8231,24 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
                 }
 
                 const tab = "Outgoings";
-                const rowNum = parseInt(oMatch[1].trim(), 10);
-                const contractor = oMatch[2].trim();
-                const oldRec = oMatch[3].trim();
-                const newRec = oMatch[4].trim();
-                const oldPay = oMatch[5].trim();
-                const newPay = oMatch[6].trim();
+                const parsed = parseStaleExpenseDetail(oMatch[0]);
+                const contractor = parsed?.contractor || oMatch[2]?.trim() || "";
+                const rowNum = parsed?.rowNum || (oMatch[1] ? parseInt(oMatch[1], 10) : 0);
+                let oldRec = "";
+                let newRec = "";
+                let oldPay = "";
+                let newPay = "";
+                const changeText = parsed?.changeText || "";
+                const recM = changeText.match(/Rec:\s*([\d\-A-Za-z]+)\s*->\s*([\d\-A-Za-z]+)/i);
+                if (recM) {
+                  oldRec = recM[1].trim();
+                  newRec = recM[2].trim();
+                }
+                const payM = changeText.match(/Pay:\s*([\d\-A-Za-z]+)\s*->\s*([\d\-A-Za-z]+)/i);
+                if (payM) {
+                  oldPay = payM[1].trim();
+                  newPay = payM[2].trim();
+                }
 
                 if (!outgoingsRows) {
                   const outgoingsResp = await withRetry(() => sheets.spreadsheets.values.get({
@@ -8322,6 +8334,17 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
                   checks.push({ ok: false, message: `✗ Could not locate contractor "${contractor}" in the Outgoings tab.` });
                 }
 
+                let msgDates = "";
+                if (oldRec && newRec && oldPay && newPay) {
+                  msgDates = `dates moved (Rec: ${oldRec} → ${newRec}, Pay: ${oldPay} → ${newPay})`;
+                } else if (oldRec && newRec) {
+                  msgDates = `receive date moved ${oldRec} → ${newRec}`;
+                } else if (oldPay && newPay) {
+                  msgDates = `pay date moved ${oldPay} → ${newPay}`;
+                } else {
+                  msgDates = `dates updated`;
+                }
+
                 results.push({
                   status: isResolved ? "ok" : "issue",
                   stale: true,
@@ -8336,7 +8359,7 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
                   checks,
                   message: isResolved
                     ? `[${tab}] Row ${actualRowNum} - ${contractor}: Alert resolved.`
-                    : `[${tab}] Row ${actualRowNum} - ${contractor}: receive date moved ${oldRec} → ${newRec}.`
+                    : `[${tab}] Row ${actualRowNum} - ${contractor}: ${msgDates}.`
                 });
               }
             }

@@ -124,3 +124,49 @@ export async function getSheetGid(sheets, spreadsheetId, sheetName) {
 export async function getSheetId(sheets, spreadsheetId, tabName) {
   return getSheetGid(sheets, spreadsheetId, tabName);
 }
+
+export async function applySheetFontFormat(sheets, spreadsheetId, tabName, startRowIndex, endRowIndex, startColIndex = 0, endColIndex = 50, referenceRange = "Outgoings!A126") {
+  try {
+    const gid = await getSheetGid(sheets, spreadsheetId, tabName);
+    const refData = await withRetry(() => sheets.spreadsheets.get({
+      spreadsheetId,
+      ranges: [referenceRange],
+      fields: "sheets.data.rowData.values.effectiveFormat.textFormat"
+    }));
+    const tf = refData.data.sheets?.[0]?.data?.[0]?.rowData?.[0]?.values?.[0]?.effectiveFormat?.textFormat;
+    const fontFamily = tf?.fontFamily || "Arial";
+    const fontSize = tf?.fontSize || 9;
+
+    await withRetry(() => sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: {
+        requests: [
+          {
+            repeatCell: {
+              range: {
+                sheetId: gid,
+                startRowIndex,
+                endRowIndex,
+                startColumnIndex: startColIndex,
+                endColumnIndex: endColIndex
+              },
+              cell: {
+                userEnteredFormat: {
+                  textFormat: {
+                    fontFamily,
+                    fontSize
+                  }
+                }
+              },
+              fields: "userEnteredFormat.textFormat.fontFamily,userEnteredFormat.textFormat.fontSize"
+            }
+          }
+        ]
+      }
+    }));
+    return { fontFamily, fontSize };
+  } catch (err) {
+    console.warn(`[applySheetFontFormat] Failed to apply font format on ${tabName}:`, err.message);
+    return { fontFamily: "Arial", fontSize: 9 };
+  }
+}

@@ -1949,7 +1949,7 @@ export default function CashflowWorkbenchView({
               gap: "6px"
             }}
           >
-            {updatingTxns ? <Spinner /> : "⚡"} Update bank feeds & P&L now
+            {updatingTxns ? <Spinner /> : "⚡"} Update bank feeds & P&L
           </button>
 
           <button
@@ -2003,7 +2003,7 @@ export default function CashflowWorkbenchView({
               fontWeight: "600",
               color: isReconciledComplete ? "#15803d" : "#475569"
             }}>
-              Reconciled & complete for P&L
+              Reconciled & ready for automated P&L updates
             </span>
             {updatingReconStatus && <Spinner size={11} />}
           </label>

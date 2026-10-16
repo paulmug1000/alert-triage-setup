@@ -12,7 +12,7 @@ export default function Index() {
   return (
     <>
       <Head>
-        <title>Pulse - the agency finance dashboard</title>
+        <title>PMA - Pulse Management Area</title>
         <meta name="description" content="Pulse - the agency finance dashboard" />
         <meta property="og:type" content="website" />
         <meta property="og:site_name" content="Pulse" />

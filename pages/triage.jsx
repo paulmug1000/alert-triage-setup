@@ -52,7 +52,7 @@ function TriageSystemWithGlobals({ onBack, initialNav }) {
   return (
     <>
       <Head>
-        <title>Pulse - the agency finance dashboard</title>
+        <title>PMA - Pulse Management Area</title>
       </Head>
       <TaskProvider automationCommanderSheetId={appGlobals.automationCommanderSheetId} managedClient={appGlobals.managedClient}>
         <TriageSystemContent onBack={onBack} appGlobals={appGlobals} initialNav={initialNav} />

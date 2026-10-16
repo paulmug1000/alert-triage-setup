@@ -1,6 +1,6 @@
 import { createHash } from "crypto";
 import { isPlaceholderInvoice, isPlaceholderExpense } from "../utils/helpers.js";
-import { withRetry, colIndexToLetter, applySheetFontFormat } from "./sheetsClient.js";
+import { withRetry, colIndexToLetter, applySheetFontFormat, getSheetGid } from "./sheetsClient.js";
 import { getClientWebAppUrl, getAllClients } from "./workspaces.js";
 import { redisClient } from "./redisClient.js";
 import { ensureAlertMemoryTab, readAlertMemory, updateAlertMemoryRow, findMemoryRow } from "./alertMemory.js";
@@ -1872,49 +1872,58 @@ export async function pushCategoryPLAmountsToOutgoings_(sheets, masterSheetId, c
     requestBody: { values: [rowValues] }
   }));
 
-  // 4. If any cells have fractional pence (e.g. £5.94), ensure they format with 2 decimals
-  if (decimalColIndices.length > 0) {
-    try {
-      const meta = await withRetry(() => sheets.spreadsheets.get({
-        spreadsheetId: clientSheetId,
-        fields: "sheets.properties"
-      }));
-      const outSheet = meta.data.sheets?.find(s => s.properties.title === "Outgoings");
-      if (outSheet) {
-        const outSheetId = outSheet.properties.sheetId;
-        const requests = decimalColIndices.map(colIdx => ({
-          repeatCell: {
-            range: {
-              sheetId: outSheetId,
-              startRowIndex: targetSheetRow - 1,
-              endRowIndex: targetSheetRow,
-              startColumnIndex: colIdx,
-              endColumnIndex: colIdx + 1
-            },
-            cell: {
-              userEnteredFormat: {
-                numberFormat: {
-                  type: "CURRENCY",
-                  pattern: "\"£\"#,##0.00"
-                },
-                textFormat: {
-                  fontFamily: "Arial",
-                  fontSize: 9
-                }
+  // 4. Consolidate formatting into a single batchUpdate: format whole row as Arial 9pt, and any decimal cells with currency pattern
+  try {
+    const outSheetId = await getSheetGid(sheets, clientSheetId, "Outgoings");
+    const requests = [
+      {
+        repeatCell: {
+          range: {
+            sheetId: outSheetId,
+            startRowIndex: targetSheetRow - 1,
+            endRowIndex: targetSheetRow,
+            startColumnIndex: 0,
+            endColumnIndex: 50
+          },
+          cell: {
+            userEnteredFormat: {
+              textFormat: {
+                fontFamily: "Arial",
+                fontSize: 9
               }
-            },
-            fields: "userEnteredFormat.numberFormat,userEnteredFormat.textFormat.fontFamily,userEnteredFormat.textFormat.fontSize"
-          }
-        }));
+            }
+          },
+          fields: "userEnteredFormat.textFormat.fontFamily,userEnteredFormat.textFormat.fontSize"
+        }
+      },
+      ...decimalColIndices.map(colIdx => ({
+        repeatCell: {
+          range: {
+            sheetId: outSheetId,
+            startRowIndex: targetSheetRow - 1,
+            endRowIndex: targetSheetRow,
+            startColumnIndex: colIdx,
+            endColumnIndex: colIdx + 1
+          },
+          cell: {
+            userEnteredFormat: {
+              numberFormat: {
+                type: "CURRENCY",
+                pattern: "\"£\"#,##0.00"
+              }
+            }
+          },
+          fields: "userEnteredFormat.numberFormat"
+        }
+      }))
+    ];
 
-        await withRetry(() => sheets.spreadsheets.batchUpdate({
-          spreadsheetId: clientSheetId,
-          requestBody: { requests }
-        }));
-      }
-    } catch (fmtErr) {
-      console.warn("[P&L Amount Push] Could not apply decimal number formatting:", fmtErr.message);
-    }
+    await withRetry(() => sheets.spreadsheets.batchUpdate({
+      spreadsheetId: clientSheetId,
+      requestBody: { requests }
+    }));
+  } catch (fmtErr) {
+    console.warn("[P&L Amount Push] Could not apply row formatting:", fmtErr.message);
   }
 
   const nonZeroCount = rowValues.filter(v => typeof v === "number" && v !== 0).length;
@@ -2020,16 +2029,18 @@ export async function ensureCategoryInOutgoings_(sheets, clientSheetId, category
     requestBody: { values: payload }
   }));
 
-  // Match and preserve the sheet's existing font family and size (e.g. Arial 9pt from Row 126)
-  await applySheetFontFormat(sheets, clientSheetId, "Outgoings", targetSheetRow - 1, targetSheetRow, 0, 50, "Outgoings!A126");
-
   // P&L Amount Push: Extract monthly amounts from PLFromApp and PLComp on Master Sheet and write to Columns G onwards
+  // pushCategoryPLAmountsToOutgoings_ automatically formats the entire row as Arial 9pt in its consolidated batchUpdate
   if (masterSheetId) {
     try {
       await pushCategoryPLAmountsToOutgoings_(sheets, masterSheetId, clientSheetId, cleanName, targetSheetRow);
     } catch (plErr) {
       console.warn(`[Outgoings Provision] Could not push P&L amounts for "${cleanName}":`, plErr.message);
+      await applySheetFontFormat(sheets, clientSheetId, "Outgoings", targetSheetRow - 1, targetSheetRow, 0, 50, "Arial", 9);
     }
+  } else {
+    // If no masterSheetId, apply Arial 9pt font formatting directly
+    await applySheetFontFormat(sheets, clientSheetId, "Outgoings", targetSheetRow - 1, targetSheetRow, 0, 50, "Arial", 9);
   }
 
   console.log(`[Outgoings Provision] Successfully inserted "${cleanName}" into Outgoings!Row ${targetSheetRow} (${isDeliveryExpense ? "CoS" : "Overhead"}, VAT: ${vatSetting}).`);

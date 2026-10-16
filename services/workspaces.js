@@ -446,7 +446,7 @@ export async function handleCreateOutgoingsVendor(req, res, sheets) {
       requestBody: { values: [[sanitizeFormulaInput(vendorName), vatFlag || "Yes", invTiming || "Next", payTiming || "Next", pctString]] },
     });
 
-    await applySheetFontFormat(sheets, sheetIdClean, "Outgoings", newRow - 1, newRow, 0, 50, "Outgoings!A14");
+    await applySheetFontFormat(sheets, sheetIdClean, "Outgoings", newRow - 1, newRow, 0, 50, "Arial", 9);
 
     let tenantClient = req.body.clientName || "";
     if (!tenantClient) {

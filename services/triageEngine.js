@@ -2639,7 +2639,7 @@ async function writeOutgoingsExpense(sheets, clientSheetId, outgoingsData) {
       valueInputOption: "USER_ENTERED",
       requestBody: { values: [[categoryName, vatCharged || "No", "Next", "Next", "100%", "100%"]] },
     });
-    await applySheetFontFormat(sheets, clientSheetId, "Outgoings", sheetRow - 1, sheetRow, 0, 50, "Outgoings!A14");
+    await applySheetFontFormat(sheets, clientSheetId, "Outgoings", sheetRow - 1, sheetRow, 0, 50, "Arial", 9);
     console.log(`  ✅ New vendor row written: ${categoryName}`);
   }
 

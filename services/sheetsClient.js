@@ -125,18 +125,9 @@ export async function getSheetId(sheets, spreadsheetId, tabName) {
   return getSheetGid(sheets, spreadsheetId, tabName);
 }
 
-export async function applySheetFontFormat(sheets, spreadsheetId, tabName, startRowIndex, endRowIndex, startColIndex = 0, endColIndex = 50, referenceRange = "Outgoings!A126") {
+export async function applySheetFontFormat(sheets, spreadsheetId, tabName, startRowIndex, endRowIndex, startColIndex = 0, endColIndex = 50, fontFamily = "Arial", fontSize = 9) {
   try {
     const gid = await getSheetGid(sheets, spreadsheetId, tabName);
-    const refData = await withRetry(() => sheets.spreadsheets.get({
-      spreadsheetId,
-      ranges: [referenceRange],
-      fields: "sheets.data.rowData.values.effectiveFormat.textFormat"
-    }));
-    const tf = refData.data.sheets?.[0]?.data?.[0]?.rowData?.[0]?.values?.[0]?.effectiveFormat?.textFormat;
-    const fontFamily = tf?.fontFamily || "Arial";
-    const fontSize = tf?.fontSize || 9;
-
     await withRetry(() => sheets.spreadsheets.batchUpdate({
       spreadsheetId,
       requestBody: {

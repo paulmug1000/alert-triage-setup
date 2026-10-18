@@ -109,7 +109,7 @@ export default function DeepDivePopover({
   if (!mounted || !isOpen || !targetRect) return null;
 
   const formatGBP = (val) => {
-    return formatMoney(val, 0, currencySymbol, thousandsSeparator);
+    return formatMoney(val, 2, currencySymbol, thousandsSeparator);
   };
 
   const hasSections = Array.isArray(sections) && sections.length > 0;

@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect } from "react";
 import Spinner from "../Spinner";
-import { DeepDiveEngine, buildDeepDiveData, getDeepDiveType, parseMoney, formatMoney } from "../../services/deepDiveHelper";
+import { DeepDiveEngine, buildDeepDiveData, getDeepDiveType, parseMoney, formatMoney as universalFormatMoney } from "../../services/deepDiveHelper";
 import { downloadCsv } from "../../utils/helpers";
 
 export default function PerformanceBreakdownView({
@@ -116,6 +116,10 @@ export default function PerformanceBreakdownView({
 
   const currencySymbol = propCurrencySymbol || keyData?.currencySymbol || "£";
   const thousandsSeparator = propThousandsSeparator || keyData?.thousandsSeparator || ",";
+
+  const formatMoney = (val) => {
+    return universalFormatMoney(val, 2, currencySymbol, thousandsSeparator);
+  };
 
   // Build deep dive data based on active period and breakdownType using shared buildDeepDiveData
   const ddData = useMemo(() => {

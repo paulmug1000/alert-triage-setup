@@ -893,7 +893,7 @@ export default async function handler(req, res) {
           const batchRanges = [];
           targetTabNames.forEach((t) => {
             batchRanges.push(`'${t}'!CR2`);
-            batchRanges.push(`'${t}'!A3:Q150`);
+            batchRanges.push(`'${t}'!CD4:CN30`);
           });
 
           const reconBatchResp = await withRetry(() =>
@@ -909,43 +909,37 @@ export default async function handler(req, res) {
             const tabName = targetTabNames[i];
             const cr2Val = valueRanges[i * 2]?.values?.[0]?.[0];
             const isReconciled = Boolean(cr2Val === true || String(cr2Val || "").trim().toUpperCase() === "TRUE");
-            const rawTxRows = valueRanges[i * 2 + 1]?.values || [];
+            const unrecRows = valueRanges[i * 2 + 1]?.values || [];
 
-            if (isReconciled) {
-              const outgoingsTxns = [];
-              rawTxRows.forEach((r) => {
-                const cat = String(r[16] || "").trim().toLowerCase();
-                if (cat === "outgoings" || cat === "outgoing") {
-                  const date = r[1] || r[0] || "";
-                  const payee = r[3] || r[4] || "";
-                  const desc = r[4] || "";
-                  const ref = r[5] || r[6] || "";
-                  const amtVal = parseMoney(r[8]);
-                  if (Math.abs(amtVal) > 0.001) {
-                    outgoingsTxns.push({
-                      date,
-                      paidDate: date,
-                      supplier: payee,
-                      desc,
-                      ref,
-                      gross: amtVal,
-                      amount: -Math.abs(amtVal),
-                      isCash: true,
-                    });
-                  }
-                }
-              });
+            const unreconciledItems = [];
+            unrecRows.forEach((r) => {
+              const dateVal = r[2]; // CF
+              const payee = String(r[3] || "").trim(); // CG
+              const rawAmt = parseFloat(String(r[5] || "0").replace(/[£$€,\s]/g, "")) || 0; // CI
+              const amt = Math.abs(rawAmt);
+              const cat = String(r[9] || "").trim(); // CK
+              const vatApplies = String(r[10] || "").trim().toLowerCase() === "yes"; // CL
+              if (amt > 0 && cat) {
+                const vatAmt = vatApplies ? Math.round(amt * (20 / 120) * 100) / 100 : 0;
+                const netAmt = Math.round((amt - vatAmt) * 100) / 100;
+                unreconciledItems.push({
+                  d: String(dateVal || ""),
+                  p: String(dateVal || ""),
+                  s: payee,
+                  c: cat,
+                  r: "UNRECON",
+                  n: netAmt,
+                  v: vatAmt,
+                  g: amt,
+                  u: true,
+                });
+              }
+            });
 
-              reconMonths[tabName] = {
-                isReconciled: true,
-                transactions: outgoingsTxns,
-              };
-            } else {
-              reconMonths[tabName] = {
-                isReconciled: false,
-                transactions: [],
-              };
-            }
+            reconMonths[tabName] = {
+              isReconciled,
+              unreconciledItems,
+            };
           }
         }
       } catch (reconErr) {

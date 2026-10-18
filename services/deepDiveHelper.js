@@ -386,7 +386,7 @@ export const DeepDiveEngine = {
         const datesStr = startStr && endStr ? ` | ${startStr} to ${endStr}` : "";
 
         let detail = "";
-        const formattedJobAmount = Math.abs(rawAmount % 1) > 0.001 ? formatMoney(rawAmount, 2) : formatMoney(rawAmount, 0);
+        const formattedJobAmount = formatMoney(rawAmount, 2);
         if (isRetainer) {
           detail = `Retainer | ${formattedJobAmount} per month${datesStr}`;
         } else {
@@ -1055,143 +1055,14 @@ export const CashDeepDiveEngine = {
       const hasReconConfig = Boolean(
         keyData.outgoings?.reconMonths && Object.keys(keyData.outgoings.reconMonths).length > 0
       );
-      const isReconciled = Boolean(reconEntry?.isReconciled);
 
-      // CASE A: Month is marked "reconciled and ready for automated P&L updates" in Recon Sheet (CR2 checked)
-      if (hasReconConfig && isReconciled && Array.isArray(reconEntry?.transactions) && reconEntry.transactions.length > 0) {
-        const normCat = (s) => String(s || "").replace(/^\d+\s*[-–]\s*/, "").trim().toLowerCase();
-        const allOutgoingsExpenses = keyData.outgoings?.expenses || [];
-        const knownExpMap = new Map();
-        allOutgoingsExpenses.forEach((e) => {
-          if (e.name && !e.name.toLowerCase().includes("depreciation") && e.name.toLowerCase() !== "hide") {
-            knownExpMap.set(normCat(e.name), e.name);
-          }
-        });
-
-        // Build lookup from Xero bills in transactionsByMonth to extract categories & net/vat
-        const xeroTxnsLookup = new Map();
-        const txnsByMonth = keyData.outgoings?.transactionsByMonth || {};
-        for (const y of [1, 2, 3]) {
-          const yList = txnsByMonth[y] || [];
-          for (let c = 0; c < yList.length; c++) {
-            const mList = yList[c] || [];
-            if (Array.isArray(mList)) {
-              mList.forEach((t) => {
-                const s = String(t.s || "").toLowerCase().trim();
-                const r = String(t.r || "").toLowerCase().trim();
-                if (s) {
-                  const cleanS = s.split("(")[0].trim();
-                  xeroTxnsLookup.set(cleanS, t);
-                  xeroTxnsLookup.set(s, t);
-                }
-                if (r) xeroTxnsLookup.set(r, t);
-              });
-            }
-          }
-        }
-
-        const mapPayeeToCategory = (payee, desc) => {
-          const p = String(payee || "").toLowerCase().trim();
-          const d = String(desc || "").toLowerCase().trim();
-
-          if (p.includes("capital on tap") || d.includes("capital on tap") || p.includes("credit card")) {
-            return "Credit card payment";
-          }
-
-          // Direct match from Xero bills lookup
-          for (const [key, t] of xeroTxnsLookup.entries()) {
-            if (key && (p.includes(key) || key.includes(p))) {
-              const matchedNorm = normCat(t.c);
-              if (knownExpMap.has(matchedNorm)) return knownExpMap.get(matchedNorm);
-              if (t.c) return t.c;
-            }
-          }
-
-          // Common payee category patterns
-          if (p.includes("thrive")) return "Consulting";
-          if (p.includes("hiscox")) return "Insurance";
-          if (p.includes("tide") || p.includes("revolut") || p.includes("bank fee")) return "Bank Fees";
-          if (p.includes("kimber")) return "Audit & Accountancy fees";
-          if (p.includes("vodafone") || p.includes("zen internet") || p.includes("telecom")) return "Telephone & Internet";
-          if (p.includes("noughts & ones") || p.includes("referral")) return "Referral fees";
-          if (p.includes("registered office")) return "Rental of office space";
-          if (
-            p.includes("slack") || p.includes("adobe") || p.includes("anthropic") ||
-            p.includes("vercel") || p.includes("xero") || p.includes("webflow") ||
-            p.includes("cobry") || p.includes("bugherd") || p.includes("ico") ||
-            p.includes("linkedin") || p.includes("digilytiks") || p.includes("google") ||
-            p.includes("cake")
-          ) {
-            return "IT Software and Information";
-          }
-
-          // Direct match against known Outgoings categories
-          for (const [nCat, origName] of knownExpMap.entries()) {
-            if (p.includes(nCat) || nCat.includes(p)) return origName;
-          }
-
-          return "Other expenses";
-        };
-
-        const catMap = new Map();
-        reconEntry.transactions.forEach((tx) => {
-          const catName = mapPayeeToCategory(tx.supplier, tx.desc);
-          if (!catMap.has(catName)) {
-            catMap.set(catName, { name: catName, txns: [] });
-          }
-
-          // Enrich Net and VAT from Xero bills lookup if available
-          const p = String(tx.supplier || "").toLowerCase().trim();
-          const r = String(tx.ref || "").toLowerCase().trim();
-          const matchedX = xeroTxnsLookup.get(r) || xeroTxnsLookup.get(p) || null;
-
-          const gross = Math.abs(tx.gross);
-          const net = matchedX?.n !== undefined ? matchedX.n : gross;
-          const vat = matchedX?.v !== undefined ? matchedX.v : 0;
-
-          catMap.get(catName).txns.push({
-            date: tx.date || "",
-            paidDate: tx.paidDate || tx.date || "",
-            supplier: tx.supplier || "",
-            desc: tx.desc || "",
-            ref: tx.ref || "",
-            net,
-            vat,
-            gross,
-            amount: -Math.abs(gross),
-            isUnreconciled: false,
-            isCash: true,
-          });
-        });
-
-        catMap.forEach(({ name, txns }) => {
-          txns.sort((a, b) => {
-            const da = CashDeepDiveEngine.parsePayDate(a.paidDate || a.date);
-            const db = CashDeepDiveEngine.parsePayDate(b.paidDate || b.date);
-            const ta = da ? da.getTime() : 0;
-            const tb = db ? db.getTime() : 0;
-            if (ta !== tb) return ta - tb;
-            return String(a.supplier || "").localeCompare(String(b.supplier || ""));
-          });
-
-          const grossSum = txns.reduce((sum, t) => sum + Math.abs(t.gross), 0);
-          results.push({
-            name,
-            amount: -Math.abs(Math.round(grossSum)),
-            transactions: txns,
-            isCash: true,
-          });
-        });
-
-        results.sort((a, b) => String(a.name).localeCompare(String(b.name)));
-        return results;
-      }
-
-      // CASE B: If Recon Sheet is configured for this client but CR2 is unchecked (or tab missing),
-      // the month is an unfinalized "forecast". In accordance with user instructions, no transaction-level
-      // breakdown should be shown — fall through directly to modeled forecast allocations below.
-      if (!hasReconConfig) {
-        // Fallback for clients without Recon Sheet: extract transactions from Row 300 if present
+      // If Recon Sheet is configured for this client and CR2 is unchecked, this is an unfinalized
+      // forecast month: return modeled forecast allocations with no transaction-level breakdown.
+      if (hasReconConfig && reconEntry && !reconEntry.isReconciled) {
+        // Fall through directly to modeled forecast allocations below
+      } else {
+        // Month is reconciled (or client has no Recon Sheet): extract transactions from Row 300
+        // (which contains accounting tool transactions + Recon right-hand side unreconciled transactions)
         const allOverheadTxns = [];
         const txnsByMonth = keyData.outgoings?.transactionsByMonth || {};
         for (const y of [1, 2, 3]) {
@@ -1203,6 +1074,19 @@ export const CashDeepDiveEngine = {
             }
           }
         }
+
+        // Merge live unreconciled items from Recon Sheet (covers items entered before cost sync runs)
+        const liveReconUnrec = reconEntry?.unreconciledItems || [];
+        liveReconUnrec.forEach((uItem) => {
+          const alreadyInList = allOverheadTxns.some((t) => {
+            const sMatch = String(t.s || "").toLowerCase().trim() === String(uItem.s || "").toLowerCase().trim();
+            const gMatch = Math.abs((t.g || 0) - (uItem.g || 0)) < 0.05;
+            return sMatch && gMatch;
+          });
+          if (!alreadyInList) {
+            allOverheadTxns.push(uItem);
+          }
+        });
 
         const paidTxns = allOverheadTxns.filter((t) => {
           const dateStr = t.p || (t.u ? t.d : "");
@@ -1220,15 +1104,26 @@ export const CashDeepDiveEngine = {
             }
           });
 
+          const resolveCategory = (rawCat) => {
+            const nCat = normCat(rawCat);
+            if (knownExpMap.has(nCat)) return knownExpMap.get(nCat);
+            if (nCat.includes("travel - national") || nCat === "travel national") {
+              return knownExpMap.get("travel - national") || knownExpMap.get("travel - uk") || knownExpMap.get("travel") || "Travel - National";
+            }
+            if (nCat.includes("it software and consumables") || nCat.includes("software and consumables") || nCat.includes("it software & consumables")) {
+              return knownExpMap.get("it software and consumables") || knownExpMap.get("software & it subscriptions") || knownExpMap.get("it software and information") || "IT Software and Consumables";
+            }
+            return rawCat || "General Expenses";
+          };
+
           const catMap = new Map();
           paidTxns.forEach((t) => {
-            const nCat = normCat(t.c);
-            if (!catMap.has(nCat)) {
-              const displayName = knownExpMap.get(nCat) || t.c || "Other expenses";
-              catMap.set(nCat, { name: displayName, txns: [] });
+            const displayName = resolveCategory(t.c);
+            if (!catMap.has(displayName)) {
+              catMap.set(displayName, { name: displayName, txns: [] });
             }
             const grossVal = t.g !== undefined ? t.g : (t.n !== undefined ? t.n + (t.v || 0) : (t.amount || 0));
-            catMap.get(nCat).txns.push({
+            catMap.get(displayName).txns.push({
               date: t.d || "",
               paidDate: t.p || (t.u ? t.d : "") || "",
               supplier: t.s || "",

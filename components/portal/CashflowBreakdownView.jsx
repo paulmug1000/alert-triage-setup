@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect } from "react";
 import Spinner from "../Spinner";
-import { CashDeepDiveEngine, DeepDiveEngine, formatMoney, parseMoney } from "../../services/deepDiveHelper";
+import { CashDeepDiveEngine, DeepDiveEngine, formatMoney as universalFormatMoney, parseMoney } from "../../services/deepDiveHelper";
 import { downloadCsv } from "../../utils/helpers";
 
 export default function CashflowBreakdownView({
@@ -16,7 +16,26 @@ export default function CashflowBreakdownView({
 }) {
   const [activeCategory, setActiveCategory] = useState("cashConfInc");
 
-  const rollingMonths = useMemo(() => data?.rollingMonths || [], [data?.rollingMonths]);
+  const formatMoney = (val) => {
+    return universalFormatMoney(val, 2, currencySymbol, thousandsSeparator);
+  };
+
+  // Support all financial months when available from Cash sheet (36 months across 3 financial years), falling back to rolling window
+  const availableMonths = useMemo(() => {
+    return data?.allMonths && data.allMonths.length > 0 ? data.allMonths : (data?.rollingMonths || []);
+  }, [data?.allMonths, data?.rollingMonths]);
+
+  const getRowValue = (row, idx) => {
+    if (!row) return 0;
+    const val = row.allValues ? row.allValues[idx] : row.rollingValues?.[idx];
+    return parseMoney(val);
+  };
+
+  const getRowNote = (row, idx) => {
+    if (!row) return "";
+    const note = row.allNotes ? row.allNotes[idx] : row.rollingNotes?.[idx];
+    return typeof note === "string" ? note.trim() : "";
+  };
 
   const isIncomeMode = useMemo(() => {
     if (keyData?.outgoingsMeta?.mode) {
@@ -37,7 +56,7 @@ export default function CashflowBreakdownView({
       { id: "cashSalaries", name: "Salary payments" },
       { id: "cashContractors", name: "Contractor payments" },
       ...(!isIncomeMode ? [{ id: "cashDirCosts", name: "Direct cost payments" }] : []),
-      { id: "cashOutgoings", name: "Outgoings payments" },
+      { id: "cashOutgoings", name: "Other expenses" },
       { id: "cashTaxes", name: "Tax payments" },
       { id: "cashOther", name: "Other cash movements" },
     ];
@@ -51,13 +70,13 @@ export default function CashflowBreakdownView({
 
   // Determine initial month: closest to current calendar date
   const defaultMonthIdx = useMemo(() => {
-    if (rollingMonths.length === 0) return 0;
+    if (availableMonths.length === 0) return 0;
     const now = new Date();
     const currMonthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
 
     let closestIdx = 0;
     let closestDiff = Infinity;
-    rollingMonths.forEach((mStr, idx) => {
+    availableMonths.forEach((mStr, idx) => {
       const d = DeepDiveEngine.parseHeaderDate(mStr);
       if (d) {
         const diff = Math.abs(d.getTime() - currMonthStart);
@@ -68,16 +87,16 @@ export default function CashflowBreakdownView({
       }
     });
     return closestIdx;
-  }, [rollingMonths]);
+  }, [availableMonths]);
 
   const [selectedMonthIdx, setSelectedMonthIdx] = useState(0);
   const [hasUserSelectedMonth, setHasUserSelectedMonth] = useState(false);
 
   useEffect(() => {
-    if (!hasUserSelectedMonth && rollingMonths.length > 0) {
+    if (!hasUserSelectedMonth && availableMonths.length > 0) {
       setSelectedMonthIdx(defaultMonthIdx);
     }
-  }, [defaultMonthIdx, hasUserSelectedMonth, rollingMonths.length]);
+  }, [defaultMonthIdx, hasUserSelectedMonth, availableMonths.length]);
 
   const [openAccordions, setOpenAccordions] = useState({});
 
@@ -93,14 +112,14 @@ export default function CashflowBreakdownView({
   };
 
   const targetDate = useMemo(() => {
-    if (rollingMonths.length === 0) return new Date();
-    const str = rollingMonths[selectedMonthIdx] || rollingMonths[0];
+    if (availableMonths.length === 0) return new Date();
+    const str = availableMonths[selectedMonthIdx] || availableMonths[0];
     return DeepDiveEngine.parseHeaderDate(str) || new Date();
-  }, [rollingMonths, selectedMonthIdx]);
+  }, [availableMonths, selectedMonthIdx]);
 
   const periodLabel = useMemo(() => {
-    return rollingMonths[selectedMonthIdx] || `Month ${selectedMonthIdx + 1}`;
-  }, [rollingMonths, selectedMonthIdx]);
+    return availableMonths[selectedMonthIdx] || `Month ${selectedMonthIdx + 1}`;
+  }, [availableMonths, selectedMonthIdx]);
 
   const allJobs = useMemo(() => {
     return keyData?.jobs?.all || [
@@ -118,7 +137,7 @@ export default function CashflowBreakdownView({
   // Extract sheet cell total from data.includingPipeline (to match original Google Sheets Cash tab exactly)
   const sheetTargetTotal = useMemo(() => {
     const rows = data?.includingPipeline || data?.excludingPipeline || [];
-    if (rows.length === 0 || !rollingMonths[selectedMonthIdx]) return null;
+    if (rows.length === 0 || !availableMonths[selectedMonthIdx]) return null;
 
     const sumRows = (labelPatterns, rowIndices = []) => {
       const matching = rows.filter((r) => {
@@ -126,7 +145,7 @@ export default function CashflowBreakdownView({
         const l = (r.label || "").toLowerCase();
         return labelPatterns.some((p) => l === p.toLowerCase() || l.startsWith(p.toLowerCase()));
       });
-      return matching.reduce((sum, r) => sum + parseMoney(r.rollingValues?.[selectedMonthIdx]), 0);
+      return matching.reduce((sum, r) => sum + getRowValue(r, selectedMonthIdx), 0);
     };
 
     if (activeCategory === "cashConfInc") return sumRows(["confirmed cash incoming", "cash incoming adjustment", "incoming cash adjustment"], [6, 7, 47, 49]);
@@ -145,7 +164,7 @@ export default function CashflowBreakdownView({
     if (activeCategory === "cashTaxes") return sumRows(["corporation tax", "corporation tax adjustment", "vat", "vat adjustment"], [19, 20, 21, 22, 61, 62, 63, 64]);
     if (activeCategory === "cashOther") return sumRows(["non-operating income", "non-operating expenses", "other cash movements", "other adjustments"], [24, 25, 26, 27, 29, 30, 66, 67, 68, 69, 71, 72]);
     return null;
-  }, [data, activeCategory, selectedMonthIdx, rollingMonths, isNotesMode]);
+  }, [data, activeCategory, selectedMonthIdx, availableMonths, isNotesMode]);
 
   // Invoices Sent Data (Confirmed & Pipeline lists)
   const invoicesSentData = useMemo(() => {
@@ -174,7 +193,7 @@ export default function CashflowBreakdownView({
           const l = (r.label || "").toLowerCase();
           return l === "salaries" || l === "salaries outgoing" || l === "salary payments";
         });
-        const val = parseMoney(salRow?.rollingValues?.[selectedMonthIdx]);
+        const val = getRowValue(salRow, selectedMonthIdx);
         if (Math.abs(val) > 0.01) {
           results.push({ name: "Net Payroll", amount: val });
         }
@@ -187,7 +206,7 @@ export default function CashflowBreakdownView({
         return l === "dividends as salary" || l === "dividends as salary outgoing";
       });
       const divAdj = rows.find((r) => (r.label || "").toLowerCase() === "dividends as salary adjustment");
-      const divVal = parseMoney(divRow?.rollingValues?.[selectedMonthIdx]) + parseMoney(divAdj?.rollingValues?.[selectedMonthIdx]);
+      const divVal = getRowValue(divRow, selectedMonthIdx) + getRowValue(divAdj, selectedMonthIdx);
       if (Math.abs(divVal) > 0.01) {
         results.push({
           name: "Dividends as salary",
@@ -319,7 +338,7 @@ export default function CashflowBreakdownView({
       const vatRow = rows.find((r) => (r.label || "").toLowerCase() === "vat");
       const vatAdj = rows.find((r) => (r.label || "").toLowerCase() === "vat adjustment");
 
-      const corpVal = parseMoney(corpRow?.rollingValues?.[selectedMonthIdx]) + parseMoney(corpAdj?.rollingValues?.[selectedMonthIdx]);
+      const corpVal = getRowValue(corpRow, selectedMonthIdx) + getRowValue(corpAdj, selectedMonthIdx);
       if (Math.abs(corpVal) > 0.01) {
         results.push({
           name: "Corporation tax",
@@ -327,7 +346,7 @@ export default function CashflowBreakdownView({
         });
       }
 
-      const vatVal = parseMoney(vatRow?.rollingValues?.[selectedMonthIdx]) + parseMoney(vatAdj?.rollingValues?.[selectedMonthIdx]);
+      const vatVal = getRowValue(vatRow, selectedMonthIdx) + getRowValue(vatAdj, selectedMonthIdx);
       if (Math.abs(vatVal) > 0.01) {
         results.push({
           name: "VAT",
@@ -346,15 +365,15 @@ export default function CashflowBreakdownView({
       const nonOpExp = findRow("non-operating expenses");
       const otherMove = findRow("other cash movements");
       if (nonOpInc) {
-        const val = parseMoney(nonOpInc.rollingValues?.[selectedMonthIdx]);
+        const val = getRowValue(nonOpInc, selectedMonthIdx);
         if (Math.abs(val) > 0.01) results.push({ client: "Other", name: "Non-operating income", desc: "", amount: val, status: "", type: "Income" });
       }
       if (nonOpExp) {
-        const val = parseMoney(nonOpExp.rollingValues?.[selectedMonthIdx]);
+        const val = getRowValue(nonOpExp, selectedMonthIdx);
         if (Math.abs(val) > 0.01) results.push({ client: "Other", name: "Non-operating expenses", desc: "", amount: -Math.abs(val), status: "", type: "Expense" });
       }
       if (otherMove) {
-        const val = parseMoney(otherMove.rollingValues?.[selectedMonthIdx]);
+        const val = getRowValue(otherMove, selectedMonthIdx);
         if (Math.abs(val) > 0.01) results.push({ client: "Other", name: "Other cash movements", desc: "", amount: val, status: "", type: "Movement" });
       }
       return results;
@@ -399,9 +418,9 @@ export default function CashflowBreakdownView({
       // 1. Check inclRows
       for (const rIdx of targetIndices.incl) {
         const r = inclRows.find((row) => row.rowIndex === rIdx);
-        const cellNote = r?.rollingNotes?.[selectedMonthIdx];
-        if (cellNote && cellNote.trim()) {
-          note = cellNote.trim();
+        const cellNote = getRowNote(r, selectedMonthIdx);
+        if (cellNote) {
+          note = cellNote;
           break;
         }
       }
@@ -409,9 +428,9 @@ export default function CashflowBreakdownView({
       if (!note) {
         for (const rIdx of targetIndices.excl) {
           const r = exclRows.find((row) => row.rowIndex === rIdx);
-          const cellNote = r?.rollingNotes?.[selectedMonthIdx];
-          if (cellNote && cellNote.trim()) {
-            note = cellNote.trim();
+          const cellNote = getRowNote(r, selectedMonthIdx);
+          if (cellNote) {
+            note = cellNote;
             break;
           }
         }
@@ -650,10 +669,13 @@ export default function CashflowBreakdownView({
         <select
           className="breakdown-select"
           value={selectedMonthIdx}
-          onChange={(e) => setSelectedMonthIdx(parseInt(e.target.value, 10))}
+          onChange={(e) => {
+            setHasUserSelectedMonth(true);
+            setSelectedMonthIdx(parseInt(e.target.value, 10));
+          }}
           style={dropdownStyle}
         >
-          {rollingMonths.map((m, idx) => (
+          {availableMonths.map((m, idx) => (
             <option key={idx} value={idx}>
               {m}
             </option>
@@ -1016,7 +1038,7 @@ export default function CashflowBreakdownView({
               </div>
             ) : listData.length === 0 ? (
               <div style={{ padding: "2.5rem 0", textAlign: "center", color: "#94a3b8", fontSize: "14px" }}>
-                No outgoings recorded for this period.
+                No other expenses recorded for this period.
               </div>
             ) : (
               listData.map((item, idx) => {

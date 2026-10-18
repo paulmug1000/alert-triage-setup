@@ -374,6 +374,7 @@ export default function CashflowBreakdownView({
   }, [activeCategory, invoicesSentData, listData]);
 
   // Final Total to display: Use sheet target if available, otherwise computed sum
+  const finalDisplayTotal = sheetTargetTotal !== null ? sheetTargetTotal : computedSum;
   const manualAdjustment = finalDisplayTotal - computedSum;
 
   const manualAdjustmentLabel = useMemo(() => {

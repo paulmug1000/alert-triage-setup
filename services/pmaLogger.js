@@ -52,24 +52,41 @@ export async function ensurePmaActivityLogTab(sheets, automationCommanderSheetId
  * Appends row to PmaActivityLog on Automation Commander and busts Redis activity cache.
  * Safe & Non-blocking: will never throw to the caller.
  */
-export async function logPmaActivity(sheets, {
-  automationCommanderSheetId = DEFAULT_AC_SHEET_ID,
-  clientName = "",
-  category = "PMA",
-  action = "",
-  summary = "",
-  details = {},
-  user = "PMA Admin"
-}) {
+export async function logPmaActivity(sheetsOrOptions, maybeOptions = {}) {
   try {
+    let sheets = sheetsOrOptions;
+    let options = maybeOptions;
+
+    // Support logPmaActivity({ ... }) single argument
+    if (sheetsOrOptions && (!sheetsOrOptions.spreadsheets || typeof sheetsOrOptions.spreadsheets !== "object")) {
+      options = sheetsOrOptions;
+      sheets = null;
+    }
+
+    const {
+      automationCommanderSheetId = DEFAULT_AC_SHEET_ID,
+      clientName = "",
+      category = "PMA",
+      action = "",
+      summary = "",
+      details = {},
+      user = "PMA Admin",
+      userEmail = "",
+    } = options || {};
+
     const acId = automationCommanderSheetId || DEFAULT_AC_SHEET_ID;
     const nowISO = new Date().toISOString();
     const cleanClient = String(clientName || "").trim();
     const cleanCategory = String(category || "PMA").trim().toUpperCase();
     const cleanAction = String(action || "").trim();
     const cleanSummary = String(summary || "").trim();
-    const cleanUser = String(user || "PMA Admin").trim();
+    const cleanUser = String(userEmail || user || "PMA Admin").trim();
     const detailsStr = typeof details === "string" ? details : JSON.stringify(details || {});
+
+    if (!sheets) {
+      const { getSheetsClient } = await import("./sheetsClient.js");
+      sheets = await getSheetsClient();
+    }
 
     // 1. Append row to Automation Commander
     await withRetry(() =>
@@ -78,8 +95,8 @@ export async function logPmaActivity(sheets, {
         range: `${PMA_ACTIVITY_LOG_TAB}!A:G`,
         valueInputOption: "RAW",
         requestBody: {
-          values: [[nowISO, cleanClient, cleanCategory, cleanAction, cleanSummary, detailsStr, cleanUser]]
-        }
+          values: [[nowISO, cleanClient, cleanCategory, cleanAction, cleanSummary, detailsStr, cleanUser]],
+        },
       })
     );
 

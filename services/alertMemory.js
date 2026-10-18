@@ -481,7 +481,7 @@ export async function appendAlertMemoryRow(sheets, automationCommanderSheetId, p
   if (alertType === "expense") alertType = "expenseDashboardDiscr";
   if (alertType === "crm") alertType = "crmPipeAppDiscr";
 
-  const now = new Date().toISOString().split("T")[0];
+  const now = new Date().toISOString();
   const response = await withRetry(() => sheets.spreadsheets.values.append({
     spreadsheetId: automationCommanderSheetId,
     range: `${ALERT_MEMORY_TAB}!A:L`,
@@ -489,7 +489,7 @@ export async function appendAlertMemoryRow(sheets, automationCommanderSheetId, p
     requestBody: {
       values: [[
         fingerprintHash, alertType, clientName, alertSummary,
-        cachedOptionsJSON, status, ignoreReason || "", now, now,
+        cachedOptionsJSON, status, ignoreReason || "", payload.firstSeen || now, now,
         now, 
         dataSnapshot || "",
         category || "discrepancy",
@@ -503,7 +503,7 @@ export async function appendAlertMemoryRow(sheets, automationCommanderSheetId, p
 
 export async function updateAlertMemoryRow(sheets, automationCommanderSheetId, rowIndex, updates) {
   const compressedOptions = compressOptionsJSON_(updates.cachedOptionsJSON);
-  const now = new Date().toISOString().split("T")[0];
+  const now = new Date().toISOString();
   const values = [
     updates.fingerprintHash,
     updates.alertType,
@@ -512,7 +512,7 @@ export async function updateAlertMemoryRow(sheets, automationCommanderSheetId, r
     compressedOptions,
     updates.status,    
     updates.ignoreReason || "",
-    updates.firstSeen,
+    updates.firstSeen || now,
     now, 
     updates.lastRechecked || now,
     updates.dataSnapshot || "",
@@ -531,7 +531,7 @@ export async function updateAlertMemoryRow(sheets, automationCommanderSheetId, r
 
 export async function updateAlertMemoryRowsBatch(sheets, automationCommanderSheetId, updateItems) {
   if (!updateItems || updateItems.length === 0) return;
-  const now = new Date().toISOString().split("T")[0];
+  const now = new Date().toISOString();
   const data = updateItems.map(({ rowIndex, updates }) => {
     const compressedOptions = compressOptionsJSON_(updates.cachedOptionsJSON);
     const values = [
@@ -542,7 +542,7 @@ export async function updateAlertMemoryRowsBatch(sheets, automationCommanderShee
       compressedOptions,
       updates.status,
       updates.ignoreReason || "",
-      updates.firstSeen,
+      updates.firstSeen || now,
       now, 
       updates.lastRechecked || now,
       updates.dataSnapshot || "",

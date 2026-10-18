@@ -125,17 +125,45 @@ export const ADMIN_ONLY_ALERT_TYPES = new Set([
 export function stripRowInfo(text) {
   if (!text || typeof text !== "string") return text;
   return text
-    .replace(/\(\s*row\s+\d+,\s*/gi, "(")
-    .replace(/\(\s*(?:Confirmed|Pipeline)?\s*row\s+\d+,\s*/gi, "(")
-    .replace(/\s*\(\s*(?:Confirmed|Pipeline)?\s*row\s+\d+\s*\)/gi, "")
-    .replace(/\b(?:Confirmed|Pipeline)?\s*Row\s+\d+,\s*/gi, "")
-    .replace(/\b(Confirmed|Pipeline)\s+row\s+\d+\b/gi, "$1")
-    .replace(/\bchild\s+row\s+\d+\b/gi, "child entry")
-    .replace(/\s*-\s*row\s+\d+:\s*/gi, ": ")
-    .replace(/\brow\s+\d+:\s*/gi, "")
+    // Strip parenthesized combined row/slot references: (Row 362, slot 1), (slot 1, Row 362), (Sheet Row 362, Slot 1)
+    .replace(/\s*\(\s*(?:Confirmed|Pipeline)?\s*(?:sheet\s+)?rows?\s+\d+,\s*slots?\s+\d+\s*\)/gi, "")
+    .replace(/\s*\(\s*slots?\s+\d+,\s*(?:Confirmed|Pipeline)?\s*(?:sheet\s+)?rows?\s+\d+\s*\)/gi, "")
+    // Strip standalone parenthesized slot or row: (slot 1), (Row 362), (Confirmed row 14)
+    .replace(/\s*\(\s*slots?\s+\d+\s*\)/gi, "")
+    .replace(/\s*\(\s*(?:Confirmed|Pipeline)?\s*(?:sheet\s+)?rows?\s+\d+\s*\)/gi, "")
+    .replace(/\(\s*(?:sheet\s+)?rows?\s+\d+,\s*/gi, "(")
+    .replace(/\(\s*(?:Confirmed|Pipeline)?\s*(?:sheet\s+)?rows?\s+\d+,\s*/gi, "(")
+    // Strip inline Row / Slot references: "slot 1", "slot 2", "Row 362,"
+    .replace(/\b(?:Confirmed|Pipeline)?\s*(?:Sheet\s+)?Row\s+\d+,\s*/gi, "")
+    .replace(/\b(Confirmed|Pipeline)\s+(?:sheet\s+)?rows?\s+\d+\b/gi, "$1")
+    .replace(/\bchild\s+rows?\s+\d+\b/gi, "child entry")
+    .replace(/\bchild\s+rows?\b/gi, "child entries")
+    .replace(/\bparent\s+rows?\b/gi, "parent job")
+    .replace(/\s*-\s*(?:sheet\s+)?rows?\s+\d+:\s*/gi, ": ")
+    .replace(/\b(?:sheet\s+)?rows?\s+\d+:\s*/gi, "")
+    .replace(/\b(?:in|into|on)\s+slots?\s+\d+\b/gi, "")
+    .replace(/\b(?:in|into|on)\s+(?:sheet\s+)?rows?\s+\d+\b/gi, "")
+    .replace(/\bslots?\s+\d+\b/gi, "")
+    .replace(/\bslot\s+amount\b/gi, "expected amount")
+    .replace(/\bslots\b/gi, "entries")
+    .replace(/\bmulti-row\b/gi, "recurring")
+    .replace(/\bnew\s+row\b/gi, "new entry")
+    .replace(/\bempty\s+slots?\b/gi, "unbilled entries")
     .replace(/Mismatched rows:/gi, "Mismatched entries:")
-    .replace(/\s+/g, " ")
+    // Clean up trailing/dangling prepositions or punctuation: e.g. "Place in Job - Name - " -> "Place in Job - Name"
+    .replace(/\s*-\s*-\s*/g, " - ")
+    .replace(/\s*,\s*,/g, ",")
+    .replace(/,\s*-\s*/g, " - ")
+    .replace(/\b(?:on|in|at)\s*$/gi, "")
+    .replace(/\b(?:on|in|at)\s+([.,;:!?])/gi, "$1")
+    .replace(/\s{2,}/g, " ")
+    .replace(/\s+([.,;:!?])/g, "$1")
+    .replace(/\(\s*\)/g, "")
     .trim();
+}
+
+export function cleanUserFacingText(text) {
+  return stripRowInfo(text);
 }
 
 export const getFlagName = (flagKey) => {
@@ -899,5 +927,82 @@ export function getAlertJobTarget(alertOrNa, isInfo = false, clientInfo = null) 
 
   return null;
 }
+
+const RET_MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const RET_MONTH_INDEX = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+
+export function getRetainerRowMonthLabel(r, rIdx = 0, job = null) {
+  // 1. Check if the row has an explicit date in slots or row fields
+  const slotDate = r?.invoiceSlots?.[0]?.sentDate || r?.expenseSlots?.[0]?.date || r?.startDate || r?.date;
+  if (slotDate) {
+    const s = String(slotDate).trim();
+    const m = s.match(/^(\d{1,2})[-/ ]([A-Za-z]{3})[-/ ](\d{2,4})$/);
+    if (m) {
+      const monStr = m[2];
+      const yrStr = m[3].length === 4 ? m[3].slice(-2) : m[3];
+      return `${monStr.charAt(0).toUpperCase() + monStr.slice(1).toLowerCase()}-${yrStr}`;
+    }
+    const d = new Date(s);
+    if (!isNaN(d.getTime())) {
+      const monStr = RET_MONTH_NAMES[d.getMonth()];
+      const yrStr = String(d.getFullYear()).slice(-2);
+      return `${monStr}-${yrStr}`;
+    }
+  }
+
+  // 2. Derive by projecting from the retainer job's startDate + rIdx months
+  const parentStart = job?.startDate || job?.rows?.[0]?.startDate;
+  if (parentStart) {
+    const s = String(parentStart).trim();
+    const m = s.match(/^(\d{1,2})[-/ ]([A-Za-z]{3})[-/ ](\d{2,4})$/);
+    if (m) {
+      const mIdx = RET_MONTH_INDEX[m[2].toLowerCase()];
+      if (mIdx !== undefined) {
+        const fullYr = m[3].length === 2 ? 2000 + parseInt(m[3], 10) : parseInt(m[3], 10);
+        const day = Math.min(parseInt(m[1], 10) || 1, 28);
+        const projectedDate = new Date(fullYr, mIdx + (rIdx || 0), day);
+        const monStr = RET_MONTH_NAMES[projectedDate.getMonth()];
+        const yrStr = String(projectedDate.getFullYear()).slice(-2);
+        return `${monStr}-${yrStr}`;
+      }
+    }
+    const d = new Date(s);
+    if (!isNaN(d.getTime())) {
+      const projectedDate = new Date(d.getFullYear(), d.getMonth() + (rIdx || 0), Math.min(d.getDate(), 28));
+      const monStr = RET_MONTH_NAMES[projectedDate.getMonth()];
+      const yrStr = String(projectedDate.getFullYear()).slice(-2);
+      return `${monStr}-${yrStr}`;
+    }
+  }
+
+  return `Month ${(rIdx || 0) + 1}`;
+}
+
+export function formatSeenTimestamp(ts) {
+  if (!ts) return "";
+  const str = String(ts).trim();
+  if (!str) return "";
+  if (str.includes("T")) {
+    try {
+      const d = new Date(str);
+      if (!isNaN(d.getTime())) {
+        const yyyy = d.getFullYear();
+        const mm = String(d.getMonth() + 1).padStart(2, "0");
+        const dd = String(d.getDate()).padStart(2, "0");
+        const hh = String(d.getHours()).padStart(2, "0");
+        const min = String(d.getMinutes()).padStart(2, "0");
+        return `${yyyy}-${mm}-${dd} ${hh}:${min}`;
+      }
+    } catch (e) { }
+    const [datePart, timePart] = str.split("T");
+    const timeClean = (timePart || "").slice(0, 5);
+    return timeClean ? `${datePart} ${timeClean}` : datePart;
+  }
+  if (/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}/.test(str)) {
+    return str.slice(0, 16);
+  }
+  return str;
+}
+
 
 

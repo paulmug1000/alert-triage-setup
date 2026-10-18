@@ -400,7 +400,7 @@ export default function HomeView({
         ) : clientsPendingSetup.length === 0 ? (
           <div style={{ background: "#F0FDF4", border: "1px solid #BBF7D0", borderRadius: "8px", padding: "14px 16px", color: "#166534", fontSize: "13.5px", display: "flex", alignItems: "center", gap: "10px" }}>
             <span style={{ fontSize: "16px", fontWeight: "bold" }}>✓</span>
-            <span>All assigned clients are fully set up and live on financial dashboards.</span>
+            <span>All clients are fully set up.</span>
           </div>
         ) : (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "12px" }}>

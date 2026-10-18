@@ -1472,17 +1472,27 @@ export async function handleAssignExpenseToJob(req, res, sheets) {
 }
 
 export async function handleUpdateExpenseSlot(req, res, sheets) {
-  const { clientSheetId, rowNum, slotNum, expense, deleteSlot, tabName } = req.body;
-  if (!clientSheetId || !rowNum || !slotNum) return res.status(400).json({ success: false, error: "Missing clientSheetId, rowNum, or slotNum" });
+  const { clientSheetId, rowNum, slotNum, expense, deleteSlot, tabName, jobClient, jobName, createNewRow } = req.body;
+  if (!clientSheetId || !rowNum || (!slotNum && !createNewRow)) return res.status(400).json({ success: false, error: "Missing clientSheetId, rowNum, or slotNum" });
   if (!deleteSlot && !expense) return res.status(400).json({ success: false, error: "Missing expense (or set deleteSlot: true)" });
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
     const targetTab = tabName ? String(tabName).trim() : "Confirmed";
+
+    let actualRowNum = parseInt(rowNum, 10);
+    let actualSlotNum = parseInt(slotNum, 10);
+
+    if (createNewRow) {
+      const newRowNum = await insertChildJobRow_(sheets, sheetIdClean, actualRowNum, jobClient || "", jobName || "");
+      actualRowNum = newRowNum;
+      actualSlotNum = 1;
+    }
+
     const slotCols = {
       1: { d: "BX", a: "BY", v: "BZ", dt: "CA", dp: "CB", st: "CC", id: "CD" },
       2: { d: "CE", a: "CF", v: "CG", dt: "CH", dp: "CI", st: "CJ", id: "CK" },
       3: { d: "CL", a: "CM", v: "CN", dt: "CO", dp: "CP", st: "CQ", id: "CR" },
-    }[slotNum];
+    }[actualSlotNum];
     if (!slotCols) return res.status(400).json({ success: false, error: "Invalid slotNum" });
 
     const values = deleteSlot
@@ -1502,12 +1512,12 @@ export async function handleUpdateExpenseSlot(req, res, sheets) {
       requestBody: {
         valueInputOption: "RAW",
         data: [
-          { range: `${targetTab}!${slotCols.d}${rowNum}`,  values: [[values[0]]] },
-          { range: `${targetTab}!${slotCols.a}${rowNum}`,  values: [[values[1]]] },
-          { range: `${targetTab}!${slotCols.v}${rowNum}`,  values: [[values[2]]] },
-          { range: `${targetTab}!${slotCols.dp}${rowNum}`, values: [[values[4]]] },
-          { range: `${targetTab}!${slotCols.st}${rowNum}`, values: [[values[5]]] },
-          { range: `${targetTab}!${slotCols.id}${rowNum}`, values: [[values[6]]] },
+          { range: `${targetTab}!${slotCols.d}${actualRowNum}`,  values: [[values[0]]] },
+          { range: `${targetTab}!${slotCols.a}${actualRowNum}`,  values: [[values[1]]] },
+          { range: `${targetTab}!${slotCols.v}${actualRowNum}`,  values: [[values[2]]] },
+          { range: `${targetTab}!${slotCols.dp}${actualRowNum}`, values: [[values[4]]] },
+          { range: `${targetTab}!${slotCols.st}${actualRowNum}`, values: [[values[5]]] },
+          { range: `${targetTab}!${slotCols.id}${actualRowNum}`, values: [[values[6]]] },
         ],
       },
     });
@@ -1515,7 +1525,7 @@ export async function handleUpdateExpenseSlot(req, res, sheets) {
     if (deleteSlot) {
       await sheets.spreadsheets.values.update({
         spreadsheetId: sheetIdClean,
-        range: `${targetTab}!${slotCols.dt}${rowNum}`,
+        range: `${targetTab}!${slotCols.dt}${actualRowNum}`,
         valueInputOption: "RAW",
         requestBody: { values: [[""]] },
       });
@@ -1524,7 +1534,7 @@ export async function handleUpdateExpenseSlot(req, res, sheets) {
       if (formattedDate) {
         await sheets.spreadsheets.values.update({
           spreadsheetId: sheetIdClean,
-          range: `${targetTab}!${slotCols.dt}${rowNum}`,
+          range: `${targetTab}!${slotCols.dt}${actualRowNum}`,
           valueInputOption: "USER_ENTERED",
           requestBody: { values: [[formattedDate]] },
         });
@@ -1911,25 +1921,34 @@ export async function handleAssignInvoiceToJob(req, res, sheets) {
 }
 
 export async function handleUpdateInvoiceSlot(req, res, sheets) {
-  const { clientSheetId, rowNum, slotNum, invoice, deleteSlot, jobClient, jobName, tabName } = req.body;
-  if (!clientSheetId || !rowNum || !slotNum) return res.status(400).json({ success: false, error: "Missing clientSheetId, rowNum, or slotNum" });
+  const { clientSheetId, rowNum, slotNum, invoice, deleteSlot, jobClient, jobName, tabName, createNewRow } = req.body;
+  if (!clientSheetId || !rowNum || (!slotNum && !createNewRow)) return res.status(400).json({ success: false, error: "Missing clientSheetId, rowNum, or slotNum" });
   if (!deleteSlot && !invoice) return res.status(400).json({ success: false, error: "Missing invoice (or set deleteSlot: true)" });
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
     const targetTab = tabName ? String(tabName).trim() : "Confirmed";
+
+    let actualRowNum = parseInt(rowNum, 10);
+    let actualSlotNum = parseInt(slotNum, 10);
+
+    if (createNewRow) {
+      const newRowNum = await insertChildJobRow_(sheets, sheetIdClean, actualRowNum, jobClient || "", jobName || "");
+      actualRowNum = newRowNum;
+      actualSlotNum = 1;
+    }
+
     const slotCols = {
       1: { a: "AP", ref: "AQ", sent: "AR", days: "AS", st: "AT" },
       2: { a: "AW", ref: "AX", sent: "AY", days: "AZ", st: "BA" },
       3: { a: "BD", ref: "BE", sent: "BF", days: "BG", st: "BH" },
-    }[slotNum];
+    }[actualSlotNum];
     if (!slotCols) return res.status(400).json({ success: false, error: "Invalid slotNum" });
 
-    let actualRowNum = rowNum;
-    if (jobClient || jobName) {
+    if (!createNewRow && (jobClient || jobName)) {
       try {
         const checkResp = await sheets.spreadsheets.values.get({
           spreadsheetId: sheetIdClean,
-          range: `${targetTab}!A${rowNum}:B${rowNum}`,
+          range: `${targetTab}!A${actualRowNum}:B${actualRowNum}`,
           valueRenderOption: "UNFORMATTED_VALUE"
         });
         const currentVals = checkResp.data.values?.[0] || [];
@@ -1953,7 +1972,7 @@ export async function handleUpdateInvoiceSlot(req, res, sheets) {
               matches.push(i + 1);
             }
           }
-          if (matches.length > 0) {
+          if (matches.length > 0 && !matches.includes(actualRowNum)) {
             actualRowNum = matches[0];
             console.log(`ℹ Reconciled update_invoice_slot row from ${rowNum} to ${actualRowNum} on ${targetTab} for job "${jobName}"`);
           }

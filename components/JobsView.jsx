@@ -6,7 +6,7 @@ import DirectCostsEditModal from "./DirectCostsEditModal";
 import JobsNewJobModal from "./JobsNewJobModal";
 import { useJobs } from "../hooks/useJobs";
 import { useAppGlobals } from "../hooks/useAppGlobals";
-import { isPlaceholderInvoice, isPlaceholderExpense } from "../utils/helpers";
+import { isPlaceholderInvoice, isPlaceholderExpense, getRetainerRowMonthLabel } from "../utils/helpers";
 
 export const parseSheetDate = (dStr) => {
   if (!dStr) return null;
@@ -203,6 +203,280 @@ export const JobDateInput = ({
       }}
     />
   );
+};
+
+export const getStatusPill = (status) => {
+  const s = String(status || "").trim();
+  if (s === "Paid") return { backgroundColor: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0" };
+  if (s === "Draft") return { backgroundColor: "#ffedd5", color: "#9a3412", border: "1px solid #fed7aa" };
+  if (s === "Sent" || s === "Received") return { backgroundColor: "#e0f2fe", color: "#0369a1", border: "1px solid #bae6fd" };
+  return { backgroundColor: "#f1f5f9", color: "#475569", border: "1px solid #e2e8f0" };
+};
+
+export const getJobInvoiceItems = (job, isRetainer) => {
+  if (!job || !job.rows || job.rows.length === 0) return [];
+  const items = [];
+
+  if (isRetainer) {
+    job.rows.forEach((r, rIdx) => {
+      const monthLabel = getRetainerRowMonthLabel(r, rIdx, job);
+      const slots = r.invoiceSlots || [];
+
+      const mainSlot = slots.find((s) => s.slotNum === 1) || {
+        slotNum: 1, amount: "", ref: "", sentDate: "", daysToPay: "", status: ""
+      };
+      items.push({
+        id: `ret_inv_${r.rowNum}_1`,
+        rowNum: r.rowNum,
+        slotNum: 1,
+        slot: mainSlot,
+        row: r,
+        label: monthLabel,
+        subLabel: `Row ${r.rowNum}${mainSlot.sentDate ? ` · ${mainSlot.sentDate}` : ""}`
+      });
+
+      slots.filter((s) => s.slotNum > 1).forEach((extraSlot) => {
+        const hasData = Boolean(
+          (extraSlot.ref && String(extraSlot.ref).trim() !== "") ||
+          (extraSlot.amount && String(extraSlot.amount).trim() !== "")
+        );
+        if (hasData) {
+          items.push({
+            id: `ret_inv_${r.rowNum}_${extraSlot.slotNum}`,
+            rowNum: r.rowNum,
+            slotNum: extraSlot.slotNum,
+            slot: extraSlot,
+            row: r,
+            label: `${monthLabel} (Extra Inv ${extraSlot.slotNum})`,
+            subLabel: `Row ${r.rowNum}`
+          });
+        }
+      });
+    });
+  } else {
+    job.rows.forEach((r, rIdx) => {
+      const slots = r.invoiceSlots || [
+        { slotNum: 1, amount: "", ref: "", sentDate: "", daysToPay: "", status: "" },
+        { slotNum: 2, amount: "", ref: "", sentDate: "", daysToPay: "", status: "" },
+        { slotNum: 3, amount: "", ref: "", sentDate: "", daysToPay: "", status: "" }
+      ];
+
+      slots.forEach((s) => {
+        const seqNum = rIdx * 3 + s.slotNum;
+        items.push({
+          id: `proj_inv_${r.rowNum}_${s.slotNum}`,
+          rowNum: r.rowNum,
+          slotNum: s.slotNum,
+          slot: s,
+          row: r,
+          label: `Invoice ${seqNum}`,
+          subLabel: rIdx > 0 ? `Row ${r.rowNum}` : ""
+        });
+      });
+    });
+  }
+
+  return items;
+};
+
+export const getJobExpenseItems = (job, isRetainer) => {
+  if (!job || !job.rows || job.rows.length === 0) return [];
+  const items = [];
+
+  if (isRetainer) {
+    job.rows.forEach((r, rIdx) => {
+      const monthLabel = getRetainerRowMonthLabel(r, rIdx, job);
+      const slots = r.expenseSlots || [];
+
+      slots.forEach((s) => {
+        const hasData = Boolean(
+          (s.description && String(s.description).trim() !== "") ||
+          (s.amount && String(s.amount).trim() !== "") ||
+          (s.transactionId && String(s.transactionId).trim() !== "")
+        );
+        if (hasData || (rIdx === 0 && s.slotNum === 1)) {
+          items.push({
+            id: `ret_exp_${r.rowNum}_${s.slotNum}`,
+            rowNum: r.rowNum,
+            slotNum: s.slotNum,
+            slot: s,
+            row: r,
+            label: s.slotNum === 1 ? `${monthLabel} Cost` : `${monthLabel} Cost ${s.slotNum}`,
+            subLabel: `Row ${r.rowNum}`
+          });
+        }
+      });
+    });
+  } else {
+    job.rows.forEach((r, rIdx) => {
+      const slots = r.expenseSlots || [
+        { slotNum: 1, description: "", amount: "", vat: "", date: "", daysToPay: "", status: "", transactionId: "" },
+        { slotNum: 2, description: "", amount: "", vat: "", date: "", daysToPay: "", status: "", transactionId: "" },
+        { slotNum: 3, description: "", amount: "", vat: "", date: "", daysToPay: "", status: "", transactionId: "" }
+      ];
+
+      slots.forEach((s) => {
+        const seqNum = rIdx * 3 + s.slotNum;
+        items.push({
+          id: `proj_exp_${r.rowNum}_${s.slotNum}`,
+          rowNum: r.rowNum,
+          slotNum: s.slotNum,
+          slot: s,
+          row: r,
+          label: `Direct Cost ${seqNum}`,
+          subLabel: rIdx > 0 ? `Row ${r.rowNum}` : ""
+        });
+      });
+    });
+  }
+
+  return items;
+};
+
+export const getJobFinancialMetrics = (job, isRetainer, isConfirmed, currentRevVal, currentCostVal) => {
+  if (!job || !job.rows || job.rows.length === 0) {
+    return {
+      revenue: 0,
+      realInvoiced: 0,
+      placeholderInvoiced: 0,
+      leftToInvoice: 0,
+      priorMonthsUninvoicedCount: 0,
+      directCosts: 0,
+      realCostsReceived: 0,
+      placeholderCosts: 0,
+      costsLeftToReceive: 0,
+      priorMonthsUnreceivedCount: 0,
+      isRetainer: false,
+      isConfirmed: false
+    };
+  }
+
+  const parentRow = job.rows[0];
+  const tabName = job.tabName || parentRow.tabName || "Confirmed";
+  const confirmed = isConfirmed !== undefined ? Boolean(isConfirmed) : (String(tabName).toLowerCase() === "confirmed");
+
+  const rawRev = parseFloat(String(currentRevVal !== undefined ? currentRevVal : (parentRow.revenue || "0")).replace(/[£$€,\s]/g, "")) || 0;
+  const rawCost = parseFloat(String(currentCostVal !== undefined ? currentCostVal : (parentRow.directCosts || "0")).replace(/[£$€,\s]/g, "")) || 0;
+
+  let realInvoiced = 0;
+  let placeholderInvoiced = 0;
+  job.rows.forEach((r) => {
+    (r.invoiceSlots || []).forEach((slot) => {
+      const amt = parseFloat(String(slot.amount || "0").replace(/[£$€,\s]/g, "")) || 0;
+      if (amt > 0) {
+        const ref = String(slot.ref || "").trim();
+        if (isPlaceholderInvoice(ref, slot.status) || !ref) {
+          placeholderInvoiced += amt;
+        } else {
+          realInvoiced += amt;
+        }
+      }
+    });
+  });
+
+  let realCostsReceived = 0;
+  let placeholderCosts = 0;
+  job.rows.forEach((r) => {
+    (r.expenseSlots || []).forEach((slot) => {
+      const amt = parseFloat(String(slot.amount || "0").replace(/[£$€,\s]/g, "")) || 0;
+      if (amt > 0) {
+        if (isPlaceholderExpense(slot)) {
+          placeholderCosts += amt;
+        } else {
+          realCostsReceived += amt;
+        }
+      }
+    });
+  });
+
+  let totalRevenue = rawRev;
+  let totalDirectCosts = rawCost;
+  let leftToInvoice = 0;
+  let costsLeftToReceive = 0;
+  let priorMonthsUninvoicedCount = 0;
+  let priorMonthsUnreceivedCount = 0;
+
+  if (!confirmed) {
+    leftToInvoice = 0;
+    costsLeftToReceive = 0;
+  } else if (isRetainer) {
+    const now = new Date();
+
+    let baseStartDate = parseSheetDate(parentRow.startDate);
+    if (!baseStartDate && parentRow.invoiceSlots?.[0]?.sentDate) {
+      baseStartDate = parseSheetDate(parentRow.invoiceSlots[0].sentDate);
+    }
+    if (!baseStartDate && parentRow.dateConf) {
+      baseStartDate = parseSheetDate(parentRow.dateConf);
+    }
+    if (!baseStartDate) {
+      for (let i = 0; i < job.rows.length; i++) {
+        const d = parseSheetDate(job.rows[i].invoiceSlots?.[0]?.sentDate);
+        if (d) {
+          baseStartDate = new Date(d.getFullYear(), d.getMonth() - i, d.getDate());
+          break;
+        }
+      }
+    }
+
+    const sDate = baseStartDate || parseSheetDate(parentRow.startDate);
+    const eDate = parseSheetDate(parentRow.endDate);
+    let monthsCount = job.rows.length;
+    if (sDate && eDate && eDate > sDate) {
+      const diffDays = (eDate.getTime() - sDate.getTime()) / (24 * 60 * 60 * 1000);
+      const diffMonths = Math.round(diffDays / 30.4375);
+      monthsCount = Math.max(job.rows.length, diffMonths);
+    }
+    totalRevenue = rawRev * monthsCount;
+    totalDirectCosts = rawCost * monthsCount;
+
+    if (sDate) {
+      let expectedPriorRevenue = 0;
+      let expectedPriorCosts = 0;
+      let priorPeriodsCount = 0;
+
+      for (let p = 0; p < monthsCount; p++) {
+        const nextPStart = addMonths(sDate, p + 1);
+        const pEnd = new Date(nextPStart.getFullYear(), nextPStart.getMonth(), nextPStart.getDate() - 1, 23, 59, 59, 999);
+
+        if (pEnd < now) {
+          priorPeriodsCount++;
+          const periodRev = job.rows[p]?.revenue ? (parseFloat(String(job.rows[p].revenue).replace(/[£$€,\s]/g, "")) || rawRev) : rawRev;
+          expectedPriorRevenue += periodRev;
+
+          const periodCost = job.rows[p]?.directCosts ? (parseFloat(String(job.rows[p].directCosts).replace(/[£$€,\s]/g, "")) || rawCost) : rawCost;
+          expectedPriorCosts += periodCost;
+        }
+      }
+
+      leftToInvoice = Math.max(0, expectedPriorRevenue - realInvoiced);
+      priorMonthsUninvoicedCount = rawRev > 0 ? Math.ceil(leftToInvoice / rawRev) : (leftToInvoice > 0 ? 1 : 0);
+
+      costsLeftToReceive = Math.max(0, expectedPriorCosts - realCostsReceived);
+      priorMonthsUnreceivedCount = rawCost > 0 ? Math.ceil(costsLeftToReceive / rawCost) : (costsLeftToReceive > 0 ? 1 : 0);
+    } else {
+      leftToInvoice = 0;
+      costsLeftToReceive = 0;
+    }
+  } else {
+    leftToInvoice = totalRevenue > 0 ? Math.max(0, totalRevenue - realInvoiced) : 0;
+    costsLeftToReceive = totalDirectCosts > 0 ? Math.max(0, totalDirectCosts - realCostsReceived) : 0;
+  }
+
+  return {
+    revenue: totalRevenue,
+    realInvoiced,
+    placeholderInvoiced,
+    leftToInvoice,
+    priorMonthsUninvoicedCount,
+    directCosts: totalDirectCosts,
+    realCostsReceived,
+    placeholderCosts,
+    costsLeftToReceive,
+    priorMonthsUnreceivedCount,
+    isRetainer,
+    isConfirmed: confirmed
+  };
 };
 
 export default function JobsView({
@@ -1015,305 +1289,6 @@ export default function JobsView({
 
   // Number of unsaved dirty jobs
   const dirtyCount = Object.keys(draftEdits).length;
-
-  // Status pill styling
-  const getStatusPill = (status) => {
-    const s = String(status || "").trim();
-    if (s === "Paid") return { backgroundColor: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0" };
-    if (s === "Draft") return { backgroundColor: "#ffedd5", color: "#9a3412", border: "1px solid #fed7aa" };
-    if (s === "Sent" || s === "Received") return { backgroundColor: "#e0f2fe", color: "#0369a1", border: "1px solid #bae6fd" };
-    return { backgroundColor: "#f1f5f9", color: "#475569", border: "1px solid #e2e8f0" };
-  };
-
-  // Helper to gather all invoice items across parent and child rows
-  const getJobInvoiceItems = (job, isRetainer) => {
-    if (!job || !job.rows || job.rows.length === 0) return [];
-    const items = [];
-
-    if (isRetainer) {
-      // Retainer billing: each row in job.rows represents a period (Month 1, Month 2...)
-      job.rows.forEach((r, rIdx) => {
-        const periodNum = rIdx + 1;
-        const slots = r.invoiceSlots || [];
-
-        // Primary monthly retainer invoice slot (slot 1)
-        const mainSlot = slots.find((s) => s.slotNum === 1) || {
-          slotNum: 1, amount: "", ref: "", sentDate: "", daysToPay: "", status: ""
-        };
-        items.push({
-          id: `ret_inv_${r.rowNum}_1`,
-          rowNum: r.rowNum,
-          slotNum: 1,
-          slot: mainSlot,
-          row: r,
-          label: `Month ${periodNum}`,
-          subLabel: `Row ${r.rowNum}${mainSlot.sentDate ? ` · ${mainSlot.sentDate}` : ""}`
-        });
-
-        // Any extra invoices assigned to this month/period (slot 2 or 3)
-        slots.filter((s) => s.slotNum > 1).forEach((extraSlot) => {
-          const hasData = Boolean(
-            (extraSlot.ref && String(extraSlot.ref).trim() !== "") ||
-            (extraSlot.amount && String(extraSlot.amount).trim() !== "")
-          );
-          if (hasData) {
-            items.push({
-              id: `ret_inv_${r.rowNum}_${extraSlot.slotNum}`,
-              rowNum: r.rowNum,
-              slotNum: extraSlot.slotNum,
-              slot: extraSlot,
-              row: r,
-              label: `Month ${periodNum} (Extra Inv ${extraSlot.slotNum})`,
-              subLabel: `Row ${r.rowNum}`
-            });
-          }
-        });
-      });
-    } else {
-      // Project billing: sequential invoices across rows
-      // Row 0 -> Invoice 1, 2, 3
-      // Row 1 -> Invoice 4, 5, 6
-      // Row 2 -> Invoice 7, 8, 9...
-      job.rows.forEach((r, rIdx) => {
-        const slots = r.invoiceSlots || [
-          { slotNum: 1, amount: "", ref: "", sentDate: "", daysToPay: "", status: "" },
-          { slotNum: 2, amount: "", ref: "", sentDate: "", daysToPay: "", status: "" },
-          { slotNum: 3, amount: "", ref: "", sentDate: "", daysToPay: "", status: "" }
-        ];
-
-        slots.forEach((s) => {
-          const seqNum = rIdx * 3 + s.slotNum;
-          items.push({
-            id: `proj_inv_${r.rowNum}_${s.slotNum}`,
-            rowNum: r.rowNum,
-            slotNum: s.slotNum,
-            slot: s,
-            row: r,
-            label: `Invoice ${seqNum}`,
-            subLabel: rIdx > 0 ? `Row ${r.rowNum}` : ""
-          });
-        });
-      });
-    }
-
-    return items;
-  };
-
-  // Helper to gather all expense / direct cost items across parent and child rows
-  const getJobExpenseItems = (job, isRetainer) => {
-    if (!job || !job.rows || job.rows.length === 0) return [];
-    const items = [];
-
-    if (isRetainer) {
-      job.rows.forEach((r, rIdx) => {
-        const periodNum = rIdx + 1;
-        const slots = r.expenseSlots || [];
-
-        slots.forEach((s) => {
-          const hasData = Boolean(
-            (s.description && String(s.description).trim() !== "") ||
-            (s.amount && String(s.amount).trim() !== "") ||
-            (s.transactionId && String(s.transactionId).trim() !== "")
-          );
-          if (hasData || (rIdx === 0 && s.slotNum === 1)) {
-            items.push({
-              id: `ret_exp_${r.rowNum}_${s.slotNum}`,
-              rowNum: r.rowNum,
-              slotNum: s.slotNum,
-              slot: s,
-              row: r,
-              label: s.slotNum === 1 ? `Month ${periodNum} Cost` : `Month ${periodNum} Cost ${s.slotNum}`,
-              subLabel: `Row ${r.rowNum}`
-            });
-          }
-        });
-      });
-    } else {
-      // Project direct costs: sequential across rows
-      // Row 0 -> Direct Cost 1, 2, 3
-      // Row 1 -> Direct Cost 4, 5, 6
-      // Row 2 -> Direct Cost 7, 8, 9...
-      job.rows.forEach((r, rIdx) => {
-        const slots = r.expenseSlots || [
-          { slotNum: 1, description: "", amount: "", vat: "", date: "", daysToPay: "", status: "", transactionId: "" },
-          { slotNum: 2, description: "", amount: "", vat: "", date: "", daysToPay: "", status: "", transactionId: "" },
-          { slotNum: 3, description: "", amount: "", vat: "", date: "", daysToPay: "", status: "", transactionId: "" }
-        ];
-
-        slots.forEach((s) => {
-          const seqNum = rIdx * 3 + s.slotNum;
-          items.push({
-            id: `proj_exp_${r.rowNum}_${s.slotNum}`,
-            rowNum: r.rowNum,
-            slotNum: s.slotNum,
-            slot: s,
-            row: r,
-            label: `Direct Cost ${seqNum}`,
-            subLabel: rIdx > 0 ? `Row ${r.rowNum}` : ""
-          });
-        });
-      });
-    }
-
-    return items;
-  };
-
-  // Helper to calculate job financial metrics excluding gap sweep placeholders
-  const getJobFinancialMetrics = (job, isRetainer, isConfirmed, currentRevVal, currentCostVal) => {
-    if (!job || !job.rows || job.rows.length === 0) {
-      return {
-        revenue: 0,
-        realInvoiced: 0,
-        placeholderInvoiced: 0,
-        leftToInvoice: 0,
-        priorMonthsUninvoicedCount: 0,
-        directCosts: 0,
-        realCostsReceived: 0,
-        placeholderCosts: 0,
-        costsLeftToReceive: 0,
-        priorMonthsUnreceivedCount: 0,
-        isRetainer: false,
-        isConfirmed: false
-      };
-    }
-
-    const parentRow = job.rows[0];
-    const tabName = job.tabName || parentRow.tabName || (filterType === "pipeline" ? "Pipeline" : "Confirmed");
-    const confirmed = isConfirmed !== undefined ? Boolean(isConfirmed) : (String(tabName).toLowerCase() === "confirmed");
-
-    const rawRev = parseFloat(String(currentRevVal !== undefined ? currentRevVal : (parentRow.revenue || "0")).replace(/[£$€,\s]/g, "")) || 0;
-    const rawCost = parseFloat(String(currentCostVal !== undefined ? currentCostVal : (parentRow.directCosts || "0")).replace(/[£$€,\s]/g, "")) || 0;
-
-    // Sum Real vs Placeholder Invoiced across all rows
-    let realInvoiced = 0;
-    let placeholderInvoiced = 0;
-    job.rows.forEach((r) => {
-      (r.invoiceSlots || []).forEach((slot) => {
-        const amt = parseFloat(String(slot.amount || "0").replace(/[£$€,\s]/g, "")) || 0;
-        if (amt > 0) {
-          const ref = String(slot.ref || "").trim();
-          if (isPlaceholderInvoice(ref, slot.status) || !ref) {
-            placeholderInvoiced += amt;
-          } else {
-            realInvoiced += amt;
-          }
-        }
-      });
-    });
-
-    // Sum Real vs Placeholder Direct Costs across all rows
-    let realCostsReceived = 0;
-    let placeholderCosts = 0;
-    job.rows.forEach((r) => {
-      (r.expenseSlots || []).forEach((slot) => {
-        const amt = parseFloat(String(slot.amount || "0").replace(/[£$€,\s]/g, "")) || 0;
-        if (amt > 0) {
-          if (isPlaceholderExpense(slot)) {
-            placeholderCosts += amt;
-          } else {
-            realCostsReceived += amt;
-          }
-        }
-      });
-    });
-
-    let totalRevenue = rawRev;
-    let totalDirectCosts = rawCost;
-    let leftToInvoice = 0;
-    let costsLeftToReceive = 0;
-    let priorMonthsUninvoicedCount = 0;
-    let priorMonthsUnreceivedCount = 0;
-
-    if (!confirmed) {
-      // Pipeline jobs: do not track remaining billing obligations
-      leftToInvoice = 0;
-      costsLeftToReceive = 0;
-    } else if (isRetainer) {
-      // Confirmed Retainer jobs:
-      // Only include pills if a prior monthly period remains uninvoiced / unreceived
-      const now = new Date();
-
-      // Determine retainer start date to derive period cycles (period 0 = month 1, period 1 = month 2, etc.)
-      let baseStartDate = parseSheetDate(parentRow.startDate);
-      if (!baseStartDate && parentRow.invoiceSlots?.[0]?.sentDate) {
-        baseStartDate = parseSheetDate(parentRow.invoiceSlots[0].sentDate);
-      }
-      if (!baseStartDate && parentRow.dateConf) {
-        baseStartDate = parseSheetDate(parentRow.dateConf);
-      }
-      if (!baseStartDate) {
-        for (let i = 0; i < job.rows.length; i++) {
-          const d = parseSheetDate(job.rows[i].invoiceSlots?.[0]?.sentDate);
-          if (d) {
-            baseStartDate = new Date(d.getFullYear(), d.getMonth() - i, d.getDate());
-            break;
-          }
-        }
-      }
-
-      const sDate = baseStartDate || parseSheetDate(parentRow.startDate);
-      const eDate = parseSheetDate(parentRow.endDate);
-      let monthsCount = job.rows.length;
-      if (sDate && eDate && eDate > sDate) {
-        const diffDays = (eDate.getTime() - sDate.getTime()) / (24 * 60 * 60 * 1000);
-        const diffMonths = Math.round(diffDays / 30.4375);
-        monthsCount = Math.max(job.rows.length, diffMonths);
-      }
-      totalRevenue = rawRev * monthsCount;
-      totalDirectCosts = rawCost * monthsCount;
-
-      if (sDate) {
-        // Calculate how much revenue & direct costs were expected for all prior periods completed before today
-        let expectedPriorRevenue = 0;
-        let expectedPriorCosts = 0;
-        let priorPeriodsCount = 0;
-
-        for (let p = 0; p < monthsCount; p++) {
-          const nextPStart = addMonths(sDate, p + 1);
-          const pEnd = new Date(nextPStart.getFullYear(), nextPStart.getMonth(), nextPStart.getDate() - 1, 23, 59, 59, 999);
-
-          // Only periods that have ended before now are considered prior/completed periods
-          if (pEnd < now) {
-            priorPeriodsCount++;
-            const periodRev = job.rows[p]?.revenue ? (parseFloat(String(job.rows[p].revenue).replace(/[£$€,\s]/g, "")) || rawRev) : rawRev;
-            expectedPriorRevenue += periodRev;
-
-            const periodCost = job.rows[p]?.directCosts ? (parseFloat(String(job.rows[p].directCosts).replace(/[£$€,\s]/g, "")) || rawCost) : rawCost;
-            expectedPriorCosts += periodCost;
-          }
-        }
-
-        // Compare expected prior amounts against all real invoices / costs received across the retainer
-        leftToInvoice = Math.max(0, expectedPriorRevenue - realInvoiced);
-        priorMonthsUninvoicedCount = rawRev > 0 ? Math.ceil(leftToInvoice / rawRev) : (leftToInvoice > 0 ? 1 : 0);
-
-        costsLeftToReceive = Math.max(0, expectedPriorCosts - realCostsReceived);
-        priorMonthsUnreceivedCount = rawCost > 0 ? Math.ceil(costsLeftToReceive / rawCost) : (costsLeftToReceive > 0 ? 1 : 0);
-      } else {
-        leftToInvoice = 0;
-        costsLeftToReceive = 0;
-      }
-    } else {
-      // Confirmed Project jobs: compare total contract revenue / costs against real invoices / costs
-      leftToInvoice = totalRevenue > 0 ? Math.max(0, totalRevenue - realInvoiced) : 0;
-      costsLeftToReceive = totalDirectCosts > 0 ? Math.max(0, totalDirectCosts - realCostsReceived) : 0;
-    }
-
-    return {
-      revenue: totalRevenue,
-      realInvoiced,
-      placeholderInvoiced,
-      leftToInvoice,
-      priorMonthsUninvoicedCount,
-      directCosts: totalDirectCosts,
-      realCostsReceived,
-      placeholderCosts,
-      costsLeftToReceive,
-      priorMonthsUnreceivedCount,
-      isRetainer,
-      isConfirmed: confirmed
-    };
-  };
 
   // ============================================================================
   // LEGACY INLINE CELL FOR SPREADSHEET VIEW

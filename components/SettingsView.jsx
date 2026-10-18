@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import Spinner from "./Spinner";
 import ClientSettingsView from "./ClientSettingsView";
 import { useSettings } from "../hooks/useSettings";
@@ -15,16 +15,29 @@ export default function SettingsView({
   getFlagName,
   isAdmin = false,
   user,
-  managedClient = null
+  managedClient = null,
+  onRegisterNavGuard
 }) {
   const { clientsWithFlags, isLoading, refreshTriage } = useTriage();
   // Only Admin is an internal staff role able to see all clients
   const effectiveIsAdmin = !!(isAdmin || user?.isAdmin || user?.role === "Admin");
 
+  // Navigation guard ref forwarded from ClientSettingsView
+  const clientNavGuardRef = useRef(null);
+
   // Top tab mode: "system" vs "client"
   const [settingsMode, setSettingsMode] = useState(() => {
     return managedClient ? "client" : "system";
   });
+
+  const handleSwitchMode = (targetMode) => {
+    if (targetMode === settingsMode) return;
+    if (settingsMode === "client" && clientNavGuardRef.current) {
+      clientNavGuardRef.current(() => setSettingsMode(targetMode));
+    } else {
+      setSettingsMode(targetMode);
+    }
+  };
 
   useEffect(() => {
     if (managedClient) {
@@ -224,7 +237,7 @@ export default function SettingsView({
   const rows = settingsData?.recentRows || [];
 
   return (
-    <div style={{ padding: "20px", maxWidth: effectiveIsAdmin ? "1240px" : "800px", margin: "0 auto" }}>
+    <div style={{ padding: "20px", maxWidth: effectiveIsAdmin && settingsMode === "client" ? "1440px" : effectiveIsAdmin ? "1240px" : "800px", margin: "0 auto", boxSizing: "border-box", width: "100%" }}>
       {/* Top Application Version & Copyright Header */}
       <div style={{ fontSize: "11px", fontStyle: "italic", color: "#666", marginBottom: "16px" }}>
         Pulse v{SYSTEM_VERSION} - {getSystemCopyright()}
@@ -237,7 +250,7 @@ export default function SettingsView({
           <div style={{ display: "inline-flex", background: "#f1f5f9", padding: "3px", borderRadius: "8px", border: "1px solid #cbd5e1" }}>
             <button
               type="button"
-              onClick={() => setSettingsMode("system")}
+              onClick={() => handleSwitchMode("system")}
               style={{
                 padding: "6px 14px",
                 borderRadius: "6px",
@@ -255,7 +268,7 @@ export default function SettingsView({
             </button>
             <button
               type="button"
-              onClick={() => setSettingsMode("client")}
+              onClick={() => handleSwitchMode("client")}
               style={{
                 padding: "6px 14px",
                 borderRadius: "6px",
@@ -281,6 +294,10 @@ export default function SettingsView({
           managedClient={managedClient}
           user={user}
           isAdmin={effectiveIsAdmin}
+          onRegisterNavGuard={(guardFn) => {
+            clientNavGuardRef.current = guardFn;
+            onRegisterNavGuard?.(guardFn);
+          }}
         />
       ) : (
         <>

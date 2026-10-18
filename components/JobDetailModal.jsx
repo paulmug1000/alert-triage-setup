@@ -11,7 +11,7 @@ import {
   formatCurrency,
   parseLikelihoodValue
 } from "./JobsView";
-import { isPlaceholderInvoice, isPlaceholderExpense } from "../utils/helpers";
+import { isPlaceholderInvoice, isPlaceholderExpense, getRetainerRowMonthLabel } from "../utils/helpers";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 
 export default function JobDetailModal({
@@ -394,7 +394,7 @@ export default function JobDetailModal({
     const items = [];
     if (isRetainer) {
       job.rows.forEach((r, rIdx) => {
-        const periodNum = rIdx + 1;
+        const monthLabel = getRetainerRowMonthLabel(r, rIdx, job);
         const slots = r.invoiceSlots || [];
         const mainSlot = slots.find((s) => s.slotNum === 1) || { slotNum: 1, amount: "", ref: "", sentDate: "", daysToPay: "", status: "" };
         items.push({
@@ -403,7 +403,7 @@ export default function JobDetailModal({
           slotNum: 1,
           slot: mainSlot,
           row: r,
-          label: `Month ${periodNum}`,
+          label: monthLabel,
           subLabel: `Row ${r.rowNum}${mainSlot.sentDate ? ` · ${mainSlot.sentDate}` : ""}`
         });
         slots.filter((s) => s.slotNum > 1).forEach((extraSlot) => {
@@ -414,7 +414,7 @@ export default function JobDetailModal({
               slotNum: extraSlot.slotNum,
               slot: extraSlot,
               row: r,
-              label: `Month ${periodNum} (Extra Inv ${extraSlot.slotNum})`,
+              label: `${monthLabel} (Extra Inv ${extraSlot.slotNum})`,
               subLabel: `Row ${r.rowNum}`
             });
           }
@@ -450,7 +450,7 @@ export default function JobDetailModal({
     const items = [];
     if (isRetainer) {
       job.rows.forEach((r, rIdx) => {
-        const periodNum = rIdx + 1;
+        const monthLabel = getRetainerRowMonthLabel(r, rIdx, job);
         const slots = r.expenseSlots || [];
         slots.forEach((s) => {
           const hasData = Boolean((s.description && String(s.description).trim() !== "") || (s.amount && String(s.amount).trim() !== "") || (s.transactionId && String(s.transactionId).trim() !== ""));
@@ -461,7 +461,7 @@ export default function JobDetailModal({
               slotNum: s.slotNum,
               slot: s,
               row: r,
-              label: s.slotNum === 1 ? `Month ${periodNum} Cost` : `Month ${periodNum} Cost ${s.slotNum}`,
+              label: s.slotNum === 1 ? `${monthLabel} Cost` : `${monthLabel} Cost ${s.slotNum}`,
               subLabel: `Row ${r.rowNum}`
             });
           }

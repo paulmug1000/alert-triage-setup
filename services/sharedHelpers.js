@@ -1,4 +1,4 @@
-import { withRetry } from "./sheetsClient";
+import { withRetry } from "./sheetsClient.js";
 
 export async function getToleranceValues(sheets, masterSheetId) {
   try {
@@ -142,20 +142,85 @@ export async function fetchJobRowsForDisplay(sheets, spreadsheetId, tabName, par
       }));
       rows = resp.data.values || [];
     }
-    const parentRow = rows[parentRowNum - 1] || [];
-    const parentClient = String(parentRow[0] || "").trim();
-    const parentJob    = String(parentRow[1] || "").trim();
-    if (!parentClient && !parentJob) return null;
+    let targetRowIndex = parentRowNum - 1;
+    let targetRow = rows[targetRowIndex] || [];
+    let curClient = String(targetRow[0] || "").trim();
+    let curJob = String(targetRow[1] || "").trim();
 
-    const allRows = [{ rowNum: parentRowNum, row: parentRow, isParent: true }];
-    for (let i = parentRowNum; i < rows.length; i++) {
+    // If targetRow has empty client and jobName, it is a child row. Scan upwards to find the enclosing parent row.
+    if (!curClient && !curJob) {
+      let scanIdx = targetRowIndex - 1;
+      while (scanIdx >= (tabName === "Pipeline" ? 5 : 1)) {
+        const candidate = rows[scanIdx] || [];
+        const candClient = String(candidate[0] || "").trim();
+        const candJob = String(candidate[1] || "").trim();
+        if (candClient || candJob) {
+          curClient = candClient;
+          curJob = candJob;
+          targetRowIndex = scanIdx;
+          targetRow = candidate;
+          break;
+        }
+        scanIdx--;
+      }
+    }
+    if (!curClient && !curJob) return null;
+
+    // Check if targetRow is already the parent row
+    const targetRev = String(targetRow[32] || "").trim();
+    const targetType = String(targetRow[35] || "").trim();
+    const targetStart = String(targetRow[37] || "").trim();
+    const targetCode = String(targetRow[2] || "").trim();
+    let trueParentIndex = targetRowIndex;
+
+    // Only scan upwards if targetRow is NOT already a parent row
+    if (!targetRev && !targetType && !targetStart && !targetCode) {
+      let pIdx = targetRowIndex - 1;
+      while (pIdx >= (tabName === "Pipeline" ? 5 : 1)) {
+        const prev = rows[pIdx] || [];
+        const prevClient = String(prev[0] || "").trim();
+        const prevJob = String(prev[1] || "").trim();
+        
+        // Blank row means boundary of the job reached
+        if (!prevClient && !prevJob) break;
+
+        const matchesJob = (!prevClient || prevClient.toLowerCase() === curClient.toLowerCase()) &&
+                           (!prevJob || prevJob.toLowerCase() === curJob.toLowerCase());
+        if (!matchesJob) break;
+
+        trueParentIndex = pIdx;
+        const pRevenue = String(prev[32] || "").trim();
+        const pBudget = parseFloat(String(prev[33] || "").replace(/[£$€,\s]/g, "")) || 0;
+        const pStart = String(prev[37] || "").trim();
+        const pType = String(prev[35] || "").trim();
+        if (pRevenue || pBudget > 0 || pStart || pType) {
+          break; // Reached the true parent row
+        }
+        pIdx--;
+      }
+    }
+
+    const parentRow = rows[trueParentIndex] || [];
+    const parentClient = String(parentRow[0] || curClient).trim();
+    const parentJob = String(parentRow[1] || curJob).trim();
+
+    const allRows = [{ rowNum: trueParentIndex + 1, row: parentRow, isParent: true }];
+    for (let i = trueParentIndex + 1; i < rows.length; i++) {
       const r = rows[i] || [];
       const rc = String(r[0] || "").trim();
       const rj = String(r[1] || "").trim();
       const rRevenue = String(r[32] || "").trim();
       const rBudget = parseFloat(String(r[33] || "").replace(/[£$€,\s]/g, "")) || 0;
       const rStart = String(r[37] || "").trim();
-      if (rc === parentClient && rj === parentJob && !rRevenue && !rBudget && !rStart) {
+      const rType = String(r[35] || "").trim();
+
+      // If row is completely blank, stop
+      if (!rc && !rj && !r[41] && !r[42] && !r[75] && !r[76]) break;
+
+      const matchesClient = !rc || rc.toLowerCase() === parentClient.toLowerCase();
+      const matchesJob = (rj && rj.toLowerCase() === parentJob.toLowerCase()) || (!rj && (r[41] || r[42] || r[75] || r[76]));
+
+      if (matchesClient && matchesJob && !rRevenue && !rBudget && !rStart && !rType) {
         allRows.push({ rowNum: i + 1, row: r, isParent: false });
       } else {
         break;

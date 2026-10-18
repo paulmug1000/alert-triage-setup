@@ -12,6 +12,9 @@ import InvoicesView from "../components/InvoicesView";
 import JobsView from "../components/JobsView";
 import OutgoingsView from "../components/OutgoingsView";
 import RetainersView from "../components/RetainersView";
+import SalariesView from "../components/SalariesView";
+import ExpensesView from "../components/ExpensesView";
+import NBToFindView from "../components/NBToFindView";
 import ToolsView from "../components/ToolsView";
 import SettingsView from "../components/SettingsView";
 import IntegrationsView from "../components/IntegrationsView";
@@ -329,9 +332,22 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
     }
   }, [isAuthenticated, user?.email, loadClients]);
 
-  const handleNavHome = () => { fireOutgoingsPullIfPending(); setActiveNav("home"); };
+  // ── Navigation Guard for Unsaved Changes ──────────────────────────────
+  const navGuardRef = useRef(null);
+  const registerNavGuard = useCallback((guardFn) => {
+    navGuardRef.current = guardFn;
+  }, []);
+  const navigateWithGuard = useCallback((action) => {
+    if (navGuardRef.current) {
+      navGuardRef.current(action);
+    } else {
+      action();
+    }
+  }, []);
+
+  const handleNavHome = () => navigateWithGuard(() => { fireOutgoingsPullIfPending(); setActiveNav("home"); });
   const lastManagedAlertSelectionRef = useRef("");
-  const handleNavAlerts = () => {
+  const handleNavAlerts = () => navigateWithGuard(() => {
     fireOutgoingsPullIfPending();
     setActiveNav("alerts");
     if (managedClient) {
@@ -339,6 +355,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
       const match =
         (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === targetName) ||
         (triageEngine.clientsWithFlags || []).find(c => c.clientName?.toLowerCase() === targetName) ||
+        (allClientsMap && (allClientsMap[managedClient.clientName] || Object.values(allClientsMap).find(c => c.clientName?.toLowerCase() === targetName))) ||
         managedClient;
       if (triageEngine.sessionId) {
         lastManagedAlertSelectionRef.current = `${targetName}-${triageEngine.sessionId}`;
@@ -347,7 +364,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
     } else {
       setScreen("clientSelection");
     }
-  };
+  });
 
   // Automatically select managed client alerts when activeNav is alerts
   useEffect(() => {
@@ -359,6 +376,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
         const match =
           (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === targetName) ||
           (triageEngine.clientsWithFlags || []).find(c => c.clientName?.toLowerCase() === targetName) ||
+          (allClientsMap && (allClientsMap[managedClient.clientName] || Object.values(allClientsMap).find(c => c.clientName?.toLowerCase() === targetName))) ||
           managedClient;
         triageEngine.selectClient(match);
       }
@@ -366,13 +384,13 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
       lastManagedAlertSelectionRef.current = "";
     }
   }, [activeNav, managedClient, triageEngine.sessionId, allOutgoingsClients, triageEngine.clientsWithFlags]);
-  const handleNavOverview = () => { fireOutgoingsPullIfPending(); setActiveNav("overview"); loadOverview(); };
-  const handleNavTasks = () => { fireOutgoingsPullIfPending(); setActiveNav("tasks"); setTasksFilter("active"); loadTasks("active", true); };
-  const handleNavActivity = () => { fireOutgoingsPullIfPending(); setActiveNav("activity"); loadClients(); };
+  const handleNavOverview = () => navigateWithGuard(() => { fireOutgoingsPullIfPending(); setActiveNav("overview"); loadOverview(); });
+  const handleNavTasks = () => navigateWithGuard(() => { fireOutgoingsPullIfPending(); setActiveNav("tasks"); setTasksFilter("active"); loadTasks("active", true); });
+  const handleNavActivity = () => navigateWithGuard(() => { fireOutgoingsPullIfPending(); setActiveNav("activity"); loadClients(); });
   const handleNavAppLog = handleNavActivity;
-  const handleNavSettings = () => { fireOutgoingsPullIfPending(); setActiveNav("settings"); loadClients(); };
-  const handleNavIntegrations = () => { fireOutgoingsPullIfPending(); setActiveNav("integrations"); loadClients(); };
-  const handleNavSetup = (clientName = "") => {
+  const handleNavSettings = () => navigateWithGuard(() => { fireOutgoingsPullIfPending(); setActiveNav("settings"); loadClients(); });
+  const handleNavIntegrations = () => navigateWithGuard(() => { fireOutgoingsPullIfPending(); setActiveNav("integrations"); loadClients(); });
+  const handleNavSetup = (clientName = "") => navigateWithGuard(() => {
     fireOutgoingsPullIfPending();
     if (typeof clientName === "string" && clientName.trim()) {
       setSetupClientName(clientName.trim());
@@ -383,13 +401,16 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
     }
     setActiveNav("setup");
     loadClients();
-  };
-  const handleNavTools = () => { setActiveNav("tools"); loadClients(); };
-  const handleNavOutgoings = () => { setActiveNav("outgoings"); loadClients(); };
-  const handleNavInvoices = () => { setActiveNav("invoices"); loadClients(); };
-  const handleNavJobs = () => { setActiveNav("jobs"); loadClients(); };
-  const handleNavRetainers = () => { setActiveNav("retainers"); loadClients(); };
-  const handleNavViews = () => { setActiveNav("views"); loadClients(); };
+  });
+  const handleNavTools = () => navigateWithGuard(() => { setActiveNav("tools"); loadClients(); });
+  const handleNavOutgoings = () => navigateWithGuard(() => { setActiveNav("outgoings"); loadClients(); });
+  const handleNavInvoices = () => navigateWithGuard(() => { setActiveNav("invoices"); loadClients(); });
+  const handleNavJobs = () => navigateWithGuard(() => { setActiveNav("jobs"); loadClients(); });
+  const handleNavRetainers = () => navigateWithGuard(() => { setActiveNav("retainers"); loadClients(); });
+  const handleNavSalaries = () => navigateWithGuard(() => { setActiveNav("salaries"); loadClients(); });
+  const handleNavExpenses = () => navigateWithGuard(() => { setActiveNav("expenses"); loadClients(); });
+  const handleNavNBToFind = () => navigateWithGuard(() => { setActiveNav("nbtofind"); loadClients(); });
+  const handleNavViews = () => navigateWithGuard(() => { setActiveNav("views"); loadClients(); });
 
   // Synchronize browser URL with activeNav so direct bookmarking works naturally
   // Rule: Canonical URL for PMA is ALWAYS /pma (never bare root /)
@@ -449,6 +470,8 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
         setActiveNav("setup");
       } else if (navParam === "tasks") {
         setActiveNav("tasks");
+      } else if (navParam) {
+        setActiveNav(navParam);
       }
     }
   }, [initialNav]);
@@ -686,6 +709,42 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
       );
     }
 
+    // ── SALARIES SCREEN ─────────────────────────────────────────────────────────
+    if (activeNav === "salaries") {
+      return (
+        <SalariesView
+          allOutgoingsClients={allOutgoingsClients}
+          styles={styles}
+          managedClient={managedClient}
+          onClearManagedClient={handleClearManagedClient}
+        />
+      );
+    }
+
+    // ── EXPENSES SCREEN ─────────────────────────────────────────────────────────
+    if (activeNav === "expenses") {
+      return (
+        <ExpensesView
+          allOutgoingsClients={allOutgoingsClients}
+          styles={styles}
+          managedClient={managedClient}
+          onClearManagedClient={handleClearManagedClient}
+        />
+      );
+    }
+
+    // ── NEW BUSINESS TO FIND SCREEN ─────────────────────────────────────────────
+    if (activeNav === "nbtofind") {
+      return (
+        <NBToFindView
+          allOutgoingsClients={allOutgoingsClients}
+          styles={styles}
+          managedClient={managedClient}
+          onClearManagedClient={handleClearManagedClient}
+        />
+      );
+    }
+
     // ── TOOLS SCREEN ─────────────────────────────────────────────────────────────
     if (activeNav === "tools") {
       return (
@@ -752,6 +811,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
           isAdmin={isAdmin}
           user={user}
           managedClient={managedClient}
+          onRegisterNavGuard={registerNavGuard}
         />
       );
     }
@@ -836,6 +896,9 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
         onInvoices={handleNavInvoices}
         onRetainers={handleNavRetainers}
         onJobs={handleNavJobs}
+        onSalaries={handleNavSalaries}
+        onExpenses={handleNavExpenses}
+        onNBToFind={handleNavNBToFind}
         onViews={handleNavViews}
         onTools={handleNavTools}
         onIntegrations={handleNavIntegrations}
@@ -847,8 +910,8 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
         onLogout={logout}
         clients={allOutgoingsClients}
         managedClient={managedClient}
-        onSelectManagedClient={setManagedClient}
-        onClearManagedClient={handleClearManagedClient}
+        onSelectManagedClient={(c) => navigateWithGuard(() => setManagedClient(c))}
+        onClearManagedClient={() => navigateWithGuard(() => handleClearManagedClient())}
       >
         {renderActiveView()}
       </NavShell>

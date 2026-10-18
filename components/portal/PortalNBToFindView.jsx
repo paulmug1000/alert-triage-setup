@@ -438,7 +438,7 @@ export default function PortalNBToFindView({
                       zIndex: 2,
                     }}
                   >
-                    Metric / Target
+
                   </th>
                   {monthHeaders.map((m, idx) => (
                     <th
@@ -463,7 +463,7 @@ export default function PortalNBToFindView({
                       background: "#0047AB",
                     }}
                   >
-                    Total Target
+                    Total target
                   </th>
                 </tr>
               </thead>
@@ -481,7 +481,7 @@ export default function PortalNBToFindView({
                       zIndex: 1,
                     }}
                   >
-                    New Business to Find
+                    New business to find
                   </td>
 
                   {monthHeaders.map((_, mIdx) => {

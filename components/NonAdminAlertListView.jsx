@@ -1,7 +1,7 @@
 import React from "react";
 import Spinner from "./Spinner";
 import TruncatedCode from "./TruncatedCode";
-import { stripRowInfo, parseUnreceivedExpensesDetail, parseStaleExpenseDetail, parseInfoAlertDetail, filterAnalysisResultsForAlert, getCleanPLCategoryName, getAlertJobTarget } from "../utils/helpers";
+import { stripRowInfo, parseUnreceivedExpensesDetail, parseStaleExpenseDetail, parseInfoAlertDetail, filterAnalysisResultsForAlert, getCleanPLCategoryName, getAlertJobTarget, formatSeenTimestamp } from "../utils/helpers";
 
 const KNOWN_PROACTIVE_TYPES = new Set([
   "retainer_invoice",
@@ -179,18 +179,20 @@ export default function NonAdminAlertListView({
                         onClick={() => selectAlert(alert)}
                         style={{
                           ...styles.optionButton,
+                          display: "block",
+                          width: "100%",
+                          boxSizing: "border-box",
                           textAlign: "left",
-                          padding: "12px",
-                          border: "1px solid #e0e0e0",
-                          borderRadius: "4px",
+                          padding: "14px 16px",
+                          border: "1px solid #cbd5e1",
+                          borderRadius: "8px",
                           cursor: "pointer",
                           backgroundColor: "#fff",
                           fontSize: "13px",
-                          transition: "all 0.2s",
-                          width: "100%"
+                          transition: "all 0.2s"
                         }}
-                        onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "#f5f5f5"; e.currentTarget.style.borderColor = "#1976d2"; }}
-                        onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "#fff"; e.currentTarget.style.borderColor = "#e0e0e0"; }}
+                        onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "#f8fafc"; e.currentTarget.style.borderColor = "#2563eb"; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "#fff"; e.currentTarget.style.borderColor = "#cbd5e1"; }}
                       >
                         {renderAlertContent(alert)}
                       </button>
@@ -253,18 +255,20 @@ export default function NonAdminAlertListView({
 
                 return (
                   <div key={alertId} style={{
-                    padding: "14px",
-                    borderRadius: "6px",
-                    border: isResolved ? "1px solid #c8e6c9" : "1px solid #ddd",
-                    background: isResolved ? "#f1f8f2" : "#fafafa",
+                    padding: "14px 16px",
+                    borderRadius: "8px",
+                    border: isResolved ? "1px solid #c8e6c9" : "1px solid #cbd5e1",
+                    background: isResolved ? "#f1f8f2" : "#ffffff",
                     display: "flex",
                     flexDirection: "column",
-                    gap: "8px",
+                    gap: "4px",
+                    boxSizing: "border-box",
+                    width: "100%",
                   }}>
                     <div style={{
                       fontWeight: "600",
-                      fontSize: "14px",
-                      color: isResolved ? "#2e7d32" : "#1a1a1a",
+                      fontSize: "13.5px",
+                      color: isResolved ? "#2e7d32" : "#0f172a",
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "space-between",
@@ -282,13 +286,10 @@ export default function NonAdminAlertListView({
                     <div style={{
                       fontSize: "12px",
                       color: "#555",
-                      backgroundColor: "#ffffff",
-                      border: `1px solid ${isResolved ? "#c8e6c9" : "#bae6fd"}`,
-                      borderRadius: "4px",
-                      padding: "8px 10px",
                       display: "flex",
                       flexDirection: "column",
-                      gap: "3px",
+                      gap: "2px",
+                      marginTop: "2px",
                     }}>
                       {parsed.tab && <div><strong>Tab:</strong> {parsed.tab}{parsed.slot ? ` (Slot ${parsed.slot})` : ""}</div>}
                       {parsed.month && <div><strong>Month:</strong> {parsed.month}</div>}
@@ -303,9 +304,9 @@ export default function NonAdminAlertListView({
                             {parsed.changes.map((ch, ci) => (
                               <span key={ci} style={{
                                 padding: "2px 7px", borderRadius: "4px", fontSize: "11px", fontWeight: "600",
-                                background: isResolved ? "#f1f8f2" : "#ffffff",
-                                color: isResolved ? "#2e7d32" : "#0369a1",
-                                border: `1px solid ${isResolved ? "#bbf7d0" : "#bae6fd"}`,
+                                background: isResolved ? "#f1f8f2" : "#f1f5f9",
+                                color: isResolved ? "#2e7d32" : "#334155",
+                                border: `1px solid ${isResolved ? "#bbf7d0" : "#cbd5e1"}`,
                               }}>
                                 {ch.label}
                               </span>
@@ -314,12 +315,12 @@ export default function NonAdminAlertListView({
                         </div>
                       )}
                       {parsed.highlight && (
-                        <div style={{ marginTop: "4px", fontWeight: "700", color: isResolved ? "#2e7d32" : "#0369a1" }}>
+                        <div style={{ marginTop: "4px", fontWeight: "600", color: isResolved ? "#2e7d32" : "#0284c7" }}>
                           {parsed.highlight}
                         </div>
                       )}
                       {parsed.rawText && (
-                        <div style={{ marginTop: "3px", color: isResolved ? "#2e7d32" : "#666", lineHeight: "1.4" }}>
+                        <div style={{ marginTop: "2px", color: isResolved ? "#2e7d32" : "#666", lineHeight: "1.4" }}>
                           {stripRowInfo(parsed.rawText)}
                         </div>
                       )}
@@ -365,11 +366,11 @@ export default function NonAdminAlertListView({
                       <div style={{ fontSize: "12px", color: "#c62828", marginTop: "4px" }}>Error: {analysis.error}</div>
                     )}
 
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", marginTop: "4px" }}>
-                      <div style={{ fontSize: "11px", color: "#aaa" }}>
-                        {na.firstSeen ? `First seen: ${na.firstSeen.split("T")[0]}` : ""}
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", marginTop: "6px" }}>
+                      <div style={{ fontSize: "11px", color: "#888" }}>
+                        {na.firstSeen ? `First seen: ${formatSeenTimestamp(na.firstSeen)}` : ""}
                         {na.firstSeen && na.lastSeen ? " · " : ""}
-                        {na.lastSeen ? `Last seen: ${na.lastSeen.split("T")[0]}` : ""}
+                        {na.lastSeen ? `Last seen: ${formatSeenTimestamp(na.lastSeen)}` : ""}
                       </div>
                       {!isResolved && (
                         <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
@@ -443,13 +444,13 @@ export default function NonAdminAlertListView({
               {groupAlerts.map((alert, idx) => {
                 const m = alert.metadata || {};
                 return (
-                  <div key={idx} style={{ border: "1px solid #ddd", borderRadius: "6px", padding: "14px", backgroundColor: "#fafafa" }}>
-                    <div style={{ fontWeight: "600", fontSize: "14px", color: "#1a1a1a", marginBottom: "6px" }}>
+                  <div key={idx} style={{ border: "1px solid #cbd5e1", borderRadius: "8px", padding: "14px 16px", backgroundColor: "#ffffff", boxSizing: "border-box", width: "100%", display: "flex", flexDirection: "column", gap: "4px" }}>
+                    <div style={{ fontWeight: "600", fontSize: "13.5px", color: "#0f172a", marginBottom: "2px" }}>
                       {alert.heading}
                     </div>
 
                     {alert.alertType === "retainer_invoice" && (
-                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                      <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                         {m.endClientName && <div><strong>End client:</strong> {m.endClientName}</div>}
                         {m.jobName && <div><strong>Job:</strong> {m.jobName}</div>}
                         {m.revenue && <div><strong>Monthly revenue:</strong> {m.revenue}</div>}
@@ -458,14 +459,14 @@ export default function NonAdminAlertListView({
                         {m.lastInvoiceDate && <div><strong>Last invoice sent:</strong> {m.lastInvoiceDate}</div>}
                         {m.expectedByDate && <div><strong>Next expected by:</strong> {m.expectedByDate}</div>}
                         {m.possibleMatchInvoiceNo && (
-                          <div style={{ marginTop: "8px", paddingTop: "8px", borderTop: "1px solid #bae6fd" }}>
+                          <div style={{ marginTop: "6px", paddingTop: "6px", borderTop: "1px solid #e2e8f0" }}>
                             {m.possibleMatchCase === "changed" && (
-                              <div style={{ display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", marginBottom: "6px", background: "#ffffff", color: "#991b1b", border: "1px solid #fca5a5" }}>
+                              <div style={{ display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "600", marginBottom: "4px", background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca" }}>
                                 Possible retainer change - {m.possibleMatchConfidence === "high" ? "high" : "medium"} confidence
                               </div>
                             )}
                             {m.possibleMatchCase === "draft" && (
-                              <div style={{ display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", marginBottom: "6px", background: "#ffffff", color: "#075985", border: "1px solid #7dd3fc" }}>
+                              <div style={{ display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "600", marginBottom: "4px", background: "#f0f9ff", color: "#0369a1", border: "1px solid #bae6fd" }}>
                                 Draft invoice found nearby
                               </div>
                             )}
@@ -477,7 +478,7 @@ export default function NonAdminAlertListView({
                           </div>
                         )}
                         {m.jobName && (!m.possibleMatchInvoiceNo || m.possibleMatchCase === "changed") && (
-                          <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px solid #bae6fd", display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                          <div style={{ marginTop: "8px", paddingTop: "8px", borderTop: "1px solid #e2e8f0", display: "flex", gap: "8px", flexWrap: "wrap" }}>
                             {m.possibleMatchInvoiceNo ? (
                               <>
                                 <button className="triage-btn" onClick={() => {
@@ -501,23 +502,23 @@ export default function NonAdminAlertListView({
                     )}
 
                     {alert.alertType === "uninvoiced_new_job" && (
-                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                      <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                         {m.endClientName && <div><strong>End client:</strong> {m.endClientName}</div>}
                         {m.jobName && <div><strong>Job:</strong> {m.jobName}{m.projectCode ? ` [${m.projectCode}]` : ""}</div>}
                         {m.startDate && <div><strong>Job started:</strong> {m.startDate}</div>}
                         {m.revenue && <div><strong>Revenue:</strong> £{parseFloat(m.revenue).toFixed(2)}</div>}
-                        <div style={{ marginTop: "6px", fontWeight: "700", color: "#0369a1" }}>Over a month elapsed with zero real invoices sent.</div>
+                        <div style={{ marginTop: "4px", color: "#c62828" }}>Over a month elapsed with zero real invoices sent.</div>
                       </div>
                     )}
 
                     {alert.alertType === "uninvoiced_revenue" && (
-                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                      <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                         {m.endClientName && <div><strong>End client:</strong> {m.endClientName}</div>}
                         {m.jobName && <div><strong>Job:</strong> {m.jobName}{m.projectCode ? ` [${m.projectCode}]` : ""}</div>}
                         {m.endDate && <div><strong>Job ended:</strong> {m.endDate}</div>}
                         {m.revenue && <div><strong>Revenue:</strong> £{parseFloat(m.revenue).toFixed(2)}</div>}
-                        {m.uninvoicedAmount && <div style={{ marginTop: "6px", fontWeight: "700", color: "#0369a1" }}>£{parseFloat(m.uninvoicedAmount).toFixed(2)} uninvoiced (placeholders and drafts excluded)</div>}
-                        {m.draftCount && parseInt(m.draftCount) > 0 && <div style={{ marginTop: "6px", padding: "6px 8px", background: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", color: "#0369a1" }}>{m.draftCount} invoice{parseInt(m.draftCount) > 1 ? "s" : ""} totalling £{parseFloat(m.draftTotal || 0).toFixed(2)} {parseInt(m.draftCount) > 1 ? "have" : "has"} a reference but {parseInt(m.draftCount) > 1 ? "are" : "is"} still <strong>Draft</strong> (not yet sent) - not counted as invoiced above.</div>}
+                        {m.uninvoicedAmount && <div style={{ marginTop: "4px", fontWeight: "600", color: "#c62828" }}>£{parseFloat(m.uninvoicedAmount).toFixed(2)} uninvoiced (placeholders and drafts excluded)</div>}
+                        {m.draftCount && parseInt(m.draftCount) > 0 && <div style={{ marginTop: "4px", color: "#d97706" }}>{m.draftCount} invoice{parseInt(m.draftCount) > 1 ? "s" : ""} totalling £{parseFloat(m.draftTotal || 0).toFixed(2)} {parseInt(m.draftCount) > 1 ? "have" : "has"} a reference but {parseInt(m.draftCount) > 1 ? "are" : "is"} still <strong>Draft</strong> (not yet sent) - not counted as invoiced above.</div>}
                       </div>
                     )}
 
@@ -533,14 +534,14 @@ export default function NonAdminAlertListView({
                       const pTotal = parseFloat(m.placeholderTotal || alert.placeholderTotal || parsed.placeholderTotal || "0");
 
                       return (
-                        <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                        <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                           {clientName && <div><strong>End client:</strong> {clientName}</div>}
                           {jName && <div><strong>Job:</strong> {jName}{pCode ? ` [${pCode}]` : ""}</div>}
                           {eDate && <div><strong>Job ended:</strong> {eDate}</div>}
                           {dCosts && <div><strong>Direct cost budget:</strong> £{parseFloat(dCosts).toFixed(2)}</div>}
-                          {unrecAmt && <div style={{ marginTop: "6px", fontWeight: "700", color: "#0369a1" }}>£{parseFloat(unrecAmt).toFixed(2)} unreceived (placeholders and estimates excluded)</div>}
+                          {unrecAmt && <div style={{ marginTop: "4px", fontWeight: "600", color: "#c62828" }}>£{parseFloat(unrecAmt).toFixed(2)} unreceived (placeholders and estimates excluded)</div>}
                           {pCount > 0 && (
-                            <div style={{ marginTop: "6px", padding: "6px 8px", background: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", color: "#0369a1" }}>
+                            <div style={{ marginTop: "4px", color: "#d97706" }}>
                               {pCount} expense{pCount > 1 ? "s" : ""} totalling £{pTotal.toFixed(2)} {pCount > 1 ? "are placeholders - not counted as received above." : "is a placeholder - not counted as received above."}
                             </div>
                           )}
@@ -560,21 +561,21 @@ export default function NonAdminAlertListView({
                       const desc = m.description || alert.description;
 
                       return (
-                        <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #fde68a", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                        <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                           {contractor && <div><strong>Contractor:</strong> {contractor}</div>}
                           <div><strong>Location:</strong> Outgoings tab{month ? ` (${month})` : ""}{cellCoord ? `, Cell ${cellCoord}` : ""}</div>
                           {appId && <div><strong>App ID:</strong> {appId}</div>}
                           {amount && <div><strong>Amount:</strong> £{parseFloat(amount).toFixed(2)}</div>}
                           {recDate && <div><strong>Received date:</strong> {recDate} {weeksAgo ? <span style={{ color: "#b45309", fontWeight: "600" }}>({weeksAgo} weeks ago - overdue)</span> : null}</div>}
                           {payDate && <div><strong>Estimated pay date:</strong> {payDate}</div>}
-                          {desc && <div style={{ marginTop: "4px", color: "#78716c", fontStyle: "italic" }}>{desc}</div>}
+                          {desc && <div style={{ marginTop: "2px", color: "#78716c", fontStyle: "italic" }}>{desc}</div>}
                         </div>
                       );
                     })()}
 
                     {alert.alertType === "retroactive_outgoings_update" && (
-                      <div style={{ fontSize: "12px", color: "#334155", backgroundColor: "#ffffff", border: "1px solid #cbd5e1", borderRadius: "6px", padding: "10px 12px", marginBottom: "8px" }}>
-                        <div style={{ whiteSpace: "pre-line", lineHeight: "1.5" }}>{alert.detail || alert.detailsSnippet || m.details}</div>
+                      <div style={{ fontSize: "12px", color: "#555", marginTop: "2px", marginBottom: "4px", whiteSpace: "pre-line", lineHeight: "1.4" }}>
+                        {alert.detail || alert.detailsSnippet || m.details}
                       </div>
                     )}
 
@@ -599,15 +600,12 @@ export default function NonAdminAlertListView({
                       ];
 
                       return (
-                        <div style={{ backgroundColor: "#ffffff", border: "1px solid #ddd6fe", borderRadius: "8px", padding: "12px", marginBottom: "10px" }}>
-                          <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px" }}>
-                            <span style={{ fontSize: "15px" }}>🏷️</span>
-                            <div style={{ fontSize: "12px", color: "#4b5563", lineHeight: "1.4" }}>
-                              This account is currently quarantined to ensure unverified expenses are not included. Select how it should be mapped:
-                            </div>
+                        <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "4px", marginTop: "2px", marginBottom: "4px" }}>
+                          <div style={{ color: "#4b5563", lineHeight: "1.4" }}>
+                            This account is currently quarantined to ensure unverified expenses are not included. Select how it should be mapped:
                           </div>
 
-                          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "10px", marginTop: "10px" }}>
+                          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "10px", marginTop: "4px" }}>
                             <select
                               value={currentChoice}
                               onChange={(e) => setSelectedClassifications(prev => ({ ...prev, [alert.alertKey]: e.target.value }))}
@@ -662,28 +660,30 @@ export default function NonAdminAlertListView({
                     })()}
 
                     {alert.alertType === "crm_wipe" && (
-                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                      <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                         {m.timestamp && <div><strong>Log timestamp:</strong> {m.timestamp}</div>}
                         {m.sequenceType && <div><strong>Sequence:</strong> {m.sequenceType}</div>}
                         {m.summary && <div><strong>Summary:</strong> {m.summary}</div>}
                         {m.jobInfo && <div><strong>Job:</strong> {m.jobInfo}</div>}
-                        {m.detailsSnippet && <div style={{ marginTop: "4px" }}><strong>AutoLog details:</strong><div style={{ fontFamily: "monospace", fontSize: "11px", color: "#666", marginTop: "2px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{m.detailsSnippet}</div></div>}
+                        {m.detailsSnippet && <div style={{ marginTop: "4px" }}><strong>AutoLog details:</strong><div style={{ fontFamily: "monospace", fontSize: "11px", color: "#666", backgroundColor: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "4px", padding: "6px 8px", marginTop: "2px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{m.detailsSnippet}</div></div>}
                       </div>
                     )}
 
                     {alert.alertType === "revenue_mismatch" && (
-                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                      <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                         {(() => {
                           const detail = stripRowInfo(alert.detail || "");
                           const mismatchIdx = detail.indexOf("Mismatched entries:");
-                          if (mismatchIdx === -1) return <div style={{ fontWeight: "600" }}>{detail}</div>;
-                          const header = detail.slice(0, mismatchIdx).trim();
-                          const rowsPart = detail.slice(mismatchIdx + "Mismatched entries:".length).trim();
+                          const effectiveIdx = mismatchIdx !== -1 ? mismatchIdx : detail.indexOf("Mismatched rows:");
+                          const label = mismatchIdx !== -1 ? "Mismatched entries:" : "Mismatched rows:";
+                          if (effectiveIdx === -1) return <div style={{ fontWeight: "600" }}>{detail}</div>;
+                          const header = detail.slice(0, effectiveIdx).trim();
+                          const rowsPart = detail.slice(effectiveIdx + label.length).trim();
                           const rows = rowsPart.split(";").map(s => s.trim()).filter(Boolean);
                           return (
                             <>
-                              <div style={{ fontWeight: "600", marginBottom: "6px" }}>{header}</div>
-                              <div style={{ fontWeight: "600", marginBottom: "4px" }}>Mismatched entries:</div>
+                              <div style={{ fontWeight: "600", marginBottom: "4px" }}>{header}</div>
+                              <div style={{ fontWeight: "600", marginBottom: "2px" }}>Mismatched entries:</div>
                               {rows.map((row, i) => {
                                 const diffMatch = row.match(/[-\u2014]\s*diff/);
                                 const diffIdx = diffMatch ? diffMatch.index : -1;
@@ -697,19 +697,21 @@ export default function NonAdminAlertListView({
                     )}
 
                     {alert.alertType === "direct_costs_mismatch" && (
-                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
-                        {alert.metadata?.tab && <span style={{ display: "inline-block", marginBottom: "6px", padding: "2px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", background: "#ffffff", color: "#0369a1", border: "1px solid #bae6fd" }}>{alert.metadata.tab} tab</span>}
+                      <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
+                        {alert.metadata?.tab && <span style={{ display: "inline-block", marginBottom: "4px", padding: "2px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "600", background: "#f0f9ff", color: "#0369a1", border: "1px solid #bae6fd", width: "fit-content" }}>{alert.metadata.tab} tab</span>}
                         {(() => {
                           const detail = stripRowInfo(alert.detail || "");
                           const mismatchIdx = detail.indexOf("Mismatched entries:");
-                          if (mismatchIdx === -1) return <div style={{ fontWeight: "600" }}>{detail}</div>;
-                          const header = detail.slice(0, mismatchIdx).trim();
-                          const rowsPart = detail.slice(mismatchIdx + "Mismatched entries:".length).trim();
+                          const effectiveIdx = mismatchIdx !== -1 ? mismatchIdx : detail.indexOf("Mismatched rows:");
+                          const label = mismatchIdx !== -1 ? "Mismatched entries:" : "Mismatched rows:";
+                          if (effectiveIdx === -1) return <div style={{ fontWeight: "600" }}>{detail}</div>;
+                          const header = detail.slice(0, effectiveIdx).trim();
+                          const rowsPart = detail.slice(effectiveIdx + label.length).trim();
                           const rows = rowsPart.split(";").map(s => s.trim()).filter(Boolean);
                           return (
                             <>
-                              <div style={{ fontWeight: "600", marginBottom: "6px" }}>{header}</div>
-                              <div style={{ fontWeight: "600", marginBottom: "4px" }}>Mismatched entries:</div>
+                              <div style={{ fontWeight: "600", marginBottom: "4px" }}>{header}</div>
+                              <div style={{ fontWeight: "600", marginBottom: "2px" }}>Mismatched entries:</div>
                               {rows.map((row, i) => {
                                 const diffMatch = row.match(/[-\u2014]\s*diff/);
                                 const diffIdx = diffMatch ? diffMatch.index : -1;
@@ -725,17 +727,17 @@ export default function NonAdminAlertListView({
                     {alert.alertType === "pipeline_confirmed_overlap" && (() => {
                       const md = alert.metadata || {};
                       return (
-                        <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
-                          <div style={{ fontWeight: "600", marginBottom: "6px" }}>Job exists in both tabs but Pipeline is not closed out</div>
-                          <div style={{ marginBottom: "4px" }}><strong>Confirmed tab</strong></div>
+                        <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
+                          <div style={{ fontWeight: "600", color: "#c62828", marginBottom: "4px" }}>Job exists in both tabs but Pipeline is not closed out</div>
+                          <div style={{ marginBottom: "2px" }}><strong>Confirmed tab</strong></div>
                           {md.endClientName && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Client: {md.endClientName}</div>}
                           {md.jobName && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Job: {md.jobName}</div>}
                           {md.projectCode && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Project code: {md.projectCode}</div>}
                           {md.jobType && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Job type: {md.jobType}</div>}
-                          <div style={{ marginBottom: "4px", marginTop: "6px" }}><strong>Pipeline tab</strong></div>
+                          <div style={{ marginBottom: "2px", marginTop: "4px" }}><strong>Pipeline tab</strong></div>
                           <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Likelihood: <strong>{md.likelihood ? (parseFloat(md.likelihood) * 100).toFixed(0) + "%" : "(blank)"}</strong></div>
                           <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>&quot;Copied to confirmed?&quot;: <strong>{md.copiedToConf || "(blank)"}</strong></div>
-                          <div style={{ marginTop: "6px", color: "#0369a1", fontStyle: "italic" }}>Expected fix: set Pipeline likelihood to 0% or mark &quot;Copied to confirmed?&quot; as Yes.</div>
+                          <div style={{ marginTop: "4px", color: "#0369a1", fontStyle: "italic" }}>Expected fix: set Pipeline likelihood to 0% or mark &quot;Copied to confirmed?&quot; as Yes.</div>
                         </div>
                       );
                     })()}
@@ -743,11 +745,11 @@ export default function NonAdminAlertListView({
                     {alert.alertType === "retainer_shrink_blocked" && (() => {
                       const md = alert.metadata || {};
                       return (
-                        <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
-                          <div style={{ fontWeight: "600", marginBottom: "6px" }}>Retainer contract shrunk - excess child row could not be removed automatically</div>
+                        <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
+                          <div style={{ fontWeight: "600", color: "#c62828", marginBottom: "4px" }}>Retainer contract shrunk - excess child row could not be removed automatically</div>
                           {md.clientJobStr && <div style={{ marginBottom: "2px" }}><strong>Job:</strong> {md.clientJobStr}</div>}
                           {md.childRowNum && <div style={{ marginBottom: "2px" }}><strong>Blocked child row:</strong> {md.childRowNum}</div>}
-                          {md.timestamp && <div style={{ marginBottom: "6px" }}><strong>First detected:</strong> {String(md.timestamp).slice(0, 10)}</div>}
+                          {md.timestamp && <div style={{ marginBottom: "4px" }}><strong>First detected:</strong> {String(md.timestamp).slice(0, 10)}</div>}
                           <div style={{ color: "#0369a1", fontStyle: "italic" }}>Row {md.childRowNum} falls outside the new contract period but contains actuals (invoices or expenses) so cannot be auto-removed. Manual review required.</div>
                         </div>
                       );
@@ -756,14 +758,14 @@ export default function NonAdminAlertListView({
                     {alert.alertType === "autolog_error" && (() => {
                       const md = alert.metadata || {};
                       return (
-                        <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                        <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                           {md.category && <div style={{ marginBottom: "2px" }}><strong>Category / Step:</strong> {md.category}</div>}
                           {md.occurrenceCount && <div style={{ marginBottom: "2px" }}><strong>Occurrences (last 100 log rows):</strong> {md.occurrenceCount}</div>}
                           {md.timestamp && <div style={{ marginBottom: "2px" }}><strong>Last seen in log:</strong> {md.timestamp}</div>}
                           {md.errorSnippet && (
-                            <div style={{ marginTop: "6px" }}>
+                            <div style={{ marginTop: "4px" }}>
                               <strong>Extracted error:</strong>
-                              <div style={{ fontFamily: "monospace", fontSize: "11px", color: "#0369a1", backgroundColor: "#fafafa", border: "1px solid #e2e8f0", borderRadius: "4px", padding: "6px 8px", marginTop: "3px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                              <div style={{ fontFamily: "monospace", fontSize: "11px", color: "#0369a1", backgroundColor: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "4px", padding: "6px 8px", marginTop: "2px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
                                 {md.errorSnippet}
                               </div>
                             </div>
@@ -775,14 +777,14 @@ export default function NonAdminAlertListView({
                     {alert.alertType === "infinite_loop" && (() => {
                       const md = alert.metadata || {};
                       return (
-                        <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
-                          <div style={{ display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", marginBottom: "6px", background: "#ffffff", color: "#0369a1", border: "1px solid #bae6fd" }}>
+                        <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
+                          <div style={{ display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "600", marginBottom: "4px", background: "#f0f9ff", color: "#0369a1", border: "1px solid #bae6fd", width: "fit-content" }}>
                             {md.conflictType === "intra_run_oscillation" ? "Within-run oscillation" : "Multi-run flip-flop"}
                           </div>
                           {md.invoiceNo && <div style={{ marginBottom: "2px" }}><strong>Invoice:</strong> {md.invoiceNo}</div>}
                           {md.fieldName && <div style={{ marginBottom: "2px" }}><strong>Conflicting field:</strong> {md.fieldName}</div>}
                           {md.suggestion && (
-                            <div style={{ marginTop: "6px", color: "#0369a1", fontStyle: "italic" }}>
+                            <div style={{ marginTop: "4px", color: "#0369a1", fontStyle: "italic" }}>
                               💡 {md.suggestion}
                             </div>
                           )}
@@ -791,33 +793,33 @@ export default function NonAdminAlertListView({
                     })()}
 
                     {alert.alertType === "deleted_invoice" && (
-                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                      <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                         {(m.endClientName || alert.endClientName) && <div><strong>End client:</strong> {m.endClientName || alert.endClientName}</div>}
                         {(m.jobName || alert.jobName) && <div><strong>Job:</strong> {m.jobName || alert.jobName}{(m.projectCode || alert.projectCode) ? ` [${m.projectCode || alert.projectCode}]` : ""}</div>}
                         {(m.stableJobKey || alert.stableJobKey) && <div><strong>Invoice ref:</strong> {m.stableJobKey || alert.stableJobKey}</div>}
-                        <div style={{ marginTop: "4px", color: "#0369a1", fontStyle: "italic" }}>
+                        <div style={{ marginTop: "4px", color: "#c62828" }}>
                           Invoice reference appears on Confirmed tab but was not found in the accounting system (it may have been deleted or voided in Xero).
                         </div>
                       </div>
                     )}
 
                     {alert.alertType === "deleted_expense" && (
-                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                      <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                         {(m.endClientName || alert.endClientName) && <div><strong>End client:</strong> {m.endClientName || alert.endClientName}</div>}
                         {(m.jobName || alert.jobName) && <div><strong>Job:</strong> {m.jobName || alert.jobName}</div>}
                         {(m.stableJobKey || alert.stableJobKey) && <div><strong>Expense ID / Ref:</strong> {m.stableJobKey || alert.stableJobKey}</div>}
-                        <div style={{ marginTop: "4px", color: "#0369a1", fontStyle: "italic" }}>
+                        <div style={{ marginTop: "4px", color: "#c62828" }}>
                           Expense reference appears on Confirmed tab but was not found in the accounting system (it may have been deleted or voided in Xero).
                         </div>
                       </div>
                     )}
 
                     {alert.alertType === "job_structure_error" && (
-                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                      <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                         {(m.endClientName || alert.endClientName) && <div><strong>End client:</strong> {m.endClientName || alert.endClientName}</div>}
                         {(m.jobName || alert.jobName) && <div><strong>Job:</strong> {m.jobName || alert.jobName}{(m.projectCode || alert.projectCode) ? ` [${m.projectCode || alert.projectCode}]` : ""}</div>}
                         {alert.detail && (
-                          <div style={{ marginTop: "4px", color: "#c2410c", fontWeight: "500" }}>
+                          <div style={{ marginTop: "4px", color: "#c62828" }}>
                             {stripRowInfo(alert.detail)}
                           </div>
                         )}
@@ -825,7 +827,7 @@ export default function NonAdminAlertListView({
                     )}
 
                     {!KNOWN_PROACTIVE_TYPES.has(alert.alertType) && (
-                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                      <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                         {(m.endClientName || alert.endClientName) && <div><strong>End client:</strong> {m.endClientName || alert.endClientName}</div>}
                         {(m.jobName || alert.jobName) && <div><strong>Job:</strong> {m.jobName || alert.jobName}{(m.projectCode || alert.projectCode) ? ` [${m.projectCode || alert.projectCode}]` : ""}</div>}
                         {alert.detail && (
@@ -836,9 +838,13 @@ export default function NonAdminAlertListView({
                       </div>
                     )}
 
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <div style={{ fontSize: "11px", color: "#aaa" }}>First seen: {alert.firstSeen} · Last seen: {alert.lastSeen}</div>
-                      <div style={{ display: "flex", gap: "8px" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", marginTop: "6px" }}>
+                      <div style={{ fontSize: "11px", color: "#888" }}>
+                        {alert.firstSeen ? `First seen: ${formatSeenTimestamp(alert.firstSeen)}` : ""}
+                        {alert.firstSeen && alert.lastSeen ? " · " : ""}
+                        {alert.lastSeen ? `Last seen: ${formatSeenTimestamp(alert.lastSeen)}` : ""}
+                      </div>
+                      <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
                         {(() => {
                           const cName = alert.clientName || selectedClient?.clientName;
                           const clientInfo = (clientsWithFlags || []).find(c => c.clientName === cName) || (allClientsMap && (allClientsMap[cName] || Object.values(allClientsMap).find(cl => cl.clientName?.toLowerCase() === cName?.toLowerCase()))) || selectedClient || { clientName: cName };

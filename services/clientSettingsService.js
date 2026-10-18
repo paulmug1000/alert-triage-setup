@@ -22,6 +22,64 @@ const REDIS_SETTINGS_PREFIX = "pulse:client_settings:";
 const REDIS_SETTINGS_TTL = 1800; // 30 minutes cache
 
 /**
+ * Pulse required CRM fields mapping configuration
+ */
+export const CRM_PULSE_FIELDS = [
+  { key: "client", label: "Client", colLetter: "A", crmColLetter: "AB", defaultFormat: "Other", formatOptions: ["Other", "String"] },
+  { key: "job", label: "Job", colLetter: "B", crmColLetter: "AC", defaultFormat: "", formatOptions: [] },
+  { key: "projectCode", label: "Project code", colLetter: "C", crmColLetter: "AD", defaultFormat: "", formatOptions: [] },
+  { key: "revenue", label: "Revenue", colLetter: "D", crmColLetter: "AE", defaultFormat: "Actual", formatOptions: ["Actual", "Strip value"] },
+  { key: "directCosts", label: "Direct costs", colLetter: "E", crmColLetter: "AF", defaultFormat: "", formatOptions: [] },
+  { key: "startDate", label: "Start date", colLetter: "F", crmColLetter: "AG", defaultFormat: "Actual", formatOptions: ["Actual", "Convert US", "Actual OR by Status"] },
+  {
+    key: "endDate",
+    label: "End date",
+    colLetter: "G",
+    crmColLetter: "AH",
+    defaultFormat: "Actual",
+    formatOptions: [
+      "Actual",
+      "Months",
+      "AddRetEnd",
+      "2MonthsForAll",
+      "3MonthsForAll",
+      "4MonthsForAll",
+      "ActualOr2MonthsForAll",
+      "ActualOr3MonthsForAll",
+      "ActualOr4MonthsForAll",
+      "MonthsOr2MonthsForAll",
+      "MonthsOr3MonthsForAll",
+      "MonthsOr4MonthsForAll",
+      "2MonthsProj6MonthsRet",
+      "ActualOrAddRetEndOr2MonthsProj",
+      "ActualOrAddRetEndOr3MonthsProj",
+      "ActualOrAddRetEndOr4MonthsProj"
+    ]
+  },
+  { key: "likelihood", label: "Likelihood", colLetter: "H", crmColLetter: "AI", defaultFormat: "Actual", formatOptions: ["Actual", "Divide by 100", "Mapped", "ActualOrMappedByStatus"] },
+  { key: "status", label: "Status", colLetter: "I", crmColLetter: "AJ", defaultFormat: "", formatOptions: [] },
+  {
+    key: "projectRetainer",
+    label: "Project / retainer",
+    colLetter: "J",
+    crmColLetter: "AK",
+    defaultFormat: "From CRM",
+    formatOptions: [
+      "From CRM",
+      "All project",
+      "All retainer",
+      "FromCRMOrAllProject",
+      "FromCRMOrAllRetainer",
+      "FromCRMConvertOrAllProject",
+      "FromCRMConvertOrAllRetainer"
+    ]
+  },
+  { key: "leadSource", label: "Lead source", colLetter: "K", crmColLetter: "AL", defaultFormat: "Mapped", formatOptions: ["Mapped", "Actual"] },
+  { key: "dateAddedToPipeline", label: "Date added to pipeline", colLetter: "L", crmColLetter: "AM", defaultFormat: "", formatOptions: [] },
+  { key: "productLine", label: "Product line", colLetter: "M", crmColLetter: "AN", defaultFormat: "Mapped", formatOptions: ["Mapped", "Actual"] }
+];
+
+/**
  * Normalizes a client key for Redis storage.
  */
 function getSettingsRedisKey(clientName) {
@@ -68,7 +126,7 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
     "KeyInfo!BA2:BA180",   // [6] Accounting category mappings
     "KeyInfo!L32:N75",     // [7] CRM status mappings (Status, %, Date rule)
     "KeyInfo!B23:B37",     // [8] Product lines 1-15
-    "KeyInfo!D22:E62",     // [9] Product line mappings (CRM -> PL)
+    "KeyInfo!E23:F62",     // [9] Product line mappings (CRM -> PL)
     "KeyInfo!G63:G72",     // [10] Client-specific lead sources
     "KeyInfo!I32:J75",     // [11] Lead sources mappings (CRM -> Mapped)
     "KeyInfo!E1",          // [12] Template Sheet Reference URL
@@ -78,7 +136,22 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
     "DataChgAlert!A100:J120", // [16] Expense settings & tolerances
     "DataChgAlert!B82",    // [17] Pipeline mode - add jobs to Conf?
     "KeyInfo!H12:I21",     // [18] Bank accounts (H: Names, I: Tool IDs, max 10, rows 12-21)
-    "KeyInfo!H23:I28"      // [19] Non-cash bank accounts (H: Names, I: Tool IDs, max 6, rows 23-28)
+    "KeyInfo!H23:I28",     // [19] Non-cash bank accounts (H: Names, I: Tool IDs, max 6, rows 23-28)
+    "InvAppList!F1",        // [20] Invoice number formatting
+    "InvAppList!N4:N20",    // [21] Raw invoice numbers for sample preview
+    "CRMList!AB2:AN2",      // [22] CRM field mappings
+    "CRMList!A2:M2",        // [23] CRM field formatting rules
+    "CRMList!DD2:DH2",      // [24] Confirmed job definition (DD2: Likelihood, DF2: Status, DH2: Operator)
+    "CRMList!EE2",          // [25] Pipeline excluded statuses
+    "DataFromCRM!A1:ZZ",     // [26] Available CRM column headers + raw data rows
+    "CRMList!A4:M",          // [27] All Mapped CRM output jobs
+    "CRMList!CZ4:DL",        // [28] All Confirmed jobs
+    "CRMList!DU4:EG",        // [29] All Pipeline jobs
+    "KeyInfo!AW2:AW",        // [30] Chart of Accounts from accounting tool
+    "KeyInfo!BE2:BE",        // [31] Full list of P&L categories
+    "KeyInfo!G32:G60",       // [32] Standard lead sources
+    "KeyInfo!BG2:BG",        // [33] Remaining unmapped P&L categories
+    "JnlAppList!F2"          // [34] Expense status mapping
   ];
 
   const clientRanges = [
@@ -118,7 +191,7 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
   const keyBA = mVals[6]?.values || [];
   const keyL32N75 = mVals[7]?.values || [];
   const keyB23B37 = mVals[8]?.values || [];
-  const keyD22E62 = mVals[9]?.values || [];
+  const keyE23F62 = mVals[9]?.values || [];
   const keyG63G72 = mVals[10]?.values || [];
   const keyI32J75 = mVals[11]?.values || [];
   const keyE1 = mVals[12]?.values?.[0]?.[0] || "";
@@ -130,6 +203,38 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
   const dcaB82 = mVals[17]?.values?.[0]?.[0] || "";
   const keyH12I21 = mVals[18]?.values || [];
   const keyH23I28 = mVals[19]?.values || [];
+
+  const invF1 = String(mVals[20]?.values?.[0]?.[0] || "StripPre").trim();
+  const rawInvRows = mVals[21]?.values || [];
+  const sampleInvoiceNumbers = Array.from(new Set(
+    rawInvRows.map(r => String(r[0] || "").trim()).filter(v => v && !v.startsWith("#"))
+  )).slice(0, 5);
+
+  const expStatusMapping = String(mVals[34]?.values?.[0]?.[0] || "Actual").trim() || "Actual";
+
+  const crmMappedCols = (mVals[22]?.values?.[0] || []).map(c => String(c || "").trim());
+  const crmFormatRules = (mVals[23]?.values?.[0] || []).map(c => String(c || "").trim());
+
+  const fieldMappings = CRM_PULSE_FIELDS.map((f, idx) => ({
+    key: f.key,
+    label: f.label,
+    crmField: crmMappedCols[idx] || "",
+    formatRule: crmFormatRules[idx] !== undefined && crmFormatRules[idx] !== "" ? crmFormatRules[idx] : f.defaultFormat
+  }));
+
+  const dd2dh2 = mVals[24]?.values?.[0] || [];
+  const confirmedLikelihood = String(dd2dh2[0] || "").trim(); // DD2
+  const confirmedStatus = String(dd2dh2[2] || "").trim();     // DF2
+  const confirmedOperator = String(dd2dh2[4] || "Or").trim(); // DH2
+  const pipelineExcludedStatuses = String(mVals[25]?.values?.[0]?.[0] || "").trim(); // EE2
+
+  const rawCrmData = mVals[26]?.values || [];
+  const availableCrmHeaders = (rawCrmData[0] || []).map(h => String(h || "").trim()).filter(Boolean);
+  const rawCrmRows = rawCrmData.slice(1);
+
+  const previewMappedJobs = (mVals[27]?.values || []).filter(r => r && r.some(cell => String(cell).trim() !== ""));
+  const previewConfirmedJobs = (mVals[28]?.values || []).filter(r => r && r.some(cell => String(cell).trim() !== ""));
+  const previewPipelineJobs = (mVals[29]?.values || []).filter(r => r && r.some(cell => String(cell).trim() !== ""));
 
   // Check if A120 is an IMPORTRANGE formula
   const formulaA120 = String(masterFormulaResp.data?.values?.[0]?.[0] || "");
@@ -156,15 +261,31 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
 
   const accountingMappings = {
     revenue: getSliceValues(2, 17),
-    cosStaffCosts: getSliceValues(19, 33),
-    nonCosStaffCosts: getSliceValues(35, 48),
+    cosStaffCosts: getSliceValues(19, 28),
+    nonCosStaffCosts: getSliceValues(35, 43),
     corporationTax: getSliceValues(50, 52),
     depreciation: getSliceValues(54, 56),
     otherCostOfSale: getSliceValues(59, 78),
-    nonOperatingIncome: getSliceValues(81, 99),
-    nonOperatingExpenses: getSliceValues(101, 126),
+    nonOperatingIncome: getSliceValues(81, 93),
+    nonOperatingExpenses: getSliceValues(101, 110),
     ignore: getSliceValues(128, 180)
   };
+
+  const chartOfAccounts = (mVals[30]?.values || [])
+    .map(r => String(r[0] || "").trim())
+    .filter(Boolean);
+
+  const plCategories = (mVals[31]?.values || [])
+    .map(r => String(r[0] || "").trim())
+    .filter(Boolean);
+
+  const standardLeadSources = (mVals[32]?.values || [])
+    .map(r => String(r[0] || "").trim())
+    .filter(Boolean);
+
+  const sheetRemainingCategories = (mVals[33]?.values || [])
+    .map(r => String(r[0] || "").trim())
+    .filter(Boolean);
 
   // --------------------------------------------------------------------------
   // Parse CRM Status Mappings (KeyInfo!L32:N75)
@@ -182,11 +303,11 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
   });
 
   // --------------------------------------------------------------------------
-  // Parse Product Lines & Mappings (B23:B37, D22:E62)
+  // Parse Product Lines & Mappings (B23:B37, E23:F62)
   // --------------------------------------------------------------------------
   const productLines = (keyB23B37 || []).map(r => String(r[0] || "").trim()).filter(Boolean);
   const productLineMappings = [];
-  (keyD22E62 || []).forEach(row => {
+  (keyE23F62 || []).forEach(row => {
     const crmProductLine = String(row[0] || "").trim();
     const mappedTo = String(row[1] || "").trim();
     if (crmProductLine || mappedTo) {
@@ -293,6 +414,9 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
     // 3. ACCOUNTING
     accounting: {
       toolInUse: String(keyQ1Q10[3]?.[0] || "None").trim(), // Q4
+      invoiceNumberFormatting: invF1 || "StripPre",
+      sampleInvoiceNumbers: sampleInvoiceNumbers,
+      expenseStatusMapping: expStatusMapping,
       bankAccounts: (keyH12I21 || [])
         .map(r => String(r[0] || "").trim())
         .filter(n => n && !n.toLowerCase().includes("non-cash") && !n.endsWith(":")),
@@ -315,6 +439,9 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
         .filter(d => d.name && !d.name.toLowerCase().includes("non-cash bank accounts") && !d.name.endsWith(":")),
       contractorsManual: (keyATContr || []).map(r => String(r[0] || "").trim()).filter(Boolean),
       passThroughManual: (keyATPass || []).map(r => String(r[0] || "").trim()).filter(Boolean),
+      chartOfAccounts,
+      plCategories,
+      sheetRemainingCategories,
       mappings: accountingMappings
     },
 
@@ -337,7 +464,19 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
         range: String(keyX14X41[25]?.[0] || "").trim(),         // X39
         columnRow: String(keyX14X41[26]?.[0] || "").trim(),     // X40
         keyHeaders: String(keyX14X41[27]?.[0] || "").trim()     // X41
-      }
+      },
+      fieldMappings,
+      availableCrmHeaders,
+      rawCrmRows,
+      jobDefinitions: {
+        confirmedLikelihood,
+        confirmedStatus,
+        confirmedOperator: confirmedOperator || "Or",
+        pipelineExcludedStatuses
+      },
+      previewMappedJobs,
+      previewConfirmedJobs,
+      previewPipelineJobs
     },
 
     // 5. CRM STATUS MAPPING
@@ -355,6 +494,7 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
       productLines: productLines,
       productLineMappings: productLineMappings,
       leadSources: leadSources,
+      standardLeadSources: standardLeadSources,
       leadSourceMappings: leadSourceMappings
     },
 
@@ -599,21 +739,50 @@ export async function saveClientSettings({
     if (settings.accounting.mappings) {
       const m = settings.accounting.mappings;
       if (Array.isArray(m.revenue)) addMasterColumnSlice("BA", 2, 17, m.revenue);
-      if (Array.isArray(m.cosStaffCosts)) addMasterColumnSlice("BA", 19, 33, m.cosStaffCosts);
-      if (Array.isArray(m.nonCosStaffCosts)) addMasterColumnSlice("BA", 35, 48, m.nonCosStaffCosts);
+      if (Array.isArray(m.cosStaffCosts)) addMasterColumnSlice("BA", 19, 28, m.cosStaffCosts);
+      if (Array.isArray(m.nonCosStaffCosts)) addMasterColumnSlice("BA", 35, 43, m.nonCosStaffCosts);
       if (Array.isArray(m.corporationTax)) addMasterColumnSlice("BA", 50, 52, m.corporationTax);
       if (Array.isArray(m.depreciation)) addMasterColumnSlice("BA", 54, 56, m.depreciation);
       if (Array.isArray(m.otherCostOfSale)) addMasterColumnSlice("BA", 59, 78, m.otherCostOfSale);
-      if (Array.isArray(m.nonOperatingIncome)) addMasterColumnSlice("BA", 81, 99, m.nonOperatingIncome);
-      if (Array.isArray(m.nonOperatingExpenses)) addMasterColumnSlice("BA", 101, 126, m.nonOperatingExpenses);
+      if (Array.isArray(m.nonOperatingIncome)) addMasterColumnSlice("BA", 81, 93, m.nonOperatingIncome);
+      if (Array.isArray(m.nonOperatingExpenses)) addMasterColumnSlice("BA", 101, 110, m.nonOperatingExpenses);
       if (Array.isArray(m.ignore)) addMasterColumnSlice("BA", 128, 180, m.ignore);
+    }
+    if (settings.accounting.invoiceNumberFormatting !== undefined) {
+      addMasterCell("InvAppList!F1", settings.accounting.invoiceNumberFormatting);
+    }
+    if (settings.accounting.expenseStatusMapping !== undefined) {
+      addMasterCell("JnlAppList!F2", settings.accounting.expenseStatusMapping);
     }
   }
 
-  // 4. CRM (KeyInfo)
+  // 4. CRM (KeyInfo & CRMList)
   if (settings.crm) {
     if (settings.crm.toolInUse) addMasterCell("KeyInfo!Q8", settings.crm.toolInUse);
     if (settings.crm.crmDrives) addMasterCell("KeyInfo!Q9", settings.crm.crmDrives);
+
+    // CRM Field Mappings (CRMList!AB2:AN2 and CRMList!A2:M2)
+    if (Array.isArray(settings.crm.fieldMappings) && settings.crm.fieldMappings.length === 13) {
+      const crmFieldsRow = settings.crm.fieldMappings.map(f => String(f.crmField || "").trim());
+      const formatRulesRow = settings.crm.fieldMappings.map(f => String(f.formatRule !== undefined ? f.formatRule : "").trim());
+      masterUpdates.push({
+        range: "CRMList!AB2:AN2",
+        values: [crmFieldsRow]
+      });
+      masterUpdates.push({
+        range: "CRMList!A2:M2",
+        values: [formatRulesRow]
+      });
+    }
+
+    // Confirmed & Pipeline Definitions (CRMList!DD2, DF2, DH2, EE2)
+    if (settings.crm.jobDefinitions) {
+      const jd = settings.crm.jobDefinitions;
+      addMasterCell("CRMList!DD2", jd.confirmedLikelihood !== undefined ? jd.confirmedLikelihood : "");
+      addMasterCell("CRMList!DF2", jd.confirmedStatus !== undefined ? jd.confirmedStatus : "");
+      addMasterCell("CRMList!DH2", jd.confirmedOperator !== undefined ? jd.confirmedOperator : "Or");
+      addMasterCell("CRMList!EE2", jd.pipelineExcludedStatuses !== undefined ? jd.pipelineExcludedStatuses : "");
+    }
 
     // Conditional Tool fields
     addMasterCell("KeyInfo!X14", settings.crm.googleSheetUrl || "");
@@ -668,7 +837,7 @@ export async function saveClientSettings({
     }
     if (Array.isArray(settings.jobs.productLineMappings)) {
       const rows = [];
-      for (let r = 0; r < 41; r++) {
+      for (let r = 0; r < 40; r++) {
         const item = settings.jobs.productLineMappings[r];
         if (item && (item.crmProductLine || item.mappedTo)) {
           rows.push([item.crmProductLine || "", item.mappedTo || ""]);
@@ -676,7 +845,7 @@ export async function saveClientSettings({
           rows.push(["", ""]);
         }
       }
-      masterUpdates.push({ range: "KeyInfo!D22:E62", values: rows });
+      masterUpdates.push({ range: "KeyInfo!E23:F62", values: rows });
     }
     if (Array.isArray(settings.jobs.leadSources)) {
       addMasterColumnSlice("G", 63, 72, settings.jobs.leadSources);
@@ -818,3 +987,275 @@ export async function saveClientSettings({
 
   return { success: true, savedAt: updatedSettings.lastSyncedAt };
 }
+
+/**
+ * Tests CRM field mappings and job definitions by saving them to Google Sheets,
+ * waiting briefly for sheet recalculation, and returning freshly calculated preview rows.
+ */
+export async function testCrmMappingsAndGetPreview({
+  clientName,
+  masterSheetId,
+  clientSheetId,
+  settings
+}) {
+  await saveClientSettings({
+    clientName,
+    masterSheetId,
+    clientSheetId,
+    settings
+  });
+
+  // Short pause to allow Google Sheets formula engine to recalculate array formulas in CRMList
+  await new Promise(resolve => setTimeout(resolve, 1400));
+
+  const sheets = await getSheetsClient();
+  const previewResp = await withRetry(() => sheets.spreadsheets.values.batchGet({
+    spreadsheetId: masterSheetId,
+    ranges: [
+      "CRMList!A4:M",
+      "CRMList!CZ4:DL",
+      "CRMList!DU4:EG"
+    ],
+    valueRenderOption: "FORMATTED_VALUE"
+  }));
+
+  const pVals = previewResp.data.valueRanges || [];
+  const previewMappedJobs = (pVals[0]?.values || []).filter(r => r && r.some(cell => String(cell).trim() !== ""));
+  const previewConfirmedJobs = (pVals[1]?.values || []).filter(r => r && r.some(cell => String(cell).trim() !== ""));
+  const previewPipelineJobs = (pVals[2]?.values || []).filter(r => r && r.some(cell => String(cell).trim() !== ""));
+
+  return {
+    success: true,
+    previewMappedJobs,
+    previewConfirmedJobs,
+    previewPipelineJobs
+  };
+}
+
+/**
+ * Fetches distinct opportunity status values directly from CRMList!I4:I5004 in the Master Sheet.
+ */
+export async function fetchCrmStatusesFromSheet({ masterSheetId }) {
+  if (!masterSheetId) return [];
+  const sheets = await getSheetsClient();
+  const resp = await withRetry(() => sheets.spreadsheets.values.get({
+    spreadsheetId: masterSheetId,
+    range: "CRMList!I4:I5004",
+    valueRenderOption: "FORMATTED_VALUE"
+  }));
+
+  const rawVals = (resp.data.values || []).map(r => String(r[0] || "").trim()).filter(Boolean);
+  const seen = new Set();
+  const uniqueStatuses = [];
+  rawVals.forEach(s => {
+    const lower = s.toLowerCase();
+    if (!seen.has(lower)) {
+      seen.add(lower);
+      uniqueStatuses.push(s);
+    }
+  });
+
+  return uniqueStatuses;
+}
+
+function colToA1Letter(colIndex) {
+  let temp, letter = '';
+  while (colIndex >= 0) {
+    temp = colIndex % 26;
+    letter = String.fromCharCode(temp + 65) + letter;
+    colIndex = Math.floor(colIndex / 26) - 1;
+  }
+  return letter;
+}
+
+/**
+ * Fetches distinct raw CRM product line values from DataFromCRM / CRMList in the Master Sheet.
+ */
+export async function fetchCrmProductLinesFromSheet({ masterSheetId }) {
+  if (!masterSheetId) return [];
+  const sheets = await getSheetsClient();
+  const resp = await withRetry(() => sheets.spreadsheets.values.batchGet({
+    spreadsheetId: masterSheetId,
+    ranges: ["CRMList!AN2", "DataFromCRM!A1:ZZ1", "CRMList!AN4:AN5004"],
+    valueRenderOption: "FORMATTED_VALUE"
+  }));
+
+  const prodLineHeader = String(resp.data.valueRanges?.[0]?.values?.[0]?.[0] || "").trim();
+  const allHeaders = (resp.data.valueRanges?.[1]?.values?.[0] || []).map(h => String(h || "").trim());
+  const fallbackM = (resp.data.valueRanges?.[2]?.values || []).map(r => String(r[0] || "").trim()).filter(Boolean);
+
+  let rawValues = [];
+  if (prodLineHeader) {
+    const colIdx = allHeaders.indexOf(prodLineHeader);
+    if (colIdx >= 0) {
+      const colLetter = colToA1Letter(colIdx);
+      const colResp = await withRetry(() => sheets.spreadsheets.values.get({
+        spreadsheetId: masterSheetId,
+        range: `DataFromCRM!${colLetter}2:${colLetter}`,
+        valueRenderOption: "FORMATTED_VALUE"
+      }));
+      rawValues = (colResp.data.values || []).map(r => String(r[0] || "").trim()).filter(Boolean);
+    }
+  }
+
+  const seen = new Set();
+  const uniqueItems = [];
+  [...rawValues, ...fallbackM].forEach(item => {
+    const lower = item.toLowerCase();
+    if (!seen.has(lower)) {
+      seen.add(lower);
+      uniqueItems.push(item);
+    }
+  });
+
+  return uniqueItems;
+}
+
+/**
+ * Fetches distinct raw CRM lead sources from DataFromCRM / CRMList in the Master Sheet.
+ */
+export async function fetchCrmLeadSourcesFromSheet({ masterSheetId }) {
+  if (!masterSheetId) return [];
+  const sheets = await getSheetsClient();
+  const resp = await withRetry(() => sheets.spreadsheets.values.batchGet({
+    spreadsheetId: masterSheetId,
+    ranges: ["CRMList!AL2", "DataFromCRM!A1:ZZ1", "CRMList!AL4:AL5004"],
+    valueRenderOption: "FORMATTED_VALUE"
+  }));
+
+  const leadSourceHeader = String(resp.data.valueRanges?.[0]?.values?.[0]?.[0] || "").trim();
+  const allHeaders = (resp.data.valueRanges?.[1]?.values?.[0] || []).map(h => String(h || "").trim());
+  const fallbackK = (resp.data.valueRanges?.[2]?.values || []).map(r => String(r[0] || "").trim()).filter(Boolean);
+
+  let rawValues = [];
+  if (leadSourceHeader) {
+    const colIdx = allHeaders.indexOf(leadSourceHeader);
+    if (colIdx >= 0) {
+      const colLetter = colToA1Letter(colIdx);
+      const colResp = await withRetry(() => sheets.spreadsheets.values.get({
+        spreadsheetId: masterSheetId,
+        range: `DataFromCRM!${colLetter}2:${colLetter}`,
+        valueRenderOption: "FORMATTED_VALUE"
+      }));
+      rawValues = (colResp.data.values || []).map(r => String(r[0] || "").trim()).filter(Boolean);
+    }
+  }
+
+  const seen = new Set();
+  const uniqueItems = [];
+  [...rawValues, ...fallbackK].forEach(item => {
+    const lower = item.toLowerCase();
+    if (!seen.has(lower)) {
+      seen.add(lower);
+      uniqueItems.push(item);
+    }
+  });
+
+  return uniqueItems;
+}
+
+/**
+ * Triggers GAS refreshAccountingToolChartOfAccounts and re-fetches KeyInfo!AW2:AW.
+ */
+export async function refreshChartOfAccountsService({ clientName, masterSheetId }) {
+  if (!masterSheetId) throw new Error("Missing masterSheetId");
+  const sheets = await getSheetsClient();
+
+  let gasResult = null;
+  try {
+    const autoUpdatesResp = await withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M",
+      range: "AutoUpdates!A2:N50"
+    }));
+    const rows = autoUpdatesResp.data.values || [];
+    const clientRow = rows.find(r => String(r[0] || "").trim() === clientName);
+    const webAppUrl = String(clientRow?.[13] || "").trim();
+
+    if (webAppUrl) {
+      const secret = process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "triage-cron-2026-AY4K2LDMXBV8DS7";
+      const resp = await fetch(webAppUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ secret, action: "refresh_chart_of_accounts", clientName })
+      });
+      gasResult = await resp.json().catch(() => null);
+    }
+  } catch (err) {
+    console.warn("Could not call Master WebApp for refresh_chart_of_accounts:", err.message);
+  }
+
+  const coaResp = await withRetry(() => sheets.spreadsheets.values.get({
+    spreadsheetId: masterSheetId,
+    range: "KeyInfo!AW2:AW",
+    valueRenderOption: "FORMATTED_VALUE"
+  }));
+
+  const chartOfAccounts = (coaResp.data.values || []).map(r => String(r[0] || "").trim()).filter(Boolean);
+
+  if (redisClient?.isOpen && clientName) {
+    try {
+      await redisClient.del(getSettingsRedisKey(clientName));
+    } catch (e) {}
+  }
+
+  return {
+    success: true,
+    message: gasResult?.message || "Successfully fetched chart of accounts from sheet.",
+    chartOfAccounts
+  };
+}
+
+/**
+ * Triggers GAS PullPLBasedOn and re-fetches KeyInfo!BE2:BE & BG2:BG.
+ */
+export async function pullFreshPlCategoriesService({ clientName, masterSheetId }) {
+  if (!masterSheetId) throw new Error("Missing masterSheetId");
+  const sheets = await getSheetsClient();
+
+  let gasResult = null;
+  try {
+    const autoUpdatesResp = await withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M",
+      range: "AutoUpdates!A2:N50"
+    }));
+    const rows = autoUpdatesResp.data.values || [];
+    const clientRow = rows.find(r => String(r[0] || "").trim() === clientName);
+    const webAppUrl = String(clientRow?.[13] || "").trim();
+
+    if (webAppUrl) {
+      const secret = process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "triage-cron-2026-AY4K2LDMXBV8DS7";
+      const resp = await fetch(webAppUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ secret, action: "pull_pl", clientName })
+      });
+      gasResult = await resp.json().catch(() => null);
+    }
+  } catch (err) {
+    console.warn("Could not call Master WebApp for pull_pl:", err.message);
+  }
+
+  const plResp = await withRetry(() => sheets.spreadsheets.values.batchGet({
+    spreadsheetId: masterSheetId,
+    ranges: ["KeyInfo!BE2:BE", "KeyInfo!BG2:BG"],
+    valueRenderOption: "FORMATTED_VALUE"
+  }));
+
+  const plCategories = (plResp.data.valueRanges?.[0]?.values || []).map(r => String(r[0] || "").trim()).filter(Boolean);
+  const sheetRemainingCategories = (plResp.data.valueRanges?.[1]?.values || []).map(r => String(r[0] || "").trim()).filter(Boolean);
+
+  if (redisClient?.isOpen && clientName) {
+    try {
+      await redisClient.del(getSettingsRedisKey(clientName));
+    } catch (e) {}
+  }
+
+  return {
+    success: true,
+    message: gasResult?.message || "Successfully pulled fresh P&L data.",
+    plCategories,
+    sheetRemainingCategories
+  };
+}
+
+

@@ -107,7 +107,7 @@ if (typeof document !== "undefined") {
 // Persistent top bar - rendered around every screen
 export default function NavShell({
   activeNav, onHome, onAlerts, onOverview, onTasks, onActivity, onAppLog,
-  onOutgoings, onInvoices, onRetainers, onJobs, onViews, onTools, onIntegrations, onSetup, onSettings,
+  onOutgoings, onInvoices, onRetainers, onJobs, onSalaries, onExpenses, onNBToFind, onViews, onTools, onIntegrations, onSetup, onSettings,
   homeAlertCount, taskCount, user, onLogout, clients = [],
   managedClient, onSelectManagedClient, onClearManagedClient, children
 }) {
@@ -117,6 +117,7 @@ export default function NavShell({
   const [manageDropdownOpen, setManageDropdownOpen] = useState(false);
   const [pulseDropdownOpen, setPulseDropdownOpen] = useState(false);
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
+  const [editDropdownOpen, setEditDropdownOpen] = useState(false);
   const [portalClients, setPortalClients] = useState(() => {
     if (clients && clients.length > 0) return clients;
     if (typeof window !== "undefined") {
@@ -173,6 +174,9 @@ export default function NavShell({
       if (profileDropdownOpen && !e.target.closest(".pma-profile-dropdown") && !e.target.closest(".pma-profile-btn")) {
         setProfileDropdownOpen(false);
       }
+      if (editDropdownOpen && !e.target.closest(".pma-edit-dropdown") && !e.target.closest(".pma-nav-dropdown-btn")) {
+        setEditDropdownOpen(false);
+      }
     };
     const handleKey = (e) => {
       if (e.key === "Escape") {
@@ -180,6 +184,7 @@ export default function NavShell({
         setManageDropdownOpen(false);
         setPulseDropdownOpen(false);
         setProfileDropdownOpen(false);
+        setEditDropdownOpen(false);
       }
     };
     document.addEventListener("mousedown", close);
@@ -188,7 +193,7 @@ export default function NavShell({
       document.removeEventListener("mousedown", close);
       document.removeEventListener("keydown", handleKey);
     };
-  }, [showMore, manageDropdownOpen, pulseDropdownOpen, profileDropdownOpen]);
+  }, [showMore, manageDropdownOpen, pulseDropdownOpen, profileDropdownOpen, editDropdownOpen]);
 
   const handleSelectPulseClient = (client) => {
     if (typeof window !== "undefined") {
@@ -227,16 +232,26 @@ export default function NavShell({
     borderRadius: "0", display: "flex", alignItems: "center", whiteSpace: "nowrap",
   });
 
-  // Strict requested menu order:
-  // Home, Alerts, Tasks, Jobs, Contractors, Invoices, Retainers, Views, EoM, Integrations, Setup, Activity, Settings
+  // Strict requested menu order with Edit dropdown:
+  // Home, Alerts, Tasks, Edit (Jobs, Contractors, Invoices, Retainers, Salaries), Views, EoM, Integrations, Setup, Activity, Settings
   const allNavItems = [
     { key: "home", label: "Home", handler: onHome },
     { key: "alerts", label: "Alerts", handler: onAlerts, badge: homeAlertCount },
     { key: "tasks", label: "Tasks", handler: onTasks, badge: taskCount },
-    { key: "jobs", label: "Jobs", handler: onJobs },
-    { key: "outgoings", label: "Contractors", handler: onOutgoings },
-    { key: "invoices", label: "Invoices", handler: onInvoices },
-    { key: "retainers", label: "Retainers", handler: onRetainers },
+    {
+      key: "edit",
+      label: "Edit",
+      isDropdown: true,
+      children: [
+        { key: "jobs", label: "Jobs", handler: onJobs },
+        { key: "outgoings", label: "Contractors", handler: onOutgoings },
+        { key: "invoices", label: "Invoices", handler: onInvoices },
+        { key: "retainers", label: "Retainers", handler: onRetainers },
+        { key: "salaries", label: "Salaries", handler: onSalaries },
+        { key: "expenses", label: "Expenses", handler: onExpenses },
+        { key: "nbtofind", label: "New Business to Find", handler: onNBToFind },
+      ],
+    },
     { key: "views", label: "Views", handler: onViews },
     { key: "tools", label: "EoM", handler: onTools },
     { key: "integrations", label: "Integrations", handler: onIntegrations },
@@ -700,15 +715,101 @@ export default function NavShell({
         display: "flex",
         alignItems: "stretch",
         position: "relative",
-        overflowX: isMobile ? "visible" : "auto",
-        scrollbarWidth: "none"
+        zIndex: 100,
+        overflow: "visible",
       }}>
-        {!isMobile && allNavItems.map(({ key, label, handler, badge }) => (
-          <button key={key} className="triage-btn pulse-nav-item" onClick={handler} style={navBtnStyle(key)}>
-            {label}
-            {badge !== undefined && <Badge count={badge} />}
-          </button>
-        ))}
+        {!isMobile && allNavItems.map((item) => {
+          if (item.isDropdown) {
+            const isSubActive = item.children.some(c => isTabActive(c.key));
+            return (
+              <div key={item.key} style={{ position: "relative", display: "flex", alignItems: "stretch" }}>
+                <button
+                  type="button"
+                  className="triage-btn pulse-nav-item pma-nav-dropdown-btn"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setEditDropdownOpen((v) => !v);
+                  }}
+                  style={{
+                    ...navBtnStyle(item.key),
+                    color: (isSubActive || editDropdownOpen) ? "#0066cc" : "#444",
+                    fontWeight: (isSubActive || editDropdownOpen) ? "600" : "400",
+                    borderBottom: isSubActive ? "2px solid #0066cc" : "2px solid transparent",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "5px",
+                  }}
+                >
+                  <span>{item.label}</span>
+                  <span style={{ fontSize: "10px", opacity: 0.8, lineHeight: 1 }}>{editDropdownOpen ? "▲" : "▼"}</span>
+                </button>
+                {editDropdownOpen && (
+                  <div
+                    className="pma-edit-dropdown"
+                    style={{
+                      position: "absolute",
+                      top: "calc(100% + 1px)",
+                      left: 0,
+                      background: "#ffffff",
+                      borderRadius: "0 0 8px 8px",
+                      boxShadow: "0 10px 25px -5px rgba(0, 0, 0, 0.2), 0 8px 10px -6px rgba(0, 0, 0, 0.15)",
+                      border: "1px solid #cbd5e1",
+                      borderTop: "none",
+                      zIndex: 1000,
+                      minWidth: "175px",
+                      overflow: "hidden",
+                    }}
+                  >
+                    {item.children.map((sub) => {
+                      const active = isTabActive(sub.key);
+                      return (
+                        <button
+                          key={sub.key}
+                          type="button"
+                          onClick={() => {
+                            setEditDropdownOpen(false);
+                            sub.handler?.();
+                          }}
+                          style={{
+                            width: "100%",
+                            padding: "9px 14px",
+                            textAlign: "left",
+                            fontSize: "13px",
+                            fontWeight: active ? 700 : 500,
+                            color: active ? "#0066cc" : "#334155",
+                            background: active ? "#eff6ff" : "transparent",
+                            border: "none",
+                            borderBottom: "1px solid #f1f5f9",
+                            cursor: "pointer",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            transition: "background 0.12s",
+                          }}
+                          onMouseEnter={(e) => {
+                            if (!active) e.currentTarget.style.background = "#f8fafc";
+                          }}
+                          onMouseLeave={(e) => {
+                            if (!active) e.currentTarget.style.background = "transparent";
+                          }}
+                        >
+                          <span>{sub.label}</span>
+                          {active && <span style={{ color: "#0066cc", fontSize: "12px" }}>✓</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          }
+          return (
+            <button key={item.key} className="triage-btn pulse-nav-item" onClick={item.handler} style={navBtnStyle(item.key)}>
+              {item.label}
+              {item.badge !== undefined && <Badge count={item.badge} />}
+            </button>
+          );
+        })}
 
         {isMobile && (
           <>
@@ -725,7 +826,11 @@ export default function NavShell({
             </button>
             {activeNav !== "home" && activeNav !== "alerts" && activeNav !== "tasks" && (
               (() => {
-                const current = allNavItems.find(n => isTabActive(n.key));
+                let current = allNavItems.find((n) => !n.isDropdown && isTabActive(n.key));
+                if (!current) {
+                  const editGroup = allNavItems.find((n) => n.isDropdown);
+                  current = editGroup?.children?.find((c) => isTabActive(c.key));
+                }
                 if (!current) return null;
                 return (
                   <button className="triage-btn pulse-nav-item" onClick={current.handler} style={navBtnStyle(current.key)}>
@@ -760,14 +865,52 @@ export default function NavShell({
             {showMore && (
               <div className="nav-more-dropdown"
                 style={{ position: "absolute", top: "100%", right: "0", background: "#fff", border: "1px solid #ddd", borderRadius: "0 0 8px 8px", boxShadow: "0 6px 20px rgba(0,0,0,0.15)", zIndex: 200, minWidth: "180px" }}>
-                {allNavItems.map(({ key, label, handler, badge }) => (
-                  <button key={key} className="triage-btn"
-                    onClick={() => { handler(); setShowMore(false); }}
-                    style={{ background: "none", border: "none", cursor: "pointer", width: "100%", justifyContent: "flex-start", borderBottom: "1px solid #f0f0f0", padding: "12px 16px", fontSize: "14px", fontWeight: isTabActive(key) ? "600" : "400", color: isTabActive(key) ? "#0066cc" : "#444", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                    <span>{label}</span>
-                    {badge !== undefined && <Badge count={badge} />}
-                  </button>
-                ))}
+                {allNavItems.map((item) => {
+                  if (item.isDropdown) {
+                    return (
+                      <div key={item.key} style={{ borderBottom: "1px solid #f0f0f0" }}>
+                        <div style={{ padding: "8px 16px 4px", fontSize: "11px", fontWeight: 700, color: "#94a3b8", textTransform: "uppercase" }}>
+                          {item.label}
+                        </div>
+                        {item.children.map((sub) => (
+                          <button
+                            key={sub.key}
+                            className="triage-btn"
+                            onClick={() => {
+                              sub.handler?.();
+                              setShowMore(false);
+                            }}
+                            style={{
+                              background: "none",
+                              border: "none",
+                              cursor: "pointer",
+                              width: "100%",
+                              textAlign: "left",
+                              padding: "10px 16px 10px 24px",
+                              fontSize: "13px",
+                              fontWeight: isTabActive(sub.key) ? "600" : "400",
+                              color: isTabActive(sub.key) ? "#0066cc" : "#444",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "space-between",
+                            }}
+                          >
+                            <span>{sub.label}</span>
+                            {isTabActive(sub.key) && <span style={{ color: "#0066cc" }}>✓</span>}
+                          </button>
+                        ))}
+                      </div>
+                    );
+                  }
+                  return (
+                    <button key={item.key} className="triage-btn"
+                      onClick={() => { item.handler(); setShowMore(false); }}
+                      style={{ background: "none", border: "none", cursor: "pointer", width: "100%", justifyContent: "flex-start", borderBottom: "1px solid #f0f0f0", padding: "12px 16px", fontSize: "14px", fontWeight: isTabActive(item.key) ? "600" : "400", color: isTabActive(item.key) ? "#0066cc" : "#444", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                      <span>{item.label}</span>
+                      {item.badge !== undefined && <Badge count={item.badge} />}
+                    </button>
+                  );
+                })}
               </div>
             )}
           </>

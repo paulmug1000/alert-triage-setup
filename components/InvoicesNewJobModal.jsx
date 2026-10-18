@@ -37,6 +37,7 @@ export default function InvoicesNewJobModal({
           revenue: parseFloat(revenue) || 0, directCosts: parseFloat(directCosts) || 0,
           vatYesNo, projectType, startDate, endDate,
           invoice: inv,
+          automationCommanderSheetId: invoicesClient?.automationCommanderSheetId,
         }),
       });
       const data = await res.json();

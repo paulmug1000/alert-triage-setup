@@ -1,0 +1,131 @@
+import { getSessionUser } from "../../../services/authService.js";
+import {
+  getSalariesData,
+  saveEmployeeData,
+  saveSalaryAmountOverride,
+  saveDividendsData,
+} from "../../../services/salariesService.js";
+import { getClients } from "../../../services/workspaces.js";
+
+export default async function handler(req, res) {
+  // 1. Authenticate user
+  const sessionUser = getSessionUser(req);
+  if (!sessionUser) {
+    return res.status(401).json({ success: false, error: "Active session required." });
+  }
+
+  // Enforce PMA access roles (Admins, ClientManagers)
+  const isPulseOnly =
+    sessionUser.role === "ClientUser" ||
+    sessionUser.role === "Senior (Restricted)" ||
+    Boolean(sessionUser.isSenior) ||
+    (!sessionUser.isAdmin && sessionUser.role !== "ClientManager");
+
+  if (isPulseOnly) {
+    return res.status(403).json({ success: false, error: "Forbidden: Access restricted to Pulse Portal" });
+  }
+
+  // 2. GET Request: Fetch Salaries & Dividends
+  if (req.method === "GET") {
+    let { clientName, masterSheetId, clientSheetId, bypassCache } = req.query;
+
+    if (!masterSheetId || !clientSheetId) {
+      if (clientName) {
+        try {
+          const all = await getClients();
+          const match = all.find((c) => c.clientName?.toLowerCase() === clientName.toLowerCase().trim());
+          if (match) {
+            masterSheetId = masterSheetId || match.masterSheetId;
+            clientSheetId = clientSheetId || match.clientSheetId;
+          }
+        } catch (e) {
+          console.warn("Failed to resolve client sheets in GET /api/pma/salaries:", e);
+        }
+      }
+    }
+
+    if (!masterSheetId || !clientSheetId) {
+      return res.status(400).json({
+        success: false,
+        error: "Missing required masterSheetId or clientSheetId parameter.",
+      });
+    }
+
+    try {
+      const data = await getSalariesData({
+        clientName: clientName || "Client",
+        masterSheetId,
+        clientSheetId,
+        bypassCache: bypassCache === "true" || bypassCache === true,
+      });
+
+      return res.status(200).json(data);
+    } catch (err) {
+      console.error("Error in GET /api/pma/salaries:", err);
+      return res.status(500).json({ success: false, error: err.message || "Failed to load salaries data" });
+    }
+  }
+
+  // 3. POST Request: Save modifications
+  if (req.method === "POST") {
+    const { action, clientName, masterSheetId, clientSheetId } = req.body || {};
+
+    if (!masterSheetId && !clientSheetId) {
+      return res.status(400).json({
+        success: false,
+        error: "Missing required masterSheetId or clientSheetId parameter.",
+      });
+    }
+
+    try {
+      if (action === "save_employee") {
+        const { sheetRow, employeeData } = req.body;
+        const result = await saveEmployeeData({
+          masterSheetId,
+          clientSheetId,
+          clientName: clientName || "Client",
+          sheetRow: parseInt(sheetRow, 10),
+          employeeData,
+          sessionUser,
+        });
+        return res.status(200).json(result);
+      }
+
+      if (action === "save_amount_override") {
+        const { sheetRow, colLetterStart, amounts } = req.body;
+        const result = await saveSalaryAmountOverride({
+          masterSheetId,
+          clientSheetId,
+          clientName: clientName || "Client",
+          sheetRow: parseInt(sheetRow, 10),
+          colLetterStart,
+          amounts,
+          sessionUser,
+        });
+        return res.status(200).json(result);
+      }
+
+      if (action === "save_dividends") {
+        const { sheetRow, deliveryPct, monthlyAmounts, description } = req.body;
+        const result = await saveDividendsData({
+          clientSheetId,
+          masterSheetId,
+          clientName: clientName || "Client",
+          sheetRow: parseInt(sheetRow || 118, 10),
+          deliveryPct,
+          monthlyAmounts,
+          description,
+          sessionUser,
+        });
+        return res.status(200).json(result);
+      }
+
+      return res.status(400).json({ success: false, error: `Unknown action: ${action}` });
+    } catch (err) {
+      console.error(`Error in POST /api/pma/salaries (action=${action}):`, err);
+      return res.status(500).json({ success: false, error: err.message || "Failed to save salaries data" });
+    }
+  }
+
+  return res.status(405).json({ success: false, error: "Method not allowed. Use GET or POST." });
+}

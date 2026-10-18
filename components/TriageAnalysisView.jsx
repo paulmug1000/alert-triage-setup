@@ -1,10 +1,15 @@
-import React from "react";
+import React, { useState } from "react";
 import Spinner from "./Spinner";
 import TruncatedCode from "./TruncatedCode";
 import { useTriage } from "../contexts/TriageContext";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useTasks } from "../contexts/TaskContext";
-import { stripRowInfo } from "../utils/helpers";
+import { stripRowInfo, cleanUserFacingText, formatSeenTimestamp } from "../utils/helpers";
+import JobMatchCard, { buildJobsFromRows } from "./JobMatchCard";
+import ExploreJobsModal from "./ExploreJobsModal";
+import OutgoingsContractorPickerModal from "./OutgoingsContractorPickerModal";
+import JobDetailModal from "./JobDetailModal";
+import InvoicesNewJobModal from "./InvoicesNewJobModal";
 
 export default function TriageAnalysisView({
   styles, setScreen, getFlagName, setActiveNav, handleNavTasks,
@@ -16,7 +21,7 @@ export default function TriageAnalysisView({
   const { openCreateTaskModal } = useTasks();
   const {
     selectedClient, clientAlerts, currentClientAlertIndex, setCurrentClientAlertIndex,
-    acceptError, setAcceptError, clientsWithFlags, fromCache, setFromCache,
+    acceptError, setAcceptError, clientsWithFlags, setClientsWithFlags, fromCache, setFromCache,
     selectAlert, setClientAlerts, claudeAnalysis, setClaudeAnalysis,
     previousIgnoreReason, setPreviousIgnoreReason, acceptOption, isAccepting,
     isAnalyzing, setIsAnalyzing, existingTaskBanner, setExistingTaskBanner,
@@ -26,24 +31,357 @@ export default function TriageAnalysisView({
   } = useTriage();
 
   const { allClientsMap, automationCommanderSheetId } = useAppGlobals();
-  const alert = clientAlerts[currentClientAlertIndex];
-  const progress = currentClientAlertIndex + 1;
 
+  // Modals & Placement State
+  const [exploreJobsOpen, setExploreJobsOpen] = useState(false);
+  const [outgoingsPickerOpen, setOutgoingsPickerOpen] = useState(false);
+  const [createNewJobOpen, setCreateNewJobOpen] = useState(false);
+  const [placementPrompt, setPlacementPrompt] = useState(null);
+  const [confirmJobModal, setConfirmJobModal] = useState(null);
+  const [viewingJobTarget, setViewingJobTarget] = useState(null);
+  const [isSavingPlacement, setIsSavingPlacement] = useState(false);
+
+  let clientInfo = (clientsWithFlags || []).find(c => c.clientName === selectedClient?.clientName);
+  if (!clientInfo?.clientSheetId && !clientInfo?.masterSheetId) {
+    clientInfo = allClientsMap[selectedClient?.clientName] || selectedClient || {};
+  }
+  const targetClientSheetId = clientInfo?.clientSheetId || clientInfo?.sheetId || selectedClient?.clientSheetId || "";
+
+  const alert = clientAlerts[currentClientAlertIndex];
   const alertFlags = alert?.data?.flags || [];
   const isExpenseType = alert?.type === "expense" || alert?.flagType === "expenseDashboardDiscr" || alert?.sheetName === "DirComp";
   const isInvoiceType = alert?.type === "invoice" || alert?.flagType === "invoiceDashboardDiscr" || alert?.sheetName === "InvComp";
+  const isCrmType = alert?.type === "crm" || alert?.sheetName === "CRMComp" || Boolean(alert?.alertType?.startsWith("crm")) || Boolean(alert?.flagType?.startsWith("crm"));
+
+  const handleResolveAlertAfterPlacement = async (targetAlert, description) => {
+    const alertId = `${targetAlert.sheetName}-${targetAlert.rowNumber}`;
+    const uniqueId = targetAlert.fingerprintHash || `${targetAlert.flagType || targetAlert.type}-${targetAlert.sheetName}-${targetAlert.rowNumber}`;
+
+    setProcessedAlerts(new Set([...processedAlerts, uniqueId]));
+
+    if (sessionId) {
+      fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "remove_alert", sessionId, alertId }),
+      }).catch(() => { });
+    }
+
+    if (automationCommanderSheetId) {
+      fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "record_decision",
+          alert: targetAlert,
+          decision: {
+            action: "ACCEPTED",
+            notes: description || "Placed from alert triage"
+          },
+          automationCommanderSheetId
+        })
+      }).catch(() => { });
+    }
+
+    const updatedAlerts = clientAlerts.filter((_, idx) => idx !== currentClientAlertIndex);
+    setClientAlerts(updatedAlerts);
+
+    let acceptedFlagType = targetAlert.flagType || targetAlert.alertType || targetAlert.type || "";
+    if (acceptedFlagType === "invoice") acceptedFlagType = "invoiceDashboardDiscr";
+    if (acceptedFlagType === "expense") acceptedFlagType = "expenseDashboardDiscr";
+    if (acceptedFlagType === "crm") acceptedFlagType = "crmPipeAppDiscr";
+
+    setClientsWithFlags(prev => prev.map(c => {
+      if (c.clientName !== selectedClient?.clientName) return c;
+      const updatedCounts = { ...(c.alertCounts || {}) };
+      const updatedFlags = { ...(c.flags || {}) };
+      if (updatedCounts[acceptedFlagType] > 0) updatedCounts[acceptedFlagType]--;
+      if ((updatedCounts[acceptedFlagType] || 0) === 0) updatedFlags[acceptedFlagType] = false;
+      return { ...c, alertCounts: updatedCounts, flags: updatedFlags };
+    }));
+
+    if (updatedAlerts.length === 0) {
+      if (allNoActionResolved()) {
+        handlePostClear([], resolvedNoActionFlags);
+      } else {
+        setScreen("alertSelection");
+        setCurrentClientAlertIndex(0);
+      }
+    } else {
+      setScreen("alertSelection");
+      setCurrentClientAlertIndex(0);
+    }
+  };
+
+  const handleInitiatePlaceOnJob = (jobArg, maybeSlotNum, maybeSlot, maybeRowNum, createNewRow = false, customLabel = null) => {
+    let jobRow = jobArg;
+    let slotNum = maybeSlotNum;
+    let slot = maybeSlot;
+    if (jobArg && typeof jobArg === "object" && jobArg.slotNum !== undefined && maybeSlotNum === undefined) {
+      slotNum = jobArg.slotNum;
+      slot = jobArg.slot;
+      jobRow = {
+        client: jobArg.jobClient || jobArg.client,
+        jobName: jobArg.jobName,
+        projectCode: jobArg.projectCode,
+        rowNum: jobArg.rowNum,
+        tabName: jobArg.tabName || "Confirmed"
+      };
+    }
+    const targetRowNum = maybeRowNum || jobRow.rowNum || jobRow.rows?.[0]?.rowNum;
+
+    const isRetainer = String(jobRow.projectRetainer || jobRow.jobType || "").toLowerCase().includes("retainer");
+    const slotLabel = customLabel || (createNewRow
+      ? (isExpenseType ? "New Direct Cost" : "New Invoice Entry")
+      : (isExpenseType
+          ? `Direct Cost ${slotNum || 1}`
+          : (isRetainer ? `Month ${slotNum || 1} Invoice` : `Invoice ${slotNum || 1}`)
+        ));
+
+    if (isExpenseType) {
+      const amt = parseFloat(String(alert.summary?.amount || alert.data?.accounting?.[2] || "0").replace(/[£$€,\s]/g, "")) || 0;
+      const desc = alert.summary?.description || alert.summary?.reference || alert.data?.accounting?.[1] || "Expense";
+      const date = alert.summary?.date || alert.data?.accounting?.[0] || "";
+      const vat = (alert.summary?.vatAmount && parseFloat(String(alert.summary.vatAmount).replace(/,/g, "")) > 0) ? "Yes" : (alert.data?.accounting?.[8] ? "Yes" : "No");
+      const txnId = alert.summary?.transactionId || alert.data?.accounting?.[11] || "";
+      const status = alert.summary?.status || alert.data?.accounting?.[5] || "Received";
+
+      setPlacementPrompt({
+        type: "expense_job",
+        jobClient: jobRow.client || selectedClient?.clientName,
+        jobName: jobRow.jobName,
+        projectCode: jobRow.projectCode || "",
+        rowNum: targetRowNum,
+        slotNum,
+        slot,
+        slotLabel,
+        isRetainer,
+        createNewRow: Boolean(createNewRow),
+        tabName: "Confirmed",
+        amount: amt,
+        description: desc,
+        date,
+        vat,
+        transactionId: txnId,
+        status,
+        daysToPay: 30
+      });
+    } else {
+      const invNo = alert.summary?.invoiceNo || alert.data?.accounting?.[5] || "";
+      const amt = parseFloat(String(alert.summary?.amount || alert.data?.accounting?.[2] || "0").replace(/[£$€,\s]/g, "")) || 0;
+      const sentDate = alert.summary?.sentDate || alert.data?.accounting?.[6] || "";
+      const status = alert.summary?.status || alert.data?.accounting?.[9] || "Sent";
+
+      setPlacementPrompt({
+        type: "invoice",
+        jobClient: jobRow.client || selectedClient?.clientName,
+        jobName: jobRow.jobName,
+        projectCode: jobRow.projectCode || "",
+        rowNum: targetRowNum,
+        slotNum,
+        slot,
+        slotLabel,
+        isRetainer,
+        createNewRow: Boolean(createNewRow),
+        tabName: "Confirmed",
+        invoiceNo: invNo,
+        amount: amt,
+        sentDate,
+        status,
+        daysToPay: 30
+      });
+    }
+  };
+
+  const handleInitiatePlaceOnContractor = ({ contractor, month, colLetter, sheetRow, cell }) => {
+    const amt = parseFloat(String(alert.summary?.amount || alert.data?.accounting?.[2] || "0").replace(/[£$€,\s]/g, "")) || 0;
+    const desc = alert.summary?.description || alert.summary?.reference || alert.data?.accounting?.[1] || "Expense";
+    const date = alert.summary?.date || alert.data?.accounting?.[0] || "";
+    const status = alert.summary?.status || alert.data?.accounting?.[5] || "Received";
+
+    setPlacementPrompt({
+      type: "expense_contractor",
+      contractorName: contractor.name,
+      sheetRow,
+      colLetter,
+      monthLabel: month.label,
+      cell,
+      amount: amt,
+      description: desc,
+      date,
+      status
+    });
+  };
+
+  const executeConfirmedPlacement = async () => {
+    if (!placementPrompt || !targetClientSheetId) return;
+    setIsSavingPlacement(true);
+    setAcceptError("");
+
+    try {
+      if (placementPrompt.type === "invoice") {
+        const res = await fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "update_invoice_slot",
+            clientSheetId: targetClientSheetId,
+            clientName: selectedClient?.clientName || "",
+            tabName: placementPrompt.tabName || "Confirmed",
+            rowNum: placementPrompt.rowNum,
+            slotNum: placementPrompt.slotNum,
+            createNewRow: Boolean(placementPrompt.createNewRow),
+            jobClient: placementPrompt.jobClient,
+            jobName: placementPrompt.jobName,
+            invoice: {
+              invoiceNo: placementPrompt.invoiceNo,
+              amount: parseFloat(placementPrompt.amount) || 0,
+              sentDate: placementPrompt.sentDate || "",
+              daysToPay: parseInt(placementPrompt.daysToPay, 10) || 30,
+              status: placementPrompt.status || "Sent"
+            }
+          })
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Failed to place invoice");
+
+        setPlacementPrompt(null);
+        setExploreJobsOpen(false);
+        const invDesc = placementPrompt.createNewRow
+          ? `Added new invoice entry for invoice #${placementPrompt.invoiceNo} on ${placementPrompt.jobName}`
+          : `Placed invoice #${placementPrompt.invoiceNo} on ${placementPrompt.jobName} (${placementPrompt.slotLabel || "Invoice"})`;
+        await handleResolveAlertAfterPlacement(alert, invDesc);
+      } else if (placementPrompt.type === "expense_job") {
+        const res = await fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "update_expense_slot",
+            clientSheetId: targetClientSheetId,
+            clientName: selectedClient?.clientName || "",
+            tabName: placementPrompt.tabName || "Confirmed",
+            rowNum: placementPrompt.rowNum,
+            slotNum: placementPrompt.slotNum,
+            createNewRow: Boolean(placementPrompt.createNewRow),
+            jobClient: placementPrompt.jobClient,
+            jobName: placementPrompt.jobName,
+            expense: {
+              description: placementPrompt.description,
+              amount: parseFloat(placementPrompt.amount) || 0,
+              vat: placementPrompt.vat || "No",
+              date: placementPrompt.date || "",
+              daysToPay: parseInt(placementPrompt.daysToPay, 10) || 30,
+              status: placementPrompt.status || "Received",
+              transactionId: placementPrompt.transactionId || ""
+            }
+          })
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Failed to place expense on job");
+
+        setPlacementPrompt(null);
+        setExploreJobsOpen(false);
+        const expDesc = placementPrompt.createNewRow
+          ? `Added new direct cost entry for expense on ${placementPrompt.jobName}`
+          : `Placed expense of £${placementPrompt.amount} on ${placementPrompt.jobName} (${placementPrompt.slotLabel || "Direct Cost"})`;
+        await handleResolveAlertAfterPlacement(alert, expDesc);
+      } else if (placementPrompt.type === "expense_contractor") {
+        const newBlock = {
+          appId: alert.summary?.appId || alert.data?.accounting?.[11] || `EXP-${Date.now()}`,
+          amount: parseFloat(placementPrompt.amount) || 0,
+          status: placementPrompt.status || "Received",
+          recDate: placementPrompt.date || "",
+          payDate: placementPrompt.payDate || "",
+          description: placementPrompt.description || ""
+        };
+        const existingBlocks = placementPrompt.cell?.blocks || [];
+        const updatedBlocks = [...existingBlocks, newBlock];
+
+        const res = await fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "update_outgoing_note",
+            clientSheetId: targetClientSheetId,
+            clientName: selectedClient?.clientName || "",
+            contractorName: placementPrompt.contractorName,
+            sheetRow: placementPrompt.sheetRow,
+            colLetter: placementPrompt.colLetter,
+            blocks: updatedBlocks,
+            automationCommanderSheetId
+          })
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Failed to update contractor note in Outgoings");
+
+        setPlacementPrompt(null);
+        setOutgoingsPickerOpen(false);
+        await handleResolveAlertAfterPlacement(alert, `Placed expense of £${placementPrompt.amount} on contractor ${placementPrompt.contractorName} (${placementPrompt.monthLabel})`);
+      }
+    } catch (err) {
+      setAcceptError(`Error placing item: ${err.message}`);
+    } finally {
+      setIsSavingPlacement(false);
+    }
+  };
+
+  const executeConfirmedJobCreation = async () => {
+    if (!confirmJobModal || !targetClientSheetId) return;
+    setIsSavingPlacement(true);
+    setAcceptError("");
+
+    try {
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "add_new_job",
+          clientSheetId: targetClientSheetId,
+          clientName: selectedClient?.clientName || "",
+          tabName: confirmJobModal.tabName || "Confirmed",
+          jobData: {
+            client: confirmJobModal.client.trim(),
+            jobName: confirmJobModal.jobName.trim(),
+            projectCode: confirmJobModal.projectCode.trim(),
+            projectRetainer: confirmJobModal.projectRetainer || "Project",
+            status: confirmJobModal.tabName || "Confirmed",
+            likelihood: confirmJobModal.likelihood || "100",
+            revenue: parseFloat(String(confirmJobModal.revenue || "0").replace(/[£$€,\s]/g, "")) || 0,
+            directCosts: parseFloat(String(confirmJobModal.directCosts || "0").replace(/[£$€,\s]/g, "")) || 0,
+            vat: confirmJobModal.vat || "Yes",
+            dateConfirmed: new Date().toISOString().split("T")[0],
+            startDate: confirmJobModal.startDate || "",
+            endDate: confirmJobModal.endDate || "",
+            invoices: [],
+            expenses: []
+          }
+        })
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || "Failed to create job in Pulse");
+
+      setConfirmJobModal(null);
+      await handleResolveAlertAfterPlacement(alert, `Created new job "${confirmJobModal.jobName}" in Pulse from CRM`);
+    } catch (err) {
+      setAcceptError(`Error creating job: ${err.message}`);
+    } finally {
+      setIsSavingPlacement(false);
+    }
+  };
+  const progress = currentClientAlertIndex + 1;
   const isMissingFlag = String(alertFlags[0] || "").trim() === "1";
   const isMissingCost = isExpenseType && isMissingFlag;
   const isMissingInvoice = isInvoiceType && isMissingFlag;
+  const isCrmMismatch = isCrmType && (alert?.subType === "field_mismatch" || (!isMissingFlag && alertFlags.length > 0));
 
   const otherDuplicateAlerts = (isInvoiceType && alert?.summary?.invoiceNo)
     ? clientAlerts.filter(a => {
-        const thisId = alert.fingerprintHash || `${alert.sheetName}-${alert.rowNumber}`;
-        const otherId = a.fingerprintHash || `${a.sheetName}-${a.rowNumber}`;
-        if (thisId === otherId) return false;
-        const otherInvNo = String(a.summary?.invoiceNo || a.data?.accounting?.[5] || "").trim();
-        return otherInvNo && otherInvNo.toLowerCase() === String(alert.summary.invoiceNo).trim().toLowerCase();
-      })
+      const thisId = alert.fingerprintHash || `${alert.sheetName}-${alert.rowNumber}`;
+      const otherId = a.fingerprintHash || `${a.sheetName}-${a.rowNumber}`;
+      if (thisId === otherId) return false;
+      const otherInvNo = String(a.summary?.invoiceNo || a.data?.accounting?.[5] || "").trim();
+      return otherInvNo && otherInvNo.toLowerCase() === String(alert.summary.invoiceNo).trim().toLowerCase();
+    })
     : [];
 
   const isDuplicateInvoice = isInvoiceType && Boolean(
@@ -68,7 +406,7 @@ export default function TriageAnalysisView({
           </button>
           {(() => {
             let info = (clientsWithFlags || []).find(c => c.clientName === selectedClient.clientName);
-            
+
             if (!info?.clientSheetId && !info?.masterSheetId) {
               info = allClientsMap[selectedClient.clientName] || selectedClient;
             }
@@ -113,7 +451,7 @@ export default function TriageAnalysisView({
                     // CRITICAL FIX: Delete the old options from local React memory so selectAlert is forced to fetch fresh data
                     const freshAlert = { ...clientAlerts[currentClientAlertIndex] };
                     delete freshAlert.options;
-                    
+
                     setClientAlerts(prev => {
                       const newAlerts = [...prev];
                       newAlerts[currentClientAlertIndex] = freshAlert;
@@ -123,7 +461,7 @@ export default function TriageAnalysisView({
                     // Small delay to ensure Sheets write has committed before re-fetching
                     await new Promise(r => setTimeout(r, 1000));
                     await selectAlert(freshAlert);
-                  } catch(e) { console.error("Cache bust failed:", e); }
+                  } catch (e) { console.error("Cache bust failed:", e); }
                 }} style={{ fontSize: "11px", padding: "2px 8px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "4px", cursor: "pointer", color: "#555" }}>
                   ↻ Refresh
                 </button>
@@ -142,9 +480,9 @@ export default function TriageAnalysisView({
                 <span>{fullName}</span>
                 {(alert.firstSeen || alert.lastSeen) && (
                   <span style={{ fontSize: "11px", color: "#3b82f6", fontWeight: "500", opacity: 0.8 }}>
-                    {alert.firstSeen ? `First seen: ${alert.firstSeen.split("T")[0]}` : ""}
+                    {alert.firstSeen ? `First seen: ${formatSeenTimestamp(alert.firstSeen)}` : ""}
                     {alert.firstSeen && alert.lastSeen ? " · " : ""}
-                    {alert.lastSeen ? `Last seen: ${alert.lastSeen.split("T")[0]}` : ""}
+                    {alert.lastSeen ? `Last seen: ${formatSeenTimestamp(alert.lastSeen)}` : ""}
                   </span>
                 )}
               </div>
@@ -160,6 +498,101 @@ export default function TriageAnalysisView({
             <div style={{ fontSize: "13px", lineHeight: "1.6", color: "#78350f" }}>
               {alert.summary.lockedMessage}
             </div>
+          </div>
+        )}
+
+        {(isInvoiceType || isExpenseType) && alert.summary && alert.type !== "locked" && (
+          <div style={{
+            ...styles.alertSummary, marginBottom: "20px",
+            backgroundColor: alert.type === "expense" ? "#f0fdf4" : "#eff6ff",
+            borderLeft: `4px solid ${alert.type === "expense" ? "#16a34a" : "#2563eb"}`
+          }}>
+            <h3 style={{ fontSize: "17px", fontWeight: "700", marginBottom: "8px", color: alert.type === "expense" ? "#166534" : "#1e40af" }}>
+              ⚠ {alert.type === "expense" ? (() => {
+                const expFlags = alert.data?.flags || [];
+                const isMissing = String(expFlags[0] || "").trim() === "1";
+                if (isMissing) return "Missing expense in accounting system, not in Pulse";
+                const expFlagNames = [null, "Duplicate app ID", "Description mismatch", "Amount mismatch", "VAT mismatch", "Received date mismatch", "Pay date mismatch", "Status mismatch"];
+                const active = expFlags.map((v, i) => String(v || "").trim() === "1" && expFlagNames[i] ? expFlagNames[i] : null).filter(Boolean);
+                return active.length > 0 ? `Field mismatch: ${active.join(", ").toLowerCase()}` : "Expense discrepancy";
+              })()
+                : (() => {
+                  const flags = alert.data?.flags || [];
+                  const isMissing = String(flags[0] || "").trim() === "1";
+                  if (isMissing) return "Missing invoice in accounting system, not in Pulse";
+                  const invFlagNames2 = [null, "Client mismatch", "Amount mismatch", "Sent date mismatch", "Duplicate invoice in sheet", "Pay date mismatch", "Status mismatch"];
+                  const active = flags.map((v, i) => String(v || "").trim() === "1" && invFlagNames2[i] ? invFlagNames2[i] : null).filter(Boolean);
+                  return active.length > 0 ? `Field mismatch: ${active.join(", ").toLowerCase()}` : "Invoice discrepancy";
+                })()
+              }
+            </h3>
+            <div style={{ fontSize: "13px", lineHeight: "1.6", color: "#333" }}>
+              {alert.type === "expense" ? (
+                // Expense display
+                <>
+                  {alert.summary.reference && <div><strong>Reference:</strong> {alert.summary.reference}</div>}
+                  {alert.summary.description && <div><strong>Description:</strong> {alert.summary.description}</div>}
+                  <div><strong>Amount:</strong> £{alert.summary.amount.toFixed(2)}{(() => {
+                    const vat = parseFloat(String(alert.summary.vatAmount || "0").replace(/[£$€,\s]/g, "")) || 0;
+                    return vat > 0 ? " +VAT" : " (no VAT)";
+                  })()}</div>
+                  {alert.summary.date && <div><strong>Date:</strong> {alert.summary.date}</div>}
+                  {alert.summary.accountName && <div><strong>Account name:</strong> {alert.summary.accountName}</div>}
+                  {alert.summary.status && <div><strong>Status:</strong> {alert.summary.status}</div>}
+                  {alert.summary.transactionId && <div><strong>Transaction ID:</strong> {alert.summary.transactionId}</div>}
+                </>
+              ) : (
+                // Invoice display
+                <>
+                  <div><strong>Invoice:</strong> {alert.summary.invoiceNo}</div>
+                  <div><strong>Amount:</strong> £{alert.summary.amount.toFixed(2)}{alert.summary.vatIncluded && alert.summary.vatIncluded > 0 ? " +VAT" : " (no VAT)"}</div>
+                  <div><strong>Client:</strong> {alert.summary.client}</div>
+                  {alert.summary.job && <div><strong>Description:</strong> {alert.summary.job}</div>}
+                  {alert.summary.sentDate && <div><strong>Sent:</strong> {alert.summary.sentDate}</div>}
+                  {alert.summary.status && <div><strong>Status:</strong> {alert.summary.status}</div>}
+                </>
+              )}
+            </div>
+            {/* Field-by-field comparison lines for mismatched fields only */}
+            {(() => {
+              const flags = alert.data?.flags || [];
+              const isMissing = String(flags[0] || "").trim() === "1";
+              if (isMissing) return null;
+              const acc = alert.data?.accounting || [];
+              const conf = alert.data?.confirmed || [];
+              let mismatchLines = [];
+              if (alert.type === "expense") {
+                const expFlagNames = ["Missing cost", "Duplicate app ID", "Description mismatch", "Amount mismatch", "VAT mismatch", "Rec date mismatch", "Pay date mismatch", "Status mismatch"];
+                const activeFlags = flags.map((v, i) => String(v || "").trim() === "1" && expFlagNames[i] ? expFlagNames[i] : null).filter(Boolean);
+                const FIELD_DEFS = [
+                  { name: "Description mismatch", line: `Description in accounting: ${acc[1] || "(blank)"}. Description in Confirmed tab: ${conf[3] || "(blank)"}.` },
+                  { name: "Amount mismatch", line: `Amount in accounting: ${acc[2] ? `£${acc[2]}` : "£0"}. Amount in Confirmed tab: ${conf[4] ? `£${conf[4]}` : "£0"}.` },
+                  { name: "VAT mismatch", line: `VAT in accounting: ${acc[8] ? `£${acc[8]}` : "£0"}. VAT in Confirmed tab: ${conf[6] || "(blank)"}.` },
+                  { name: "Rec date mismatch", line: `Received date in accounting: ${acc[0] || "(blank)"}. Received date in Confirmed tab: ${conf[7] || "(blank)"}.` },
+                  { name: "Pay date mismatch", line: `Pay date in accounting: ${acc[7] || "(blank)"}. Pay date in Confirmed tab: ${conf[8] || "(blank)"}.` },
+                  { name: "Status mismatch", line: `Status in accounting: ${acc[5] || "(blank)"}. Status in Confirmed tab: ${conf[9] || "(blank)"}.` },
+                ];
+                mismatchLines = FIELD_DEFS.filter(f => activeFlags.includes(f.name));
+              } else {
+                const invFlagNames = ["Missing invoice", "Client mismatch", "Amount mismatch", "Sent date mismatch", "Duplicate invoice in sheet", "Pay date mismatch", "Status mismatch"];
+                const activeFlags = flags.map((v, i) => String(v || "").trim() === "1" && invFlagNames[i] ? invFlagNames[i] : null).filter(Boolean);
+                const FIELD_DEFS = [
+                  { name: "Client mismatch", line: `Client in accounting: ${acc[0] || "(blank)"}. Client in Confirmed tab: ${conf[1] || "(blank)"}.` },
+                  { name: "Amount mismatch", line: `Amount in accounting: ${acc[2] ? `£${acc[2]}` : "£0"}. Amount in Confirmed tab: ${conf[2] ? `£${conf[2]}` : "£0"}.` },
+                  { name: "Sent date mismatch", line: `Sent date in accounting: ${acc[6] || "(blank)"}. Sent date in Confirmed tab: ${conf[3] || "(blank)"}.` },
+                  { name: "Duplicate invoice in sheet", line: `Duplicate invoice number: Invoice #${alert.summary?.invoiceNo || acc[5] || conf[0]} appears in multiple rows in the spreadsheet (${spreadsheetItems.length > 0 ? spreadsheetItems.length : 2} entries).` },
+                  { name: "Pay date mismatch", line: `Pay date in accounting: ${acc[8] || "(blank)"}. Pay date in Confirmed tab: ${conf[4] || "(blank)"}.` },
+                  { name: "Status mismatch", line: `Status in accounting: ${acc[9] || "(blank)"}. Status in Confirmed tab: ${conf[5] || "(blank)"}.` },
+                ];
+                mismatchLines = FIELD_DEFS.filter(f => activeFlags.includes(f.name));
+              }
+              if (mismatchLines.length === 0) return null;
+              return (
+                <div style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "13px", color: "#333", marginTop: "10px", paddingTop: "10px", borderTop: "1px solid rgba(0,0,0,0.08)" }}>
+                  {mismatchLines.map(f => <div key={f.name}>{f.line}</div>)}
+                </div>
+              );
+            })()}
           </div>
         )}
 
@@ -262,99 +695,6 @@ export default function TriageAnalysisView({
           </div>
         )}
 
-        {(isInvoiceType || isExpenseType) && alert.summary && alert.type !== "locked" && (
-          <div style={{ ...styles.alertSummary, marginBottom: "20px",
-            backgroundColor: alert.type === "expense" ? "#f0fdf4" : "#eff6ff",
-            borderLeft: `4px solid ${alert.type === "expense" ? "#16a34a" : "#2563eb"}` }}>
-            <h3 style={{ fontSize: "17px", fontWeight: "700", marginBottom: "8px", color: alert.type === "expense" ? "#166534" : "#1e40af" }}>
-              ⚠ {alert.type === "expense" ? (() => {
-                  const expFlags = alert.data?.flags || [];
-                  const isMissing = String(expFlags[0]||"").trim() === "1";
-                  if (isMissing) return "Missing expense - in accounting system, not in Pulse";
-                  const expFlagNames = [null,"Duplicate App ID","Description mismatch","Amount mismatch","VAT mismatch","Rec date mismatch","Pay date mismatch","Status mismatch"];
-                  const active = expFlags.map((v,i) => String(v||"").trim()==="1" && expFlagNames[i] ? expFlagNames[i] : null).filter(Boolean);
-                  return active.length > 0 ? `Field mismatch: ${active.join(", ")}` : "Expense Discrepancy";
-                })()
-                : (() => {
-                    const flags = alert.data?.flags || [];
-                    const isMissing = String(flags[0]||"").trim() === "1";
-                    if (isMissing) return "Missing invoice - in accounting system, not in Pulse";
-                    const invFlagNames2 = [null,"Client mismatch","Amount mismatch","Sent date mismatch","Duplicate invoice in sheet","Pay date mismatch","Status mismatch"];
-                    const active = flags.map((v,i) => String(v||"").trim()==="1" && invFlagNames2[i] ? invFlagNames2[i] : null).filter(Boolean);
-                    return active.length > 0 ? `Field mismatch: ${active.join(", ")}` : "Invoice Discrepancy";
-                  })()
-              }
-            </h3>
-            <div style={{ fontSize: "13px", lineHeight: "1.6", color: "#333" }}>
-              {alert.type === "expense" ? (
-                // Expense display
-                <>
-                  {alert.summary.reference && <div><strong>Reference:</strong> {alert.summary.reference}</div>}
-                  {alert.summary.description && <div><strong>Description:</strong> {alert.summary.description}</div>}
-                  <div><strong>Amount:</strong> £{alert.summary.amount.toFixed(2)}{(() => {
-                    const vat = parseFloat(String(alert.summary.vatAmount || "0").replace(/[£$€,\s]/g, "")) || 0;
-                    return vat > 0 ? " +VAT" : " (no VAT)";
-                  })()}</div>
-                  {alert.summary.date && <div><strong>Date:</strong> {alert.summary.date}</div>}
-                  {alert.summary.accountName && <div><strong>Account Name:</strong> {alert.summary.accountName}</div>}
-                  {alert.summary.status && <div><strong>Status:</strong> {alert.summary.status}</div>}
-                  {alert.summary.transactionId && <div><strong>Transaction ID:</strong> {alert.summary.transactionId}</div>}
-                </>
-              ) : (
-                // Invoice display
-                <>
-                  <div><strong>Invoice:</strong> {alert.summary.invoiceNo}</div>
-                  <div><strong>Amount:</strong> £{alert.summary.amount.toFixed(2)}{alert.summary.vatIncluded && alert.summary.vatIncluded > 0 ? " +VAT" : " (no VAT)"}</div>
-                  <div><strong>Client:</strong> {alert.summary.client}</div>
-                  {alert.summary.job && <div><strong>Description:</strong> {alert.summary.job}</div>}
-                  {alert.summary.sentDate && <div><strong>Sent:</strong> {alert.summary.sentDate}</div>}
-                  {alert.summary.status && <div><strong>Status:</strong> {alert.summary.status}</div>}
-                </>
-              )}
-            </div>
-            {/* Field-by-field comparison lines for mismatched fields only */}
-            {(() => {
-              const flags = alert.data?.flags || [];
-              const isMissing = String(flags[0]||"").trim() === "1";
-              if (isMissing) return null;
-              const acc = alert.data?.accounting || [];
-              const conf = alert.data?.confirmed || [];
-              let mismatchLines = [];
-              if (alert.type === "expense") {
-                const expFlagNames = ["Missing cost","Duplicate app ID","Description mismatch","Amount mismatch","VAT mismatch","Rec date mismatch","Pay date mismatch","Status mismatch"];
-                const activeFlags = flags.map((v,i) => String(v||"").trim()==="1" && expFlagNames[i] ? expFlagNames[i] : null).filter(Boolean);
-                const FIELD_DEFS = [
-                  { name: "Description mismatch", line: `Description in accounting: ${acc[1] || "(blank)"}. Description in Confirmed tab: ${conf[3] || "(blank)"}.` },
-                  { name: "Amount mismatch",       line: `Amount in accounting: ${acc[2] ? `£${acc[2]}` : "£0"}. Amount in Confirmed tab: ${conf[4] ? `£${conf[4]}` : "£0"}.` },
-                  { name: "VAT mismatch",          line: `VAT in accounting: ${acc[8] ? `£${acc[8]}` : "£0"}. VAT in Confirmed tab: ${conf[6] || "(blank)"}.` },
-                  { name: "Rec date mismatch",     line: `Received date in accounting: ${acc[0] || "(blank)"}. Received date in Confirmed tab: ${conf[7] || "(blank)"}.` },
-                  { name: "Pay date mismatch",     line: `Pay date in accounting: ${acc[7] || "(blank)"}. Pay date in Confirmed tab: ${conf[8] || "(blank)"}.` },
-                  { name: "Status mismatch",       line: `Status in accounting: ${acc[5] || "(blank)"}. Status in Confirmed tab: ${conf[9] || "(blank)"}.` },
-                ];
-                mismatchLines = FIELD_DEFS.filter(f => activeFlags.includes(f.name));
-              } else {
-                const invFlagNames = ["Missing invoice","Client mismatch","Amount mismatch","Sent date mismatch","Duplicate invoice in sheet","Pay date mismatch","Status mismatch"];
-                const activeFlags = flags.map((v,i) => String(v||"").trim()==="1" && invFlagNames[i] ? invFlagNames[i] : null).filter(Boolean);
-                const FIELD_DEFS = [
-                  { name: "Client mismatch",    line: `Client in accounting: ${acc[0] || "(blank)"}. Client in Confirmed tab: ${conf[1] || "(blank)"}.` },
-                  { name: "Amount mismatch",    line: `Amount in accounting: ${acc[2] ? `£${acc[2]}` : "£0"}. Amount in Confirmed tab: ${conf[2] ? `£${conf[2]}` : "£0"}.` },
-                  { name: "Sent date mismatch", line: `Sent date in accounting: ${acc[6] || "(blank)"}. Sent date in Confirmed tab: ${conf[3] || "(blank)"}.` },
-                  { name: "Duplicate invoice in sheet", line: `Duplicate invoice number: Invoice #${alert.summary?.invoiceNo || acc[5] || conf[0]} appears in multiple rows in the spreadsheet (${spreadsheetItems.length > 0 ? spreadsheetItems.length : 2} entries).` },
-                  { name: "Pay date mismatch",  line: `Pay date in accounting: ${acc[8] || "(blank)"}. Pay date in Confirmed tab: ${conf[4] || "(blank)"}.` },
-                  { name: "Status mismatch",    line: `Status in accounting: ${acc[9] || "(blank)"}. Status in Confirmed tab: ${conf[5] || "(blank)"}.` },
-                ];
-                mismatchLines = FIELD_DEFS.filter(f => activeFlags.includes(f.name));
-              }
-              if (mismatchLines.length === 0) return null;
-              return (
-                <div style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "13px", color: "#333", marginTop: "10px", paddingTop: "10px", borderTop: "1px solid rgba(0,0,0,0.08)" }}>
-                  {mismatchLines.map(f => <div key={f.name}>{f.line}</div>)}
-                </div>
-              );
-            })()}
-          </div>
-        )}
-
         {acceptError && (
           <div style={{ ...styles.errorBanner, marginBottom: "16px" }}>
             {acceptError}
@@ -422,7 +762,7 @@ export default function TriageAnalysisView({
                   if (withType?.jobRowsData?.[0]?.projectRetainer) optionJobType = withType.jobRowsData[0].projectRetainer;
                   else if (withType?.newJobData?.projectRetainer) optionJobType = withType.newJobData.projectRetainer;
                 }
-              } catch (e) {}
+              } catch (e) { }
 
               // Column mapping:
               // Dash discrepancy:
@@ -433,48 +773,48 @@ export default function TriageAnalysisView({
               //   CRM (EU:FD):   [0]=code, [1]=client, [2]=job, [3]=revenue, [4]=dirCosts, [5]=start, [6]=end, [7]=likelihood, [8]=status, [9]=type
 
               const crmClient = isDash ? cd[0] : cd[1];
-              const crmJob    = isDash ? cd[1] : cd[2];
-              const crmCode   = isDash ? cd[2] : cd[0];
-              const crmRev    = cd[3];
-              const crmCosts  = cd[4];
-              const crmStart  = cd[5];
-              const crmEnd    = cd[6];
+              const crmJob = isDash ? cd[1] : cd[2];
+              const crmCode = isDash ? cd[2] : cd[0];
+              const crmRev = cd[3];
+              const crmCosts = cd[4];
+              const crmStart = cd[5];
+              const crmEnd = cd[6];
               const crmLikely = cd[7];
-              const crmType   = cd[9];
+              const crmType = cd[9];
 
               const shtClient = isDash ? sd[1] : sd[0];
-              const shtJob    = isDash ? sd[2] : sd[1];
-              const shtCode   = isDash ? sd[0] : sd[2];
-              const shtRev    = sd[3];
-              const shtCosts  = sd[4];
-              const shtStart  = sd[5];
-              const shtEnd    = sd[6];
+              const shtJob = isDash ? sd[2] : sd[1];
+              const shtCode = isDash ? sd[0] : sd[2];
+              const shtRev = sd[3];
+              const shtCosts = sd[4];
+              const shtStart = sd[5];
+              const shtEnd = sd[6];
               const shtLikely = sd[7];
-              const shtType   = (isDash ? sd[8] : optionJobType) || cd[9] || optionJobType || "";
+              const shtType = (isDash ? sd[8] : optionJobType) || cd[9] || optionJobType || "";
 
               const pickVal = (v1, v2) => (v1 !== null && v1 !== undefined && String(v1).trim() !== "") ? v1 : v2;
 
               // Top title values
               const displayClient = (isDash ? (crmClient || shtClient) : (shtClient || crmClient)) || "";
-              const displayJob    = (isDash ? (crmJob || shtJob) : (shtJob || crmJob)) || "";
-              const displayCode   = (isDash ? (crmCode || shtCode) : (shtCode || crmCode)) || "";
+              const displayJob = (isDash ? (crmJob || shtJob) : (shtJob || crmJob)) || "";
+              const displayCode = (isDash ? (crmCode || shtCode) : (shtCode || crmCode)) || "";
 
               // Full details values (for missing job or summary grid)
-              const displayRev    = isDash ? pickVal(crmRev, shtRev) : pickVal(shtRev, crmRev);
-              const displayCosts  = isDash ? pickVal(crmCosts, shtCosts) : pickVal(shtCosts, crmCosts);
-              const displayStart  = isDash ? pickVal(crmStart, shtStart) : pickVal(shtStart, crmStart);
-              const displayEnd    = isDash ? pickVal(crmEnd, shtEnd) : pickVal(shtEnd, crmEnd);
+              const displayRev = isDash ? pickVal(crmRev, shtRev) : pickVal(shtRev, crmRev);
+              const displayCosts = isDash ? pickVal(crmCosts, shtCosts) : pickVal(shtCosts, crmCosts);
+              const displayStart = isDash ? pickVal(crmStart, shtStart) : pickVal(shtStart, crmStart);
+              const displayEnd = isDash ? pickVal(crmEnd, shtEnd) : pickVal(shtEnd, crmEnd);
               const displayLikely = isDash ? pickVal(crmLikely, shtLikely) : pickVal(shtLikely, crmLikely);
-              const displayType   = isDash ? pickVal(crmType, shtType) : pickVal(shtType, crmType);
+              const displayType = isDash ? pickVal(crmType, shtType) : pickVal(shtType, crmType);
 
               // Field mismatch definitions
               const FIELD_DEFS = [
-                { name: "Client name",  crm: crmClient, sheet: shtClient, fmt: v => v || "(blank)" },
-                { name: "Job name",     crm: crmJob,    sheet: shtJob,    fmt: v => v || "(blank)" },
-                { name: "Revenue",      crm: crmRev,    sheet: shtRev,    fmt: formatCurrency },
-                { name: "Direct costs", crm: crmCosts,  sheet: shtCosts,  fmt: formatCurrency },
-                { name: "Start date",   crm: crmStart,  sheet: shtStart,  fmt: v => v || "(blank)" },
-                { name: "End date",     crm: crmEnd,    sheet: shtEnd,    fmt: v => v || "(blank)" },
+                { name: "Client name", crm: crmClient, sheet: shtClient, fmt: v => v || "(blank)" },
+                { name: "Job name", crm: crmJob, sheet: shtJob, fmt: v => v || "(blank)" },
+                { name: "Revenue", crm: crmRev, sheet: shtRev, fmt: formatCurrency },
+                { name: "Direct costs", crm: crmCosts, sheet: shtCosts, fmt: formatCurrency },
+                { name: "Start date", crm: crmStart, sheet: shtStart, fmt: v => v || "(blank)" },
+                { name: "End date", crm: crmEnd, sheet: shtEnd, fmt: v => v || "(blank)" },
                 { name: "% Likelihood", crm: crmLikely, sheet: shtLikely, fmt: formatLikelihood },
               ];
               const mismatchedFieldNames = alert.mismatchFields || [];
@@ -549,511 +889,488 @@ export default function TriageAnalysisView({
                       ))}
                     </div>
                   )}
+
+                  {/* For CRM Missing Job in Pulse: Clear 2-Action Cards */}
+                  {!isMismatch && isDash && (
+                    <div style={{ marginTop: "16px", paddingTop: "14px", borderTop: "1px solid #e9d5ff" }}>
+                      <div style={{ fontSize: "14px", fontWeight: "700", color: "#5b21b6", marginBottom: "10px" }}>
+                        Possible actions
+                      </div>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "12px" }}>
+                        {/* Option 1: Create Job in Pulse */}
+                        <div style={{ background: "#ffffff", border: "1.5px solid #7c3aed", borderRadius: "8px", padding: "14px", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+                          <div>
+                            <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
+                              <span style={{ fontSize: "16px" }}>➕</span>
+                              <strong style={{ color: "#6d28d9", fontSize: "14px" }}>Create Job in Pulse</strong>
+                            </div>
+                            <p style={{ fontSize: "12px", color: "#4b5563", margin: "4px 0 12px 0", lineHeight: "1.4" }}>
+                              Add this CRM deal to your <strong>{tabLabel}</strong> jobs in Pulse with the pre-filled revenue, dates, and client information.
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            className="triage-btn"
+                            onClick={() => {
+                              setConfirmJobModal({
+                                client: displayClient,
+                                jobName: displayJob,
+                                projectCode: displayCode || "",
+                                projectRetainer: displayType || "Project",
+                                tabName: tabLabel,
+                                likelihood: isPipeline ? (displayLikely || "50") : "100",
+                                revenue: displayRev || 0,
+                                directCosts: displayCosts || 0,
+                                vat: "Yes",
+                                startDate: displayStart || "",
+                                endDate: displayEnd || ""
+                              });
+                            }}
+                            style={{
+                              ...styles.decisionButton,
+                              ...styles.approveButton,
+                              width: "100%",
+                              padding: "9px 14px",
+                              fontSize: "13px",
+                              fontWeight: "600",
+                              background: "#7c3aed",
+                              borderColor: "#6d28d9",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              gap: "6px"
+                            }}
+                          >
+                            ➕ Create Job in Pulse
+                          </button>
+                        </div>
+
+                        {/* Option 2: Ignore Deal */}
+                        <div style={{ background: "#ffffff", border: "1px solid #cbd5e1", borderRadius: "8px", padding: "14px", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+                          <div>
+                            <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
+                              <span style={{ fontSize: "16px" }}>🚫</span>
+                              <strong style={{ color: "#475569", fontSize: "14px" }}>Ignore Deal</strong>
+                            </div>
+                            <p style={{ fontSize: "12px", color: "#64748b", margin: "4px 0 12px 0", lineHeight: "1.4" }}>
+                              Dismiss this alert if this deal should not be created or tracked in Pulse (e.g. test, duplicate, or cancelled).
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            className="triage-btn"
+                            onClick={() => setShowIgnoreModal(true)}
+                            style={{
+                              ...styles.buttonSecondary,
+                              width: "100%",
+                              padding: "9px 14px",
+                              fontSize: "13px",
+                              fontWeight: "600",
+                              color: "#64748b",
+                              borderColor: "#cbd5e1",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              gap: "6px"
+                            }}
+                          >
+                            🚫 Ignore Deal
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })()}
-            {isMissingCost && (
-              <div style={{ marginBottom: "16px" }}>
-                <button
-                  className="triage-btn"
-                  onClick={() => setActiveNav("outgoings")}
-                  style={{
-                    ...styles.buttonSecondary,
-                    fontSize: "13px",
-                    padding: "8px 16px",
-                    fontWeight: "600",
-                    color: "#059669",
-                    borderColor: "#6ee7b7",
-                    background: "#ecfdf5",
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "6px",
-                    cursor: "pointer"
-                  }}
-                >
-                  📤 Place expense
-                </button>
-              </div>
-            )}
-            {isMissingInvoice && (
-              <div style={{ marginBottom: "16px" }}>
-                <button
-                  className="triage-btn"
-                  onClick={() => setActiveNav("invoices")}
-                  style={{
-                    ...styles.buttonSecondary,
-                    fontSize: "13px",
-                    padding: "8px 16px",
-                    fontWeight: "600",
-                    color: "#ea580c",
-                    borderColor: "#fdba74",
-                    background: "#fff7ed",
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "6px",
-                    cursor: "pointer"
-                  }}
-                >
-                  📥 Place invoice
-                </button>
-              </div>
-            )}
-            <h3 style={{ fontSize: "14px", fontWeight: "600", marginBottom: "12px", color: "#1a1a1a" }}>
-              Potential Actions
-            </h3>
-            {(() => {
-              try {
-                const options = JSON.parse(claudeAnalysis);
-                if (Array.isArray(options)) {
-                  return options.map((option, idx) => (
-                    <div key={idx} style={{ ...styles.optionCard, marginBottom: "16px" }}>
-                      <div style={styles.optionTitle}>
-                        Option {idx + 1}: {option.title}
-                      </div>
-                      {/* Spreadsheet-style job row(s) display */}
-                      {Array.isArray(option.jobRowsData) && option.jobRowsData.length > 0 && (
-                        <div style={{ marginBottom: "10px", overflowX: "auto", border: "1px solid #e0e0e0", borderRadius: "6px" }}>
-                          <table style={{ borderCollapse: "collapse", fontSize: "11px", width: "100%", minWidth: "700px" }}>
-                            <thead>
-                              <tr style={{ background: "#f3f4f6" }}>
-                                {[...(isAdmin ? ["Row"] : []), "Client","Job name","Code","Revenue","Direct costs","Type","VAT","Start","End",
-                                  ...(option.jobRowsData[0].likelihood !== null ? ["% Likely"] : []),
-                                  ...(option.jobRowsData[0].copiedToConf !== null ? ["Copied?"] : [])
-                                ].map(h => (
-                                  <th key={h} style={{ padding: "5px 8px", textAlign: "left", borderBottom: "1px solid #ddd", whiteSpace: "nowrap" }}>{h}</th>
-                                ))}
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {option.jobRowsData.map(jr => (
-                                <tr key={jr.rowNum} style={{ borderBottom: "1px solid #eee" }}>
-                                  {isAdmin && <td style={{ padding: "5px 8px", color: "#888" }}>{jr.rowNum}</td>}
-                                  <td style={{ padding: "5px 8px" }}>{jr.client}</td>
-                                  <td style={{ padding: "5px 8px" }}>{jr.jobName}</td>
-                                  <td style={{ padding: "5px 8px" }}>{jr.projectCode}</td>
-                                  <td style={{ padding: "5px 8px" }}>{jr.revenue}</td>
-                                  <td style={{ padding: "5px 8px" }}>{jr.directCosts}</td>
-                                  <td style={{ padding: "5px 8px" }}>{jr.projectRetainer}</td>
-                                  <td style={{ padding: "5px 8px" }}>{jr.vat}</td>
-                                  <td style={{ padding: "5px 8px" }}>{jr.startDate}</td>
-                                  <td style={{ padding: "5px 8px" }}>{jr.endDate}</td>
-                                  {jr.likelihood !== null && <td style={{ padding: "5px 8px" }}>{jr.likelihood}</td>}
-                                  {jr.copiedToConf !== null && <td style={{ padding: "5px 8px" }}>{jr.copiedToConf}</td>}
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                          {/* Invoice slots - only render if any slot has data or is the target */}
-                          {option.jobRowsData.some(jr => jr.invoiceSlots?.some(s => s.amount || s.ref || s.highlighted)) && (
-                            <table style={{ borderCollapse: "collapse", fontSize: "11px", width: "100%", minWidth: "700px", borderTop: "2px solid #ddd" }}>
-                              <thead>
-                                <tr style={{ background: "#f3f4f6" }}>
-                                  {[...(isAdmin ? ["Row"] : []), "Slot","Amount","Reference","Sent","Days","Status"].map(h => (
-                                    <th key={h} style={{ padding: "5px 8px", textAlign: "left", borderBottom: "1px solid #ddd", whiteSpace: "nowrap" }}>{h}</th>
-                                  ))}
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {option.jobRowsData.flatMap(jr => jr.invoiceSlots.map(s => (
-                                  <tr key={`${jr.rowNum}-inv${s.slotNum}`} style={{
-                                    borderBottom: "1px solid #eee",
-                                    background: s.highlighted ? "#fff3cd" : "transparent",
-                                    fontWeight: s.highlighted ? "700" : "400",
+
+            {/* For CRM Missing Jobs (non-mismatch), actions are already rendered inside the CRM card above */}
+            {(!((alert?.flagType || alert?.alertType || alert?.type || "").startsWith("crm")) || alert.subType === "field_mismatch" || !((alert?.flagType || alert?.alertType || alert?.type || "").includes("Dash"))) && (
+              <>
+                <h3 style={{ fontSize: "14px", fontWeight: "700", marginBottom: "12px", color: "#1e293b" }}>
+                  Possible actions
+                </h3>
+                {(() => {
+                  try {
+                    const options = JSON.parse(claudeAnalysis);
+                    if (Array.isArray(options)) {
+                      const getOptionJobDetails = (opt, alertObj) => {
+                        const m = opt?.matchingDetails?.matchedJobDetails || {};
+                        const u = opt?.matchingDetails?.unmatchedJobSummary || {};
+                        const j = opt?.jobDetails || {};
+                        return {
+                          client: j.client || j.clientName || m.clientName || m.client || alertObj?.summary?.client || alertObj?.clientName || "",
+                          clientName: j.clientName || j.client || m.clientName || m.client || alertObj?.summary?.client || alertObj?.clientName || "",
+                          jobName: j.jobName || j.job || m.jobName || m.job || alertObj?.summary?.jobName || "",
+                          job: j.jobName || j.job || m.jobName || m.job || alertObj?.summary?.jobName || "",
+                          projectCode: j.projectCode || m.projectCode || "",
+                          revenue: (j.revenue && j.revenue !== "0") ? j.revenue : (m.revenue || opt?.slotBreakdown?.correctedTotal || alertObj?.summary?.amount || ""),
+                          directCosts: (j.directCosts && j.directCosts !== "0") ? j.directCosts : (m.directCosts || "£0"),
+                          projectRetainer: j.projectRetainer || j.type || m.projectRetainer || m.type || "",
+                          type: j.projectRetainer || j.type || m.projectRetainer || m.type || "",
+                          startDate: j.startDate || m.startDate || "",
+                          endDate: j.endDate || m.endDate || "",
+                          tabName: j.tabName || m.tabName || "Confirmed",
+                          rowNum: j.rowNum || opt?.jobRow || 1,
+                          vatSetting: j.vatSetting || j.vat || m.vat || "Yes"
+                        };
+                      };
+
+                      // Data mismatch alerts (amount mismatch, date mismatch, duplicate invoice, CRM field mismatch)
+                      // must NOT be rendered as slot-placement candidate cards (JobMatchCard).
+                      // They should be rendered directly as Action Cards.
+                      const isDataMismatch = ((isInvoiceType || isExpenseType) && !isMissingFlag) || isCrmMismatch;
+
+                      // Check if there are candidate job match options (only for unplaced / missing items, NEVER for CRM or data mismatches)
+                      const candidateJobOptions = (isDataMismatch || isCrmType)
+                        ? []
+                        : options.filter(opt =>
+                            (Array.isArray(opt.jobRowsData) && opt.jobRowsData.length > 0) ||
+                            opt.jobDetails ||
+                            opt.matchType === "existing_job" ||
+                            opt.matchType === "job_match"
+                          );
+
+                      // Suppress generic AI fallback option only when candidate job match cards actually exist
+                      const otherOptions = options.filter(opt => {
+                        if (candidateJobOptions.includes(opt)) return false;
+                        if (candidateJobOptions.length > 0) {
+                          const title = String(opt.title || "").toLowerCase();
+                          const reason = String(opt.matchAnalysis?.reasonForChoice || "").toLowerCase();
+                          if (title.includes("manual investigation") || title.includes("no confident automatic match") || reason.includes("manual investigation required")) {
+                            return false;
+                          }
+                        }
+                        return true;
+                      });
+
+                      return (
+                        <div>
+                          {/* 1. Candidate Job Match Cards (CRM Style - Missing items only) */}
+                          {candidateJobOptions.map((option, idx) => {
+                            const conf = option.matchAnalysis?.matchConfidence || (idx === 0 ? "High confidence" : null);
+                            const reason = option.businessLogic || option.matchAnalysis?.reasonForChoice || (typeof option.matchAnalysis === 'string' ? option.matchAnalysis : null);
+                            const fbDetails = getOptionJobDetails(option, alert);
+                            const rawJobs = option.jobRowsData ? buildJobsFromRows(option.jobRowsData, fbDetails) : null;
+                            const candidateJob = rawJobs?.[0] || null;
+
+                            return (
+                              <JobMatchCard
+                                key={`candidate-job-${idx}`}
+                                candidateIndex={idx}
+                                job={candidateJob}
+                                jobDetails={fbDetails}
+                                mode={isExpenseType ? "expense" : "invoice"}
+                                isAdmin={isAdmin}
+                                confidence={conf}
+                                recommendationReason={reason}
+                                alertSummary={alert.summary}
+                                onPlaceSlot={(job, slotNum, slot, rowNum, createNewRow, customLabel) => handleInitiatePlaceOnJob(job, slotNum, slot, rowNum, createNewRow, customLabel)}
+                                onViewJob={(job) => {
+                                  setViewingJobTarget({
+                                    clientSheetId: targetClientSheetId,
+                                    clientName: job.client || selectedClient?.clientName,
+                                    jobName: job.jobName,
+                                    rowNum: job.rows?.[0]?.rowNum || job.rowNum,
+                                    tabName: job.tabName || "Confirmed"
+                                  });
+                                }}
+                              />
+                            );
+                          })}
+
+                          {/* 2. Generic / Info Options or Data Mismatch Action Cards */}
+                          {otherOptions.map((option, idx) => {
+                            const isDeleteAction = option.matchType === "delete";
+                            const isIgnoreAction = option.matchType === "ignore";
+                            return (
+                              <div
+                                key={`other-opt-${idx}`}
+                                style={{
+                                  ...styles.optionCard,
+                                  marginBottom: "16px",
+                                  ...(isDeleteAction ? { borderColor: "#fca5a5", borderLeft: "4px solid #ef4444" } : {}),
+                                  ...(isIgnoreAction ? { borderColor: "#cbd5e1", borderLeft: "4px solid #94a3b8", backgroundColor: "#f8fafc" } : {})
+                                }}
+                              >
+                                <div style={{
+                                  ...styles.optionTitle,
+                                  color: isDeleteAction ? "#b91c1c" : isIgnoreAction ? "#475569" : styles.optionTitle.color,
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "space-between",
+                                  gap: "8px",
+                                  flexWrap: "wrap"
+                                }}>
+                                  <span>
+                                    {isDataMismatch ? `Action ${idx + 1}: ` : `Option ${candidateJobOptions.length + idx + 1}: `}
+                                    {cleanUserFacingText(option.title)}
+                                  </span>
+                                  {isDeleteAction && (
+                                    <span style={{ fontSize: "11px", fontWeight: "700", color: "#dc2626", background: "#fee2e2", padding: "2px 8px", borderRadius: "12px", border: "1px solid #fca5a5" }}>
+                                      DELETES JOB
+                                    </span>
+                                  )}
+                                </div>
+
+                                {option.explanation && (
+                                  <div style={{
+                                    ...styles.optionDetail,
+                                    marginTop: "8px",
+                                    padding: "10px 12px",
+                                    backgroundColor: isDeleteAction ? "#fff5f5" : "#fff8e1",
+                                    borderLeft: isDeleteAction ? "3px solid #ef4444" : "3px solid #f59e0b",
+                                    fontSize: "13px",
+                                    lineHeight: "1.5",
+                                    borderRadius: "0 6px 6px 0"
                                   }}>
-                                    {isAdmin && <td style={{ padding: "5px 8px", color: "#888" }}>{jr.rowNum}</td>}
-                                    <td style={{ padding: "5px 8px" }}>{s.slotNum}{s.highlighted ? " ← this option" : ""}</td>
-                                    <td style={{ padding: "5px 8px" }}>{s.amount}</td>
-                                    <td style={{ padding: "5px 8px" }}>{s.ref}</td>
-                                    <td style={{ padding: "5px 8px" }}>{s.sentDate}</td>
-                                    <td style={{ padding: "5px 8px" }}>{s.daysToPay}</td>
-                                    <td style={{ padding: "5px 8px" }}>{s.status}</td>
-                                  </tr>
-                                )))}
-                              </tbody>
-                            </table>
-                          )}
-                          {/* Expense slots - only render if any slot has data or is the target */}
-                          {option.jobRowsData.some(jr => jr.expenseSlots?.some(s => s.amount || s.description || s.highlighted)) && (
-                            <table style={{ borderCollapse: "collapse", fontSize: "11px", width: "100%", minWidth: "700px", borderTop: "2px solid #ddd" }}>
-                              <thead>
-                                <tr style={{ background: "#f3f4f6" }}>
-                                  {[...(isAdmin ? ["Row"] : []), "Slot","Description","Amount","VAT","Date","Days","Status","Txn ID"].map(h => (
-                                    <th key={h} style={{ padding: "5px 8px", textAlign: "left", borderBottom: "1px solid #ddd", whiteSpace: "nowrap" }}>{h}</th>
-                                  ))}
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {option.jobRowsData.flatMap(jr => jr.expenseSlots.map(s => (
-                                  <tr key={`${jr.rowNum}-exp${s.slotNum}`} style={{
-                                    borderBottom: "1px solid #eee",
-                                    background: s.highlighted ? "#fff3cd" : "transparent",
-                                    fontWeight: s.highlighted ? "700" : "400",
-                                  }}>
-                                    {isAdmin && <td style={{ padding: "5px 8px", color: "#888" }}>{jr.rowNum}</td>}
-                                    <td style={{ padding: "5px 8px" }}>{s.slotNum}{s.highlighted ? " ← this option" : ""}</td>
-                                    <td style={{ padding: "5px 8px" }}>{s.description}</td>
-                                    <td style={{ padding: "5px 8px" }}>{s.amount}</td>
-                                    <td style={{ padding: "5px 8px" }}>{s.vat}</td>
-                                    <td style={{ padding: "5px 8px" }}>{s.date}</td>
-                                    <td style={{ padding: "5px 8px" }}>{s.daysToPay}</td>
-                                    <td style={{ padding: "5px 8px" }}>{s.status}</td>
-                                    <td style={{ padding: "5px 8px" }}>{s.transactionId}</td>
-                                  </tr>
-                                )))}
-                              </tbody>
-                            </table>
-                          )}
-                        </div>
-                      )}
-                      {/* Info matchType: explanation + job details, Mark as resolved button */}
-                      {option.matchType === "info" && (
-                        <>
-                          {option.explanation && (
-                            <div style={{ ...styles.optionDetail, marginTop: "8px", padding: "10px", backgroundColor: "#fff8e1", borderLeft: "3px solid #f59e0b", fontSize: "13px", lineHeight: "1.5" }}>
-                              {isAdmin ? option.explanation : stripRowInfo(option.explanation)}
-                            </div>
-                          )}
-                          {option.jobDetails && (
-                            <div style={{ ...styles.optionDetail, marginTop: "8px", padding: "10px", backgroundColor: "#f0f9ff", borderLeft: "3px solid #3b82f6" }}>
-                              <strong style={{ color: "#1d4ed8", fontSize: "12px" }}>Job Details:</strong>
-                              <div style={{ marginTop: "6px", fontSize: "12px", color: "#333" }}>
-                                {option.jobDetails.clientName && <div><strong>Client:</strong> {option.jobDetails.clientName}</div>}
-                                {option.jobDetails.jobName && <div><strong>Job:</strong> {option.jobDetails.jobName}</div>}
-                                {option.jobDetails.projectCode && <div><strong>Code:</strong> {option.jobDetails.projectCode}</div>}
-                                {option.jobDetails.revenue && <div><strong>Revenue:</strong> {option.jobDetails.revenue}</div>}
-                                {option.jobDetails.vatSetting && <div><strong>VAT:</strong> {option.jobDetails.vatSetting}</div>}
-                                {option.jobDetails.startDate && <div><strong>Dates:</strong> {option.jobDetails.startDate} → {option.jobDetails.endDate || "?"}</div>}
-                                {option.jobDetails.slot1 && !option.jobDetails.slot1.startsWith("(empty)") && <div><strong>Inv 1:</strong> {option.jobDetails.slot1}</div>}
-                                {option.jobDetails.slot2 && !option.jobDetails.slot2.startsWith("(empty)") && <div><strong>Inv 2:</strong> {option.jobDetails.slot2}</div>}
-                                {option.jobDetails.slot3 && !option.jobDetails.slot3.startsWith("(empty)") && <div><strong>Inv 3:</strong> {option.jobDetails.slot3}</div>}
+                                    {cleanUserFacingText(option.explanation)}
+                                  </div>
+                                )}
+
+                                {option.vatUpdate && (
+                                  <div style={{ marginTop: "12px", background: "#f0fdf4", border: "1px solid #86efac", borderRadius: "6px", padding: "10px 14px" }}>
+                                    <strong style={{ color: "#15803d" }}>If accepted, the following will be updated:</strong>
+                                    <div style={{ fontFamily: "monospace", fontSize: "12px", marginTop: "4px" }}>
+                                      {option.vatUpdate.cells
+                                        ? option.vatUpdate.cells.map(cell => (
+                                          <div key={cell}>Cell {cell}: &quot;{option.vatUpdate.currentValue}&quot; → &quot;{option.vatUpdate.newValue}&quot;</div>
+                                        ))
+                                        : <div>Cell {option.vatUpdate.cell}: &quot;{option.vatUpdate.currentValue}&quot; → &quot;{option.vatUpdate.newValue}&quot;</div>
+                                      }
+                                    </div>
+                                  </div>
+                                )}
+
+                                {option.revenueImpact && (
+                                  <div style={{ marginTop: "10px", padding: "10px 12px", backgroundColor: "#f0fdf4", borderLeft: "3px solid #16a34a", fontSize: "13px", lineHeight: "1.5", color: "#166534", borderRadius: "0 6px 6px 0" }}>
+                                    <strong>Revenue impact:</strong> {cleanUserFacingText(option.revenueImpact)}
+                                  </div>
+                                )}
+
+                                {option.recommendedActions && option.recommendedActions.length > 0 && !option.vatUpdate && (
+                                  <div style={{ ...styles.optionDetail, marginTop: "8px" }}>
+                                    <strong>Actions:</strong>
+                                    {option.recommendedActions.map((action, i) => (
+                                      <div key={i} style={{ marginTop: "4px", fontSize: "13px" }}>
+                                        {i === 0 ? <strong style={{ color: "#059669" }}>✓ {cleanUserFacingText(action)}</strong> : `• ${cleanUserFacingText(action)}`}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+
+                                <button
+                                  className={`triage-btn ${isDeleteAction ? "triage-btn-danger" : isIgnoreAction ? "triage-btn-secondary" : "triage-btn-primary"}`}
+                                  onClick={() => {
+                                    if (option.matchType === "info") {
+                                      const alert2 = clientAlerts[currentClientAlertIndex];
+                                      const alertId = `${alert2.sheetName}-${alert2.rowNumber}`;
+                                      setProcessedAlerts(new Set([...processedAlerts, alertId]));
+                                      if (sessionId) {
+                                        fetch("/api/triage", {
+                                          method: "POST",
+                                          headers: { "Content-Type": "application/json" },
+                                          body: JSON.stringify({ action: "remove_alert", sessionId, alertId }),
+                                          rank: 1,
+                                        }).catch(() => { });
+                                      }
+                                      const updatedAlerts = clientAlerts.filter((_, i) => i !== currentClientAlertIndex);
+                                      setClientAlerts(updatedAlerts);
+                                      if (updatedAlerts.length === 0) {
+                                        if (allNoActionResolved()) { handlePostClear([], resolvedNoActionFlags); }
+                                        else { setScreen("alertSelection"); setCurrentClientAlertIndex(0); }
+                                      } else { setScreen("alertSelection"); setCurrentClientAlertIndex(0); }
+                                    } else {
+                                      acceptOption(option);
+                                    }
+                                  }}
+                                  disabled={isAccepting}
+                                  style={{
+                                    ...styles.decisionButton,
+                                    ...(isDeleteAction
+                                      ? { backgroundColor: "#dc2626", borderColor: "#b91c1c", color: "white" }
+                                      : isIgnoreAction
+                                        ? { backgroundColor: "#f1f5f9", borderColor: "#cbd5e1", color: "#475569" }
+                                        : styles.approveButton),
+                                    marginTop: "12px",
+                                    width: "100%",
+                                    opacity: isAccepting ? 0.5 : 1
+                                  }}
+                                >
+                                  {isAccepting ? (
+                                    <><Spinner color="white" />Writing to sheet...</>
+                                  ) : (
+                                    option.actionButtonText || (option.matchType === "info" ? "✓ Mark as resolved" : `✓ Accept ${isDataMismatch ? 'action' : 'option'} ${candidateJobOptions.length + idx + 1}`)
+                                  )}
+                                </button>
+                              </div>
+                            );
+                          })}
+
+                          {/* 3. Other Action Cards (Modeled on CRM Missing Job Layout - Missing items only) */}
+                          {(isInvoiceType || isExpenseType) && !isDataMismatch && (
+                            <div style={{ marginTop: "16px", paddingTop: "14px", borderTop: "1px solid #e2e8f0" }}>
+                              <div style={{ fontSize: "14px", fontWeight: "700", color: "#334155", marginBottom: "10px" }}>
+                                Other actions
+                              </div>
+                              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "12px" }}>
+                                {/* Search all confirmed jobs */}
+                                <div style={{ background: "#ffffff", border: "1px solid #fdba74", borderRadius: "8px", padding: "14px", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+                                  <div>
+                                    <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
+                                      <span style={{ fontSize: "16px" }}>🔍</span>
+                                      <strong style={{ color: "#c2410c", fontSize: "14px" }}>Search all confirmed jobs</strong>
+                                    </div>
+                                    <p style={{ fontSize: "12px", color: "#4b5563", margin: "4px 0 12px 0", lineHeight: "1.4" }}>
+                                      Search and select any job across the entire client list if this {isInvoiceType ? "invoice" : "expense"} belongs to a different job.
+                                    </p>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    className="triage-btn"
+                                    onClick={() => setExploreJobsOpen(true)}
+                                    style={{
+                                      ...styles.buttonSecondary,
+                                      width: "100%",
+                                      padding: "8px 14px",
+                                      fontSize: "13px",
+                                      fontWeight: "600",
+                                      color: "#ea580c",
+                                      borderColor: "#fdba74",
+                                      background: "#fff7ed",
+                                      display: "flex",
+                                      alignItems: "center",
+                                      justifyContent: "center",
+                                      gap: "6px"
+                                    }}
+                                  >
+                                    🔍 Search confirmed jobs
+                                  </button>
+                                </div>
+
+                                {/* Create new job (Invoices only) */}
+                                {isInvoiceType && (
+                                  <div style={{ background: "#ffffff", border: "1px solid #93c5fd", borderRadius: "8px", padding: "14px", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+                                    <div>
+                                      <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
+                                        <span style={{ fontSize: "16px" }}>➕</span>
+                                        <strong style={{ color: "#1d4ed8", fontSize: "14px" }}>Create new job</strong>
+                                      </div>
+                                      <p style={{ fontSize: "12px", color: "#4b5563", margin: "4px 0 12px 0", lineHeight: "1.4" }}>
+                                        Add a new job row to the Confirmed tab and assign this invoice directly to it.
+                                      </p>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      className="triage-btn"
+                                      onClick={() => setCreateNewJobOpen(true)}
+                                      style={{
+                                        ...styles.buttonSecondary,
+                                        width: "100%",
+                                        padding: "8px 14px",
+                                        fontSize: "13px",
+                                        fontWeight: "600",
+                                        color: "#2563eb",
+                                        borderColor: "#93c5fd",
+                                        background: "#eff6ff",
+                                        display: "flex",
+                                        alignItems: "center",
+                                        justifyContent: "center",
+                                        gap: "6px"
+                                      }}
+                                    >
+                                      ➕ Create new job
+                                    </button>
+                                  </div>
+                                )}
+
+                                {/* Place against contractor (Expenses only) */}
+                                {isExpenseType && (
+                                  <div style={{ background: "#ffffff", border: "1px solid #6ee7b7", borderRadius: "8px", padding: "14px", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+                                    <div>
+                                      <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
+                                        <span style={{ fontSize: "16px" }}>👷</span>
+                                        <strong style={{ color: "#047857", fontSize: "14px" }}>Place against contractor</strong>
+                                      </div>
+                                      <p style={{ fontSize: "12px", color: "#4b5563", margin: "4px 0 12px 0", lineHeight: "1.4" }}>
+                                        Place on the Outgoings sheet if this is an agency contractor rather than a direct job cost.
+                                      </p>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      className="triage-btn"
+                                      onClick={() => setOutgoingsPickerOpen(true)}
+                                      style={{
+                                        ...styles.buttonSecondary,
+                                        width: "100%",
+                                        padding: "8px 14px",
+                                        fontSize: "13px",
+                                        fontWeight: "600",
+                                        color: "#059669",
+                                        borderColor: "#6ee7b7",
+                                        background: "#ecfdf5",
+                                        display: "flex",
+                                        alignItems: "center",
+                                        justifyContent: "center",
+                                        gap: "6px"
+                                      }}
+                                    >
+                                      👷 Select contractor on outgoings
+                                    </button>
+                                  </div>
+                                )}
+
+                                {/* Ignore alert / deal */}
+                                <div style={{ background: "#ffffff", border: "1px solid #cbd5e1", borderRadius: "8px", padding: "14px", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+                                  <div>
+                                    <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
+                                      <span style={{ fontSize: "16px" }}>🚫</span>
+                                      <strong style={{ color: "#475569", fontSize: "14px" }}>Ignore alert</strong>
+                                    </div>
+                                    <p style={{ fontSize: "12px", color: "#64748b", margin: "4px 0 12px 0", lineHeight: "1.4" }}>
+                                      Dismiss this alert if this transaction does not belong in Pulse tracking.
+                                    </p>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    className="triage-btn"
+                                    onClick={() => setShowIgnoreModal(true)}
+                                    style={{
+                                      ...styles.buttonSecondary,
+                                      width: "100%",
+                                      padding: "8px 14px",
+                                      fontSize: "13px",
+                                      fontWeight: "600",
+                                      color: "#64748b",
+                                      borderColor: "#cbd5e1",
+                                      display: "flex",
+                                      alignItems: "center",
+                                      justifyContent: "center",
+                                      gap: "6px"
+                                    }}
+                                  >
+                                    🚫 Ignore alert
+                                  </button>
+                                </div>
                               </div>
                             </div>
                           )}
-                          {option.recommendedActions && option.recommendedActions.length > 0 && (
-                            <div style={{ ...styles.optionDetail, marginTop: "8px" }}>
-                              <strong>Actions:</strong>
-                              {option.recommendedActions.map((action, i) => (
-                                <div key={i} style={{ marginTop: "4px", fontSize: "13px" }}>
-                                  {i === 0 ? <strong style={{ color: "#059669" }}>✓ {action}</strong> : `• ${action}`}
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                          <button className="triage-btn triage-btn-primary"
-                            onClick={() => {
-                              const alert2 = clientAlerts[currentClientAlertIndex];
-                              const alertId = `${alert2.sheetName}-${alert2.rowNumber}`;
-                              setProcessedAlerts(new Set([...processedAlerts, alertId]));
-                              if (sessionId) {
-                                fetch("/api/triage", {
-                                  method: "POST",
-                                  headers: { "Content-Type": "application/json" },
-                                  body: JSON.stringify({ action: "remove_alert", sessionId, alertId }),
-                                rank: 1,
-                                }).catch(() => {});
-                              }
-                              const updatedAlerts = clientAlerts.filter((_, i) => i !== currentClientAlertIndex);
-                              setClientAlerts(updatedAlerts);
-                              if (updatedAlerts.length === 0) {
-                                if (allNoActionResolved()) { handlePostClear([], resolvedNoActionFlags); }
-                                else { setScreen("alertSelection"); setCurrentClientAlertIndex(0); }
-                              } else { setScreen("alertSelection"); setCurrentClientAlertIndex(0); }
-                            }}
-                            style={{ ...styles.decisionButton, ...styles.approveButton, marginTop: "12px", width: "100%" }}
-                          >
-                            ✓ Mark as Resolved
-                          </button>
-                        </>
-                      )}
-                      {/* Standard (non-info) rendering: CRM details, match analysis, accept button */}
-                      {option.matchType !== "info" && (<>
-                      {/* Explanation and revenue impact for invoice amount mismatch options */}
-                      {option.explanation && (
-                        <div style={{ ...styles.optionDetail, marginTop: "8px", padding: "10px", backgroundColor: "#fff8e1", borderLeft: "3px solid #f59e0b", fontSize: "13px", lineHeight: "1.5" }}>
-                          {isAdmin ? option.explanation : stripRowInfo(option.explanation)}
                         </div>
-                      )}
-                      {option.slotBreakdown && option.slotBreakdown.lines && option.slotBreakdown.lines.length > 0 && (
-                        <div style={{ ...styles.optionDetail, marginTop: "8px", padding: "10px", backgroundColor: "#f0f9ff", borderLeft: "3px solid #3b82f6", fontSize: "12px" }}>
-                          <strong style={{ color: "#1d4ed8", display: "block", marginBottom: "6px" }}>Invoice slots on this job:</strong>
-                          {option.slotBreakdown.lines.map((line, i) => (
-                            <div key={i} style={{ fontFamily: "monospace", color: line.includes("← this invoice") ? "#0f766e" : (line.includes("PLACE-INV") || line.includes("MANUAL-INV")) ? "#9333ea" : "#333", marginBottom: "2px", fontWeight: line.includes("← this invoice") ? "600" : "400" }}>
-                              {line}
-                            </div>
-                          ))}
-                          <div style={{ marginTop: "8px", paddingTop: "6px", borderTop: "1px solid #bfdbfe", color: "#1e40af", fontWeight: "600" }}>
-                            New real total invoiced (excl. placeholders): {option.slotBreakdown.correctedTotal} / Revenue: {option.slotBreakdown.currentRevenue} ({option.slotBreakdown.revenueRatio})
-                          </div>
-                        </div>
-                      )}
-                      {option.revenueImpact && (
-                        <div style={{ ...styles.optionDetail, marginTop: "6px", padding: "10px", backgroundColor: "#fef2f2", borderLeft: "3px solid #ef4444", fontSize: "13px", fontWeight: "500" }}>
-                          ⚠ Revenue impact: {option.revenueImpact}
-                        </div>
-                      )}
-                      {/* VAT mismatch - show job context and exact cell that will be updated */}
-                      {option.discrepancyType === "inv_vat_mismatch" && option.matchType === "existing_job" && option.jobDetails && (
-                        <div style={{ ...styles.optionDetail, marginTop: "8px", padding: "10px", backgroundColor: "#f0f9ff", borderLeft: "3px solid #3b82f6" }}>
-                          <strong style={{ color: "#1d4ed8", fontSize: "12px" }}>Job Details (Confirmed tab{isAdmin ? `, row ${option.jobRow}` : ""}):</strong>
-                          <div style={{ marginTop: "6px", fontSize: "12px", color: "#333" }}>
-                            {option.jobDetails.clientName && <div><strong>Client:</strong> {option.jobDetails.clientName}</div>}
-                            {option.jobDetails.jobName && <div><strong>Job:</strong> {option.jobDetails.jobName}</div>}
-                            {option.jobDetails.projectCode && <div><strong>Code:</strong> {option.jobDetails.projectCode}</div>}
-                            {option.jobDetails.revenue && <div><strong>Revenue:</strong> {option.jobDetails.revenue}</div>}
-                            {option.jobDetails.vatSetting && <div><strong>Current VAT setting:</strong> {option.jobDetails.vatSetting}</div>}
-                            {option.jobDetails.startDate && <div><strong>Dates:</strong> {option.jobDetails.startDate} → {option.jobDetails.endDate || "?"}</div>}
-                            {option.jobDetails.slot1 && !option.jobDetails.slot1.startsWith("(empty)") && <div><strong>Inv 1:</strong> {option.jobDetails.slot1}</div>}
-                            {option.jobDetails.slot2 && !option.jobDetails.slot2.startsWith("(empty)") && <div><strong>Inv 2:</strong> {option.jobDetails.slot2}</div>}
-                            {option.jobDetails.slot3 && !option.jobDetails.slot3.startsWith("(empty)") && <div><strong>Inv 3:</strong> {option.jobDetails.slot3}</div>}
-                          </div>
-                        </div>
-                      )}
-                      {option.vatUpdate && (
-                        <div style={{ marginTop: "12px", background: "#f0fdf4", border: "1px solid #86efac", borderRadius: "6px", padding: "10px 14px" }}>
-                          <strong style={{ color: "#15803d" }}>If accepted, the following will be updated:</strong>
-                          <div style={{ fontFamily: "monospace", fontSize: "12px", marginTop: "4px" }}>
-                            {option.vatUpdate.cells
-                              ? option.vatUpdate.cells.map(cell => (
-                                  <div key={cell}>Cell {cell}: &quot;{option.vatUpdate.currentValue}&quot; → &quot;{option.vatUpdate.newValue}&quot;</div>
-                                ))
-                              : <div>Cell {option.vatUpdate.cell}: &quot;{option.vatUpdate.currentValue}&quot; → &quot;{option.vatUpdate.newValue}&quot;</div>
-                            }
-                          </div>
-                        </div>
-                      )}
-                      {/* CRM match analysis - ONLY show for CRM/invoices, not expenses, not VAT mismatches (those use explanation) */}
-                      {option.matchAnalysis && typeof option.matchAnalysis === 'object' && !option.allocationBreakdown && option.discrepancyType !== "inv_vat_mismatch" && (
-                        <div style={{ ...styles.optionDetail, marginTop: "8px", padding: "8px", backgroundColor: "#fef3c7", borderLeft: "3px solid #f59e0b" }}>
-                          <strong style={{ color: "#b45309" }}>Match Analysis:</strong>
-                          {option.matchAnalysis.matchConfidence && (
-                            <div style={{ marginTop: "6px", fontSize: "13px" }}>
-                              <strong>Confidence:</strong> {option.matchAnalysis.matchConfidence}
-                            </div>
-                          )}
-                          {option.matchAnalysis.clientNameMatch && (
-                            <div style={{ marginTop: "4px", fontSize: "13px", color: "#555" }}>
-                              <strong>Client Name:</strong> {option.matchAnalysis.clientNameMatch}
-                            </div>
-                          )}
-                          {option.matchAnalysis.jobNameMatch && (
-                            <div style={{ marginTop: "4px", fontSize: "13px", color: "#555" }}>
-                              <strong>Job Name:</strong> {option.matchAnalysis.jobNameMatch}
-                            </div>
-                          )}
-                          {option.matchAnalysis.revenueMatch && (
-                            <div style={{ marginTop: "4px", fontSize: "13px", color: "#555" }}>
-                              <strong>Revenue:</strong> {option.matchAnalysis.revenueMatch}
-                            </div>
-                          )}
-                          {option.matchAnalysis.dateRangeMatch && (
-                            <div style={{ marginTop: "4px", fontSize: "13px", color: "#555" }}>
-                              <strong>Dates:</strong> {option.matchAnalysis.dateRangeMatch}
-                            </div>
-                          )}
-                          {option.matchAnalysis.projectCodeMatch && (
-                            <div style={{ marginTop: "4px", fontSize: "13px", color: "#555" }}>
-                              <strong>Project Code:</strong> {option.matchAnalysis.projectCodeMatch}
-                            </div>
-                          )}
-                          {option.matchAnalysis.reasonForChoice && (
-                            <div style={{ marginTop: "6px", fontSize: "13px", color: "#555", fontStyle: "italic" }}>
-                              <strong>Why:</strong> {option.matchAnalysis.reasonForChoice}
-                            </div>
-                          )}
-                          {option.matchAnalysis.discrepancies && (
-                            <div style={{ marginTop: "6px", fontSize: "13px", color: "#d97706" }}>
-                              <strong>⚠️ Concerns:</strong> {option.matchAnalysis.discrepancies}
-                            </div>
-                          )}
-                          {option.matchAnalysis.whyItDidntAutoMatch && (
-                            <div style={{ marginTop: "6px", fontSize: "13px", color: "#666" }}>
-                              <strong>Why no auto-match:</strong> {option.matchAnalysis.whyItDidntAutoMatch}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                      {/* NEW FORMAT: Display allocation breakdown for expenses */}
-                      {option.allocationBreakdown && typeof option.allocationBreakdown === 'object' && (
-                        <div style={{ ...styles.optionDetail, marginTop: "8px", padding: "8px", backgroundColor: "#f0f9ff", borderLeft: "3px solid #3b82f6" }}>
-                          <strong style={{ color: "#1e40af" }}>Direct Cost Allocation:</strong>
-                          {option.allocationBreakdown.jobDirectCostBudget && (
-                            <div style={{ marginTop: "6px", fontSize: "13px", color: "#333" }}>
-                              <strong>Total Budget:</strong> {option.allocationBreakdown.jobDirectCostBudget}
-                            </div>
-                          )}
-                          {option.allocationBreakdown.allocatedExpenses && Array.isArray(option.allocationBreakdown.allocatedExpenses) && option.allocationBreakdown.allocatedExpenses.length > 0 && (
-                            <div style={{ marginTop: "6px", fontSize: "13px", color: "#333" }}>
-                              <strong>Allocated Expenses:</strong>
-                              <ul style={{ margin: "4px 0 0 16px", paddingLeft: "0", fontSize: "12px" }}>
-                                {option.allocationBreakdown.allocatedExpenses.map((exp, i) => (
-                                  <li key={i} style={{ color: "#444", marginBottom: "2px" }}>{exp}</li>
-                                ))}
-                              </ul>
-                            </div>
-                          )}
-                          {option.allocationBreakdown.totalAllocated && (
-                            <div style={{ marginTop: "4px", fontSize: "13px", color: "#555" }}>
-                              <strong>Total Allocated:</strong> {option.allocationBreakdown.totalAllocated}
-                            </div>
-                          )}
-                          {option.allocationBreakdown.placeholderExpenses && Array.isArray(option.allocationBreakdown.placeholderExpenses) && option.allocationBreakdown.placeholderExpenses.length > 0 && (
-                            <div style={{ marginTop: "6px", fontSize: "13px", color: "#b45309" }}>
-                              <strong>Pending Placeholders:</strong>
-                              <ul style={{ margin: "4px 0 0 16px", paddingLeft: "0", fontSize: "12px" }}>
-                                {option.allocationBreakdown.placeholderExpenses.map((exp, i) => (
-                                  <li key={i} style={{ color: "#92400e", marginBottom: "2px" }}>{exp}</li>
-                                ))}
-                              </ul>
-                            </div>
-                          )}
-                          {option.allocationBreakdown.remainingBudget && (
-                            <div style={{ marginTop: "6px", fontSize: "13px", color: "#059669", fontWeight: "bold" }}>
-                              Remaining Budget: {option.allocationBreakdown.remainingBudget}
-                            </div>
-                          )}
-                          {option.allocationBreakdown.expenseCanFit && (
-                            <div style={{
-                              marginTop: "6px", fontSize: "13px",
-                              color: String(option.allocationBreakdown.expenseCanFit).toUpperCase().startsWith("YES") ? "#059669" : "#dc2626"
-                            }}>
-                              {String(option.allocationBreakdown.expenseCanFit).toUpperCase().startsWith("YES") ? "✓" : "✗"} {option.allocationBreakdown.expenseCanFit}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                      {/* Expense match analysis - only shown alongside allocation breakdown */}
-                      {option.matchAnalysis && typeof option.matchAnalysis === 'object' && option.allocationBreakdown && (
-                        <div style={{ ...styles.optionDetail, marginTop: "8px", padding: "8px", backgroundColor: "#fef3c7", borderLeft: "3px solid #f59e0b" }}>
-                          <strong style={{ color: "#b45309" }}>Match Analysis:</strong>
-                          {option.matchAnalysis.matchConfidence && (
-                            <div style={{ marginTop: "6px", fontSize: "13px" }}>
-                              <strong>Confidence:</strong> {option.matchAnalysis.matchConfidence}
-                            </div>
-                          )}
-                          {option.matchAnalysis.vendorAnalysis && (
-                            <div style={{ marginTop: "6px", fontSize: "13px", color: "#555" }}>
-                              <strong>Vendor:</strong> {option.matchAnalysis.vendorAnalysis}
-                            </div>
-                          )}
-                          {option.matchAnalysis.placeholderMatch && (
-                            <div style={{ marginTop: "6px", fontSize: "13px", color: "#555" }}>
-                              <strong>Placeholder Match:</strong> {option.matchAnalysis.placeholderMatch}
-                            </div>
-                          )}
-                          {option.matchAnalysis.budgetFit && (
-                            <div style={{ marginTop: "6px", fontSize: "13px", color: "#555" }}>
-                              <strong>Budget Fit:</strong> {option.matchAnalysis.budgetFit}
-                            </div>
-                          )}
-                          {option.matchAnalysis.reasonForChoice && (
-                            <div style={{ marginTop: "6px", fontSize: "13px", color: "#555", fontStyle: "italic" }}>
-                              {option.matchAnalysis.reasonForChoice}
-                            </div>
-                          )}
-                          {option.matchAnalysis.discrepancies && (
-                            <div style={{ marginTop: "6px", fontSize: "13px", color: "#d97706" }}>
-                              <strong>⚠️ Concerns:</strong> {option.matchAnalysis.discrepancies}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                      {option.facts && typeof option.facts === 'object' && (
-                        <div style={{ ...styles.optionDetail, marginTop: "8px" }}>
-                          <ul style={{ margin: "4px 0 0 16px", paddingLeft: "0", fontSize: "13px", color: "#555" }}>
-                            {option.facts.jobType && <li><strong>Type:</strong> {option.facts.jobType}</li>}
-                            {option.facts.totalRevenue && <li><strong>Total revenue:</strong> £{option.facts.totalRevenue.toLocaleString()}</li>}
-                            {option.facts.startDate && <li><strong>Start date:</strong> {option.facts.startDate}</li>}
-                            {option.facts.endDate && <li><strong>End date:</strong> {option.facts.endDate}</li>}
-                            {option.facts.existingInvoices && (
-                              <li>
-                                <strong>Existing invoices:</strong>
-                                <div style={{ marginTop: "4px", fontFamily: "monospace", fontSize: "11px", color: "#333", lineHeight: "1.6" }}>
-                                  {option.facts.existingInvoices.split(/\.\s+(?=Row )/).map((line, i) => (
-                                    <div key={i} style={{ paddingLeft: "4px", borderLeft: "2px solid #e0e0e0", marginBottom: "2px" }}>
-                                      {isAdmin ? line.trim() : stripRowInfo(line.trim())}
-                                    </div>
-                                  ))}
-                                </div>
-                              </li>
-                            )}
-                            {option.facts.remainingToInvoice && <li><strong>Left to invoice:</strong> £{option.facts.remainingToInvoice.toLocaleString()}</li>}
-                            {option.facts.invoiceMatchStatus && <li><strong>{option.facts.invoiceMatchStatus}</strong></li>}
-                          </ul>
-                        </div>
-                      )}
-                      {option.facts && option.facts.discrepancies && (
-                        <div style={{ ...styles.optionDetail, marginTop: "8px", paddingTop: "8px", borderTop: "1px solid #ddd" }}>
-                          <strong style={{ color: "#d97706" }}>⚠️ {option.facts.discrepancies}</strong>
-                        </div>
-                      )}
-                      {option.businessLogic && (
-                        <div style={{ ...styles.optionDetail, marginTop: "8px" }}>
-                          <strong>Why this works:</strong>
-                          <div style={{ marginTop: "4px", color: "#555", fontStyle: "italic" }}>{option.businessLogic}</div>
-                        </div>
-                      )}
-                      {option.recommendedActions && Array.isArray(option.recommendedActions) && option.recommendedActions.length > 0 && option.discrepancyType !== "inv_vat_mismatch" && (
-                        <div style={{ ...styles.optionDetail, marginTop: "8px" }}>
-                          <strong>Actions:</strong>
-                          {option.recommendedActions.map((action, i) => (
-                            <div key={i} style={{ fontSize: "13px", color: "#555", marginTop: i === 0 ? "8px" : "6px", paddingTop: i === 0 ? "8px" : "0", borderTop: i === 0 ? "1px solid #ddd" : "none" }}>
-                              {i === 0 ? <strong style={{ color: "#059669" }}>✓ {action}</strong> : `• ${action}`}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      {/* Fallback for old format fields */}
-                      {option.jobStatus && (
-                        <div style={styles.optionDetail}>
-                          <strong>Status:</strong> {option.jobStatus}
-                        </div>
-                      )}
-                      {option.existingInvoices && option.existingInvoices.length > 0 && (
-                        <div style={styles.optionDetail}>
-                          <strong>Existing invoices:</strong>
-                          {option.existingInvoices.map((inv, i) => (
-                            <div key={i} style={{ marginLeft: "16px", fontSize: "13px" }}>
-                              {inv.date} - {inv.amount} ({inv.ref})
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      {option.remainingToInvoice && (
-                        <div style={styles.optionDetail}>
-                          <strong>Remaining to invoice:</strong> {option.remainingToInvoice}
-                        </div>
-                      )}
-                      {option.summary && !option.businessLogic && (
-                        <div style={styles.optionSummary}>{option.summary}</div>
-                      )}
-                      <button className="triage-btn triage-btn-primary"
-                        onClick={() => acceptOption(option)}
-                        disabled={isAccepting}
-                        style={{
-                          ...styles.decisionButton,
-                          ...styles.approveButton,
-                          marginTop: "12px",
-                          width: "100%",
-                          opacity: isAccepting ? 0.5 : 1,
-                        }}
-                      >
-                        {isAccepting ? <><Spinner color="white" />Writing to sheet...</> : `✓ Accept Option ${idx + 1}`}
-                      </button>
-                      </>)}
-                    </div>
-                  ));
-                }
-              } catch (e) {
-                // Show as plain text if not JSON
-                return (
-                  <div style={styles.claudeAnalysis}>
-                    {claudeAnalysis.split('\n').map((line, idx) => (
-                      <div key={idx}>{line || <br />}</div>
-                    ))}
-                  </div>
-                );
-              }
-            })()}
+                      );
+                    }
+                  } catch (e) {
+                    // Show as plain text if not JSON
+                    return (
+                      <div style={styles.claudeAnalysis}>
+                        {claudeAnalysis.split('\n').map((line, idx) => (
+                          <div key={idx}>{line || <br />}</div>
+                        ))}
+                      </div>
+                    );
+                  }
+                })()}
+              </>
+            )}
           </div>
         )}
 
@@ -1107,12 +1424,52 @@ export default function TriageAnalysisView({
               📊 Open Sheets
             </button>
           )}
-          {/* Use AI button - shown for alert types that previously used Claude */}
-          {claudeAnalysis && (() => {
+
+          {/* Re-run analysis button */}
+          <button className="triage-btn" disabled={isAnalyzing}
+            onClick={async () => {
+              setIsAnalyzing(true);
+              setClaudeAnalysis("");
+              try {
+                const res = await fetch("/api/triage", {
+                  method: "POST", headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ action: "analyze_alert", alert, automationCommanderSheetId, forceFresh: true }),
+                });
+                const d = await res.json();
+                if (d.success) {
+                  const pir = d.previousIgnoreReason;
+                  setPreviousIgnoreReason(pir && typeof pir === "object" ? pir : pir ? { ignoreReason: pir, changeReason: null } : null);
+                  setClaudeAnalysis(JSON.stringify(d.options || [], null, 2));
+                  setClientAlerts(prev => {
+                    const newAlerts = [...prev];
+                    const idx = newAlerts.findIndex(a => a.sheetName === alert.sheetName && a.rowNumber === alert.rowNumber);
+                    if (idx !== -1) {
+                      newAlerts[idx] = { ...newAlerts[idx], options: d.options };
+                    }
+                    return newAlerts;
+                  });
+                } else {
+                  setClaudeAnalysis("Error: " + (d.error || "Unknown error"));
+                }
+              } catch (e) {
+                setClaudeAnalysis("Error: " + e.message);
+              } finally {
+                setIsAnalyzing(false);
+              }
+            }}
+            style={{
+              ...styles.buttonSecondary, color: "#4b5563", borderColor: "#cbd5e1",
+              opacity: isAnalyzing ? 0.6 : 1
+            }}>
+            ↻ Re-run
+          </button>
+
+          {/* Use AI button - shown only to Admins for alert types that previously used Claude */}
+          {isAdmin && claudeAnalysis && (() => {
             const alert = clientAlerts[currentClientAlertIndex];
             const ft = alert?.flagType || alert?.alertType || alert?.type || "";
-            const aiTypes = new Set(["invoiceDashboardDiscr","expenseDashboardDiscr",
-              "crmPipeDashDiscr","crmConfDashDiscr","crmPipeAppDiscr","crmConfAppDiscr"]);
+            const aiTypes = new Set(["invoiceDashboardDiscr", "expenseDashboardDiscr",
+              "crmPipeDashDiscr", "crmConfDashDiscr", "crmPipeAppDiscr", "crmConfAppDiscr"]);
             if (!aiTypes.has(ft)) return null;
             return (
               <button className="triage-btn" disabled={isAnalyzing}
@@ -1132,11 +1489,13 @@ export default function TriageAnalysisView({
                     } else {
                       setClaudeAnalysis("Error: " + (d.error || "Unknown error"));
                     }
-                  } catch(e) { setClaudeAnalysis("Error: " + e.message); }
+                  } catch (e) { setClaudeAnalysis("Error: " + e.message); }
                   finally { setIsAnalyzing(false); }
                 }}
-                style={{ ...styles.buttonSecondary, color: "#059669", borderColor: "#6ee7b7",
-                  opacity: isAnalyzing ? 0.6 : 1 }}>
+                style={{
+                  ...styles.buttonSecondary, color: "#059669", borderColor: "#6ee7b7",
+                  opacity: isAnalyzing ? 0.6 : 1
+                }}>
                 🤖 Use AI
               </button>
             );
@@ -1240,6 +1599,401 @@ export default function TriageAnalysisView({
               </div>
             </div>
           </div>
+        )}
+
+        {/* Explore all Confirmed jobs modal */}
+        {exploreJobsOpen && (
+          <ExploreJobsModal
+            isOpen={exploreJobsOpen}
+            onClose={() => setExploreJobsOpen(false)}
+            clientSheetId={targetClientSheetId}
+            clientName={selectedClient?.clientName}
+            mode={isExpenseType ? "expense" : "invoice"}
+            alertItem={alert}
+            onSelectSlot={(jobRow, slotNum, slot, rowNum, createNewRow, customLabel) => {
+              handleInitiatePlaceOnJob(jobRow, slotNum, slot, rowNum, createNewRow, customLabel);
+            }}
+            onViewJob={(job) => {
+              setViewingJobTarget({
+                clientSheetId: targetClientSheetId,
+                clientName: job.client || selectedClient?.clientName,
+                jobName: job.jobName,
+                rowNum: job.rowNum,
+                rowNumber: job.rowNum,
+                tabName: "Confirmed"
+              });
+            }}
+            isAdmin={isAdmin}
+          />
+        )}
+
+        {/* Create new job from invoice modal */}
+        {createNewJobOpen && (
+          <InvoicesNewJobModal
+            newJobData={{
+              inv: {
+                invoiceNo: alert?.summary?.invoiceNo || alert?.data?.accounting?.[5] || "",
+                amount: parseFloat(String(alert?.summary?.amount || alert?.data?.accounting?.[2] || "0").replace(/[£$€,\s]/g, "")) || 0,
+                client: alert?.summary?.client || alert?.data?.accounting?.[0] || selectedClient?.clientName || "",
+                job: alert?.summary?.job || alert?.data?.accounting?.[1] || "",
+                sentDate: alert?.summary?.sentDate || alert?.data?.accounting?.[6] || "",
+                dueDate: alert?.summary?.dueDate || alert?.data?.accounting?.[7] || "",
+                status: alert?.summary?.status || alert?.data?.accounting?.[9] || "Sent",
+                vatAmount: (alert?.summary?.vatAmount && parseFloat(String(alert.summary.vatAmount).replace(/,/g, "")) > 0)
+                  ? parseFloat(String(alert.summary.vatAmount).replace(/,/g, ""))
+                  : (alert?.data?.accounting?.[8] ? parseFloat(String(alert.data.accounting[8]).replace(/,/g, "")) : 0),
+              }
+            }}
+            invoicesClient={{
+              clientSheetId: targetClientSheetId,
+              clientName: selectedClient?.clientName || clientInfo?.clientName || "",
+              masterSheetId: clientInfo?.masterSheetId || selectedClient?.masterSheetId || "",
+              automationCommanderSheetId,
+            }}
+            onClose={() => setCreateNewJobOpen(false)}
+            onMarkPullPending={() => {}}
+            onSuccess={async (inv) => {
+              setCreateNewJobOpen(false);
+              const invIdentifier = inv?.invoiceNo ? `invoice #${inv.invoiceNo}` : "invoice";
+              await handleResolveAlertAfterPlacement(alert, `Created new job for ${invIdentifier}`);
+            }}
+          />
+        )}
+
+        {/* Outgoings Contractor Grid Picker Modal */}
+        {outgoingsPickerOpen && (
+          <OutgoingsContractorPickerModal
+            isOpen={outgoingsPickerOpen}
+            onClose={() => setOutgoingsPickerOpen(false)}
+            clientSheetId={targetClientSheetId}
+            clientName={selectedClient?.clientName}
+            expense={{
+              vendor: alert?.summary?.description || alert?.summary?.reference || alert?.data?.accounting?.[1] || "",
+              description: alert?.summary?.description || alert?.summary?.reference || alert?.data?.accounting?.[1] || "",
+              date: alert?.summary?.date || alert?.data?.accounting?.[0] || "",
+              amount: parseFloat(String(alert?.summary?.amount || alert?.data?.accounting?.[2] || "0").replace(/[£$€,\s]/g, "")) || 0
+            }}
+            onSelectCell={(data) => {
+              handleInitiatePlaceOnContractor(data);
+            }}
+            isAdmin={isAdmin}
+          />
+        )}
+
+        {/* Confirm Placement Dialog */}
+        {placementPrompt && (
+          <div
+            style={styles.modalOverlay}
+            onClick={(e) => {
+              if (e.target === e.currentTarget && !isSavingPlacement) {
+                setPlacementPrompt(null);
+              }
+            }}
+          >
+            <div style={{ ...styles.modalCard, maxWidth: "520px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "12px" }}>
+                <span style={{ fontSize: "24px" }}>
+                  {placementPrompt.type === "invoice" ? "📄" : placementPrompt.type === "expense_contractor" ? "👷" : "📦"}
+                </span>
+                <div>
+                  <h3 style={{ ...styles.modalTitle, margin: 0 }}>Confirm Placement</h3>
+                  <p style={{ ...styles.modalSubtitle, margin: 0 }}>
+                    Please confirm where this {placementPrompt.type === "invoice" ? "invoice" : "expense"} will be placed.
+                  </p>
+                </div>
+              </div>
+
+              {/* Placement details card */}
+              <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "8px", padding: "14px", marginBottom: "16px" }}>
+                {placementPrompt.type === "invoice" && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px", fontSize: "13px" }}>
+                    <div>
+                      <span style={{ color: "#64748b" }}>Target Job: </span>
+                      <strong style={{ color: "#0f172a" }}>{placementPrompt.jobName}</strong>
+                      <span style={{ color: "#64748b" }}> ({placementPrompt.jobClient})</span>
+                    </div>
+                    <div>
+                      <span style={{ color: "#64748b" }}>Placement Target: </span>
+                      <span style={{ display: "inline-block", background: "#f0fdf4", border: "1px solid #86efac", padding: "2px 8px", borderRadius: "4px", fontWeight: "600", color: "#166534" }}>
+                        {placementPrompt.slotLabel || (placementPrompt.createNewRow ? "New Invoice Entry" : "Invoice Entry")}
+                      </span>
+                    </div>
+                    {placementPrompt.slot && (placementPrompt.slot.ref || (placementPrompt.slot.amount && parseFloat(placementPrompt.slot.amount) > 0)) && (
+                      <div style={{ padding: "6px 10px", background: "#fffbeb", border: "1px solid #fef3c7", borderRadius: "6px", fontSize: "12px", color: "#92400e" }}>
+                        ⚠️ <strong>Notice:</strong> This entry currently has Invoice #{placementPrompt.slot.ref || "(no number)"} (£{parseFloat(placementPrompt.slot.amount || 0).toLocaleString()}). Confirming will update this entry with the incoming invoice details.
+                      </div>
+                    )}
+                    <div style={{ height: "1px", background: "#e2e8f0", margin: "4px 0" }} />
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
+                      <div>
+                        <span style={{ color: "#64748b", fontSize: "12px" }}>Invoice #:</span>
+                        <div style={{ fontWeight: "600", color: "#0f172a" }}>#{placementPrompt.invoiceNo || "N/A"}</div>
+                      </div>
+                      <div>
+                        <span style={{ color: "#64748b", fontSize: "12px" }}>Amount:</span>
+                        <div style={{ fontWeight: "700", color: "#16a34a" }}>£{parseFloat(placementPrompt.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                      </div>
+                      <div>
+                        <span style={{ color: "#64748b", fontSize: "12px" }}>Sent Date:</span>
+                        <div style={{ fontWeight: "500", color: "#334155" }}>{placementPrompt.sentDate || "Not recorded"}</div>
+                      </div>
+                      <div>
+                        <span style={{ color: "#64748b", fontSize: "12px" }}>Status:</span>
+                        <div style={{ fontWeight: "500", color: "#334155" }}>{placementPrompt.status || "Sent"}</div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {placementPrompt.type === "expense_job" && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px", fontSize: "13px" }}>
+                    <div>
+                      <span style={{ color: "#64748b" }}>Target Job: </span>
+                      <strong style={{ color: "#0f172a" }}>{placementPrompt.jobName}</strong>
+                      <span style={{ color: "#64748b" }}> ({placementPrompt.jobClient})</span>
+                    </div>
+                    <div>
+                      <span style={{ color: "#64748b" }}>Placement Target: </span>
+                      <span style={{ display: "inline-block", background: "#fffbeb", border: "1px solid #fcd34d", padding: "2px 8px", borderRadius: "4px", fontWeight: "600", color: "#92400e" }}>
+                        {placementPrompt.slotLabel || (placementPrompt.createNewRow ? "New Direct Cost" : "Direct Cost Entry")}
+                      </span>
+                    </div>
+                    {placementPrompt.slot && (placementPrompt.slot.description || (placementPrompt.slot.amount && parseFloat(placementPrompt.slot.amount) > 0)) && (
+                      <div style={{ padding: "6px 10px", background: "#fffbeb", border: "1px solid #fef3c7", borderRadius: "6px", fontSize: "12px", color: "#92400e" }}>
+                        ⚠️ <strong>Notice:</strong> This entry currently has {placementPrompt.slot.description || "an expense"} (£{parseFloat(placementPrompt.slot.amount || 0).toLocaleString()}). Confirming will update this entry with the incoming expense.
+                      </div>
+                    )}
+                    <div style={{ height: "1px", background: "#e2e8f0", margin: "4px 0" }} />
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
+                      <div style={{ gridColumn: "span 2" }}>
+                        <span style={{ color: "#64748b", fontSize: "12px" }}>Description:</span>
+                        <div style={{ fontWeight: "600", color: "#0f172a" }}>{placementPrompt.description || "N/A"}</div>
+                      </div>
+                      <div>
+                        <span style={{ color: "#64748b", fontSize: "12px" }}>Amount:</span>
+                        <div style={{ fontWeight: "700", color: "#dc2626" }}>£{parseFloat(placementPrompt.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                      </div>
+                      <div>
+                        <span style={{ color: "#64748b", fontSize: "12px" }}>Date:</span>
+                        <div style={{ fontWeight: "500", color: "#334155" }}>{placementPrompt.date || "Not recorded"}</div>
+                      </div>
+                      <div>
+                        <span style={{ color: "#64748b", fontSize: "12px" }}>VAT:</span>
+                        <div style={{ fontWeight: "500", color: "#334155" }}>{placementPrompt.vat || "No"}</div>
+                      </div>
+                      <div>
+                        <span style={{ color: "#64748b", fontSize: "12px" }}>Status:</span>
+                        <div style={{ fontWeight: "500", color: "#334155" }}>{placementPrompt.status || "Received"}</div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {placementPrompt.type === "expense_contractor" && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px", fontSize: "13px" }}>
+                    <div>
+                      <span style={{ color: "#64748b" }}>Target Contractor: </span>
+                      <strong style={{ color: "#0f172a" }}>{placementPrompt.contractorName}</strong>
+                    </div>
+                    <div>
+                      <span style={{ color: "#64748b" }}>Target Month: </span>
+                      <span style={{ display: "inline-block", background: "#ecfdf5", border: "1px solid #a7f3d0", padding: "2px 8px", borderRadius: "4px", fontWeight: "600", color: "#065f46" }}>
+                        {placementPrompt.monthLabel}
+                      </span>
+                    </div>
+                    <div style={{ height: "1px", background: "#e2e8f0", margin: "4px 0" }} />
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
+                      <div style={{ gridColumn: "span 2" }}>
+                        <span style={{ color: "#64748b", fontSize: "12px" }}>Description:</span>
+                        <div style={{ fontWeight: "600", color: "#0f172a" }}>{placementPrompt.description || "N/A"}</div>
+                      </div>
+                      <div>
+                        <span style={{ color: "#64748b", fontSize: "12px" }}>Amount:</span>
+                        <div style={{ fontWeight: "700", color: "#dc2626" }}>£{parseFloat(placementPrompt.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                      </div>
+                      <div>
+                        <span style={{ color: "#64748b", fontSize: "12px" }}>Date:</span>
+                        <div style={{ fontWeight: "500", color: "#334155" }}>{placementPrompt.date || "Not recorded"}</div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {acceptError && (
+                <div style={{ marginBottom: "12px", padding: "8px 12px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "6px", color: "#dc2626", fontSize: "12px" }}>
+                  {acceptError}
+                </div>
+              )}
+
+              {/* Modal action buttons */}
+              <div style={styles.modalButtons}>
+                <button
+                  type="button"
+                  className="triage-btn"
+                  onClick={() => setPlacementPrompt(null)}
+                  disabled={isSavingPlacement}
+                  style={styles.buttonSecondary}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="triage-btn"
+                  onClick={executeConfirmedPlacement}
+                  disabled={isSavingPlacement}
+                  style={{
+                    ...styles.decisionButton,
+                    ...styles.approveButton,
+                    background: "#16a34a",
+                    borderColor: "#15803d",
+                    padding: "8px 16px",
+                    opacity: isSavingPlacement ? 0.6 : 1,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "6px"
+                  }}
+                >
+                  {isSavingPlacement ? (
+                    <>
+                      <Spinner />
+                      <span>Placing...</span>
+                    </>
+                  ) : (
+                    "✓ Confirm & Place"
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Confirm Job Creation Dialog */}
+        {confirmJobModal && (
+          <div
+            style={styles.modalOverlay}
+            onClick={(e) => {
+              if (e.target === e.currentTarget && !isSavingPlacement) {
+                setConfirmJobModal(null);
+              }
+            }}
+          >
+            <div style={{ ...styles.modalCard, maxWidth: "520px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "12px" }}>
+                <span style={{ fontSize: "24px" }}>➕</span>
+                <div>
+                  <h3 style={{ ...styles.modalTitle, margin: 0 }}>Confirm Job Creation</h3>
+                  <p style={{ ...styles.modalSubtitle, margin: 0 }}>
+                    Create a new job in Pulse based on this CRM deal.
+                  </p>
+                </div>
+              </div>
+
+              {/* Job details summary card */}
+              <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "8px", padding: "14px", marginBottom: "16px" }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: "10px", fontSize: "13px" }}>
+                  <div>
+                    <span style={{ color: "#64748b", fontSize: "12px" }}>Client:</span>
+                    <div style={{ fontWeight: "700", color: "#0f172a", fontSize: "14px" }}>{confirmJobModal.client}</div>
+                  </div>
+                  <div>
+                    <span style={{ color: "#64748b", fontSize: "12px" }}>Job Name:</span>
+                    <div style={{ fontWeight: "600", color: "#0f172a" }}>{confirmJobModal.jobName}</div>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
+                    <div>
+                      <span style={{ color: "#64748b", fontSize: "12px" }}>Project Code:</span>
+                      <div style={{ fontWeight: "500", color: "#334155" }}>{confirmJobModal.projectCode || "Auto-assigned"}</div>
+                    </div>
+                    <div>
+                      <span style={{ color: "#64748b", fontSize: "12px" }}>Job Type / Tab:</span>
+                      <div style={{ display: "inline-block", background: "#f1f5f9", padding: "2px 8px", borderRadius: "4px", fontWeight: "600", color: "#334155" }}>
+                        {confirmJobModal.projectRetainer} ({confirmJobModal.tabName})
+                      </div>
+                    </div>
+                    <div>
+                      <span style={{ color: "#64748b", fontSize: "12px" }}>Revenue:</span>
+                      <div style={{ fontWeight: "700", color: "#16a34a" }}>
+                        £{parseFloat(confirmJobModal.revenue || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </div>
+                    </div>
+                    <div>
+                      <span style={{ color: "#64748b", fontSize: "12px" }}>Direct Costs:</span>
+                      <div style={{ fontWeight: "700", color: "#dc2626" }}>
+                        £{parseFloat(confirmJobModal.directCosts || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </div>
+                    </div>
+                    {confirmJobModal.startDate && (
+                      <div>
+                        <span style={{ color: "#64748b", fontSize: "12px" }}>Start Date:</span>
+                        <div style={{ fontWeight: "500", color: "#334155" }}>{confirmJobModal.startDate}</div>
+                      </div>
+                    )}
+                    {confirmJobModal.endDate && (
+                      <div>
+                        <span style={{ color: "#64748b", fontSize: "12px" }}>End Date:</span>
+                        <div style={{ fontWeight: "500", color: "#334155" }}>{confirmJobModal.endDate}</div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {acceptError && (
+                <div style={{ marginBottom: "12px", padding: "8px 12px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "6px", color: "#dc2626", fontSize: "12px" }}>
+                  {acceptError}
+                </div>
+              )}
+
+              {/* Modal action buttons */}
+              <div style={styles.modalButtons}>
+                <button
+                  type="button"
+                  className="triage-btn"
+                  onClick={() => setConfirmJobModal(null)}
+                  disabled={isSavingPlacement}
+                  style={styles.buttonSecondary}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="triage-btn"
+                  onClick={executeConfirmedJobCreation}
+                  disabled={isSavingPlacement}
+                  style={{
+                    ...styles.decisionButton,
+                    ...styles.approveButton,
+                    background: "#7c3aed",
+                    borderColor: "#6d28d9",
+                    padding: "8px 16px",
+                    opacity: isSavingPlacement ? 0.6 : 1,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "6px"
+                  }}
+                >
+                  {isSavingPlacement ? (
+                    <>
+                      <Spinner />
+                      <span>Creating Job...</span>
+                    </>
+                  ) : (
+                    "✓ Confirm & Create Job"
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Job Detail Modal for "View Job" */}
+        {viewingJobTarget && (
+          <JobDetailModal
+            isOpen={!!viewingJobTarget}
+            target={viewingJobTarget}
+            onClose={() => setViewingJobTarget(null)}
+          />
         )}
       </div>
     </div>

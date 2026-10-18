@@ -11,7 +11,7 @@ import { useTasks } from "../contexts/TaskContext";
 import { useTriage } from "../contexts/TriageContext";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useAuth } from "../hooks/useAuth";
-import { ADMIN_ONLY_ALERT_TYPES, stripRowInfo, parseUnreceivedExpensesDetail, parseStaleExpenseDetail, parseInfoAlertDetail, filterAnalysisResultsForAlert, getCleanPLCategoryName, getAlertJobTarget } from "../utils/helpers";
+import { ADMIN_ONLY_ALERT_TYPES, stripRowInfo, parseUnreceivedExpensesDetail, parseStaleExpenseDetail, parseInfoAlertDetail, filterAnalysisResultsForAlert, getCleanPLCategoryName, getAlertJobTarget, formatSeenTimestamp } from "../utils/helpers";
 
 const RICH_NOACTION_FLAG_GROUP = {
   crmCopiedConfChecked: "crm",
@@ -831,10 +831,10 @@ export default function AlertSelectionView({
   const renderAlertContent = (alert) => {
     const detailSub = getActionableDetail(alert);
     const alertDates = (alert.firstSeen || alert.lastSeen) ? (
-      <div style={{ fontSize: "10px", color: "#aaa", marginTop: "6px" }}>
-        {alert.firstSeen ? `First seen: ${alert.firstSeen.split("T")[0]}` : ""}
+      <div style={{ fontSize: "11px", color: "#888", marginTop: "6px" }}>
+        {alert.firstSeen ? `First seen: ${formatSeenTimestamp(alert.firstSeen)}` : ""}
         {alert.firstSeen && alert.lastSeen ? " · " : ""}
-        {alert.lastSeen ? `Last seen: ${alert.lastSeen.split("T")[0]}` : ""}
+        {alert.lastSeen ? `Last seen: ${formatSeenTimestamp(alert.lastSeen)}` : ""}
       </div>
     ) : null;
 
@@ -853,28 +853,31 @@ export default function AlertSelectionView({
 
     if (isAppDiscr) {
       const sd = alert.data?.sheetData || [];
-      const client = sd[0] || ""; const job = sd[1] || ""; const code = sd[2] || "";
-      const rev = sd[3] ? `£${parseFloat(String(sd[3]).replace(/[£$€,\s]/g, "")) || 0}` : "";
+      const client = sd[0] || alert.clientName || "";
+      const job = sd[1] || "";
+      const code = sd[2] || "";
+      const revVal = sd[3] ? parseFloat(String(sd[3]).replace(/[£$€,\s]/g, "")) : null;
+      const rev = revVal !== null && !isNaN(revVal) ? (revVal % 1 === 0 ? `£${revVal}` : `£${revVal.toFixed(2)}`) : (sd[3] ? `£${sd[3]}` : "");
       const start = sd[5] || ""; const end = sd[6] || "";
       const likely = sd[7] || "";
       const isPipeline = ft === "crmPipeAppDiscr";
       const isMismatch = alert.subType === "field_mismatch";
       return (
-        <div style={{ pointerEvents: "none" }}>
-          <div style={{ fontWeight: "600", display: "flex", alignItems: "center" }}>
+        <div style={{ pointerEvents: "none", width: "100%" }}>
+          <div style={{ fontWeight: "600", fontSize: "13.5px", color: "#0f172a", display: "flex", alignItems: "center" }}>
             <span>{client}{job ? ` - ${job}` : ""}</span>
             {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(ft) && <AdminBadge show={clientHasManager} />}
           </div>
-          {code && <div style={{ fontSize: "11px", color: "#888", marginTop: "2px" }}>Code: {code}</div>}
-          {rev && <div style={{ fontSize: "11px", color: "#888" }}>Revenue: {rev}</div>}
-          {start && <div style={{ fontSize: "11px", color: "#888" }}>Dates: {start}{end ? ` → ${end}` : ""}</div>}
-          {isPipeline && likely && <div style={{ fontSize: "11px", color: "#888" }}>Likelihood: {(parseFloat(likely) * 100).toFixed(0)}%</div>}
+          {code && <div style={{ fontSize: "12px", color: "#555", marginTop: "2px" }}>Code: {code}</div>}
+          {rev && <div style={{ fontSize: "12px", color: "#555" }}>Revenue: {rev}</div>}
+          {(start || end) && <div style={{ fontSize: "12px", color: "#555" }}>Dates: {start}{end ? ` → ${end}` : ""}</div>}
+          {isPipeline && likely && <div style={{ fontSize: "12px", color: "#555" }}>Likelihood: {(parseFloat(likely) * 100).toFixed(0)}%</div>}
           {isMismatch ? (
-            <div style={{ fontSize: "11px", color: "#d97706", marginTop: "3px" }}>
+            <div style={{ fontSize: "12px", color: "#d97706", marginTop: "4px" }}>
               ⚠ Field mismatch: {(alert.mismatchFields || []).join(", ")}
             </div>
           ) : (
-            <div style={{ fontSize: "11px", color: "#c62828", marginTop: "3px" }}>
+            <div style={{ fontSize: "12px", color: "#c62828", marginTop: "4px" }}>
               {isPipeline ? "In Pulse pipeline jobs - not in CRM" : "In Pulse confirmed jobs - not in CRM"}
             </div>
           )}
@@ -886,28 +889,31 @@ export default function AlertSelectionView({
 
     if (isDashDiscr) {
       const cd = alert.data?.crmData || [];
-      const client = cd[0] || ""; const job = cd[1] || ""; const code = cd[2] || "";
-      const rev = cd[3] ? `£${parseFloat(String(cd[3]).replace(/[£$€,\s]/g, "")) || 0}` : "";
+      const client = cd[0] || alert.clientName || "";
+      const job = cd[1] || "";
+      const code = cd[2] || "";
+      const revVal = cd[3] ? parseFloat(String(cd[3]).replace(/[£$€,\s]/g, "")) : null;
+      const rev = revVal !== null && !isNaN(revVal) ? (revVal % 1 === 0 ? `£${revVal}` : `£${revVal.toFixed(2)}`) : (cd[3] ? `£${cd[3]}` : "");
       const start = cd[5] || ""; const end = cd[6] || ""; const likely = cd[7] || "";
       const isMismatch = alert.subType === "field_mismatch";
       const isPipeline = ft === "crmPipeDashDiscr";
       const mismatchFields = alert.mismatchFields || [];
       return (
-        <div style={{ pointerEvents: "none" }}>
-          <div style={{ fontWeight: "600", display: "flex", alignItems: "center" }}>
+        <div style={{ pointerEvents: "none", width: "100%" }}>
+          <div style={{ fontWeight: "600", fontSize: "13.5px", color: "#0f172a", display: "flex", alignItems: "center" }}>
             <span>{client}{job ? ` - ${job}` : ""}</span>
             {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(ft) && <AdminBadge show={clientHasManager} />}
           </div>
-          {code && <div style={{ fontSize: "11px", color: "#888", marginTop: "2px" }}>Code: {code}</div>}
-          {rev && <div style={{ fontSize: "11px", color: "#888" }}>Revenue: {rev}</div>}
-          {start && <div style={{ fontSize: "11px", color: "#888" }}>Dates: {start}{end ? ` → ${end}` : ""}</div>}
-          {isPipeline && likely && <div style={{ fontSize: "11px", color: "#888" }}>Likelihood: {(parseFloat(likely) * 100).toFixed(0)}%</div>}
+          {code && <div style={{ fontSize: "12px", color: "#555", marginTop: "2px" }}>Code: {code}</div>}
+          {rev && <div style={{ fontSize: "12px", color: "#555" }}>Revenue: {rev}</div>}
+          {(start || end) && <div style={{ fontSize: "12px", color: "#555" }}>Dates: {start}{end ? ` → ${end}` : ""}</div>}
+          {isPipeline && likely && <div style={{ fontSize: "12px", color: "#555" }}>Likelihood: {(parseFloat(likely) * 100).toFixed(0)}%</div>}
           {isMismatch ? (
-            <div style={{ fontSize: "11px", color: "#d97706", marginTop: "3px" }}>
+            <div style={{ fontSize: "12px", color: "#d97706", marginTop: "4px" }}>
               ⚠ Field mismatch: {mismatchFields.join(", ")}
             </div>
           ) : (
-            <div style={{ fontSize: "11px", color: "#c62828", marginTop: "3px" }}>
+            <div style={{ fontSize: "12px", color: "#c62828", marginTop: "4px" }}>
               {isPipeline ? "In CRM - not in Pulse pipeline jobs" : "In CRM - not in Pulse confirmed jobs"}
             </div>
           )}
@@ -917,66 +923,163 @@ export default function AlertSelectionView({
       );
     }
 
-    if (ft === "invoiceDashboardDiscr" || alert.type === "invoice") {
+    const isInvoiceType = ft === "invoiceDashboardDiscr" || alert.type === "invoice" || ft.startsWith("invoice");
+    if (isInvoiceType) {
       const inv = alert.summary || {};
-      const invNo = inv.invoiceNo || inv.reference || alert.data?.accounting?.[5] || "?";
-      const clientName = inv.client || alert.data?.accounting?.[0] || "";
-      const invDesc = inv.job || inv.description || alert.data?.accounting?.[1] || "";
-      const sentDate = inv.sentDate || alert.data?.accounting?.[6] || "";
-      const status = inv.status || alert.data?.accounting?.[9] || "";
-      const amount = typeof inv.amount === "number" ? inv.amount : parseFloat(String(inv.amount || "0").replace(/[^\d.-]/g, "")) || 0;
-      const vatLabel = inv.vatIncluded && inv.vatIncluded > 0 ? " +VAT" : " (no VAT)";
-      const isDraft = String(status).toLowerCase() === "draft";
-      const isPaid = String(status).toLowerCase() === "paid";
+      const acct = alert.data?.accounting || [];
+      const flags = alert.data?.flags || [];
+      const invNo = inv.invoiceNo || inv.reference || acct[5] || "";
+      const clientName = inv.client || acct[0] || alert.clientName || "";
+      const invDesc = inv.job || inv.description || acct[1] || "";
+      const sentDate = inv.sentDate || acct[6] || "";
+      const datePaid = inv.datePaid || acct[8] || "";
+      const status = inv.status || acct[9] || "";
 
-      const statusBadge = status ? (
-        <span style={{
-          display: "inline-block",
-          padding: "2px 8px",
-          borderRadius: "12px",
-          fontSize: "11px",
-          fontWeight: "600",
-          backgroundColor: isDraft ? "#fef3c7" : isPaid ? "#dcfce7" : "#e0f2fe",
-          color: isDraft ? "#92400e" : isPaid ? "#166534" : "#0284c7",
-          border: `1px solid ${isDraft ? "#fde68a" : isPaid ? "#bbf7d0" : "#bae6fd"}`,
-          marginLeft: "8px"
-        }}>
-          {status}
-        </span>
-      ) : null;
+      let amt = null;
+      if (typeof inv.amount === "number") amt = inv.amount;
+      else if (inv.amount) amt = parseFloat(String(inv.amount).replace(/[£$€,\s]/g, ""));
+      else if (acct[2] || acct[3]) amt = parseFloat(String(acct[3] || acct[2]).replace(/,/g, ""));
+
+      const vatIncluded = inv.vatIncluded !== undefined ? inv.vatIncluded : (parseFloat(String(acct[4] || "0")) || 0);
+      const vatLabel = vatIncluded && vatIncluded > 0 ? " +VAT" : " (no VAT)";
+      const formattedAmt = amt !== null && !isNaN(amt) ? `£${amt.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "";
+
+      const title = clientName && invDesc
+        ? `${clientName} - ${invDesc}`
+        : (clientName ? `${clientName}${invNo ? ` - Invoice #${invNo}` : ""}` : (invNo ? `Invoice #${invNo}` : "Invoice"));
+
+      const isMissing = String(flags[0] || "").trim() === "1";
+      const invFlagNames = [null, "Client mismatch", "Amount mismatch", "Sent date mismatch", null, "Pay date mismatch", "Status mismatch"];
+      const activeMismatches = flags.map((v, i) => String(v || "").trim() === "1" && invFlagNames[i] ? invFlagNames[i] : null).filter(Boolean);
 
       return (
         <div style={{ pointerEvents: "none", width: "100%" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
-            <div style={{ fontWeight: "700", fontSize: "14px", color: "#1e293b", display: "flex", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
-              <span>Invoice #{invNo} · £{amount.toFixed(2)}{vatLabel}</span>
-              {statusBadge}
-              {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(ft) && <AdminBadge show={clientHasManager} />}
+          <div style={{ fontWeight: "600", fontSize: "13.5px", color: "#0f172a", display: "flex", alignItems: "center" }}>
+            <span>{title}</span>
+            {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(ft) && <AdminBadge show={clientHasManager} />}
+          </div>
+          {invNo && (
+            <div style={{ fontSize: "12px", color: "#555", marginTop: "2px" }}>
+              Invoice: {String(invNo).startsWith("#") ? invNo : `#${invNo}`}
             </div>
+          )}
+          {formattedAmt && (
+            <div style={{ fontSize: "12px", color: "#555" }}>
+              Amount: {formattedAmt}{vatLabel}
+            </div>
+          )}
+          {(sentDate || datePaid) && (
+            <div style={{ fontSize: "12px", color: "#555" }}>
+              {sentDate && datePaid ? `Dates: Sent ${sentDate} → Paid ${datePaid}` : (sentDate ? `Sent date: ${sentDate}` : `Paid date: ${datePaid}`)}
+            </div>
+          )}
+          {status && (
+            <div style={{ fontSize: "12px", color: "#555" }}>
+              Status: {status}
+            </div>
+          )}
+          {isMissing ? (
+            <div style={{ fontSize: "12px", color: "#c62828", marginTop: "4px" }}>
+              In accounting - not in Pulse confirmed jobs
+            </div>
+          ) : activeMismatches.length > 0 ? (
+            <div style={{ fontSize: "12px", color: "#d97706", marginTop: "4px" }}>
+              ⚠ Field mismatch: {activeMismatches.join(", ")}
+            </div>
+          ) : detailSub ? (
+            <div style={{ fontSize: "12px", color: "#d97706", marginTop: "4px" }}>
+              ⚠ {detailSub}
+            </div>
+          ) : null}
+          {ignoreBanner}
+          {alertDates}
+        </div>
+      );
+    }
+
+    const isExpenseType = ft === "expenseDashboardDiscr" || alert.type === "expense" || ft.startsWith("expense") || alert.sheetName === "DirComp";
+    if (isExpenseType) {
+      const exp = alert.summary || {};
+      const acct = alert.data?.accounting || [];
+      const flags = alert.data?.flags || [];
+
+      const rawDesc = exp.description || acct[1] || "";
+      const reference = exp.reference || acct[3] || "";
+      const date = exp.date || acct[0] || "";
+      const datePaid = exp.datePaid || acct[7] || "";
+      const accountName = exp.accountName || acct[4] || "";
+      const status = exp.status || acct[5] || "";
+
+      let amt = null;
+      if (typeof exp.amount === "number") amt = exp.amount;
+      else if (exp.amount) amt = parseFloat(String(exp.amount).replace(/[£$€,\s]/g, ""));
+      else if (acct[2]) amt = parseFloat(String(acct[2]).replace(/,/g, ""));
+
+      const vatVal = parseFloat(String(exp.vatAmount || acct[8] || "0").replace(/[£$€,\s]/g, "")) || 0;
+      const vatLabel = vatVal > 0 ? " +VAT" : " (no VAT)";
+      const formattedAmt = amt !== null && !isNaN(amt) ? `£${amt.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "";
+
+      let vendorName = "";
+      let cleanDesc = "";
+      const parenIdx = rawDesc.indexOf("(");
+      if (parenIdx > 0) {
+        vendorName = rawDesc.substring(0, parenIdx).trim();
+        cleanDesc = rawDesc.substring(parenIdx + 1).replace(/\)+$/, "").trim();
+      } else {
+        vendorName = rawDesc.trim();
+      }
+      if (!vendorName) vendorName = alert.clientName || "Expense";
+
+      const title = vendorName && cleanDesc ? `${vendorName} - ${cleanDesc}` : vendorName;
+
+      const isMissing = String(flags[0] || "").trim() === "1";
+      const expFlagNames = [null, "Duplicate App ID", "Description mismatch", "Amount mismatch", "VAT mismatch", "Rec date mismatch", "Pay date mismatch", "Status mismatch"];
+      const activeExpMismatches = flags.map((v, i) => String(v || "").trim() === "1" && expFlagNames[i] ? expFlagNames[i] : null).filter(Boolean);
+
+      return (
+        <div style={{ pointerEvents: "none", width: "100%" }}>
+          <div style={{ fontWeight: "600", fontSize: "13.5px", color: "#0f172a", display: "flex", alignItems: "center" }}>
+            <span>{title}</span>
+            {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(ft) && <AdminBadge show={clientHasManager} />}
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "8px 14px", fontSize: "12px", color: "#475569", marginTop: "6px", background: "#f8fafc", padding: "8px 12px", borderRadius: "6px", border: "1px solid #e2e8f0" }}>
-            {clientName && (
-              <div>
-                <strong style={{ color: "#334155" }}>Client:</strong> {clientName}
-              </div>
-            )}
-            {invDesc && (
-              <div>
-                <strong style={{ color: "#334155" }}>Description:</strong> {invDesc}
-              </div>
-            )}
-            {sentDate && (
-              <div>
-                <strong style={{ color: "#334155" }}>Sent date:</strong> {sentDate}
-              </div>
-            )}
-            {status && (
-              <div>
-                <strong style={{ color: "#334155" }}>Status:</strong> {status}
-              </div>
-            )}
-          </div>
-          {detailSub && <div style={{ fontSize: "11px", fontWeight: "600", color: "#d97706", marginTop: "6px" }}>⚠ {detailSub}</div>}
+          {reference && reference !== "-" && (
+            <div style={{ fontSize: "12px", color: "#555", marginTop: "2px" }}>
+              Reference: {reference}
+            </div>
+          )}
+          {formattedAmt && (
+            <div style={{ fontSize: "12px", color: "#555", marginTop: !reference || reference === "-" ? "2px" : 0 }}>
+              Amount: {formattedAmt}{vatLabel}
+            </div>
+          )}
+          {(date || datePaid) && (
+            <div style={{ fontSize: "12px", color: "#555" }}>
+              {date && datePaid && date !== datePaid ? `Dates: ${date} → Paid ${datePaid}` : (date ? `Date: ${date}` : `Paid date: ${datePaid}`)}
+            </div>
+          )}
+          {accountName && (
+            <div style={{ fontSize: "12px", color: "#555" }}>
+              Category: {accountName}
+            </div>
+          )}
+          {status && (
+            <div style={{ fontSize: "12px", color: "#555" }}>
+              Status: {status}
+            </div>
+          )}
+          {isMissing ? (
+            <div style={{ fontSize: "12px", color: "#c62828", marginTop: "4px" }}>
+              In accounting - not in Pulse confirmed jobs
+            </div>
+          ) : activeExpMismatches.length > 0 ? (
+            <div style={{ fontSize: "12px", color: "#d97706", marginTop: "4px" }}>
+              ⚠ Field mismatch: {activeExpMismatches.join(", ")}
+            </div>
+          ) : detailSub ? (
+            <div style={{ fontSize: "12px", color: "#d97706", marginTop: "4px" }}>
+              ⚠ {detailSub}
+            </div>
+          ) : null}
           {ignoreBanner}
           {alertDates}
         </div>
@@ -984,12 +1087,12 @@ export default function AlertSelectionView({
     }
 
     return (
-      <div style={{ pointerEvents: "none" }}>
-        <div style={{ fontWeight: "600", color: "#333", display: "flex", alignItems: "center" }}>
+      <div style={{ pointerEvents: "none", width: "100%" }}>
+        <div style={{ fontWeight: "600", fontSize: "13.5px", color: "#0f172a", display: "flex", alignItems: "center" }}>
           <span>{getAlertSummary(alert)}</span>
           {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(ft) && <AdminBadge show={clientHasManager} />}
         </div>
-        {detailSub && <div style={{ fontSize: "11px", fontWeight: "600", color: "#d97706", marginTop: "4px" }}>⚠ {detailSub}</div>}
+        {detailSub && <div style={{ fontSize: "12px", fontWeight: "600", color: "#d97706", marginTop: "4px" }}>⚠ {detailSub}</div>}
         {ignoreBanner}
         {alertDates}
       </div>
@@ -1180,15 +1283,15 @@ export default function AlertSelectionView({
                                   const newSel = new Set(bulkSelected);
                                   if (isChecked) newSel.delete(selKey); else newSel.add(selKey);
                                   setBulkSelected(newSel);
-                                }} style={{ display: "flex", alignItems: "flex-start", gap: "10px", padding: "12px", border: `1px solid ${isChecked ? "#7c3aed" : "#e0e0e0"}`, borderRadius: "4px", cursor: "pointer", backgroundColor: isChecked ? "#ede9fe" : "#fff", fontSize: "13px" }}>
-                                  <input type="checkbox" checked={isChecked} onChange={() => { }} style={{ marginTop: "2px", accentColor: "#7c3aed", flexShrink: 0 }} />
-                                  <div style={{ flex: 1 }}>{renderAlertContent(alert)}</div>
+                                }} style={{ display: "flex", alignItems: "flex-start", gap: "12px", padding: "14px 16px", border: `1px solid ${isChecked ? "#7c3aed" : "#cbd5e1"}`, borderRadius: "8px", cursor: "pointer", backgroundColor: isChecked ? "#ede9fe" : "#fff", fontSize: "13px", width: "100%", boxSizing: "border-box" }}>
+                                  <input type="checkbox" checked={isChecked} onChange={() => { }} style={{ marginTop: "3px", accentColor: "#7c3aed", flexShrink: 0 }} />
+                                  <div style={{ flex: 1, width: "100%" }}>{renderAlertContent(alert)}</div>
                                 </div>
                               ) : (
                                 <button className="triage-btn" key={idx} onClick={() => selectAlert(alert)}
-                                  style={{ ...styles.optionButton, textAlign: "left", padding: "12px", border: "1px solid #e0e0e0", borderRadius: "4px", cursor: "pointer", backgroundColor: "#fff", fontSize: "13px", transition: "all 0.2s" }}
-                                  onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "#f5f5f5"; e.currentTarget.style.borderColor = "#2196f3"; }}
-                                  onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "#fff"; e.currentTarget.style.borderColor = "#e0e0e0"; }}>
+                                  style={{ ...styles.optionButton, display: "block", width: "100%", boxSizing: "border-box", textAlign: "left", padding: "14px 16px", border: "1px solid #cbd5e1", borderRadius: "8px", cursor: "pointer", backgroundColor: "#fff", fontSize: "13px", transition: "all 0.2s" }}
+                                  onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "#f8fafc"; e.currentTarget.style.borderColor = "#2563eb"; }}
+                                  onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "#fff"; e.currentTarget.style.borderColor = "#cbd5e1"; }}>
                                   {renderAlertContent(alert)}
                                 </button>
                               );
@@ -1344,18 +1447,20 @@ export default function AlertSelectionView({
 
                               return (
                                 <div key={alertId} style={{
-                                  padding: "14px",
-                                  borderRadius: "6px",
-                                  border: isResolved ? "1px solid #c8e6c9" : (infoBulkMode && isBulkSelected ? "1px solid #7c3aed" : "1px solid #ddd"),
-                                  background: isResolved ? "#f1f8f2" : (infoBulkMode && isBulkSelected ? "#ede9fe" : "#fafafa"),
+                                  padding: "14px 16px",
+                                  borderRadius: "8px",
+                                  border: isResolved ? "1px solid #c8e6c9" : (infoBulkMode && isBulkSelected ? "1px solid #7c3aed" : "1px solid #cbd5e1"),
+                                  background: isResolved ? "#f1f8f2" : (infoBulkMode && isBulkSelected ? "#ede9fe" : "#ffffff"),
                                   display: "flex",
                                   flexDirection: "column",
-                                  gap: "8px",
+                                  gap: "4px",
+                                  boxSizing: "border-box",
+                                  width: "100%",
                                 }}>
                                   <div style={{
                                     fontWeight: "600",
-                                    fontSize: "14px",
-                                    color: isResolved ? "#2e7d32" : "#1a1a1a",
+                                    fontSize: "13.5px",
+                                    color: isResolved ? "#2e7d32" : "#0f172a",
                                     display: "flex",
                                     alignItems: "center",
                                     justifyContent: "space-between",
@@ -1383,13 +1488,10 @@ export default function AlertSelectionView({
                                   <div style={{
                                     fontSize: "12px",
                                     color: "#555",
-                                    backgroundColor: "#ffffff",
-                                    border: `1px solid ${isResolved ? "#c8e6c9" : "#bae6fd"}`,
-                                    borderRadius: "4px",
-                                    padding: "8px 10px",
                                     display: "flex",
                                     flexDirection: "column",
-                                    gap: "3px",
+                                    gap: "2px",
+                                    marginTop: "2px",
                                   }}>
                                     {parsed.tab && <div><strong>Tab:</strong> {parsed.tab}{parsed.slot ? ` (Slot ${parsed.slot})` : ""}</div>}
                                     {parsed.month && <div><strong>Month:</strong> {parsed.month}</div>}
@@ -1409,9 +1511,9 @@ export default function AlertSelectionView({
                                           {parsed.changes.map((ch, ci) => (
                                             <span key={ci} style={{
                                               padding: "2px 7px", borderRadius: "4px", fontSize: "11px", fontWeight: "600",
-                                              background: isResolved ? "#f1f8f2" : "#ffffff",
-                                              color: isResolved ? "#2e7d32" : "#0369a1",
-                                              border: `1px solid ${isResolved ? "#bbf7d0" : "#bae6fd"}`,
+                                              background: isResolved ? "#f1f8f2" : "#f1f5f9",
+                                              color: isResolved ? "#2e7d32" : "#334155",
+                                              border: `1px solid ${isResolved ? "#bbf7d0" : "#cbd5e1"}`,
                                             }}>
                                               {ch.label}
                                             </span>
@@ -1420,12 +1522,12 @@ export default function AlertSelectionView({
                                       </div>
                                     )}
                                     {parsed.highlight && (
-                                      <div style={{ marginTop: "4px", fontWeight: "700", color: isResolved ? "#2e7d32" : "#0369a1" }}>
+                                      <div style={{ marginTop: "4px", fontWeight: "600", color: isResolved ? "#2e7d32" : "#0284c7" }}>
                                         {parsed.highlight}
                                       </div>
                                     )}
                                     {parsed.rawText && (
-                                      <div style={{ marginTop: "3px", color: isResolved ? "#2e7d32" : "#666", lineHeight: "1.4" }}>
+                                      <div style={{ marginTop: "2px", color: isResolved ? "#2e7d32" : "#666", lineHeight: "1.4" }}>
                                         {isAdmin ? parsed.rawText : stripRowInfo(parsed.rawText)}
                                       </div>
                                     )}
@@ -1491,11 +1593,11 @@ export default function AlertSelectionView({
                                     <div style={{ fontSize: "12px", color: "#c62828", marginTop: "4px" }}>Error: {analysis.error}</div>
                                   )}
 
-                                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", marginTop: "4px" }}>
-                                    <div style={{ fontSize: "11px", color: "#aaa" }}>
-                                      {na.firstSeen ? `First seen: ${na.firstSeen.split("T")[0]}` : ""}
+                                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", marginTop: "6px" }}>
+                                    <div style={{ fontSize: "11px", color: "#888" }}>
+                                      {na.firstSeen ? `First seen: ${formatSeenTimestamp(na.firstSeen)}` : ""}
                                       {na.firstSeen && na.lastSeen ? " · " : ""}
-                                      {na.lastSeen ? `Last seen: ${na.lastSeen.split("T")[0]}` : ""}
+                                      {na.lastSeen ? `Last seen: ${formatSeenTimestamp(na.lastSeen)}` : ""}
                                     </div>
                                     {!isResolved && (
                                       <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
@@ -1671,9 +1773,9 @@ export default function AlertSelectionView({
                             const m = alert.metadata || {};
                             const isBulkSelected = proactiveBulkSelected.has(alert.rowIndex);
                             return (
-                              <div key={idx} style={{ border: `1px solid ${proactiveBulkMode && isBulkSelected ? "#7c3aed" : "#ddd"}`, borderRadius: "6px", padding: "14px", backgroundColor: proactiveBulkMode && isBulkSelected ? "#ede9fe" : "#fafafa" }}>
+                              <div key={idx} style={{ border: `1px solid ${proactiveBulkMode && isBulkSelected ? "#7c3aed" : "#cbd5e1"}`, borderRadius: "8px", padding: "14px 16px", backgroundColor: proactiveBulkMode && isBulkSelected ? "#ede9fe" : "#ffffff", boxSizing: "border-box", width: "100%", display: "flex", flexDirection: "column", gap: "4px" }}>
                                 {proactiveBulkMode && (
-                                  <label style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px", cursor: "pointer", fontSize: "12px", fontWeight: "600", color: "#5b21b6" }}>
+                                  <label style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600", color: "#5b21b6" }}>
                                     <input type="checkbox" checked={isBulkSelected} onChange={() => {
                                       setProactiveBulkSelected(prev => {
                                         const next = new Set(prev);
@@ -1684,12 +1786,12 @@ export default function AlertSelectionView({
                                     Select for bulk action
                                   </label>
                                 )}
-                                <div style={{ fontWeight: "600", fontSize: "14px", color: "#1a1a1a", marginBottom: "6px", display: "flex", alignItems: "center" }}>
+                                <div style={{ fontWeight: "600", fontSize: "13.5px", color: "#0f172a", marginBottom: "2px", display: "flex", alignItems: "center" }}>
                                   <span>{alert.heading}</span>
                                   {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(alert.alertType) && <AdminBadge show={clientHasManager} />}
                                 </div>
                                 {alert.alertType === "retainer_invoice" && (
-                                  <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                  <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                                     {m.endClientName && <div><strong>End client:</strong> {m.endClientName}</div>}
                                     {m.jobName && <div><strong>Job:</strong> {m.jobName}</div>}
                                     {m.confirmedRow && <div><strong>Confirmed tab row:</strong> {m.confirmedRow}</div>}
@@ -1699,14 +1801,14 @@ export default function AlertSelectionView({
                                     {m.lastInvoiceDate && <div><strong>Last invoice sent:</strong> {m.lastInvoiceDate}</div>}
                                     {m.expectedByDate && <div><strong>Next expected by:</strong> {m.expectedByDate}</div>}
                                     {m.possibleMatchInvoiceNo && (
-                                      <div style={{ marginTop: "8px", paddingTop: "8px", borderTop: "1px solid #bae6fd" }}>
+                                      <div style={{ marginTop: "6px", paddingTop: "6px", borderTop: "1px solid #e2e8f0" }}>
                                         {m.possibleMatchCase === "changed" && (
-                                          <div style={{ display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", marginBottom: "6px", background: "#ffffff", color: m.possibleMatchConfidence === "high" ? "#991b1b" : "#713f12", border: `1px solid ${m.possibleMatchConfidence === "high" ? "#fca5a5" : "#fde047"}` }}>
+                                          <div style={{ display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "600", marginBottom: "4px", background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca" }}>
                                             Possible retainer change - {m.possibleMatchConfidence === "high" ? "high" : "medium"} confidence
                                           </div>
                                         )}
                                         {m.possibleMatchCase === "draft" && (
-                                          <div style={{ display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", marginBottom: "6px", background: "#ffffff", color: "#075985", border: "1px solid #7dd3fc" }}>
+                                          <div style={{ display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "600", marginBottom: "4px", background: "#f0f9ff", color: "#0369a1", border: "1px solid #bae6fd" }}>
                                             Draft invoice found nearby
                                           </div>
                                         )}
@@ -1718,7 +1820,7 @@ export default function AlertSelectionView({
                                       </div>
                                     )}
                                     {m.confirmedRow && m.jobName && (!m.possibleMatchInvoiceNo || m.possibleMatchCase === "changed") && (
-                                      <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px solid #bae6fd", display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                                      <div style={{ marginTop: "8px", paddingTop: "8px", borderTop: "1px solid #e2e8f0", display: "flex", gap: "8px", flexWrap: "wrap" }}>
                                         {m.possibleMatchInvoiceNo ? (
                                           <>
                                             <button className="triage-btn" onClick={() => {
@@ -1742,25 +1844,25 @@ export default function AlertSelectionView({
                                 )}
 
                                 {alert.alertType === "uninvoiced_new_job" && (
-                                  <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                  <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                                     {m.endClientName && <div><strong>End client:</strong> {m.endClientName}</div>}
                                     {m.jobName && <div><strong>Job:</strong> {m.jobName}{m.projectCode ? ` [${m.projectCode}]` : ""}</div>}
                                     {m.confirmedRow && <div><strong>Confirmed tab row:</strong> {m.confirmedRow}</div>}
                                     {m.startDate && <div><strong>Job started:</strong> {m.startDate}</div>}
                                     {m.revenue && <div><strong>Revenue:</strong> £{parseFloat(m.revenue).toFixed(2)}</div>}
-                                    <div style={{ marginTop: "6px", fontWeight: "700", color: "#0369a1" }}>Over a month elapsed with zero real invoices sent.</div>
+                                    <div style={{ marginTop: "4px", color: "#c62828" }}>Over a month elapsed with zero real invoices sent.</div>
                                   </div>
                                 )}
 
                                 {alert.alertType === "uninvoiced_revenue" && (
-                                  <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                  <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                                     {m.endClientName && <div><strong>End client:</strong> {m.endClientName}</div>}
                                     {m.jobName && <div><strong>Job:</strong> {m.jobName}{m.projectCode ? ` [${m.projectCode}]` : ""}</div>}
                                     {m.confirmedRow && <div><strong>Confirmed tab row:</strong> {m.confirmedRow}</div>}
                                     {m.endDate && <div><strong>Job ended:</strong> {m.endDate}</div>}
                                     {m.revenue && <div><strong>Revenue:</strong> £{parseFloat(m.revenue).toFixed(2)}</div>}
-                                    {m.uninvoicedAmount && <div style={{ marginTop: "6px", fontWeight: "700", color: "#0369a1" }}>£{parseFloat(m.uninvoicedAmount).toFixed(2)} uninvoiced (placeholders and drafts excluded)</div>}
-                                    {m.draftCount && parseInt(m.draftCount) > 0 && <div style={{ marginTop: "6px", padding: "6px 8px", background: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", color: "#0369a1" }}>{m.draftCount} invoice{parseInt(m.draftCount) > 1 ? "s" : ""} totalling £{parseFloat(m.draftTotal || 0).toFixed(2)} {parseInt(m.draftCount) > 1 ? "have" : "has"} a reference but {parseInt(m.draftCount) > 1 ? "are" : "is"} still <strong>Draft</strong> (not yet sent) - not counted as invoiced above.</div>}
+                                    {m.uninvoicedAmount && <div style={{ marginTop: "4px", fontWeight: "600", color: "#c62828" }}>£{parseFloat(m.uninvoicedAmount).toFixed(2)} uninvoiced (placeholders and drafts excluded)</div>}
+                                    {m.draftCount && parseInt(m.draftCount) > 0 && <div style={{ marginTop: "4px", color: "#d97706" }}>{m.draftCount} invoice{parseInt(m.draftCount) > 1 ? "s" : ""} totalling £{parseFloat(m.draftTotal || 0).toFixed(2)} {parseInt(m.draftCount) > 1 ? "have" : "has"} a reference but {parseInt(m.draftCount) > 1 ? "are" : "is"} still <strong>Draft</strong> (not yet sent) - not counted as invoiced above.</div>}
                                   </div>
                                 )}
 
@@ -1777,15 +1879,15 @@ export default function AlertSelectionView({
                                   const pTotal = parseFloat(m.placeholderTotal || alert.placeholderTotal || parsed.placeholderTotal || "0");
 
                                   return (
-                                    <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                    <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                                       {clientName && <div><strong>End client:</strong> {clientName}</div>}
                                       {jName && <div><strong>Job:</strong> {jName}{pCode ? ` [${pCode}]` : ""}</div>}
                                       {confRow && <div><strong>Confirmed tab row:</strong> {confRow}</div>}
                                       {eDate && <div><strong>Job ended:</strong> {eDate}</div>}
                                       {dCosts && <div><strong>Direct cost budget:</strong> £{parseFloat(dCosts).toFixed(2)}</div>}
-                                      {unrecAmt && <div style={{ marginTop: "6px", fontWeight: "700", color: "#0369a1" }}>£{parseFloat(unrecAmt).toFixed(2)} unreceived (placeholders and estimates excluded)</div>}
+                                      {unrecAmt && <div style={{ marginTop: "4px", fontWeight: "600", color: "#c62828" }}>£{parseFloat(unrecAmt).toFixed(2)} unreceived (placeholders and estimates excluded)</div>}
                                       {pCount > 0 && (
-                                        <div style={{ marginTop: "6px", padding: "6px 8px", background: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", color: "#0369a1" }}>
+                                        <div style={{ marginTop: "4px", color: "#d97706" }}>
                                           {pCount} expense{pCount > 1 ? "s" : ""} totalling £{pTotal.toFixed(2)} {pCount > 1 ? "are placeholders - not counted as received above." : "is a placeholder - not counted as received above."}
                                         </div>
                                       )}
@@ -1805,21 +1907,21 @@ export default function AlertSelectionView({
                                   const desc = m.description || alert.description;
 
                                   return (
-                                    <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #fde68a", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                    <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                                       {contractor && <div><strong>Contractor:</strong> {contractor}</div>}
                                       <div><strong>Location:</strong> Outgoings tab{month ? ` (${month})` : ""}{cellCoord ? `, Cell ${cellCoord}` : ""}</div>
                                       {appId && <div><strong>App ID:</strong> {appId}</div>}
                                       {amount && <div><strong>Amount:</strong> £{parseFloat(amount).toFixed(2)}</div>}
                                       {recDate && <div><strong>Received date:</strong> {recDate} {weeksAgo ? <span style={{ color: "#b45309", fontWeight: "600" }}>({weeksAgo} weeks ago - overdue)</span> : null}</div>}
                                       {payDate && <div><strong>Estimated pay date:</strong> {payDate}</div>}
-                                      {desc && <div style={{ marginTop: "4px", color: "#78716c", fontStyle: "italic" }}>{desc}</div>}
+                                      {desc && <div style={{ marginTop: "2px", color: "#78716c", fontStyle: "italic" }}>{desc}</div>}
                                     </div>
                                   );
                                 })()}
 
                                 {alert.alertType === "retroactive_outgoings_update" && (
-                                  <div style={{ fontSize: "12px", color: "#334155", backgroundColor: "#ffffff", border: "1px solid #cbd5e1", borderRadius: "6px", padding: "10px 12px", marginBottom: "8px" }}>
-                                    <div style={{ whiteSpace: "pre-line", lineHeight: "1.5" }}>{alert.detail || alert.detailsSnippet || m.details}</div>
+                                  <div style={{ fontSize: "12px", color: "#555", marginTop: "2px", marginBottom: "4px", whiteSpace: "pre-line", lineHeight: "1.4" }}>
+                                    {alert.detail || alert.detailsSnippet || m.details}
                                   </div>
                                 )}
 
@@ -1844,15 +1946,12 @@ export default function AlertSelectionView({
                                   ];
 
                                   return (
-                                    <div style={{ backgroundColor: "#ffffff", border: "1px solid #ddd6fe", borderRadius: "8px", padding: "12px", marginBottom: "10px" }}>
-                                      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px" }}>
-                                        <span style={{ fontSize: "15px" }}>🏷️</span>
-                                        <div style={{ fontSize: "12px", color: "#4b5563", lineHeight: "1.4" }}>
-                                          This account is currently quarantined to ensure unverified expenses are not included. Select how it should be mapped:
-                                        </div>
+                                    <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "4px", marginTop: "2px", marginBottom: "4px" }}>
+                                      <div style={{ color: "#4b5563", lineHeight: "1.4" }}>
+                                        This account is currently quarantined to ensure unverified expenses are not included. Select how it should be mapped:
                                       </div>
 
-                                      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "10px", marginTop: "10px" }}>
+                                      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "10px", marginTop: "4px" }}>
                                         <select
                                           value={currentChoice}
                                           onChange={(e) => setSelectedClassifications(prev => ({ ...prev, [alert.alertKey]: e.target.value }))}
@@ -1907,17 +2006,17 @@ export default function AlertSelectionView({
                                 })()}
 
                                 {alert.alertType === "crm_wipe" && (
-                                  <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                  <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                                     {m.timestamp && <div><strong>Log timestamp:</strong> {m.timestamp}</div>}
                                     {m.sequenceType && <div><strong>Sequence:</strong> {m.sequenceType}</div>}
                                     {m.summary && <div><strong>Summary:</strong> {m.summary}</div>}
                                     {m.jobInfo && <div><strong>Job:</strong> {m.jobInfo}</div>}
-                                    {m.detailsSnippet && <div style={{ marginTop: "4px" }}><strong>AutoLog details:</strong><div style={{ fontFamily: "monospace", fontSize: "11px", color: "#666", marginTop: "2px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{m.detailsSnippet}</div></div>}
+                                    {m.detailsSnippet && <div style={{ marginTop: "4px" }}><strong>AutoLog details:</strong><div style={{ fontFamily: "monospace", fontSize: "11px", color: "#666", backgroundColor: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "4px", padding: "6px 8px", marginTop: "2px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{m.detailsSnippet}</div></div>}
                                   </div>
                                 )}
 
                                 {alert.alertType === "revenue_mismatch" && (
-                                  <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                  <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                                     {(() => {
                                       const detail = alert.detail || "";
                                       const mismatchIdx = detail.indexOf("Mismatched rows:");
@@ -1927,8 +2026,8 @@ export default function AlertSelectionView({
                                       const rows = rowsPart.split(";").map(s => s.trim()).filter(Boolean);
                                       return (
                                         <>
-                                          <div style={{ fontWeight: "600", marginBottom: "6px" }}>{header}</div>
-                                          <div style={{ fontWeight: "600", marginBottom: "4px" }}>Mismatched rows:</div>
+                                          <div style={{ fontWeight: "600", marginBottom: "4px" }}>{header}</div>
+                                          <div style={{ fontWeight: "600", marginBottom: "2px" }}>Mismatched rows:</div>
                                           {rows.map((row, i) => {
                                             const diffMatch = row.match(/[-\u2014]\s*diff/);
                                             const diffIdx = diffMatch ? diffMatch.index : -1;
@@ -1942,8 +2041,8 @@ export default function AlertSelectionView({
                                 )}
 
                                 {alert.alertType === "direct_costs_mismatch" && (
-                                  <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
-                                    {alert.metadata?.tab && <span style={{ display: "inline-block", marginBottom: "6px", padding: "2px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", background: "#ffffff", color: "#0369a1", border: "1px solid #bae6fd" }}>{alert.metadata.tab} tab</span>}
+                                  <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
+                                    {alert.metadata?.tab && <span style={{ display: "inline-block", marginBottom: "4px", padding: "2px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "600", background: "#f0f9ff", color: "#0369a1", border: "1px solid #bae6fd", width: "fit-content" }}>{alert.metadata.tab} tab</span>}
                                     {(() => {
                                       const detail = alert.detail || "";
                                       const mismatchIdx = detail.indexOf("Mismatched rows:");
@@ -1953,8 +2052,8 @@ export default function AlertSelectionView({
                                       const rows = rowsPart.split(";").map(s => s.trim()).filter(Boolean);
                                       return (
                                         <>
-                                          <div style={{ fontWeight: "600", marginBottom: "6px" }}>{header}</div>
-                                          <div style={{ fontWeight: "600", marginBottom: "4px" }}>Mismatched rows:</div>
+                                          <div style={{ fontWeight: "600", marginBottom: "4px" }}>{header}</div>
+                                          <div style={{ fontWeight: "600", marginBottom: "2px" }}>Mismatched rows:</div>
                                           {rows.map((row, i) => {
                                             const diffMatch = row.match(/[-\u2014]\s*diff/);
                                             const diffIdx = diffMatch ? diffMatch.index : -1;
@@ -1970,21 +2069,21 @@ export default function AlertSelectionView({
                                 {alert.alertType === "pipeline_confirmed_overlap" && (() => {
                                   const md = alert.metadata || {};
                                   return (
-                                    <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
-                                      <div style={{ fontWeight: "600", marginBottom: "6px" }}>Job exists in both tabs but Pipeline is not closed out</div>
-                                      <div style={{ marginBottom: "4px" }}><strong>Confirmed tab</strong></div>
+                                    <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
+                                      <div style={{ fontWeight: "600", color: "#c62828", marginBottom: "4px" }}>Job exists in both tabs but Pipeline is not closed out</div>
+                                      <div style={{ marginBottom: "2px" }}><strong>Confirmed tab</strong></div>
                                       {md.confirmedRow && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Row: {md.confirmedRow}</div>}
                                       {md.endClientName && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Client: {md.endClientName}</div>}
                                       {md.jobName && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Job: {md.jobName}</div>}
                                       {md.projectCode && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Project code: {md.projectCode}</div>}
                                       {md.jobType && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Job type: {md.jobType}</div>}
-                                      <div style={{ marginBottom: "4px", marginTop: "6px" }}><strong>Pipeline tab</strong></div>
+                                      <div style={{ marginBottom: "2px", marginTop: "4px" }}><strong>Pipeline tab</strong></div>
                                       {md.pipelineRow && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Row: {md.pipelineRow}</div>}
                                       <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Likelihood: <strong>{md.likelihood ? (parseFloat(md.likelihood) * 100).toFixed(0) + "%" : "(blank)"}</strong></div>
                                       <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>&quot;Copied to confirmed?&quot;: <strong>{md.copiedToConf || "(blank)"}</strong></div>
-                                      <div style={{ marginTop: "6px", color: "#0369a1", fontStyle: "italic" }}>Expected fix: set Pipeline likelihood to 0% or mark &quot;Copied to confirmed?&quot; as Yes.</div>
+                                      <div style={{ marginTop: "4px", color: "#0369a1", fontStyle: "italic" }}>Expected fix: set Pipeline likelihood to 0% or mark &quot;Copied to confirmed?&quot; as Yes.</div>
                                       {md.pipelineRow && (
-                                        <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px solid #bae6fd" }}>
+                                        <div style={{ marginTop: "8px", paddingTop: "8px", borderTop: "1px solid #e2e8f0" }}>
                                           <button className="triage-btn" onClick={() => markPipelineCopied(alert)} style={{ padding: "6px 14px", background: "#16a34a", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>✓ Mark &quot;Copied to confirmed?&quot; = Yes</button>
                                         </div>
                                       )}
@@ -1995,11 +2094,11 @@ export default function AlertSelectionView({
                                 {alert.alertType === "retainer_shrink_blocked" && (() => {
                                   const md = alert.metadata || {};
                                   return (
-                                    <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
-                                      <div style={{ fontWeight: "600", marginBottom: "6px" }}>Retainer contract shrunk - excess child row could not be removed automatically</div>
+                                    <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
+                                      <div style={{ fontWeight: "600", color: "#c62828", marginBottom: "4px" }}>Retainer contract shrunk - excess child row could not be removed automatically</div>
                                       {md.clientJobStr && <div style={{ marginBottom: "2px" }}><strong>Job:</strong> {md.clientJobStr}</div>}
                                       {md.childRowNum && <div style={{ marginBottom: "2px" }}><strong>Blocked child row:</strong> {md.childRowNum}</div>}
-                                      {md.timestamp && <div style={{ marginBottom: "6px" }}><strong>First detected:</strong> {String(md.timestamp).slice(0, 10)}</div>}
+                                      {md.timestamp && <div style={{ marginBottom: "4px" }}><strong>First detected:</strong> {String(md.timestamp).slice(0, 10)}</div>}
                                       <div style={{ color: "#0369a1", fontStyle: "italic" }}>Row {md.childRowNum} falls outside the new contract period but contains actuals (invoices or expenses) so cannot be auto-removed. Manual review required.</div>
                                     </div>
                                   );
@@ -2008,22 +2107,22 @@ export default function AlertSelectionView({
                                 {alert.alertType === "autolog_error" && (() => {
                                   const md = alert.metadata || {};
                                   return (
-                                    <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                    <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                                       {md.category && <div style={{ marginBottom: "2px" }}><strong>Category / Step:</strong> {md.category}</div>}
                                       {md.occurrenceCount && <div style={{ marginBottom: "2px" }}><strong>Occurrences (last 100 log rows):</strong> {md.occurrenceCount}</div>}
                                       {md.timestamp && <div style={{ marginBottom: "2px" }}><strong>Last seen in log:</strong> {md.timestamp}</div>}
                                       {md.errorSnippet && (
-                                        <div style={{ marginTop: "6px" }}>
+                                        <div style={{ marginTop: "4px" }}>
                                           <strong>Extracted error:</strong>
-                                          <div style={{ fontFamily: "monospace", fontSize: "11px", color: "#0369a1", backgroundColor: "#fafafa", border: "1px solid #e2e8f0", borderRadius: "4px", padding: "6px 8px", marginTop: "3px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                                          <div style={{ fontFamily: "monospace", fontSize: "11px", color: "#0369a1", backgroundColor: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "4px", padding: "6px 8px", marginTop: "2px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
                                             {md.errorSnippet}
                                           </div>
                                         </div>
                                       )}
                                       {md.rawSnippet && md.rawSnippet !== md.errorSnippet && (
-                                        <div style={{ marginTop: "6px" }}>
+                                        <div style={{ marginTop: "4px" }}>
                                           <strong>AutoLog context:</strong>
-                                          <div style={{ fontFamily: "monospace", fontSize: "11px", color: "#666", backgroundColor: "#fafafa", border: "1px solid #e2e8f0", borderRadius: "4px", padding: "6px 8px", marginTop: "3px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                                          <div style={{ fontFamily: "monospace", fontSize: "11px", color: "#666", backgroundColor: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "4px", padding: "6px 8px", marginTop: "2px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
                                             {md.rawSnippet}
                                           </div>
                                         </div>
@@ -2035,30 +2134,30 @@ export default function AlertSelectionView({
                                 {alert.alertType === "infinite_loop" && (() => {
                                   const md = alert.metadata || {};
                                   return (
-                                    <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
-                                      <div style={{ display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", marginBottom: "6px", background: "#ffffff", color: "#0369a1", border: "1px solid #bae6fd" }}>
+                                    <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
+                                      <div style={{ display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "600", marginBottom: "4px", background: "#f0f9ff", color: "#0369a1", border: "1px solid #bae6fd", width: "fit-content" }}>
                                         {md.conflictType === "intra_run_oscillation" ? "Within-run oscillation" : "Multi-run flip-flop"}
                                       </div>
                                       {md.invoiceNo && <div style={{ marginBottom: "2px" }}><strong>Invoice:</strong> {md.invoiceNo}</div>}
                                       {md.fieldName && <div style={{ marginBottom: "2px" }}><strong>Conflicting field:</strong> {md.fieldName}</div>}
                                       {(md.transition1 || md.transition2) && (
-                                        <div style={{ marginTop: "6px" }}>
+                                        <div style={{ marginTop: "4px" }}>
                                           <strong>Conflicting transitions:</strong>
-                                          <div style={{ fontFamily: "monospace", fontSize: "11px", color: "#0369a1", backgroundColor: "#fafafa", border: "1px solid #e2e8f0", borderRadius: "4px", padding: "6px 8px", marginTop: "3px" }}>
+                                          <div style={{ fontFamily: "monospace", fontSize: "11px", color: "#0369a1", backgroundColor: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "4px", padding: "6px 8px", marginTop: "2px" }}>
                                             {md.transition1 && <div>1. {md.transition1}</div>}
                                             {md.transition2 && <div>2. {md.transition2}</div>}
                                           </div>
                                         </div>
                                       )}
                                       {md.suggestion && (
-                                        <div style={{ marginTop: "6px", color: "#0369a1", fontStyle: "italic" }}>
+                                        <div style={{ marginTop: "4px", color: "#0369a1", fontStyle: "italic" }}>
                                           💡 {md.suggestion}
                                         </div>
                                       )}
                                       {md.rawSnippet && (
-                                        <div style={{ marginTop: "6px" }}>
+                                        <div style={{ marginTop: "4px" }}>
                                           <strong>AutoLog context:</strong>
-                                          <div style={{ fontFamily: "monospace", fontSize: "11px", color: "#666", backgroundColor: "#fafafa", border: "1px solid #e2e8f0", borderRadius: "4px", padding: "6px 8px", marginTop: "3px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                                          <div style={{ fontFamily: "monospace", fontSize: "11px", color: "#666", backgroundColor: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "4px", padding: "6px 8px", marginTop: "2px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
                                             {md.rawSnippet}
                                           </div>
                                         </div>
@@ -2068,36 +2167,36 @@ export default function AlertSelectionView({
                                 })()}
 
                                 {alert.alertType === "deleted_invoice" && (
-                                  <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                  <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                                     {(m.endClientName || alert.endClientName) && <div><strong>End client:</strong> {m.endClientName || alert.endClientName}</div>}
                                     {(m.jobName || alert.jobName) && <div><strong>Job:</strong> {m.jobName || alert.jobName}{(m.projectCode || alert.projectCode) ? ` [${m.projectCode || alert.projectCode}]` : ""}</div>}
                                     {(m.confirmedRow || alert.confirmedRow) && <div><strong>Confirmed tab row:</strong> {m.confirmedRow || alert.confirmedRow}</div>}
                                     {(m.stableJobKey || alert.stableJobKey) && <div><strong>Invoice ref:</strong> {m.stableJobKey || alert.stableJobKey}</div>}
-                                    <div style={{ marginTop: "4px", color: "#0369a1", fontStyle: "italic" }}>
+                                    <div style={{ marginTop: "4px", color: "#c62828" }}>
                                       Invoice reference appears on Confirmed tab but was not found in the accounting system (it may have been deleted or voided in Xero).
                                     </div>
                                   </div>
                                 )}
 
                                 {alert.alertType === "deleted_expense" && (
-                                  <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                  <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                                     {(m.endClientName || alert.endClientName) && <div><strong>End client:</strong> {m.endClientName || alert.endClientName}</div>}
                                     {(m.jobName || alert.jobName) && <div><strong>Job:</strong> {m.jobName || alert.jobName}</div>}
                                     {(m.confirmedRow || alert.confirmedRow) && <div><strong>Confirmed tab row:</strong> {m.confirmedRow || alert.confirmedRow}</div>}
                                     {(m.stableJobKey || alert.stableJobKey) && <div><strong>Expense ID / Ref:</strong> {m.stableJobKey || alert.stableJobKey}</div>}
-                                    <div style={{ marginTop: "4px", color: "#0369a1", fontStyle: "italic" }}>
+                                    <div style={{ marginTop: "4px", color: "#c62828" }}>
                                       Expense reference appears on Confirmed tab but was not found in the accounting system (it may have been deleted or voided in Xero).
                                     </div>
                                   </div>
                                 )}
 
                                 {alert.alertType === "job_structure_error" && (
-                                  <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                  <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                                     {(m.endClientName || alert.endClientName) && <div><strong>End client:</strong> {m.endClientName || alert.endClientName}</div>}
                                     {(m.jobName || alert.jobName) && <div><strong>Job:</strong> {m.jobName || alert.jobName}{(m.projectCode || alert.projectCode) ? ` [${m.projectCode || alert.projectCode}]` : ""}</div>}
                                     {(m.confirmedRow || alert.confirmedRow) && <div><strong>Confirmed tab row:</strong> {m.confirmedRow || alert.confirmedRow}</div>}
                                     {alert.detail && (
-                                      <div style={{ marginTop: "4px", color: "#c2410c", fontWeight: "500" }}>
+                                      <div style={{ marginTop: "4px", color: "#c62828" }}>
                                         {isAdmin ? alert.detail : stripRowInfo(alert.detail)}
                                       </div>
                                     )}
@@ -2105,7 +2204,7 @@ export default function AlertSelectionView({
                                 )}
 
                                 {!KNOWN_PROACTIVE_TYPES.has(alert.alertType) && (
-                                  <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#ffffff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                  <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                                     {(m.endClientName || alert.endClientName) && <div><strong>End client:</strong> {m.endClientName || alert.endClientName}</div>}
                                     {(m.jobName || alert.jobName) && <div><strong>Job:</strong> {m.jobName || alert.jobName}{(m.projectCode || alert.projectCode) ? ` [${m.projectCode || alert.projectCode}]` : ""}</div>}
                                     {(m.confirmedRow || alert.confirmedRow) && <div><strong>Confirmed tab row:</strong> {m.confirmedRow || alert.confirmedRow}</div>}
@@ -2117,8 +2216,12 @@ export default function AlertSelectionView({
                                   </div>
                                 )}
 
-                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                                  <div style={{ fontSize: "11px", color: "#aaa" }}>First seen: {alert.firstSeen} · Last seen: {alert.lastSeen}</div>
+                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", marginTop: "6px" }}>
+                                  <div style={{ fontSize: "11px", color: "#888" }}>
+                                    {alert.firstSeen ? `First seen: ${formatSeenTimestamp(alert.firstSeen)}` : ""}
+                                    {alert.firstSeen && alert.lastSeen ? " · " : ""}
+                                    {alert.lastSeen ? `Last seen: ${formatSeenTimestamp(alert.lastSeen)}` : ""}
+                                  </div>
                                   <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
                                     {(() => {
                                       const cName = alert.clientName || selectedClient?.clientName;

@@ -219,7 +219,8 @@ export default function TasksView({
     setTaskActionError("");
     try {
       const alertObj = JSON.parse(task.alertDataJSON || "{}");
-      const clientInfo = allClientsMap[task.clientName] || {};
+      const clientInfo = (allClientsMap && (allClientsMap[task.clientName] || Object.values(allClientsMap).find(c => c.clientName?.toLowerCase() === task.clientName?.toLowerCase()))) || {};
+      const acId = automationCommanderSheetId || "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
       const res = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -227,9 +228,9 @@ export default function TasksView({
           action: "analyze_noaction_flag",
           flagType: task.alertType || alertObj.flagType || alertObj.alertType || alertObj.type,
           clientSheetId: clientInfo.clientSheetId || alertObj.clientSheetId || alertObj.clientId,
-          masterSheetId: clientInfo.masterSheetId || alertObj.masterSheetId,
-          automationCommanderSheetId,
-          clientName: task.clientName,
+          masterSheetId: clientInfo.masterSheetId || alertObj.masterSheetId || alertObj.clientId,
+          automationCommanderSheetId: acId,
+          clientName: task.clientName || alertObj.clientName,
           targetLine: alertObj.detail || alertObj.summary?.summary || task.alertSummary,
         }),
       });

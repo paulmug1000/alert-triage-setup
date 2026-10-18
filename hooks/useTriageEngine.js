@@ -313,13 +313,24 @@ export function useTriageEngine({
     try {
       console.log(`\n📍 selectClient called: ${client.clientName}`);
       setSelectingClient(client.clientName);
-      setSelectedClient(client);
+      const enrichedClient = {
+        ...((allClientsMap && allClientsMap[client.clientName]) || {}),
+        ...((clientsWithFlags || []).find(c => c.clientName === client.clientName) || {}),
+        ...client,
+      };
+      if (!enrichedClient.clientSheetId && allClientsMap && allClientsMap[client.clientName]?.clientSheetId) {
+        enrichedClient.clientSheetId = allClientsMap[client.clientName].clientSheetId;
+      }
+      if (!enrichedClient.masterSheetId && allClientsMap && allClientsMap[client.clientName]?.masterSheetId) {
+        enrichedClient.masterSheetId = allClientsMap[client.clientName].masterSheetId;
+      }
+      setSelectedClient(enrichedClient);
       setCurrentClientAlertIndex(0);
       setAcceptError("");
       
-      console.log(`Selected client: ${client.clientName}`);
-      console.log(`  masterSheetId: ${client.masterSheetId}`);
-      console.log(`  clientSheetId: ${client.clientSheetId}`);
+      console.log(`Selected client: ${enrichedClient.clientName}`);
+      console.log(`  masterSheetId: ${enrichedClient.masterSheetId}`);
+      console.log(`  clientSheetId: ${enrichedClient.clientSheetId}`);
       
       console.log(`  Fetching alerts from Redis (sessionId: ${sessionId})`);
       const response = await fetch(`/api/triage?action=get_alerts&sessionId=${sessionId}`);
@@ -427,7 +438,36 @@ export function useTriageEngine({
       
       setScreen("triageAnalysis");
       
-      if (alert.options && alert.options.length > 0) {
+      // Validate that cached options are complete and do not contain deprecated fallback cards
+      const isInvoiceAlert = alert.type === "invoice" || alert.flagType === "invoiceDashboardDiscr" || alert.alertType === "invoiceDashboardDiscr" || alert.sheetName === "InvComp";
+      const isInvMissing = String(alert.data?.flags?.[0] || "").trim() === "1";
+      const isDataMismatch = isInvoiceAlert && !isInvMissing;
+      const isDupInvoice = Boolean(alert.isDuplicateInvoice || String(alert.data?.flags?.[4] || "").trim() === "1" || (alert.spreadsheetItems && alert.spreadsheetItems.length > 1));
+      const isCrmAlert = alert.type === "crm" || alert.sheetName === "CRMComp" || Boolean(alert.alertType?.startsWith("crm")) || Boolean(alert.flagType?.startsWith("crm"));
+      const isCrmMismatch = isCrmAlert && alert.subType === "field_mismatch";
+      const isExpAlert = alert.type === "expense" || alert.sheetName === "DirComp" || alert.flagType === "expenseDashboardDiscr" || alert.alertType === "expenseDashboardDiscr";
+      const isExpMismatch = isExpAlert && String(alert.data?.flags?.[0] || "").trim() !== "1";
+
+      const hasStaleOrIncompleteCache = alert.options && alert.options.length > 0 && alert.options.some(opt => {
+        // If it's a candidate job option but jobRowsData or jobDetails is missing revenue, dates, and type
+        if (opt.jobRowsData && opt.jobRowsData.length > 0) {
+          const row0 = opt.jobRowsData[0] || {};
+          const hasRev = row0.revenue && String(row0.revenue).trim() !== "" && String(row0.revenue).trim() !== "0";
+          const hasDates = Boolean(row0.startDate || row0.endDate);
+          const hasType = Boolean(row0.projectRetainer);
+          if (!hasRev && !hasDates && !hasType) return true;
+        }
+        const title = String(opt.title || "").toLowerCase();
+        if (title.includes("manual investigation") || title.includes("no confident automatic match")) return true;
+        if (opt.title && (opt.title.includes("CREATE NEW") || title.includes("321 - subcontractors") || (title.includes("outgoings vendor") && (/"\s*\d+\s*-/.test(title) || /outgoings vendor "[^"]*[\(\[]/i.test(opt.title))))) return true;
+        if (isDataMismatch && (!opt.actionButtonText || String(opt.actionButtonText).includes("Mark as reviewed") || opt.matchType === "info")) return true;
+        if (isDupInvoice && !alert.options.some(o => o.matchType === "delete" || String(o.title || "").includes("Clear invoice"))) return true;
+        if (isCrmMismatch && (!opt.actionButtonText || alert.options.length !== 2 || String(opt.actionButtonText).includes("Mark as reviewed") || opt.matchType === "info")) return true;
+        if (isExpMismatch && (!opt.actionButtonText || alert.options.length > 2 || String(opt.actionButtonText).includes("Mark as reviewed") || opt.matchType === "info")) return true;
+        return false;
+      });
+
+      if (alert.options && alert.options.length > 0 && !hasStaleOrIncompleteCache) {
         console.log(`✅ Using cached options instantly`);
         setFromCache(true);
         setClaudeAnalysis(JSON.stringify(alert.options, null, 2));
@@ -804,20 +844,32 @@ export function useTriageEngine({
 
   const analyzeNoActionFlag = async (na) => {
     const key = na.fingerprintHash || na.flagType;
-    if (!selectedClient || noActionAnalysisLoading[key]) return;
+    if ((!selectedClient && !na.clientName) || noActionAnalysisLoading[key]) return;
     setNoActionAnalysisLoading(prev => ({ ...prev, [key]: true }));
+
+    const clientName = selectedClient?.clientName || na.clientName;
+    const clientInfo =
+      (allClientsMap && clientName && allClientsMap[clientName]) ||
+      (clientsWithFlags || []).find(c => c.clientName === clientName) ||
+      selectedClient || {};
+
+    const clientSheetId = clientInfo.clientSheetId || selectedClient?.clientSheetId || na.clientSheetId || na.clientId;
+    const masterSheetId = clientInfo.masterSheetId || selectedClient?.masterSheetId || na.masterSheetId || na.clientId;
+    const targetLine = na.flagDetail || na.detail || na.alertSummary;
+    const acId = automationCommanderSheetId || "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
+
     try {
       const resp = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "analyze_noaction_flag",
-          flagType: na.flagType,
-          clientSheetId: selectedClient.clientSheetId,
-          masterSheetId: selectedClient.masterSheetId,
-          automationCommanderSheetId,
-          clientName: selectedClient.clientName,
-          targetLine: na.flagDetail,
+          flagType: na.flagType || na.alertType,
+          clientSheetId,
+          masterSheetId,
+          automationCommanderSheetId: acId,
+          clientName,
+          targetLine,
         }),
       });
       const data = await resp.json();

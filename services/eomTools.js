@@ -1,5 +1,6 @@
 import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "./sheetsClient";
 import { redisClient } from "./redisClient";
+import { memoryCache } from "./cacheService";
 import { logPmaActivity } from "./pmaLogger";
 
 // Moved from triage.js local scope
@@ -78,7 +79,7 @@ export async function autoCompleteLinkedEomTask_(sheets, automationCommanderShee
     ]);
     const linkedTemplateIds = new Set((templatesR.data.values || []).filter(r => r[0] && r[3] === linkedFunctionValue).map(r => r[0]));
     const linkedTask = (clientTasksR.data.values || []).find(r =>
-      r[0] && r[1] === clientName && linkedTemplateIds.has(r[2]) && (r[5] !== "FALSE" && r[5] !== false)
+      r[0] && r[1] === clientName && (linkedTemplateIds.has(r[2]) || r[7] === linkedFunctionValue) && (r[5] !== "FALSE" && r[5] !== false)
     );
     if (!linkedTask) return false;
 
@@ -793,6 +794,125 @@ export async function handleEomMarkMonthActual(req, res, sheets) {
   }
 }
 
+export function findNbToFindColIndex_(headers, monthKey) {
+  if (!Array.isArray(headers) || !monthKey) return -1;
+  const [targetYear, targetMonth] = monthKey.split("-").map(Number);
+  const monthLabel = eomKeyToMonthStr_(monthKey);
+
+  for (let i = 0; i < headers.length; i++) {
+    const h = headers[i];
+    if (!h) continue;
+    if (isDateMatchJs_(h, monthLabel)) return i;
+
+    const str = String(h).trim();
+    const dMatch = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+    if (dMatch) {
+      let m = parseInt(dMatch[2], 10);
+      let y = parseInt(dMatch[3], 10);
+      if (y < 100) y += 2000;
+      if (y === targetYear && m === targetMonth) return i;
+    }
+
+    const num = Number(h);
+    if (!isNaN(num) && num > 30000 && num < 60000) {
+      const d = new Date(Math.round((num - 25569) * 86400 * 1000));
+      if (d.getUTCFullYear() === targetYear && (d.getUTCMonth() + 1) === targetMonth) {
+        return i;
+      }
+    }
+  }
+  return -1;
+}
+
+export async function handleEomMarkNbExclude(req, res, sheets) {
+  const { automationCommanderSheetId, clientSheetId, clientName, workMonthKey, mode } = req.body;
+  if (!automationCommanderSheetId || !clientSheetId || !clientName || !workMonthKey) {
+    return res.status(400).json({ success: false, error: "Missing required fields" });
+  }
+  try {
+    const targetMonthKey = eomWorkMonthToTargetMonth_(workMonthKey);
+    const targetMonthLabel = eomKeyToMonthStr_(targetMonthKey);
+    const currentMonthKey = workMonthKey;
+    const currentMonthLabel = eomKeyToMonthStr_(currentMonthKey);
+
+    const headerResp = await sheets.spreadsheets.values.get({
+      spreadsheetId: clientSheetId,
+      range: "NBtoFind!1:1",
+      valueRenderOption: "FORMATTED_VALUE"
+    });
+    const headers = headerResp.data.values?.[0] || [];
+    if (!headers.length) {
+      return res.status(400).json({ success: false, error: "Could not read headers on the NBtoFind tab." });
+    }
+
+    const targetColIdx0 = findNbToFindColIndex_(headers, targetMonthKey);
+    if (targetColIdx0 === -1) {
+      return res.status(400).json({
+        success: false,
+        error: `Could not find a column for target month (${targetMonthLabel}) on the NBtoFind tab.`
+      });
+    }
+
+    const updates = [];
+    const markedMonths = [];
+    const targetColLetter = columnIndexToLetter_(targetColIdx0 + 1);
+    updates.push({
+      range: `NBtoFind!${targetColLetter}25`,
+      values: [["No"]]
+    });
+    markedMonths.push(targetMonthLabel);
+
+    const shouldMarkBoth = mode === "both" || mode === "both_months";
+    if (shouldMarkBoth) {
+      const currentColIdx0 = findNbToFindColIndex_(headers, currentMonthKey);
+      if (currentColIdx0 === -1) {
+        return res.status(400).json({
+          success: false,
+          error: `Could not find a column for current month (${currentMonthLabel}) on the NBtoFind tab.`
+        });
+      }
+      const currentColLetter = columnIndexToLetter_(currentColIdx0 + 1);
+      updates.push({
+        range: `NBtoFind!${currentColLetter}25`,
+        values: [["No"]]
+      });
+      markedMonths.push(currentMonthLabel);
+    }
+
+    await sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId: clientSheetId,
+      requestBody: {
+        valueInputOption: "USER_ENTERED",
+        data: updates
+      }
+    });
+
+    // Invalidate NBtoFind cache so the UI reflects the change immediately
+    const cacheKey = `pma_nbtofind_${clientSheetId}`;
+    try {
+      if (redisClient?.isOpen) await redisClient.del(cacheKey);
+      else memoryCache?.delete(cacheKey);
+    } catch (e) {
+      console.warn("NBtoFind cache invalidate error:", e?.message);
+    }
+
+    await autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, clientName, "mark_nb_exclude", workMonthKey);
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId,
+      clientName,
+      category: "EOM",
+      action: "Exclude NB to Find Marked",
+      summary: `Marked NB to find as 'No' for ${markedMonths.join(" and ")} in row 25 on NBtoFind tab for ${clientName}`,
+      details: { clientName, markedMonths, ranges: updates.map(u => u.range) }
+    }).catch(e => console.error("PMA log failed:", e));
+
+    return res.status(200).json({ success: true, clientName, markedMonths, ranges: updates.map(u => u.range) });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
 export const EOM_SEED_DATA = {
   "templates": [
     {
@@ -902,6 +1022,11 @@ export const EOM_SEED_DATA = {
         "GeoBrand": "Change \"forecast\" to \"actual\" in Master Performance tab",
         "Seen": "Change \"forecast\" to \"actual\" in Master Performance tab"
       }
+    },
+    {
+      "name": "Mark month to NOT include new business to find",
+      "linkedFunction": "mark_nb_exclude",
+      "clients": {}
     },
     {
       "name": "Create backup of dashboard in static sheet",
@@ -1140,7 +1265,7 @@ export async function handleEomSeedFromChecklist(req, res, sheets) {
     for (const t of EOM_SEED_DATA.templates) {
       if (templateIdByName[t.name]) continue;
       const newId = `tmpl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      const linkedFunction = t.name.toLowerCase().includes("salaries") ? "salaries" : "";
+      const linkedFunction = t.linkedFunction || (t.name.toLowerCase().includes("salaries") ? "salaries" : "");
       newTemplateRows.push([newId, t.name, "", linkedFunction, true, new Date().toISOString()]);
       templateIdByName[t.name] = newId;
     }

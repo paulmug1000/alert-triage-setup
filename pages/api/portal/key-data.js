@@ -876,13 +876,20 @@ export default async function handler(req, res) {
     const nbHeadersY2 = (nbtofindRows[0] || []).slice(21, 33).map((h) => String(h || "").trim());
     const nbHeadersY3 = (nbtofindRows[0] || []).slice(36, 48).map((h) => String(h || "").trim());
 
-    const nbTargetRow = nbtofindRows.find((r) => String(r[0] || "").toLowerCase().includes("new business"));
-    const nbY1 = nbTargetRow ? nbTargetRow.slice(6, 18).map(formatMoneyVal) : [];
-    const nbY2 = nbTargetRow ? nbTargetRow.slice(21, 33).map(formatMoneyVal) : [];
-    const nbY3 = nbTargetRow ? nbTargetRow.slice(36, 48).map(formatMoneyVal) : [];
+    // Row 18: NB to find figure to use (1-indexed Row 18 is 0-indexed index 17)
+    const nbTargetRow = nbtofindRows[17] || nbtofindRows.find((r) => String(r[0] || "").toLowerCase().includes("figure to use")) || [];
+    const nbY1 = nbTargetRow.length > 0 ? (nbTargetRow.slice(6, 18) || []).map(formatMoneyVal) : [];
+    const nbY2 = nbTargetRow.length > 0 ? (nbTargetRow.slice(21, 33) || []).map(formatMoneyVal) : [];
+    const nbY3 = nbTargetRow.length > 0 ? (nbTargetRow.slice(36, 48) || []).map(formatMoneyVal) : [];
+
+    // Row 23: NB to find direct costs to use (1-indexed Row 23 is 0-indexed index 22)
+    const nbDirectCostsRow = nbtofindRows[22] || nbtofindRows.find((r) => String(r[0] || "").toLowerCase().includes("direct costs to use")) || [];
+    const nbDcY1 = nbDirectCostsRow.length > 0 ? (nbDirectCostsRow.slice(6, 18) || []).map(formatMoneyVal) : [];
+    const nbDcY2 = nbDirectCostsRow.length > 0 ? (nbDirectCostsRow.slice(21, 33) || []).map(formatMoneyVal) : [];
+    const nbDcY3 = nbDirectCostsRow.length > 0 ? (nbDirectCostsRow.slice(36, 48) || []).map(formatMoneyVal) : [];
 
     const sumNB = (arr) =>
-      arr.reduce((acc, v) => acc + parseMoney(v), 0);
+      (arr || []).reduce((acc, v) => acc + parseMoney(v), 0);
 
     const totalConfirmedRevenue = confirmedJobs.reduce((acc, j) => acc + j.revNum, 0);
     const totalPipelineRevenue = pipelineJobs.reduce((acc, j) => acc + j.revNum, 0);
@@ -996,6 +1003,8 @@ export default async function handler(req, res) {
           3: nbHeadersY3,
         },
         currentYear: currentOutgoingsYear,
+        mode,
+        isRevenueMode: mode.toLowerCase() === "revenue",
         allocations: {
           1: nbY1,
           2: nbY2,
@@ -1007,7 +1016,19 @@ export default async function handler(req, res) {
           2: sumNB(nbY2),
           3: sumNB(nbY3),
         },
+        directCosts: {
+          1: nbDcY1,
+          2: nbDcY2,
+          3: nbDcY3,
+        },
+        monthlyDirectCosts: currentOutgoingsYear === 2 ? nbDcY2 : (currentOutgoingsYear === 3 ? nbDcY3 : nbDcY1),
+        totalDirectCosts: {
+          1: sumNB(nbDcY1),
+          2: sumNB(nbDcY2),
+          3: sumNB(nbDcY3),
+        },
       },
+      mode,
       formOptions: {
         leadSources,
         productLines,

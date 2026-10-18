@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import Spinner from "./Spinner";
 import { useAuth } from "../hooks/useAuth";
+import { formatMoney as universalFormatMoney, parseMoney } from "../services/deepDiveHelper";
+import { downloadCsv } from "../utils/helpers";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPERS
@@ -16,19 +18,80 @@ function colIndexToLetter(colNum) {
   return letter;
 }
 
-function formatCurrency(val) {
-  if (val === "" || val === null || val === undefined) return "";
-  const str = String(val).trim();
-  if (str === "-" || str === "£-") return "-";
-  const clean = str.replace(/[£,\s]/g, "");
-  if (!isNaN(clean) && clean !== "") {
-    const num = Math.round(Number(clean));
-    if (num < 0) {
-      return `-£${Math.abs(num).toLocaleString("en-GB")}`;
-    }
-    return `£${num.toLocaleString("en-GB")}`;
+export const parseSheetDate = (dStr) => {
+  if (!dStr) return null;
+  if (dStr instanceof Date) return isNaN(dStr.getTime()) ? null : dStr;
+  const s = String(dStr).trim();
+  const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+
+  // 0. Serial number (Google Sheets date integer)
+  if (/^\d{5}$/.test(s)) {
+    const serial = parseInt(s, 10);
+    return new Date((serial - 25569) * 86400 * 1000);
   }
-  return str;
+
+  // 1. ISO format: YYYY-MM-DD
+  const isoMatch = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (isoMatch) {
+    const yr = parseInt(isoMatch[1], 10);
+    const mIdx = parseInt(isoMatch[2], 10) - 1;
+    const day = parseInt(isoMatch[3], 10);
+    return new Date(yr, mIdx, day);
+  }
+
+  // 2. DD-Mon-YY or DD-Mon-YYYY or D Mon YYYY or DD/Mon/YYYY
+  const m = s.match(/^(\d{1,2})[-/\s]([A-Za-z]+)[-/\s](\d{2,4})$/);
+  if (m) {
+    const mIdx = months[m[2].toLowerCase().slice(0, 3)];
+    if (mIdx !== undefined) {
+      let yr = parseInt(m[3], 10);
+      if (yr < 100) yr += yr <= 69 ? 2000 : 1900;
+      return new Date(yr, mIdx, parseInt(m[1], 10));
+    }
+  }
+
+  // 3. Mon-YY or Mon YYYY
+  const myMatch = s.match(/^([A-Za-z]+)[-/\s](\d{2,4})$/);
+  if (myMatch) {
+    const mIdx = months[myMatch[1].toLowerCase().slice(0, 3)];
+    if (mIdx !== undefined) {
+      let yr = parseInt(myMatch[2], 10);
+      if (yr < 100) yr += yr <= 69 ? 2000 : 1900;
+      return new Date(yr, mIdx, 1);
+    }
+  }
+
+  // 4. DD/MM/YYYY
+  const slashMatch = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (slashMatch) {
+    let yr = parseInt(slashMatch[3], 10);
+    if (yr < 100) yr += yr <= 69 ? 2000 : 1900;
+    return new Date(yr, parseInt(slashMatch[2], 10) - 1, parseInt(slashMatch[1], 10));
+  }
+
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+};
+
+function parseNum(val) {
+  if (val === null || val === undefined || val === "") return 0;
+  if (typeof val === "number") return isNaN(val) ? 0 : val;
+  const s = String(val).trim();
+  if (!s || s === "-" || s === "£-" || s === "$-" || s === "€-") return 0;
+  const isNeg = (s.startsWith("(") && s.endsWith(")")) || s.startsWith("-");
+  const cleaned = s.replace(/[£$€,\s()]/g, "");
+  const num = parseFloat(cleaned);
+  if (isNaN(num)) return 0;
+  return isNeg ? -Math.abs(num) : num;
+}
+
+function parsePct(val) {
+  if (val === null || val === undefined || val === "") return 0;
+  if (typeof val === "number") return val > 1 ? val / 100 : val;
+  const clean = String(val).replace(/%/g, "").trim();
+  const num = parseFloat(clean);
+  if (isNaN(num)) return 0;
+  return num > 1 ? num / 100 : num;
 }
 
 export function isBudgetCellEditable(sheetRow, colIdx) {
@@ -41,22 +104,22 @@ export function isBudgetCellEditable(sheetRow, colIdx) {
   if (sheetRow >= 5 && sheetRow <= 7) return isMonthCol;
   // Rows 13-15: months
   if (sheetRow >= 13 && sheetRow <= 15) return isMonthCol;
-  // Employees: A59:E111
-  if (sheetRow >= 59 && sheetRow <= 111) return colIdx >= 0 && colIdx <= 4;
+  // Employees: Rows 58-112, Cols A-E (0-4)
+  if (sheetRow >= 58 && sheetRow <= 112) return colIdx >= 0 && colIdx <= 4;
   // Dividends: Row 119, Col E (4) + months
   if (sheetRow === 119) return colIdx === 4 || isMonthCol;
-  // Contractors: Rows 127-140, Cols A (0) & E (4) + months
-  if (sheetRow >= 127 && sheetRow <= 140) return colIdx === 0 || colIdx === 4 || isMonthCol;
+  // Contractors: Rows 126-140, Cols A (0) & E (4) + months
+  if (sheetRow >= 126 && sheetRow <= 140) return colIdx === 0 || colIdx === 4 || isMonthCol;
   // Making up CoS: B142 (Col B = 1)
   if (sheetRow === 142) return colIdx === 1;
-  // Other expenses: Rows 150-250, Cols A (0) & E (4) + months
-  if (sheetRow >= 150 && sheetRow <= 250) return colIdx === 0 || colIdx === 4 || isMonthCol;
+  // Other expenses: Rows 149-251, Cols A (0) & E (4) + months
+  if (sheetRow >= 149 && sheetRow <= 251) return colIdx === 0 || colIdx === 4 || isMonthCol;
 
   return false;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// BUDGET VIEW MAIN COMPONENT
+// MAIN BUDGET VIEW COMPONENT
 // ─────────────────────────────────────────────────────────────────────────────
 export default function BudgetView({
   allOutgoingsClients = [],
@@ -74,18 +137,99 @@ export default function BudgetView({
 
   // Data State
   const [budgetData, setBudgetData] = useState(null);
+  const [keyData, setKeyData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [saveSuccessMsg, setSaveSuccessMsg] = useState("");
 
-  // FY Navigation & Filters
+  // FY Navigation
   const [selectedFyIdx, setSelectedFyIdx] = useState(0);
-  const [searchTerm, setSearchTerm] = useState("");
 
-  // Cell Editing State
+  // Section Collapsible Toggles
+  const [salariesOpen, setSalariesOpen] = useState(true);
+  const [contractorsOpen, setContractorsOpen] = useState(true);
+  const [expensesOpen, setExpensesOpen] = useState(true);
+
+  // Sub-Section Searches & Show Empty Filters
+  const [salariesSearch, setSalariesSearch] = useState("");
+  const [showEmptySalaries, setShowEmptySalaries] = useState(false);
+
+  const [contractorsSearch, setContractorsSearch] = useState("");
+  const [showEmptyContractors, setShowEmptyContractors] = useState(false);
+
+  const [expensesSearch, setExpensesSearch] = useState("");
+  const [showEmptyExpenses, setShowEmptyExpenses] = useState(false);
+
+  // Cell In-Place Editing
   const [editingCell, setEditingCell] = useState(null); // { sheetRow, colIdx, editValue }
   const [savingKey, setSavingKey] = useState(null); // `${sheetRow}_${colIdx}`
   const committingRef = useRef(false);
+
+  // Making up CoS Setting Popover/Inline State
+  const [isEditingCosTarget, setIsEditingCosTarget] = useState(false);
+  const [cosTargetInput, setCosTargetInput] = useState("");
+
+  // Spread Modal State: { isOpen: boolean, sheetRow: 5 | 13, label: string, annualTotal: string }
+  const [spreadModal, setSpreadModal] = useState({
+    isOpen: false,
+    sheetRow: null,
+    label: "",
+    annualTotal: "",
+  });
+  const [savingSpread, setSavingSpread] = useState(false);
+
+  // Currency & formatting
+  const currencySymbol = keyData?.currencySymbol || "£";
+  const thousandsSeparator = keyData?.thousandsSeparator || ",";
+
+  const formatMoney = (val) => {
+    return universalFormatMoney(val, 0, currencySymbol, thousandsSeparator);
+  };
+  const formatPctDisplay = (val) => `${Math.round((val || 0) * 100)}%`;
+
+  // Traffic Light Conditional Thresholds matching Pulse Budget overview
+  const getMarginColor = (label, numVal) => {
+    const t = keyData?.thresholds || [];
+    const parseT = (idx, def) => {
+      const v = t[idx];
+      if (v === undefined || v === null || v === "") return def;
+      if (typeof v === "number") return v > 1 ? v / 100 : v;
+      const n = parseFloat(String(v).replace(/%/g, "").trim());
+      return isNaN(n) ? def : String(v).includes("%") || n > 1 ? n / 100 : n;
+    };
+
+    if (label.includes("Gross profit margin") || label.includes("Gross profit %")) {
+      const z42 = parseT(0, 0.495);
+      const z43 = parseT(1, 0.445);
+      if (numVal < z43) return "#f4cccc";
+      if (numVal <= z42) return "#fce5cd";
+      return "#d9ead3";
+    }
+    if (label.includes("Overheads as %")) {
+      const z47 = parseT(5, 0.309);
+      const z48 = parseT(6, 0.2);
+      if (numVal > z47) return "#f4cccc";
+      if (numVal >= z48) return "#d9ead3";
+      return "#fce5cd";
+    }
+    if (label.includes("Operating profit %")) {
+      const z52 = parseT(10, 0.145);
+      const z53 = parseT(11, 0.05);
+      if (numVal < z53) return "#f4cccc";
+      if (numVal <= z52) return "#fce5cd";
+      return "#d9ead3";
+    }
+    if (label.includes("Staff costs to")) {
+      const z57 = parseT(15, 0.705);
+      const z58 = parseT(16, 0.66);
+      const z59 = parseT(17, 0.54);
+      if (numVal < z59) return "#fce5cd";
+      if (numVal <= z58) return "#d9ead3";
+      if (numVal <= z57) return "#fce5cd";
+      return "#f4cccc";
+    }
+    return null;
+  };
 
   // Synchronize client selection
   useEffect(() => {
@@ -113,24 +257,32 @@ export default function BudgetView({
     }
   }, [managedClient, initialClient, allOutgoingsClients, selectedClient]);
 
-  // Fetch Budget Data
+  // Fetch Budget Data & Key Data
   const fetchBudgetData = useCallback(async (client, bypassCache = false) => {
     if (!client || (!client.clientSheetId && !client.masterSheetId)) return;
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/triage", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "get_client_view_data",
-          clientSheetId: client.clientSheetId,
-          masterSheetId: client.masterSheetId,
-          clientName: client.clientName,
-          tab: "budget",
-          bypassCache,
+      const [res, keyRes] = await Promise.all([
+        fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "get_client_view_data",
+            clientSheetId: client.clientSheetId,
+            masterSheetId: client.masterSheetId,
+            clientName: client.clientName,
+            tab: "budget",
+            bypassCache,
+          }),
         }),
-      });
+        fetch(
+          `/api/portal/key-data?clientSheetId=${encodeURIComponent(client.clientSheetId || "")}&clientName=${encodeURIComponent(
+            client.clientName || ""
+          )}${bypassCache ? "&bypassCache=true" : ""}`
+        ).catch(() => null),
+      ]);
+
       const data = await res.json();
       if (!res.ok || !data.success) {
         throw new Error(data.error || "Failed to load budget data from Master Sheet");
@@ -138,6 +290,13 @@ export default function BudgetView({
       setBudgetData(data);
       if (data.defaultFyIndex !== undefined) {
         setSelectedFyIdx(data.defaultFyIndex);
+      }
+
+      if (keyRes && keyRes.ok) {
+        const kData = await keyRes.json();
+        if (kData.success && kData.data) {
+          setKeyData(kData.data);
+        }
       }
     } catch (err) {
       console.error("fetchBudgetData error:", err);
@@ -162,7 +321,359 @@ export default function BudgetView({
     return allOutgoingsClients.filter((c) => c.clientName?.toLowerCase().includes(q));
   }, [allOutgoingsClients, clientSearch]);
 
-  // Handle cell edit commit
+  const matrix = useMemo(() => budgetData?.matrix || [], [budgetData?.matrix]);
+  const fyConfigs = budgetData?.fyConfigs || [];
+  const currentFy = fyConfigs[selectedFyIdx] || fyConfigs[0] || null;
+  const maxFyIdx = fyConfigs.length > 0 ? fyConfigs.length - 1 : 0;
+  const isIncomeMode = budgetData?.isIncomeMode || false;
+  const isRevMode = !isIncomeMode;
+
+  const fyCols = useMemo(() => {
+    return currentFy?.monthCols || [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
+  }, [currentFy?.monthCols]);
+  const totalCol = currentFy?.totalCol || 19;
+  const activeFyLabel = currentFy?.label || `FY${selectedFyIdx + 1}`;
+
+  const row0 = useMemo(() => matrix[0] || [], [matrix]);
+  const monthHeaders = useMemo(() => {
+    return fyCols.map((cIdx, i) => row0[cIdx]?.v || `M${i + 1}`);
+  }, [fyCols, row0]);
+
+  // Desired Making up CoS % from Cell B142 (sheetRow 142, colIdx 1 -> matrix[141][1])
+  const desCosPct = useMemo(() => {
+    const rawVal = matrix[141]?.[1]?.v;
+    return parsePct(rawVal);
+  }, [matrix]);
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // INSTANT MATHEMATICAL MODEL RECALCULATION ENGINE
+  // Mirrors Master Sheet formulas to ensure instant top table reflection
+  // ───────────────────────────────────────────────────────────────────────────
+  const computedModel = useMemo(() => {
+    if (!matrix || matrix.length === 0) return null;
+
+    // Helper to get array of 12 numeric values for a matrix row
+    const getMonthVals = (rowIdx) => {
+      const r = matrix[rowIdx] || [];
+      return fyCols.map((cIdx) => parseNum(r[cIdx]?.v));
+    };
+
+    // 1. Revenue
+    const conf = isRevMode ? getMonthVals(4) : getMonthVals(20); // Row 5 or Row 21
+    const pipe = isRevMode ? getMonthVals(5) : getMonthVals(21); // Row 6 or Row 22
+    const nb = isRevMode ? getMonthVals(6) : getMonthVals(22);   // Row 7 or Row 23
+    const totalRev = conf.map((v, i) => v + pipe[i] + nb[i]);
+
+    // 2. Direct Costs
+    // Row 13 in Master Sheet is direct costs input
+    const dirCosts = isRevMode ? getMonthVals(12) : new Array(12).fill(0);
+
+    // 3. Salaries (Rows 58 to 112 -> matrix[57] to matrix[111])
+    const salaryDel = new Array(12).fill(0);
+    const salaryNonDel = new Array(12).fill(0);
+
+    for (let rIdx = 57; rIdx <= 111; rIdx++) {
+      const row = matrix[rIdx];
+      if (!row) continue;
+      const name = String(row[0]?.v || "").trim();
+      const equivSalary = parseNum(row[1]?.v);
+      const startStr = row[2]?.v;
+      const endStr = row[3]?.v;
+      const delPct = parsePct(row[4]?.v);
+      const costPmInSheet = parseNum(row[5]?.v);
+
+      if (!name && equivSalary === 0 && !costPmInSheet) continue;
+
+      const startDate = parseSheetDate(startStr);
+      const endDate = parseSheetDate(endStr);
+      // Col F cost pm: if sheet has value, use it; otherwise estimate equivSalary / 12 * 1.15
+      const costPm = costPmInSheet || (equivSalary ? Math.round((equivSalary / 12) * 1.15) : 0);
+
+      fyCols.forEach((cIdx, mIdx) => {
+        // If sheet cell has calculated value, prefer it
+        const cellVal = parseNum(row[cIdx]?.v);
+        let activeVal = cellVal;
+        if (cellVal === 0 && costPm > 0) {
+          const mDate = parseSheetDate(row0[cIdx]?.v);
+          let isActive = true;
+          if (startDate && mDate && mDate < startDate) isActive = false;
+          if (endDate && mDate && mDate > endDate) isActive = false;
+          if (isActive) activeVal = costPm;
+        }
+
+        salaryDel[mIdx] += activeVal * delPct;
+        salaryNonDel[mIdx] += activeVal * (1 - delPct);
+      });
+    }
+
+    // Dividends (Row 119 -> matrix[118])
+    const divRow = matrix[118] || [];
+    const divDelPct = parsePct(divRow[4]?.v);
+    const divVals = getMonthVals(118);
+    const divDel = divVals.map((v) => v * divDelPct);
+    const divNonDel = divVals.map((v) => v * (1 - divDelPct));
+
+    // 4. Contractors (Rows 126 to 140 -> matrix[125] to matrix[139])
+    const contractorDel = new Array(12).fill(0);
+    for (let rIdx = 125; rIdx <= 139; rIdx++) {
+      const row = matrix[rIdx];
+      if (!row) continue;
+      const delPct = parsePct(row[4]?.v);
+      const vals = getMonthVals(rIdx);
+      vals.forEach((v, mIdx) => {
+        contractorDel[mIdx] += v * delPct;
+      });
+    }
+
+    // 5. Other Expenses (Rows 149 to 251 -> matrix[148] to matrix[250])
+    const expDel = new Array(12).fill(0);
+    const expNonDel = new Array(12).fill(0);
+    for (let rIdx = 148; rIdx <= 250; rIdx++) {
+      const row = matrix[rIdx];
+      if (!row) continue;
+      const delPct = parsePct(row[4]?.v);
+      const vals = getMonthVals(rIdx);
+      vals.forEach((v, mIdx) => {
+        expDel[mIdx] += v * delPct;
+        expNonDel[mIdx] += v * (1 - delPct);
+      });
+    }
+
+    // 6. Making up CoS (Row 142 -> matrix[141])
+    // Formula: if (TotalRev * DesCoS) - otherCoS > 0 -> difference, else 0
+    const makingUpCosVals = new Array(12).fill(0);
+    if (desCosPct > 0) {
+      for (let m = 0; m < 12; m++) {
+        const targetCos = totalRev[m] * desCosPct;
+        const otherCos =
+          dirCosts[m] +
+          salaryDel[m] +
+          divDel[m] +
+          contractorDel[m] +
+          expDel[m];
+        makingUpCosVals[m] = Math.max(0, Math.round(targetCos - otherCos));
+      }
+    }
+
+    // 7. Summary Line Rollups
+    // Staff costs - delivery = salaries del + divs del + contractors del + making up CoS
+    const staffDel = salaryDel.map(
+      (v, i) => v + divDel[i] + contractorDel[i] + makingUpCosVals[i]
+    );
+
+    // Staff costs - non-delivery = salaries non-del + divs non-del
+    const staffNonDel = salaryNonDel.map((v, i) => v + divNonDel[i]);
+
+    // Total Costs of Sale
+    const totalCoS = isRevMode
+      ? staffDel.map((v, i) => v + dirCosts[i] + expDel[i])
+      : staffDel.map((v, i) => v + expDel[i]);
+
+    // Gross Profit & Margin
+    const gp = totalRev.map((v, i) => v - totalCoS[i]);
+    const gpMargin = gp.map((v, i) => (totalRev[i] ? v / totalRev[i] : 0));
+
+    // Total Overheads & Ratio
+    const totalOverheads = staffNonDel.map((v, i) => v + expNonDel[i]);
+    const overheadsPct = totalOverheads.map((v, i) => (totalRev[i] ? v / totalRev[i] : 0));
+
+    // Operating Profit & Margin
+    const opProfit = gp.map((v, i) => v - totalOverheads[i]);
+    const opProfitPct = opProfit.map((v, i) => (totalRev[i] ? v / totalRev[i] : 0));
+
+    const staffToIncPct = totalRev.map((v, i) =>
+      totalRev[i] ? (staffDel[i] + staffNonDel[i]) / totalRev[i] : 0
+    );
+
+    // Helpers to append 13th item (FY Total)
+    const sumArr = (arr) => arr.reduce((acc, n) => acc + (n || 0), 0);
+    const withTotal = (arr) => [...arr, sumArr(arr)];
+
+    const confWithTot = withTotal(conf);
+    const pipeWithTot = withTotal(pipe);
+    const nbWithTot = withTotal(nb);
+    const totalRevWithTot = withTotal(totalRev);
+
+    const staffDelWithTot = withTotal(staffDel);
+    const dirCostsWithTot = withTotal(dirCosts);
+    const expDelWithTot = withTotal(expDel);
+    const totalCoSWithTot = withTotal(totalCoS);
+
+    const totRevVal = totalRevWithTot[12];
+    const gpTot = totalRevWithTot[12] - totalCoSWithTot[12];
+    const gpWithTot = [...gp, gpTot];
+    const gpMarginWithTot = [...gpMargin, totRevVal ? gpTot / totRevVal : 0];
+
+    const staffNonDelWithTot = withTotal(staffNonDel);
+    const expNonDelWithTot = withTotal(expNonDel);
+    const totalOverheadsWithTot = withTotal(totalOverheads);
+    const totOverheadsVal = totalOverheadsWithTot[12];
+    const overheadsPctWithTot = [...overheadsPct, totRevVal ? totOverheadsVal / totRevVal : 0];
+
+    const opProfitTot = gpTot - totOverheadsVal;
+    const opProfitWithTot = [...opProfit, opProfitTot];
+    const opProfitPctWithTot = [...opProfitPct, totRevVal ? opProfitTot / totRevVal : 0];
+    const staffToIncWithTot = [
+      ...staffToIncPct,
+      totRevVal ? (staffDelWithTot[12] + staffNonDelWithTot[12]) / totRevVal : 0,
+    ];
+
+    return {
+      conf: confWithTot,
+      pipe: pipeWithTot,
+      nb: nbWithTot,
+      totalRev: totalRevWithTot,
+      staffDel: staffDelWithTot,
+      dirCosts: dirCostsWithTot,
+      expDel: expDelWithTot,
+      totalCoS: totalCoSWithTot,
+      gp: gpWithTot,
+      gpMargin: gpMarginWithTot,
+      staffNonDel: staffNonDelWithTot,
+      expNonDel: expNonDelWithTot,
+      totalOverheads: totalOverheadsWithTot,
+      overheadsPct: overheadsPctWithTot,
+      opProfit: opProfitWithTot,
+      opProfitPct: opProfitPctWithTot,
+      staffToIncPct: staffToIncWithTot,
+      makingUpCosVals: withTotal(makingUpCosVals),
+      salaryDelTotal: sumArr(salaryDel),
+      salaryNonDelTotal: sumArr(salaryNonDel),
+      expDelTotal: sumArr(expDel),
+      expNonDelTotal: sumArr(expNonDel),
+    };
+  }, [matrix, fyCols, isRevMode, desCosPct, row0]);
+
+  // Construct Top Table Rows
+  const tableRows = useMemo(() => {
+    if (!computedModel) return [];
+
+    const rows = [];
+    const addSpacer = (height = 6) => rows.push({ type: "spacer", height });
+    const addSectionHeader = (label) => rows.push({ type: "section", label });
+
+    const addDataRow = (
+      label,
+      dataArr,
+      isCurrency,
+      isBigTotal,
+      isMargin,
+      bg,
+      color,
+      isBold = false,
+      isEditable = false,
+      sheetRow = null
+    ) => {
+      let accentBar = null;
+      const l = String(label || "").toLowerCase();
+      if (l.includes("gross profit margin") || l.includes("gross profit %")) accentBar = "#e69138";
+      else if (l.includes("overheads as %") || l.includes("overheads %")) accentBar = "#45818e";
+      else if (l.includes("operating profit %")) accentBar = "#1155cc";
+      else if (l.includes("staff costs to")) accentBar = "#64748b";
+
+      rows.push({
+        type: "data",
+        label,
+        data: dataArr,
+        isCurrency,
+        isBigTotal,
+        isMargin,
+        accentBar,
+        bg: bg || "#ffffff",
+        color: color || "#0047AB",
+        isBold: isBigTotal || isBold,
+        isEditable,
+        sheetRow,
+      });
+    };
+
+    addSpacer(10);
+    addSectionHeader(isRevMode ? "Revenue" : "Income");
+    // Confirmed Revenue (Sheet Row 5) - EDITABLE!
+    addDataRow(
+      isRevMode ? "Confirmed revenue" : "Confirmed income",
+      computedModel.conf,
+      true,
+      false,
+      false,
+      "#ffffff",
+      "#0047AB",
+      false,
+      true,
+      5
+    );
+    addDataRow(
+      isRevMode ? "Pipeline revenue" : "Pipeline income",
+      computedModel.pipe,
+      true,
+      false,
+      false,
+      "#ffffff",
+      "#0047AB"
+    );
+    addDataRow(
+      isRevMode ? "New business to find revenue" : "New business to find income",
+      computedModel.nb,
+      true,
+      false,
+      false,
+      "#ffffff",
+      "#0047AB"
+    );
+    addSpacer(6);
+    addDataRow(
+      isRevMode ? "Total revenue" : "Total income",
+      computedModel.totalRev,
+      true,
+      true,
+      false,
+      "#9900ff",
+      "#ffffff"
+    );
+    addSpacer(18);
+
+    addSectionHeader("Costs of sale");
+    addDataRow("Staff costs - delivery", computedModel.staffDel, true, false, false, "#ffffff", "#0047AB");
+    if (isRevMode) {
+      // Direct Costs (Sheet Row 13) - EDITABLE!
+      addDataRow("Direct costs", computedModel.dirCosts, true, false, false, "#ffffff", "#0047AB", false, true, 13);
+    }
+    addDataRow("Other expenses - delivery", computedModel.expDel, true, false, false, "#ffffff", "#0047AB");
+    addSpacer(4);
+    addDataRow("Total costs of sale", computedModel.totalCoS, true, false, false, "#ffffff", "#0047AB", true);
+    addSpacer(10);
+    addDataRow("Gross profit", computedModel.gp, true, true, false, "#e69138", "#ffffff");
+    addSpacer(8);
+    addDataRow("Gross profit margin %", computedModel.gpMargin, false, false, true, "#ffffff", "#0047AB");
+    addSpacer(16);
+
+    addSectionHeader("Overheads");
+    addDataRow("Staff costs - non-delivery", computedModel.staffNonDel, true, false, false, "#ffffff", "#0047AB");
+    addDataRow("Other expenses - non-delivery", computedModel.expNonDel, true, false, false, "#ffffff", "#0047AB");
+    addSpacer(16);
+    addDataRow("Total overheads", computedModel.totalOverheads, true, true, false, "#45818e", "#ffffff");
+    addSpacer(10);
+    addDataRow(
+      isRevMode ? "Overheads as % of revenue" : "Overheads as % of income",
+      computedModel.overheadsPct,
+      false,
+      false,
+      true,
+      "#ffffff",
+      "#0047AB"
+    );
+    addSpacer(16);
+
+    addDataRow("Operating profit", computedModel.opProfit, true, true, false, "#1155cc", "#ffffff");
+    addSpacer(10);
+    addDataRow("Operating profit %", computedModel.opProfitPct, false, false, true, "#ffffff", "#0047AB");
+
+    return rows;
+  }, [computedModel, isRevMode]);
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // CELL UPDATE HANDLER (OPTIMISTIC + PERSIST TO GOOGLE SHEETS)
+  // ───────────────────────────────────────────────────────────────────────────
   const handleUpdateCell = async (sheetRow, colIdx, newValue) => {
     if (!selectedClient) return;
     const clientKey = selectedClient.clientSheetId;
@@ -171,9 +682,9 @@ export default function BudgetView({
 
     let displayVal = newValue;
     if (colIdx >= 6 && newValue !== "") {
-      displayVal = formatCurrency(newValue);
-    } else if (sheetRow >= 59 && sheetRow <= 111 && colIdx === 1 && newValue !== "") {
-      displayVal = formatCurrency(newValue);
+      displayVal = formatMoney(parseNum(newValue));
+    } else if (sheetRow >= 58 && sheetRow <= 112 && colIdx === 1 && newValue !== "") {
+      displayVal = formatMoney(parseNum(newValue));
     } else if (
       (colIdx === 4 || (sheetRow === 142 && colIdx === 1)) &&
       newValue !== ""
@@ -194,6 +705,13 @@ export default function BudgetView({
         const newRow = [...newMatrix[rIdx]];
         newRow[colIdx] = { ...(newRow[colIdx] || {}), v: displayVal };
         newMatrix[rIdx] = newRow;
+
+        // If Direct costs row 13 was updated, also update row 30 (formula mirror)
+        if (sheetRow === 13 && newMatrix[29]) {
+          const row30 = [...newMatrix[29]];
+          row30[colIdx] = { ...(row30[colIdx] || {}), v: displayVal };
+          newMatrix[29] = row30;
+        }
       }
       return { ...prev, matrix: newMatrix };
     });
@@ -223,18 +741,8 @@ export default function BudgetView({
         throw new Error(data?.error || `Failed to update cell (status ${res.status})`);
       }
 
-      if (data.formattedValue !== undefined && data.formattedValue !== displayVal) {
-        setBudgetData((prev) => {
-          if (!prev || !prev.matrix) return prev;
-          const newMatrix = [...prev.matrix];
-          const rIdx = sheetRow - 1;
-          if (newMatrix[rIdx]) {
-            const newRow = [...newMatrix[rIdx]];
-            newRow[colIdx] = { ...(newRow[colIdx] || {}), v: data.formattedValue };
-            newMatrix[rIdx] = newRow;
-          }
-          return { ...prev, matrix: newMatrix };
-        });
+      if (data.updatedMatrix) {
+        setBudgetData((prev) => (prev ? { ...prev, matrix: data.updatedMatrix } : prev));
       }
       setSaveSuccessMsg(`Updated Row ${sheetRow} (${colLetter})`);
       setTimeout(() => setSaveSuccessMsg(""), 3000);
@@ -245,6 +753,82 @@ export default function BudgetView({
     }
   };
 
+  // ───────────────────────────────────────────────────────────────────────────
+  // SPREAD ROW HANDLER (FOR ROWS 5 & 13 ACROSS ACTIVE FY)
+  // ───────────────────────────────────────────────────────────────────────────
+  const handleSpreadRow = async (sheetRow, annualValStr) => {
+    if (!selectedClient || !sheetRow) return;
+    const cleanNum = parseNum(annualValStr);
+    const monthlyVal = Math.round(cleanNum / 12);
+    const startColIdx = fyCols[0];
+    const endColIdx = fyCols[11];
+    const startColLetter = colIndexToLetter(startColIdx + 1);
+    const endColLetter = colIndexToLetter(endColIdx + 1);
+    const values = Array(12).fill(monthlyVal);
+
+    setSavingSpread(true);
+    setSpreadModal((prev) => ({ ...prev, isOpen: false }));
+
+    // Optimistically update matrix
+    setBudgetData((prev) => {
+      if (!prev || !prev.matrix) return prev;
+      const newMatrix = [...prev.matrix];
+      const rIdx = sheetRow - 1;
+      if (newMatrix[rIdx]) {
+        const newRow = [...newMatrix[rIdx]];
+        fyCols.forEach((cIdx) => {
+          newRow[cIdx] = { ...(newRow[cIdx] || {}), v: formatMoney(monthlyVal) };
+        });
+        newMatrix[rIdx] = newRow;
+
+        if (sheetRow === 13 && newMatrix[29]) {
+          const row30 = [...newMatrix[29]];
+          fyCols.forEach((cIdx) => {
+            row30[cIdx] = { ...(row30[cIdx] || {}), v: formatMoney(monthlyVal) };
+          });
+          newMatrix[29] = row30;
+        }
+      }
+      return { ...prev, matrix: newMatrix };
+    });
+
+    try {
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "spread_view_row",
+          clientSheetId: selectedClient.clientSheetId,
+          masterSheetId: selectedClient.masterSheetId,
+          sheetRow,
+          startColLetter,
+          endColLetter,
+          values,
+          rowDescription: sheetRow === 5 ? "Confirmed revenue" : "Direct costs",
+          clientName: selectedClient.clientName,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data?.error || "Failed to spread row across months");
+      }
+
+      if (data.updatedMatrix) {
+        setBudgetData((prev) => (prev ? { ...prev, matrix: data.updatedMatrix } : prev));
+      }
+      setSaveSuccessMsg(`Spread ${formatMoney(cleanNum)} evenly across ${activeFyLabel}`);
+      setTimeout(() => setSaveSuccessMsg(""), 3500);
+    } catch (err) {
+      console.error("spread_view_row error:", err);
+      setError(err.message || "Failed to spread row");
+      fetchBudgetData(selectedClient, true);
+    } finally {
+      setSavingSpread(false);
+    }
+  };
+
+  // Helper for cell editable options
   const getEditableOpts = (sheetRow, colIdx, cellValue) => {
     const isEditable = isBudgetCellEditable(sheetRow, colIdx);
     if (!isEditable) return null;
@@ -255,17 +839,17 @@ export default function BudgetView({
     let initialEditVal = cellValue ?? "";
     if (colIdx === 4 || (sheetRow === 142 && colIdx === 1)) {
       initialEditVal = String(cellValue ?? "").replace(/%/g, "").trim();
-    } else if (colIdx >= 6 || (sheetRow >= 59 && sheetRow <= 111 && colIdx === 1)) {
-      initialEditVal = String(cellValue ?? "").replace(/[£,]/g, "").trim();
+    } else if (colIdx >= 6 || (sheetRow >= 58 && sheetRow <= 112 && colIdx === 1)) {
+      initialEditVal = String(cellValue ?? "").replace(/[£,$\s]/g, "").trim();
     }
 
     return {
       isEditable,
       isEditing,
       isSaving,
-      inputType: "text",
       editValue: isEditing ? editingCell.editValue : initialEditVal,
-      onChangeEditValue: (val) => setEditingCell((prev) => (prev ? { ...prev, editValue: val } : null)),
+      onChangeEditValue: (val) =>
+        setEditingCell((prev) => (prev ? { ...prev, editValue: val } : null)),
       onCommitEdit: async (overrideVal) => {
         if (committingRef.current) return;
         committingRef.current = true;
@@ -276,7 +860,7 @@ export default function BudgetView({
         }, 100);
         if (!cur && overrideVal === undefined) return;
 
-        const rawVal = overrideVal !== undefined ? overrideVal : (cur ? cur.editValue : "");
+        const rawVal = overrideVal !== undefined ? overrideVal : cur ? cur.editValue : "";
         setSavingKey(`${sheetRow}_${colIdx}`);
         try {
           await handleUpdateCell(sheetRow, colIdx, rawVal);
@@ -291,39 +875,138 @@ export default function BudgetView({
     };
   };
 
-  const matrix = useMemo(() => budgetData?.matrix || [], [budgetData?.matrix]);
-  const fyConfigs = budgetData?.fyConfigs || [];
-  const currentFy = fyConfigs[selectedFyIdx] || fyConfigs[0] || null;
-  const maxFyIdx = fyConfigs.length > 0 ? fyConfigs.length - 1 : 0;
+  // ───────────────────────────────────────────────────────────────────────────
+  // CSV EXPORT
+  // ───────────────────────────────────────────────────────────────────────────
+  const handleDownloadCSV = () => {
+    const dateStr = new Date().toISOString().split("T")[0];
+    const yearLabel = activeFyLabel.replace(/\s+/g, "_");
+    const exportRows = [];
 
-  const fyCols = currentFy?.monthCols || [];
-  const totalCol = currentFy?.totalCol || 19;
-  const THEME_HEADER_BG = "#1e1b4b";
+    exportRows.push([`Budget overview: ${activeFyLabel}`]);
+    exportRows.push([]);
+    exportRows.push(["Metric", ...monthHeaders, "", "Total"]);
 
-  const headerRow0 = matrix[0] || [];
-  const headerRow1 = matrix[1] || [];
+    tableRows.forEach((r) => {
+      if (r.type === "section") {
+        exportRows.push([r.label]);
+      } else if (r.type !== "spacer") {
+        const rowVals = Array.from({ length: 12 }).map((_, mIdx) => {
+          const val = r.data[mIdx];
+          return r.isCurrency ? formatMoney(val) : formatPctDisplay(val);
+        });
+        const totalVal = r.isCurrency ? formatMoney(r.data[12]) : formatPctDisplay(r.data[12]);
+        exportRows.push([r.label, ...rowVals, "", totalVal]);
+      }
+    });
 
-  // Filter matrix rows based on search term
-  const filteredMatrixRows = useMemo(() => {
-    const dataRows = matrix.slice(2);
-    if (!searchTerm.trim()) {
-      return dataRows.map((row, idx) => ({ row, sheetRow: 3 + idx }));
+    downloadCsv(`Pulse_Budget_Overview_${yearLabel}_${dateStr}.csv`, exportRows);
+  };
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // SUB-SECTION DATA EXTRACTION & FILTERING
+  // ───────────────────────────────────────────────────────────────────────────
+  // 1. Salaries & Dividends (Rows 58 to 112, plus Row 119)
+  const salaryRows = useMemo(() => {
+    const list = [];
+    for (let r = 58; r <= 112; r++) {
+      const row = matrix[r - 1];
+      if (!row) continue;
+      const name = String(row[0]?.v || "").trim();
+      const salary = String(row[1]?.v || "").trim();
+      const hasContent = Boolean(name || salary || parseNum(row[1]?.v) > 0);
+      list.push({ sheetRow: r, row, hasContent, name });
     }
-    const q = searchTerm.toLowerCase().trim();
-    return dataRows
-      .map((row, idx) => ({ row, sheetRow: 3 + idx }))
-      .filter(({ row }) => {
-        const desc = String(row?.[0]?.v || "").toLowerCase();
-        const type = String(row?.[1]?.v || "").toLowerCase();
-        return desc.includes(q) || type.includes(q);
-      });
-  }, [matrix, searchTerm]);
+    return list;
+  }, [matrix]);
+
+  const filteredSalaryRows = useMemo(() => {
+    return salaryRows.filter(({ hasContent, name }) => {
+      if (!showEmptySalaries && !hasContent) return false;
+      if (salariesSearch.trim()) {
+        return name.toLowerCase().includes(salariesSearch.toLowerCase().trim());
+      }
+      return true;
+    });
+  }, [salaryRows, showEmptySalaries, salariesSearch]);
+
+  const activeEmployeeCount = useMemo(() => {
+    return salaryRows.filter((s) => s.hasContent).length;
+  }, [salaryRows]);
+
+  // 2. Contractors (Rows 126 to 140)
+  const contractorRows = useMemo(() => {
+    const list = [];
+    for (let r = 126; r <= 140; r++) {
+      const row = matrix[r - 1];
+      if (!row) continue;
+      const name = String(row[0]?.v || "").trim();
+      const hasContent = Boolean(
+        name || fyCols.some((cIdx) => parseNum(row[cIdx]?.v) > 0)
+      );
+      list.push({ sheetRow: r, row, hasContent, name });
+    }
+    return list;
+  }, [matrix, fyCols]);
+
+  const filteredContractorRows = useMemo(() => {
+    return contractorRows.filter(({ hasContent, name }) => {
+      if (!showEmptyContractors && !hasContent) return false;
+      if (contractorsSearch.trim()) {
+        return name.toLowerCase().includes(contractorsSearch.toLowerCase().trim());
+      }
+      return true;
+    });
+  }, [contractorRows, showEmptyContractors, contractorsSearch]);
+
+  const activeContractorCount = useMemo(() => {
+    return contractorRows.filter((c) => c.hasContent).length;
+  }, [contractorRows]);
+
+  // 3. Other Expenses (Rows 149 to 251)
+  const expenseRows = useMemo(() => {
+    const list = [];
+    for (let r = 149; r <= 251; r++) {
+      const row = matrix[r - 1];
+      if (!row) continue;
+      const name = String(row[0]?.v || "").trim();
+      const hasContent = Boolean(
+        name || fyCols.some((cIdx) => parseNum(row[cIdx]?.v) > 0)
+      );
+      list.push({ sheetRow: r, row, hasContent, name });
+    }
+    return list;
+  }, [matrix, fyCols]);
+
+  const filteredExpenseRows = useMemo(() => {
+    return expenseRows.filter(({ hasContent, name }) => {
+      if (!showEmptyExpenses && !hasContent) return false;
+      if (expensesSearch.trim()) {
+        return name.toLowerCase().includes(expensesSearch.toLowerCase().trim());
+      }
+      return true;
+    });
+  }, [expenseRows, showEmptyExpenses, expensesSearch]);
+
+  const activeExpenseCount = useMemo(() => {
+    return expenseRows.filter((e) => e.hasContent).length;
+  }, [expenseRows]);
 
   const targetSheetId = selectedClient?.masterSheetId || selectedClient?.clientSheetId;
 
   return (
-    <div style={{ padding: "24px 32px", maxWidth: "1600px", margin: "0 auto", boxSizing: "border-box" }}>
-      {/* Top Header Card */}
+    <div
+      style={{
+        padding: "24px 32px",
+        maxWidth: "1680px",
+        margin: "0 auto",
+        boxSizing: "border-box",
+        fontFamily: "'Kumbh Sans', sans-serif",
+      }}
+    >
+      {/* ───────────────────────────────────────────────────────────────────── */}
+      {/* ACTION BAR / TOP HEADER CARD                                          */}
+      {/* ───────────────────────────────────────────────────────────────────── */}
       <div
         style={{
           display: "flex",
@@ -339,68 +1022,73 @@ export default function BudgetView({
           border: "1px solid #e2e8f0",
         }}
       >
-        <div>
+        <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
           <h1
             style={{
               margin: 0,
-              fontSize: "20px",
+              fontSize: "22px",
               fontWeight: 700,
-              color: "#1e293b",
+              color: "#0047AB",
               display: "flex",
               alignItems: "center",
-              gap: "8px",
+              gap: "10px",
             }}
           >
             <span>Budget</span>
-            {budgetData?.isIncomeMode !== undefined && (
-              <span
-                style={{
-                  fontSize: "12px",
-                  background: "#eff6ff",
-                  color: "#1d4ed8",
-                  padding: "2px 8px",
-                  borderRadius: "12px",
-                  fontWeight: 600,
-                }}
-              >
-                {budgetData.isIncomeMode ? "Income Mode" : "Revenue Mode"}
-              </span>
-            )}
           </h1>
-          <p style={{ margin: "4px 0 0", fontSize: "13px", color: "#64748b" }}>
-            Master Sheet Budget model (rows 1–253) across 3 financial years
-          </p>
+          <span
+            style={{
+              fontSize: "12px",
+              fontWeight: 700,
+              color: "#0047AB",
+              background: "rgba(0, 71, 171, 0.08)",
+              padding: "3px 10px",
+              borderRadius: "4px",
+            }}
+          >
+            {activeFyLabel}
+          </span>
+          <span
+            style={{
+              fontSize: "12px",
+              background: "#eff6ff",
+              color: "#1d4ed8",
+              padding: "2px 8px",
+              borderRadius: "12px",
+              fontWeight: 600,
+            }}
+          >
+            {isIncomeMode ? "Income mode" : "Revenue mode"}
+          </span>
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
           {/* Client Selector (if not managed) */}
           {!managedClient && (
-            <div style={{ position: "relative" }}>
-              <select
-                value={selectedClient?.clientName || ""}
-                onChange={(e) => {
-                  const match = allOutgoingsClients.find((c) => c.clientName === e.target.value);
-                  if (match) setSelectedClient(match);
-                }}
-                style={{
-                  padding: "7px 12px",
-                  fontSize: "13px",
-                  borderRadius: "6px",
-                  border: "1px solid #cbd5e1",
-                  background: "#fff",
-                  color: "#1e293b",
-                  fontWeight: 600,
-                  cursor: "pointer",
-                  outline: "none",
-                }}
-              >
-                {filteredClients.map((c) => (
-                  <option key={c.clientName} value={c.clientName}>
-                    {c.clientName}
-                  </option>
-                ))}
-              </select>
-            </div>
+            <select
+              value={selectedClient?.clientName || ""}
+              onChange={(e) => {
+                const match = allOutgoingsClients.find((c) => c.clientName === e.target.value);
+                if (match) setSelectedClient(match);
+              }}
+              style={{
+                padding: "6px 12px",
+                fontSize: "13px",
+                borderRadius: "6px",
+                border: "1px solid #cbd5e1",
+                background: "#fff",
+                color: "#1e293b",
+                fontWeight: 600,
+                cursor: "pointer",
+                outline: "none",
+              }}
+            >
+              {filteredClients.map((c) => (
+                <option key={c.clientName} value={c.clientName}>
+                  {c.clientName}
+                </option>
+              ))}
+            </select>
           )}
 
           {managedClient && (
@@ -411,7 +1099,7 @@ export default function BudgetView({
                 gap: "8px",
                 background: "#eff6ff",
                 border: "1px solid #bfdbfe",
-                padding: "6px 12px",
+                padding: "5px 10px",
                 borderRadius: "6px",
                 fontSize: "13px",
                 fontWeight: 600,
@@ -454,7 +1142,7 @@ export default function BudgetView({
                   color: selectedFyIdx <= 0 ? "#cbd5e1" : "#1e293b",
                   fontWeight: 700,
                 }}
-                title="Previous Financial Year"
+                title="Previous financial year"
               >
                 ◀
               </button>
@@ -495,19 +1183,21 @@ export default function BudgetView({
                   color: selectedFyIdx >= maxFyIdx ? "#cbd5e1" : "#1e293b",
                   fontWeight: 700,
                 }}
-                title="Next Financial Year"
+                title="Next financial year"
               >
                 ▶
               </button>
             </div>
           )}
 
+          {/* Refresh Button */}
           <button
             type="button"
             onClick={() => selectedClient && fetchBudgetData(selectedClient, true)}
             disabled={loading}
+            title="Refresh budget data from master sheet"
             style={{
-              padding: "7px 14px",
+              padding: "6px 12px",
               background: "#f8fafc",
               border: "1px solid #cbd5e1",
               borderRadius: "6px",
@@ -523,13 +1213,36 @@ export default function BudgetView({
             {loading ? <Spinner size={14} color="#0066cc" /> : "↻"} Refresh
           </button>
 
+          {/* CSV Export Button */}
+          <button
+            type="button"
+            onClick={handleDownloadCSV}
+            title="Export budget overview to CSV"
+            style={{
+              padding: "6px 12px",
+              background: "#f8fafc",
+              border: "1px solid #cbd5e1",
+              borderRadius: "6px",
+              fontSize: "13px",
+              fontWeight: 600,
+              color: "#334155",
+              cursor: "pointer",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "6px",
+            }}
+          >
+            📥 Export CSV
+          </button>
+
+          {/* Admin: Open in Sheets */}
           {isAdmin && targetSheetId && (
             <a
               href={`https://docs.google.com/spreadsheets/d/${targetSheetId}/edit#gid=0`}
               target="_blank"
               rel="noreferrer"
               style={{
-                padding: "7px 14px",
+                padding: "6px 12px",
                 borderRadius: "6px",
                 border: "1px solid #166534",
                 background: "#15803d",
@@ -541,10 +1254,10 @@ export default function BudgetView({
                 alignItems: "center",
                 gap: "6px",
               }}
-              title="Open spreadsheet in Google Sheets"
+              title="Open master sheet in Google Sheets"
             >
               <span>📊</span>
-              <span>Open in Sheets</span>
+              <span>Open in sheets</span>
             </a>
           )}
         </div>
@@ -592,146 +1305,399 @@ export default function BudgetView({
         </div>
       )}
 
-      {/* Search / Filter Bar */}
-      {budgetData && (
+      {/* Main Loading Spinner */}
+      {loading && !budgetData && (
         <div
           style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            flexWrap: "wrap",
-            gap: "12px",
-            marginBottom: "14px",
+            textAlign: "center",
+            padding: "80px 20px",
+            background: "#ffffff",
+            borderRadius: "8px",
+            border: "1px solid #e2e8f0",
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-            <input
-              type="text"
-              placeholder="Search budget line items..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              style={{
-                padding: "6px 12px",
-                borderRadius: "6px",
-                border: "1px solid #cbd5e1",
-                fontSize: "13px",
-                width: "260px",
-                outline: "none",
-              }}
-            />
-            {searchTerm && (
-              <button
-                type="button"
-                onClick={() => setSearchTerm("")}
-                style={{
-                  background: "none",
-                  border: "none",
-                  color: "#64748b",
-                  fontSize: "12px",
-                  cursor: "pointer",
-                  textDecoration: "underline",
-                }}
-              >
-                Clear
-              </button>
-            )}
-          </div>
-
-          <div style={{ fontSize: "12px", color: "#64748b" }}>
-            Showing {filteredMatrixRows.length} rows · Click on highlighted cells to edit
-          </div>
-        </div>
-      )}
-
-      {/* Main Content Area */}
-      {loading && !budgetData && (
-        <div style={{ textAlign: "center", padding: "80px 20px", background: "#ffffff", borderRadius: "8px", border: "1px solid #e2e8f0" }}>
-          <Spinner size={32} color="#0047AB" />
+          <Spinner size={36} color="#0047AB" />
           <div style={{ marginTop: "14px", color: "#64748b", fontSize: "14px", fontWeight: 600 }}>
             Loading budget from Master Sheet...
           </div>
         </div>
       )}
 
-      {budgetData && currentFy && (
+      {/* ───────────────────────────────────────────────────────────────────── */}
+      {/* 1. TOP FULL-YEAR BUDGET OVERVIEW TABLE                                */}
+      {/* ───────────────────────────────────────────────────────────────────── */}
+      {budgetData && computedModel && (
         <div
           style={{
             background: "#ffffff",
             borderRadius: "8px",
-            border: "1px solid #cbd5e1",
-            boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
+            boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
+            border: "1px solid #e2e8f0",
             overflow: "hidden",
+            width: "100%",
+            marginBottom: "32px",
           }}
         >
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "12px", fontFamily: "system-ui, -apple-system, sans-serif" }}>
+          {/* Table Header Bar with Instructions */}
+          <div
+            style={{
+              padding: "10px 16px",
+              background: "#f8fafc",
+              borderBottom: "1px solid #e2e8f0",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              flexWrap: "wrap",
+              gap: "10px",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <span style={{ fontSize: "13px", fontWeight: 700, color: "#1e293b" }}>
+                Full-year budget overview
+              </span>
+              <span style={{ fontSize: "12px", color: "#64748b" }}>
+                · Showing {activeFyLabel} (months sync with all sections below)
+              </span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", fontSize: "12px", color: "#475569" }}>
+              <span
+                style={{
+                  background: "#eff6ff",
+                  border: "1px solid #bfdbfe",
+                  color: "#1d4ed8",
+                  padding: "2px 8px",
+                  borderRadius: "12px",
+                  fontWeight: 600,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "4px",
+                }}
+              >
+                <span>✏️</span>{" "}
+                {isIncomeMode
+                  ? "Confirmed income is editable"
+                  : "Confirmed revenue and direct costs are editable"}
+              </span>
+              <span>Click any highlighted cell to edit, or use ⚡ spread</span>
+            </div>
+          </div>
+
+          <div style={{ overflowX: "auto", width: "100%" }}>
+            <table
+              style={{
+                width: "100%",
+                minWidth: "1040px",
+                tableLayout: "fixed",
+                borderCollapse: "separate",
+                borderSpacing: 0,
+                fontSize: "11.5px",
+                fontFamily: "'Kumbh Sans', sans-serif",
+              }}
+            >
               <thead>
-                <tr style={{ background: THEME_HEADER_BG, color: "#ffffff" }}>
-                  <th style={{ padding: "8px 6px", border: "1px solid #312e81", width: "45px", textAlign: "center" }}>Row</th>
-                  <th style={{ padding: "8px 10px", border: "1px solid #312e81", textAlign: "left", minWidth: "240px" }}>
-                    {headerRow0?.[0]?.v || "Description"}
-                  </th>
-                  <th style={{ padding: "8px 6px", border: "1px solid #312e81", minWidth: "75px", textAlign: "center" }}>Type</th>
-                  <th style={{ padding: "8px 6px", border: "1px solid #312e81", minWidth: "50px", textAlign: "center" }}>VAT</th>
-                  <th style={{ padding: "8px 6px", border: "1px solid #312e81", minWidth: "50px", textAlign: "center" }}>Pay</th>
-                  <th style={{ padding: "8px 6px", border: "1px solid #312e81", minWidth: "55px", textAlign: "center" }}>Del</th>
-                  <th style={{ padding: "8px 6px", border: "1px solid #312e81", minWidth: "55px", textAlign: "center" }}>Likl</th>
-                  {fyCols.map((cIdx) => (
-                    <th key={cIdx} style={{ padding: "8px 8px", border: "1px solid #312e81", minWidth: "85px", textAlign: "right" }}>
-                      {headerRow1?.[cIdx]?.v || headerRow0?.[cIdx]?.v || `M${cIdx}`}
+                <tr style={{ background: "#0047AB", color: "#ffffff", height: "32px" }}>
+                  <th
+                    style={{
+                      padding: "6px 12px",
+                      textAlign: "left",
+                      fontWeight: 700,
+                      width: "20%",
+                      position: "sticky",
+                      left: 0,
+                      background: "#0047AB",
+                      zIndex: 3,
+                      fontSize: "12px",
+                    }}
+                  />
+                  {monthHeaders.map((mLabel, idx) => (
+                    <th
+                      key={idx}
+                      style={{
+                        padding: "6px 4px",
+                        textAlign: "right",
+                        fontWeight: 700,
+                        fontSize: "11.5px",
+                        width: "6.0%",
+                        background: "#0047AB",
+                      }}
+                    >
+                      {mLabel}
                     </th>
                   ))}
-                  <th style={{ padding: "8px 8px", border: "1px solid #312e81", minWidth: "95px", textAlign: "right", background: "#312e81" }}>
-                    {headerRow0?.[totalCol]?.v || "FY Total"}
+                  <th
+                    style={{
+                      padding: "6px 12px",
+                      textAlign: "right",
+                      fontWeight: 800,
+                      fontSize: "12px",
+                      width: "8.0%",
+                      background: "#0047AB",
+                      borderLeft: "1px solid #cbd5e1",
+                    }}
+                  >
+                    Total
                   </th>
                 </tr>
               </thead>
+
               <tbody>
-                {filteredMatrixRows.map(({ row, sheetRow }) => {
-                  const isSectionHeader =
-                    sheetRow === 4 ||
-                    sheetRow === 12 ||
-                    sheetRow === 19 ||
-                    sheetRow === 58 ||
-                    sheetRow === 118 ||
-                    sheetRow === 126 ||
-                    sheetRow === 149;
+                {tableRows.map((r, rIdx) => {
+                  if (r.type === "spacer") {
+                    return (
+                      <tr key={rIdx} style={{ height: `${r.height}px`, lineHeight: 0 }}>
+                        <td
+                          style={{
+                            padding: 0,
+                            background: "#ffffff",
+                            position: "sticky",
+                            left: 0,
+                            zIndex: 2,
+                            border: "none",
+                          }}
+                        />
+                        {Array.from({ length: 12 }).map((_, cIdx) => (
+                          <td key={cIdx} style={{ padding: 0, background: "#ffffff", border: "none" }} />
+                        ))}
+                        <td
+                          style={{
+                            padding: 0,
+                            background: "rgba(0, 71, 171, 0.04)",
+                            border: "none",
+                            borderLeft: "1px solid #cbd5e1",
+                          }}
+                        />
+                      </tr>
+                    );
+                  }
+
+                  if (r.type === "section") {
+                    return (
+                      <tr key={rIdx} style={{ height: "26px", borderBottom: "1px solid #f1f5f9" }}>
+                        <td
+                          style={{
+                            padding: "5px 12px",
+                            textAlign: "left",
+                            fontWeight: 700,
+                            fontSize: "11px",
+                            textTransform: "uppercase",
+                            letterSpacing: "0.6px",
+                            color: "#0047AB",
+                            position: "sticky",
+                            left: 0,
+                            background: "#ffffff",
+                            zIndex: 2,
+                            boxShadow: "2px 0 3px rgba(0,0,0,0.02)",
+                          }}
+                        >
+                          {r.label}
+                        </td>
+                        {Array.from({ length: 12 }).map((_, cIdx) => (
+                          <td key={cIdx} style={{ padding: 0, background: "#ffffff", border: "none" }} />
+                        ))}
+                        <td
+                          style={{
+                            padding: 0,
+                            background: "rgba(0, 71, 171, 0.04)",
+                            border: "none",
+                            borderLeft: "1px solid #cbd5e1",
+                          }}
+                        />
+                      </tr>
+                    );
+                  }
+
+                  // Data Row
+                  const isBigTotal = r.isBigTotal;
+                  const rowBg = r.bg;
+                  const rowColor = r.color;
+                  const isBold = r.isBold;
+                  const isMargin = r.isMargin;
+                  const rowHeight = isBigTotal ? "32px" : isMargin ? "22px" : "26px";
+                  const fontSize = isBigTotal ? "13px" : isMargin ? "11px" : "11.5px";
+                  const borderBottom = isBigTotal ? "2px solid #cbd5e1" : "1px solid #f1f5f9";
 
                   return (
                     <tr
-                      key={sheetRow}
+                      key={rIdx}
                       style={{
-                        borderBottom: "1px solid #f1f5f9",
-                        background: isSectionHeader ? "#e0e7ff" : "#ffffff",
-                        fontWeight: isSectionHeader ? "700" : "normal",
+                        height: rowHeight,
+                        background: isBigTotal ? rowBg : r.isEditable ? "#fdfefe" : "#ffffff",
+                        borderBottom,
+                        fontWeight: isBold ? 700 : 400,
                       }}
                     >
-                      <td style={{ padding: "5px 4px", textAlign: "center", color: "#94a3b8", background: isSectionHeader ? "#c7d2fe" : "#f8fafc", borderRight: "1px solid #e2e8f0" }}>
-                        {sheetRow}
+                      {/* Metric Label Column */}
+                      <td
+                        style={{
+                          padding: isMargin ? "2px 12px" : "4.5px 12px",
+                          paddingLeft: isMargin ? "22px" : isBigTotal ? "12px" : "16px",
+                          textAlign: "left",
+                          color: isBigTotal ? "#ffffff" : rowColor,
+                          fontWeight: isBold ? 700 : 400,
+                          fontStyle: isMargin ? "italic" : "normal",
+                          fontSize,
+                          position: "sticky",
+                          left: 0,
+                          background: isBigTotal ? rowBg : r.isEditable ? "#f8faff" : "#ffffff",
+                          borderLeft: isMargin && r.accentBar ? `4px solid ${r.accentBar}` : "none",
+                          zIndex: 2,
+                          whiteSpace: "nowrap",
+                          boxShadow: "2px 0 3px rgba(0,0,0,0.02)",
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                          <span>{r.label}</span>
+                          {r.isEditable && (
+                            <div style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                              <span
+                                style={{
+                                  fontSize: "10px",
+                                  fontWeight: 700,
+                                  background: "#dbeafe",
+                                  color: "#1e40af",
+                                  padding: "1px 6px",
+                                  borderRadius: "4px",
+                                }}
+                                title="This row is editable cell-by-cell or via spread"
+                              >
+                                Editable
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setSpreadModal({
+                                    isOpen: true,
+                                    sheetRow: r.sheetRow,
+                                    label: r.label,
+                                    annualTotal: r.data[12] ? String(r.data[12]) : "",
+                                  })
+                                }
+                                style={{
+                                  fontSize: "11px",
+                                  fontWeight: 600,
+                                  color: "#1d4ed8",
+                                  background: "#eff6ff",
+                                  border: "1px solid #bfdbfe",
+                                  borderRadius: "4px",
+                                  padding: "2px 6px",
+                                  cursor: "pointer",
+                                }}
+                                title="Spread an annual amount evenly across all 12 months"
+                              >
+                                ⚡ Spread
+                              </button>
+                            </div>
+                          )}
+                        </div>
                       </td>
-                      <td style={{ padding: "5px 10px", borderRight: "1px solid #f1f5f9", color: isSectionHeader ? "#1e1b4b" : "inherit" }}>
-                        {row?.[0]?.v || ""}
-                      </td>
-                      <td style={{ padding: "5px 6px", textAlign: "center", borderRight: "1px solid #f1f5f9" }}>{row?.[1]?.v || ""}</td>
-                      <td style={{ padding: "5px 6px", textAlign: "center", borderRight: "1px solid #f1f5f9" }}>{row?.[2]?.v || ""}</td>
-                      <td style={{ padding: "5px 6px", textAlign: "center", borderRight: "1px solid #f1f5f9" }}>{row?.[3]?.v || ""}</td>
-                      <td style={{ padding: "5px 6px", textAlign: "center", borderRight: "1px solid #f1f5f9" }}>{row?.[4]?.v || ""}</td>
-                      <td style={{ padding: "5px 6px", textAlign: "center", borderRight: "1px solid #f1f5f9" }}>{row?.[5]?.v || ""}</td>
-                      {fyCols.map((cIdx) => {
-                        const cell = row?.[cIdx];
-                        const opts = getEditableOpts(sheetRow, cIdx, cell?.v);
+
+                      {/* 12 Month Values */}
+                      {Array.from({ length: 12 }).map((_, mIdx) => {
+                        const val = r.data[mIdx];
+                        const displayVal = r.isCurrency ? formatMoney(val) : formatPctDisplay(val);
+                        const cIdx = fyCols[mIdx];
+
+                        if (isBigTotal) {
+                          return (
+                            <td
+                              key={mIdx}
+                              style={{
+                                padding: "4.5px 4px",
+                                textAlign: "right",
+                                color: "#ffffff",
+                                fontSize: "13px",
+                                fontWeight: 700,
+                                whiteSpace: "nowrap",
+                                fontVariantNumeric: "tabular-nums",
+                              }}
+                            >
+                              {displayVal}
+                            </td>
+                          );
+                        }
+
+                        if (isMargin) {
+                          const threshBg = getMarginColor(r.label, val);
+                          return (
+                            <td
+                              key={mIdx}
+                              style={{
+                                padding: "1px 2px",
+                                background: "#ffffff",
+                                textAlign: "right",
+                                height: "22px",
+                              }}
+                            >
+                              <div
+                                style={{
+                                  display: "inline-block",
+                                  width: "100%",
+                                  padding: "1.5px 3px",
+                                  borderRadius: "4px",
+                                  background: threshBg || "transparent",
+                                  color: "#0047AB",
+                                  border: threshBg ? "1.5px solid #ffffff" : "none",
+                                  fontStyle: "italic",
+                                  fontSize: "11px",
+                                  fontWeight: 700,
+                                  fontVariantNumeric: "tabular-nums",
+                                  boxSizing: "border-box",
+                                }}
+                              >
+                                {displayVal}
+                              </div>
+                            </td>
+                          );
+                        }
+
+                        // Editable month cell for Row 5 or Row 13
+                        if (r.isEditable && r.sheetRow) {
+                          const opts = getEditableOpts(r.sheetRow, cIdx, val);
+                          return (
+                            <EditableBudgetCell
+                              key={mIdx}
+                              value={val}
+                              displayValue={displayVal}
+                              editableOpts={opts}
+                              isHighlighted={true}
+                              align="right"
+                            />
+                          );
+                        }
+
+                        // Regular read-only cell
                         return (
-                          <EditableCell
-                            key={cIdx}
-                            cell={cell}
-                            editableOpts={opts}
-                            align="right"
-                            isAmount={true}
-                          />
+                          <td
+                            key={mIdx}
+                            style={{
+                              padding: "4px 4px",
+                              textAlign: "right",
+                              color: rowColor,
+                              fontSize: "11.5px",
+                              whiteSpace: "nowrap",
+                              fontVariantNumeric: "tabular-nums",
+                            }}
+                          >
+                            {displayVal}
+                          </td>
                         );
                       })}
-                      <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: "700", background: isSectionHeader ? "#c7d2fe" : "#f8fafc" }}>
-                        {row?.[totalCol]?.v || ""}
+
+                      {/* 13th Column: FY Total */}
+                      <td
+                        style={{
+                          padding: "4.5px 12px",
+                          textAlign: "right",
+                          fontWeight: 700,
+                          fontSize: isBigTotal ? "13px" : "12px",
+                          color: isBigTotal ? "#ffffff" : rowColor,
+                          background: isBigTotal ? rowBg : "rgba(0, 71, 171, 0.04)",
+                          borderLeft: "1px solid #cbd5e1",
+                          whiteSpace: "nowrap",
+                          fontVariantNumeric: "tabular-nums",
+                        }}
+                      >
+                        {r.isCurrency ? formatMoney(r.data[12]) : formatPctDisplay(r.data[12])}
                       </td>
                     </tr>
                   );
@@ -741,26 +1707,1106 @@ export default function BudgetView({
           </div>
         </div>
       )}
+
+      {/* ───────────────────────────────────────────────────────────────────── */}
+      {/* SUB-SECTIONS (MIRRORING BUDGET TAB)                                  */}
+      {/* ───────────────────────────────────────────────────────────────────── */}
+      {budgetData && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
+          {/* ═════════════════════════════════════════════════════════════════ */}
+          {/* 2. SALARIES SUB-SECTION (Rows 58 to 112 + Dividends Row 119)     */}
+          {/* ═════════════════════════════════════════════════════════════════ */}
+          <div
+            style={{
+              background: "#ffffff",
+              borderRadius: "8px",
+              boxShadow: "0 1px 3px rgba(0,0,0,0.06)",
+              border: "1px solid #cbd5e1",
+              overflow: "hidden",
+            }}
+          >
+            {/* Collapsible Header */}
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                padding: "12px 18px",
+                background: "#f8fafc",
+                borderBottom: salariesOpen ? "1px solid #e2e8f0" : "none",
+                cursor: "pointer",
+                userSelect: "none",
+              }}
+              onClick={() => setSalariesOpen((prev) => !prev)}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                <span style={{ fontSize: "14px", color: "#64748b" }}>{salariesOpen ? "▼" : "▶"}</span>
+                <h3 style={{ margin: 0, fontSize: "16px", fontWeight: 700, color: "#1e293b" }}>
+                  Salaries & staff costs
+                </h3>
+                <span
+                  style={{
+                    fontSize: "12px",
+                    background: "#e0e7ff",
+                    color: "#3730a3",
+                    padding: "2px 8px",
+                    borderRadius: "12px",
+                    fontWeight: 600,
+                  }}
+                >
+                  {activeEmployeeCount} active
+                </span>
+                <span style={{ fontSize: "12px", color: "#64748b" }}>
+                  · Master Sheet Budget rows 58–112 (cols A–E drive monthly costs) + dividends
+                </span>
+              </div>
+
+              <div
+                style={{ display: "flex", alignItems: "center", gap: "12px" }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <input
+                  type="text"
+                  placeholder="Search staff..."
+                  value={salariesSearch}
+                  onChange={(e) => setSalariesSearch(e.target.value)}
+                  style={{
+                    padding: "4px 8px",
+                    borderRadius: "4px",
+                    border: "1px solid #cbd5e1",
+                    fontSize: "12px",
+                    outline: "none",
+                    width: "160px",
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowEmptySalaries((prev) => !prev)}
+                  style={{
+                    padding: "4px 10px",
+                    borderRadius: "4px",
+                    border: "1px solid #cbd5e1",
+                    background: showEmptySalaries ? "#e0e7ff" : "#ffffff",
+                    color: showEmptySalaries ? "#3730a3" : "#475569",
+                    fontSize: "12px",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                  }}
+                >
+                  {showEmptySalaries ? "Hide empty rows" : "Show all empty rows"}
+                </button>
+              </div>
+            </div>
+
+            {/* Content Table */}
+            {salariesOpen && (
+              <div style={{ overflowX: "auto" }}>
+                <table
+                  style={{
+                    width: "100%",
+                    borderCollapse: "collapse",
+                    fontSize: "12px",
+                    fontFamily: "system-ui, -apple-system, sans-serif",
+                  }}
+                >
+                  <thead>
+                    <tr style={{ background: "#312e81", color: "#ffffff" }}>
+                      <th style={{ padding: "8px 6px", width: "42px", textAlign: "center" }}>Row</th>
+                      <th style={{ padding: "8px 10px", textAlign: "left", minWidth: "220px" }}>Name</th>
+                      <th style={{ padding: "8px 8px", textAlign: "right", minWidth: "110px" }}>
+                        Equiv salary
+                      </th>
+                      <th style={{ padding: "8px 6px", textAlign: "center", minWidth: "90px" }}>Start</th>
+                      <th style={{ padding: "8px 6px", textAlign: "center", minWidth: "90px" }}>End</th>
+                      <th style={{ padding: "8px 6px", textAlign: "center", width: "65px" }}>Del %</th>
+                      <th style={{ padding: "8px 8px", textAlign: "right", minWidth: "95px" }}>Cost/mth</th>
+                      {fyCols.map((cIdx) => (
+                        <th
+                          key={cIdx}
+                          style={{
+                            padding: "8px 6px",
+                            textAlign: "right",
+                            minWidth: "75px",
+                            borderLeft: "1px solid #4338ca",
+                          }}
+                        >
+                          {row0[cIdx]?.v || `M${cIdx}`}
+                        </th>
+                      ))}
+                      <th
+                        style={{
+                          padding: "8px 8px",
+                          textAlign: "right",
+                          minWidth: "85px",
+                          background: "#1e1b4b",
+                          borderLeft: "1px solid #4338ca",
+                        }}
+                      >
+                        Total
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredSalaryRows.map(({ sheetRow, row, hasContent }) => {
+                      const name = row[0]?.v || "";
+                      const equivSalary = row[1]?.v || "";
+                      const startMth = row[2]?.v || "";
+                      const endMth = row[3]?.v || "";
+                      const delPct = row[4]?.v || "";
+                      const costPm = row[5]?.v || "";
+
+                      return (
+                        <tr
+                          key={sheetRow}
+                          style={{
+                            borderBottom: "1px solid #f1f5f9",
+                            background: hasContent ? "#ffffff" : "#fafafa",
+                          }}
+                        >
+                          <td style={{ padding: "5px 4px", textAlign: "center", color: "#94a3b8", background: "#f8fafc" }}>
+                            {sheetRow}
+                          </td>
+
+                          {/* Col A: Name */}
+                          <EditableGridCell
+                            sheetRow={sheetRow}
+                            colIdx={0}
+                            value={name}
+                            align="left"
+                            editableOpts={getEditableOpts(sheetRow, 0, name)}
+                          />
+
+                          {/* Col B: Equiv Salary */}
+                          <EditableGridCell
+                            sheetRow={sheetRow}
+                            colIdx={1}
+                            value={equivSalary}
+                            align="right"
+                            isCurrency={true}
+                            editableOpts={getEditableOpts(sheetRow, 1, equivSalary)}
+                          />
+
+                          {/* Col C: Start Month */}
+                          <EditableGridCell
+                            sheetRow={sheetRow}
+                            colIdx={2}
+                            value={startMth}
+                            align="center"
+                            editableOpts={getEditableOpts(sheetRow, 2, startMth)}
+                          />
+
+                          {/* Col D: End Month */}
+                          <EditableGridCell
+                            sheetRow={sheetRow}
+                            colIdx={3}
+                            value={endMth}
+                            align="center"
+                            editableOpts={getEditableOpts(sheetRow, 3, endMth)}
+                          />
+
+                          {/* Col E: Del % */}
+                          <EditableGridCell
+                            sheetRow={sheetRow}
+                            colIdx={4}
+                            value={delPct}
+                            align="center"
+                            isPercent={true}
+                            editableOpts={getEditableOpts(sheetRow, 4, delPct)}
+                          />
+
+                          {/* Col F: Cost pm (formula in sheet) */}
+                          <td style={{ padding: "5px 8px", textAlign: "right", color: "#64748b", background: "#f8fafc" }}>
+                            {costPm}
+                          </td>
+
+                          {/* Monthly Columns across FY */}
+                          {fyCols.map((cIdx) => (
+                            <td
+                              key={cIdx}
+                              style={{
+                                padding: "5px 6px",
+                                textAlign: "right",
+                                borderLeft: "1px solid #f8fafc",
+                                color: "#334155",
+                              }}
+                            >
+                              {row[cIdx]?.v || ""}
+                            </td>
+                          ))}
+
+                          {/* FY Total */}
+                          <td
+                            style={{
+                              padding: "5px 8px",
+                              textAlign: "right",
+                              fontWeight: 700,
+                              background: "#f8fafc",
+                              borderLeft: "1px solid #e2e8f0",
+                            }}
+                          >
+                            {row[totalCol]?.v || ""}
+                          </td>
+                        </tr>
+                      );
+                    })}
+
+                    {/* ── Dividends Row (Row 119) ── */}
+                    {matrix[118] && (
+                      <tr style={{ background: "#fefce8", borderTop: "2px solid #fef08a", fontWeight: 600 }}>
+                        <td style={{ padding: "6px 4px", textAlign: "center", color: "#854d0e", background: "#fef9c3" }}>
+                          119
+                        </td>
+                        <td style={{ padding: "6px 10px", color: "#854d0e" }}>
+                          <span>{matrix[118][0]?.v || "Div in lieu of salary"}</span>
+                          <span
+                            style={{
+                              fontSize: "10px",
+                              background: "#fef08a",
+                              color: "#854d0e",
+                              padding: "1px 6px",
+                              borderRadius: "4px",
+                              marginLeft: "8px",
+                            }}
+                          >
+                            Dividends
+                          </span>
+                        </td>
+                        <td style={{ padding: "6px 8px", textAlign: "right", color: "#94a3b8" }}>—</td>
+                        <td style={{ padding: "6px 6px", textAlign: "center", color: "#94a3b8" }}>—</td>
+                        <td style={{ padding: "6px 6px", textAlign: "center", color: "#94a3b8" }}>—</td>
+
+                        {/* Del % (Col E) - Editable */}
+                        <EditableGridCell
+                          sheetRow={119}
+                          colIdx={4}
+                          value={matrix[118][4]?.v || "0%"}
+                          align="center"
+                          isPercent={true}
+                          editableOpts={getEditableOpts(119, 4, matrix[118][4]?.v || "0%")}
+                        />
+
+                        <td style={{ padding: "6px 8px", textAlign: "right", color: "#94a3b8" }}>—</td>
+
+                        {/* Monthly Dividend Cells - Editable */}
+                        {fyCols.map((cIdx) => {
+                          const cell = matrix[118][cIdx];
+                          const opts = getEditableOpts(119, cIdx, cell?.v);
+                          return (
+                            <EditableGridCell
+                              key={cIdx}
+                              sheetRow={119}
+                              colIdx={cIdx}
+                              value={cell?.v}
+                              align="right"
+                              isCurrency={true}
+                              editableOpts={opts}
+                            />
+                          );
+                        })}
+
+                        <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, background: "#fef9c3" }}>
+                          {matrix[118][totalCol]?.v || ""}
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* ═════════════════════════════════════════════════════════════════ */}
+          {/* 3. CONTRACTORS SUB-SECTION (Rows 126 to 140 + Making up CoS 142) */}
+          {/* ═════════════════════════════════════════════════════════════════ */}
+          <div
+            style={{
+              background: "#ffffff",
+              borderRadius: "8px",
+              boxShadow: "0 1px 3px rgba(0,0,0,0.06)",
+              border: "1px solid #cbd5e1",
+              overflow: "hidden",
+            }}
+          >
+            {/* Collapsible Header */}
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                padding: "12px 18px",
+                background: "#f8fafc",
+                borderBottom: contractorsOpen ? "1px solid #e2e8f0" : "none",
+                cursor: "pointer",
+                userSelect: "none",
+              }}
+              onClick={() => setContractorsOpen((prev) => !prev)}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                <span style={{ fontSize: "14px", color: "#64748b" }}>{contractorsOpen ? "▼" : "▶"}</span>
+                <h3 style={{ margin: 0, fontSize: "16px", fontWeight: 700, color: "#1e293b" }}>
+                  Contractors & subcontractors
+                </h3>
+                <span
+                  style={{
+                    fontSize: "12px",
+                    background: "#e0e7ff",
+                    color: "#3730a3",
+                    padding: "2px 8px",
+                    borderRadius: "12px",
+                    fontWeight: 600,
+                  }}
+                >
+                  {activeContractorCount} active
+                </span>
+
+                {/* Prominent "Making up CoS" Target Setting Control */}
+                <div
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    background: "#faf5ff",
+                    border: "1px solid #e9d5ff",
+                    padding: "3px 10px",
+                    borderRadius: "6px",
+                    fontSize: "12px",
+                    marginLeft: "8px",
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <span style={{ fontWeight: 600, color: "#7e22ce" }}>Making up CoS target (B142):</span>
+                  {isEditingCosTarget ? (
+                    <div style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                      <input
+                        type="text"
+                        value={cosTargetInput}
+                        autoFocus
+                        onChange={(e) => setCosTargetInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            setIsEditingCosTarget(false);
+                            handleUpdateCell(142, 1, cosTargetInput);
+                          } else if (e.key === "Escape") {
+                            setIsEditingCosTarget(false);
+                          }
+                        }}
+                        onBlur={() => {
+                          setIsEditingCosTarget(false);
+                          handleUpdateCell(142, 1, cosTargetInput);
+                        }}
+                        style={{
+                          width: "55px",
+                          padding: "2px 4px",
+                          fontSize: "12px",
+                          border: "1px solid #a855f7",
+                          borderRadius: "4px",
+                          textAlign: "center",
+                        }}
+                      />
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCosTargetInput(matrix[141]?.[1]?.v ? String(matrix[141][1].v).replace(/%/g, "") : "50");
+                        setIsEditingCosTarget(true);
+                      }}
+                      style={{
+                        background: "#f3e8ff",
+                        border: "1px solid #d8b4fe",
+                        color: "#6b21a8",
+                        fontWeight: 700,
+                        fontSize: "12px",
+                        padding: "1px 8px",
+                        borderRadius: "4px",
+                        cursor: "pointer",
+                      }}
+                      title="Click to edit desired CoS %"
+                    >
+                      {matrix[141]?.[1]?.v || "50%"} ✏️
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div
+                style={{ display: "flex", alignItems: "center", gap: "12px" }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <input
+                  type="text"
+                  placeholder="Search contractors..."
+                  value={contractorsSearch}
+                  onChange={(e) => setContractorsSearch(e.target.value)}
+                  style={{
+                    padding: "4px 8px",
+                    borderRadius: "4px",
+                    border: "1px solid #cbd5e1",
+                    fontSize: "12px",
+                    outline: "none",
+                    width: "160px",
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowEmptyContractors((prev) => !prev)}
+                  style={{
+                    padding: "4px 10px",
+                    borderRadius: "4px",
+                    border: "1px solid #cbd5e1",
+                    background: showEmptyContractors ? "#e0e7ff" : "#ffffff",
+                    color: showEmptyContractors ? "#3730a3" : "#475569",
+                    fontSize: "12px",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                  }}
+                >
+                  {showEmptyContractors ? "Hide empty rows" : "Show all empty rows"}
+                </button>
+              </div>
+            </div>
+
+            {/* Content Table */}
+            {contractorsOpen && (
+              <div style={{ overflowX: "auto" }}>
+                <table
+                  style={{
+                    width: "100%",
+                    borderCollapse: "collapse",
+                    fontSize: "12px",
+                    fontFamily: "system-ui, -apple-system, sans-serif",
+                  }}
+                >
+                  <thead>
+                    <tr style={{ background: "#0e7490", color: "#ffffff" }}>
+                      <th style={{ padding: "8px 6px", width: "42px", textAlign: "center" }}>Row</th>
+                      <th style={{ padding: "8px 10px", textAlign: "left", minWidth: "240px" }}>Contractor name</th>
+                      <th style={{ padding: "8px 6px", textAlign: "center", width: "70px" }}>Del %</th>
+                      {fyCols.map((cIdx) => (
+                        <th
+                          key={cIdx}
+                          style={{
+                            padding: "8px 6px",
+                            textAlign: "right",
+                            minWidth: "75px",
+                            borderLeft: "1px solid #155e75",
+                          }}
+                        >
+                          {row0[cIdx]?.v || `M${cIdx}`}
+                        </th>
+                      ))}
+                      <th
+                        style={{
+                          padding: "8px 8px",
+                          textAlign: "right",
+                          minWidth: "85px",
+                          background: "#164e63",
+                          borderLeft: "1px solid #155e75",
+                        }}
+                      >
+                        Total
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredContractorRows.map(({ sheetRow, row, hasContent }) => {
+                      const name = row[0]?.v || "";
+                      const delPct = row[4]?.v || "";
+
+                      return (
+                        <tr
+                          key={sheetRow}
+                          style={{
+                            borderBottom: "1px solid #f1f5f9",
+                            background: hasContent ? "#ffffff" : "#fafafa",
+                          }}
+                        >
+                          <td style={{ padding: "5px 4px", textAlign: "center", color: "#94a3b8", background: "#f8fafc" }}>
+                            {sheetRow}
+                          </td>
+
+                          {/* Contractor Name */}
+                          <EditableGridCell
+                            sheetRow={sheetRow}
+                            colIdx={0}
+                            value={name}
+                            align="left"
+                            editableOpts={getEditableOpts(sheetRow, 0, name)}
+                          />
+
+                          {/* Del % */}
+                          <EditableGridCell
+                            sheetRow={sheetRow}
+                            colIdx={4}
+                            value={delPct}
+                            align="center"
+                            isPercent={true}
+                            editableOpts={getEditableOpts(sheetRow, 4, delPct)}
+                          />
+
+                          {/* Monthly Columns (Editable) */}
+                          {fyCols.map((cIdx) => {
+                            const cell = row[cIdx];
+                            const opts = getEditableOpts(sheetRow, cIdx, cell?.v);
+                            return (
+                              <EditableGridCell
+                                key={cIdx}
+                                sheetRow={sheetRow}
+                                colIdx={cIdx}
+                                value={cell?.v}
+                                align="right"
+                                isCurrency={true}
+                                editableOpts={opts}
+                              />
+                            );
+                          })}
+
+                          {/* FY Total */}
+                          <td
+                            style={{
+                              padding: "5px 8px",
+                              textAlign: "right",
+                              fontWeight: 700,
+                              background: "#f8fafc",
+                              borderLeft: "1px solid #e2e8f0",
+                            }}
+                          >
+                            {row[totalCol]?.v || ""}
+                          </td>
+                        </tr>
+                      );
+                    })}
+
+                    {/* ── Making up CoS Row (Row 142) ── */}
+                    {matrix[141] && (
+                      <tr style={{ background: "#faf5ff", borderTop: "2px solid #e9d5ff", fontWeight: 600 }}>
+                        <td style={{ padding: "6px 4px", textAlign: "center", color: "#7e22ce", background: "#f3e8ff" }}>
+                          142
+                        </td>
+                        <td style={{ padding: "6px 10px", color: "#7e22ce" }}>
+                          <span>{matrix[141][0]?.v || "Making up CoS"}</span>
+                          <span
+                            style={{
+                              fontSize: "10px",
+                              background: "#e9d5ff",
+                              color: "#6b21a8",
+                              padding: "1px 6px",
+                              borderRadius: "4px",
+                              marginLeft: "8px",
+                            }}
+                          >
+                            Formula top-up
+                          </span>
+                        </td>
+
+                        {/* Del % (100%) */}
+                        <td style={{ padding: "6px 6px", textAlign: "center", color: "#6b21a8" }}>
+                          {matrix[141][4]?.v || "100%"}
+                        </td>
+
+                        {/* Calculated monthly Making up CoS values */}
+                        {fyCols.map((cIdx, mIdx) => (
+                          <td
+                            key={cIdx}
+                            style={{
+                              padding: "6px 6px",
+                              textAlign: "right",
+                              borderLeft: "1px solid #f3e8ff",
+                              color: "#7e22ce",
+                            }}
+                          >
+                            {formatMoney(computedModel?.makingUpCosVals?.[mIdx] || parseNum(matrix[141][cIdx]?.v))}
+                          </td>
+                        ))}
+
+                        <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, background: "#f3e8ff" }}>
+                          {formatMoney(computedModel?.makingUpCosVals?.[12] || parseNum(matrix[141][totalCol]?.v))}
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* ═════════════════════════════════════════════════════════════════ */}
+          {/* 4. OTHER EXPENSES SUB-SECTION (Rows 149 to 251)                  */}
+          {/* ═════════════════════════════════════════════════════════════════ */}
+          <div
+            style={{
+              background: "#ffffff",
+              borderRadius: "8px",
+              boxShadow: "0 1px 3px rgba(0,0,0,0.06)",
+              border: "1px solid #cbd5e1",
+              overflow: "hidden",
+            }}
+          >
+            {/* Collapsible Header */}
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                padding: "12px 18px",
+                background: "#f8fafc",
+                borderBottom: expensesOpen ? "1px solid #e2e8f0" : "none",
+                cursor: "pointer",
+                userSelect: "none",
+              }}
+              onClick={() => setExpensesOpen((prev) => !prev)}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                <span style={{ fontSize: "14px", color: "#64748b" }}>{expensesOpen ? "▼" : "▶"}</span>
+                <h3 style={{ margin: 0, fontSize: "16px", fontWeight: 700, color: "#1e293b" }}>
+                  Other expenses
+                </h3>
+                <span
+                  style={{
+                    fontSize: "12px",
+                    background: "#e0e7ff",
+                    color: "#3730a3",
+                    padding: "2px 8px",
+                    borderRadius: "12px",
+                    fontWeight: 600,
+                  }}
+                >
+                  {activeExpenseCount} active
+                </span>
+                <span style={{ fontSize: "12px", color: "#64748b" }}>
+                  · Master Sheet Budget rows 149–251 (filtered to active lines by default)
+                </span>
+              </div>
+
+              <div
+                style={{ display: "flex", alignItems: "center", gap: "12px" }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <input
+                  type="text"
+                  placeholder="Search expenses..."
+                  value={expensesSearch}
+                  onChange={(e) => setExpensesSearch(e.target.value)}
+                  style={{
+                    padding: "4px 8px",
+                    borderRadius: "4px",
+                    border: "1px solid #cbd5e1",
+                    fontSize: "12px",
+                    outline: "none",
+                    width: "160px",
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowEmptyExpenses((prev) => !prev)}
+                  style={{
+                    padding: "4px 10px",
+                    borderRadius: "4px",
+                    border: "1px solid #cbd5e1",
+                    background: showEmptyExpenses ? "#e0e7ff" : "#ffffff",
+                    color: showEmptyExpenses ? "#3730a3" : "#475569",
+                    fontSize: "12px",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                  }}
+                >
+                  {showEmptyExpenses ? "Hide empty rows" : "Show all empty rows"}
+                </button>
+              </div>
+            </div>
+
+            {/* Content Table */}
+            {expensesOpen && (
+              <div style={{ overflowX: "auto" }}>
+                <table
+                  style={{
+                    width: "100%",
+                    borderCollapse: "collapse",
+                    fontSize: "12px",
+                    fontFamily: "system-ui, -apple-system, sans-serif",
+                  }}
+                >
+                  <thead>
+                    <tr style={{ background: "#334155", color: "#ffffff" }}>
+                      <th style={{ padding: "8px 6px", width: "42px", textAlign: "center" }}>Row</th>
+                      <th style={{ padding: "8px 10px", textAlign: "left", minWidth: "260px" }}>Expense category</th>
+                      <th style={{ padding: "8px 6px", textAlign: "center", width: "70px" }}>Del %</th>
+                      {fyCols.map((cIdx) => (
+                        <th
+                          key={cIdx}
+                          style={{
+                            padding: "8px 6px",
+                            textAlign: "right",
+                            minWidth: "75px",
+                            borderLeft: "1px solid #475569",
+                          }}
+                        >
+                          {row0[cIdx]?.v || `M${cIdx}`}
+                        </th>
+                      ))}
+                      <th
+                        style={{
+                          padding: "8px 8px",
+                          textAlign: "right",
+                          minWidth: "85px",
+                          background: "#1e293b",
+                          borderLeft: "1px solid #475569",
+                        }}
+                      >
+                        Total
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredExpenseRows.map(({ sheetRow, row, hasContent }) => {
+                      const name = row[0]?.v || "";
+                      const delPct = row[4]?.v || "";
+
+                      return (
+                        <tr
+                          key={sheetRow}
+                          style={{
+                            borderBottom: "1px solid #f1f5f9",
+                            background: hasContent ? "#ffffff" : "#fafafa",
+                          }}
+                        >
+                          <td style={{ padding: "5px 4px", textAlign: "center", color: "#94a3b8", background: "#f8fafc" }}>
+                            {sheetRow}
+                          </td>
+
+                          {/* Expense Name */}
+                          <EditableGridCell
+                            sheetRow={sheetRow}
+                            colIdx={0}
+                            value={name}
+                            align="left"
+                            editableOpts={getEditableOpts(sheetRow, 0, name)}
+                          />
+
+                          {/* Del % */}
+                          <EditableGridCell
+                            sheetRow={sheetRow}
+                            colIdx={4}
+                            value={delPct}
+                            align="center"
+                            isPercent={true}
+                            editableOpts={getEditableOpts(sheetRow, 4, delPct)}
+                          />
+
+                          {/* Monthly Columns (Editable) */}
+                          {fyCols.map((cIdx) => {
+                            const cell = row[cIdx];
+                            const opts = getEditableOpts(sheetRow, cIdx, cell?.v);
+                            return (
+                              <EditableGridCell
+                                key={cIdx}
+                                sheetRow={sheetRow}
+                                colIdx={cIdx}
+                                value={cell?.v}
+                                align="right"
+                                isCurrency={true}
+                                editableOpts={opts}
+                              />
+                            );
+                          })}
+
+                          {/* FY Total */}
+                          <td
+                            style={{
+                              padding: "5px 8px",
+                              textAlign: "right",
+                              fontWeight: 700,
+                              background: "#f8fafc",
+                              borderLeft: "1px solid #e2e8f0",
+                            }}
+                          >
+                            {row[totalCol]?.v || ""}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ───────────────────────────────────────────────────────────────────── */}
+      {/* SPREAD MODAL (FOR ROWS 5 & 13)                                        */}
+      {/* ───────────────────────────────────────────────────────────────────── */}
+      {spreadModal.isOpen && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: "rgba(15, 23, 42, 0.55)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 9999,
+            padding: "16px",
+          }}
+          onClick={() => !savingSpread && setSpreadModal({ isOpen: false, sheetRow: null, label: "", annualTotal: "" })}
+        >
+          <div
+            style={{
+              background: "#ffffff",
+              borderRadius: "10px",
+              boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.2)",
+              width: "100%",
+              maxWidth: "480px",
+              overflow: "hidden",
+              border: "1px solid #cbd5e1",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div
+              style={{
+                padding: "16px 20px",
+                background: "#0047AB",
+                color: "#ffffff",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}
+            >
+              <h3 style={{ margin: 0, fontSize: "16px", fontWeight: 700 }}>
+                Spread {spreadModal.label?.toLowerCase()}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setSpreadModal({ isOpen: false, sheetRow: null, label: "", annualTotal: "" })}
+                disabled={savingSpread}
+                style={{
+                  background: "none",
+                  border: "none",
+                  color: "#ffffff",
+                  fontSize: "18px",
+                  cursor: "pointer",
+                }}
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div style={{ padding: "20px" }}>
+              <p style={{ margin: "0 0 16px 0", fontSize: "13px", color: "#475569" }}>
+                Enter the full-year target amount for <strong>{activeFyLabel}</strong>. This will be spread evenly across all 12 months.
+              </p>
+
+              <label
+                style={{
+                  display: "block",
+                  fontSize: "13px",
+                  fontWeight: 600,
+                  color: "#1e293b",
+                  marginBottom: "6px",
+                }}
+              >
+                Annual target ({currencySymbol})
+              </label>
+              <input
+                type="text"
+                autoFocus
+                placeholder="e.g. 240,000"
+                value={spreadModal.annualTotal}
+                onChange={(e) =>
+                  setSpreadModal((prev) => ({ ...prev, annualTotal: e.target.value }))
+                }
+                style={{
+                  width: "100%",
+                  padding: "10px 12px",
+                  fontSize: "16px",
+                  fontWeight: 600,
+                  border: "1px solid #cbd5e1",
+                  borderRadius: "6px",
+                  outline: "none",
+                  boxSizing: "border-box",
+                  marginBottom: "16px",
+                }}
+              />
+
+              {/* Monthly Breakdown Preview */}
+              <div
+                style={{
+                  background: "#f8fafc",
+                  border: "1px solid #e2e8f0",
+                  borderRadius: "6px",
+                  padding: "12px",
+                  marginBottom: "20px",
+                }}
+              >
+                <div style={{ fontSize: "12px", color: "#64748b", marginBottom: "4px" }}>
+                  Calculated monthly amount:
+                </div>
+                <div style={{ fontSize: "18px", fontWeight: 700, color: "#0047AB" }}>
+                  {formatMoney(Math.round(parseNum(spreadModal.annualTotal) / 12))}
+                  <span style={{ fontSize: "12px", fontWeight: 500, color: "#64748b", marginLeft: "6px" }}>
+                    / month (12 months)
+                  </span>
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
+                <button
+                  type="button"
+                  onClick={() => setSpreadModal({ isOpen: false, sheetRow: null, label: "", annualTotal: "" })}
+                  disabled={savingSpread}
+                  style={{
+                    padding: "8px 16px",
+                    borderRadius: "6px",
+                    border: "1px solid #cbd5e1",
+                    background: "#ffffff",
+                    color: "#475569",
+                    fontSize: "13px",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={savingSpread || !spreadModal.annualTotal}
+                  onClick={() => handleSpreadRow(spreadModal.sheetRow, spreadModal.annualTotal)}
+                  style={{
+                    padding: "8px 18px",
+                    borderRadius: "6px",
+                    border: "none",
+                    background: "#0047AB",
+                    color: "#ffffff",
+                    fontSize: "13px",
+                    fontWeight: 700,
+                    cursor: savingSpread ? "wait" : "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                  }}
+                >
+                  {savingSpread ? <Spinner size={14} color="#ffffff" /> : "⚡"} Apply spread
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GENERIC EDITABLE CELL COMPONENT
+// TOP TABLE EDITABLE MONTH CELL (ROWS 5 & 13)
 // ─────────────────────────────────────────────────────────────────────────────
-function EditableCell({ cell, editableOpts, align = "left", fontSize = "12px", isAmount = false }) {
+function EditableBudgetCell({ value, displayValue, editableOpts, isHighlighted = false, align = "right" }) {
+  if (!editableOpts || !editableOpts.isEditable) {
+    return (
+      <td style={{ padding: "4px 4px", textAlign: align, fontSize: "11.5px", fontVariantNumeric: "tabular-nums" }}>
+        {displayValue}
+      </td>
+    );
+  }
+
+  const { isEditing, isSaving, editValue, onChangeEditValue, onCommitEdit, onStartEdit, onCancelEdit } = editableOpts;
+
+  if (isSaving) {
+    return (
+      <td style={{ padding: "4px 4px", textAlign: align, background: "#fef9c3" }}>
+        <Spinner size={12} color="#ca8a04" />
+      </td>
+    );
+  }
+
+  if (isEditing) {
+    return (
+      <td style={{ padding: "2px", textAlign: align, background: "#eff6ff" }}>
+        <input
+          type="text"
+          value={editValue}
+          autoFocus
+          onChange={(e) => onChangeEditValue(e.target.value)}
+          onBlur={() => onCommitEdit()}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") onCancelEdit();
+            if (e.key === "Enter") onCommitEdit();
+          }}
+          style={{
+            width: "100%",
+            fontSize: "11.5px",
+            padding: "2px 4px",
+            border: "1px solid #3b82f6",
+            borderRadius: "3px",
+            textAlign: align,
+            boxSizing: "border-box",
+            outline: "none",
+            fontWeight: 600,
+          }}
+        />
+      </td>
+    );
+  }
+
+  return (
+    <td
+      onClick={onStartEdit}
+      title="Click to edit cell amount"
+      style={{
+        padding: "3px 4px",
+        textAlign: align,
+        fontSize: "11.5px",
+        cursor: "pointer",
+        whiteSpace: "nowrap",
+        fontVariantNumeric: "tabular-nums",
+        background: isHighlighted ? "#f0f7ff" : "transparent",
+        border: isHighlighted ? "1px dashed #bfdbfe" : "none",
+        borderRadius: "3px",
+        transition: "all 0.15s ease",
+      }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.backgroundColor = "#dbeafe";
+        e.currentTarget.style.borderColor = "#60a5fa";
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.backgroundColor = isHighlighted ? "#f0f7ff" : "transparent";
+        e.currentTarget.style.borderColor = isHighlighted ? "#bfdbfe" : "transparent";
+      }}
+    >
+      {displayValue}
+    </td>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SUB-SECTIONS GRID CELL COMPONENT
+// ─────────────────────────────────────────────────────────────────────────────
+function EditableGridCell({
+  sheetRow,
+  colIdx,
+  value,
+  align = "left",
+  isCurrency = false,
+  isPercent = false,
+  editableOpts,
+}) {
   if (!editableOpts || !editableOpts.isEditable) {
     return (
       <td
         style={{
           padding: "5px 8px",
           textAlign: align,
-          fontSize,
+          fontSize: "12px",
           borderRight: "1px solid #f1f5f9",
           whiteSpace: "nowrap",
         }}
       >
-        {cell?.v ?? ""}
+        {value ?? ""}
       </td>
     );
   }
@@ -790,7 +2836,7 @@ function EditableCell({ cell, editableOpts, align = "left", fontSize = "12px", i
           }}
           style={{
             width: "100%",
-            fontSize,
+            fontSize: "12px",
             padding: "3px 5px",
             border: "1px solid #3b82f6",
             borderRadius: "3px",
@@ -810,21 +2856,21 @@ function EditableCell({ cell, editableOpts, align = "left", fontSize = "12px", i
       style={{
         padding: "5px 8px",
         textAlign: align,
-        fontSize,
+        fontSize: "12px",
         borderRight: "1px solid #f1f5f9",
         cursor: "pointer",
         whiteSpace: "nowrap",
-        background: cell?.v ? "transparent" : "#fafafa",
+        background: value ? "transparent" : "#fafafa",
         transition: "background 0.1s ease",
       }}
       onMouseEnter={(e) => {
         e.currentTarget.style.backgroundColor = "#eff6ff";
       }}
       onMouseLeave={(e) => {
-        e.currentTarget.style.backgroundColor = cell?.v ? "transparent" : "#fafafa";
+        e.currentTarget.style.backgroundColor = value ? "transparent" : "#fafafa";
       }}
     >
-      {cell?.v ?? ""}
+      {value ?? ""}
     </td>
   );
 }

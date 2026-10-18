@@ -65,6 +65,7 @@ export default async function handler(req, res) {
       clientName,
       clientSheetId,
       sheetRow,
+      useTargets,
       useBudgetForIncomeTargets,
       directCostsPercentage,
       monthlyValues,
@@ -85,11 +86,12 @@ export default async function handler(req, res) {
     }
 
     try {
-      // Action: save_settings (Cells A12 and A21)
+      // Action: save_settings (Cells A9, A12, and A21)
       if (action === "save_settings") {
         const result = await saveNBToFindSettings({
           clientName: clientName || "Client",
           clientSheetId,
+          useTargets,
           useBudgetForIncomeTargets,
           directCostsPercentage,
           userEmail: sessionUser.email,

@@ -164,10 +164,12 @@ export async function fetchNBToFindData(clientName, clientSheetId, bypassCache =
     fy.monthCols = monthCols;
   });
 
-  // Extract cell A12 (Use budget for income targets?) and cell A21 (NB direct costs as a percentage?)
+  // Extract cell A9 (Use targets?), cell A12 (Use budget for income targets?) and cell A21 (NB direct costs as a percentage?)
+  const cellA9 = String(rows[8]?.[0] || "").trim(); // Row 9, index 8
   const cellA12 = String(rows[11]?.[0] || "").trim(); // Row 12, index 11
   const cellA21 = String(rows[20]?.[0] || "").trim(); // Row 21, index 20
 
+  const useTargets = cellA9.toLowerCase() === "yes" ? "Yes" : "No";
   const useBudgetForIncomeTargets = cellA12.toLowerCase() === "yes" ? "Yes" : "No";
   const directCostsPercentage = cellA21 || "0%";
 
@@ -192,10 +194,14 @@ export async function fetchNBToFindData(clientName, clientSheetId, bypassCache =
 
   // Row 3: New business to find income/revenue (manual inputs)
   const row3 = extractRowData(2, `New business to find ${modeTerm.toLowerCase()}`);
+  // Row 5: New business to find direct costs (manual inputs in revenue mode)
+  const row5 = extractRowData(4, "NB to find direct costs");
+  row5.label = "NB to find direct costs";
   // Row 10: Total income/revenue target
   const row10 = extractRowData(9, `Total ${modeTerm.toLowerCase()} target`);
   // Row 12: Use budget for income/revenue targets? (Budget values)
   const row12 = extractRowData(11, `Budget ${modeTerm.toLowerCase()} targets`);
+  row12.label = `Budget ${modeTerm.toLowerCase()} target`;
   // Row 14: NB to find figure based on target
   const row14 = extractRowData(13, "NB to find figure based on target");
   // Row 18: NB to find figure to use (Final target figure)
@@ -233,6 +239,7 @@ export async function fetchNBToFindData(clientName, clientSheetId, bypassCache =
     defaultFyIndex,
     fyConfigs,
     settings: {
+      useTargets,                // Cell A9
       useBudgetForIncomeTargets, // Cell A12
       directCostsPercentage,     // Cell A21
       revenueFocus,
@@ -240,6 +247,7 @@ export async function fetchNBToFindData(clientName, clientSheetId, bypassCache =
     },
     sections: {
       row3,
+      row5,
       row10,
       row12,
       row14,
@@ -271,13 +279,22 @@ export async function fetchNBToFindData(clientName, clientSheetId, bypassCache =
 export async function saveNBToFindSettings({
   clientName,
   clientSheetId,
-  useBudgetForIncomeTargets, // "Yes" | "No"
-  directCostsPercentage,     // e.g. "0%", "15%"
+  useTargets, // "Yes" | "No" (Cell A9)
+  useBudgetForIncomeTargets, // "Yes" | "No" (Cell A12)
+  directCostsPercentage, // e.g. "0%", "15%" (Cell A21)
   userEmail,
 }) {
   if (!clientSheetId) throw new Error("Client Sheet ID is required");
 
   const updates = [];
+
+  if (useTargets !== undefined) {
+    const cleanTargets = useTargets === "Yes" || useTargets === true ? "Yes" : "No";
+    updates.push({
+      range: "NBtoFind!A9",
+      values: [[cleanTargets]],
+    });
+  }
 
   if (useBudgetForIncomeTargets !== undefined) {
     const cleanBudget = useBudgetForIncomeTargets === "Yes" || useBudgetForIncomeTargets === true ? "Yes" : "No";
@@ -324,7 +341,7 @@ export async function saveNBToFindSettings({
     userEmail: userEmail || "system",
     action: "UPDATE_NBTOFIND_SETTINGS",
     clientName,
-    details: `Updated NBtoFind settings (Budget A12: ${useBudgetForIncomeTargets}, Direct Costs A21: ${directCostsPercentage})`,
+    details: `Updated NBtoFind settings (Targets A9: ${useTargets}, Budget A12: ${useBudgetForIncomeTargets}, Direct Costs A21: ${directCostsPercentage})`,
   });
 
   return { success: true, updated: updates.length };
@@ -342,8 +359,8 @@ export async function saveNBToFindMonthlyValues({
 }) {
   if (!clientSheetId) throw new Error("Client Sheet ID is required");
   const rowNum = parseInt(sheetRow, 10);
-  if (![3, 10, 25].includes(rowNum)) {
-    throw new Error(`Invalid NBtoFind editable row: ${sheetRow}. Allowed rows are 3, 10, or 25.`);
+  if (![3, 5, 10, 25].includes(rowNum)) {
+    throw new Error(`Invalid NBtoFind editable row: ${sheetRow}. Allowed rows are 3, 5, 10, or 25.`);
   }
 
   if (!monthlyValues || typeof monthlyValues !== "object") {

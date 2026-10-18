@@ -66,6 +66,11 @@ export default function ToolsView({
     eomClientTasks
   } = useEoM(sessionId);
 
+  const [eomNbExcludeModal, setEomNbExcludeModal] = useState(null); // { taskId, clientName, clientSheetId }
+  const [eomNbExcludeMode, setEomNbExcludeMode] = useState("target"); // "target" | "both"
+  const [eomNbExcludeRunning, setEomNbExcludeRunning] = useState(false);
+  const [eomNbExcludeError, setEomNbExcludeError] = useState("");
+
   const {
     toolsScriptsLoaded,
     toolsFiles,
@@ -436,6 +441,55 @@ export default function ToolsView({
       })
       .catch(e => setEomClientTasksError(e.message))
       .finally(() => setEomMarkActualRunning(""));
+  };
+
+  const handleOpenNbExcludeModal = (taskId, targetClientName = eomDetailClient) => {
+    const client = (allOutgoingsClients || []).find(c => c.clientName === targetClientName);
+    if (!client) {
+      setEomClientTasksError(`Client sheet not found for ${targetClientName}`);
+      return;
+    }
+    setEomNbExcludeError("");
+    setEomNbExcludeMode("target");
+    setEomNbExcludeModal({
+      taskId,
+      clientName: targetClientName,
+      clientSheetId: client.clientSheetId,
+    });
+  };
+
+  const handleConfirmNbExclude = () => {
+    if (!eomNbExcludeModal) return;
+    const { taskId, clientName, clientSheetId } = eomNbExcludeModal;
+    setEomNbExcludeRunning(true);
+    setEomNbExcludeError("");
+
+    fetch("/api/triage", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "eom_mark_nb_exclude",
+        clientSheetId,
+        clientName,
+        workMonthKey: eomMonthKey,
+        mode: eomNbExcludeMode,
+        automationCommanderSheetId
+      })
+    })
+      .then(r => r.json())
+      .then(d => {
+        if (!d.success) {
+          setEomNbExcludeError(d.error || "Failed to mark month to not include new business to find");
+          return;
+        }
+        setEomStatusOverrides(prev => {
+          const withoutThis = (prev || []).filter(s => !(s.clientName === clientName && s.taskId === taskId));
+          return [...withoutThis, { clientName, taskId, status: "done" }];
+        });
+        setEomNbExcludeModal(null);
+      })
+      .catch(e => setEomNbExcludeError(e.message))
+      .finally(() => setEomNbExcludeRunning(false));
   };
 
   const handleEomStatusChange = (taskId, newStatus, targetClientName = eomDetailClient) => {
@@ -1169,6 +1223,17 @@ export default function ToolsView({
                                   </button>
                                 );
                               })()}
+                              {t.linkedFunction === "mark_nb_exclude" && (
+                                <button onClick={() => handleOpenNbExcludeModal(t.taskId, c.clientName)}
+                                  title="Mark month(s) to NOT include new business to find on the NBtoFind tab"
+                                  className="eom-task-action-btn"
+                                  style={{
+                                    marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px",
+                                    color: "#0066cc", cursor: "pointer", fontSize: "10px", fontWeight: "600"
+                                  }}>
+                                  Exclude NB to find
+                                </button>
+                              )}
                               {t.linkedFunction === "create_backup" && (
                                 <button onClick={() => handleEomCreateBackup(t.taskId, c.clientName)} disabled={eomBackupRunning === t.taskId}
                                   title={`Copies the Dashboard tab to the backup sheet as values only`}
@@ -1353,6 +1418,7 @@ export default function ToolsView({
                           <option value="salaries">Salaries</option>
                           <option value="cash_balance">Cash Balance</option>
                           <option value="mark_actual">Mark Month Actual</option>
+                          <option value="mark_nb_exclude">Exclude new business to find</option>
                           <option value="create_backup">Create Dashboard Backup</option>
                           <option value="time_import">Time Report Import</option>
                           <option value="alert_check">Alert Check (InvComp/DirComp/CRMComp)</option>
@@ -1401,7 +1467,7 @@ export default function ToolsView({
                           {!tpl.active && <span style={{ marginLeft: "6px", fontSize: "10px", color: "#b45309" }}>(inactive)</span>}
                           {tpl.linkedFunction && (
                             <span style={{ marginLeft: "6px", fontSize: "10px", color: "#0066cc" }}>
-                              (linked: {({ salaries: "salaries", cash_balance: "cash balance", mark_actual: "mark actual", create_backup: "create backup", alert_check: "alert check", time_import: "time import", push_outgoings: "push outgoings", cashflow_recon: "cashflow recon" }[tpl.linkedFunction]) || tpl.linkedFunction})
+                              (linked: {({ salaries: "salaries", cash_balance: "cash balance", mark_actual: "mark actual", mark_nb_exclude: "exclude new business to find", create_backup: "create backup", alert_check: "alert check", time_import: "time import", push_outgoings: "push outgoings", cashflow_recon: "cashflow recon" }[tpl.linkedFunction]) || tpl.linkedFunction})
                             </span>
                           )}
                         </div>
@@ -1439,6 +1505,7 @@ export default function ToolsView({
                       <option value="salaries">Salaries</option>
                       <option value="cash_balance">Cash Balance</option>
                       <option value="mark_actual">Mark Month Actual</option>
+                      <option value="mark_nb_exclude">Exclude new business to find</option>
                       <option value="create_backup">Create Dashboard Backup</option>
                       <option value="time_import">Time Report Import</option>
                       <option value="alert_check">Alert Check (InvComp/DirComp/CRMComp)</option>
@@ -1875,6 +1942,17 @@ export default function ToolsView({
                           </button>
                         );
                       })()}
+                      {t.linkedFunction === "mark_nb_exclude" && (
+                        <button onClick={() => handleOpenNbExcludeModal(t.taskId, eomDetailClient)}
+                          title="Mark month(s) to NOT include new business to find on the NBtoFind tab"
+                          className="eom-task-action-btn"
+                          style={{
+                            marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px",
+                            color: "#0066cc", cursor: "pointer", fontSize: "10px", fontWeight: "600"
+                          }}>
+                          Exclude NB to find
+                        </button>
+                      )}
                       {t.linkedFunction === "create_backup" && (
                         <button onClick={() => handleEomCreateBackup(t.taskId)} disabled={eomBackupRunning === t.taskId}
                           title={`Copies the Dashboard tab to the backup sheet as values only`}
@@ -2719,6 +2797,136 @@ export default function ToolsView({
           }
         }
       `}</style>
+
+      {eomNbExcludeModal && (() => {
+        const targetKey = eomWorkMonthToTargetMonth(eomMonthKey);
+        const [ty, tm] = (targetKey || "").split("-").map(Number);
+        const targetLabel = ty ? new Date(ty, tm - 1, 1).toLocaleDateString("en-GB", { month: "short", year: "numeric" }) : "";
+        const [cy, cm] = (eomMonthKey || "").split("-").map(Number);
+        const currentLabel = cy ? new Date(cy, cm - 1, 1).toLocaleDateString("en-GB", { month: "short", year: "numeric" }) : "";
+
+        return (
+          <div style={{
+            position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 3000,
+            display: "flex", alignItems: "center", justifyContent: "center", padding: "16px"
+          }}>
+            <div style={{
+              background: "#fff", borderRadius: "12px", width: "100%", maxWidth: "480px",
+              boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)",
+              overflow: "hidden"
+            }}>
+              <div style={{
+                padding: "16px 20px", borderBottom: "1px solid #e5e7eb", display: "flex",
+                justifyContent: "space-between", alignItems: "center"
+              }}>
+                <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "600", color: "#111827" }}>
+                  Exclude new business to find
+                </h3>
+                <button
+                  onClick={() => setEomNbExcludeModal(null)}
+                  disabled={eomNbExcludeRunning}
+                  style={{ background: "none", border: "none", fontSize: "20px", cursor: "pointer", color: "#6b7280" }}
+                >
+                  ×
+                </button>
+              </div>
+
+              <div style={{ padding: "20px" }}>
+                <p style={{ margin: "0 0 16px 0", fontSize: "13px", color: "#4b5563" }}>
+                  Select which months to mark on the <strong>NBtoFind</strong> tab for <strong>{eomNbExcludeModal.clientName}</strong> (writes &quot;No&quot; into row 25):
+                </p>
+
+                <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                  <label
+                    onClick={() => setEomNbExcludeMode("target")}
+                    style={{
+                      display: "flex", alignItems: "flex-start", gap: "12px", padding: "12px 14px",
+                      borderRadius: "8px", cursor: "pointer",
+                      border: eomNbExcludeMode === "target" ? "2px solid #2563eb" : "1px solid #d1d5db",
+                      background: eomNbExcludeMode === "target" ? "#eff6ff" : "#fff"
+                    }}
+                  >
+                    <input
+                      type="radio"
+                      name="nbExcludeMode"
+                      checked={eomNbExcludeMode === "target"}
+                      onChange={() => setEomNbExcludeMode("target")}
+                      style={{ marginTop: "2px" }}
+                    />
+                    <div>
+                      <div style={{ fontSize: "13px", fontWeight: "600", color: "#111827" }}>
+                        Target month only ({targetLabel})
+                      </div>
+                      <div style={{ fontSize: "12px", color: "#6b7280", marginTop: "2px" }}>
+                        Writes &quot;No&quot; into the {targetLabel} column (row 25)
+                      </div>
+                    </div>
+                  </label>
+
+                  <label
+                    onClick={() => setEomNbExcludeMode("both")}
+                    style={{
+                      display: "flex", alignItems: "flex-start", gap: "12px", padding: "12px 14px",
+                      borderRadius: "8px", cursor: "pointer",
+                      border: eomNbExcludeMode === "both" ? "2px solid #2563eb" : "1px solid #d1d5db",
+                      background: eomNbExcludeMode === "both" ? "#eff6ff" : "#fff"
+                    }}
+                  >
+                    <input
+                      type="radio"
+                      name="nbExcludeMode"
+                      checked={eomNbExcludeMode === "both"}
+                      onChange={() => setEomNbExcludeMode("both")}
+                      style={{ marginTop: "2px" }}
+                    />
+                    <div>
+                      <div style={{ fontSize: "13px", fontWeight: "600", color: "#111827" }}>
+                        Both target month and current month ({targetLabel} &amp; {currentLabel})
+                      </div>
+                      <div style={{ fontSize: "12px", color: "#6b7280", marginTop: "2px" }}>
+                        Writes &quot;No&quot; into both the {targetLabel} and {currentLabel} columns (row 25)
+                      </div>
+                    </div>
+                  </label>
+                </div>
+
+                {eomNbExcludeError && (
+                  <div style={{ marginTop: "14px", padding: "10px 12px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "6px", color: "#b91c1c", fontSize: "12px" }}>
+                    {eomNbExcludeError}
+                  </div>
+                )}
+              </div>
+
+              <div style={{
+                padding: "12px 20px", background: "#f9fafb", borderTop: "1px solid #e5e7eb",
+                display: "flex", justifyContent: "flex-end", gap: "10px"
+              }}>
+                <button
+                  onClick={() => setEomNbExcludeModal(null)}
+                  disabled={eomNbExcludeRunning}
+                  style={{
+                    padding: "7px 14px", background: "#fff", border: "1px solid #d1d5db",
+                    borderRadius: "6px", fontSize: "12px", fontWeight: "600", color: "#374151", cursor: "pointer"
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleConfirmNbExclude}
+                  disabled={eomNbExcludeRunning}
+                  style={{
+                    padding: "7px 16px", background: "#0066cc", border: "none",
+                    borderRadius: "6px", fontSize: "12px", fontWeight: "600", color: "#fff",
+                    cursor: eomNbExcludeRunning ? "default" : "pointer", opacity: eomNbExcludeRunning ? 0.7 : 1
+                  }}
+                >
+                  {eomNbExcludeRunning ? "Updating..." : "Confirm"}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

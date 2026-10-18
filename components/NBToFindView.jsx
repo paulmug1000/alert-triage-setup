@@ -36,15 +36,17 @@ export default function NBToFindView({
   // FY Navigation
   const [selectedFyIdx, setSelectedFyIdx] = useState(0);
 
-  // Settings State (Cells A12 & A21)
-  const [budgetSetting, setBudgetSetting] = useState("No"); // "Yes" | "No"
-  const [directCostsPct, setDirectCostsPct] = useState("0%");
+  // Settings State (Cells A9, A12 & A21)
+  const [targetsSetting, setTargetsSetting] = useState("No"); // "Yes" | "No" (Cell A9)
+  const [budgetSetting, setBudgetSetting] = useState("No"); // "Yes" | "No" (Cell A12)
+  const [directCostsPct, setDirectCostsPct] = useState("0%"); // Cell A21
 
-  // Edit Monthly Targets (Row 3)
+  // Edit Monthly Targets (Row 3 or Row 10)
   const [editingTargets, setEditingTargets] = useState(false);
+  const [editingTargetsRow, setEditingTargetsRow] = useState(3); // 3 or 10
   const [targetInputs, setTargetInputs] = useState({}); // { [colLetter]: value }
 
-  // Quick Single Cell Edit (Row 3 or Row 10)
+  // Quick Single Cell Edit (Row 3, Row 5, or Row 10)
   const [editingSingleCell, setEditingSingleCell] = useState(null); // { rowNum, colLetter, label, value, title }
   const [singleCellValue, setSingleCellValue] = useState("");
 
@@ -90,6 +92,7 @@ export default function NBToFindView({
       }
       setNbData(data);
       setSelectedFyIdx(data.defaultFyIndex ?? 0);
+      setTargetsSetting(data.settings?.useTargets || "No");
       setBudgetSetting(data.settings?.useBudgetForIncomeTargets || "No");
       setDirectCostsPct(data.settings?.directCostsPercentage || "0%");
     } catch (err) {
@@ -124,6 +127,7 @@ export default function NBToFindView({
   const revenueFocus = nbData?.revenueFocus || nbData?.settings?.revenueFocus || "Revenue";
   const modeTerm = revenueFocus === "Income" ? "Income" : "Revenue";
   const modeTermLower = modeTerm.toLowerCase();
+  const isRevenueMode = modeTerm === "Revenue";
 
   const rawSymbol = nbData?.currencySymbol || selectedClient?.currencySymbol || "£";
   const currencySymbol = rawSymbol === "EUR" ? "€" : rawSymbol === "GBP" ? "£" : rawSymbol === "USD" ? "$" : rawSymbol;
@@ -138,8 +142,8 @@ export default function NBToFindView({
     return `${currencySymbol}` + Math.round(num).toLocaleString(thousandsSeparator === "." ? "de-DE" : "en-GB");
   };
 
-  // ── SAVE SETTINGS (Cell A12 and/or Cell A21) ────────────────────────────────
-  const handleSaveSettings = async (newBudget, newDirectPct) => {
+  // ── SAVE SETTINGS (Cell A9, Cell A12 and/or Cell A21) ───────────────────────
+  const handleSaveSettings = async (newTargets, newBudget, newDirectPct) => {
     if (!selectedClient || !isAdmin) return;
     setSaving(true);
     setError(null);
@@ -151,6 +155,7 @@ export default function NBToFindView({
           action: "save_settings",
           clientName: selectedClient.clientName,
           clientSheetId: selectedClient.clientSheetId,
+          useTargets: newTargets !== undefined ? newTargets : targetsSetting,
           useBudgetForIncomeTargets: newBudget !== undefined ? newBudget : budgetSetting,
           directCostsPercentage: newDirectPct !== undefined ? newDirectPct : directCostsPct,
         }),
@@ -199,7 +204,7 @@ export default function NBToFindView({
     }
   };
 
-  // ── SAVE ROW 3 TARGETS ─────────────────────────────────────────────────────
+  // ── SAVE ROW 3 OR ROW 10 TARGETS ───────────────────────────────────────────
   const handleSaveAllTargets = async () => {
     if (!selectedClient || !isAdmin) return;
     setSaving(true);
@@ -212,14 +217,14 @@ export default function NBToFindView({
           action: "save_monthly_values",
           clientName: selectedClient.clientName,
           clientSheetId: selectedClient.clientSheetId,
-          sheetRow: 3,
+          sheetRow: editingTargetsRow,
           monthlyValues: targetInputs,
         }),
       });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || "Failed to save targets");
       setEditingTargets(false);
-      showSuccess(`Saved new business monthly ${modeTermLower} targets successfully.`);
+      showSuccess(`Saved monthly ${modeTermLower} targets (Row ${editingTargetsRow}) successfully.`);
       await fetchNBData(selectedClient, true);
     } catch (err) {
       console.error("Save targets error:", err);
@@ -229,7 +234,7 @@ export default function NBToFindView({
     }
   };
 
-  // ── SAVE SINGLE CELL (Row 3 or Row 10) ────────────────────────────────────
+  // ── SAVE SINGLE CELL (Row 3, Row 5, or Row 10) ────────────────────────────
   const handleSaveSingleCell = async () => {
     if (!selectedClient || !editingSingleCell || !isAdmin) return;
     setSaving(true);
@@ -263,18 +268,23 @@ export default function NBToFindView({
 
   // Open multi-month target editor for current FY
   const startEditingAllTargets = () => {
-    if (!currentFy || !nbData?.sections?.row3?.fyData?.[currentFy.id]) return;
-    const months = nbData.sections.row3.fyData[currentFy.id].months;
+    if (!currentFy) return;
+    const targetRow = targetsSetting === "Yes" && budgetSetting === "No" ? 10 : 3;
+    const rowObj = targetRow === 10 ? nbData?.sections?.row10 : nbData?.sections?.row3;
+    if (!rowObj?.fyData?.[currentFy.id]) return;
+    const months = rowObj.fyData[currentFy.id].months;
     const initial = {};
     months.forEach((m) => {
       initial[m.colLetter] = normalizeCurrency(m.value);
     });
+    setEditingTargetsRow(targetRow);
     setTargetInputs(initial);
     setEditingTargets(true);
   };
 
   // Section data helpers for current FY
   const fyRow3 = nbData?.sections?.row3?.fyData?.[currentFy?.id];
+  const fyRow5 = nbData?.sections?.row5?.fyData?.[currentFy?.id];
   const fyRow10 = nbData?.sections?.row10?.fyData?.[currentFy?.id];
   const fyRow12 = nbData?.sections?.row12?.fyData?.[currentFy?.id];
   const fyRow14 = nbData?.sections?.row14?.fyData?.[currentFy?.id];
@@ -472,23 +482,30 @@ export default function NBToFindView({
             <button
               type="button"
               onClick={startEditingAllTargets}
-              disabled={loading || saving || !nbData}
+              disabled={loading || saving || !nbData || (targetsSetting === "Yes" && budgetSetting === "Yes")}
+              title={
+                targetsSetting === "Yes" && budgetSetting === "Yes"
+                  ? "Targets are derived from Budget!Row 26"
+                  : targetsSetting === "Yes"
+                  ? `Edit monthly total ${modeTermLower} targets (Row 10)`
+                  : `Edit monthly new business ${modeTermLower} figures (Row 3)`
+              }
               style={{
                 padding: "7px 14px",
-                background: "#0047AB",
-                border: "1px solid #0047AB",
+                background: targetsSetting === "Yes" && budgetSetting === "Yes" ? "#94a3b8" : "#0047AB",
+                border: `1px solid ${targetsSetting === "Yes" && budgetSetting === "Yes" ? "#94a3b8" : "#0047AB"}`,
                 borderRadius: "6px",
                 fontSize: "13px",
                 fontWeight: 600,
                 color: "#ffffff",
-                cursor: "pointer",
+                cursor: targetsSetting === "Yes" && budgetSetting === "Yes" ? "not-allowed" : "pointer",
                 display: "inline-flex",
                 alignItems: "center",
                 gap: "6px",
                 boxShadow: "0 1px 2px rgba(0,0,0,0.1)",
               }}
             >
-              ✎ Edit Monthly Targets
+              ✎ Edit Monthly {targetsSetting === "Yes" ? `Total ${modeTerm} Targets` : `${modeTerm} Targets`}
             </button>
           )}
         </div>
@@ -548,16 +565,16 @@ export default function NBToFindView({
 
       {nbData && currentFy && (
         <>
-          {/* ── TOP CONFIGURATION CARDS (CELLS A12 & A21) ── */}
+          {/* ── TOP CONFIGURATION CARDS (CELLS A9, A12 & A21) ── */}
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
+              gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
               gap: "16px",
               marginBottom: "20px",
             }}
           >
-            {/* Card 1: Cell A12 - Use budget for income targets? */}
+            {/* Card 1: Target Settings (Cell A9: Use targets?, Cell A12: Use budget?) */}
             <div
               style={{
                 background: "#ffffff",
@@ -571,217 +588,339 @@ export default function NBToFindView({
               }}
             >
               <div>
-                <div style={{ fontSize: "11px", fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                  Options Cell A12
-                </div>
-                <div style={{ fontSize: "14px", fontWeight: 700, color: "#1e293b", marginTop: "4px" }}>
-                  Use budget for {modeTermLower} targets?
-                </div>
-                <div style={{ fontSize: "12px", color: "#64748b", marginTop: "4px" }}>
-                  When enabled, {modeTermLower} targets are dynamically populated from the Budget tab (Row 26).
-                </div>
-              </div>
-
-              <div style={{ marginTop: "12px", display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
-                {isAdmin ? (
-                  <div style={{ display: "inline-flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
-                    <div style={{ display: "inline-flex", background: "#f1f5f9", padding: "3px", borderRadius: "6px", border: "1px solid #cbd5e1" }}>
-                      <button
-                        type="button"
-                        disabled={saving || loading}
-                        onClick={() => {
-                          setBudgetSetting("Yes");
-                          handleSaveSettings("Yes", undefined);
-                        }}
-                        style={{
-                          padding: "4px 14px",
-                          fontSize: "12px",
-                          fontWeight: 700,
-                          borderRadius: "4px",
-                          border: "none",
-                          cursor: saving || loading ? "not-allowed" : "pointer",
-                          opacity: (saving || loading) && budgetSetting !== "Yes" ? 0.6 : 1,
-                          background: budgetSetting === "Yes" ? "#16a34a" : "transparent",
-                          color: budgetSetting === "Yes" ? "#ffffff" : "#475569",
-                          boxShadow: budgetSetting === "Yes" ? "0 1px 2px rgba(0,0,0,0.1)" : "none",
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: "5px",
-                        }}
-                      >
-                        {saving && budgetSetting === "Yes" && <Spinner size={12} color="#ffffff" />}
-                        <span>Yes</span>
-                      </button>
-                      <button
-                        type="button"
-                        disabled={saving || loading}
-                        onClick={() => {
-                          setBudgetSetting("No");
-                          handleSaveSettings("No", undefined);
-                        }}
-                        style={{
-                          padding: "4px 14px",
-                          fontSize: "12px",
-                          fontWeight: 700,
-                          borderRadius: "4px",
-                          border: "none",
-                          cursor: saving || loading ? "not-allowed" : "pointer",
-                          opacity: (saving || loading) && budgetSetting !== "No" ? 0.6 : 1,
-                          background: budgetSetting === "No" ? "#dc2626" : "transparent",
-                          color: budgetSetting === "No" ? "#ffffff" : "#475569",
-                          boxShadow: budgetSetting === "No" ? "0 1px 2px rgba(0,0,0,0.1)" : "none",
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: "5px",
-                        }}
-                      >
-                        {saving && budgetSetting === "No" && <Spinner size={12} color="#ffffff" />}
-                        <span>No</span>
-                      </button>
-                    </div>
-
-                    {(saving || loading) ? (
-                      <div
-                        style={{
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: "6px",
-                          fontSize: "12px",
-                          color: "#1d4ed8",
-                          fontWeight: 600,
-                          background: "#eff6ff",
-                          border: "1px solid #bfdbfe",
-                          padding: "3px 8px",
-                          borderRadius: "4px",
-                        }}
-                      >
-                        <Spinner size={12} color="#1d4ed8" />
-                        <span>Updating data...</span>
-                      </div>
-                    ) : (
-                      <span style={{ fontSize: "11px", color: "#64748b" }}>
-                        {budgetSetting === "Yes" ? "✓ Budget active" : "Using manual targets"}
-                      </span>
-                    )}
+                {/* Question 1: Use targets to determine NB to find amounts? */}
+                <div>
+                  <div style={{ fontSize: "11px", fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                    Options Cell A9
                   </div>
-                ) : (
-                  <span
-                    style={{
-                      padding: "4px 12px",
-                      borderRadius: "6px",
-                      fontSize: "13px",
-                      fontWeight: 700,
-                      background: budgetSetting === "Yes" ? "#dcfce7" : "#fee2e2",
-                      color: budgetSetting === "Yes" ? "#166534" : "#991b1b",
-                    }}
-                  >
-                    {budgetSetting}
-                  </span>
-                )}
-              </div>
-            </div>
+                  <div style={{ fontSize: "14px", fontWeight: 700, color: "#1e293b", marginTop: "4px" }}>
+                    Use targets to determine NB to find amounts?
+                  </div>
+                  <div style={{ fontSize: "12px", color: "#64748b", marginTop: "4px" }}>
+                    {targetsSetting === "Yes"
+                      ? "Target-driven forecasting mode is enabled."
+                      : `Manual monthly ${modeTermLower} inputs entered directly in Row 3.`}
+                  </div>
+                </div>
 
-            {/* Card 2: Cell A21 - Direct costs percentage */}
-            <div
-              style={{
-                background: "#ffffff",
-                border: "1px solid #cbd5e1",
-                borderRadius: "8px",
-                padding: "14px 18px",
-                boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
-                display: "flex",
-                flexDirection: "column",
-                justifyContent: "space-between",
-              }}
-            >
-              <div>
-                <div style={{ fontSize: "11px", fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                  Options Cell A21
-                </div>
-                <div style={{ fontSize: "14px", fontWeight: 700, color: "#1e293b", marginTop: "4px" }}>
-                  NB direct costs as a percentage?
-                </div>
-                <div style={{ fontSize: "12px", color: "#64748b", marginTop: "4px" }}>
-                  When 0%, no direct costs are deducted. Set a custom % to apply direct cost allocations.
-                </div>
-              </div>
-
-              <div style={{ marginTop: "12px", display: "flex", alignItems: "center", gap: "10px" }}>
-                {isAdmin ? (
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                    <input
-                      type="text"
-                      value={directCostsPct}
-                      onChange={(e) => setDirectCostsPct(e.target.value)}
-                      onBlur={() => handleSaveSettings(undefined, directCostsPct)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") handleSaveSettings(undefined, directCostsPct);
-                      }}
-                      style={{
-                        width: "60px",
-                        padding: "4px 8px",
-                        fontSize: "13px",
-                        fontWeight: 700,
-                        borderRadius: "4px",
-                        border: "1px solid #cbd5e1",
-                        textAlign: "center",
-                        outline: "none",
-                      }}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => handleSaveSettings(undefined, directCostsPct)}
-                      disabled={saving || loading}
-                      style={{
-                        padding: "4px 10px",
-                        fontSize: "12px",
-                        fontWeight: 600,
-                        background: "#0047AB",
-                        color: "#fff",
-                        border: "none",
-                        borderRadius: "4px",
-                        cursor: saving || loading ? "not-allowed" : "pointer",
-                        opacity: saving || loading ? 0.7 : 1,
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: "5px",
-                      }}
-                    >
-                      {saving && <Spinner size={12} color="#ffffff" />}
-                      <span>Save</span>
-                    </button>
-                    <div style={{ display: "flex", gap: "4px" }}>
-                      {["0%", "10%", "15%", "20%"].map((pct) => (
+                <div style={{ marginTop: "10px", display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                  {isAdmin ? (
+                    <div style={{ display: "inline-flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                      <div style={{ display: "inline-flex", background: "#f1f5f9", padding: "3px", borderRadius: "6px", border: "1px solid #cbd5e1" }}>
                         <button
-                          key={pct}
                           type="button"
                           disabled={saving || loading}
                           onClick={() => {
-                            setDirectCostsPct(pct);
-                            handleSaveSettings(undefined, pct);
+                            setTargetsSetting("Yes");
+                            handleSaveSettings("Yes", undefined, undefined);
                           }}
                           style={{
-                            padding: "3px 6px",
-                            fontSize: "11px",
+                            padding: "4px 14px",
+                            fontSize: "12px",
+                            fontWeight: 700,
                             borderRadius: "4px",
-                            border: "1px solid #e2e8f0",
-                            background: directCostsPct === pct ? "#eff6ff" : "#ffffff",
-                            color: directCostsPct === pct ? "#0047AB" : "#64748b",
+                            border: "none",
                             cursor: saving || loading ? "not-allowed" : "pointer",
-                            fontWeight: directCostsPct === pct ? 700 : 500,
-                            opacity: saving || loading ? 0.6 : 1,
+                            opacity: (saving || loading) && targetsSetting !== "Yes" ? 0.6 : 1,
+                            background: targetsSetting === "Yes" ? "#16a34a" : "transparent",
+                            color: targetsSetting === "Yes" ? "#ffffff" : "#475569",
+                            boxShadow: targetsSetting === "Yes" ? "0 1px 2px rgba(0,0,0,0.1)" : "none",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "5px",
                           }}
                         >
-                          {pct}
+                          {saving && targetsSetting === "Yes" && <Spinner size={12} color="#ffffff" />}
+                          <span>Yes</span>
                         </button>
-                      ))}
+                        <button
+                          type="button"
+                          disabled={saving || loading}
+                          onClick={() => {
+                            setTargetsSetting("No");
+                            handleSaveSettings("No", undefined, undefined);
+                          }}
+                          style={{
+                            padding: "4px 14px",
+                            fontSize: "12px",
+                            fontWeight: 700,
+                            borderRadius: "4px",
+                            border: "none",
+                            cursor: saving || loading ? "not-allowed" : "pointer",
+                            opacity: (saving || loading) && targetsSetting !== "No" ? 0.6 : 1,
+                            background: targetsSetting === "No" ? "#dc2626" : "transparent",
+                            color: targetsSetting === "No" ? "#ffffff" : "#475569",
+                            boxShadow: targetsSetting === "No" ? "0 1px 2px rgba(0,0,0,0.1)" : "none",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "5px",
+                          }}
+                        >
+                          {saving && targetsSetting === "No" && <Spinner size={12} color="#ffffff" />}
+                          <span>No</span>
+                        </button>
+                      </div>
+
+                      {saving || loading ? (
+                        <div
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "6px",
+                            fontSize: "12px",
+                            color: "#1d4ed8",
+                            fontWeight: 600,
+                            background: "#eff6ff",
+                            border: "1px solid #bfdbfe",
+                            padding: "3px 8px",
+                            borderRadius: "4px",
+                          }}
+                        >
+                          <Spinner size={12} color="#1d4ed8" />
+                          <span>Updating data...</span>
+                        </div>
+                      ) : (
+                        <span style={{ fontSize: "11px", color: "#64748b" }}>
+                          {targetsSetting === "Yes" ? "✓ Targets active" : `Manual ${modeTermLower} inputs`}
+                        </span>
+                      )}
+                    </div>
+                  ) : (
+                    <span
+                      style={{
+                        padding: "4px 12px",
+                        borderRadius: "6px",
+                        fontSize: "13px",
+                        fontWeight: 700,
+                        background: targetsSetting === "Yes" ? "#dcfce7" : "#fee2e2",
+                        color: targetsSetting === "Yes" ? "#166534" : "#991b1b",
+                      }}
+                    >
+                      {targetsSetting}
+                    </span>
+                  )}
+                </div>
+
+                {/* Question 2: If "Yes" is selected here, the "Use budget to determine targets?" question appears */}
+                {targetsSetting === "Yes" && (
+                  <div style={{ marginTop: "14px", paddingTop: "14px", borderTop: "1px dashed #cbd5e1" }}>
+                    <div style={{ fontSize: "11px", fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                      Options Cell A12
+                    </div>
+                    <div style={{ fontSize: "14px", fontWeight: 700, color: "#1e293b", marginTop: "4px" }}>
+                      Use budget to determine targets?
+                    </div>
+                    <div style={{ fontSize: "12px", color: "#64748b", marginTop: "4px" }}>
+                      {budgetSetting === "Yes"
+                        ? `Targets dynamically populated from Budget tab (Row 26).`
+                        : `Manual total ${modeTermLower} targets entered in Row 10.`}
+                    </div>
+
+                    <div style={{ marginTop: "10px", display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                      {isAdmin ? (
+                        <div style={{ display: "inline-flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                          <div style={{ display: "inline-flex", background: "#f1f5f9", padding: "3px", borderRadius: "6px", border: "1px solid #cbd5e1" }}>
+                            <button
+                              type="button"
+                              disabled={saving || loading}
+                              onClick={() => {
+                                setBudgetSetting("Yes");
+                                handleSaveSettings(undefined, "Yes", undefined);
+                              }}
+                              style={{
+                                padding: "4px 14px",
+                                fontSize: "12px",
+                                fontWeight: 700,
+                                borderRadius: "4px",
+                                border: "none",
+                                cursor: saving || loading ? "not-allowed" : "pointer",
+                                opacity: (saving || loading) && budgetSetting !== "Yes" ? 0.6 : 1,
+                                background: budgetSetting === "Yes" ? "#16a34a" : "transparent",
+                                color: budgetSetting === "Yes" ? "#ffffff" : "#475569",
+                                boxShadow: budgetSetting === "Yes" ? "0 1px 2px rgba(0,0,0,0.1)" : "none",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "5px",
+                              }}
+                            >
+                              {saving && budgetSetting === "Yes" && <Spinner size={12} color="#ffffff" />}
+                              <span>Yes</span>
+                            </button>
+                            <button
+                              type="button"
+                              disabled={saving || loading}
+                              onClick={() => {
+                                setBudgetSetting("No");
+                                handleSaveSettings(undefined, "No", undefined);
+                              }}
+                              style={{
+                                padding: "4px 14px",
+                                fontSize: "12px",
+                                fontWeight: 700,
+                                borderRadius: "4px",
+                                border: "none",
+                                cursor: saving || loading ? "not-allowed" : "pointer",
+                                opacity: (saving || loading) && budgetSetting !== "No" ? 0.6 : 1,
+                                background: budgetSetting === "No" ? "#dc2626" : "transparent",
+                                color: budgetSetting === "No" ? "#ffffff" : "#475569",
+                                boxShadow: budgetSetting === "No" ? "0 1px 2px rgba(0,0,0,0.1)" : "none",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "5px",
+                              }}
+                            >
+                              {saving && budgetSetting === "No" && <Spinner size={12} color="#ffffff" />}
+                              <span>No</span>
+                            </button>
+                          </div>
+
+                          {saving || loading ? (
+                            <div
+                              style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "6px",
+                                fontSize: "12px",
+                                color: "#1d4ed8",
+                                fontWeight: 600,
+                                background: "#eff6ff",
+                                border: "1px solid #bfdbfe",
+                                padding: "3px 8px",
+                                borderRadius: "4px",
+                              }}
+                            >
+                              <Spinner size={12} color="#1d4ed8" />
+                              <span>Updating data...</span>
+                            </div>
+                          ) : (
+                            <span style={{ fontSize: "11px", color: "#64748b" }}>
+                              {budgetSetting === "Yes" ? "✓ Budget active" : `Manual ${modeTermLower} targets`}
+                            </span>
+                          )}
+                        </div>
+                      ) : (
+                        <span
+                          style={{
+                            padding: "4px 12px",
+                            borderRadius: "6px",
+                            fontSize: "13px",
+                            fontWeight: 700,
+                            background: budgetSetting === "Yes" ? "#dcfce7" : "#fee2e2",
+                            color: budgetSetting === "Yes" ? "#166534" : "#991b1b",
+                          }}
+                        >
+                          {budgetSetting}
+                        </span>
+                      )}
                     </div>
                   </div>
-                ) : (
-                  <span style={{ fontSize: "14px", fontWeight: 700, color: "#1e293b" }}>{directCostsPct}</span>
                 )}
               </div>
             </div>
+
+            {/* Card 2: Cell A21 - Direct costs percentage (Only present if in Revenue mode) */}
+            {isRevenueMode && (
+              <div
+                style={{
+                  background: "#ffffff",
+                  border: "1px solid #cbd5e1",
+                  borderRadius: "8px",
+                  padding: "14px 18px",
+                  boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
+                  display: "flex",
+                  flexDirection: "column",
+                  justifyContent: "space-between",
+                }}
+              >
+                <div>
+                  <div style={{ fontSize: "11px", fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                    Options Cell A21
+                  </div>
+                  <div style={{ fontSize: "14px", fontWeight: 700, color: "#1e293b", marginTop: "4px" }}>
+                    NB direct costs as a percentage?
+                  </div>
+                  <div style={{ fontSize: "12px", color: "#64748b", marginTop: "4px" }}>
+                    When 0%, no direct costs are deducted. Set a custom % to apply direct cost allocations.
+                  </div>
+                </div>
+
+                <div style={{ marginTop: "12px", display: "flex", alignItems: "center", gap: "10px" }}>
+                  {isAdmin ? (
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <input
+                        type="text"
+                        value={directCostsPct}
+                        onChange={(e) => setDirectCostsPct(e.target.value)}
+                        onBlur={() => handleSaveSettings(undefined, undefined, directCostsPct)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") handleSaveSettings(undefined, undefined, directCostsPct);
+                        }}
+                        style={{
+                          width: "60px",
+                          padding: "4px 8px",
+                          fontSize: "13px",
+                          fontWeight: 700,
+                          borderRadius: "4px",
+                          border: "1px solid #cbd5e1",
+                          textAlign: "center",
+                          outline: "none",
+                        }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleSaveSettings(undefined, undefined, directCostsPct)}
+                        disabled={saving || loading}
+                        style={{
+                          padding: "4px 10px",
+                          fontSize: "12px",
+                          fontWeight: 600,
+                          background: "#0047AB",
+                          color: "#fff",
+                          border: "none",
+                          borderRadius: "4px",
+                          cursor: saving || loading ? "not-allowed" : "pointer",
+                          opacity: saving || loading ? 0.7 : 1,
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "5px",
+                        }}
+                      >
+                        {saving && <Spinner size={12} color="#ffffff" />}
+                        <span>Save</span>
+                      </button>
+                      <div style={{ display: "flex", gap: "4px" }}>
+                        {["0%", "10%", "15%", "20%"].map((pct) => (
+                          <button
+                            key={pct}
+                            type="button"
+                            disabled={saving || loading}
+                            onClick={() => {
+                              setDirectCostsPct(pct);
+                              handleSaveSettings(undefined, undefined, pct);
+                            }}
+                            style={{
+                              padding: "3px 6px",
+                              fontSize: "11px",
+                              borderRadius: "4px",
+                              border: "1px solid #e2e8f0",
+                              background: directCostsPct === pct ? "#eff6ff" : "#ffffff",
+                              color: directCostsPct === pct ? "#0047AB" : "#64748b",
+                              cursor: saving || loading ? "not-allowed" : "pointer",
+                              fontWeight: directCostsPct === pct ? 700 : 500,
+                              opacity: saving || loading ? 0.6 : 1,
+                            }}
+                          >
+                            {pct}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    <span style={{ fontSize: "14px", fontWeight: 700, color: "#1e293b" }}>{directCostsPct}</span>
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* Card 3: Summary Highlights */}
             <div
@@ -804,10 +943,12 @@ export default function NBToFindView({
                   <span style={{ fontSize: "12px", color: "#166534", fontWeight: 600 }}>Total NB to find {modeTermLower} to use:</span>
                   <span style={{ fontSize: "18px", fontWeight: 800, color: "#15803d" }}>{fyRow18?.total || `${currencySymbol}0`}</span>
                 </div>
-                <div style={{ marginTop: "4px", display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                  <span style={{ fontSize: "12px", color: "#475569" }}>NB Direct Costs to Use:</span>
-                  <span style={{ fontSize: "13px", fontWeight: 700, color: "#dc2626" }}>{fyRow23?.total || `${currencySymbol}0`}</span>
-                </div>
+                {isRevenueMode && (
+                  <div style={{ marginTop: "4px", display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                    <span style={{ fontSize: "12px", color: "#475569" }}>NB Direct Costs to Use:</span>
+                    <span style={{ fontSize: "13px", fontWeight: 700, color: "#dc2626" }}>{fyRow23?.total || `${currencySymbol}0`}</span>
+                  </div>
+                )}
               </div>
               <div style={{ fontSize: "11px", color: "#15803d", fontStyle: "italic", marginTop: "8px" }}>
                 Active months contributing: {(fyRow25?.months || []).filter((m) => m.value === "Yes").length} of 12
@@ -847,8 +988,8 @@ export default function NBToFindView({
                   </tr>
                 </thead>
                 <tbody>
-                  {/* Row 3: New Business to Find Income (Manual Monthly Inputs) */}
-                  {fyRow3 && (
+                  {/* Row 3: New Business to Find Income/Revenue (Visible & Editable when "Use targets?" is "No") */}
+                  {targetsSetting === "No" && fyRow3 && (
                     <tr style={{ background: "#ffffff", borderBottom: "1px solid #e2e8f0" }}>
                       <td style={{ padding: "9px 14px", textAlign: "left", fontWeight: 600, color: "#1e293b" }}>
                         <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
@@ -897,11 +1038,16 @@ export default function NBToFindView({
                     </tr>
                   )}
 
-                  {/* Row 10: Total Income Target */}
-                  {fyRow10 && (
-                    <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0", color: "#475569" }}>
-                      <td style={{ padding: "7px 14px", textAlign: "left", fontWeight: 600 }}>
-                        {fyRow10.label}
+                  {/* Row 10: Total Income/Revenue Target (Visible & Editable when "Use targets?" is "Yes" and "Use budget?" is "No") */}
+                  {targetsSetting === "Yes" && budgetSetting === "No" && fyRow10 && (
+                    <tr style={{ background: "#ffffff", borderBottom: "1px solid #e2e8f0", color: "#475569" }}>
+                      <td style={{ padding: "9px 14px", textAlign: "left", fontWeight: 600, color: "#1e293b" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                          <span>{fyRow10.label}</span>
+                          <span style={{ fontSize: "10px", background: "#eff6ff", color: "#1d4ed8", padding: "1px 5px", borderRadius: "4px", fontWeight: 700 }}>
+                            Editable (Row 10)
+                          </span>
+                        </div>
                       </td>
                       {fyRow10.months.map((m) => (
                         <td
@@ -918,56 +1064,139 @@ export default function NBToFindView({
                               setSingleCellValue(normalizeCurrency(m.value));
                             }
                           }}
-                          style={{ padding: "7px 10px", cursor: isAdmin ? "pointer" : "default" }}
+                          style={{
+                            padding: "9px 10px",
+                            color: "#0f172a",
+                            fontWeight: 600,
+                            cursor: isAdmin ? "pointer" : "default",
+                            transition: "background 0.1s",
+                          }}
+                          onMouseEnter={(e) => {
+                            if (isAdmin) e.currentTarget.style.background = "#eff6ff";
+                          }}
+                          onMouseLeave={(e) => {
+                            if (isAdmin) e.currentTarget.style.background = "transparent";
+                          }}
                           title={isAdmin ? `Click to edit ${m.monthLabel} total ${modeTermLower} target` : undefined}
                         >
                           {m.value || "-"}
                         </td>
                       ))}
-                      <td style={{ padding: "7px 14px", fontWeight: 700, color: "#334155" }}>
+                      <td style={{ padding: "9px 14px", fontWeight: 800, color: "#0047AB", background: "#f0f7ff" }}>
                         {fyRow10.total}
                       </td>
                     </tr>
                   )}
 
-                  {/* Row 12: Budget Targets (Row 12) */}
-                  {fyRow12 && (
+                  {/* Row 12: Budget Targets (Visible when "Use targets?" is "Yes" and "Use budget?" is "Yes") */}
+                  {targetsSetting === "Yes" && budgetSetting === "Yes" && fyRow12 && (
                     <tr style={{ background: "#ffffff", borderBottom: "1px solid #e2e8f0", color: "#64748b" }}>
-                      <td style={{ padding: "7px 14px", textAlign: "left" }}>
-                        <span>Budget {modeTermLower} target (Budget!Row 26)</span>
-                        {budgetSetting !== "Yes" && (
-                          <span style={{ fontSize: "10px", color: "#94a3b8", marginLeft: "6px" }}>(disabled via A12)</span>
-                        )}
+                      <td style={{ padding: "9px 14px", textAlign: "left", fontWeight: 600 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                          <span>Budget {modeTermLower} target</span>
+                          <span style={{ fontSize: "10px", background: "#f1f5f9", color: "#64748b", padding: "1px 5px", borderRadius: "4px", fontWeight: 600 }}>
+                            Budget!Row 26
+                          </span>
+                        </div>
                       </td>
                       {fyRow12.months.map((m) => (
-                        <td key={m.colLetter} style={{ padding: "7px 10px" }}>
+                        <td key={m.colLetter} style={{ padding: "9px 10px", color: "#334155", fontWeight: 500 }}>
                           {m.value || "-"}
                         </td>
                       ))}
-                      <td style={{ padding: "7px 14px", fontWeight: 600 }}>
+                      <td style={{ padding: "9px 14px", fontWeight: 700, color: "#334155", background: "#f8fafc" }}>
                         {fyRow12.total}
                       </td>
                     </tr>
                   )}
 
-                  {/* Row 14: NB to find figure based on target */}
-                  {fyRow14 && (
+                  {/* Row 14: NB to find figure based on target (Visible when "Use targets?" is "Yes") */}
+                  {targetsSetting === "Yes" && fyRow14 && (
                     <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0", color: "#475569" }}>
-                      <td style={{ padding: "7px 14px", textAlign: "left" }}>
-                        {fyRow14.label}
+                      <td style={{ padding: "9px 14px", textAlign: "left", fontWeight: 600 }}>
+                        <span>{fyRow14.label}</span>
                       </td>
                       {fyRow14.months.map((m) => (
-                        <td key={m.colLetter} style={{ padding: "7px 10px" }}>
+                        <td key={m.colLetter} style={{ padding: "9px 10px", color: "#334155", fontWeight: 500 }}>
                           {m.value || "-"}
                         </td>
                       ))}
-                      <td style={{ padding: "7px 14px", fontWeight: 600 }}>
+                      <td style={{ padding: "9px 14px", fontWeight: 700, color: "#334155", background: "#f1f5f9" }}>
                         {fyRow14.total}
                       </td>
                     </tr>
                   )}
 
-                  {/* Row 18: NB to find figure to use (HERO ROW) */}
+                  {/* Row 5: NB to find direct costs (Visible & Editable in all modes ONLY IF in Revenue mode) */}
+                  {isRevenueMode && fyRow5 && (
+                    <tr style={{ background: "#ffffff", borderBottom: "1px solid #e2e8f0" }}>
+                      <td style={{ padding: "9px 14px", textAlign: "left", fontWeight: 600, color: "#1e293b" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                          <span>NB to find direct costs</span>
+                          <span style={{ fontSize: "10px", background: "#eff6ff", color: "#1d4ed8", padding: "1px 5px", borderRadius: "4px", fontWeight: 700 }}>
+                            Editable (Row 5)
+                          </span>
+                        </div>
+                      </td>
+                      {fyRow5.months.map((m) => (
+                        <td
+                          key={m.colLetter}
+                          onClick={() => {
+                            if (isAdmin) {
+                              setEditingSingleCell({
+                                rowNum: 5,
+                                colLetter: m.colLetter,
+                                label: m.monthLabel,
+                                value: m.value,
+                                title: "NB to find direct costs",
+                              });
+                              setSingleCellValue(normalizeCurrency(m.value));
+                            }
+                          }}
+                          style={{
+                            padding: "9px 10px",
+                            color: "#0f172a",
+                            fontWeight: 600,
+                            cursor: isAdmin ? "pointer" : "default",
+                            transition: "background 0.1s",
+                          }}
+                          onMouseEnter={(e) => {
+                            if (isAdmin) e.currentTarget.style.background = "#eff6ff";
+                          }}
+                          onMouseLeave={(e) => {
+                            if (isAdmin) e.currentTarget.style.background = "transparent";
+                          }}
+                          title={isAdmin ? `Click to edit ${m.monthLabel} direct costs` : undefined}
+                        >
+                          {m.value || "-"}
+                        </td>
+                      ))}
+                      <td style={{ padding: "9px 14px", fontWeight: 800, color: "#dc2626", background: "#fef2f2" }}>
+                        {fyRow5.total || `${currencySymbol}0`}
+                      </td>
+                    </tr>
+                  )}
+
+                  {/* ── GAP ROW: Distinct visual separator between editable inputs and calculation outputs ── */}
+                  <tr style={{ background: "#f8fafc", borderTop: "2px dashed #cbd5e1", borderBottom: "1px solid #cbd5e1" }}>
+                    <td
+                      colSpan={currentFy.monthCols.length + 2}
+                      style={{
+                        padding: "8px 14px",
+                        textAlign: "left",
+                        fontSize: "11px",
+                        fontWeight: 700,
+                        color: "#64748b",
+                        textTransform: "uppercase",
+                        letterSpacing: "0.5px",
+                        background: "#f8fafc",
+                      }}
+                    >
+                      ↓ Figures to use in calculations (Non-editable calculated outputs)
+                    </td>
+                  </tr>
+
+                  {/* Row 18: NB to find figure to use (HERO ROW - Present in all modes) */}
                   {fyRow18 && (
                     <tr style={{ background: "#f0fdf4", borderTop: "2px solid #bbf7d0", borderBottom: "2px solid #bbf7d0" }}>
                       <td style={{ padding: "10px 14px", textAlign: "left", fontWeight: 700, color: "#166534" }}>
@@ -987,26 +1216,9 @@ export default function NBToFindView({
                     </tr>
                   )}
 
-                  {/* Row 20: NB direct costs calculation */}
-                  {directCostsPct !== "0%" && fyRow20 && (
-                    <tr style={{ background: "#ffffff", borderBottom: "1px solid #e2e8f0", color: "#64748b" }}>
-                      <td style={{ padding: "7px 14px", textAlign: "left" }}>
-                        {fyRow20.label} ({directCostsPct})
-                      </td>
-                      {fyRow20.months.map((m) => (
-                        <td key={m.colLetter} style={{ padding: "7px 10px" }}>
-                          {m.value || "-"}
-                        </td>
-                      ))}
-                      <td style={{ padding: "7px 14px", fontWeight: 600 }}>
-                        {fyRow20.total}
-                      </td>
-                    </tr>
-                  )}
-
-                  {/* Row 23: NB to find direct costs to use */}
-                  {fyRow23 && (
-                    <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0", color: "#991b1b" }}>
+                  {/* Row 23: NB to find direct costs to use (Present only in Revenue mode) */}
+                  {isRevenueMode && fyRow23 && (
+                    <tr style={{ background: "#fef2f2", borderBottom: "1px solid #fecaca", color: "#991b1b" }}>
                       <td style={{ padding: "8px 14px", textAlign: "left", fontWeight: 600 }}>
                         {fyRow23.label}
                       </td>
@@ -1015,7 +1227,7 @@ export default function NBToFindView({
                           {m.value || `${currencySymbol}0`}
                         </td>
                       ))}
-                      <td style={{ padding: "8px 14px", fontWeight: 700, color: "#991b1b" }}>
+                      <td style={{ padding: "8px 14px", fontWeight: 700, color: "#991b1b", background: "#fee2e2" }}>
                         {fyRow23.total}
                       </td>
                     </tr>
@@ -1119,7 +1331,7 @@ export default function NBToFindView({
               Edit monthly targets ({currentFy.label})
             </h3>
             <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#64748b" }}>
-              Input monthly new business {modeTermLower} targets (writes directly to NBtoFind!Row 3).
+              Input monthly {modeTermLower} targets (writes directly to NBtoFind!Row {editingTargetsRow}).
             </p>
 
             <div
@@ -1133,7 +1345,7 @@ export default function NBToFindView({
               {currentFy.monthCols.map((m) => (
                 <div key={m.colLetter}>
                   <label style={{ display: "block", fontSize: "11px", fontWeight: 700, color: "#475569", marginBottom: "4px" }}>
-                    {m.label} ({m.colLetter}3)
+                    {m.label} ({m.colLetter}{editingTargetsRow})
                   </label>
                   <input
                     type="text"
@@ -1194,7 +1406,7 @@ export default function NBToFindView({
         </div>
       )}
 
-      {/* ── MODAL: EDIT SINGLE CELL (Row 3 or Row 10) ── */}
+      {/* ── MODAL: EDIT SINGLE CELL (Row 3, Row 5, or Row 10) ── */}
       {editingSingleCell && (
         <div
           style={{
@@ -1228,7 +1440,7 @@ export default function NBToFindView({
             </p>
             <div style={{ marginBottom: "16px" }}>
               <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "#334155", marginBottom: "4px" }}>
-                {modeTerm} Target Amount ({currencySymbol})
+                {editingSingleCell.rowNum === 5 ? "Direct Costs Amount" : `${modeTerm} Target Amount`} ({currencySymbol})
               </label>
               <input
                 type="text"

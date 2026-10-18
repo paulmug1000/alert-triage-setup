@@ -102,16 +102,16 @@ export function isBudgetCellEditable(sheetRow, colIdx) {
   if (sheetRow >= 5 && sheetRow <= 7) return isMonthCol;
   // Rows 13-15: months
   if (sheetRow >= 13 && sheetRow <= 15) return isMonthCol;
-  // Employees: A59:E111
-  if (sheetRow >= 59 && sheetRow <= 111) return colIdx >= 0 && colIdx <= 4;
+  // Employees: Rows 58-112, Cols A-E (0-4)
+  if (sheetRow >= 58 && sheetRow <= 112) return colIdx >= 0 && colIdx <= 4;
   // Dividends: Row 119, Col E (4) + months
   if (sheetRow === 119) return colIdx === 4 || isMonthCol;
-  // Contractors: Rows 127-140, Cols A (0) & E (4) + months
-  if (sheetRow >= 127 && sheetRow <= 140) return colIdx === 0 || colIdx === 4 || isMonthCol;
+  // Contractors: Rows 126-140, Cols A (0) & E (4) + months
+  if (sheetRow >= 126 && sheetRow <= 140) return colIdx === 0 || colIdx === 4 || isMonthCol;
   // Making up CoS: B142 (Col B = 1)
   if (sheetRow === 142) return colIdx === 1;
-  // Other expenses: Rows 150-250, Cols A (0) & E (4) + months
-  if (sheetRow >= 150 && sheetRow <= 250) return colIdx === 0 || colIdx === 4 || isMonthCol;
+  // Other expenses: Rows 149-251, Cols A (0) & E (4) + months
+  if (sheetRow >= 149 && sheetRow <= 251) return colIdx === 0 || colIdx === 4 || isMonthCol;
 
   return false;
 }
@@ -564,7 +564,7 @@ export async function handleUpdateViewCell(req, res, sheets) {
         summary = isCleared
           ? `Cleared Des. CoS % for Making up CoS`
           : `Updated Des. CoS % for Making up CoS to "${formattedValue}"`;
-      } else if (screenTab === "budget" && rowNum >= 59 && rowNum <= 111) {
+      } else if (screenTab === "budget" && rowNum >= 58 && rowNum <= 112) {
         summary = isCleared
           ? `Cleared Equiv salary for ${ident}`
           : `Updated Equiv salary for ${ident} to "${formattedValue}"`;
@@ -574,7 +574,7 @@ export async function handleUpdateViewCell(req, res, sheets) {
           : `Updated VAT? for ${ident} to "${formattedValue}"`;
       }
     } else if (colIndex === 2) {
-      if (screenTab === "budget" && rowNum >= 59 && rowNum <= 111) {
+      if (screenTab === "budget" && rowNum >= 58 && rowNum <= 112) {
         summary = isCleared
           ? `Cleared start month for ${ident}`
           : `Updated start month for ${ident} to "${formattedValue}"`;
@@ -584,7 +584,7 @@ export async function handleUpdateViewCell(req, res, sheets) {
           : `Updated Inv? for ${ident} to "${formattedValue}"`;
       }
     } else if (colIndex === 3) {
-      if (screenTab === "budget" && rowNum >= 59 && rowNum <= 111) {
+      if (screenTab === "budget" && rowNum >= 58 && rowNum <= 112) {
         summary = isCleared
           ? `Cleared end month for ${ident}`
           : `Updated end month for ${ident} to "${formattedValue}"`;
@@ -644,6 +644,121 @@ export async function handleUpdateViewCell(req, res, sheets) {
     });
   } catch (err) {
     console.error("❌ handleUpdateViewCell error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function handleSpreadViewRow(req, res, sheets) {
+  const {
+    clientSheetId,
+    masterSheetId,
+    sheetRow,
+    startColLetter,
+    endColLetter,
+    values,
+    rowDescription,
+    screenTab = "budget",
+  } = req.body;
+
+  const sessionUser = getSessionUser(req);
+  if (!sessionUser) {
+    return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
+  }
+
+  if ((!clientSheetId && !masterSheetId) || !sheetRow || !startColLetter || !endColLetter || !Array.isArray(values)) {
+    return res.status(400).json({ success: false, error: "Missing required fields for spread" });
+  }
+
+  let resolvedClient = req.body.clientName || "";
+  if (!resolvedClient) {
+    try {
+      resolvedClient = await resolveClientNameBySheetId(sheets, extractSheetIdFromUrl(clientSheetId) || clientSheetId, req.body.automationCommanderSheetId);
+    } catch (e) {}
+  }
+
+  if (resolvedClient && !sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, resolvedClient)) {
+    return res.status(403).json({ success: false, error: "Access denied to this client" });
+  }
+
+  const rowNum = parseInt(sheetRow, 10);
+  if (screenTab === "budget" && rowNum !== 5 && rowNum !== 13) {
+    return res.status(403).json({ success: false, error: "Spread only supported on rows 5 and 13 for budget" });
+  }
+
+  try {
+    let targetSpreadsheetId = masterSheetId || clientSheetId;
+    if (clientSheetId && (!masterSheetId || masterSheetId === clientSheetId)) {
+      try {
+        const d1Res = await withRetry(() => sheets.spreadsheets.values.get({
+          spreadsheetId: extractSheetIdFromUrl(clientSheetId) || clientSheetId,
+          range: "KeyInfo!D1",
+        }));
+        const d1Val = d1Res.data.values?.[0]?.[0];
+        if (d1Val) targetSpreadsheetId = extractSheetIdFromUrl(d1Val) || String(d1Val).trim();
+      } catch (e) {}
+    }
+
+    const sheetIdClean = extractSheetIdFromUrl(targetSpreadsheetId) || targetSpreadsheetId;
+    const targetTab = "Budget";
+    const range = `${targetTab}!${startColLetter}${rowNum}:${endColLetter}${rowNum}`;
+
+    const safeValues = values.map((v) => sanitizeFormulaInput(v ?? ""));
+
+    await withRetry(() =>
+      sheets.spreadsheets.values.update({
+        spreadsheetId: sheetIdClean,
+        range,
+        valueInputOption: "USER_ENTERED",
+        requestBody: { values: [safeValues] },
+      })
+    );
+
+    // Fetch updated budget matrix
+    let updatedMatrix = null;
+    try {
+      const getBudgetRes = await withRetry(() =>
+        sheets.spreadsheets.get({
+          spreadsheetId: sheetIdClean,
+          ranges: ["Budget!A1:AX253"],
+          fields: FIELDS,
+        })
+      );
+      const rData = getBudgetRes.data.sheets[0]?.data[0]?.rowData || [];
+      updatedMatrix = rData.map((r) => (r.values || []).map(parseCell));
+    } catch (e) {
+      console.warn("Could not fetch updated budget matrix after spread:", e);
+    }
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId: req.body.automationCommanderSheetId,
+      clientName: resolvedClient,
+      category: "BUDGET",
+      action: "Budget Row Spread",
+      summary: `Spread ${rowDescription || `Row ${rowNum}`} across ${startColLetter}-${endColLetter}`,
+      details: {
+        tab: targetTab,
+        range,
+        sheetRow: rowNum,
+        values: safeValues,
+        clientName: resolvedClient,
+      },
+    }).catch((e) => console.error("PMA log failed:", e));
+
+    const cleanId = extractSheetIdFromUrl(sheetIdClean) || sheetIdClean;
+    memoryCache.del(`pulse:view_data:${cleanId}:*`);
+    memoryCache.del(`pulse:view_data:${cleanId}:budget`);
+    if (redisClient?.isOpen) {
+      redisClient.del(`pulse:view_data:${cleanId}:budget`).catch(() => {});
+    }
+
+    return res.status(200).json({
+      success: true,
+      range,
+      values: safeValues,
+      updatedMatrix,
+    });
+  } catch (err) {
+    console.error("❌ handleSpreadViewRow error:", err);
     return res.status(500).json({ success: false, error: err.message });
   }
 }

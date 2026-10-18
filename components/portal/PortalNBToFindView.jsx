@@ -12,25 +12,20 @@ export default function PortalNBToFindView({
   isLoading,
   error,
   onRefresh,
-  isReadOnly = false,
+  isReadOnly = true,
 }) {
   const nbData = data?.nbtofind;
   const [selectedYear, setSelectedYear] = useState(nbData?.currentYear || 2);
-  const [isEditing, setIsEditing] = useState(false);
-  const [editValues, setEditValues] = useState([]); // 12 monthly targets
-  const [isSaving, setIsSaving] = useState(false);
-  const [saveError, setSaveError] = useState(null);
-  const [optimisticTarget, setOptimisticTarget] = useState({}); // { [year]: string[] }
-
-  useEffect(() => {
-    setOptimisticTarget({});
-  }, [nbData]);
 
   useEffect(() => {
     if (nbData?.currentYear) {
       setSelectedYear(nbData.currentYear);
     }
   }, [nbData?.currentYear]);
+
+  const mode = nbData?.mode || data?.mode || data?.outgoingsMeta?.mode || "Revenue";
+  const isRevenueMode = String(mode).toLowerCase() === "revenue";
+  const modeTermLower = isRevenueMode ? "revenue" : "income";
 
   const fyLabels = useMemo(() => {
     if (data?.outgoings?.fyLabels) return data.outgoings.fyLabels;
@@ -47,9 +42,31 @@ export default function PortalNBToFindView({
     return nbData?.headers?.[selectedYear] || nbData?.headers?.[1] || [];
   }, [nbData, selectedYear]);
 
+  // Row 18: "New business to find" figures from NBtoFind tab
   const monthlyAllocations = useMemo(() => {
-    return optimisticTarget[selectedYear] || nbData?.allocations?.[selectedYear] || nbData?.monthlyAllocations || [];
-  }, [nbData, selectedYear, optimisticTarget]);
+    return nbData?.allocations?.[selectedYear] || nbData?.monthlyAllocations || [];
+  }, [nbData, selectedYear]);
+
+  const numAllocations = useMemo(() => {
+    return monthlyAllocations.map((v) => parseMoney(v));
+  }, [monthlyAllocations]);
+
+  const totalTarget = useMemo(() => {
+    return numAllocations.reduce((acc, v) => acc + v, 0);
+  }, [numAllocations]);
+
+  // Row 23: "NB to find direct costs" figures from NBtoFind tab (only in Revenue mode)
+  const monthlyDirectCosts = useMemo(() => {
+    return nbData?.directCosts?.[selectedYear] || nbData?.monthlyDirectCosts || [];
+  }, [nbData, selectedYear]);
+
+  const numDirectCosts = useMemo(() => {
+    return monthlyDirectCosts.map((v) => parseMoney(v));
+  }, [monthlyDirectCosts]);
+
+  const totalDirectCosts = useMemo(() => {
+    return numDirectCosts.reduce((acc, v) => acc + v, 0);
+  }, [numDirectCosts]);
 
   const rawSymbol =
     (propCurrencySymbol && propCurrencySymbol !== "£" ? propCurrencySymbol : null) ||
@@ -66,108 +83,32 @@ export default function PortalNBToFindView({
     propThousandsSeparator ||
     (currencySymbol === "€" ? "." : ",");
 
-  const currentAllocations = isEditing ? editValues : monthlyAllocations;
-
-  const numAllocations = useMemo(() => {
-    return currentAllocations.map((v) => parseMoney(v));
-  }, [currentAllocations]);
-
-  const totalTarget = useMemo(() => {
-    return numAllocations.reduce((acc, v) => acc + v, 0);
-  }, [numAllocations]);
-
   const formatGBP = (val) => {
     return formatMoney(val, 0, currencySymbol, thousandsSeparator);
   };
 
-  const handleStartEdit = () => {
-    if (isReadOnly) return;
-    setEditValues(
-      monthlyAllocations.slice(0, 12).map((val) => {
-        const num = parseMoney(val, thousandsSeparator);
-        return formatMoney(num, 0, currencySymbol, thousandsSeparator);
-      })
-    );
-    setIsEditing(true);
-    setSaveError(null);
-  };
-
-  const handleCancelEdit = () => {
-    setIsEditing(false);
-    setEditValues([]);
-    setSaveError(null);
-  };
-
-  const handleCellChange = (mIdx, val) => {
-    if (isReadOnly) return;
-    setEditValues((prev) => {
-      const copy = [...prev];
-      copy[mIdx] = val;
-      return copy;
-    });
-  };
-
-  const handleSaveData = async () => {
-    if (isReadOnly) return;
-    setIsSaving(true);
-    setSaveError(null);
-
-    try {
-      const colRange = selectedYear === 1 ? "G:R" : selectedYear === 2 ? "V:AG" : "AK:AV";
-      const [startCol, endCol] = colRange.split(":");
-
-      // NB target row in NBtoFind sheet is row 2
-      const updates = [
-        {
-          range: `NBtoFind!${startCol}2:${endCol}2`,
-          values: [editValues],
-        },
-      ];
-
-      const res = await fetch("/api/portal/save-table-data", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          clientSheetId,
-          clientName,
-          sheetName: "NBtoFind",
-          updates,
-        }),
-      });
-
-      const resData = await res.json();
-      if (!resData.success) {
-        throw new Error(resData.error || "Failed to save new business targets");
-      }
-
-      // Optimistically update local target allocations immediately so new values display with zero delay
-      setOptimisticTarget((prev) => ({
-        ...prev,
-        [selectedYear]: [...editValues],
-      }));
-
-      setIsEditing(false);
-      if (onRefresh) onRefresh();
-    } catch (err) {
-      console.error("Save NB targets error:", err);
-      setSaveError(err.message || "An error occurred while saving.");
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
   const handleDownloadCSV = () => {
-    if (!currentAllocations) return;
+    if (!monthlyAllocations) return;
     const dateStr = new Date().toISOString().split("T")[0];
 
-    const header = ["Metric / Target", ...(monthHeaders || []), "Total Target"];
-    const row = [
-      "New Business to Find",
-      ...monthHeaders.map((_, mIdx) => currentAllocations[mIdx] || `${currencySymbol}0`),
-      formatGBP(totalTarget),
+    const header = ["", ...(monthHeaders || []), "Total target"];
+    const rows = [
+      [
+        `New business to find ${modeTermLower}`,
+        ...monthHeaders.map((_, mIdx) => monthlyAllocations[mIdx] || `${currencySymbol}0`),
+        formatGBP(totalTarget),
+      ],
     ];
 
-    downloadCsv(`Pulse_NB_To_Find_Year_${selectedYear}_${dateStr}.csv`, [header, row]);
+    if (isRevenueMode && monthlyDirectCosts.length > 0) {
+      rows.push([
+        "NB to find direct costs",
+        ...monthHeaders.map((_, mIdx) => monthlyDirectCosts[mIdx] || `${currencySymbol}0`),
+        formatGBP(totalDirectCosts),
+      ]);
+    }
+
+    downloadCsv(`Pulse_NB_To_Find_Year_${selectedYear}_${dateStr}.csv`, [header, ...rows]);
   };
 
   if (isLoading && !nbData) {
@@ -244,82 +185,12 @@ export default function PortalNBToFindView({
           </span>
         </div>
 
-        {/* Controls */}
+        {/* Controls (Non-editable view: Refresh and Download CSV) */}
         <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-
-          {isEditing ? (
-            <>
-              <button
-                type="button"
-                onClick={handleCancelEdit}
-                disabled={isSaving}
-                style={{
-                  background: "#f1f5f9",
-                  border: "1px solid #cbd5e1",
-                  color: "#475569",
-                  padding: "5px 12px",
-                  borderRadius: "6px",
-                  fontSize: "12.5px",
-                  fontWeight: 600,
-                  cursor: "pointer",
-                }}
-              >
-                Cancel
-              </button>
-
-              <button
-                type="button"
-                onClick={handleSaveData}
-                disabled={isSaving}
-                style={{
-                  background: "#16a34a",
-                  border: "none",
-                  color: "#ffffff",
-                  padding: "5px 16px",
-                  borderRadius: "6px",
-                  fontSize: "12.5px",
-                  fontWeight: 700,
-                  cursor: isSaving ? "wait" : "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "6px",
-                }}
-              >
-                {isSaving ? <Spinner size={14} color="#ffffff" /> : <span>✓</span>}
-                <span>{isSaving ? "Saving..." : "Save"}</span>
-              </button>
-            </>
-          ) : !isReadOnly ? (
-            <button
-              type="button"
-              onClick={handleStartEdit}
-              title="Edit new business targets"
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "6px",
-                background: "#ffffff",
-                border: "1px solid #cbd5e1",
-                borderRadius: "6px",
-                padding: "5px 12px",
-                fontSize: "12.5px",
-                fontWeight: 600,
-                color: "#0047AB",
-                cursor: "pointer",
-              }}
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
-              </svg>
-              <span>Edit</span>
-            </button>
-          ) : null}
-
           <button
             type="button"
             onClick={onRefresh}
-            disabled={isLoading || isSaving}
+            disabled={isLoading}
             title="Refresh data"
             style={{
               background: "transparent",
@@ -369,31 +240,13 @@ export default function PortalNBToFindView({
         </div>
       </div>
 
-      {saveError && (
-        <div
-          style={{
-            background: "#fef2f2",
-            border: "1px solid #fecaca",
-            borderRadius: "6px",
-            padding: "0.6rem 0.85rem",
-            color: "#991b1b",
-            fontSize: "12px",
-          }}
-        >
-          {saveError}
-        </div>
-      )}
-
       {/* Target Breakdown Table with Navigation Arrows */}
       <div style={{ position: "relative", width: "100%", display: "flex", alignItems: "center" }}>
         {selectedYear > 1 && (
           <button
             type="button"
             className="fy-nav-arrow-left"
-            onClick={() => {
-              setSelectedYear((prev) => Math.max(1, prev - 1));
-              setIsEditing(false);
-            }}
+            onClick={() => setSelectedYear((prev) => Math.max(1, prev - 1))}
             title="Previous Year"
             style={{
               position: "absolute",
@@ -454,9 +307,7 @@ export default function PortalNBToFindView({
                       background: "#0047AB",
                       zIndex: 2,
                     }}
-                  >
-
-                  </th>
+                  />
                   {monthHeaders.map((m, idx) => (
                     <th
                       key={idx}
@@ -486,10 +337,11 @@ export default function PortalNBToFindView({
               </thead>
 
               <tbody>
-                <tr style={{ background: "#ffffff", borderBottom: "1px solid #f1f5f9" }}>
+                {/* Row 18: New Business to Find */}
+                <tr style={{ background: "#ffffff", borderBottom: isRevenueMode ? "1px solid #e2e8f0" : "none" }}>
                   <td
                     style={{
-                      padding: "6px 8px",
+                      padding: "8px 8px",
                       fontWeight: 700,
                       color: "#0f172a",
                       position: "sticky",
@@ -498,41 +350,30 @@ export default function PortalNBToFindView({
                       zIndex: 1,
                     }}
                   >
-                    New business to find
+                    New business to find {modeTermLower}
                   </td>
 
                   {monthHeaders.map((_, mIdx) => {
-                    const rawVal = currentAllocations[mIdx] !== undefined ? currentAllocations[mIdx] : `${currencySymbol}0`;
-                    const val = (isEditing && typeof rawVal === "string" && rawVal.includes("£") && currencySymbol !== "£")
-                      ? formatMoney(parseMoney(rawVal, thousandsSeparator), 0, currencySymbol, thousandsSeparator)
-                      : rawVal;
-
+                    const val = monthlyAllocations[mIdx] !== undefined ? monthlyAllocations[mIdx] : `${currencySymbol}0`;
                     return (
                       <td
                         key={mIdx}
                         style={{
-                          padding: "4px 4px",
+                          padding: "8px 4px",
                           textAlign: "right",
                           fontSize: "11px",
+                          fontWeight: 600,
+                          color: "#1e293b",
                         }}
                       >
-                        {isEditing ? (
-                          <input
-                            type="text"
-                            value={val}
-                            onChange={(e) => handleCellChange(mIdx, e.target.value)}
-                            style={inlineInputStyle}
-                          />
-                        ) : (
-                          formatGBP(val)
-                        )}
+                        {formatGBP(val)}
                       </td>
                     );
                   })}
 
                   <td
                     style={{
-                      padding: "6px 8px",
+                      padding: "8px 8px",
                       textAlign: "right",
                       fontWeight: 800,
                       color: "#0047AB",
@@ -543,6 +384,56 @@ export default function PortalNBToFindView({
                     {formatGBP(totalTarget)}
                   </td>
                 </tr>
+
+                {/* Row 23: NB to Find Direct Costs (Shown in Revenue mode only) */}
+                {isRevenueMode && (
+                  <tr style={{ background: "#f8fafc" }}>
+                    <td
+                      style={{
+                        padding: "8px 8px",
+                        fontWeight: 700,
+                        color: "#991b1b",
+                        position: "sticky",
+                        left: 0,
+                        background: "#f8fafc",
+                        zIndex: 1,
+                      }}
+                    >
+                      NB to find direct costs
+                    </td>
+
+                    {monthHeaders.map((_, mIdx) => {
+                      const val = monthlyDirectCosts[mIdx] !== undefined ? monthlyDirectCosts[mIdx] : `${currencySymbol}0`;
+                      return (
+                        <td
+                          key={mIdx}
+                          style={{
+                            padding: "8px 4px",
+                            textAlign: "right",
+                            fontSize: "11px",
+                            fontWeight: 600,
+                            color: "#991b1b",
+                          }}
+                        >
+                          {formatGBP(val)}
+                        </td>
+                      );
+                    })}
+
+                    <td
+                      style={{
+                        padding: "8px 8px",
+                        textAlign: "right",
+                        fontWeight: 800,
+                        color: "#991b1b",
+                        fontSize: "12px",
+                        background: "#f8fafc",
+                      }}
+                    >
+                      {formatGBP(totalDirectCosts)}
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -552,10 +443,7 @@ export default function PortalNBToFindView({
           <button
             type="button"
             className="fy-nav-arrow-right"
-            onClick={() => {
-              setSelectedYear((prev) => Math.min(3, prev + 1));
-              setIsEditing(false);
-            }}
+            onClick={() => setSelectedYear((prev) => Math.min(3, prev + 1))}
             title="Next Year"
             style={{
               position: "absolute",
@@ -615,26 +503,3 @@ export default function PortalNBToFindView({
     </div>
   );
 }
-
-const selectStyle = {
-  border: "1px solid #cbd5e1",
-  borderRadius: "6px",
-  padding: "4px 8px",
-  fontSize: "12px",
-  fontWeight: 600,
-  color: "#0f172a",
-  background: "#ffffff",
-  cursor: "pointer",
-};
-
-const inlineInputStyle = {
-  width: "100%",
-  boxSizing: "border-box",
-  padding: "2px 4px",
-  borderRadius: "4px",
-  border: "1px solid #94a3b8",
-  fontSize: "11px",
-  textAlign: "right",
-  background: "#ffffff",
-  color: "#0f172a",
-};

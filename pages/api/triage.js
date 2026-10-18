@@ -52,7 +52,7 @@ import {
   handleEomUpdateTaskStatus, handleEomUpdateTaskStatusBatch, handleEomUpdateTaskNotelet,
   handleEomReorderTasks, handleEomReorderTemplates, handleEomLoadBankAccounts,
   handleEomGetBankAccounts, handleEomGetCashBalanceProgress, handleEomSaveCashBalance,
-  handleEomCreateDashboardBackup, handleEomMarkMonthActual, handleEomSeedFromChecklist,
+  handleEomCreateDashboardBackup, handleEomMarkMonthActual, handleEomMarkNbExclude, handleEomSeedFromChecklist,
   handleEomGetPlCompData, handleEomPullFreshPl, handleEomPushOutgoings,
   handleEomGetDefaultTasks, handleEomSaveDefaultTask, handleEomDeleteDefaultTask,
   handleEomReorderDefaultTasks, handleEomSeedDefaultTasksFromTemplates, handleEomApplyDefaultTasks
@@ -76,7 +76,7 @@ import {
   handleAcceptOption, handleDeleteJob, handleAnalyzeNoActionFlag,
   handleRehashIgnoredAlerts, PRECOMPUTED_KEY
 } from "../../services/triageEngine";
-import { getClientViewData, handleUpdateViewCell } from "../../services/viewsService";
+import { getClientViewData, handleUpdateViewCell, handleSpreadViewRow } from "../../services/viewsService";
 import {
   getCashflowReconData,
   updateCashAdjustment,
@@ -434,6 +434,8 @@ export default async function handler(req, res) {
       }
     } else if (action === "update_view_cell") {
       return await handleUpdateViewCell(req, res, sheets);
+    } else if (action === "spread_view_row") {
+      return await handleSpreadViewRow(req, res, sheets);
     } else if (action === "get_cashflow_recon_data") {
       try {
         const { clientSheetId, reconSheetUrl, reconSheetId, eomMonthKey, targetMonthKey, clientName } = req.body;
@@ -1096,6 +1098,8 @@ export default async function handler(req, res) {
       return await handleEomCreateDashboardBackup(req, res, sheets);
     } else if (action === "eom_mark_month_actual") {
       return await handleEomMarkMonthActual(req, res, sheets);
+    } else if (action === "eom_mark_nb_exclude") {
+      return await handleEomMarkNbExclude(req, res, sheets);
     } else if (action === "eom_seed_from_checklist") {
       return await handleEomSeedFromChecklist(req, res, sheets);
     } else if (action === "eom_get_plcomp_data") {

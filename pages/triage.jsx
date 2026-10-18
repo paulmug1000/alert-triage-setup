@@ -15,6 +15,7 @@ import RetainersView from "../components/RetainersView";
 import SalariesView from "../components/SalariesView";
 import ExpensesView from "../components/ExpensesView";
 import NBToFindView from "../components/NBToFindView";
+import BudgetView from "../components/BudgetView";
 import ToolsView from "../components/ToolsView";
 import SettingsView from "../components/SettingsView";
 import IntegrationsView from "../components/IntegrationsView";
@@ -410,6 +411,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
   const handleNavSalaries = () => navigateWithGuard(() => { setActiveNav("salaries"); loadClients(); });
   const handleNavExpenses = () => navigateWithGuard(() => { setActiveNav("expenses"); loadClients(); });
   const handleNavNBToFind = () => navigateWithGuard(() => { setActiveNav("nbtofind"); loadClients(); });
+  const handleNavBudget = () => navigateWithGuard(() => { setActiveNav("budget"); loadClients(); });
   const handleNavViews = () => navigateWithGuard(() => { setActiveNav("views"); loadClients(); });
 
   // Synchronize browser URL with activeNav so direct bookmarking works naturally
@@ -745,6 +747,18 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
       );
     }
 
+    // ── BUDGET SCREEN ───────────────────────────────────────────────────────────
+    if (activeNav === "budget") {
+      return (
+        <BudgetView
+          allOutgoingsClients={allOutgoingsClients}
+          styles={styles}
+          managedClient={managedClient}
+          onClearManagedClient={handleClearManagedClient}
+        />
+      );
+    }
+
     // ── TOOLS SCREEN ─────────────────────────────────────────────────────────────
     if (activeNav === "tools") {
       return (
@@ -792,6 +806,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
           allOutgoingsClients={allOutgoingsClients}
           initialClientName={managedClient ? managedClient.clientName : setupClientName}
           onSelectClient={setSetupClientName}
+          onGoToBudget={handleNavBudget}
           user={user}
           isAdmin={isAdmin}
           managedClient={managedClient}
@@ -899,6 +914,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
         onSalaries={handleNavSalaries}
         onExpenses={handleNavExpenses}
         onNBToFind={handleNavNBToFind}
+        onBudget={handleNavBudget}
         onViews={handleNavViews}
         onTools={handleNavTools}
         onIntegrations={handleNavIntegrations}

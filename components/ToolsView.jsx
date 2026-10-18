@@ -56,6 +56,13 @@ export default function ToolsView({
     eomStatusQueueRef, eomStatusTimerRef, eomCashPendingClient, setEomCashPendingClient, eomDragOverTaskId, setEomDragOverTaskId,
     eomDraggedTemplateId, setEomDraggedTemplateId, eomDraggedClientName, setEomDraggedClientName, eomDragOverClientName, setEomDragOverClientName,
     eomDragOverTemplateId, setEomDragOverTemplateId, eomCreatingNewTemplate, setEomCreatingNewTemplate, eomNewTemplateName, setEomNewTemplateName,
+    eomShowDefaultTasksManager, setEomShowDefaultTasksManager, eomDefaultTasks, setEomDefaultTasks,
+    eomDefaultTasksLoading, setEomDefaultTasksLoading, eomDefaultTasksError, setEomDefaultTasksError,
+    eomEditingDefaultTaskId, setEomEditingDefaultTaskId, eomDefaultTaskDraft, setEomDefaultTaskDraft,
+    eomAddingDefaultTask, setEomAddingDefaultTask, eomNewDefaultTaskMode, setEomNewDefaultTaskMode,
+    eomNewDefaultTaskTemplateId, setEomNewDefaultTaskTemplateId, eomNewDefaultTaskName, setEomNewDefaultTaskName,
+    eomNewDefaultTaskNotes, setEomNewDefaultTaskNotes, eomAddingDefaultTaskSaving, setEomAddingDefaultTaskSaving,
+    eomDraggedDefaultTaskId, setEomDraggedDefaultTaskId, eomDragOverDefaultTaskId, setEomDragOverDefaultTaskId,
     eomClientTasks
   } = useEoM(sessionId);
 
@@ -679,6 +686,159 @@ export default function ToolsView({
       .finally(() => setEomAddingNewTemplateSaving(false));
   };
 
+  const loadDefaultTasks = () => {
+    setEomDefaultTasksLoading(true);
+    setEomDefaultTasksError("");
+    fetch("/api/triage", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "eom_get_default_tasks", automationCommanderSheetId })
+    })
+      .then(r => r.json())
+      .then(d => {
+        if (d.success) setEomDefaultTasks(d.defaultTasks || []);
+        else setEomDefaultTasksError(d.error || "Failed to load default tasks");
+      })
+      .catch(e => setEomDefaultTasksError(e.message))
+      .finally(() => setEomDefaultTasksLoading(false));
+  };
+
+  const handleSaveDefaultTaskEdit = (defaultTaskId) => {
+    fetch("/api/triage", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "eom_save_default_task",
+        automationCommanderSheetId,
+        defaultTaskId,
+        templateId: eomDefaultTaskDraft.templateId || "",
+        taskName: eomDefaultTaskDraft.taskName || "",
+        defaultNotes: eomDefaultTaskDraft.defaultNotes || "",
+        active: eomDefaultTaskDraft.active,
+      })
+    })
+      .then(r => r.json())
+      .then(d => {
+        if (d.success) {
+          setEomEditingDefaultTaskId("");
+          loadDefaultTasks();
+        } else {
+          setEomDefaultTasksError(d.error || "Failed to save default task");
+        }
+      })
+      .catch(e => setEomDefaultTasksError(e.message));
+  };
+
+  const handleDeleteDefaultTask = (defaultTaskId) => {
+    if (!confirm("Are you sure you want to remove this task from the default EoM tasks list?")) return;
+    fetch("/api/triage", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "eom_delete_default_task",
+        automationCommanderSheetId,
+        defaultTaskId
+      })
+    })
+      .then(r => r.json())
+      .then(d => {
+        if (d.success) loadDefaultTasks();
+        else setEomDefaultTasksError(d.error || "Failed to delete default task");
+      })
+      .catch(e => setEomDefaultTasksError(e.message));
+  };
+
+  const handleAddNewDefaultTask = () => {
+    const isTemplate = eomNewDefaultTaskMode === "template";
+    if (isTemplate && !eomNewDefaultTaskTemplateId) return;
+    if (!isTemplate && !eomNewDefaultTaskName.trim()) return;
+
+    setEomAddingDefaultTaskSaving(true);
+    fetch("/api/triage", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "eom_save_default_task",
+        automationCommanderSheetId,
+        templateId: isTemplate ? eomNewDefaultTaskTemplateId : "",
+        taskName: isTemplate ? "" : eomNewDefaultTaskName.trim(),
+        defaultNotes: eomNewDefaultTaskNotes.trim(),
+        active: true,
+      })
+    })
+      .then(r => r.json())
+      .then(d => {
+        if (d.success) {
+          setEomAddingDefaultTask(false);
+          setEomNewDefaultTaskTemplateId("");
+          setEomNewDefaultTaskName("");
+          setEomNewDefaultTaskNotes("");
+          loadDefaultTasks();
+        } else {
+          setEomDefaultTasksError(d.error || "Failed to add default task");
+        }
+      })
+      .catch(e => setEomDefaultTasksError(e.message))
+      .finally(() => setEomAddingDefaultTaskSaving(false));
+  };
+
+  const handleSeedDefaultTasks = () => {
+    setEomDefaultTasksLoading(true);
+    fetch("/api/triage", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "eom_seed_default_tasks", automationCommanderSheetId })
+    })
+      .then(r => r.json())
+      .then(d => {
+        if (d.success) loadDefaultTasks();
+        else setEomDefaultTasksError(d.error || "Failed to seed default tasks");
+      })
+      .catch(e => setEomDefaultTasksError(e.message))
+      .finally(() => setEomDefaultTasksLoading(false));
+  };
+
+  const persistDefaultTaskOrder = (draggedId, targetId) => {
+    if (!draggedId || draggedId === targetId) return;
+    const ordered = (eomDefaultTasks || []).slice().sort((a, b) => a.sortOrder - b.sortOrder);
+    const fromIdx = ordered.findIndex(t => t.defaultTaskId === draggedId);
+    const toIdx = ordered.findIndex(t => t.defaultTaskId === targetId);
+    if (fromIdx === -1 || toIdx === -1) return;
+
+    const reordered = [...ordered];
+    const [moved] = reordered.splice(fromIdx, 1);
+    reordered.splice(toIdx, 0, moved);
+    const orderedDefaultTaskIds = reordered.map(t => t.defaultTaskId);
+
+    setEomDefaultTasks(reordered.map((t, idx) => ({ ...t, sortOrder: (idx + 1) * 10 })));
+
+    fetch("/api/triage", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "eom_reorder_default_tasks", orderedDefaultTaskIds, automationCommanderSheetId })
+    })
+      .catch(e => console.error("eom_reorder_default_tasks error:", e));
+  };
+
+  const handleApplyDefaultTasksToClient = (clientName) => {
+    if (!confirm(`Apply all default EoM tasks to ${clientName}? Any tasks already assigned will not be duplicated.`)) return;
+    setEomClientTasksLoading(true);
+    fetch("/api/triage", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "eom_apply_default_tasks", clientName, automationCommanderSheetId })
+    })
+      .then(r => r.json())
+      .then(d => {
+        if (d.success) {
+          reloadEomClientTasks();
+        } else {
+          setEomClientTasksError(d.error || "Failed to apply default tasks");
+        }
+      })
+      .catch(e => setEomClientTasksError(e.message))
+      .finally(() => setEomClientTasksLoading(false));
+  };
+
+  const fmtCurrency = (val) => {
+    if (val === null || val === undefined || isNaN(val)) return "£0.00";
+    const num = Number(val);
+    return `${num < 0 ? "-" : ""}£${Math.abs(num).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  };
+
   return (
     <div style={{ padding: "20px 24px", width: "100%", maxWidth: "100%", boxSizing: "border-box" }}>
       {eomEditingNotelet && (() => {
@@ -742,7 +902,7 @@ export default function ToolsView({
         </div>
       )}
 
-      {eomSubView === "overview" && !eomDetailClient && !eomShowTemplateManager && !eomShowExcludedManager && (() => {
+      {eomSubView === "overview" && !eomDetailClient && !eomShowTemplateManager && !eomShowExcludedManager && !eomShowDefaultTasksManager && (() => {
         const [y, m] = eomMonthKey.split("-").map(Number);
         const monthLabel = new Date(y, m - 1, 1).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
         const shiftMonth = (delta) => {
@@ -874,6 +1034,10 @@ export default function ToolsView({
               <button onClick={() => setEomShowTemplateManager(true)}
                 style={{ padding: "6px 14px", background: "#fff", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "12px", color: "#666" }}>
                 Manage Templates
+              </button>
+              <button onClick={() => { setEomShowDefaultTasksManager(true); loadDefaultTasks(); }}
+                style={{ padding: "6px 14px", background: "#fff", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "12px", color: "#666" }}>
+                Default EoM Tasks
               </button>
               <button onClick={() => setEomShowExcludedManager(true)}
                 style={{ padding: "6px 14px", background: "#fff", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "12px", color: "#666" }}>
@@ -1316,7 +1480,249 @@ export default function ToolsView({
         );
       })()}
 
-      {eomSubView === "overview" && eomDetailClient && !eomShowTemplateManager && !eomShowExcludedManager && (() => {
+      {eomSubView === "overview" && eomShowDefaultTasksManager && !eomShowTemplateManager && !eomShowExcludedManager && (() => {
+        const startEditingDefaultTask = (task) => {
+          setEomEditingDefaultTaskId(task.defaultTaskId);
+          setEomDefaultTaskDraft({
+            templateId: task.templateId || "",
+            taskName: task.taskName || "",
+            defaultNotes: task.defaultNotes || "",
+            active: task.active,
+          });
+        };
+
+        return (
+          <div>
+            <button onClick={() => { setEomShowDefaultTasksManager(false); setEomEditingDefaultTaskId(""); setEomAddingDefaultTask(false); }}
+              style={{ background: "none", border: "none", color: "#0066cc", cursor: "pointer", fontSize: "13px", padding: "0 0 12px", display: "block" }}>
+              ‹ Back to overview
+            </button>
+
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "14px", flexWrap: "wrap", gap: "10px" }}>
+              <div>
+                <h3 style={{ margin: "0 0 4px", fontSize: "16px", fontWeight: "700", color: "#0f172a" }}>Default EoM Tasks</h3>
+                <p style={{ margin: 0, fontSize: "13px", color: "#64748b" }}>
+                  These tasks form the initial starting point automatically seeded for every new client during onboarding and setup.
+                </p>
+              </div>
+              {(eomDefaultTasks || []).length === 0 && !eomDefaultTasksLoading && (
+                <button
+                  onClick={handleSeedDefaultTasks}
+                  style={{ padding: "6px 14px", background: "#f0fdf4", border: "1px solid #bbf7d0", color: "#166534", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}
+                >
+                  🌱 Pre-populate from Active Templates
+                </button>
+              )}
+            </div>
+
+            {eomDefaultTasksLoading && <div style={{ fontSize: "13px", color: "#666", marginBottom: "14px" }}><Spinner /> Loading default tasks...</div>}
+            {eomDefaultTasksError && <div style={{ color: "#dc2626", fontSize: "13px", marginBottom: "14px" }}>{eomDefaultTasksError}</div>}
+
+            <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", marginBottom: "16px" }}>
+              {(eomDefaultTasks || []).slice().sort((a, b) => a.sortOrder - b.sortOrder).map((task, i) => (
+                <div key={task.defaultTaskId}
+                  draggable
+                  onDragStart={() => setEomDraggedDefaultTaskId(task.defaultTaskId)}
+                  onDragOver={e => { e.preventDefault(); if (eomDragOverDefaultTaskId !== task.defaultTaskId) setEomDragOverDefaultTaskId(task.defaultTaskId); }}
+                  onDragLeave={() => setEomDragOverDefaultTaskId(prev => prev === task.defaultTaskId ? null : prev)}
+                  onDrop={e => { e.preventDefault(); persistDefaultTaskOrder(eomDraggedDefaultTaskId, task.defaultTaskId); setEomDraggedDefaultTaskId(null); setEomDragOverDefaultTaskId(null); }}
+                  onDragEnd={() => { setEomDraggedDefaultTaskId(null); setEomDragOverDefaultTaskId(null); }}
+                  style={{
+                    padding: "12px 18px", borderTop: i > 0 ? "1px solid #f0f0f0" : "none",
+                    opacity: task.active ? (eomDraggedDefaultTaskId === task.defaultTaskId ? 0.4 : 1) : 0.55,
+                    background: eomDragOverDefaultTaskId === task.defaultTaskId ? "#f0f7ff" : "transparent"
+                  }}>
+                  {eomEditingDefaultTaskId === task.defaultTaskId ? (
+                    <div>
+                      <div style={{ marginBottom: "8px" }}>
+                        <label style={{ fontSize: "11px", fontWeight: "700", color: "#64748b", display: "block", marginBottom: "4px" }}>
+                          Source / Task Type
+                        </label>
+                        <select
+                          value={eomDefaultTaskDraft.templateId ? "template" : "custom"}
+                          onChange={e => {
+                            if (e.target.value === "template") {
+                              const firstTpl = (eomTemplates || []).find(t => t.active);
+                              setEomDefaultTaskDraft(d => ({ ...d, templateId: firstTpl?.templateId || "", taskName: "" }));
+                            } else {
+                              setEomDefaultTaskDraft(d => ({ ...d, templateId: "", taskName: task.taskName || task.name || "" }));
+                            }
+                          }}
+                          style={{ padding: "5px 8px", border: "1px solid #cbd5e1", borderRadius: "6px", fontSize: "12px", marginBottom: "8px" }}
+                        >
+                          <option value="template">Linked Template Library</option>
+                          <option value="custom">Custom Task Name</option>
+                        </select>
+                      </div>
+
+                      {eomDefaultTaskDraft.templateId ? (
+                        <select
+                          value={eomDefaultTaskDraft.templateId}
+                          onChange={e => setEomDefaultTaskDraft(d => ({ ...d, templateId: e.target.value }))}
+                          style={{ width: "100%", padding: "7px 10px", border: "1px solid #cbd5e1", borderRadius: "6px", fontSize: "13px", marginBottom: "8px" }}
+                        >
+                          {(eomTemplates || []).filter(t => t.active).map(t => (
+                            <option key={t.templateId} value={t.templateId}>{t.name}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          value={eomDefaultTaskDraft.taskName}
+                          onChange={e => setEomDefaultTaskDraft(d => ({ ...d, taskName: e.target.value }))}
+                          placeholder="Task name"
+                          style={{ width: "100%", padding: "7px 10px", border: "1px solid #cbd5e1", borderRadius: "6px", fontSize: "13px", marginBottom: "8px", boxSizing: "border-box" }}
+                        />
+                      )}
+
+                      <input
+                        value={eomDefaultTaskDraft.defaultNotes}
+                        onChange={e => setEomDefaultTaskDraft(d => ({ ...d, defaultNotes: e.target.value }))}
+                        placeholder="Default notes (prefilled for new clients)"
+                        style={{ width: "100%", padding: "7px 10px", border: "1px solid #cbd5e1", borderRadius: "6px", fontSize: "12px", marginBottom: "8px", boxSizing: "border-box" }}
+                      />
+
+                      <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "10px" }}>
+                        <label style={{ fontSize: "12px", color: "#475569", display: "flex", alignItems: "center", gap: "6px" }}>
+                          <input
+                            type="checkbox"
+                            checked={eomDefaultTaskDraft.active}
+                            onChange={e => setEomDefaultTaskDraft(d => ({ ...d, active: e.target.checked }))}
+                          />
+                          Active (Include in starting point for new clients)
+                        </label>
+                      </div>
+
+                      <div style={{ display: "flex", gap: "8px" }}>
+                        <button onClick={() => handleSaveDefaultTaskEdit(task.defaultTaskId)}
+                          style={{ padding: "6px 14px", background: "#0066cc", color: "#fff", border: "none", borderRadius: "5px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
+                          Save
+                        </button>
+                        <button onClick={() => setEomEditingDefaultTaskId("")}
+                          style={{ padding: "6px 14px", background: "none", border: "1px solid #ddd", borderRadius: "5px", cursor: "pointer", fontSize: "12px" }}>
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div onClick={() => startEditingDefaultTask(task)} style={{ cursor: "pointer", display: "flex", alignItems: "flex-start", gap: "10px" }}>
+                      <div onClick={e => e.stopPropagation()} title="Drag to reorder" style={{ cursor: "grab", color: "#ccc", fontSize: "14px", lineHeight: "20px", userSelect: "none" }}>⠿</div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: "13px", fontWeight: "600", color: "#1a1a1a" }}>
+                          {task.name}
+                          {!task.active && <span style={{ marginLeft: "6px", fontSize: "10px", color: "#b45309" }}>(inactive)</span>}
+                          {task.linkedFunction && (
+                            <span style={{ marginLeft: "6px", fontSize: "10px", color: "#0066cc" }}>
+                              (linked: {task.linkedFunction})
+                            </span>
+                          )}
+                        </div>
+                        {task.defaultNotes && <div style={{ fontSize: "12px", color: "#888", marginTop: "2px" }}>{task.defaultNotes}</div>}
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: "6px" }} onClick={e => e.stopPropagation()}>
+                        <button
+                          onClick={() => handleDeleteDefaultTask(task.defaultTaskId)}
+                          title="Remove this default task"
+                          style={{ background: "none", border: "none", color: "#94a3b8", cursor: "pointer", fontSize: "14px", padding: "2px 6px" }}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+              {(eomDefaultTasks || []).length === 0 && !eomDefaultTasksLoading && (
+                <div style={{ padding: "24px 20px", fontSize: "13px", color: "#94a3b8", textAlign: "center" }}>
+                  No default EoM tasks configured yet. Pre-populate from templates above or add one below.
+                </div>
+              )}
+            </div>
+
+            <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "14px 18px" }}>
+              {!eomAddingDefaultTask ? (
+                <button onClick={() => setEomAddingDefaultTask(true)}
+                  style={{ padding: "6px 14px", background: "#fff", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "12px" }}>
+                  + Add default task
+                </button>
+              ) : (
+                <div>
+                  <div style={{ display: "flex", gap: "10px", marginBottom: "10px" }}>
+                    <button
+                      type="button"
+                      onClick={() => setEomNewDefaultTaskMode("template")}
+                      style={{
+                        padding: "5px 12px", borderRadius: "5px", fontSize: "12px", cursor: "pointer",
+                        border: eomNewDefaultTaskMode === "template" ? "1px solid #0066cc" : "1px solid #ddd",
+                        background: eomNewDefaultTaskMode === "template" ? "#eef4ff" : "#fff",
+                        color: eomNewDefaultTaskMode === "template" ? "#0066cc" : "#666", fontWeight: "600"
+                      }}>
+                      From Template Library
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEomNewDefaultTaskMode("custom")}
+                      style={{
+                        padding: "5px 12px", borderRadius: "5px", fontSize: "12px", cursor: "pointer",
+                        border: eomNewDefaultTaskMode === "custom" ? "1px solid #0066cc" : "1px solid #ddd",
+                        background: eomNewDefaultTaskMode === "custom" ? "#eef4ff" : "#fff",
+                        color: eomNewDefaultTaskMode === "custom" ? "#0066cc" : "#666", fontWeight: "600"
+                      }}>
+                      Custom Task
+                    </button>
+                  </div>
+
+                  {eomNewDefaultTaskMode === "template" ? (
+                    <div style={{ marginBottom: "8px" }}>
+                      <select
+                        value={eomNewDefaultTaskTemplateId}
+                        onChange={e => setEomNewDefaultTaskTemplateId(e.target.value)}
+                        style={{ width: "100%", padding: "7px 10px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "13px" }}
+                      >
+                        <option value="">Select a template...</option>
+                        {(eomTemplates || []).filter(t => t.active).map(t => (
+                          <option key={t.templateId} value={t.templateId}>{t.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                  ) : (
+                    <input
+                      value={eomNewDefaultTaskName}
+                      onChange={e => setEomNewDefaultTaskName(e.target.value)}
+                      placeholder="Default task name"
+                      style={{ width: "100%", padding: "7px 10px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "13px", marginBottom: "8px", boxSizing: "border-box" }}
+                    />
+                  )}
+
+                  <input
+                    value={eomNewDefaultTaskNotes}
+                    onChange={e => setEomNewDefaultTaskNotes(e.target.value)}
+                    placeholder="Default notes (optional)"
+                    style={{ width: "100%", padding: "7px 10px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "13px", marginBottom: "10px", boxSizing: "border-box" }}
+                  />
+
+                  <div style={{ display: "flex", gap: "8px" }}>
+                    <button
+                      disabled={eomAddingDefaultTaskSaving}
+                      onClick={handleAddNewDefaultTask}
+                      style={{ padding: "6px 14px", background: eomAddingDefaultTaskSaving ? "#ccc" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: eomAddingDefaultTaskSaving ? "default" : "pointer", fontSize: "12px", fontWeight: "600" }}
+                    >
+                      {eomAddingDefaultTaskSaving ? "Saving..." : "Add to Defaults"}
+                    </button>
+                    <button
+                      onClick={() => { setEomAddingDefaultTask(false); setEomNewDefaultTaskTemplateId(""); setEomNewDefaultTaskName(""); setEomNewDefaultTaskNotes(""); }}
+                      style={{ padding: "6px 14px", background: "none", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "12px" }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
+      {eomSubView === "overview" && eomDetailClient && !eomShowTemplateManager && !eomShowExcludedManager && !eomShowDefaultTasksManager && (() => {
         const [y, m] = eomMonthKey.split("-").map(Number);
         const monthLabel = new Date(y, m - 1, 1).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
         const shiftMonth = (delta) => {
@@ -1543,7 +1949,15 @@ export default function ToolsView({
                 </div>
               ))}
               {activeTasks.length === 0 && !eomClientTasksLoading && (
-                <div style={{ padding: "20px", fontSize: "13px", color: "#999", textAlign: "center" }}>No tasks assigned yet - add one below.</div>
+                <div style={{ padding: "24px 20px", fontSize: "13px", color: "#666", textAlign: "center" }}>
+                  <div style={{ marginBottom: "10px" }}>No tasks assigned yet for {eomDetailClient}.</div>
+                  <button
+                    onClick={() => handleApplyDefaultTasksToClient(eomDetailClient)}
+                    style={{ padding: "6px 14px", background: "#f0fdf4", border: "1px solid #bbf7d0", color: "#166534", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}
+                  >
+                    📋 Apply Default EoM Tasks
+                  </button>
+                </div>
               )}
             </div>
 
@@ -1740,6 +2154,102 @@ export default function ToolsView({
                       <div style={{ fontSize: "13px", color: "#166534", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", padding: "6px 10px", marginBottom: "12px" }}>
                         ✓ {f.client} - updated {f.result.updateCount} row{f.result.updateCount !== 1 ? "s" : ""} in column {f.result.startCol} for {f.result.targetMonthStr}
                       </div>
+
+                      {f.result.importedEmployees && f.result.importedEmployees.length > 0 && (
+                        <div style={{ marginBottom: "16px", overflowX: "auto" }}>
+                          <div style={{ fontSize: "13px", fontWeight: "700", color: "#1e293b", marginBottom: "8px" }}>
+                            Imported Employee Data ({f.result.importedEmployees.length} employee{f.result.importedEmployees.length !== 1 ? "s" : ""})
+                          </div>
+                          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px", border: "1px solid #e2e8f0", borderRadius: "8px", overflow: "hidden", background: "#fff" }}>
+                            <thead>
+                              <tr style={{ background: "#f8fafc", borderBottom: "2px solid #e2e8f0" }}>
+                                <th style={{ padding: "8px 10px", textAlign: "left", fontWeight: "700", color: "#475569" }}>Employee</th>
+                                <th style={{ padding: "8px 10px", textAlign: "right", fontWeight: "700", color: "#475569" }}>Salary</th>
+                                <th style={{ padding: "8px 10px", textAlign: "right", fontWeight: "700", color: "#475569" }}>Ee NICs</th>
+                                <th style={{ padding: "8px 10px", textAlign: "right", fontWeight: "700", color: "#475569" }}>Er NICs</th>
+                                <th style={{ padding: "8px 10px", textAlign: "right", fontWeight: "700", color: "#475569" }}>Student Loan</th>
+                                <th style={{ padding: "8px 10px", textAlign: "right", fontWeight: "700", color: "#475569" }}>Er Pension</th>
+                                <th style={{ padding: "8px 10px", textAlign: "right", fontWeight: "700", color: "#475569" }}>Ee Pension</th>
+                                <th style={{ padding: "8px 10px", textAlign: "right", fontWeight: "700", color: "#475569" }}>PAYE</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {f.result.importedEmployees.map((emp, idx) => (
+                                <tr key={idx} style={{ borderBottom: "1px solid #f1f5f9", background: idx % 2 === 0 ? "#ffffff" : "#fafafa" }}>
+                                  <td style={{ padding: "6px 10px", fontWeight: 600, color: "#1e293b", whiteSpace: "nowrap" }}>
+                                    {emp.name}
+                                    {emp.status === "new_starter" && (
+                                      <span style={{ marginLeft: "6px", fontSize: "10px", padding: "1px 6px", borderRadius: "10px", background: "#fef2f2", color: "#dc2626", fontWeight: 700 }}>
+                                        New Starter
+                                      </span>
+                                    )}
+                                    {emp.status === "unmatched" && (
+                                      <span style={{ marginLeft: "6px", fontSize: "10px", padding: "1px 6px", borderRadius: "10px", background: "#fffbeb", color: "#b45309", fontWeight: 700 }}>
+                                        Unmatched
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td style={{ padding: "6px 10px", textAlign: "right", color: "#0f172a", fontFamily: "monospace" }}>{fmtCurrency(emp.salary)}</td>
+                                  <td style={{ padding: "6px 10px", textAlign: "right", color: "#475569", fontFamily: "monospace" }}>{fmtCurrency(emp.eeNic)}</td>
+                                  <td style={{ padding: "6px 10px", textAlign: "right", color: "#475569", fontFamily: "monospace" }}>{fmtCurrency(emp.erNic)}</td>
+                                  <td style={{ padding: "6px 10px", textAlign: "right", color: "#475569", fontFamily: "monospace" }}>{fmtCurrency(emp.studLoan)}</td>
+                                  <td style={{ padding: "6px 10px", textAlign: "right", color: "#475569", fontFamily: "monospace" }}>{fmtCurrency(emp.erPension)}</td>
+                                  <td style={{ padding: "6px 10px", textAlign: "right", color: "#475569", fontFamily: "monospace" }}>{fmtCurrency(emp.eePension)}</td>
+                                  <td style={{ padding: "6px 10px", textAlign: "right", color: "#475569", fontFamily: "monospace" }}>{fmtCurrency(emp.paye)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                            <tfoot>
+                              <tr style={{ background: "#f8fafc", borderTop: "2px solid #cbd5e1", fontWeight: 700 }}>
+                                <td style={{ padding: "8px 10px", color: "#0f172a" }}>Total Imported</td>
+                                {f.result.columnsSummary ? (
+                                  f.result.columnsSummary.map(col => (
+                                    <td key={col.key} style={{ padding: "8px 10px", textAlign: "right", color: "#0f172a", fontFamily: "monospace" }}>
+                                      {fmtCurrency(col.importedTotal)}
+                                    </td>
+                                  ))
+                                ) : (
+                                  <td colSpan={7} />
+                                )}
+                              </tr>
+                              <tr style={{ background: "#f1f5f9", fontWeight: 700 }}>
+                                <td style={{ padding: "8px 10px", color: "#334155" }}>Sheet Total (Row 55)</td>
+                                {f.result.columnsSummary ? (
+                                  f.result.columnsSummary.map(col => (
+                                    <td key={col.key} style={{ padding: "8px 10px", textAlign: "right", color: "#334155", fontFamily: "monospace" }}>
+                                      {col.sheetFormatted || fmtCurrency(col.sheetTotal)}
+                                    </td>
+                                  ))
+                                ) : (
+                                  <td colSpan={7} />
+                                )}
+                              </tr>
+                              <tr style={{ background: "#f8fafc", borderTop: "1px solid #e2e8f0", fontWeight: 700 }}>
+                                <td style={{ padding: "8px 10px", color: "#475569" }}>Difference vs Sheet</td>
+                                {f.result.columnsSummary ? (
+                                  f.result.columnsSummary.map(col => {
+                                    const diffVal = Math.round((col.importedTotal - col.sheetTotal) * 100) / 100;
+                                    const matches = Math.abs(diffVal) <= 0.01;
+                                    return (
+                                      <td key={col.key} style={{
+                                        padding: "8px 10px",
+                                        textAlign: "right",
+                                        fontFamily: "monospace",
+                                        color: matches ? "#166534" : "#dc2626",
+                                        background: matches ? "#f0fdf4" : "#fef2f2"
+                                      }}>
+                                        {matches ? "✓ £0.00" : `⚠️ ${diffVal > 0 ? "+" : ""}${fmtCurrency(diffVal)}`}
+                                      </td>
+                                    );
+                                  })
+                                ) : (
+                                  <td colSpan={7} />
+                                )}
+                              </tr>
+                            </tfoot>
+                          </table>
+                        </div>
+                      )}
 
                       {f.result.totalsCheck && (
                         <div style={{ marginBottom: "12px" }}>

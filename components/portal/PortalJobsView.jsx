@@ -231,8 +231,20 @@ export default function PortalJobsView({
     return list;
   }, [jobsData, filterType, searchTerm, sortBy, optimisticJobs]);
 
-  const currencySymbol = propCurrencySymbol || data?.currencySymbol || data?.clientInfo?.currencySymbol || "£";
-  const thousandsSeparator = propThousandsSeparator || data?.thousandsSeparator || data?.clientInfo?.thousandsSeparator || ",";
+  const rawSymbol =
+    (propCurrencySymbol && propCurrencySymbol !== "£" ? propCurrencySymbol : null) ||
+    data?.currencySymbol ||
+    data?.clientInfo?.currencySymbol ||
+    propCurrencySymbol ||
+    "£";
+  const currencySymbol =
+    rawSymbol === "EUR" ? "€" : rawSymbol === "GBP" ? "£" : rawSymbol === "USD" ? "$" : rawSymbol;
+  const thousandsSeparator =
+    (propThousandsSeparator && propThousandsSeparator !== "," ? propThousandsSeparator : null) ||
+    data?.thousandsSeparator ||
+    data?.clientInfo?.thousandsSeparator ||
+    propThousandsSeparator ||
+    (currencySymbol === "€" ? "." : ",");
 
   const totalPages = Math.ceil(filteredJobs.length / pageSize) || 1;
   const paginatedJobs = useMemo(() => {
@@ -290,14 +302,34 @@ export default function PortalJobsView({
       lockedMonthsRef.current = {};
     }
 
+    const normalizeAmount = (val) => {
+      if (!val && val !== 0) return "";
+      const s = String(val).trim();
+      if (!s || s === "—" || s === "-") return "";
+      const num = parseMoney(s, thousandsSeparator);
+      return formatMoney(num, 0, currencySymbol, thousandsSeparator);
+    };
+
     setEditingJob({
       ...job,
+      revenue: normalizeAmount(job?.revenue),
+      directCosts: normalizeAmount(job?.directCosts),
       childRowNumbers: Array.isArray(job.childRowNumbers) ? job.childRowNumbers : [],
       invoices: Array.isArray(job.invoices) && job.invoices.length > 0
-        ? job.invoices.map((inv, i) => ({ ...inv, num: i + 1, status: inv.status || "" }))
+        ? job.invoices.map((inv, i) => ({
+            ...inv,
+            num: i + 1,
+            amount: normalizeAmount(inv.amount),
+            status: inv.status || "",
+          }))
         : [{ num: 1, amount: "", ref: "", sendDate: "", days: "30", status: "" }],
       directExpenses: Array.isArray(job.directExpenses) && job.directExpenses.length > 0
-        ? job.directExpenses.map((exp, i) => ({ ...exp, num: i + 1, status: exp.status || "" }))
+        ? job.directExpenses.map((exp, i) => ({
+            ...exp,
+            num: i + 1,
+            amount: normalizeAmount(exp.amount),
+            status: exp.status || "",
+          }))
         : [{ num: 1, desc: "", amount: "", vat: "Yes", recDate: "", days: "30", status: "" }],
     });
   };

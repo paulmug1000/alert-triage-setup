@@ -107,7 +107,7 @@ if (typeof document !== "undefined") {
 // Persistent top bar - rendered around every screen
 export default function NavShell({
   activeNav, onHome, onAlerts, onOverview, onTasks, onActivity, onAppLog,
-  onOutgoings, onInvoices, onRetainers, onJobs, onSalaries, onExpenses, onNBToFind, onViews, onTools, onIntegrations, onSetup, onSettings,
+  onOutgoings, onInvoices, onRetainers, onJobs, onSalaries, onExpenses, onNBToFind, onBudget, onViews, onTools, onIntegrations, onSetup, onSettings,
   homeAlertCount, taskCount, user, onLogout, clients = [],
   managedClient, onSelectManagedClient, onClearManagedClient, children
 }) {
@@ -124,7 +124,7 @@ export default function NavShell({
       try {
         const stored = localStorage.getItem("pulse_cached_all_clients");
         if (stored) return JSON.parse(stored);
-      } catch {}
+      } catch { }
     }
     return [];
   });
@@ -249,7 +249,8 @@ export default function NavShell({
         { key: "retainers", label: "Retainers", handler: onRetainers },
         { key: "salaries", label: "Salaries", handler: onSalaries },
         { key: "expenses", label: "Expenses", handler: onExpenses },
-        { key: "nbtofind", label: "New Business to Find", handler: onNBToFind },
+        { key: "nbtofind", label: "New business to find", handler: onNBToFind },
+        { key: "budget", label: "Budget", handler: onBudget },
       ],
     },
     { key: "views", label: "Views", handler: onViews },

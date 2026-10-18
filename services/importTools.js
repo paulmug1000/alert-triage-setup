@@ -234,23 +234,162 @@ async function writePayrollDataToSheet_(sheets, clientSheetId, extractedData, ta
   const writeData = [];
   const writtenTotals = { grossPay: 0, eeNic: 0, erNic: 0, studLoan: 0, eePension: 0, erPension: 0, paye: 0 };
   let updateCount = 0;
+  const importedEmployees = [];
 
   for (const rawEmp of (extractedData.employees || [])) {
     const emp = normalizePayrollEmployee_(rawEmp);
-    if (emp.mappedName === "NEW_STARTER") continue;
+    if (emp.mappedName === "NEW_STARTER") {
+      importedEmployees.push({
+        name: emp.originalName || rawEmp.originalName || "New Starter",
+        salary: emp.grossPay || 0,
+        eeNic: emp.eeNic || 0,
+        erNic: emp.erNic || 0,
+        studLoan: emp.studLoan || 0,
+        erPension: emp.erPension || 0,
+        eePension: emp.eePension || 0,
+        paye: emp.paye || 0,
+        status: "new_starter",
+        written: false,
+      });
+      continue;
+    }
     const rowIdx = sheetNames.indexOf(emp.mappedName);
-    if (rowIdx === -1) { unmatched.push(emp.originalName || rawEmp.originalName); continue; }
+    if (rowIdx === -1) {
+      unmatched.push(emp.originalName || rawEmp.originalName);
+      importedEmployees.push({
+        name: emp.originalName || rawEmp.originalName || "Unmatched",
+        salary: emp.grossPay || 0,
+        eeNic: emp.eeNic || 0,
+        erNic: emp.erNic || 0,
+        studLoan: emp.studLoan || 0,
+        erPension: emp.erPension || 0,
+        eePension: emp.eePension || 0,
+        paye: emp.paye || 0,
+        status: "unmatched",
+        written: false,
+      });
+      continue;
+    }
     const sheetRow = rowIdx + 4;
     const vals = [emp.grossPay, emp.eeNic, emp.erNic, emp.studLoan, emp.eePension, emp.erPension, emp.paye];
     writeData.push({ range: `Salaries!${startColLetter}${sheetRow}:${endColLetter}${sheetRow}`, values: [vals] });
     writtenTotals.grossPay += vals[0]; writtenTotals.eeNic += vals[1]; writtenTotals.erNic += vals[2];
     writtenTotals.studLoan += vals[3]; writtenTotals.eePension += vals[4]; writtenTotals.erPension += vals[5]; writtenTotals.paye += vals[6];
     updateCount++;
+    importedEmployees.push({
+      name: emp.mappedName,
+      sheetRow,
+      salary: emp.grossPay || 0,
+      eeNic: emp.eeNic || 0,
+      erNic: emp.erNic || 0,
+      studLoan: emp.studLoan || 0,
+      erPension: emp.erPension || 0,
+      eePension: emp.eePension || 0,
+      paye: emp.paye || 0,
+      status: "matched",
+      written: true,
+    });
   }
 
   if (writeData.length > 0) {
     await withRetry(() => sheets.spreadsheets.values.batchUpdate({ spreadsheetId: clientSheetId, requestBody: { data: writeData, valueInputOption: "USER_ENTERED" } }));
   }
+
+  // Fetch sheet totals from Row 55 of Salaries tab (the formula totals row for the active month)
+  let sheetTotalsRawValues = [0, 0, 0, 0, 0, 0, 0];
+  let sheetTotalsFormattedValues = ["£0.00", "£0.00", "£0.00", "£0.00", "£0.00", "£0.00", "£0.00"];
+  try {
+    const [totalsRespUnformatted, totalsRespFormatted] = await Promise.all([
+      withRetry(() => sheets.spreadsheets.values.get({
+        spreadsheetId: clientSheetId,
+        range: `Salaries!${startColLetter}55:${endColLetter}55`,
+        valueRenderOption: "UNFORMATTED_VALUE",
+      })),
+      withRetry(() => sheets.spreadsheets.values.get({
+        spreadsheetId: clientSheetId,
+        range: `Salaries!${startColLetter}55:${endColLetter}55`,
+        valueRenderOption: "FORMATTED_VALUE",
+      })),
+    ]);
+    const rawRow = totalsRespUnformatted.data.values?.[0] || [];
+    const fmtRow = totalsRespFormatted.data.values?.[0] || [];
+    sheetTotalsRawValues = [0, 1, 2, 3, 4, 5, 6].map(idx => {
+      const v = rawRow[idx];
+      return typeof v === "number" ? v : (parseFloat(String(v || "").replace(/[^0-9.-]/g, "")) || 0);
+    });
+    sheetTotalsFormattedValues = [0, 1, 2, 3, 4, 5, 6].map(idx => String(fmtRow[idx] || "£0.00"));
+  } catch (sheetTotalsErr) {
+    console.warn("[writePayrollDataToSheet_] Failed to read Salaries Row 55 sheet totals:", sheetTotalsErr.message);
+  }
+
+  // Build columns summary comparing imported data vs sheet totals:
+  // Sheet column order: 0: Gross Pay/Salary, 1: Ee NIC, 2: Er NIC, 3: Student Loan, 4: Ee Pension, 5: Er Pension, 6: PAYE
+  // Presented order requested: Salary, Ee NICs, Er NICs, Student loan payments, Er pension, Ee pension, PAYE
+  const columnsSummary = [
+    {
+      key: "salary",
+      label: "Salary",
+      importedTotal: Math.round(writtenTotals.grossPay * 100) / 100,
+      sheetTotal: Math.round(sheetTotalsRawValues[0] * 100) / 100,
+      sheetFormatted: sheetTotalsFormattedValues[0],
+      diff: Math.round(Math.abs(writtenTotals.grossPay - sheetTotalsRawValues[0]) * 100) / 100,
+      reconciled: Math.abs(writtenTotals.grossPay - sheetTotalsRawValues[0]) <= 1.00,
+    },
+    {
+      key: "eeNic",
+      label: "Ee NICs",
+      importedTotal: Math.round(writtenTotals.eeNic * 100) / 100,
+      sheetTotal: Math.round(sheetTotalsRawValues[1] * 100) / 100,
+      sheetFormatted: sheetTotalsFormattedValues[1],
+      diff: Math.round(Math.abs(writtenTotals.eeNic - sheetTotalsRawValues[1]) * 100) / 100,
+      reconciled: Math.abs(writtenTotals.eeNic - sheetTotalsRawValues[1]) <= 1.00,
+    },
+    {
+      key: "erNic",
+      label: "Er NICs",
+      importedTotal: Math.round(writtenTotals.erNic * 100) / 100,
+      sheetTotal: Math.round(sheetTotalsRawValues[2] * 100) / 100,
+      sheetFormatted: sheetTotalsFormattedValues[2],
+      diff: Math.round(Math.abs(writtenTotals.erNic - sheetTotalsRawValues[2]) * 100) / 100,
+      reconciled: Math.abs(writtenTotals.erNic - sheetTotalsRawValues[2]) <= 1.00,
+    },
+    {
+      key: "studLoan",
+      label: "Student Loan",
+      importedTotal: Math.round(writtenTotals.studLoan * 100) / 100,
+      sheetTotal: Math.round(sheetTotalsRawValues[3] * 100) / 100,
+      sheetFormatted: sheetTotalsFormattedValues[3],
+      diff: Math.round(Math.abs(writtenTotals.studLoan - sheetTotalsRawValues[3]) * 100) / 100,
+      reconciled: Math.abs(writtenTotals.studLoan - sheetTotalsRawValues[3]) <= 1.00,
+    },
+    {
+      key: "erPension",
+      label: "Er Pension",
+      importedTotal: Math.round(writtenTotals.erPension * 100) / 100,
+      sheetTotal: Math.round(sheetTotalsRawValues[5] * 100) / 100,
+      sheetFormatted: sheetTotalsFormattedValues[5],
+      diff: Math.round(Math.abs(writtenTotals.erPension - sheetTotalsRawValues[5]) * 100) / 100,
+      reconciled: Math.abs(writtenTotals.erPension - sheetTotalsRawValues[5]) <= 1.00,
+    },
+    {
+      key: "eePension",
+      label: "Ee Pension",
+      importedTotal: Math.round(writtenTotals.eePension * 100) / 100,
+      sheetTotal: Math.round(sheetTotalsRawValues[4] * 100) / 100,
+      sheetFormatted: sheetTotalsFormattedValues[4],
+      diff: Math.round(Math.abs(writtenTotals.eePension - sheetTotalsRawValues[4]) * 100) / 100,
+      reconciled: Math.abs(writtenTotals.eePension - sheetTotalsRawValues[4]) <= 1.00,
+    },
+    {
+      key: "paye",
+      label: "PAYE",
+      importedTotal: Math.round(writtenTotals.paye * 100) / 100,
+      sheetTotal: Math.round(sheetTotalsRawValues[6] * 100) / 100,
+      sheetFormatted: sheetTotalsFormattedValues[6],
+      diff: Math.round(Math.abs(writtenTotals.paye - sheetTotalsRawValues[6]) * 100) / 100,
+      reconciled: Math.abs(writtenTotals.paye - sheetTotalsRawValues[6]) <= 1.00,
+    },
+  ];
 
   const docTotals = extractedData.totals ? normalizePayrollEmployee_(extractedData.totals) : {};
   const totalsSource = extractedData.totalsSource === "document" ? "document" : "calculated";
@@ -263,7 +402,19 @@ async function writePayrollDataToSheet_(sheets, clientSheetId, extractedData, ta
     return { category: cat, documentTotal: docVal, writtenTotal: writtenVal, diff, reconciled: diff <= TOLERANCE };
   });
 
-  return { writeSuccess: true, updateCount, targetMonthStr, startCol: startColLetter, missingFromDoc, newStarters, unmatched, totalsSource, totalsCheck };
+  return {
+    writeSuccess: true,
+    updateCount,
+    targetMonthStr,
+    startCol: startColLetter,
+    missingFromDoc,
+    newStarters,
+    unmatched,
+    totalsSource,
+    totalsCheck,
+    importedEmployees,
+    columnsSummary,
+  };
 }
 
 async function writeTimeDataToSheet_(sheets, masterSheetId, extractedData, targetMonthStr, allEmployeeNames) {

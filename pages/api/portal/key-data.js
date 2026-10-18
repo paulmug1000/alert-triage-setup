@@ -3,7 +3,7 @@ import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "../../../serv
 import { verifyUserAuthorizedForSheet } from "../../../services/userPermissions.js";
 import { redisClient } from "../../../services/redisClient.js";
 import { memoryCache } from "../../../services/cacheService.js";
-import { parseMoney } from "../../../services/deepDiveHelper.js";
+import { parseMoney, formatMoney } from "../../../services/deepDiveHelper.js";
 
 const KEYDATA_CACHE_TTL_SECS = 60; // 60s cache
 
@@ -180,8 +180,14 @@ export default async function handler(req, res) {
     const masterUrlRows = valueRanges[rangeIdx++]?.values || [];
     const currencyRows = valueRanges[rangeIdx++]?.values || [];
 
-    const currencySymbol = String(currencyRows?.[0]?.[1] || (currencyRows?.[0]?.[0] && currencyRows?.[0]?.[0] !== "Tracker currency" ? currencyRows?.[0]?.[0] : "") || "£").trim() || "£";
-    const thousandsSeparator = String(currencyRows?.[1]?.[1] || (currencyRows?.[1]?.[0] && currencyRows?.[1]?.[0] !== "Thous. separator" ? currencyRows?.[1]?.[0] : "") || ",").trim() || ",";
+    const rawCurrencySymbol = String(currencyRows?.[0]?.[1] || (currencyRows?.[0]?.[0] && currencyRows?.[0]?.[0] !== "Tracker currency" ? currencyRows?.[0]?.[0] : "") || "£").trim() || "£";
+    let currencySymbol = rawCurrencySymbol;
+    if (currencySymbol.toUpperCase() === "EUR" || currencySymbol === "€") currencySymbol = "€";
+    else if (currencySymbol.toUpperCase() === "GBP" || currencySymbol === "£") currencySymbol = "£";
+    else if (currencySymbol.toUpperCase() === "USD" || currencySymbol === "$") currencySymbol = "$";
+
+    const rawThousandsSeparator = String(currencyRows?.[1]?.[1] || (currencyRows?.[1]?.[0] && currencyRows?.[1]?.[0] !== "Thous. separator" ? currencyRows?.[1]?.[0] : "") || "").trim();
+    const thousandsSeparator = rawThousandsSeparator || (currencySymbol === "€" ? "." : ",");
 
     const leadSources = leadSourcesRows.flat().map((v) => String(v || "").trim()).filter(Boolean);
     const productLines = productLinesRows.flat().map((v) => String(v || "").trim()).filter(Boolean);
@@ -600,6 +606,12 @@ export default async function handler(req, res) {
     const pipelineJobs = parseJobs(pipelineRows, "Pipeline");
     const allJobs = [...confirmedJobs, ...pipelineJobs];
 
+    const formatMoneyVal = (v) => {
+      if (v === null || v === undefined || v === "" || v === 0 || v === "0") return `${currencySymbol}0`;
+      const num = parseMoney(v);
+      return formatMoney(num, 0, currencySymbol, thousandsSeparator);
+    };
+
     // Helper: Parse Salaries
     const salariesList = [];
     if (salariesRows.length > 3) {
@@ -608,14 +620,15 @@ export default async function handler(req, res) {
         const name = String(row[0] || "").trim();
         if (!name) continue;
         const role = String(row[1] || "").trim();
-        const fteSalary = String(row[2] || "£0").trim();
+        const fteSalaryNum = parseMoney(row[2]);
+        const fteSalary = formatMoney(fteSalaryNum, 0, currencySymbol, thousandsSeparator);
+        row[2] = fteSalary; // Normalize rawRows for salaries
         const fte = String(row[3] || "1.00").trim();
         const startDate = String(row[4] || "").trim();
         const endDate = String(row[5] || "").trim();
         const deliveryPct = String(row[6] || "").trim();
         const pensionPct = String(row[7] || "").trim();
 
-        const fteSalaryNum = parseFloat(String(fteSalary).replace(/[£,]/g, "")) || 0;
         const fteNum = parseFloat(String(fte)) || 1.0;
         const actualAnnualCost = Math.round(fteSalaryNum * fteNum);
         const isDelivery = deliveryPct === "100%" || (parseFloat(deliveryPct) || 0) > 0;
@@ -660,12 +673,12 @@ export default async function handler(req, res) {
         const paymentTiming = String(row[3] || "").trim();
         const deliveryPct = String(row[4] || "").trim();
 
-        const allocationsY1 = (row.slice(6, 18) || []).map((v) => String(v || "£0").trim());
-        const allocationsY2 = (row.slice(21, 33) || []).map((v) => String(v || "£0").trim());
-        const allocationsY3 = (row.slice(36, 48) || []).map((v) => String(v || "£0").trim());
+        const allocationsY1 = (row.slice(6, 18) || []).map(formatMoneyVal);
+        const allocationsY2 = (row.slice(21, 33) || []).map(formatMoneyVal);
+        const allocationsY3 = (row.slice(36, 48) || []).map(formatMoneyVal);
 
         const sumAllocations = (arr) =>
-          arr.reduce((acc, val) => acc + (parseFloat(String(val).replace(/[£,]/g, "")) || 0), 0);
+          arr.reduce((acc, val) => acc + parseMoney(val), 0);
 
         const totalY1 = sumAllocations(allocationsY1);
         const totalY2 = sumAllocations(allocationsY2);
@@ -730,15 +743,15 @@ export default async function handler(req, res) {
     };
 
     const vatCashByMonth = {
-      1: parseYearRow(row304, 6, 18, (v) => String(v || "£0").trim()),
-      2: parseYearRow(row304, 21, 33, (v) => String(v || "£0").trim()),
-      3: parseYearRow(row304, 36, 48, (v) => String(v || "£0").trim()),
+      1: parseYearRow(row304, 6, 18, formatMoneyVal),
+      2: parseYearRow(row304, 21, 33, formatMoneyVal),
+      3: parseYearRow(row304, 36, 48, formatMoneyVal),
     };
 
     const vatAccrualByMonth = {
-      1: parseYearRow(row305, 6, 18, (v) => String(v || "£0").trim()),
-      2: parseYearRow(row305, 21, 33, (v) => String(v || "£0").trim()),
-      3: parseYearRow(row305, 36, 48, (v) => String(v || "£0").trim()),
+      1: parseYearRow(row305, 6, 18, formatMoneyVal),
+      2: parseYearRow(row305, 21, 33, formatMoneyVal),
+      3: parseYearRow(row305, 36, 48, formatMoneyVal),
     };
 
     // In Notes metadata mode, fetch and parse transactions from Master Sheet's OutgNotes tab
@@ -864,12 +877,12 @@ export default async function handler(req, res) {
     const nbHeadersY3 = (nbtofindRows[0] || []).slice(36, 48).map((h) => String(h || "").trim());
 
     const nbTargetRow = nbtofindRows.find((r) => String(r[0] || "").toLowerCase().includes("new business"));
-    const nbY1 = nbTargetRow ? nbTargetRow.slice(6, 18).map((v) => String(v || "£0").trim()) : [];
-    const nbY2 = nbTargetRow ? nbTargetRow.slice(21, 33).map((v) => String(v || "£0").trim()) : [];
-    const nbY3 = nbTargetRow ? nbTargetRow.slice(36, 48).map((v) => String(v || "£0").trim()) : [];
+    const nbY1 = nbTargetRow ? nbTargetRow.slice(6, 18).map(formatMoneyVal) : [];
+    const nbY2 = nbTargetRow ? nbTargetRow.slice(21, 33).map(formatMoneyVal) : [];
+    const nbY3 = nbTargetRow ? nbTargetRow.slice(36, 48).map(formatMoneyVal) : [];
 
     const sumNB = (arr) =>
-      arr.reduce((acc, v) => acc + (parseFloat(String(v).replace(/[£,]/g, "")) || 0), 0);
+      arr.reduce((acc, v) => acc + parseMoney(v), 0);
 
     const totalConfirmedRevenue = confirmedJobs.reduce((acc, j) => acc + j.revNum, 0);
     const totalPipelineRevenue = pipelineJobs.reduce((acc, j) => acc + j.revNum, 0);

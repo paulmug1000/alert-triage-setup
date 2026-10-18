@@ -51,8 +51,20 @@ export default function PortalNBToFindView({
     return optimisticTarget[selectedYear] || nbData?.allocations?.[selectedYear] || nbData?.monthlyAllocations || [];
   }, [nbData, selectedYear, optimisticTarget]);
 
-  const currencySymbol = propCurrencySymbol || data?.currencySymbol || data?.clientInfo?.currencySymbol || "£";
-  const thousandsSeparator = propThousandsSeparator || data?.thousandsSeparator || data?.clientInfo?.thousandsSeparator || ",";
+  const rawSymbol =
+    (propCurrencySymbol && propCurrencySymbol !== "£" ? propCurrencySymbol : null) ||
+    data?.currencySymbol ||
+    data?.clientInfo?.currencySymbol ||
+    propCurrencySymbol ||
+    "£";
+  const currencySymbol =
+    rawSymbol === "EUR" ? "€" : rawSymbol === "GBP" ? "£" : rawSymbol === "USD" ? "$" : rawSymbol;
+  const thousandsSeparator =
+    (propThousandsSeparator && propThousandsSeparator !== "," ? propThousandsSeparator : null) ||
+    data?.thousandsSeparator ||
+    data?.clientInfo?.thousandsSeparator ||
+    propThousandsSeparator ||
+    (currencySymbol === "€" ? "." : ",");
 
   const currentAllocations = isEditing ? editValues : monthlyAllocations;
 
@@ -70,7 +82,12 @@ export default function PortalNBToFindView({
 
   const handleStartEdit = () => {
     if (isReadOnly) return;
-    setEditValues(monthlyAllocations.slice(0, 12));
+    setEditValues(
+      monthlyAllocations.slice(0, 12).map((val) => {
+        const num = parseMoney(val, thousandsSeparator);
+        return formatMoney(num, 0, currencySymbol, thousandsSeparator);
+      })
+    );
     setIsEditing(true);
     setSaveError(null);
   };
@@ -485,7 +502,10 @@ export default function PortalNBToFindView({
                   </td>
 
                   {monthHeaders.map((_, mIdx) => {
-                    const val = currentAllocations[mIdx] || `${currencySymbol}0`;
+                    const rawVal = currentAllocations[mIdx] !== undefined ? currentAllocations[mIdx] : `${currencySymbol}0`;
+                    const val = (isEditing && typeof rawVal === "string" && rawVal.includes("£") && currencySymbol !== "£")
+                      ? formatMoney(parseMoney(rawVal, thousandsSeparator), 0, currencySymbol, thousandsSeparator)
+                      : rawVal;
 
                     return (
                       <td

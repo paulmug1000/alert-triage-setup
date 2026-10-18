@@ -2,6 +2,8 @@ import React, { useState, useEffect, useMemo } from "react";
 import Spinner from "../Spinner";
 import { formatMoney, parseMoney } from "../../services/deepDiveHelper";
 import { downloadCsv } from "../../utils/helpers";
+import AddContractorModal from "./AddContractorModal";
+import AddExpenseModal from "./AddExpenseModal";
 
 export default function PortalOutgoingsView({
   clientName,
@@ -19,13 +21,22 @@ export default function PortalOutgoingsView({
   const [selectedYear, setSelectedYear] = useState(outgoingsData?.currentYear || 2); // 1, 2, 3
   const [isEditing, setIsEditing] = useState(false);
   const [editValues, setEditValues] = useState({}); // { [rowNumber]: string[] (12 months) }
+  const [editDeliveryPcts, setEditDeliveryPcts] = useState({}); // { [rowNumber]: string } (for Dividends)
+  const [optimisticDeliveryPcts, setOptimisticDeliveryPcts] = useState({});
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState(null);
   const [optimisticAllocs, setOptimisticAllocs] = useState({}); // { [year]: { [rowNumber]: string[] } }
 
-  // Clear optimistic allocations when fresh server data arrives
+  // Modals for adding items in edit mode
+  const [showAddContractorModal, setShowAddContractorModal] = useState(false);
+  const [showAddExpenseModal, setShowAddExpenseModal] = useState(false);
+  const [localNewItems, setLocalNewItems] = useState([]);
+
+  // Clear optimistic allocations and local new items when fresh server data arrives
   useEffect(() => {
     setOptimisticAllocs({});
+    setOptimisticDeliveryPcts({});
+    setLocalNewItems([]);
   }, [outgoingsData]);
 
   useEffect(() => {
@@ -55,8 +66,26 @@ export default function PortalOutgoingsView({
     if (category === "dividends") {
       list = list.filter((item) => !String(item.name || "").toLowerCase().includes("total"));
     }
-    return list;
-  }, [outgoingsData, category]);
+
+    // Merge any locally added items for this category
+    const relevantLocal = localNewItems.filter((it) => {
+      if (category === "contractors") return it.isContractor;
+      if (category === "expenses") return !it.isContractor;
+      return false;
+    });
+
+    return [...list, ...relevantLocal];
+  }, [outgoingsData, category, localNewItems]);
+
+  const deliveryExpenses = useMemo(() => {
+    if (category !== "expenses") return [];
+    return itemsList.filter((item) => item.isDelivery);
+  }, [category, itemsList]);
+
+  const nonDeliveryExpenses = useMemo(() => {
+    if (category !== "expenses") return [];
+    return itemsList.filter((item) => !item.isDelivery);
+  }, [category, itemsList]);
 
   const monthHeaders = useMemo(() => {
     if (!outgoingsData?.headers) return [];
@@ -73,8 +102,20 @@ export default function PortalOutgoingsView({
 
   const pageTitle = getPageTitle();
 
-  const currencySymbol = propCurrencySymbol || data?.currencySymbol || data?.clientInfo?.currencySymbol || "£";
-  const thousandsSeparator = propThousandsSeparator || data?.thousandsSeparator || data?.clientInfo?.thousandsSeparator || ",";
+  const rawSymbol =
+    (propCurrencySymbol && propCurrencySymbol !== "£" ? propCurrencySymbol : null) ||
+    data?.currencySymbol ||
+    data?.clientInfo?.currencySymbol ||
+    propCurrencySymbol ||
+    "£";
+  const currencySymbol =
+    rawSymbol === "EUR" ? "€" : rawSymbol === "GBP" ? "£" : rawSymbol === "USD" ? "$" : rawSymbol;
+  const thousandsSeparator =
+    (propThousandsSeparator && propThousandsSeparator !== "," ? propThousandsSeparator : null) ||
+    data?.thousandsSeparator ||
+    data?.clientInfo?.thousandsSeparator ||
+    propThousandsSeparator ||
+    (currencySymbol === "€" ? "." : ",");
 
   const formatGBP = (val) => {
     return formatMoney(val, 0, currencySymbol, thousandsSeparator);
@@ -83,12 +124,22 @@ export default function PortalOutgoingsView({
   const handleStartEdit = () => {
     if (isReadOnly) return;
     const initial = {};
+    const initialDeliveryPcts = {};
+
     itemsList.forEach((item) => {
       const optAllocs = optimisticAllocs[selectedYear]?.[item.rowNumber];
       const yearAlloc = optAllocs || item.allocations?.[selectedYear] || item.monthlyAllocations || [];
-      initial[item.rowNumber] = yearAlloc.slice(0, 12);
+      initial[item.rowNumber] = yearAlloc.slice(0, 12).map((val) => {
+        const num = parseMoney(val, thousandsSeparator);
+        return formatMoney(num, 0, currencySymbol, thousandsSeparator);
+      });
+      if (category === "dividends") {
+        initialDeliveryPcts[item.rowNumber] = optimisticDeliveryPcts[item.rowNumber] || item.deliveryPct || "0%";
+      }
     });
+
     setEditValues(initial);
+    setEditDeliveryPcts(initialDeliveryPcts);
     setIsEditing(true);
     setSaveError(null);
   };
@@ -96,6 +147,7 @@ export default function PortalOutgoingsView({
   const handleCancelEdit = () => {
     setIsEditing(false);
     setEditValues({});
+    setEditDeliveryPcts({});
     setSaveError(null);
   };
 
@@ -111,6 +163,14 @@ export default function PortalOutgoingsView({
     });
   };
 
+  const handleDeliveryPctChange = (rowNumber, val) => {
+    if (isReadOnly) return;
+    setEditDeliveryPcts((prev) => ({
+      ...prev,
+      [rowNumber]: val,
+    }));
+  };
+
   const handleSaveData = async () => {
     if (isReadOnly) return;
     setIsSaving(true);
@@ -123,16 +183,32 @@ export default function PortalOutgoingsView({
 
       itemsList.forEach((item) => {
         const edits = editValues[item.rowNumber];
-        if (!edits) return;
+        if (edits) {
+          const origAlloc = item.allocations?.[selectedYear] || item.monthlyAllocations || [];
+          const hasChanged = edits.some((v, idx) => v !== origAlloc[idx]);
 
-        const origAlloc = item.allocations?.[selectedYear] || item.monthlyAllocations || [];
-        const hasChanged = edits.some((v, idx) => v !== origAlloc[idx]);
+          if (hasChanged) {
+            updates.push({
+              range: `Outgoings!${startCol}${item.rowNumber}:${endCol}${item.rowNumber}`,
+              values: [edits],
+            });
+          }
+        }
 
-        if (hasChanged) {
-          updates.push({
-            range: `Outgoings!${startCol}${item.rowNumber}:${endCol}${item.rowNumber}`,
-            values: [edits],
-          });
+        // For Dividends: Check if Delivery % (Col E) changed
+        if (category === "dividends") {
+          const newPct = editDeliveryPcts[item.rowNumber];
+          const origPct = optimisticDeliveryPcts[item.rowNumber] || item.deliveryPct || "0%";
+          if (newPct !== undefined && newPct !== origPct) {
+            let pctFormatted = String(newPct).trim();
+            if (pctFormatted && !pctFormatted.endsWith("%") && !isNaN(Number(pctFormatted))) {
+              pctFormatted = `${pctFormatted}%`;
+            }
+            updates.push({
+              range: `Outgoings!E${item.rowNumber}`,
+              values: [[pctFormatted]],
+            });
+          }
         }
       });
 
@@ -153,7 +229,7 @@ export default function PortalOutgoingsView({
           throw new Error(resData.error || "Failed to save outgoings data");
         }
 
-        // Optimistically update local allocations immediately so new values display with zero delay
+        // Optimistically update local allocations
         setOptimisticAllocs((prev) => ({
           ...prev,
           [selectedYear]: {
@@ -161,6 +237,13 @@ export default function PortalOutgoingsView({
             ...editValues,
           },
         }));
+
+        if (category === "dividends") {
+          setOptimisticDeliveryPcts((prev) => ({
+            ...prev,
+            ...editDeliveryPcts,
+          }));
+        }
       }
 
       setIsEditing(false);
@@ -173,25 +256,139 @@ export default function PortalOutgoingsView({
     }
   };
 
+  const handleContractorCreated = (newItem) => {
+    const itemWithCategory = {
+      ...newItem,
+      isContractor: true,
+      allocations: {
+        1: new Array(12).fill(`${currencySymbol}0`),
+        2: new Array(12).fill(`${currencySymbol}0`),
+        3: new Array(12).fill(`${currencySymbol}0`),
+      },
+    };
+    setLocalNewItems((prev) => [...prev, itemWithCategory]);
+    // Initialize in editValues so user can immediately edit monthly values
+    setEditValues((prev) => ({
+      ...prev,
+      [newItem.rowNumber]: new Array(12).fill(`${currencySymbol}0`),
+    }));
+  };
+
+  const handleExpenseCreated = (newItem) => {
+    const itemWithCategory = {
+      ...newItem,
+      isContractor: false,
+      allocations: {
+        1: new Array(12).fill(`${currencySymbol}0`),
+        2: new Array(12).fill(`${currencySymbol}0`),
+        3: new Array(12).fill(`${currencySymbol}0`),
+      },
+    };
+    setLocalNewItems((prev) => [...prev, itemWithCategory]);
+    // Initialize in editValues so user can immediately edit monthly values
+    setEditValues((prev) => ({
+      ...prev,
+      [newItem.rowNumber]: new Array(12).fill(`${currencySymbol}0`),
+    }));
+  };
+
   const handleDownloadCSV = () => {
     if (!itemsList || itemsList.length === 0) return;
     const fyName = fyLabels[selectedYear] || `FY${selectedYear}`;
     const dateStr = new Date().toISOString().split("T")[0];
 
-    const header = [pageTitle, ...(monthHeaders || []), "Total"];
+    if (category === "expenses") {
+      // Export Delivery expenses and Non-delivery expenses sections
+      const header = ["Category", ...(monthHeaders || []), "Total"];
+      const buildSectionRows = (list, sectionName) => {
+        const rows = list.map((item) => {
+          const origAllocs = item.allocations?.[selectedYear] || item.monthlyAllocations || [];
+          const currentAllocs = isEditing ? editValues[item.rowNumber] || origAllocs : origAllocs;
+          const liveTotal = currentAllocs.reduce((sum, v) => sum + parseMoney(v), 0);
+          return [
+            item.name || "",
+            ...monthHeaders.map((_, mIdx) => currentAllocs[mIdx] || `${currencySymbol}0`),
+            formatGBP(liveTotal),
+          ];
+        });
+
+        // Add section Total row
+        const totalCols = monthHeaders.map((_, mIdx) => {
+          const colSum = list.reduce((sum, item) => {
+            const origAllocs = item.allocations?.[selectedYear] || item.monthlyAllocations || [];
+            const val = isEditing ? (editValues[item.rowNumber]?.[mIdx] ?? origAllocs[mIdx]) : origAllocs[mIdx];
+            return sum + parseMoney(val);
+          }, 0);
+          return formatGBP(colSum);
+        });
+
+        const sectionGrandTotal = list.reduce((sum, item) => {
+          const origAllocs = item.allocations?.[selectedYear] || item.monthlyAllocations || [];
+          const cur = isEditing ? editValues[item.rowNumber] || origAllocs : origAllocs;
+          return sum + cur.reduce((rSum, v) => rSum + parseMoney(v), 0);
+        }, 0);
+
+        return [
+          [`--- ${sectionName} ---`, ...monthHeaders.map(() => ""), ""],
+          ...rows,
+          ["Total", ...totalCols, formatGBP(sectionGrandTotal)],
+        ];
+      };
+
+      const delRows = buildSectionRows(deliveryExpenses, "Delivery expenses");
+      const nonDelRows = buildSectionRows(nonDeliveryExpenses, "Non-delivery expenses");
+
+      downloadCsv(`Pulse_${pageTitle}_${fyName}_${dateStr}.csv`, [
+        header,
+        ...delRows,
+        ["", ...monthHeaders.map(() => ""), ""],
+        ...nonDelRows,
+      ]);
+      return;
+    }
+
+    const isDividends = category === "dividends";
+    const header = [
+      pageTitle,
+      ...(isDividends ? ["Delivery %"] : []),
+      ...(monthHeaders || []),
+      "Total",
+    ];
+
     const rowsData = itemsList.map((item) => {
       const origAllocs = item.allocations?.[selectedYear] || item.monthlyAllocations || [];
       const currentAllocs = isEditing ? editValues[item.rowNumber] || origAllocs : origAllocs;
-      const liveTotal = currentAllocs.reduce((sum, v) => {
-        const n = parseMoney(v);
-        return sum + n;
-      }, 0);
+      const liveTotal = currentAllocs.reduce((sum, v) => sum + parseMoney(v), 0);
+      const delPct = isDividends
+        ? (editDeliveryPcts[item.rowNumber] ?? optimisticDeliveryPcts[item.rowNumber] ?? item.deliveryPct ?? "0%")
+        : null;
+
       return [
         item.name || "",
+        ...(isDividends ? [delPct] : []),
         ...monthHeaders.map((_, mIdx) => currentAllocs[mIdx] || `${currencySymbol}0`),
         formatGBP(liveTotal),
       ];
     });
+
+    // Total row for contractors
+    if (category === "contractors") {
+      const totalCols = monthHeaders.map((_, mIdx) => {
+        const colSum = itemsList.reduce((sum, item) => {
+          const origAllocs = item.allocations?.[selectedYear] || item.monthlyAllocations || [];
+          const val = isEditing ? (editValues[item.rowNumber]?.[mIdx] ?? origAllocs[mIdx]) : origAllocs[mIdx];
+          return sum + parseMoney(val);
+        }, 0);
+        return formatGBP(colSum);
+      });
+      const grandTotal = itemsList.reduce((sum, item) => {
+        const origAllocs = item.allocations?.[selectedYear] || item.monthlyAllocations || [];
+        const cur = isEditing ? editValues[item.rowNumber] || origAllocs : origAllocs;
+        return sum + cur.reduce((rSum, v) => rSum + parseMoney(v), 0);
+      }, 0);
+
+      rowsData.push(["Total", ...totalCols, formatGBP(grandTotal)]);
+    }
 
     downloadCsv(`Pulse_${pageTitle}_${fyName}_${dateStr}.csv`, [header, ...rowsData]);
   };
@@ -239,6 +436,295 @@ export default function PortalOutgoingsView({
     );
   }
 
+  // Helper component to render an outgoings table (supports top-left label, total row, and delivery % column)
+  const renderTableSection = (tableItems, topLeftLabel = "", showTotalRow = false, showDeliveryPct = false) => {
+    // Grand total across all rows in this table
+    const grandTotal = tableItems.reduce((sum, item) => {
+      const optAllocs = optimisticAllocs[selectedYear]?.[item.rowNumber];
+      const origAllocs = optAllocs || item.allocations?.[selectedYear] || item.monthlyAllocations || [];
+      const currentAllocs = isEditing ? editValues[item.rowNumber] || origAllocs : origAllocs;
+      const rowSum = currentAllocs.reduce((rSum, v) => rSum + parseMoney(v), 0);
+      return sum + rowSum;
+    }, 0);
+
+    return (
+      <div
+        className="fy-table-scroll-wrapper"
+        style={{
+          background: "#ffffff",
+          borderRadius: "8px",
+          boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
+          border: "1px solid #e2e8f0",
+          overflow: "hidden",
+          width: "100%",
+        }}
+      >
+        <div style={{ overflowX: "auto", width: "100%" }}>
+          <table
+            style={{
+              width: "100%",
+              minWidth: "860px",
+              borderCollapse: "separate",
+              borderSpacing: 0,
+              fontSize: "12px",
+              tableLayout: "fixed",
+            }}
+          >
+            <thead>
+              <tr style={{ background: "#0047AB", color: "#ffffff" }}>
+                <th
+                  style={{
+                    padding: "6px 8px",
+                    textAlign: "left",
+                    fontWeight: 700,
+                    width: showDeliveryPct ? "14.8%" : "18.8%",
+                    position: "sticky",
+                    left: 0,
+                    background: "#0047AB",
+                    zIndex: 2,
+                    fontSize: "11.5px",
+                  }}
+                >
+                  {topLeftLabel}
+                </th>
+
+                {showDeliveryPct && (
+                  <th
+                    style={{
+                      padding: "6px 6px",
+                      textAlign: "center",
+                      fontWeight: 700,
+                      width: "7.0%",
+                      fontSize: "11px",
+                    }}
+                  >
+                    Delivery %
+                  </th>
+                )}
+
+                {monthHeaders.map((m, idx) => (
+                  <th
+                    key={idx}
+                    style={{
+                      padding: "6px 4px",
+                      textAlign: "right",
+                      fontWeight: 700,
+                      fontSize: "11px",
+                      width: showDeliveryPct ? "5.85%" : "6.1%",
+                    }}
+                  >
+                    {m}
+                  </th>
+                ))}
+
+                <th
+                  style={{
+                    padding: "6px 8px",
+                    textAlign: "right",
+                    fontWeight: 800,
+                    width: "8.0%",
+                    background: "#0047AB",
+                    fontSize: "11px",
+                  }}
+                >
+                  Total
+                </th>
+              </tr>
+            </thead>
+
+            <tbody>
+              {tableItems.length === 0 ? (
+                <tr>
+                  <td
+                    colSpan={showDeliveryPct ? 15 : 14}
+                    style={{ padding: "2.5rem", textAlign: "center", color: "#64748b" }}
+                  >
+                    No {topLeftLabel ? topLeftLabel.toLowerCase() : pageTitle.toLowerCase()} items found.
+                  </td>
+                </tr>
+              ) : (
+                tableItems.map((item, idx) => {
+                  const optAllocs = optimisticAllocs[selectedYear]?.[item.rowNumber];
+                  const origAllocs = optAllocs || item.allocations?.[selectedYear] || item.monthlyAllocations || [];
+                  const currentAllocs = isEditing ? editValues[item.rowNumber] || origAllocs : origAllocs;
+
+                  const liveTotal = currentAllocs.reduce((sum, v) => sum + parseMoney(v), 0);
+
+                  const delPct = isEditing
+                    ? (editDeliveryPcts[item.rowNumber] ?? optimisticDeliveryPcts[item.rowNumber] ?? item.deliveryPct ?? "0%")
+                    : (optimisticDeliveryPcts[item.rowNumber] || item.deliveryPct || "0%");
+
+                  return (
+                    <tr
+                      key={item.rowNumber || idx}
+                      style={{
+                        borderBottom: "1px solid #f1f5f9",
+                        background: idx % 2 === 0 ? "#ffffff" : "#fbfcfe",
+                      }}
+                    >
+                      {/* Line Item name */}
+                      <td
+                        style={{
+                          padding: "6px 8px",
+                          fontWeight: 600,
+                          color: "#0f172a",
+                          position: "sticky",
+                          left: 0,
+                          background: idx % 2 === 0 ? "#ffffff" : "#fbfcfe",
+                          zIndex: 1,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                        title={item.name}
+                      >
+                        {item.name}
+                      </td>
+
+                      {/* Delivery % column for Dividends */}
+                      {showDeliveryPct && (
+                        <td
+                          style={{
+                            padding: "4px 6px",
+                            textAlign: "center",
+                            fontSize: "11px",
+                            fontWeight: 500,
+                            color: "#334155",
+                          }}
+                        >
+                          {isEditing ? (
+                            <input
+                              type="text"
+                              value={delPct}
+                              onChange={(e) => handleDeliveryPctChange(item.rowNumber, e.target.value)}
+                              placeholder="e.g. 50%"
+                              style={{ ...inlineInputStyle, textAlign: "center" }}
+                            />
+                          ) : (
+                            delPct
+                          )}
+                        </td>
+                      )}
+
+                      {/* 12 monthly columns */}
+                      {monthHeaders.map((_, mIdx) => {
+                        const rawCell = currentAllocs[mIdx] !== undefined ? currentAllocs[mIdx] : `${currencySymbol}0`;
+                        const val = (isEditing && typeof rawCell === "string" && rawCell.includes("£") && currencySymbol !== "£")
+                          ? formatMoney(parseMoney(rawCell, thousandsSeparator), 0, currencySymbol, thousandsSeparator)
+                          : rawCell;
+
+                        return (
+                          <td
+                            key={mIdx}
+                            style={{
+                              padding: "4px 4px",
+                              textAlign: "right",
+                              fontSize: "11px",
+                            }}
+                          >
+                            {isEditing ? (
+                              <input
+                                type="text"
+                                value={val}
+                                onChange={(e) => handleCellChange(item.rowNumber, mIdx, e.target.value)}
+                                style={inlineInputStyle}
+                              />
+                            ) : (
+                              formatGBP(val)
+                            )}
+                          </td>
+                        );
+                      })}
+
+                      {/* Row Total */}
+                      <td
+                        style={{
+                          padding: "6px 8px",
+                          textAlign: "right",
+                          fontWeight: 700,
+                          color: "#0047AB",
+                          fontSize: "11.5px",
+                          background: idx % 2 === 0 ? "#ffffff" : "#fbfcfe",
+                        }}
+                      >
+                        {formatGBP(liveTotal)}
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+
+              {/* Total Row */}
+              {showTotalRow && tableItems.length > 0 && (
+                <tr
+                  style={{
+                    background: "#f8fafc",
+                    borderTop: "2px solid #cbd5e1",
+                    fontWeight: 700,
+                  }}
+                >
+                  <td
+                    style={{
+                      padding: "8px 8px",
+                      position: "sticky",
+                      left: 0,
+                      background: "#f8fafc",
+                      zIndex: 1,
+                      color: "#0047AB",
+                      fontWeight: 800,
+                      fontSize: "11.5px",
+                    }}
+                  >
+                    Total
+                  </td>
+
+                  {showDeliveryPct && <td></td>}
+
+                  {monthHeaders.map((_, mIdx) => {
+                    const colTotal = tableItems.reduce((sum, item) => {
+                      const optAllocs = optimisticAllocs[selectedYear]?.[item.rowNumber];
+                      const origAllocs = optAllocs || item.allocations?.[selectedYear] || item.monthlyAllocations || [];
+                      const val = isEditing ? (editValues[item.rowNumber]?.[mIdx] ?? origAllocs[mIdx]) : origAllocs[mIdx];
+                      return sum + parseMoney(val);
+                    }, 0);
+
+                    return (
+                      <td
+                        key={mIdx}
+                        style={{
+                          padding: "8px 4px",
+                          textAlign: "right",
+                          color: "#0047AB",
+                          fontWeight: 700,
+                          fontSize: "11px",
+                        }}
+                      >
+                        {formatGBP(colTotal)}
+                      </td>
+                    );
+                  })}
+
+                  <td
+                    style={{
+                      padding: "8px 8px",
+                      textAlign: "right",
+                      color: "#0047AB",
+                      fontWeight: 800,
+                      fontSize: "11.5px",
+                      background: "#f8fafc",
+                    }}
+                  >
+                    {formatGBP(grandTotal)}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "1rem", width: "100%", fontFamily: "'Kumbh Sans', sans-serif" }}>
       {/* Action Bar */}
@@ -272,9 +758,59 @@ export default function PortalOutgoingsView({
 
         {/* Controls */}
         <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-
           {isEditing ? (
             <>
+              {/* Add New Item Button in Edit Mode */}
+              {category === "contractors" && (
+                <button
+                  type="button"
+                  onClick={() => setShowAddContractorModal(true)}
+                  disabled={isSaving}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    background: "#ffffff",
+                    border: "1px solid #0047AB",
+                    color: "#0047AB",
+                    padding: "5px 12px",
+                    borderRadius: "6px",
+                    fontSize: "12.5px",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    boxShadow: "0 1px 2px rgba(0, 71, 171, 0.08)",
+                  }}
+                >
+                  <span style={{ fontSize: "15px", lineHeight: "1", fontWeight: 700 }}>+</span>
+                  <span>Add new contractor</span>
+                </button>
+              )}
+
+              {category === "expenses" && (
+                <button
+                  type="button"
+                  onClick={() => setShowAddExpenseModal(true)}
+                  disabled={isSaving}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    background: "#ffffff",
+                    border: "1px solid #0047AB",
+                    color: "#0047AB",
+                    padding: "5px 12px",
+                    borderRadius: "6px",
+                    fontSize: "12.5px",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    boxShadow: "0 1px 2px rgba(0, 71, 171, 0.08)",
+                  }}
+                >
+                  <span style={{ fontSize: "15px", lineHeight: "1", fontWeight: 700 }}>+</span>
+                  <span>Add new expense</span>
+                </button>
+              )}
+
               <button
                 type="button"
                 onClick={handleCancelEdit}
@@ -412,7 +948,7 @@ export default function PortalOutgoingsView({
         </div>
       )}
 
-      {/* Main Table with Navigation Arrows */}
+      {/* Main Table(s) with Navigation Arrows */}
       <div style={{ position: "relative", width: "100%", display: "flex", alignItems: "center" }}>
         {selectedYear > 1 && (
           <button
@@ -447,244 +983,110 @@ export default function PortalOutgoingsView({
           </button>
         )}
 
-        <div
-          className="fy-table-scroll-wrapper"
-          style={{
-            background: "#ffffff",
-            borderRadius: "8px",
-            boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
-            border: "1px solid #e2e8f0",
-            overflow: "hidden",
-            width: "100%",
-          }}
-        >
-          <div style={{ overflowX: "auto", width: "100%" }}>
-            <table
-              style={{
-                width: "100%",
-                minWidth: "860px",
-                borderCollapse: "separate",
-                borderSpacing: 0,
-                fontSize: "12px",
-                tableLayout: "fixed",
-              }}
-            >
-              <thead>
-                <tr style={{ background: "#0047AB", color: "#ffffff" }}>
-                  <th
-                    style={{
-                      padding: "6px 8px",
-                      textAlign: "left",
-                      fontWeight: 700,
-                      width: "18.8%",
-                      position: "sticky",
-                      left: 0,
-                      background: "#0047AB",
-                      zIndex: 2,
-                    }}
-                  >
-                    {/* Empty top-left cell header */}
-                  </th>
-                  {monthHeaders.map((m, idx) => (
-                    <th
-                      key={idx}
-                      style={{
-                        padding: "6px 4px",
-                        textAlign: "right",
-                        fontWeight: 700,
-                        fontSize: "11px",
-                        width: "6.1%",
-                      }}
-                    >
-                      {m}
-                    </th>
-                  ))}
-                  <th
-                    style={{
-                      padding: "6px 8px",
-                      textAlign: "right",
-                      fontWeight: 800,
-                      width: "8.0%",
-                      background: "#0047AB",
-                    }}
-                  >
-                    Total
-                  </th>
-                </tr>
-              </thead>
+        <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem", width: "100%" }}>
+          {category === "expenses" ? (
+            <>
+              {/* Delivery expenses table */}
+              {renderTableSection(deliveryExpenses, "Delivery expenses", true, false)}
 
-            <tbody>
-              {itemsList.length === 0 ? (
-                <tr>
-                  <td colSpan={14} style={{ padding: "3rem", textAlign: "center", color: "#64748b" }}>
-                    No {pageTitle.toLowerCase()} items found.
-                  </td>
-                </tr>
-              ) : (
-                itemsList.map((item, idx) => {
-                  const optAllocs = optimisticAllocs[selectedYear]?.[item.rowNumber];
-                  const origAllocs = optAllocs || item.allocations?.[selectedYear] || item.monthlyAllocations || [];
-                  const currentAllocs = isEditing ? editValues[item.rowNumber] || origAllocs : origAllocs;
-
-                  const liveTotal = currentAllocs.reduce((sum, v) => {
-                    const n = parseMoney(v);
-                    return sum + n;
-                  }, 0);
-
-                  return (
-                    <tr
-                      key={item.rowNumber || idx}
-                      style={{
-                        borderBottom: "1px solid #f1f5f9",
-                        background: idx % 2 === 0 ? "#ffffff" : "#fbfcfe",
-                      }}
-                    >
-                      {/* Line Item name */}
-                      <td
-                        style={{
-                          padding: "6px 8px",
-                          fontWeight: 600,
-                          color: "#0f172a",
-                          position: "sticky",
-                          left: 0,
-                          background: idx % 2 === 0 ? "#ffffff" : "#fbfcfe",
-                          zIndex: 1,
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                        }}
-                        title={item.name}
-                      >
-                        {item.name}
-                      </td>
-
-                      {/* 12 monthly columns */}
-                      {monthHeaders.map((_, mIdx) => {
-                        const val = currentAllocs[mIdx] || `${currencySymbol}0`;
-
-                        return (
-                          <td
-                            key={mIdx}
-                            style={{
-                              padding: "4px 4px",
-                              textAlign: "right",
-                              fontSize: "11px",
-                            }}
-                          >
-                            {isEditing ? (
-                              <input
-                                type="text"
-                                value={val}
-                                onChange={(e) => handleCellChange(item.rowNumber, mIdx, e.target.value)}
-                                style={inlineInputStyle}
-                              />
-                            ) : (
-                              formatGBP(val)
-                            )}
-                          </td>
-                        );
-                      })}
-
-                      {/* Row Total */}
-                      <td
-                        style={{
-                          padding: "6px 8px",
-                          textAlign: "right",
-                          fontWeight: 700,
-                          color: "#0047AB",
-                          fontSize: "11.5px",
-                          background: idx % 2 === 0 ? "#ffffff" : "#fbfcfe",
-                        }}
-                      >
-                        {formatGBP(liveTotal)}
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
+              {/* Non-delivery expenses table */}
+              {renderTableSection(nonDeliveryExpenses, "Non-delivery expenses", true, false)}
+            </>
+          ) : category === "contractors" ? (
+            renderTableSection(itemsList, "Contractors", true, false)
+          ) : (
+            // Dividends
+            renderTableSection(itemsList, "Dividends", false, true)
+          )}
         </div>
+
+        {selectedYear < 3 && (
+          <button
+            type="button"
+            className="fy-nav-arrow-right"
+            onClick={() => {
+              setSelectedYear((prev) => Math.min(3, prev + 1));
+              setIsEditing(false);
+            }}
+            title="Next Year"
+            style={{
+              position: "absolute",
+              right: "-42px",
+              top: "50%",
+              transform: "translateY(-50%)",
+              background: "transparent",
+              color: "#a2c4c9",
+              border: "none",
+              fontSize: "2.8rem",
+              fontWeight: "bold",
+              cursor: "pointer",
+              padding: "0",
+              zIndex: 10,
+              lineHeight: 1,
+              userSelect: "none",
+              transition: "color 0.2s",
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.color = "#8fb5bb")}
+            onMouseLeave={(e) => (e.currentTarget.style.color = "#a2c4c9")}
+          >
+            ›
+          </button>
+        )}
       </div>
 
-      {selectedYear < 3 && (
-        <button
-          type="button"
-          className="fy-nav-arrow-right"
-          onClick={() => {
-            setSelectedYear((prev) => Math.min(3, prev + 1));
-            setIsEditing(false);
-          }}
-          title="Next Year"
-          style={{
-            position: "absolute",
-            right: "-42px",
-            top: "50%",
-            transform: "translateY(-50%)",
-            background: "transparent",
-            color: "#a2c4c9",
-            border: "none",
-            fontSize: "2.8rem",
-            fontWeight: "bold",
-            cursor: "pointer",
-            padding: "0",
-            zIndex: 10,
-            lineHeight: 1,
-            userSelect: "none",
-            transition: "color 0.2s",
-          }}
-          onMouseEnter={(e) => (e.currentTarget.style.color = "#8fb5bb")}
-          onMouseLeave={(e) => (e.currentTarget.style.color = "#a2c4c9")}
-        >
-          ›
-        </button>
+      {/* Add Contractor Modal */}
+      {showAddContractorModal && (
+        <AddContractorModal
+          clientSheetId={clientSheetId}
+          clientName={clientName}
+          onClose={() => setShowAddContractorModal(false)}
+          onSuccess={handleContractorCreated}
+        />
       )}
-    </div>
 
-    <style jsx>{`
-      @media (orientation: landscape) and (max-width: 1024px) {
-        .fy-table-scroll-wrapper {
-          margin: 0 !important;
-          width: 100% !important;
+      {/* Add Expense Modal */}
+      {showAddExpenseModal && (
+        <AddExpenseModal
+          clientSheetId={clientSheetId}
+          clientName={clientName}
+          onClose={() => setShowAddExpenseModal(false)}
+          onSuccess={handleExpenseCreated}
+        />
+      )}
+
+      <style jsx>{`
+        @media (orientation: landscape) and (max-width: 1024px) {
+          .fy-table-scroll-wrapper {
+            margin: 0 !important;
+            width: 100% !important;
+          }
+          .fy-nav-arrow-left {
+            left: -32px !important;
+            font-size: 2.4rem !important;
+          }
+          .fy-nav-arrow-right {
+            right: -32px !important;
+            font-size: 2.4rem !important;
+          }
         }
-        .fy-nav-arrow-left {
-          left: -32px !important;
-          font-size: 2.4rem !important;
+        @media (max-width: 768px) and (orientation: portrait) {
+          .fy-nav-arrow-left {
+            left: 2px !important;
+            font-size: 2.2rem !important;
+          }
+          .fy-nav-arrow-right {
+            right: 2px !important;
+            font-size: 2.2rem !important;
+          }
+          .fy-table-scroll-wrapper {
+            margin: 0 24px !important;
+            width: calc(100% - 48px) !important;
+          }
         }
-        .fy-nav-arrow-right {
-          right: -32px !important;
-          font-size: 2.4rem !important;
-        }
-      }
-      @media (max-width: 768px) and (orientation: portrait) {
-        .fy-nav-arrow-left {
-          left: 2px !important;
-          font-size: 2.2rem !important;
-        }
-        .fy-nav-arrow-right {
-          right: 2px !important;
-          font-size: 2.2rem !important;
-        }
-        .fy-table-scroll-wrapper {
-          margin: 0 24px !important;
-          width: calc(100% - 48px) !important;
-        }
-      }
-    `}</style>
+      `}</style>
     </div>
   );
 }
-
-const selectStyle = {
-  border: "1px solid #cbd5e1",
-  borderRadius: "6px",
-  padding: "4px 8px",
-  fontSize: "12px",
-  fontWeight: 600,
-  color: "#0f172a",
-  background: "#ffffff",
-  cursor: "pointer",
-};
 
 const inlineInputStyle = {
   width: "100%",

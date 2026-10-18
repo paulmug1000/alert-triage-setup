@@ -78,6 +78,7 @@ export async function fetchNBToFindData(clientName, clientSheetId, bypassCache =
       ranges: [
         "NBtoFind!A1:AV25",
         "KeyInfo!B15",
+        "KeyInfo!C4:D5",
       ],
       valueRenderOption: "FORMATTED_VALUE",
     });
@@ -86,6 +87,16 @@ export async function fetchNBToFindData(clientName, clientSheetId, bypassCache =
   const valueRanges = response.data.valueRanges || [];
   const rows = valueRanges[0]?.values || [];
   const keyInfoB15 = String(valueRanges[1]?.values?.[0]?.[0] || "").trim();
+  const currencyRows = valueRanges[2]?.values || [];
+
+  const rawCurrencySymbol = String(currencyRows?.[0]?.[1] || (currencyRows?.[0]?.[0] && currencyRows?.[0]?.[0] !== "Tracker currency" ? currencyRows?.[0]?.[0] : "") || "£").trim() || "£";
+  let currencySymbol = rawCurrencySymbol;
+  if (currencySymbol.toUpperCase() === "EUR" || currencySymbol === "€") currencySymbol = "€";
+  else if (currencySymbol.toUpperCase() === "GBP" || currencySymbol === "£") currencySymbol = "£";
+  else if (currencySymbol.toUpperCase() === "USD" || currencySymbol === "$") currencySymbol = "$";
+
+  const rawThousandsSeparator = String(currencyRows?.[1]?.[1] || (currencyRows?.[1]?.[0] && currencyRows?.[1]?.[0] !== "Thous. separator" ? currencyRows?.[1]?.[0] : "") || "").trim();
+  const thousandsSeparator = rawThousandsSeparator || (currencySymbol === "€" ? "." : ",");
 
   // Resolve Revenue Focus / Mode ("Income" vs "Revenue") from KeyInfo!B15 or sheet labels
   const row3LabelRaw = String(rows[2]?.[0] || "").toLowerCase();
@@ -217,6 +228,8 @@ export async function fetchNBToFindData(clientName, clientSheetId, bypassCache =
     clientSheetId,
     revenueFocus,
     modeTerm,
+    currencySymbol,
+    thousandsSeparator,
     defaultFyIndex,
     fyConfigs,
     settings: {

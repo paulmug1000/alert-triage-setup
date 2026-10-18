@@ -1579,3 +1579,334 @@ export async function handleEomPushOutgoings(req, res, sheets) {
     return res.status(500).json({ success: false, error: err.message });
   }
 }
+
+// ============================================================================
+// DEFAULT EOM TASKS (Starting point for new clients during setup)
+// ============================================================================
+
+export async function ensureEomDefaultTasksTab_(sheets, spreadsheetId) {
+  try {
+    const meta = await sheets.spreadsheets.get({
+      spreadsheetId,
+      fields: "sheets.properties.title"
+    });
+    const exists = meta.data.sheets?.some(s => s.properties?.title === "EomDefaultTasks");
+    if (!exists) {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId,
+        requestBody: {
+          requests: [
+            {
+              addSheet: {
+                properties: {
+                  title: "EomDefaultTasks",
+                  gridProperties: { rowCount: 200, columnCount: 10, frozenRowCount: 1 }
+                }
+              }
+            }
+          ]
+        }
+      });
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: "EomDefaultTasks!A1:I1",
+        valueInputOption: "RAW",
+        requestBody: {
+          values: [["DefaultTaskId", "TemplateId", "TaskName", "DefaultNotes", "Active", "CreatedAt", "SortOrder", "LinkedFunction", "AlertCategories"]]
+        }
+      });
+    }
+  } catch (err) {
+    console.warn("[ensureEomDefaultTasksTab_] Note:", err.message);
+  }
+}
+
+export async function handleEomGetDefaultTasks(req, res, sheets) {
+  const { automationCommanderSheetId } = req.body;
+  if (!automationCommanderSheetId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+  try {
+    await ensureEomDefaultTasksTab_(sheets, automationCommanderSheetId);
+    const [tasksResp, templatesResp] = await Promise.all([
+      withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomDefaultTasks!A2:I1000" })),
+      withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:H1000" })),
+    ]);
+
+    const templateById = {};
+    (templatesResp.data.values || []).forEach(r => {
+      if (r[0]) {
+        templateById[r[0]] = {
+          templateId: r[0],
+          name: r[1] || "",
+          defaultNotes: r[2] || "",
+          linkedFunction: r[3] || "",
+          active: r[4] !== "FALSE" && r[4] !== false,
+          alertCategories: r[6] || "",
+        };
+      }
+    });
+
+    const rows = (tasksResp.data.values || []).filter(r => r[0]);
+    const defaultTasks = rows.map((r, i) => {
+      const template = r[1] ? templateById[r[1]] : null;
+      return {
+        defaultTaskId: r[0],
+        templateId: r[1] || "",
+        taskName: r[2] || (template ? template.name : ""),
+        name: r[1] ? (template ? template.name : "(template deleted)") : (r[2] || ""),
+        defaultNotes: r[3] !== undefined && r[3] !== "" ? r[3] : (template ? template.defaultNotes : ""),
+        active: r[4] !== "FALSE" && r[4] !== false,
+        createdAt: r[5] || "",
+        sortOrder: r[6] !== undefined && r[6] !== "" ? Number(r[6]) : 1000000 + i,
+        linkedFunction: r[7] || (template ? template.linkedFunction : ""),
+        alertCategories: r[8] || (template ? template.alertCategories : ""),
+      };
+    }).sort((a, b) => a.sortOrder - b.sortOrder);
+
+    return res.status(200).json({ success: true, defaultTasks });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function handleEomSaveDefaultTask(req, res, sheets) {
+  const { automationCommanderSheetId, defaultTaskId, templateId, taskName, defaultNotes, active, sortOrder, linkedFunction, alertCategories } = req.body;
+  if (!automationCommanderSheetId || (!templateId && !taskName)) {
+    return res.status(400).json({ success: false, error: "Missing required fields" });
+  }
+  try {
+    await ensureEomDefaultTasksTab_(sheets, automationCommanderSheetId);
+    const resp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomDefaultTasks!A2:I1000" }));
+    const rows = resp.data.values || [];
+
+    if (defaultTaskId) {
+      const rowIdx = rows.findIndex(r => r[0] === defaultTaskId);
+      if (rowIdx === -1) return res.status(404).json({ success: false, error: "Default task not found" });
+      const sheetRow = rowIdx + 2;
+      await withRetry(() => sheets.spreadsheets.values.update({
+        spreadsheetId: automationCommanderSheetId,
+        range: `EomDefaultTasks!B${sheetRow}:I${sheetRow}`,
+        valueInputOption: "RAW",
+        requestBody: {
+          values: [[
+            templateId || "",
+            taskName || "",
+            defaultNotes || "",
+            active !== false,
+            rows[rowIdx][5] || new Date().toISOString(),
+            sortOrder !== undefined ? sortOrder : (rows[rowIdx][6] || sheetRow * 10),
+            linkedFunction || "",
+            alertCategories || ""
+          ]]
+        }
+      }));
+      return res.status(200).json({ success: true, defaultTaskId });
+    }
+
+    const newId = `deftask_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const newSortOrder = sortOrder !== undefined ? sortOrder : (rows.length + 1) * 10;
+    await withRetry(() => sheets.spreadsheets.values.append({
+      spreadsheetId: automationCommanderSheetId,
+      range: "EomDefaultTasks!A:I",
+      valueInputOption: "RAW",
+      requestBody: {
+        values: [[
+          newId,
+          templateId || "",
+          taskName || "",
+          defaultNotes || "",
+          active !== false,
+          new Date().toISOString(),
+          newSortOrder,
+          linkedFunction || "",
+          alertCategories || ""
+        ]]
+      }
+    }));
+    return res.status(200).json({ success: true, defaultTaskId: newId });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function handleEomDeleteDefaultTask(req, res, sheets) {
+  const { automationCommanderSheetId, defaultTaskId } = req.body;
+  if (!automationCommanderSheetId || !defaultTaskId) {
+    return res.status(400).json({ success: false, error: "Missing required fields" });
+  }
+  try {
+    await ensureEomDefaultTasksTab_(sheets, automationCommanderSheetId);
+    const resp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomDefaultTasks!A2:I1000" }));
+    const rows = resp.data.values || [];
+    const rowIdx = rows.findIndex(r => r[0] === defaultTaskId);
+    if (rowIdx === -1) return res.status(404).json({ success: false, error: "Default task not found" });
+
+    const sheetRow = rowIdx + 2;
+    await withRetry(() => sheets.spreadsheets.values.clear({
+      spreadsheetId: automationCommanderSheetId,
+      range: `EomDefaultTasks!A${sheetRow}:I${sheetRow}`
+    }));
+
+    return res.status(200).json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function handleEomReorderDefaultTasks(req, res, sheets) {
+  const { automationCommanderSheetId, orderedDefaultTaskIds } = req.body;
+  if (!automationCommanderSheetId || !Array.isArray(orderedDefaultTaskIds) || orderedDefaultTaskIds.length === 0) {
+    return res.status(400).json({ success: false, error: "Missing orderedDefaultTaskIds" });
+  }
+  try {
+    await ensureEomDefaultTasksTab_(sheets, automationCommanderSheetId);
+    const resp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomDefaultTasks!A2:I1000" });
+    const rows = resp.data.values || [];
+    const rowIndexById = {};
+    rows.forEach((r, idx) => { if (r[0]) rowIndexById[r[0]] = idx; });
+
+    const writes = [];
+    orderedDefaultTaskIds.forEach((id, index) => {
+      if (id in rowIndexById) {
+        const sheetRow = rowIndexById[id] + 2;
+        writes.push({
+          range: `EomDefaultTasks!G${sheetRow}`,
+          values: [[(index + 1) * 10]]
+        });
+      }
+    });
+
+    if (writes.length > 0) {
+      await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: automationCommanderSheetId,
+        requestBody: { valueInputOption: "RAW", data: writes }
+      });
+    }
+    return res.status(200).json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function handleEomSeedDefaultTasksFromTemplates(req, res, sheets) {
+  const { automationCommanderSheetId } = req.body;
+  if (!automationCommanderSheetId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+  try {
+    await ensureEomDefaultTasksTab_(sheets, automationCommanderSheetId);
+    const [templatesResp, existingResp] = await Promise.all([
+      withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:H1000" })),
+      withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomDefaultTasks!A2:I1000" })),
+    ]);
+
+    const existingRows = existingResp.data.values || [];
+    const existingTemplateIds = new Set(existingRows.filter(r => r[0] && r[1]).map(r => r[1]));
+
+    const templates = (templatesResp.data.values || [])
+      .filter(r => r[0] && (r[4] !== "FALSE" && r[4] !== false))
+      .sort((a, b) => (Number(a[7]) || 0) - (Number(b[7]) || 0));
+
+    const newRows = [];
+    let sortCounter = (existingRows.length + 1) * 10;
+    for (const t of templates) {
+      if (!existingTemplateIds.has(t[0])) {
+        const id = `deftask_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        newRows.push([
+          id,
+          t[0], // templateId
+          t[1] || "", // taskName
+          t[2] || "", // defaultNotes
+          true,
+          new Date().toISOString(),
+          sortCounter,
+          t[3] || "", // linkedFunction
+          t[6] || ""  // alertCategories
+        ]);
+        sortCounter += 10;
+      }
+    }
+
+    if (newRows.length > 0) {
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: automationCommanderSheetId,
+        range: "EomDefaultTasks!A:I",
+        valueInputOption: "RAW",
+        requestBody: { values: newRows }
+      });
+    }
+
+    return res.status(200).json({ success: true, seededCount: newRows.length });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function applyDefaultEomTasksToClient_(sheets, automationCommanderSheetId, clientName) {
+  if (!automationCommanderSheetId || !clientName) return { success: false, appliedCount: 0 };
+  try {
+    await ensureEomDefaultTasksTab_(sheets, automationCommanderSheetId);
+    const [defaultsResp, clientTasksResp] = await Promise.all([
+      withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomDefaultTasks!A2:I1000" })),
+      withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:H5000" })),
+    ]);
+
+    const activeDefaults = (defaultsResp.data.values || [])
+      .filter(r => r[0] && (r[4] !== "FALSE" && r[4] !== false))
+      .sort((a, b) => (Number(a[6]) || 0) - (Number(b[6]) || 0));
+
+    if (activeDefaults.length === 0) return { success: true, appliedCount: 0, reason: "No active default tasks configured." };
+
+    const clientExisting = (clientTasksResp.data.values || []).filter(r => r[0] && r[1] === clientName);
+    const existingTemplateIds = new Set(clientExisting.filter(r => r[2]).map(r => r[2]));
+    const existingCustomNames = new Set(clientExisting.filter(r => !r[2] && r[3]).map(r => r[3].trim().toLowerCase()));
+
+    const rowsToAppend = [];
+    let startSort = (clientExisting.length + 1) * 10;
+    for (const dt of activeDefaults) {
+      const templateId = dt[1] || "";
+      const taskName = dt[2] || "";
+      const defaultNotes = dt[3] || "";
+      const sortOrder = dt[6] !== undefined && dt[6] !== "" ? Number(dt[6]) : startSort;
+
+      // Skip if already assigned to this client
+      if (templateId && existingTemplateIds.has(templateId)) continue;
+      if (!templateId && taskName && existingCustomNames.has(taskName.trim().toLowerCase())) continue;
+
+      const newTaskId = `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      rowsToAppend.push([
+        newTaskId,
+        clientName,
+        templateId,
+        taskName,
+        defaultNotes,
+        true,
+        new Date().toISOString(),
+        sortOrder
+      ]);
+      startSort += 10;
+    }
+
+    if (rowsToAppend.length > 0) {
+      await withRetry(() => sheets.spreadsheets.values.append({
+        spreadsheetId: automationCommanderSheetId,
+        range: "EomClientTasks!A:H",
+        valueInputOption: "RAW",
+        requestBody: { values: rowsToAppend }
+      }));
+    }
+
+    return { success: true, appliedCount: rowsToAppend.length };
+  } catch (err) {
+    console.error(`[applyDefaultEomTasksToClient_] Error for ${clientName}:`, err);
+    return { success: false, error: err.message, appliedCount: 0 };
+  }
+}
+
+export async function handleEomApplyDefaultTasks(req, res, sheets) {
+  const { automationCommanderSheetId, clientName } = req.body;
+  if (!automationCommanderSheetId || !clientName) return res.status(400).json({ success: false, error: "Missing required fields" });
+  try {
+    const result = await applyDefaultEomTasksToClient_(sheets, automationCommanderSheetId, clientName);
+    return res.status(200).json(result);
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}

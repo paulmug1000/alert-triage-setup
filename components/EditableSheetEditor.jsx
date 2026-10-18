@@ -1,26 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import Spinner from "./Spinner";
 
-// Columns checked to determine if a row is blank:
-// Column A (0), G:R (6..17), V:AG (21..32), and AK:AV (36..47)
-const BLANK_CHECK_COLS = [
-  0,
-  ...Array.from({ length: 12 }, (_, i) => 6 + i),  // G:R (6..17)
-  ...Array.from({ length: 12 }, (_, i) => 21 + i), // V:AG (21..32)
-  ...Array.from({ length: 12 }, (_, i) => 36 + i), // AK:AV (36..47)
-];
-
-function isRowBlank(row) {
-  if (!row || row.length === 0) return true;
-  for (const colIdx of BLANK_CHECK_COLS) {
-    const val = row[colIdx]?.v;
-    if (val !== undefined && val !== null && String(val).trim() !== "") {
-      return false;
-    }
-  }
-  return true;
-}
-
 function colIndexToLetter(colNum) {
   let letter = "";
   let n = colNum;
@@ -56,25 +36,6 @@ function isBudgetCellEditable(sheetRow, colIdx) {
   return false;
 }
 
-function isCellEditable(sheetRow, colIdx, screenTab) {
-  const isAllowedCol =
-    (colIdx >= 0 && colIdx <= 5) ||   // A:F
-    (colIdx >= 6 && colIdx <= 17) ||  // G:R
-    (colIdx >= 21 && colIdx <= 32) || // V:AG
-    (colIdx >= 36 && colIdx <= 47);   // AK:AV
-
-  if (screenTab === "contractors") {
-    return sheetRow >= 13 && sheetRow <= 110 && isAllowedCol;
-  }
-  if (screenTab === "outgoings") {
-    return sheetRow >= 126 && sheetRow <= 225 && isAllowedCol;
-  }
-  if (screenTab === "budget") {
-    return isBudgetCellEditable(sheetRow, colIdx);
-  }
-  return false;
-}
-
 function formatCurrency(val) {
   if (val === "" || val === null || val === undefined) return "";
   const str = String(val).trim();
@@ -96,21 +57,17 @@ export default function EditableSheetEditor({
   onClose,
   isAdmin = true,
 }) {
-  const [activeTab, setActiveTab] = useState(initialTab); // 'budget' | 'contractors' | 'outgoings'
+  const [activeTab] = useState("budget");
   const [cache, setCache] = useState({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-
-  const [contractorsFyIdx, setContractorsFyIdx] = useState(0);
-  const [outgoingsFyIdx, setOutgoingsFyIdx] = useState(0);
   const [budgetFyIdx, setBudgetFyIdx] = useState(0);
-  const [showBlankRows, setShowBlankRows] = useState(false);
 
   const cacheRef = useRef({});
   const clientKey = client?.clientSheetId || "";
   const masterKey = client?.masterSheetId || "";
 
-  const fetchData = useCallback(async (tab, forceRefresh = false) => {
+  const fetchData = useCallback(async (tab = "budget", forceRefresh = false) => {
     if (!clientKey) return;
 
     if (!forceRefresh && cacheRef.current[clientKey] && cacheRef.current[clientKey][tab]) {
@@ -146,13 +103,7 @@ export default function EditableSheetEditor({
           return next;
         });
 
-        if (tab === "contractors" && data.defaultFyIndex !== undefined) {
-          setContractorsFyIdx(data.defaultFyIndex);
-        }
-        if (tab === "outgoings" && data.defaultFyIndex !== undefined) {
-          setOutgoingsFyIdx(data.defaultFyIndex);
-        }
-        if (tab === "budget" && data.defaultFyIndex !== undefined) {
+        if (data.defaultFyIndex !== undefined) {
           setBudgetFyIdx(data.defaultFyIndex);
         }
       } else {
@@ -167,8 +118,8 @@ export default function EditableSheetEditor({
   }, [clientKey, masterKey]);
 
   useEffect(() => {
-    fetchData(activeTab);
-  }, [activeTab, fetchData]);
+    fetchData("budget");
+  }, [fetchData]);
 
   const handleUpdateCell = async (tabName, sheetRow, colIdx, newValue) => {
     if (!client || !client.clientSheetId) return;
@@ -178,13 +129,9 @@ export default function EditableSheetEditor({
     let displayVal = newValue;
     if (colIdx >= 6 && newValue !== "") {
       displayVal = formatCurrency(newValue);
-    } else if (tabName === "budget" && sheetRow >= 59 && sheetRow <= 111 && colIdx === 1 && newValue !== "") {
+    } else if (sheetRow >= 59 && sheetRow <= 111 && colIdx === 1 && newValue !== "") {
       displayVal = formatCurrency(newValue);
-    } else if (
-      ((tabName === "budget" && (colIdx === 4 || (sheetRow === 142 && colIdx === 1))) ||
-        ((tabName === "contractors" || tabName === "outgoings") && (colIdx === 4 || colIdx === 5))) &&
-      newValue !== ""
-    ) {
+    } else if ((colIdx === 4 || (sheetRow === 142 && colIdx === 1)) && newValue !== "") {
       const clean = String(newValue).replace(/%/g, "").trim();
       const num = parseFloat(clean);
       if (!isNaN(num)) {
@@ -197,40 +144,15 @@ export default function EditableSheetEditor({
       if (!clientData || !clientData[tabName]) return prev;
       const tabData = clientData[tabName];
 
-      const updateRowList = (rows, startRow) => {
-        return (rows || []).map((row, idx) => {
-          if (startRow + idx !== sheetRow) return row;
-          const newRow = [...(row || [])];
-          newRow[colIdx] = { ...(newRow[colIdx] || {}), v: displayVal };
-          return newRow;
-        });
-      };
-
       const updatedTabData = { ...tabData };
-      if (tabName === "contractors") {
-        if (updatedTabData.contractorRows) {
-          updatedTabData.contractorRows = updateRowList(updatedTabData.contractorRows, 13);
-        }
-        if (updatedTabData.mainRows) {
-          updatedTabData.mainRows = updateRowList(updatedTabData.mainRows, 13);
-        }
-      } else if (tabName === "outgoings") {
-        if (updatedTabData.outgoingRows) {
-          updatedTabData.outgoingRows = updateRowList(updatedTabData.outgoingRows, 126);
-        }
-        if (updatedTabData.mainRows) {
-          updatedTabData.mainRows = updateRowList(updatedTabData.mainRows, 126);
-        }
-      } else if (tabName === "budget") {
-        if (updatedTabData.matrix) {
-          const newMatrix = [...updatedTabData.matrix];
-          const rIdx = sheetRow - 1;
-          if (newMatrix[rIdx]) {
-            const newRow = [...newMatrix[rIdx]];
-            newRow[colIdx] = { ...(newRow[colIdx] || {}), v: displayVal };
-            newMatrix[rIdx] = newRow;
-            updatedTabData.matrix = newMatrix;
-          }
+      if (updatedTabData.matrix) {
+        const newMatrix = [...updatedTabData.matrix];
+        const rIdx = sheetRow - 1;
+        if (newMatrix[rIdx]) {
+          const newRow = [...newMatrix[rIdx]];
+          newRow[colIdx] = { ...(newRow[colIdx] || {}), v: displayVal };
+          newMatrix[rIdx] = newRow;
+          updatedTabData.matrix = newMatrix;
         }
       }
 
@@ -248,39 +170,25 @@ export default function EditableSheetEditor({
     try {
       const currentTab = cacheRef.current[clientKey]?.[tabName] || cache[clientKey]?.[tabName];
       let rowDesc = "";
-      if (tabName === "contractors") {
-        const r = currentTab?.contractorRows?.[sheetRow - 13] || currentTab?.mainRows?.[sheetRow - 13];
-        rowDesc = r?.[0]?.v || "";
-      } else if (tabName === "outgoings") {
-        const r = currentTab?.outgoingRows?.[sheetRow - 126] || currentTab?.mainRows?.[sheetRow - 126];
-        rowDesc = r?.[0]?.v || "";
-      } else if (tabName === "budget") {
-        const r = currentTab?.matrix?.[sheetRow - 1];
-        rowDesc = r?.[0]?.v || `Row ${sheetRow}`;
+      if (currentTab?.matrix) {
+        rowDesc = currentTab.matrix[sheetRow - 1]?.[0]?.v || "";
       }
-      const headerLabel =
-        tabName === "budget"
-          ? currentTab?.matrix?.[0]?.[colIdx]?.v || ""
-          : currentTab?.headerRow?.[colIdx]?.v || "";
 
       const res = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "update_view_cell",
-          clientSheetId: client.clientSheetId,
-          masterSheetId: client.masterSheetId,
-          clientName: client.clientName,
-          tab: tabName === "budget" ? "Budget" : "Outgoings",
-          screenTab: tabName,
+          clientSheetId: clientKey,
+          masterSheetId: masterKey,
+          tab: "budget",
+          screenTab: "budget",
           sheetRow,
           colLetter,
           colIdx,
-          value: displayVal,
-          contractorName: tabName === "contractors" ? (colIdx === 0 ? displayVal : rowDesc) : undefined,
-          rowDescription: tabName === "outgoings" || tabName === "budget" ? (colIdx === 0 ? displayVal : rowDesc) : undefined,
-          headerLabel,
-          monthLabel: headerLabel,
+          value: newValue,
+          rowDescription: rowDesc,
+          clientName: client.clientName,
         }),
       });
 
@@ -289,18 +197,29 @@ export default function EditableSheetEditor({
         throw new Error(data?.error || `Failed to update cell (status ${res.status})`);
       }
 
-      if (tabName === "budget" && data.updatedMatrix) {
+      if (data.formattedValue !== undefined && data.formattedValue !== displayVal) {
         setCache((prev) => {
           const clientData = prev[clientKey];
-          if (!clientData || !clientData.budget) return prev;
+          if (!clientData || !clientData[tabName]) return prev;
+          const tabData = clientData[tabName];
+          const updatedTabData = { ...tabData };
+
+          if (updatedTabData.matrix) {
+            const newMatrix = [...updatedTabData.matrix];
+            const rIdx = sheetRow - 1;
+            if (newMatrix[rIdx]) {
+              const newRow = [...newMatrix[rIdx]];
+              newRow[colIdx] = { ...(newRow[colIdx] || {}), v: data.formattedValue };
+              newMatrix[rIdx] = newRow;
+              updatedTabData.matrix = newMatrix;
+            }
+          }
+
           const next = {
             ...prev,
             [clientKey]: {
               ...clientData,
-              budget: {
-                ...clientData.budget,
-                matrix: data.updatedMatrix,
-              },
+              [tabName]: updatedTabData,
             },
           };
           cacheRef.current = next;
@@ -308,12 +227,13 @@ export default function EditableSheetEditor({
         });
       }
     } catch (err) {
-      console.error("Cell update error:", err);
-      fetchData(tabName, true);
+      console.error("handleUpdateCell error:", err);
+      alert(`Failed to save cell: ${err.message}`);
+      fetchData("budget", true);
     }
   };
 
-  const currentTabData = client?.clientSheetId ? cache[client.clientSheetId]?.[activeTab] : null;
+  const currentTabData = cache[clientKey]?.["budget"];
 
   return (
     <div
@@ -328,89 +248,45 @@ export default function EditableSheetEditor({
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        padding: "16px",
-        boxSizing: "border-box",
+        padding: "20px",
+        backdropFilter: "blur(2px)",
       }}
     >
       <div
         style={{
           background: "#ffffff",
-          borderRadius: "14px",
-          width: "98vw",
-          maxWidth: "1600px",
-          height: "94vh",
+          borderRadius: "12px",
+          width: "95vw",
+          maxWidth: "1400px",
+          height: "90vh",
           display: "flex",
           flexDirection: "column",
-          boxShadow: "0 25px 50px -12px rgba(0,0,0,0.35)",
+          boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.25)",
           overflow: "hidden",
         }}
       >
-        {/* Modal Top Header */}
+        {/* Top Header Bar */}
         <div
           style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
             padding: "14px 20px",
             background: "#0f172a",
             color: "#ffffff",
-            flexWrap: "wrap",
-            gap: "12px",
-            borderBottom: "1px solid #334155",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            borderBottom: "1px solid #1e293b",
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
-            <span style={{ fontSize: "16px", fontWeight: "700", letterSpacing: "0.2px" }}>
-              Data editor
+          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+            <span style={{ fontSize: "16px", fontWeight: "700" }}>
+              Budget Editor — {client?.clientName || "Client"}
             </span>
-            <span
-              style={{
-                fontSize: "12px",
-                fontWeight: "600",
-                padding: "3px 10px",
-                borderRadius: "12px",
-                background: "rgba(255, 255, 255, 0.15)",
-                color: "#e2e8f0",
-              }}
-            >
-              {client.clientName}
-            </span>
-          </div>
-
-          {/* Tab Switcher Buttons */}
-          <div style={{ display: "flex", alignItems: "center", background: "#1e293b", borderRadius: "8px", padding: "3px" }}>
-            {[
-              { id: "budget", label: "Budget" },
-              { id: "contractors", label: "Contractors" },
-              { id: "outgoings", label: "Outgoings" },
-            ].map((t) => {
-              const isSelected = activeTab === t.id;
-              return (
-                <button
-                  key={t.id}
-                  onClick={() => setActiveTab(t.id)}
-                  style={{
-                    background: isSelected ? "#0284c7" : "transparent",
-                    color: isSelected ? "#ffffff" : "#94a3b8",
-                    border: "none",
-                    borderRadius: "6px",
-                    padding: "6px 14px",
-                    fontSize: "13px",
-                    fontWeight: isSelected ? "700" : "500",
-                    cursor: "pointer",
-                    transition: "all 0.15s ease",
-                  }}
-                >
-                  {t.label}
-                </button>
-              );
-            })}
           </div>
 
           {/* Right Action Controls */}
           <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
             <button
-              onClick={() => fetchData(activeTab, true)}
+              onClick={() => fetchData("budget", true)}
               disabled={loading}
               style={{
                 padding: "6px 12px",
@@ -432,7 +308,7 @@ export default function EditableSheetEditor({
 
             {isAdmin && (
               <a
-                href={`https://docs.google.com/spreadsheets/d/${activeTab === "budget" ? client.masterSheetId : client.clientSheetId}/edit`}
+                href={`https://docs.google.com/spreadsheets/d/${client.masterSheetId || client.clientSheetId}/edit`}
                 target="_blank"
                 rel="noreferrer"
                 style={{
@@ -472,28 +348,6 @@ export default function EditableSheetEditor({
           </div>
         </div>
 
-        {/* Secondary Bar for Tab Controls (e.g. Blank Rows filter) */}
-        {(activeTab === "contractors" || activeTab === "outgoings") && (
-          <div
-            style={{
-              padding: "8px 20px",
-              background: "#f8fafc",
-              borderBottom: "1px solid #e2e8f0",
-              display: "flex",
-              justifyContent: "flex-end",
-            }}
-          >
-            <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#475569", cursor: "pointer", fontWeight: "600" }}>
-              <input
-                type="checkbox"
-                checked={showBlankRows}
-                onChange={(e) => setShowBlankRows(e.target.checked)}
-              />
-              Show blank rows
-            </label>
-          </div>
-        )}
-
         {/* Table Content Area */}
         <div style={{ flex: 1, overflowY: "auto", overflowX: "auto", padding: "16px", background: "#ffffff" }}>
           {loading && !currentTabData ? (
@@ -508,7 +362,7 @@ export default function EditableSheetEditor({
               <strong>Error:</strong> {error}
               <div style={{ marginTop: "10px" }}>
                 <button
-                  onClick={() => fetchData(activeTab, true)}
+                  onClick={() => fetchData("budget", true)}
                   style={{ padding: "6px 14px", background: "#ef4444", color: "#fff", border: "none", borderRadius: "4px", cursor: "pointer", fontSize: "12px" }}
                 >
                   Retry
@@ -516,34 +370,12 @@ export default function EditableSheetEditor({
               </div>
             </div>
           ) : (
-            <>
-              {activeTab === "budget" && (
-                <BudgetView
-                  data={currentTabData}
-                  fyIdx={budgetFyIdx}
-                  onFyChange={setBudgetFyIdx}
-                  onUpdateCell={(sheetRow, colIdx, val) => handleUpdateCell("budget", sheetRow, colIdx, val)}
-                />
-              )}
-              {activeTab === "contractors" && (
-                <ContractorsView
-                  data={currentTabData}
-                  fyIdx={contractorsFyIdx}
-                  onFyChange={setContractorsFyIdx}
-                  showBlankRows={showBlankRows}
-                  onUpdateCell={(sheetRow, colIdx, val) => handleUpdateCell("contractors", sheetRow, colIdx, val)}
-                />
-              )}
-              {activeTab === "outgoings" && (
-                <OutgoingsTableView
-                  data={currentTabData}
-                  fyIdx={outgoingsFyIdx}
-                  onFyChange={setOutgoingsFyIdx}
-                  showBlankRows={showBlankRows}
-                  onUpdateCell={(sheetRow, colIdx, val) => handleUpdateCell("outgoings", sheetRow, colIdx, val)}
-                />
-              )}
-            </>
+            <BudgetTableView
+              data={currentTabData}
+              fyIdx={budgetFyIdx}
+              onFyChange={setBudgetFyIdx}
+              onUpdateCell={(sheetRow, colIdx, val) => handleUpdateCell("budget", sheetRow, colIdx, val)}
+            />
           )}
         </div>
       </div>
@@ -552,393 +384,9 @@ export default function EditableSheetEditor({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CONTRACTORS VIEW COMPONENT
+// BUDGET TABLE COMPONENT
 // ─────────────────────────────────────────────────────────────────────────────
-function ContractorsView({ data, fyIdx, onFyChange, showBlankRows, onUpdateCell }) {
-  const [editingCell, setEditingCell] = useState(null);
-  const [savingKey, setSavingKey] = useState(null);
-  const committingRef = useRef(false);
-
-  if (!data || !data.fyConfigs) return null;
-
-  const { headerRow, contractorRows, totalRows, mainRows, fyConfigs } = data;
-  const currentFy = fyConfigs[fyIdx] || fyConfigs[0];
-  const maxFyIdx = fyConfigs.length - 1;
-
-  const fyCols = currentFy.monthCols;
-  const totalCol = currentFy.totalCol;
-  const allActiveFyCols = [...fyCols, totalCol];
-  const DARK_RED = "#7f1d1d";
-
-  const rawContractors = (contractorRows || (mainRows ? mainRows.slice(0, 98) : [])).map((row, idx) => ({
-    row,
-    sheetRow: 13 + idx,
-  }));
-
-  const visibleContractors = showBlankRows
-    ? rawContractors
-    : rawContractors.filter((item) => !isRowBlank(item.row));
-
-  const contractorTotals = totalRows || (mainRows ? mainRows.slice(98, 102) : []);
-
-  const metaCols = [
-    { idx: 0, label: headerRow?.[0]?.v || "Contractor Name", width: "170px", minWidth: "150px", isName: true },
-    { idx: 1, label: headerRow?.[1]?.v || "VAT?", width: "24px", minWidth: "22px", maxWidth: "28px" },
-    { idx: 2, label: headerRow?.[2]?.v || "Inv?", width: "24px", minWidth: "22px", maxWidth: "28px" },
-    { idx: 3, label: headerRow?.[3]?.v || "Pay?", width: "24px", minWidth: "22px", maxWidth: "28px" },
-    { idx: 4, label: headerRow?.[4]?.v || "Del", width: "24px", minWidth: "22px", maxWidth: "28px" },
-    { idx: 5, label: headerRow?.[5]?.v || "Likl. %", width: "30px", minWidth: "26px", maxWidth: "34px" },
-  ];
-
-  const getEditableOpts = (sheetRow, colIdx, cellValue) => {
-    const isEditable = isCellEditable(sheetRow, colIdx, "contractors");
-    if (!isEditable) return null;
-
-    const isEditing = editingCell?.sheetRow === sheetRow && editingCell?.colIdx === colIdx;
-    const isSaving = savingKey === `${sheetRow}_${colIdx}`;
-
-    let inputType = "text";
-    let options = null;
-    let initialEditVal = cellValue ?? "";
-
-    if (colIdx === 1) {
-      inputType = "select";
-      options = ["Yes", "No"];
-    } else if (colIdx === 2 || colIdx === 3) {
-      inputType = "select";
-      options = ["Curr", "Next"];
-    } else if (colIdx === 4 || colIdx === 5) {
-      inputType = "text";
-      initialEditVal = String(cellValue ?? "").replace(/%/g, "").trim();
-    } else if (colIdx >= 6) {
-      inputType = "text";
-      initialEditVal = String(cellValue ?? "").replace(/[£,]/g, "").trim();
-    }
-
-    return {
-      isEditable,
-      isEditing,
-      isSaving,
-      inputType,
-      options,
-      editValue: isEditing ? editingCell.editValue : initialEditVal,
-      onChangeEditValue: (val) => setEditingCell((prev) => (prev ? { ...prev, editValue: val } : null)),
-      onCommitEdit: async (overrideVal) => {
-        if (committingRef.current) return;
-        committingRef.current = true;
-        const cur = editingCell;
-        setEditingCell(null);
-        setTimeout(() => { committingRef.current = false; }, 100);
-        if (!cur && overrideVal === undefined) return;
-
-        let rawVal = overrideVal !== undefined ? overrideVal : (cur ? cur.editValue : "");
-        setSavingKey(`${sheetRow}_${colIdx}`);
-        try {
-          await onUpdateCell(sheetRow, colIdx, rawVal);
-        } finally {
-          setSavingKey(null);
-        }
-      },
-      onStartEdit: () => {
-        setEditingCell({ sheetRow, colIdx, editValue: initialEditVal });
-      },
-      onCancelEdit: () => setEditingCell(null),
-    };
-  };
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-      {/* FY Switcher */}
-      <div style={{ display: "flex", alignItems: "center", gap: "10px", padding: "8px 12px", background: "#f8fafc", borderRadius: "8px", border: "1px solid #e2e8f0" }}>
-        <span style={{ fontSize: "13px", fontWeight: "700", color: "#334155" }}>Financial Year:</span>
-        <button
-          onClick={() => onFyChange(Math.max(0, fyIdx - 1))}
-          disabled={fyIdx === 0}
-          style={{ padding: "4px 10px", borderRadius: "4px", border: "1px solid #cbd5e1", background: fyIdx === 0 ? "#f1f5f9" : "#fff", cursor: fyIdx === 0 ? "not-allowed" : "pointer" }}
-        >
-          ◀
-        </button>
-        <span style={{ fontSize: "13px", fontWeight: "700", color: DARK_RED, minWidth: "60px", textAlign: "center" }}>
-          {currentFy.label}
-        </span>
-        <button
-          onClick={() => onFyChange(Math.min(maxFyIdx, fyIdx + 1))}
-          disabled={fyIdx === maxFyIdx}
-          style={{ padding: "4px 10px", borderRadius: "4px", border: "1px solid #cbd5e1", background: fyIdx === maxFyIdx ? "#f1f5f9" : "#fff", cursor: fyIdx === maxFyIdx ? "not-allowed" : "pointer" }}
-        >
-          ▶
-        </button>
-      </div>
-
-      {/* Table */}
-      <div style={{ overflowX: "auto", border: "1px solid #e2e8f0", borderRadius: "8px" }}>
-        <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "12px", fontFamily: "monospace" }}>
-          <thead>
-            <tr style={{ background: DARK_RED, color: "#ffffff" }}>
-              <th style={{ padding: "8px 6px", border: "1px solid #991b1b", width: "35px" }}>#</th>
-              {metaCols.map((c) => (
-                <th key={c.idx} style={{ padding: "8px 6px", border: "1px solid #991b1b", minWidth: c.minWidth, width: c.width, textAlign: c.isName ? "left" : "center", fontSize: c.isName ? "12px" : "11px" }}>
-                  {c.label}
-                </th>
-              ))}
-              {allActiveFyCols.map((colIdx) => (
-                <th key={colIdx} style={{ padding: "8px 8px", border: "1px solid #991b1b", minWidth: "85px", textAlign: "right" }}>
-                  {headerRow?.[colIdx]?.v || `Col ${colIdx}`}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {visibleContractors.map(({ row, sheetRow }) => (
-              <tr key={sheetRow} style={{ borderBottom: "1px solid #f1f5f9" }}>
-                <td style={{ padding: "6px", textAlign: "center", color: "#94a3b8", background: "#f8fafc", borderRight: "1px solid #e2e8f0" }}>{sheetRow}</td>
-                {metaCols.map((c) => {
-                  const cell = row?.[c.idx];
-                  const opts = getEditableOpts(sheetRow, c.idx, cell?.v);
-                  return (
-                    <EditableCell
-                      key={c.idx}
-                      cell={cell}
-                      editableOpts={opts}
-                      align={c.isName ? "left" : "center"}
-                      fontSize={c.isName ? "12px" : "11px"}
-                    />
-                  );
-                })}
-                {allActiveFyCols.map((colIdx) => {
-                  const cell = row?.[colIdx];
-                  const opts = getEditableOpts(sheetRow, colIdx, cell?.v);
-                  return (
-                    <EditableCell
-                      key={colIdx}
-                      cell={cell}
-                      editableOpts={opts}
-                      align="right"
-                      isAmount={true}
-                    />
-                  );
-                })}
-              </tr>
-            ))}
-            {/* Totals */}
-            {contractorTotals.map((row, idx) => (
-              <tr key={`tot-${idx}`} style={{ background: "#fef2f2", fontWeight: "700" }}>
-                <td style={{ padding: "6px", textAlign: "center", color: "#94a3b8" }}>-</td>
-                {metaCols.map((c) => (
-                  <td key={c.idx} style={{ padding: "6px 8px", border: "1px solid #fee2e2", textAlign: c.isName ? "left" : "center" }}>
-                    {row?.[c.idx]?.v || ""}
-                  </td>
-                ))}
-                {allActiveFyCols.map((colIdx) => (
-                  <td key={colIdx} style={{ padding: "6px 8px", border: "1px solid #fee2e2", textAlign: "right", color: DARK_RED }}>
-                    {row?.[colIdx]?.v || ""}
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// OUTGOINGS VIEW COMPONENT
-// ─────────────────────────────────────────────────────────────────────────────
-function OutgoingsTableView({ data, fyIdx, onFyChange, showBlankRows, onUpdateCell }) {
-  const [editingCell, setEditingCell] = useState(null);
-  const [savingKey, setSavingKey] = useState(null);
-  const committingRef = useRef(false);
-
-  if (!data || !data.fyConfigs) return null;
-
-  const { headerRow, outgoingRows, totalRows, mainRows, fyConfigs } = data;
-  const currentFy = fyConfigs[fyIdx] || fyConfigs[0];
-  const maxFyIdx = fyConfigs.length - 1;
-
-  const fyCols = currentFy.monthCols;
-  const totalCol = currentFy.totalCol;
-  const allActiveFyCols = [...fyCols, totalCol];
-  const DARK_RED = "#7f1d1d";
-
-  const rawOutgoings = (outgoingRows || (mainRows ? mainRows.slice(0, 100) : [])).map((row, idx) => ({
-    row,
-    sheetRow: 126 + idx,
-  }));
-
-  const visibleOutgoings = showBlankRows
-    ? rawOutgoings
-    : rawOutgoings.filter((item) => !isRowBlank(item.row));
-
-  const outgoingTotals = totalRows || (mainRows ? mainRows.slice(100, 104) : []);
-
-  const metaCols = [
-    { idx: 0, label: headerRow?.[0]?.v || "Expense Name", width: "170px", minWidth: "150px", isName: true },
-    { idx: 1, label: headerRow?.[1]?.v || "VAT?", width: "24px", minWidth: "22px", maxWidth: "28px" },
-    { idx: 2, label: headerRow?.[2]?.v || "Inv?", width: "24px", minWidth: "22px", maxWidth: "28px" },
-    { idx: 3, label: headerRow?.[3]?.v || "Pay?", width: "24px", minWidth: "22px", maxWidth: "28px" },
-    { idx: 4, label: headerRow?.[4]?.v || "Del", width: "24px", minWidth: "22px", maxWidth: "28px" },
-    { idx: 5, label: headerRow?.[5]?.v || "Likl. %", width: "30px", minWidth: "26px", maxWidth: "34px" },
-  ];
-
-  const getEditableOpts = (sheetRow, colIdx, cellValue) => {
-    const isEditable = isCellEditable(sheetRow, colIdx, "outgoings");
-    if (!isEditable) return null;
-
-    const isEditing = editingCell?.sheetRow === sheetRow && editingCell?.colIdx === colIdx;
-    const isSaving = savingKey === `${sheetRow}_${colIdx}`;
-
-    let inputType = "text";
-    let options = null;
-    let initialEditVal = cellValue ?? "";
-
-    if (colIdx === 1) {
-      inputType = "select";
-      options = ["Yes", "No"];
-    } else if (colIdx === 2 || colIdx === 3) {
-      inputType = "select";
-      options = ["Curr", "Next"];
-    } else if (colIdx === 4 || colIdx === 5) {
-      inputType = "text";
-      initialEditVal = String(cellValue ?? "").replace(/%/g, "").trim();
-    } else if (colIdx >= 6) {
-      inputType = "text";
-      initialEditVal = String(cellValue ?? "").replace(/[£,]/g, "").trim();
-    }
-
-    return {
-      isEditable,
-      isEditing,
-      isSaving,
-      inputType,
-      options,
-      editValue: isEditing ? editingCell.editValue : initialEditVal,
-      onChangeEditValue: (val) => setEditingCell((prev) => (prev ? { ...prev, editValue: val } : null)),
-      onCommitEdit: async (overrideVal) => {
-        if (committingRef.current) return;
-        committingRef.current = true;
-        const cur = editingCell;
-        setEditingCell(null);
-        setTimeout(() => { committingRef.current = false; }, 100);
-        if (!cur && overrideVal === undefined) return;
-
-        let rawVal = overrideVal !== undefined ? overrideVal : (cur ? cur.editValue : "");
-        setSavingKey(`${sheetRow}_${colIdx}`);
-        try {
-          await onUpdateCell(sheetRow, colIdx, rawVal);
-        } finally {
-          setSavingKey(null);
-        }
-      },
-      onStartEdit: () => {
-        setEditingCell({ sheetRow, colIdx, editValue: initialEditVal });
-      },
-      onCancelEdit: () => setEditingCell(null),
-    };
-  };
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-      {/* FY Switcher */}
-      <div style={{ display: "flex", alignItems: "center", gap: "10px", padding: "8px 12px", background: "#f8fafc", borderRadius: "8px", border: "1px solid #e2e8f0" }}>
-        <span style={{ fontSize: "13px", fontWeight: "700", color: "#334155" }}>Financial Year:</span>
-        <button
-          onClick={() => onFyChange(Math.max(0, fyIdx - 1))}
-          disabled={fyIdx === 0}
-          style={{ padding: "4px 10px", borderRadius: "4px", border: "1px solid #cbd5e1", background: fyIdx === 0 ? "#f1f5f9" : "#fff", cursor: fyIdx === 0 ? "not-allowed" : "pointer" }}
-        >
-          ◀
-        </button>
-        <span style={{ fontSize: "13px", fontWeight: "700", color: DARK_RED, minWidth: "60px", textAlign: "center" }}>
-          {currentFy.label}
-        </span>
-        <button
-          onClick={() => onFyChange(Math.min(maxFyIdx, fyIdx + 1))}
-          disabled={fyIdx === maxFyIdx}
-          style={{ padding: "4px 10px", borderRadius: "4px", border: "1px solid #cbd5e1", background: fyIdx === maxFyIdx ? "#f1f5f9" : "#fff", cursor: fyIdx === maxFyIdx ? "not-allowed" : "pointer" }}
-        >
-          ▶
-        </button>
-      </div>
-
-      {/* Table */}
-      <div style={{ overflowX: "auto", border: "1px solid #e2e8f0", borderRadius: "8px" }}>
-        <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "12px", fontFamily: "monospace" }}>
-          <thead>
-            <tr style={{ background: DARK_RED, color: "#ffffff" }}>
-              <th style={{ padding: "8px 6px", border: "1px solid #991b1b", width: "35px" }}>#</th>
-              {metaCols.map((c) => (
-                <th key={c.idx} style={{ padding: "8px 6px", border: "1px solid #991b1b", minWidth: c.minWidth, width: c.width, textAlign: c.isName ? "left" : "center", fontSize: c.isName ? "12px" : "11px" }}>
-                  {c.label}
-                </th>
-              ))}
-              {allActiveFyCols.map((colIdx) => (
-                <th key={colIdx} style={{ padding: "8px 8px", border: "1px solid #991b1b", minWidth: "85px", textAlign: "right" }}>
-                  {headerRow?.[colIdx]?.v || `Col ${colIdx}`}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {visibleOutgoings.map(({ row, sheetRow }) => (
-              <tr key={sheetRow} style={{ borderBottom: "1px solid #f1f5f9" }}>
-                <td style={{ padding: "6px", textAlign: "center", color: "#94a3b8", background: "#f8fafc", borderRight: "1px solid #e2e8f0" }}>{sheetRow}</td>
-                {metaCols.map((c) => {
-                  const cell = row?.[c.idx];
-                  const opts = getEditableOpts(sheetRow, c.idx, cell?.v);
-                  return (
-                    <EditableCell
-                      key={c.idx}
-                      cell={cell}
-                      editableOpts={opts}
-                      align={c.isName ? "left" : "center"}
-                      fontSize={c.isName ? "12px" : "11px"}
-                    />
-                  );
-                })}
-                {allActiveFyCols.map((colIdx) => {
-                  const cell = row?.[colIdx];
-                  const opts = getEditableOpts(sheetRow, colIdx, cell?.v);
-                  return (
-                    <EditableCell
-                      key={colIdx}
-                      cell={cell}
-                      editableOpts={opts}
-                      align="right"
-                      isAmount={true}
-                    />
-                  );
-                })}
-              </tr>
-            ))}
-            {/* Totals */}
-            {outgoingTotals.map((row, idx) => (
-              <tr key={`tot-${idx}`} style={{ background: "#fef2f2", fontWeight: "700" }}>
-                <td style={{ padding: "6px", textAlign: "center", color: "#94a3b8" }}>-</td>
-                {metaCols.map((c) => (
-                  <td key={c.idx} style={{ padding: "6px 8px", border: "1px solid #fee2e2", textAlign: c.isName ? "left" : "center" }}>
-                    {row?.[c.idx]?.v || ""}
-                  </td>
-                ))}
-                {allActiveFyCols.map((colIdx) => (
-                  <td key={colIdx} style={{ padding: "6px 8px", border: "1px solid #fee2e2", textAlign: "right", color: DARK_RED }}>
-                    {row?.[colIdx]?.v || ""}
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// BUDGET VIEW COMPONENT
-// ─────────────────────────────────────────────────────────────────────────────
-function BudgetView({ data, fyIdx, onFyChange, onUpdateCell }) {
+function BudgetTableView({ data, fyIdx, onFyChange, onUpdateCell }) {
   const [editingCell, setEditingCell] = useState(null);
   const [savingKey, setSavingKey] = useState(null);
   const committingRef = useRef(false);
@@ -979,10 +427,12 @@ function BudgetView({ data, fyIdx, onFyChange, onUpdateCell }) {
         committingRef.current = true;
         const cur = editingCell;
         setEditingCell(null);
-        setTimeout(() => { committingRef.current = false; }, 100);
+        setTimeout(() => {
+          committingRef.current = false;
+        }, 100);
         if (!cur && overrideVal === undefined) return;
 
-        let rawVal = overrideVal !== undefined ? overrideVal : (cur ? cur.editValue : "");
+        const rawVal = overrideVal !== undefined ? overrideVal : (cur ? cur.editValue : "");
         setSavingKey(`${sheetRow}_${colIdx}`);
         try {
           await onUpdateCell(sheetRow, colIdx, rawVal);
@@ -1116,7 +566,7 @@ function EditableCell({ cell, editableOpts, align = "left", fontSize = "12px", i
     );
   }
 
-  const { isEditing, isSaving, inputType, options, editValue, onChangeEditValue, onCommitEdit, onStartEdit, onCancelEdit } = editableOpts;
+  const { isEditing, isSaving, editValue, onChangeEditValue, onCommitEdit, onStartEdit, onCancelEdit } = editableOpts;
 
   if (isSaving) {
     return (
@@ -1127,31 +577,6 @@ function EditableCell({ cell, editableOpts, align = "left", fontSize = "12px", i
   }
 
   if (isEditing) {
-    if (inputType === "select") {
-      return (
-        <td style={{ padding: "2px", textAlign: align, background: "#eff6ff" }}>
-          <select
-            value={editValue}
-            autoFocus
-            onChange={(e) => {
-              onChangeEditValue(e.target.value);
-              onCommitEdit(e.target.value);
-            }}
-            onBlur={() => onCommitEdit()}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") onCancelEdit();
-              if (e.key === "Enter") onCommitEdit();
-            }}
-            style={{ width: "100%", fontSize: "11px", padding: "2px", border: "1px solid #3b82f6", borderRadius: "3px" }}
-          >
-            {options.map((opt) => (
-              <option key={opt} value={opt}>{opt}</option>
-            ))}
-          </select>
-        </td>
-      );
-    }
-
     return (
       <td style={{ padding: "2px", textAlign: align, background: "#eff6ff" }}>
         <input
@@ -1183,8 +608,12 @@ function EditableCell({ cell, editableOpts, align = "left", fontSize = "12px", i
         whiteSpace: "nowrap",
         background: cell?.v ? "transparent" : "#fafafa",
       }}
-      onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "#eff6ff"; }}
-      onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = cell?.v ? "transparent" : "#fafafa"; }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.backgroundColor = "#eff6ff";
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.backgroundColor = cell?.v ? "transparent" : "#fafafa";
+      }}
     >
       {cell?.v ?? ""}
     </td>

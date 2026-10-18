@@ -8,6 +8,7 @@ export default function OnboardingChecklistView({
   clientSheetId,
   user,
   onOpenSheetEditor,
+  onGoToBudget,
   onSetupModeToggled
 }) {
   const [loading, setLoading] = useState(true);
@@ -27,6 +28,36 @@ export default function OnboardingChecklistView({
 
   // Completing setup
   const [completingSetup, setCompletingSetup] = useState(false);
+  const [applyingEomTasks, setApplyingEomTasks] = useState(false);
+
+  const handleApplyDefaultEomTasks = async () => {
+    setApplyingEomTasks(true);
+    setFeedback(null);
+    try {
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "eom_apply_default_tasks",
+          clientName
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setFeedback({
+          type: "success",
+          message: `Default EoM tasks applied successfully (${data.appliedCount} task${data.appliedCount !== 1 ? "s" : ""} added).`
+        });
+        loadChecklist();
+      } else {
+        throw new Error(data.error || "Failed to apply default EoM tasks.");
+      }
+    } catch (err) {
+      setFeedback({ type: "error", message: err.message });
+    } finally {
+      setApplyingEomTasks(false);
+    }
+  };
 
   // Load checklist data
   const loadChecklist = useCallback(async () => {
@@ -509,19 +540,23 @@ export default function OnboardingChecklistView({
                     </div>
                   )}
 
-                  {/* Phase 3 Custom Widgets: Embedded Spreadsheet Editors */}
+                  {/* Phase 3 Custom Widgets: Budget Editor */}
                   {phase.id === "phase_3" && (
                     <div style={{ padding: "16px", borderRadius: "10px", background: "#F8FAFC", border: "1px solid #E2E8F0", marginBottom: "20px" }}>
                       <span style={{ display: "block", fontSize: "13px", fontWeight: "700", color: "#1E293B", marginBottom: "8px" }}>
-                        Direct Spreadsheet Table Editors
+                        Budget Table Editor
                       </span>
                       <p style={{ margin: "0 0 12px", fontSize: "12px", color: "#64748B" }}>
-                        Open in-app table editors to populate budgets, contractor assignments, and monthly outgoings forecasts:
+                        Open the budget screen to populate client financial budget forecasts across financial years:
                       </p>
                       <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
                         <button
                           type="button"
-                          onClick={() => onOpenSheetEditor && onOpenSheetEditor("budget")}
+                          onClick={() => {
+                            if (onGoToBudget) onGoToBudget(clientName);
+                            else if (onOpenSheetEditor) onOpenSheetEditor("budget");
+                            else if (typeof window !== "undefined") window.location.href = `/pma?nav=budget&client=${encodeURIComponent(clientName || "")}`;
+                          }}
                           style={{
                             padding: "8px 14px",
                             borderRadius: "6px",
@@ -535,9 +570,24 @@ export default function OnboardingChecklistView({
                         >
                           📊 Edit Budget Table
                         </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Phase 4 Custom Widgets: EoM Tasks */}
+                  {phase.id === "phase_4" && (
+                    <div style={{ padding: "16px", borderRadius: "10px", background: "#F8FAFC", border: "1px solid #E2E8F0", marginBottom: "20px" }}>
+                      <span style={{ display: "block", fontSize: "13px", fontWeight: "700", color: "#1E293B", marginBottom: "8px" }}>
+                        End-of-Month (EoM) Client Tasks (Task 28)
+                      </span>
+                      <p style={{ margin: "0 0 12px", fontSize: "12px", color: "#64748B" }}>
+                        Default EoM tasks are automatically assigned to this client upon creation. You can apply or re-sync default tasks, or manage tasks directly in the EoM section:
+                      </p>
+                      <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", alignItems: "center" }}>
                         <button
                           type="button"
-                          onClick={() => onOpenSheetEditor && onOpenSheetEditor("contractors")}
+                          onClick={() => handleApplyDefaultEomTasks()}
+                          disabled={applyingEomTasks}
                           style={{
                             padding: "8px 14px",
                             borderRadius: "6px",
@@ -546,27 +596,27 @@ export default function OnboardingChecklistView({
                             color: "#1E293B",
                             fontWeight: "600",
                             fontSize: "12px",
-                            cursor: "pointer"
+                            cursor: applyingEomTasks ? "wait" : "pointer"
                           }}
                         >
-                          👥 Edit Contractors Table
+                          {applyingEomTasks ? "Applying Defaults..." : "📋 Seed / Re-apply Default EoM Tasks"}
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => onOpenSheetEditor && onOpenSheetEditor("outgoings")}
+                        <a
+                          href={`/pma?nav=tasks&client=${encodeURIComponent(clientName)}`}
                           style={{
                             padding: "8px 14px",
                             borderRadius: "6px",
-                            border: "1px solid #CBD5E1",
-                            background: "#FFFFFF",
-                            color: "#1E293B",
+                            border: "none",
+                            background: "#023f98",
+                            color: "#FFFFFF",
                             fontWeight: "600",
                             fontSize: "12px",
-                            cursor: "pointer"
+                            textDecoration: "none",
+                            display: "inline-block"
                           }}
                         >
-                          💸 Edit Outgoings Table
-                        </button>
+                          Manage in EoM section →
+                        </a>
                       </div>
                     </div>
                   )}

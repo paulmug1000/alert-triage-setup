@@ -172,6 +172,12 @@ export async function getAllClients(sheets, sessionUser = { isAdmin: true }, byp
   return { clientsArray: finalClientsArray, clientsObj: finalClientsObj };
 }
 
+export async function getClients(sessionUser = { isAdmin: true }, bypassCache = false) {
+  const sheets = await getSheetsClient();
+  const { clientsArray } = await getAllClients(sheets, sessionUser, bypassCache);
+  return clientsArray || [];
+}
+
 export async function handleGetAllClients(req, res, sheets) {
   const automationCommanderSheetId = req.body?.automationCommanderSheetId || process.env.AUTOMATION_COMMANDER_SHEET_ID || DEFAULT_AC_SHEET_ID;
   const { bypassCache } = req.body || {};

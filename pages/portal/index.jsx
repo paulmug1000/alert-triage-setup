@@ -711,8 +711,24 @@ export default function PortalPage() {
   const hasBudget = payload ? Boolean(payload.clientInfo?.hasBudget ?? payload.hasBudget) : false;
   const hasCash = payload ? Boolean(payload.clientInfo?.hasCash ?? payload.hasCash) : false;
 
-  const currencySymbol = payload?.clientInfo?.currencySymbol || payload?.currencySymbol || keyData?.currencySymbol || performanceData?.currencySymbol || "£";
-  const thousandsSeparator = payload?.clientInfo?.thousandsSeparator || payload?.thousandsSeparator || keyData?.thousandsSeparator || performanceData?.thousandsSeparator || ",";
+  const rawSymbol =
+    payload?.clientInfo?.currencySymbol ||
+    payload?.currencySymbol ||
+    keyData?.currencySymbol ||
+    performanceData?.currencySymbol ||
+    selectedClient?.currencySymbol ||
+    (typeof window !== "undefined" ? window.currencySymbol || (function() { try { return localStorage.getItem("pulse_currency_symbol"); } catch { return null; } })() : null) ||
+    "£";
+  const currencySymbol =
+    rawSymbol === "EUR" ? "€" : rawSymbol === "GBP" ? "£" : rawSymbol === "USD" ? "$" : rawSymbol;
+
+  const thousandsSeparator =
+    payload?.clientInfo?.thousandsSeparator ||
+    payload?.thousandsSeparator ||
+    keyData?.thousandsSeparator ||
+    performanceData?.thousandsSeparator ||
+    selectedClient?.thousandsSeparator ||
+    (currencySymbol === "€" ? "." : ",");
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -1072,6 +1088,7 @@ export default function PortalPage() {
                 isLoading={loadingKeyData}
                 error={keyDataError}
                 onRefresh={handleRefreshKeyData}
+                isReadOnly={isReadOnly}
               />
             )}
 

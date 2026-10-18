@@ -253,22 +253,37 @@ export default function ViewsScreen({
 
   const cid = selectedClient?.clientSheetId;
   const payload = cid ? payloadCache[cid] : null;
-  const currencySymbol = payload?.currencySymbol || "£";
-  const thousandsSeparator = payload?.thousandsSeparator || ",";
-
   const perfData = cid ? perfCache[cid] : null;
   const cashData = cid ? cashCache[cid] : null;
   const keyData = cid ? keyDataCache[cid] : null;
   const budgetData = cid ? budgetCache[cid] : null;
 
+  const rawSymbol =
+    payload?.clientInfo?.currencySymbol ||
+    payload?.currencySymbol ||
+    keyData?.currencySymbol ||
+    perfData?.currencySymbol ||
+    selectedClient?.currencySymbol ||
+    "£";
+  const currencySymbol =
+    rawSymbol === "EUR" ? "€" : rawSymbol === "GBP" ? "£" : rawSymbol === "USD" ? "$" : rawSymbol;
+
+  const thousandsSeparator =
+    payload?.clientInfo?.thousandsSeparator ||
+    payload?.thousandsSeparator ||
+    keyData?.thousandsSeparator ||
+    perfData?.thousandsSeparator ||
+    selectedClient?.thousandsSeparator ||
+    (currencySymbol === "€" ? "." : ",");
+
   const isCurrentViewLoading =
     activeTab === "fyPerformance"
       ? loadingPerf || (loadingPayload && !payload)
       : activeTab === "cashflow"
-      ? loadingCash || (loadingPayload && !payload)
-      : activeTab === "budgetOverview"
-      ? loadingBudget || loadingPerf || (loadingPayload && !payload)
-      : loadingKeyData || (loadingPayload && !payload);
+        ? loadingCash || (loadingPayload && !payload)
+        : activeTab === "budgetOverview"
+          ? loadingBudget || loadingPerf || (loadingPayload && !payload)
+          : loadingKeyData || (loadingPayload && !payload);
 
   const filteredClients = (allClients || []).filter((c) =>
     (c.clientName || "").toLowerCase().includes(clientSearch.toLowerCase().trim())
@@ -294,7 +309,7 @@ export default function ViewsScreen({
       >
         <div style={{ display: "flex", alignItems: "center", gap: "16px", flexWrap: "wrap" }}>
           <h1 style={{ margin: 0, fontSize: "20px", fontWeight: "700", color: "#0f172a" }}>
-            Client Views
+            Client views
           </h1>
 
           {!managedClient && (
@@ -528,6 +543,7 @@ export default function ViewsScreen({
                 isLoading={loadingKeyData}
                 error={keyDataError}
                 onRefresh={() => fetchKeyData(selectedClient, true)}
+                isReadOnly={false}
               />
             )}
 

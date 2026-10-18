@@ -578,7 +578,7 @@ export default function IntegrationsView({
 
       const crmInt = c.integrations?.[crmTool];
       if (crmInt?.connected) crmConnected++;
-      if (crmInt?.isExpired || crmInt?.reconnectRequired) attentionCount++;
+      if (crmInt?.reconnectRequired) attentionCount++;
     }
 
     if (sharedXero?.reconnectRequired) attentionCount++;
@@ -660,20 +660,20 @@ export default function IntegrationsView({
       {!loading && !managedClient && (
         <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap", marginBottom: "20px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "8px 14px", borderRadius: "10px", background: "#f8fafc", border: "1px solid #e2e8f0", fontSize: "12px" }}>
-            <span style={{ color: "#64748b", fontWeight: "600" }}>Total Clients:</span>
+            <span style={{ color: "#64748b", fontWeight: "600" }}>Total clients:</span>
             <span style={{ fontWeight: "700", color: "#0f172a" }}>{metrics.total}</span>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "8px 14px", borderRadius: "10px", background: "#f0fdf4", border: "1px solid #bbf7d0", fontSize: "12px" }}>
-            <span style={{ color: "#166534", fontWeight: "600" }}>Accounting Active:</span>
+            <span style={{ color: "#166534", fontWeight: "600" }}>Accounting active:</span>
             <span style={{ fontWeight: "700", color: "#15803d" }}>{metrics.accountingConnected} / {metrics.total}</span>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "8px 14px", borderRadius: "10px", background: "#eff6ff", border: "1px solid #bfdbfe", fontSize: "12px" }}>
-            <span style={{ color: "#1e40af", fontWeight: "600" }}>CRM Active:</span>
+            <span style={{ color: "#1e40af", fontWeight: "600" }}>CRM active:</span>
             <span style={{ fontWeight: "700", color: "#1d4ed8" }}>{metrics.crmConnected} / {metrics.total}</span>
           </div>
           {metrics.attentionCount > 0 ? (
             <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "8px 14px", borderRadius: "10px", background: "#fef2f2", border: "1px solid #fecaca", fontSize: "12px" }}>
-              <span style={{ color: "#991b1b", fontWeight: "700" }}>⚠️ Attention Required:</span>
+              <span style={{ color: "#991b1b", fontWeight: "700" }}>⚠️ Attention required:</span>
               <span style={{ fontWeight: "700", color: "#dc2626" }}>{metrics.attentionCount}</span>
             </div>
           ) : (
@@ -1096,8 +1096,8 @@ export default function IntegrationsView({
                         ({String(client.crmTool || "").toLowerCase().includes("sheet")
                           ? "Google Sheet"
                           : String(client.crmTool || "").toLowerCase().includes("excel")
-                          ? "Excel"
-                          : client.crmTool || "None"})
+                            ? "Excel"
+                            : client.crmTool || "None"})
                       </span>
                     </div>
 
@@ -1815,8 +1815,8 @@ function CrmCard({
             )}
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "5px" }}>
               <span style={{ color: "#64748b" }}>Token Status:</span>
-              <span style={{ fontWeight: "600", color: toolData.isExpired ? "#b91c1c" : "#15803d" }}>
-                {toolData.isExpired ? "Expired (Auto-refreshes on query)" : "Active"}
+              <span style={{ fontWeight: "600", color: toolData.reconnectRequired ? "#dc2626" : "#15803d" }}>
+                {toolData.reconnectRequired ? "Re-authorisation Required" : "Connected (Auto-refreshes)"}
               </span>
             </div>
             {toolData.lastRefreshedAt && (

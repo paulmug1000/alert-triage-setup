@@ -83,6 +83,21 @@ export function useEoM(sessionId) {
   const [eomCreatingNewTemplate, setEomCreatingNewTemplate] = useState(false);
   const [eomNewTemplateName, setEomNewTemplateName] = useState("");
 
+  const [eomShowDefaultTasksManager, setEomShowDefaultTasksManager] = useState(false);
+  const [eomDefaultTasks, setEomDefaultTasks] = useState(null);
+  const [eomDefaultTasksLoading, setEomDefaultTasksLoading] = useState(false);
+  const [eomDefaultTasksError, setEomDefaultTasksError] = useState("");
+  const [eomEditingDefaultTaskId, setEomEditingDefaultTaskId] = useState("");
+  const [eomDefaultTaskDraft, setEomDefaultTaskDraft] = useState({ templateId: "", taskName: "", defaultNotes: "", active: true });
+  const [eomAddingDefaultTask, setEomAddingDefaultTask] = useState(false);
+  const [eomNewDefaultTaskMode, setEomNewDefaultTaskMode] = useState("template");
+  const [eomNewDefaultTaskTemplateId, setEomNewDefaultTaskTemplateId] = useState("");
+  const [eomNewDefaultTaskName, setEomNewDefaultTaskName] = useState("");
+  const [eomNewDefaultTaskNotes, setEomNewDefaultTaskNotes] = useState("");
+  const [eomAddingDefaultTaskSaving, setEomAddingDefaultTaskSaving] = useState(false);
+  const [eomDraggedDefaultTaskId, setEomDraggedDefaultTaskId] = useState(null);
+  const [eomDragOverDefaultTaskId, setEomDragOverDefaultTaskId] = useState(null);
+
   const eomClientTasks = useMemo(() => (eomAllTasks || []).filter(t => t.clientName === eomDetailClient), [eomAllTasks, eomDetailClient]);
 
   return {
@@ -108,6 +123,13 @@ export function useEoM(sessionId) {
     eomStatusQueueRef, eomStatusTimerRef, eomCashPendingClient, setEomCashPendingClient, eomDragOverTaskId, setEomDragOverTaskId,
     eomDraggedTemplateId, setEomDraggedTemplateId, eomDraggedClientName, setEomDraggedClientName, eomDragOverClientName, setEomDragOverClientName,
     eomDragOverTemplateId, setEomDragOverTemplateId, eomCreatingNewTemplate, setEomCreatingNewTemplate, eomNewTemplateName, setEomNewTemplateName,
+    eomShowDefaultTasksManager, setEomShowDefaultTasksManager, eomDefaultTasks, setEomDefaultTasks,
+    eomDefaultTasksLoading, setEomDefaultTasksLoading, eomDefaultTasksError, setEomDefaultTasksError,
+    eomEditingDefaultTaskId, setEomEditingDefaultTaskId, eomDefaultTaskDraft, setEomDefaultTaskDraft,
+    eomAddingDefaultTask, setEomAddingDefaultTask, eomNewDefaultTaskMode, setEomNewDefaultTaskMode,
+    eomNewDefaultTaskTemplateId, setEomNewDefaultTaskTemplateId, eomNewDefaultTaskName, setEomNewDefaultTaskName,
+    eomNewDefaultTaskNotes, setEomNewDefaultTaskNotes, eomAddingDefaultTaskSaving, setEomAddingDefaultTaskSaving,
+    eomDraggedDefaultTaskId, setEomDraggedDefaultTaskId, eomDragOverDefaultTaskId, setEomDragOverDefaultTaskId,
     eomClientTasks
   };
 }

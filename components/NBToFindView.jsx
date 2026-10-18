@@ -121,6 +121,22 @@ export default function NBToFindView({
   }, [allOutgoingsClients, clientSearch]);
 
   const currentFy = nbData?.fyConfigs?.[selectedFyIdx] || null;
+  const revenueFocus = nbData?.revenueFocus || nbData?.settings?.revenueFocus || "Revenue";
+  const modeTerm = revenueFocus === "Income" ? "Income" : "Revenue";
+  const modeTermLower = modeTerm.toLowerCase();
+
+  const rawSymbol = nbData?.currencySymbol || selectedClient?.currencySymbol || "£";
+  const currencySymbol = rawSymbol === "EUR" ? "€" : rawSymbol === "GBP" ? "£" : rawSymbol === "USD" ? "$" : rawSymbol;
+  const thousandsSeparator = nbData?.thousandsSeparator || (currencySymbol === "€" ? "." : ",");
+
+  const normalizeCurrency = (val) => {
+    if (!val && val !== 0) return "";
+    const s = String(val).trim();
+    if (!s || s === "—" || s === "-") return "";
+    const num = parseFloat(s.replace(/[£$€,\s]/g, ""));
+    if (isNaN(num)) return s;
+    return `${currencySymbol}` + Math.round(num).toLocaleString(thousandsSeparator === "." ? "de-DE" : "en-GB");
+  };
 
   // ── SAVE SETTINGS (Cell A12 and/or Cell A21) ────────────────────────────────
   const handleSaveSettings = async (newBudget, newDirectPct) => {
@@ -141,8 +157,8 @@ export default function NBToFindView({
       });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || "Failed to save settings");
-      showSuccess("Updated New Business configuration settings.");
       await fetchNBData(selectedClient, true);
+      showSuccess("Updated New Business configuration settings.");
     } catch (err) {
       console.error("Save settings error:", err);
       setError(err.message || "Failed to save settings");
@@ -203,7 +219,7 @@ export default function NBToFindView({
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || "Failed to save targets");
       setEditingTargets(false);
-      showSuccess("Saved new business monthly targets successfully.");
+      showSuccess(`Saved new business monthly ${modeTermLower} targets successfully.`);
       await fetchNBData(selectedClient, true);
     } catch (err) {
       console.error("Save targets error:", err);
@@ -251,7 +267,7 @@ export default function NBToFindView({
     const months = nbData.sections.row3.fyData[currentFy.id].months;
     const initial = {};
     months.forEach((m) => {
-      initial[m.colLetter] = m.value;
+      initial[m.colLetter] = normalizeCurrency(m.value);
     });
     setTargetInputs(initial);
     setEditingTargets(true);
@@ -290,12 +306,12 @@ export default function NBToFindView({
             <span>New business to find</span>
             {nbData && (
               <span style={{ fontSize: "12px", background: "#f0fdf4", color: "#166534", padding: "2px 8px", borderRadius: "12px", fontWeight: 700, border: "1px solid #bbf7d0" }}>
-                Target: {fyRow18?.total || "£0"}
+                Target: {fyRow18?.total || `${currencySymbol}0`}
               </span>
             )}
           </h1>
           <p style={{ margin: "4px 0 0", fontSize: "13px", color: "#64748b" }}>
-            Future revenue targets, budget alignment options, and monthly allocations (NBtoFind Tab)
+            Future {modeTermLower} targets, budget alignment options, and monthly allocations (NBtoFind Tab)
           </p>
         </div>
 
@@ -429,10 +445,12 @@ export default function NBToFindView({
             </div>
           )}
 
+
           <button
             type="button"
             onClick={() => selectedClient && fetchNBData(selectedClient, true)}
             disabled={loading || saving}
+            title="Refresh data"
             style={{
               padding: "7px 14px",
               background: "#f8fafc",
@@ -441,7 +459,7 @@ export default function NBToFindView({
               fontSize: "13px",
               fontWeight: 600,
               color: "#334155",
-              cursor: loading ? "not-allowed" : "pointer",
+              cursor: loading || saving ? "not-allowed" : "pointer",
               display: "inline-flex",
               alignItems: "center",
               gap: "6px",
@@ -477,6 +495,7 @@ export default function NBToFindView({
       </div>
 
       {/* Notifications */}
+
       {error && (
         <div
           style={{
@@ -556,56 +575,94 @@ export default function NBToFindView({
                   Options Cell A12
                 </div>
                 <div style={{ fontSize: "14px", fontWeight: 700, color: "#1e293b", marginTop: "4px" }}>
-                  Use budget for income targets?
+                  Use budget for {modeTermLower} targets?
                 </div>
                 <div style={{ fontSize: "12px", color: "#64748b", marginTop: "4px" }}>
-                  When enabled, income targets are dynamically populated from the Budget tab (Row 26).
+                  When enabled, {modeTermLower} targets are dynamically populated from the Budget tab (Row 26).
                 </div>
               </div>
 
-              <div style={{ marginTop: "12px", display: "flex", alignItems: "center", gap: "10px" }}>
+              <div style={{ marginTop: "12px", display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
                 {isAdmin ? (
-                  <div style={{ display: "inline-flex", background: "#f1f5f9", padding: "3px", borderRadius: "6px", border: "1px solid #cbd5e1" }}>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setBudgetSetting("Yes");
-                        handleSaveSettings("Yes", undefined);
-                      }}
-                      style={{
-                        padding: "4px 14px",
-                        fontSize: "12px",
-                        fontWeight: 700,
-                        borderRadius: "4px",
-                        border: "none",
-                        cursor: "pointer",
-                        background: budgetSetting === "Yes" ? "#16a34a" : "transparent",
-                        color: budgetSetting === "Yes" ? "#ffffff" : "#475569",
-                        boxShadow: budgetSetting === "Yes" ? "0 1px 2px rgba(0,0,0,0.1)" : "none",
-                      }}
-                    >
-                      Yes
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setBudgetSetting("No");
-                        handleSaveSettings("No", undefined);
-                      }}
-                      style={{
-                        padding: "4px 14px",
-                        fontSize: "12px",
-                        fontWeight: 700,
-                        borderRadius: "4px",
-                        border: "none",
-                        cursor: "pointer",
-                        background: budgetSetting === "No" ? "#dc2626" : "transparent",
-                        color: budgetSetting === "No" ? "#ffffff" : "#475569",
-                        boxShadow: budgetSetting === "No" ? "0 1px 2px rgba(0,0,0,0.1)" : "none",
-                      }}
-                    >
-                      No
-                    </button>
+                  <div style={{ display: "inline-flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                    <div style={{ display: "inline-flex", background: "#f1f5f9", padding: "3px", borderRadius: "6px", border: "1px solid #cbd5e1" }}>
+                      <button
+                        type="button"
+                        disabled={saving || loading}
+                        onClick={() => {
+                          setBudgetSetting("Yes");
+                          handleSaveSettings("Yes", undefined);
+                        }}
+                        style={{
+                          padding: "4px 14px",
+                          fontSize: "12px",
+                          fontWeight: 700,
+                          borderRadius: "4px",
+                          border: "none",
+                          cursor: saving || loading ? "not-allowed" : "pointer",
+                          opacity: (saving || loading) && budgetSetting !== "Yes" ? 0.6 : 1,
+                          background: budgetSetting === "Yes" ? "#16a34a" : "transparent",
+                          color: budgetSetting === "Yes" ? "#ffffff" : "#475569",
+                          boxShadow: budgetSetting === "Yes" ? "0 1px 2px rgba(0,0,0,0.1)" : "none",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "5px",
+                        }}
+                      >
+                        {saving && budgetSetting === "Yes" && <Spinner size={12} color="#ffffff" />}
+                        <span>Yes</span>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={saving || loading}
+                        onClick={() => {
+                          setBudgetSetting("No");
+                          handleSaveSettings("No", undefined);
+                        }}
+                        style={{
+                          padding: "4px 14px",
+                          fontSize: "12px",
+                          fontWeight: 700,
+                          borderRadius: "4px",
+                          border: "none",
+                          cursor: saving || loading ? "not-allowed" : "pointer",
+                          opacity: (saving || loading) && budgetSetting !== "No" ? 0.6 : 1,
+                          background: budgetSetting === "No" ? "#dc2626" : "transparent",
+                          color: budgetSetting === "No" ? "#ffffff" : "#475569",
+                          boxShadow: budgetSetting === "No" ? "0 1px 2px rgba(0,0,0,0.1)" : "none",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "5px",
+                        }}
+                      >
+                        {saving && budgetSetting === "No" && <Spinner size={12} color="#ffffff" />}
+                        <span>No</span>
+                      </button>
+                    </div>
+
+                    {(saving || loading) ? (
+                      <div
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "6px",
+                          fontSize: "12px",
+                          color: "#1d4ed8",
+                          fontWeight: 600,
+                          background: "#eff6ff",
+                          border: "1px solid #bfdbfe",
+                          padding: "3px 8px",
+                          borderRadius: "4px",
+                        }}
+                      >
+                        <Spinner size={12} color="#1d4ed8" />
+                        <span>Updating data...</span>
+                      </div>
+                    ) : (
+                      <span style={{ fontSize: "11px", color: "#64748b" }}>
+                        {budgetSetting === "Yes" ? "✓ Budget active" : "Using manual targets"}
+                      </span>
+                    )}
                   </div>
                 ) : (
                   <span
@@ -621,9 +678,6 @@ export default function NBToFindView({
                     {budgetSetting}
                   </span>
                 )}
-                <span style={{ fontSize: "11px", color: "#64748b" }}>
-                  {budgetSetting === "Yes" ? "✓ Budget active" : "Using manual targets"}
-                </span>
               </div>
             </div>
 
@@ -677,7 +731,7 @@ export default function NBToFindView({
                     <button
                       type="button"
                       onClick={() => handleSaveSettings(undefined, directCostsPct)}
-                      disabled={saving}
+                      disabled={saving || loading}
                       style={{
                         padding: "4px 10px",
                         fontSize: "12px",
@@ -686,16 +740,22 @@ export default function NBToFindView({
                         color: "#fff",
                         border: "none",
                         borderRadius: "4px",
-                        cursor: "pointer",
+                        cursor: saving || loading ? "not-allowed" : "pointer",
+                        opacity: saving || loading ? 0.7 : 1,
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "5px",
                       }}
                     >
-                      Save
+                      {saving && <Spinner size={12} color="#ffffff" />}
+                      <span>Save</span>
                     </button>
                     <div style={{ display: "flex", gap: "4px" }}>
                       {["0%", "10%", "15%", "20%"].map((pct) => (
                         <button
                           key={pct}
                           type="button"
+                          disabled={saving || loading}
                           onClick={() => {
                             setDirectCostsPct(pct);
                             handleSaveSettings(undefined, pct);
@@ -707,8 +767,9 @@ export default function NBToFindView({
                             border: "1px solid #e2e8f0",
                             background: directCostsPct === pct ? "#eff6ff" : "#ffffff",
                             color: directCostsPct === pct ? "#0047AB" : "#64748b",
-                            cursor: "pointer",
+                            cursor: saving || loading ? "not-allowed" : "pointer",
                             fontWeight: directCostsPct === pct ? 700 : 500,
+                            opacity: saving || loading ? 0.6 : 1,
                           }}
                         >
                           {pct}
@@ -740,12 +801,12 @@ export default function NBToFindView({
                   {currentFy.label} Annual Forecast Summary
                 </div>
                 <div style={{ marginTop: "6px", display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                  <span style={{ fontSize: "12px", color: "#166534", fontWeight: 600 }}>Total NB to Find to Use:</span>
-                  <span style={{ fontSize: "18px", fontWeight: 800, color: "#15803d" }}>{fyRow18?.total || "£0"}</span>
+                  <span style={{ fontSize: "12px", color: "#166534", fontWeight: 600 }}>Total NB to find {modeTermLower} to use:</span>
+                  <span style={{ fontSize: "18px", fontWeight: 800, color: "#15803d" }}>{fyRow18?.total || `${currencySymbol}0`}</span>
                 </div>
                 <div style={{ marginTop: "4px", display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
                   <span style={{ fontSize: "12px", color: "#475569" }}>NB Direct Costs to Use:</span>
-                  <span style={{ fontSize: "13px", fontWeight: 700, color: "#dc2626" }}>{fyRow23?.total || "£0"}</span>
+                  <span style={{ fontSize: "13px", fontWeight: 700, color: "#dc2626" }}>{fyRow23?.total || `${currencySymbol}0`}</span>
                 </div>
               </div>
               <div style={{ fontSize: "11px", color: "#15803d", fontStyle: "italic", marginTop: "8px" }}>
@@ -762,6 +823,10 @@ export default function NBToFindView({
               border: "1px solid #cbd5e1",
               boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
               overflow: "hidden",
+              position: "relative",
+              opacity: saving ? 0.75 : 1,
+              pointerEvents: saving ? "none" : "auto",
+              transition: "opacity 0.2s ease",
             }}
           >
             <div style={{ overflowX: "auto" }}>
@@ -803,9 +868,9 @@ export default function NBToFindView({
                                 colLetter: m.colLetter,
                                 label: m.monthLabel,
                                 value: m.value,
-                                title: "New business to find income target",
+                                title: `New business to find ${modeTermLower} target`,
                               });
-                              setSingleCellValue(m.value);
+                              setSingleCellValue(normalizeCurrency(m.value));
                             }
                           }}
                           style={{
@@ -848,13 +913,13 @@ export default function NBToFindView({
                                 colLetter: m.colLetter,
                                 label: m.monthLabel,
                                 value: m.value,
-                                title: "Total income target",
+                                title: `Total ${modeTermLower} target`,
                               });
-                              setSingleCellValue(m.value);
+                              setSingleCellValue(normalizeCurrency(m.value));
                             }
                           }}
                           style={{ padding: "7px 10px", cursor: isAdmin ? "pointer" : "default" }}
-                          title={isAdmin ? `Click to edit ${m.monthLabel} total income target` : undefined}
+                          title={isAdmin ? `Click to edit ${m.monthLabel} total ${modeTermLower} target` : undefined}
                         >
                           {m.value || "-"}
                         </td>
@@ -869,7 +934,7 @@ export default function NBToFindView({
                   {fyRow12 && (
                     <tr style={{ background: "#ffffff", borderBottom: "1px solid #e2e8f0", color: "#64748b" }}>
                       <td style={{ padding: "7px 14px", textAlign: "left" }}>
-                        <span>Budget target (Budget!Row 26)</span>
+                        <span>Budget {modeTermLower} target (Budget!Row 26)</span>
                         {budgetSetting !== "Yes" && (
                           <span style={{ fontSize: "10px", color: "#94a3b8", marginLeft: "6px" }}>(disabled via A12)</span>
                         )}
@@ -913,7 +978,7 @@ export default function NBToFindView({
                       </td>
                       {fyRow18.months.map((m) => (
                         <td key={m.colLetter} style={{ padding: "10px 10px", fontWeight: 700, color: "#15803d", fontSize: "13px" }}>
-                          {m.value || "£0"}
+                          {m.value || `${currencySymbol}0`}
                         </td>
                       ))}
                       <td style={{ padding: "10px 14px", fontWeight: 800, color: "#166534", background: "#dcfce7", fontSize: "14px" }}>
@@ -947,7 +1012,7 @@ export default function NBToFindView({
                       </td>
                       {fyRow23.months.map((m) => (
                         <td key={m.colLetter} style={{ padding: "8px 10px", fontWeight: 600 }}>
-                          {m.value || "£0"}
+                          {m.value || `${currencySymbol}0`}
                         </td>
                       ))}
                       <td style={{ padding: "8px 14px", fontWeight: 700, color: "#991b1b" }}>
@@ -973,7 +1038,7 @@ export default function NBToFindView({
                             <button
                               type="button"
                               onClick={() => handleToggleMonthActive(m.colLetter, m.value)}
-                              disabled={saving}
+                              disabled={saving || loading}
                               style={{
                                 padding: "4px 8px",
                                 borderRadius: "4px",
@@ -983,7 +1048,8 @@ export default function NBToFindView({
                                 borderColor: m.value === "Yes" ? "#86efac" : "#fca5a5",
                                 background: m.value === "Yes" ? "#dcfce7" : "#fee2e2",
                                 color: m.value === "Yes" ? "#166534" : "#991b1b",
-                                cursor: "pointer",
+                                cursor: saving || loading ? "not-allowed" : "pointer",
+                                opacity: saving || loading ? 0.7 : 1,
                                 width: "50px",
                                 transition: "all 0.1s",
                               }}
@@ -1053,7 +1119,7 @@ export default function NBToFindView({
               Edit monthly targets ({currentFy.label})
             </h3>
             <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#64748b" }}>
-              Input monthly new business revenue targets (writes directly to NBtoFind!Row 3).
+              Input monthly new business {modeTermLower} targets (writes directly to NBtoFind!Row 3).
             </p>
 
             <div
@@ -1076,7 +1142,7 @@ export default function NBToFindView({
                       const val = e.target.value;
                       setTargetInputs((prev) => ({ ...prev, [m.colLetter]: val }));
                     }}
-                    placeholder="£0"
+                    placeholder={`${currencySymbol}0`}
                     style={{
                       width: "100%",
                       padding: "6px 8px",
@@ -1162,7 +1228,7 @@ export default function NBToFindView({
             </p>
             <div style={{ marginBottom: "16px" }}>
               <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "#334155", marginBottom: "4px" }}>
-                Target Amount (£)
+                {modeTerm} Target Amount ({currencySymbol})
               </label>
               <input
                 type="text"

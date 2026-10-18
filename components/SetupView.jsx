@@ -8,6 +8,7 @@ export default function SetupView({
   allOutgoingsClients = [],
   initialClientName = "",
   onSelectClient,
+  onGoToBudget,
   user,
   isAdmin,
   managedClient,
@@ -248,7 +249,7 @@ export default function SetupView({
                 }}
               >
                 <span>➕</span>
-                <span>Onboard New Client</span>
+                <span>Onboard new client</span>
               </button>
             </div>
           )}
@@ -258,7 +259,7 @@ export default function SetupView({
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "14px", marginBottom: "24px" }}>
           <div style={{ background: "#FFFFFF", borderRadius: "10px", border: "1px solid #E2E8F0", padding: "16px 20px" }}>
             <span style={{ fontSize: "12px", fontWeight: "600", color: "#64748B", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-              Total Clients
+              Total clients
             </span>
             <div style={{ fontSize: "24px", fontWeight: "800", color: "#0F172A", marginTop: "4px" }}>
               {totalClientsCount}
@@ -266,7 +267,7 @@ export default function SetupView({
           </div>
           <div style={{ background: "#FFFFFF", borderRadius: "10px", border: "1px solid #FDE68A", padding: "16px 20px", background: "#FFFBEB" }}>
             <span style={{ fontSize: "12px", fontWeight: "600", color: "#B45309", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-              In Setup Mode / Onboarding
+              In setup mode / onboarding
             </span>
             <div style={{ fontSize: "24px", fontWeight: "800", color: "#B45309", marginTop: "4px" }}>
               {setupClientsCount}
@@ -274,7 +275,7 @@ export default function SetupView({
           </div>
           <div style={{ background: "#FFFFFF", borderRadius: "10px", border: "1px solid #BBF7D0", padding: "16px 20px", background: "#F0FDF4" }}>
             <span style={{ fontSize: "12px", fontWeight: "600", color: "#166534", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-              Live Dashboards Active
+              Live dashboards active
             </span>
             <div style={{ fontSize: "24px", fontWeight: "800", color: "#166534", marginTop: "4px" }}>
               {liveClientsCount}
@@ -624,6 +625,7 @@ export default function SetupView({
           clientSheetId={selectedClient?.clientSheetId || config?.clientSheetId}
           user={user}
           onOpenSheetEditor={(editor) => setActiveSheetEditor(editor)}
+          onGoToBudget={onGoToBudget}
           onSetupModeToggled={(newMode) => {
             setSetupMode(newMode);
             if (selectedClient) loadConfig(selectedClient);
@@ -847,79 +849,41 @@ export default function SetupView({
               </div>
             </div>
 
-            {/* 4. SPREADSHEET EDITORS */}
+            {/* 4. BUDGET DATA EDITOR */}
             <div style={{ background: "#FFFFFF", borderRadius: "12px", border: "1px solid #E2E8F0", padding: "20px", boxShadow: "0 1px 3px rgba(0,0,0,0.04)" }}>
               <div style={{ marginBottom: "14px" }}>
                 <h2 style={{ margin: "0 0 4px 0", fontSize: "16px", fontWeight: "700", color: "#0F172A" }}>
-                  4. Data editors
+                  4. Budget editor
                 </h2>
                 <p style={{ margin: 0, fontSize: "13px", color: "#64748B" }}>
-                  Direct spreadsheet table editing for client budgets, contractors, and outgoings.
+                  Direct spreadsheet table editing for client financial budget model (also available under the Edit menu).
                 </p>
               </div>
 
               <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
                 <button
                   type="button"
-                  onClick={() => setActiveSheetEditor("budget")}
+                  onClick={() => {
+                    if (onGoToBudget) onGoToBudget(selectedClient?.clientName);
+                    else if (typeof window !== "undefined") window.location.href = `/pma?nav=budget&client=${encodeURIComponent(selectedClient?.clientName || "")}`;
+                  }}
                   style={{
                     display: "inline-flex",
                     alignItems: "center",
                     gap: "6px",
                     padding: "9px 16px",
                     borderRadius: "8px",
-                    background: "#F8FAFC",
-                    color: "#0F172A",
+                    background: "#023f98",
+                    color: "#FFFFFF",
                     fontSize: "13px",
                     fontWeight: "600",
-                    border: "1px solid #CBD5E1",
-                    cursor: "pointer"
+                    border: "none",
+                    cursor: "pointer",
+                    boxShadow: "0 1px 2px rgba(2, 63, 152, 0.2)"
                   }}
                 >
                   <span>📊</span>
-                  <span>Edit budget</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setActiveSheetEditor("contractors")}
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "6px",
-                    padding: "9px 16px",
-                    borderRadius: "8px",
-                    background: "#F8FAFC",
-                    color: "#0F172A",
-                    fontSize: "13px",
-                    fontWeight: "600",
-                    border: "1px solid #CBD5E1",
-                    cursor: "pointer"
-                  }}
-                >
-                  <span>👷</span>
-                  <span>Edit contractors</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setActiveSheetEditor("outgoings")}
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "6px",
-                    padding: "9px 16px",
-                    borderRadius: "8px",
-                    background: "#F8FAFC",
-                    color: "#0F172A",
-                    fontSize: "13px",
-                    fontWeight: "600",
-                    border: "1px solid #CBD5E1",
-                    cursor: "pointer"
-                  }}
-                >
-                  <span>💳</span>
-                  <span>Edit outgoings</span>
+                  <span>Open Budget editor</span>
                 </button>
               </div>
             </div>
@@ -961,6 +925,7 @@ export default function SetupView({
                     clientSheetId={selectedClient?.clientSheetId || config?.clientSheetId}
                     user={user}
                     onOpenSheetEditor={(editor) => setActiveSheetEditor(editor)}
+                    onGoToBudget={onGoToBudget}
                     onSetupModeToggled={(newMode) => {
                       setSetupMode(newMode);
                       if (selectedClient) loadConfig(selectedClient);

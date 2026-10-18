@@ -1409,7 +1409,8 @@ export async function provisionNewClientSystem({
         "p1_duplicate_templates",
         "p2_select_tools",
         "p4_ac_enrollment",
-        "p4_rep_control"
+        "p4_rep_control",
+        "p4_eom_jobs"
       ].includes(t.id);
 
       return [
@@ -1430,6 +1431,15 @@ export async function provisionNewClientSystem({
       valueInputOption: "USER_ENTERED",
       requestBody: { values: initialTaskRows }
     });
+
+    // 9b. Seed Default EoM Tasks for this client into EomClientTasks
+    console.log(`  📋 Seeding Default EoM tasks for "${cleanClientName}"...`);
+    try {
+      const { applyDefaultEomTasksToClient_ } = await import("./eomTools");
+      await applyDefaultEomTasksToClient_(sheets, DEFAULT_AC_SHEET_ID, cleanClientName);
+    } catch (eomSeedErr) {
+      console.warn("EoM default tasks seed note:", eomSeedErr.message);
+    }
   } catch (seedErr) {
     console.warn("Setup tabs seed note:", seedErr.message);
   }

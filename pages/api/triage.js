@@ -53,7 +53,9 @@ import {
   handleEomReorderTasks, handleEomReorderTemplates, handleEomLoadBankAccounts,
   handleEomGetBankAccounts, handleEomGetCashBalanceProgress, handleEomSaveCashBalance,
   handleEomCreateDashboardBackup, handleEomMarkMonthActual, handleEomSeedFromChecklist,
-  handleEomGetPlCompData, handleEomPullFreshPl, handleEomPushOutgoings
+  handleEomGetPlCompData, handleEomPullFreshPl, handleEomPushOutgoings,
+  handleEomGetDefaultTasks, handleEomSaveDefaultTask, handleEomDeleteDefaultTask,
+  handleEomReorderDefaultTasks, handleEomSeedDefaultTasksFromTemplates, handleEomApplyDefaultTasks
 } from "../../services/eomTools";
 import {
   handleUploadPayrollChunk, handleIdentifyPayrollClient, handleIdentifyTimeClient,
@@ -1102,6 +1104,18 @@ export default async function handler(req, res) {
       return await handleEomPullFreshPl(req, res, sheets);
     } else if (action === "eom_push_outgoings") {
       return await handleEomPushOutgoings(req, res, sheets);
+    } else if (action === "eom_get_default_tasks") {
+      return await handleEomGetDefaultTasks(req, res, sheets);
+    } else if (action === "eom_save_default_task") {
+      return await handleEomSaveDefaultTask(req, res, sheets);
+    } else if (action === "eom_delete_default_task") {
+      return await handleEomDeleteDefaultTask(req, res, sheets);
+    } else if (action === "eom_reorder_default_tasks") {
+      return await handleEomReorderDefaultTasks(req, res, sheets);
+    } else if (action === "eom_seed_default_tasks") {
+      return await handleEomSeedDefaultTasksFromTemplates(req, res, sheets);
+    } else if (action === "eom_apply_default_tasks") {
+      return await handleEomApplyDefaultTasks(req, res, sheets);
 
     } else if (action === "get_flag_sweep_log") {
       const runs = await readFlagSweepLog(sheets, req.body.automationCommanderSheetId);

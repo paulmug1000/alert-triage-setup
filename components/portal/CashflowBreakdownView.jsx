@@ -79,6 +79,19 @@ export default function CashflowBreakdownView({
     }
   }, [defaultMonthIdx, hasUserSelectedMonth, rollingMonths.length]);
 
+  const [openAccordions, setOpenAccordions] = useState({});
+
+  useEffect(() => {
+    setOpenAccordions({});
+  }, [selectedMonthIdx, activeCategory]);
+
+  const toggleAccordion = (key) => {
+    setOpenAccordions((prev) => ({
+      ...prev,
+      [key]: !prev[key],
+    }));
+  };
+
   const targetDate = useMemo(() => {
     if (rollingMonths.length === 0) return new Date();
     const str = rollingMonths[selectedMonthIdx] || rollingMonths[0];
@@ -194,10 +207,14 @@ export default function CashflowBreakdownView({
       return CashDeepDiveEngine.getOutgoingsCash(targetDate, "cashContractors", keyData);
     }
 
-    if (activeCategory === "cashContractors" || activeCategory === "cashOutgoings") {
+    if (activeCategory === "cashOutgoings") {
+      return CashDeepDiveEngine.getOutgoingsCash(targetDate, "expCash", keyData);
+    }
+
+    if (activeCategory === "cashContractors") {
       const results = [];
-      const isCon = activeCategory === "cashContractors";
-      const items = isCon ? (keyData?.outgoings?.contractors || []) : (keyData?.outgoings?.expenses || []);
+      const isCon = true;
+      const items = keyData?.outgoings?.contractors || [];
       const headers = keyData?.outgoings?.headers || {};
       const outgoingsMeta = keyData?.outgoingsMeta;
 
@@ -450,6 +467,31 @@ export default function CashflowBreakdownView({
           inv.status,
         ]);
       });
+    } else if (activeCategory === "cashOutgoings") {
+      rows.push(["Category / Item", "Details", "Amount", "Reference", "Net", "VAT", "Gross", "Status"]);
+      listData.forEach((item) => {
+        rows.push([item.name || "", "", item.amount || 0, "", "", "", "", ""]);
+        if (item.transactions && item.transactions.length > 0) {
+          item.transactions.forEach((t) => {
+            const dateStr = t.paidDate ? (t.date && t.date !== t.paidDate ? `${t.paidDate} (Inv: ${t.date})` : t.paidDate) : (t.date || "");
+            rows.push([
+              `  [Txn] ${dateStr}`,
+              t.supplier || "",
+              t.gross !== undefined ? -Math.abs(t.gross) : (t.amount || 0),
+              t.ref || "",
+              t.net !== undefined ? t.net : 0,
+              t.vat !== undefined ? t.vat : 0,
+              t.gross !== undefined ? t.gross : 0,
+              t.isUnreconciled ? "Pending Recon" : "Reconciled",
+            ]);
+          });
+        }
+      });
+      if (Math.abs(manualAdjustment) > 2 && !listData.some((i) => (i.name || "").toLowerCase().includes("adjustment"))) {
+        rows.push([manualAdjustmentLabel, "", manualAdjustment, "", "", "", "", ""]);
+      }
+      rows.push([]);
+      rows.push(["Total", "", finalDisplayTotal, "", "", "", "", ""]);
     } else if (activeCategory === "cashContractors" && isNotesMode) {
       rows.push(["Pay date", "Vendor", "Description", "Total excl VAT", "VAT included", "Total incl VAT", "Received date", "Status"]);
       listData.forEach((item) => {
@@ -945,6 +987,255 @@ export default function CashflowBreakdownView({
                 )}
               </tbody>
             </table>
+          </div>
+        ) : activeCategory === "cashOutgoings" ? (
+          /* Outgoings Payments: Expandable category cards with full transaction tables matching PerformanceBreakdownView */
+          <div style={{ maxWidth: "800px", width: "100%" }}>
+            {/* Right-aligned Total Row */}
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "flex-end",
+                paddingBottom: "10px",
+                borderBottom: "1px solid #f1f5f9",
+                marginBottom: "12px",
+              }}
+            >
+              <span style={{ fontSize: "1.25rem", fontWeight: 700, color: "#0047AB" }}>
+                {formatMoney(finalDisplayTotal)}
+              </span>
+            </div>
+
+            {isLoading ? (
+              <div style={{ padding: "3rem 0", textAlign: "center", color: "#64748b" }}>
+                <Spinner size={28} color="#0047AB" />
+                <p style={{ marginTop: "0.75rem", color: "#64748b", fontWeight: 500, fontSize: "14px" }}>
+                  Please wait - loading transactions...
+                </p>
+              </div>
+            ) : listData.length === 0 ? (
+              <div style={{ padding: "2.5rem 0", textAlign: "center", color: "#94a3b8", fontSize: "14px" }}>
+                No outgoings recorded for this period.
+              </div>
+            ) : (
+              listData.map((item, idx) => {
+                const isAdjustment =
+                  item.name === "Manual adjustment" ||
+                  String(item.name || "").startsWith("Manual adjustment") ||
+                  item.name === "Rounding adjustment";
+
+                if (isAdjustment) {
+                  return (
+                    <div
+                      key={idx}
+                      style={{
+                        border: "1px dashed #cbd5e1",
+                        borderRadius: "8px",
+                        background: "#f8fafc",
+                        marginBottom: "8px",
+                        padding: "10px 16px",
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        fontSize: "13.3px",
+                      }}
+                    >
+                      <span style={{ color: "#64748b", fontStyle: "italic", fontSize: "12.3px" }}>
+                        {manualAdjustmentLabel || item.name}
+                      </span>
+                      <span style={{ fontWeight: 700, color: "#0047AB" }}>
+                        {formatMoney(item.amount)}
+                      </span>
+                    </div>
+                  );
+                }
+
+                const hasTxns = Array.isArray(item.transactions) && item.transactions.length > 0;
+                const itemKey = `cf_cat_${idx}_${item.name}`;
+                const isExpanded = Boolean(openAccordions[itemKey]);
+
+                if (hasTxns) {
+                  return (
+                    <div
+                      key={idx}
+                      style={{
+                        border: "1px solid #e2e8f0",
+                        borderRadius: "8px",
+                        background: "#ffffff",
+                        marginBottom: "10px",
+                        overflow: "hidden",
+                        boxShadow: "0 1px 2px rgba(0, 0, 0, 0.03)",
+                      }}
+                    >
+                      <div
+                        onClick={() => toggleAccordion(itemKey)}
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          padding: "12px 16px",
+                          background: isExpanded ? "#f1f5f9" : "#f8fafc",
+                          cursor: "pointer",
+                          fontWeight: 600,
+                          color: "#0047AB",
+                          fontSize: "14px",
+                          userSelect: "none",
+                          transition: "background 0.15s ease",
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                          <span
+                            style={{
+                              fontSize: "11px",
+                              transition: "transform 0.15s ease",
+                              transform: isExpanded ? "rotate(0deg)" : "rotate(-90deg)",
+                              display: "inline-block",
+                            }}
+                          >
+                            ▼
+                          </span>
+                          <span style={{ color: "#0f172a", fontWeight: 700 }}>{item.name}</span>
+                          <span
+                            style={{
+                              fontSize: "11px",
+                              padding: "2px 8px",
+                              borderRadius: "10px",
+                              background: "#e2e8f0",
+                              color: "#475569",
+                              fontWeight: 500,
+                            }}
+                          >
+                            {item.transactions.length} txn{item.transactions.length === 1 ? "" : "s"}
+                          </span>
+                        </div>
+                        <span style={{ fontWeight: 700, color: "#0047AB", whiteSpace: "nowrap" }}>
+                          {formatMoney(item.amount)}
+                        </span>
+                      </div>
+
+                      {isExpanded && (
+                        <div style={{ borderTop: "1px solid #e2e8f0", background: "#ffffff", overflowX: "auto" }}>
+                          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12.5px" }}>
+                            <thead>
+                              <tr style={{ background: "#f8fafc", color: "#64748b", borderBottom: "1px solid #e2e8f0", textAlign: "left" }}>
+                                <th style={{ padding: "9px 16px", fontWeight: 600, width: "140px" }}>Date</th>
+                                <th style={{ padding: "9px 16px", fontWeight: 600 }}>Supplier / Description</th>
+                                <th style={{ padding: "9px 16px", fontWeight: 600, width: "120px" }}>Reference</th>
+                                <th style={{ padding: "9px 16px", fontWeight: 600, textAlign: "right", width: "95px" }}>Net</th>
+                                <th style={{ padding: "9px 16px", fontWeight: 600, textAlign: "right", width: "80px" }}>VAT</th>
+                                <th style={{ padding: "9px 16px", fontWeight: 600, textAlign: "right", width: "95px" }}>Gross</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {item.transactions.map((txn, tIdx) => {
+                                const dateDisplay = txn.paidDate
+                                  ? (txn.date && txn.date !== txn.paidDate ? `${txn.paidDate} (Inv: ${txn.date})` : txn.paidDate)
+                                  : (txn.date || "—");
+
+                                return (
+                                  <tr
+                                    key={tIdx}
+                                    style={{
+                                      borderBottom: tIdx === item.transactions.length - 1 ? "none" : "1px solid #f1f5f9",
+                                      background: txn.isUnreconciled ? "#fffdf5" : "transparent",
+                                      transition: "background 0.1s ease",
+                                    }}
+                                  >
+                                    <td style={{ padding: "8px 16px", color: "#475569", whiteSpace: "nowrap", fontSize: "12px" }}>
+                                      {dateDisplay}
+                                    </td>
+                                    <td style={{ padding: "8px 16px", color: "#0f172a" }}>
+                                      <div style={{ display: "flex", alignItems: "center", gap: "7px", flexWrap: "wrap" }}>
+                                        <span style={{ fontWeight: 500 }}>{txn.supplier || "—"}</span>
+                                        {txn.isUnreconciled && (
+                                          <span
+                                            style={{
+                                              fontSize: "10px",
+                                              padding: "1px 5px",
+                                              borderRadius: "3px",
+                                              background: "#fef3c7",
+                                              color: "#92400e",
+                                              border: "1px solid #fde68a",
+                                              fontWeight: 600,
+                                              lineHeight: "1.2",
+                                            }}
+                                            title="Unreconciled bank statement line from Cashflow Reconciliation"
+                                          >
+                                            Pending Recon
+                                          </span>
+                                        )}
+                                      </div>
+                                    </td>
+                                    <td style={{ padding: "8px 16px", color: "#64748b", fontSize: "11.5px", whiteSpace: "nowrap" }}>
+                                      {txn.ref || "—"}
+                                    </td>
+                                    <td style={{ padding: "8px 16px", textAlign: "right", color: "#64748b", fontSize: "11.5px", fontVariantNumeric: "tabular-nums" }}>
+                                      {txn.net !== undefined ? formatMoney(txn.net) : "—"}
+                                    </td>
+                                    <td style={{ padding: "8px 16px", textAlign: "right", color: "#64748b", fontSize: "11.5px", fontVariantNumeric: "tabular-nums" }}>
+                                      {txn.vat ? formatMoney(txn.vat) : "—"}
+                                    </td>
+                                    <td style={{ padding: "8px 16px", textAlign: "right", fontWeight: 700, color: "#0047AB", fontVariantNumeric: "tabular-nums" }}>
+                                      {formatMoney(txn.gross !== undefined ? txn.gross : txn.amount)}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
+
+                // Card without transactions (forecast months / no txns)
+                return (
+                  <div
+                    key={idx}
+                    style={{
+                      border: "1px solid #e2e8f0",
+                      borderRadius: "8px",
+                      background: "#ffffff",
+                      marginBottom: "8px",
+                      padding: "11px 16px",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      fontSize: "13.5px",
+                      boxShadow: "0 1px 2px rgba(0, 0, 0, 0.02)",
+                    }}
+                  >
+                    <span style={{ color: "#0f172a", fontWeight: 600 }}>{item.name}</span>
+                    <span style={{ fontWeight: 700, color: "#0047AB" }}>{formatMoney(item.amount)}</span>
+                  </div>
+                );
+              })
+            )}
+
+            {/* Manual adjustment row if sheet target differs from transaction sum and not already in listData */}
+            {Math.abs(manualAdjustment) > 2 && !listData.some(i => (i.name || "").toLowerCase().includes("adjustment")) && (
+              <div
+                style={{
+                  border: "1px dashed #cbd5e1",
+                  borderRadius: "8px",
+                  background: "#f8fafc",
+                  marginBottom: "8px",
+                  padding: "10px 16px",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  fontSize: "13.3px",
+                }}
+              >
+                <span style={{ color: "#64748b", fontStyle: "italic", fontSize: "12.3px" }}>
+                  {manualAdjustmentLabel}
+                </span>
+                <span style={{ fontWeight: 700, color: "#0047AB" }}>
+                  {formatMoney(manualAdjustment)}
+                </span>
+              </div>
+            )}
           </div>
         ) : (
           /* 3. Simple List (Salaries, Contractors, Outgoings, Taxes) matching original buildSimpleListHtml */

@@ -1391,7 +1391,7 @@ export async function handleEomGetPlCompData(req, res, sheets) {
       return res.status(400).json({ success: false, error: `No Master Sheet ID found for client "${clientName}"` });
     }
 
-    const [c1Resp, dataResp, f87Resp] = await Promise.all([
+    const [c1Resp, dataResp, f87Resp, t87Resp] = await Promise.all([
       withRetry(() => sheets.spreadsheets.values.get({
         spreadsheetId: masterSheetId,
         range: "PLComp!C1",
@@ -1399,12 +1399,17 @@ export async function handleEomGetPlCompData(req, res, sheets) {
       })),
       withRetry(() => sheets.spreadsheets.values.get({
         spreadsheetId: masterSheetId,
-        range: "PLComp!D1:J595",
+        range: "PLComp!D1:Y595",
         valueRenderOption: "FORMATTED_VALUE"
       })),
       withRetry(() => sheets.spreadsheets.values.get({
         spreadsheetId: masterSheetId,
-        range: "PLComp!F87:J87",
+        range: "PLComp!F87:K87",
+        valueRenderOption: "FORMATTED_VALUE"
+      })),
+      withRetry(() => sheets.spreadsheets.values.get({
+        spreadsheetId: masterSheetId,
+        range: "PLComp!T87:Y87",
         valueRenderOption: "FORMATTED_VALUE"
       }))
     ]);
@@ -1413,21 +1418,30 @@ export async function handleEomGetPlCompData(req, res, sheets) {
     const allData = dataResp.data.values || [];
 
     const row1 = allData[0] || [];
-    const monthHeaders = [
-      row1[2] || "",
-      row1[3] || "",
-      row1[4] || "",
-      row1[5] || "",
-      row1[6] || ""
-    ];
+    // Relative to Col D (index 0):
+    // Cols F..K (not including unreconciled): indices 2, 3, 4, 5, 6, 7
+    // Cols T..Y (including unreconciled): indices 16, 17, 18, 19, 20, 21
+    const monthColsStandard = ["F", "G", "H", "I", "J", "K"];
+    const monthIndicesStandard = [2, 3, 4, 5, 6, 7];
+
+    const monthColsWithAdds = ["T", "U", "V", "W", "X", "Y"];
+    const monthIndicesWithAdds = [16, 17, 18, 19, 20, 21];
 
     const f87Values = f87Resp.data.values?.[0] || [];
-    const monthCols = ["F", "G", "H", "I", "J"];
-    const months = monthCols.map((colLetter, idx) => ({
+    const t87Values = t87Resp.data.values?.[0] || [];
+
+    const monthsStandard = monthColsStandard.map((colLetter, idx) => ({
       colIndex: idx,
       colLetter,
-      header: monthHeaders[idx] || `Month ${idx + 1}`,
+      header: row1[monthIndicesStandard[idx]] || `Month ${idx + 1}`,
       checked: String(f87Values[idx] || "").toUpperCase() === "TRUE"
+    }));
+
+    const monthsWithAdds = monthColsWithAdds.map((colLetter, idx) => ({
+      colIndex: idx,
+      colLetter,
+      header: row1[monthIndicesWithAdds[idx]] || `Month ${idx + 1}`,
+      checked: String(t87Values[idx] || "").toUpperCase() === "TRUE"
     }));
 
     let cosStart = -1, cosEnd = -1;
@@ -1466,64 +1480,72 @@ export async function handleEomGetPlCompData(req, res, sheets) {
       }
     }
 
-    const extractRows = (startIdx, endIdx) => {
+    const extractRows = (startIdx, endIdx, colIndices) => {
       if (startIdx === -1 || endIdx === -1 || startIdx >= endIdx) return [];
       const result = [];
       for (let i = startIdx; i < endIdx && i < allData.length; i++) {
         const row = allData[i] || [];
         const label = String(row[1] || "").trim();
         if (!label) continue;
-        const values = [
-          row[2] || "0.00",
-          row[3] || "0.00",
-          row[4] || "0.00",
-          row[5] || "0.00",
-          row[6] || "0.00"
-        ];
+        const values = colIndices.map(ci => row[ci] || "0.00");
         result.push({ label, values, rowNumber: i + 1 });
       }
       return result;
     };
 
-    const sections = [];
-
-    // 1. Costs of sale
-    if (cosStart !== -1 && cosEnd !== -1) {
-      const rows = extractRows(cosStart, cosEnd);
-      if (rows.length > 0) {
-        sections.push({ title: "Costs of sale", rows });
+    const buildSections = (colIndices) => {
+      const sections = [];
+      // 1. Costs of sale
+      if (cosStart !== -1 && cosEnd !== -1) {
+        const rows = extractRows(cosStart, cosEnd, colIndices);
+        if (rows.length > 0) {
+          sections.push({ title: "Costs of sale", rows });
+        }
       }
-    }
 
-    // 2. Overhead expenses (actual expense accounts start after Overheads label down to row 595)
-    if (overheadStart !== -1) {
-      const rows = extractRows(overheadStart + 1, Math.min(allData.length, 595));
-      if (rows.length > 0) {
-        sections.push({ title: "Overhead expenses", rows });
+      // 2. Overhead expenses (actual expense accounts start after Overheads label down to row 595)
+      if (overheadStart !== -1) {
+        const rows = extractRows(overheadStart + 1, Math.min(allData.length, 595), colIndices);
+        if (rows.length > 0) {
+          sections.push({ title: "Overhead expenses", rows });
+        }
       }
-    }
 
-    // 3. Non-operating income
-    if (nonOpIncStart !== -1 && nonOpIncEnd !== -1) {
-      const rows = extractRows(nonOpIncStart, nonOpIncEnd);
-      if (rows.length > 0) {
-        sections.push({ title: "Non-operating income", rows });
+      // 3. Non-operating income
+      if (nonOpIncStart !== -1 && nonOpIncEnd !== -1) {
+        const rows = extractRows(nonOpIncStart, nonOpIncEnd, colIndices);
+        if (rows.length > 0) {
+          sections.push({ title: "Non-operating income", rows });
+        }
       }
-    }
 
-    // 4. Non-operating expenses
-    if (nonOpExpStart !== -1 && nonOpExpEnd !== -1) {
-      const rows = extractRows(nonOpExpStart, nonOpExpEnd);
-      if (rows.length > 0) {
-        sections.push({ title: "Non-operating expenses", rows });
+      // 4. Non-operating expenses
+      if (nonOpExpStart !== -1 && nonOpExpEnd !== -1) {
+        const rows = extractRows(nonOpExpStart, nonOpExpEnd, colIndices);
+        if (rows.length > 0) {
+          sections.push({ title: "Non-operating expenses", rows });
+        }
       }
-    }
+      return sections;
+    };
+
+    const sectionsStandard = buildSections(monthIndicesStandard);
+    const sectionsWithAdds = buildSections(monthIndicesWithAdds);
 
     return res.status(200).json({
       success: true,
       lastUpdated,
-      months,
-      sections
+      includingUnreconciled: {
+        months: monthsWithAdds,
+        sections: sectionsWithAdds
+      },
+      notIncludingUnreconciled: {
+        months: monthsStandard,
+        sections: sectionsStandard
+      },
+      // Default top-level fields (including unreconciled items):
+      months: monthsWithAdds,
+      sections: sectionsWithAdds
     });
   } catch (err) {
     console.error("❌ eom_get_plcomp_data error:", err);
@@ -1590,10 +1612,12 @@ export async function handleEomPullFreshPl(req, res, sheets) {
 }
 
 export async function handleEomPushOutgoings(req, res, sheets) {
-  const { clientName, selectedMonths, automationCommanderSheetId, workMonthKey } = req.body;
+  const { clientName, selectedMonths, automationCommanderSheetId, workMonthKey, includeUnreconciled } = req.body;
   if (!clientName || !automationCommanderSheetId || !Array.isArray(selectedMonths)) {
     return res.status(400).json({ success: false, error: "Missing clientName, automationCommanderSheetId, or selectedMonths" });
   }
+
+  const isInclUnrec = includeUnreconciled !== false; // Default: true (Include unreconciled items)
 
   try {
     const clientResp = await withRetry(() => sheets.spreadsheets.values.get({
@@ -1612,37 +1636,45 @@ export async function handleEomPushOutgoings(req, res, sheets) {
       return res.status(400).json({ success: false, error: `Missing master sheet ID or Web App URL for "${clientName}"` });
     }
 
-    // 1. Write checkboxes to PLComp!F87:K87
-    // Columns F..J correspond to selectedMonths. Col K set to FALSE.
-    const checkboxRow = [
-      selectedMonths.includes("F") ? true : false,
-      selectedMonths.includes("G") ? true : false,
-      selectedMonths.includes("H") ? true : false,
-      selectedMonths.includes("I") ? true : false,
-      selectedMonths.includes("J") ? true : false,
-      false
-    ];
+    // 1. Write checkboxes to appropriate range in PLComp
+    // If includeUnreconciled: Columns T..Y (range PLComp!T87:Y87)
+    // If not includeUnreconciled: Columns F..K (range PLComp!F87:K87)
+    const targetCols = isInclUnrec
+      ? ["T", "U", "V", "W", "X", "Y"]
+      : ["F", "G", "H", "I", "J", "K"];
+    const checkboxRange = isInclUnrec ? "PLComp!T87:Y87" : "PLComp!F87:K87";
+    const checkboxRow = targetCols.map(col => selectedMonths.includes(col));
 
     await withRetry(() => sheets.spreadsheets.values.update({
       spreadsheetId: masterSheetId,
-      range: "PLComp!F87:K87",
+      range: checkboxRange,
       valueInputOption: "USER_ENTERED",
       requestBody: { values: [checkboxRow] }
     }));
 
-    // 2. Call Master Web App to run pushOutgoingsToClientSheet(true)
+    // 2. Call Master Web App to run pushOutgoingsWithPLAddsToClientSheet (if including unreconciled)
+    // or pushOutgoingsToClientSheet (if not including unreconciled)
     const secret = process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "";
+    const action = isInclUnrec ? "push_outgoings_with_pl_adds" : "push_outgoings";
+    const functionName = isInclUnrec ? "pushOutgoingsWithPLAddsToClientSheet" : "pushOutgoingsToClientSheet";
+
     const gasResp = await fetch(webAppUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ secret, action: "push_outgoings", clientName }),
+      body: JSON.stringify({
+        secret,
+        action,
+        functionName,
+        includeUnreconciled: isInclUnrec,
+        clientName
+      }),
     });
 
     const gasText = await gasResp.text();
     let gasData = null;
     try { gasData = JSON.parse(gasText); } catch (e) {}
     if (!gasData) {
-      console.error(`❌ Master Web App push_outgoings failed (HTTP ${gasResp.status}):`, gasText.slice(0, 300));
+      console.error(`❌ Master Web App ${action} failed (HTTP ${gasResp.status}):`, gasText.slice(0, 300));
       return res.status(502).json({
         success: false,
         error: `Client Master Web App returned HTTP ${gasResp.status} (${gasText.slice(0, 120).replace(/<[^>]*>/g, '').trim() || 'non-JSON'}). Please verify deployment permissions.`
@@ -1660,17 +1692,17 @@ export async function handleEomPushOutgoings(req, res, sheets) {
       const targetMonthKey = eomWorkMonthToTargetMonth_(workMonthKey);
       targetMonthLabel = eomKeyToMonthStr_(targetMonthKey) || "";
       
+      const checkRange = isInclUnrec ? "PLComp!T1:Y1" : "PLComp!F1:K1";
       const headersResp = await withRetry(() => sheets.spreadsheets.values.get({
         spreadsheetId: masterSheetId,
-        range: "PLComp!F1:J1",
+        range: checkRange,
         valueRenderOption: "FORMATTED_VALUE"
       }));
       const headers = headersResp.data.values?.[0] || [];
-      const colLetters = ["F", "G", "H", "I", "J"];
 
       for (let i = 0; i < headers.length; i++) {
         if (headers[i] && isDateMatchJs_(headers[i], targetMonthLabel)) {
-          relevantColLetter = colLetters[i];
+          relevantColLetter = targetCols[i];
           break;
         }
       }
@@ -1687,14 +1719,14 @@ export async function handleEomPushOutgoings(req, res, sheets) {
       automationCommanderSheetId,
       clientName,
       category: "EOM",
-      action: "Pushed Outgoings",
-      summary: `Pushed outgoings for ${clientName} (${selectedMonths.join(", ")})${markedTaskDone ? " - EoM task marked Done" : ""}`,
-      details: { clientName, selectedMonths, markedTaskDone }
+      action: isInclUnrec ? "Pushed Outgoings (incl. unreconciled)" : "Pushed Outgoings",
+      summary: `Pushed outgoings for ${clientName} (${selectedMonths.join(", ")})${isInclUnrec ? " [including unreconciled items]" : " [not including unreconciled items]"}${markedTaskDone ? " - EoM task marked Done" : ""}`,
+      details: { clientName, selectedMonths, includeUnreconciled: isInclUnrec, markedTaskDone }
     }).catch(e => console.error("PMA log failed:", e));
 
     return res.status(200).json({
       success: true,
-      message: gasData.message || "Outgoings pushed successfully.",
+      message: gasData.message || (isInclUnrec ? "Outgoings (including unreconciled items) pushed successfully." : "Outgoings pushed successfully."),
       warnings: gasData.warnings || [],
       markedTaskDone,
       targetMonthLabel

@@ -837,6 +837,122 @@ export default async function handler(req, res) {
       }
     }
 
+    // Fetch Recon Sheet bank transactions and CR2 "Month ready" gate
+    const reconMonths = {};
+    let reconSheetId = null;
+
+    if (masterSheetId) {
+      try {
+        const reconCellResp = await withRetry(() =>
+          sheets.spreadsheets.values.get({
+            spreadsheetId: masterSheetId,
+            range: "KeyInfo!G1",
+            valueRenderOption: "FORMATTED_VALUE",
+          })
+        );
+        const rUrl = String(reconCellResp.data.values?.[0]?.[0] || "").trim();
+        if (rUrl) {
+          reconSheetId = extractSheetIdFromUrl(rUrl) || rUrl;
+        }
+      } catch (err) {
+        console.warn("⚠️ Failed to read KeyInfo!G1 from master sheet:", err.message);
+      }
+    }
+
+    if (reconSheetId) {
+      try {
+        const reconMeta = await withRetry(() =>
+          sheets.spreadsheets.get({
+            spreadsheetId: reconSheetId,
+            fields: "sheets.properties.title",
+          })
+        );
+        const allReconTabTitles = (reconMeta.data.sheets || [])
+          .map((s) => s.properties?.title)
+          .filter((t) => /^\d{4}$/.test(t));
+
+        // Get months across Outgoings headers (Year 1, 2, 3)
+        const allOutgoingsMonthHeaders = [
+          ...outgoingsHeadersY1,
+          ...outgoingsHeadersY2,
+          ...outgoingsHeadersY3,
+        ].filter(Boolean);
+
+        const targetTabNames = [];
+        allOutgoingsMonthHeaders.forEach((h) => {
+          const d = parseMonthYear(h);
+          if (d) {
+            const tabName = `${String(d.getFullYear()).slice(-2)}${String(d.getMonth() + 1).padStart(2, "0")}`;
+            if (allReconTabTitles.includes(tabName) && !targetTabNames.includes(tabName)) {
+              targetTabNames.push(tabName);
+            }
+          }
+        });
+
+        if (targetTabNames.length > 0) {
+          const batchRanges = [];
+          targetTabNames.forEach((t) => {
+            batchRanges.push(`'${t}'!CR2`);
+            batchRanges.push(`'${t}'!A3:Q150`);
+          });
+
+          const reconBatchResp = await withRetry(() =>
+            sheets.spreadsheets.values.batchGet({
+              spreadsheetId: reconSheetId,
+              ranges: batchRanges,
+              valueRenderOption: "FORMATTED_VALUE",
+            })
+          );
+
+          const valueRanges = reconBatchResp.data.valueRanges || [];
+          for (let i = 0; i < targetTabNames.length; i++) {
+            const tabName = targetTabNames[i];
+            const cr2Val = valueRanges[i * 2]?.values?.[0]?.[0];
+            const isReconciled = Boolean(cr2Val === true || String(cr2Val || "").trim().toUpperCase() === "TRUE");
+            const rawTxRows = valueRanges[i * 2 + 1]?.values || [];
+
+            if (isReconciled) {
+              const outgoingsTxns = [];
+              rawTxRows.forEach((r) => {
+                const cat = String(r[16] || "").trim().toLowerCase();
+                if (cat === "outgoings" || cat === "outgoing") {
+                  const date = r[1] || r[0] || "";
+                  const payee = r[3] || r[4] || "";
+                  const desc = r[4] || "";
+                  const ref = r[5] || r[6] || "";
+                  const amtVal = parseMoney(r[8]);
+                  if (Math.abs(amtVal) > 0.001) {
+                    outgoingsTxns.push({
+                      date,
+                      paidDate: date,
+                      supplier: payee,
+                      desc,
+                      ref,
+                      gross: amtVal,
+                      amount: -Math.abs(amtVal),
+                      isCash: true,
+                    });
+                  }
+                }
+              });
+
+              reconMonths[tabName] = {
+                isReconciled: true,
+                transactions: outgoingsTxns,
+              };
+            } else {
+              reconMonths[tabName] = {
+                isReconciled: false,
+                transactions: [],
+              };
+            }
+          }
+        }
+      } catch (reconErr) {
+        console.warn("⚠️ Failed to fetch Recon sheet tabs:", reconErr.message);
+      }
+    }
+
     const getFy = (headers, fallback) => {
       if (!headers || headers.length === 0) return fallback;
       const last = headers[headers.length - 1] || headers[0];
@@ -993,6 +1109,7 @@ export default async function handler(req, res) {
         isNotesMode,
         contractorTransactions,
         transactionsByMonth,
+        reconMonths,
         vatCashByMonth,
         vatAccrualByMonth,
       },

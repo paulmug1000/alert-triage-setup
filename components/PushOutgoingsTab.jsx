@@ -17,14 +17,14 @@ export default function PushOutgoingsTab({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  // Checkbox state for columns F..J (array of 5 booleans or column letters)
-  const [checkedMonths, setCheckedMonths] = useState({
-    F: false,
-    G: false,
-    H: false,
-    I: false,
-    J: false
-  });
+  // Toggle for including unreconciled items (default: true)
+  const [includeUnreconciled, setIncludeUnreconciled] = useState(true);
+
+  // Independent checkbox states for both modes
+  // With adds: columns T..Y (including unreconciled)
+  // Standard: columns F..K (not including unreconciled)
+  const [checkedMonthsWithAdds, setCheckedMonthsWithAdds] = useState({});
+  const [checkedMonthsStandard, setCheckedMonthsStandard] = useState({});
 
   // Action states
   const [pullingPl, setPullingPl] = useState(false);
@@ -66,12 +66,20 @@ export default function PushOutgoingsTab({
       }
       setPlData(data);
 
-      // Initialize checked months from sheet
-      const initialChecked = {};
-      (data.months || []).forEach(m => {
-        initialChecked[m.colLetter] = !!m.checked;
+      // Initialize checked months for both modes from sheet
+      const initialCheckedAdds = {};
+      const addsMonths = data.includingUnreconciled?.months || data.months || [];
+      addsMonths.forEach(m => {
+        initialCheckedAdds[m.colLetter] = !!m.checked;
       });
-      setCheckedMonths(initialChecked);
+      setCheckedMonthsWithAdds(initialCheckedAdds);
+
+      const initialCheckedStd = {};
+      const stdMonths = data.notIncludingUnreconciled?.months || [];
+      stdMonths.forEach(m => {
+        initialCheckedStd[m.colLetter] = !!m.checked;
+      });
+      setCheckedMonthsStandard(initialCheckedStd);
     } catch (err) {
       console.error("Error loading PLComp data:", err);
       setError(err.message);
@@ -100,24 +108,48 @@ export default function PushOutgoingsTab({
     return list.filter(c => c.clientName.toLowerCase().includes(q));
   }, [allOutgoingsClients, clientSearch]);
 
+  // Active dataset based on includeUnreconciled toggle
+  const activeData = useMemo(() => {
+    if (!plData) return { months: [], sections: [] };
+    if (includeUnreconciled) {
+      return plData.includingUnreconciled || { months: plData.months || [], sections: plData.sections || [] };
+    } else {
+      return plData.notIncludingUnreconciled || { months: [], sections: [] };
+    }
+  }, [plData, includeUnreconciled]);
+
+  // Current checked state based on includeUnreconciled toggle
+  const currentChecked = includeUnreconciled ? checkedMonthsWithAdds : checkedMonthsStandard;
+
   // Toggle checkbox for a specific month
   const toggleMonth = (colLetter) => {
-    setCheckedMonths(prev => ({
-      ...prev,
-      [colLetter]: !prev[colLetter]
-    }));
+    if (includeUnreconciled) {
+      setCheckedMonthsWithAdds(prev => ({
+        ...prev,
+        [colLetter]: !prev[colLetter]
+      }));
+    } else {
+      setCheckedMonthsStandard(prev => ({
+        ...prev,
+        [colLetter]: !prev[colLetter]
+      }));
+    }
   };
 
   const selectedColCount = useMemo(() => {
-    return Object.values(checkedMonths).filter(Boolean).length;
-  }, [checkedMonths]);
+    return Object.values(currentChecked).filter(Boolean).length;
+  }, [currentChecked]);
 
   const handleSelectAll = (select) => {
     const updated = {};
-    ["F", "G", "H", "I", "J"].forEach(col => {
-      updated[col] = !!select;
+    (activeData.months || []).forEach(m => {
+      updated[m.colLetter] = !!select;
     });
-    setCheckedMonths(updated);
+    if (includeUnreconciled) {
+      setCheckedMonthsWithAdds(updated);
+    } else {
+      setCheckedMonthsStandard(updated);
+    }
   };
 
   // Pull fresh P&L handler
@@ -156,7 +188,7 @@ export default function PushOutgoingsTab({
   // Push outgoings handler
   const handlePushOutgoings = async () => {
     if (!selectedClient) return;
-    const selectedCols = Object.entries(checkedMonths)
+    const selectedCols = Object.entries(currentChecked)
       .filter(([, checked]) => checked)
       .map(([col]) => col);
 
@@ -176,6 +208,7 @@ export default function PushOutgoingsTab({
           action: "eom_push_outgoings",
           clientName: selectedClient,
           selectedMonths: selectedCols,
+          includeUnreconciled,
           automationCommanderSheetId,
           workMonthKey: eomMonthKey
         })
@@ -185,7 +218,7 @@ export default function PushOutgoingsTab({
         throw new Error(data.error || "Failed to push outgoings");
       }
 
-      let successText = `✓ Outgoings successfully pushed for ${selectedCols.length} month${selectedCols.length !== 1 ? "s" : ""}.`;
+      let successText = `✓ Outgoings successfully pushed (${includeUnreconciled ? "including unreconciled items" : "not including unreconciled items"}) for ${selectedCols.length} month${selectedCols.length !== 1 ? "s" : ""}.`;
       if (data.markedTaskDone) {
         successText += ` Task "Use PLComp..." automatically marked Done for ${data.targetMonthLabel || "the current month"}!`;
         if (onTaskMarkedDone) {
@@ -280,7 +313,7 @@ export default function PushOutgoingsTab({
             flexWrap: "wrap",
             gap: "12px"
           }}>
-            {/* Last Updated Timestamp & Metadata */}
+            {/* Last Updated Timestamp & Mode Toggle */}
             <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
               <div style={{
                 fontSize: "12px",
@@ -305,6 +338,56 @@ export default function PushOutgoingsTab({
               }}>
                 <span>🕒</span>
                 <span>P&amp;L last updated: <strong>{plData?.lastUpdated || "-"}</strong> (cell C1)</span>
+              </div>
+
+              {/* Mode Toggle: Including vs Not including unreconciled items */}
+              <div style={{
+                display: "inline-flex",
+                alignItems: "center",
+                background: "#f1f5f9",
+                borderRadius: "8px",
+                padding: "3px",
+                border: "1px solid #e2e8f0",
+                gap: "2px"
+              }}>
+                <button
+                  type="button"
+                  onClick={() => setIncludeUnreconciled(true)}
+                  title="Pull actuals including unreconciled items from PLComp columns T-Y and run pushOutgoingsWithPLAddsToClientSheet"
+                  style={{
+                    padding: "5px 11px",
+                    fontSize: "12px",
+                    fontWeight: includeUnreconciled ? "700" : "500",
+                    color: includeUnreconciled ? "#0369a1" : "#64748b",
+                    background: includeUnreconciled ? "#ffffff" : "transparent",
+                    border: includeUnreconciled ? "1px solid #bae6fd" : "1px solid transparent",
+                    borderRadius: "6px",
+                    cursor: "pointer",
+                    boxShadow: includeUnreconciled ? "0 1px 2px rgba(0,0,0,0.05)" : "none",
+                    transition: "all 0.15s ease"
+                  }}
+                >
+                  Including unreconciled items
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIncludeUnreconciled(false)}
+                  title="Pull standard actuals from PLComp columns F-K and run pushOutgoingsToClientSheet"
+                  style={{
+                    padding: "5px 11px",
+                    fontSize: "12px",
+                    fontWeight: !includeUnreconciled ? "700" : "500",
+                    color: !includeUnreconciled ? "#0f172a" : "#64748b",
+                    background: !includeUnreconciled ? "#ffffff" : "transparent",
+                    border: !includeUnreconciled ? "1px solid #cbd5e1" : "1px solid transparent",
+                    borderRadius: "6px",
+                    cursor: "pointer",
+                    boxShadow: !includeUnreconciled ? "0 1px 2px rgba(0,0,0,0.05)" : "none",
+                    transition: "all 0.15s ease"
+                  }}
+                >
+                  Not including unreconciled items
+                </button>
               </div>
             </div>
 
@@ -337,7 +420,10 @@ export default function PushOutgoingsTab({
               <button
                 onClick={handlePushOutgoings}
                 disabled={pushingOutgoings || pullingPl || loading || selectedColCount === 0}
-                title="Saves selected checkboxes to PLComp!F87:K87 and runs pushOutgoingsToClientSheet"
+                title={includeUnreconciled
+                  ? "Saves selected checkboxes to PLComp!T87:Y87 and runs pushOutgoingsWithPLAddsToClientSheet"
+                  : "Saves selected checkboxes to PLComp!F87:K87 and runs pushOutgoingsToClientSheet"
+                }
                 style={{
                   display: "inline-flex",
                   alignItems: "center",
@@ -473,7 +559,7 @@ export default function PushOutgoingsTab({
             Retry
           </button>
         </div>
-      ) : !plData || !plData.sections || plData.sections.length === 0 ? (
+      ) : !activeData || !activeData.sections || activeData.sections.length === 0 ? (
         /* No sections found */
         <div style={{
           background: "#ffffff",
@@ -510,14 +596,15 @@ export default function PushOutgoingsTab({
             fontSize: "12px"
           }}>
             <div style={{ color: "#64748b" }}>
-              Showing <strong>{plData.sections.reduce((acc, s) => acc + s.rows.length, 0)}</strong> accounts across <strong>{plData.sections.length}</strong> sections
+              Showing <strong>{activeData.sections.reduce((acc, s) => acc + s.rows.length, 0)}</strong> accounts across <strong>{activeData.sections.length}</strong> sections
+              {" • "}<span style={{ color: includeUnreconciled ? "#0369a1" : "#475569", fontWeight: "600" }}>{includeUnreconciled ? "Including unreconciled items (cols T–Y)" : "Not including unreconciled items (cols F–K)"}</span>
             </div>
             <div style={{ display: "flex", gap: "10px" }}>
               <button
                 onClick={() => handleSelectAll(true)}
                 style={{ background: "none", border: "none", color: "#0284c7", cursor: "pointer", fontSize: "12px", fontWeight: "600", padding: 0 }}
               >
-                Select all 5 months
+                Select all {(activeData.months || []).length} months
               </button>
               <span style={{ color: "#cbd5e1" }}>|</span>
               <button
@@ -542,46 +629,50 @@ export default function PushOutgoingsTab({
                     fontSize: "11px",
                     textTransform: "uppercase",
                     letterSpacing: "0.5px",
-                    width: "38%"
+                    width: "34%"
                   }}>
                     Push Checkbox
                   </th>
-                  {(plData.months || []).map(m => (
-                    <th key={m.colLetter} style={{
-                      padding: "8px 12px",
-                      textAlign: "right",
-                      width: "12.4%"
-                    }}>
-                      <label style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: "6px",
-                        cursor: "pointer",
-                        background: checkedMonths[m.colLetter] ? "#e0f2fe" : "#ffffff",
-                        padding: "4px 8px",
-                        borderRadius: "6px",
-                        border: `1px solid ${checkedMonths[m.colLetter] ? "#0284c7" : "#cbd5e1"}`,
-                        transition: "all 0.15s ease"
+                  {(activeData.months || []).map(m => {
+                    const isChecked = !!currentChecked[m.colLetter];
+                    const colWidth = `${66 / Math.max(1, (activeData.months || []).length)}%`;
+                    return (
+                      <th key={m.colLetter} style={{
+                        padding: "8px 12px",
+                        textAlign: "right",
+                        width: colWidth
                       }}>
-                        <input
-                          type="checkbox"
-                          checked={!!checkedMonths[m.colLetter]}
-                          onChange={() => toggleMonth(m.colLetter)}
-                          style={{ cursor: "pointer", accentColor: "#0284c7" }}
-                        />
-                        <span style={{
-                          fontSize: "11px",
-                          fontWeight: "700",
-                          color: checkedMonths[m.colLetter] ? "#0369a1" : "#475569"
+                        <label style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "6px",
+                          cursor: "pointer",
+                          background: isChecked ? "#e0f2fe" : "#ffffff",
+                          padding: "4px 8px",
+                          borderRadius: "6px",
+                          border: `1px solid ${isChecked ? "#0284c7" : "#cbd5e1"}`,
+                          transition: "all 0.15s ease"
                         }}>
-                          Push
-                        </span>
-                      </label>
-                    </th>
-                  ))}
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={() => toggleMonth(m.colLetter)}
+                            style={{ cursor: "pointer", accentColor: "#0284c7" }}
+                          />
+                          <span style={{
+                            fontSize: "11px",
+                            fontWeight: "700",
+                            color: isChecked ? "#0369a1" : "#475569"
+                          }}>
+                            Push
+                          </span>
+                        </label>
+                      </th>
+                    );
+                  })}
                 </tr>
 
-                {/* 2. Month Labels Header Row (from F1:J1) */}
+                {/* 2. Month Labels Header Row */}
                 <tr style={{ background: "#f8fafc", borderBottom: "2px solid #cbd5e1" }}>
                   <th style={{
                     padding: "10px 16px",
@@ -594,27 +685,30 @@ export default function PushOutgoingsTab({
                   }}>
                     Account / Category
                   </th>
-                  {(plData.months || []).map(m => (
-                    <th key={m.colLetter} style={{
-                      padding: "10px 16px",
-                      textAlign: "right",
-                      color: checkedMonths[m.colLetter] ? "#0369a1" : "#0f172a",
-                      fontWeight: "700",
-                      fontSize: "13px"
-                    }}>
-                      <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end" }}>
-                        <span>{m.header}</span>
-                        <span style={{ fontSize: "10px", fontWeight: "500", color: "#94a3b8" }}>
-                          Col {m.colLetter}
-                        </span>
-                      </div>
-                    </th>
-                  ))}
+                  {(activeData.months || []).map(m => {
+                    const isChecked = !!currentChecked[m.colLetter];
+                    return (
+                      <th key={m.colLetter} style={{
+                        padding: "10px 16px",
+                        textAlign: "right",
+                        color: isChecked ? "#0369a1" : "#0f172a",
+                        fontWeight: "700",
+                        fontSize: "13px"
+                      }}>
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end" }}>
+                          <span>{m.header}</span>
+                          <span style={{ fontSize: "10px", fontWeight: "500", color: "#94a3b8" }}>
+                            Col {m.colLetter}
+                          </span>
+                        </div>
+                      </th>
+                    );
+                  })}
                 </tr>
               </thead>
 
               <tbody>
-                {plData.sections.map((section, sIdx) => (
+                {activeData.sections.map((section, sIdx) => (
                   <React.Fragment key={section.title}>
                     {/* Section Header Row */}
                     <tr style={{
@@ -622,7 +716,7 @@ export default function PushOutgoingsTab({
                       borderTop: sIdx > 0 ? "2px solid #e2e8f0" : "none",
                       borderBottom: "1px solid #cbd5e1"
                     }}>
-                      <td colSpan={(plData.months?.length || 5) + 1} style={{
+                      <td colSpan={(activeData.months?.length || 6) + 1} style={{
                         padding: "8px 16px",
                         fontSize: "12px",
                         fontWeight: "700",
@@ -666,12 +760,13 @@ export default function PushOutgoingsTab({
                           {row.label}
                         </td>
                         {row.values.map((val, vIdx) => {
-                          const colLetter = ["F", "G", "H", "I", "J"][vIdx];
-                          const isColChecked = !!checkedMonths[colLetter];
+                          const m = (activeData.months || [])[vIdx];
+                          const colLetter = m ? m.colLetter : "";
+                          const isColChecked = !!currentChecked[colLetter];
                           const isZero = val === "0.00" || val === "0" || !val;
                           return (
                             <td
-                              key={vIdx}
+                              key={colLetter || vIdx}
                               style={{
                                 padding: "8px 16px",
                                 textAlign: "right",
@@ -706,13 +801,14 @@ export default function PushOutgoingsTab({
             gap: "12px"
           }}>
             <div style={{ fontSize: "12px", color: "#64748b" }}>
-              Selected <strong>{selectedColCount} of 5</strong> months to push to client sheet Outgoings.
+              Selected <strong>{selectedColCount} of {(activeData.months || []).length}</strong> months to push to client sheet Outgoings ({includeUnreconciled ? "including unreconciled items" : "not including unreconciled items"}).
             </div>
 
             <div style={{ display: "flex", gap: "10px" }}>
               <button
                 onClick={handlePullFreshPl}
                 disabled={pullingPl || pushingOutgoings || loading}
+                title="Runs the PullPLBasedOn GAS function on the client's master sheet"
                 style={{
                   padding: "7px 14px",
                   background: "#ffffff",
@@ -724,12 +820,16 @@ export default function PushOutgoingsTab({
                   cursor: (pullingPl || pushingOutgoings || loading) ? "not-allowed" : "pointer"
                 }}
               >
-                {pullingPl ? "Pulling..." : "Pull Fresh P&L"}
+                {pullingPl ? "Pulling..." : "Pull fresh P&L"}
               </button>
 
               <button
                 onClick={handlePushOutgoings}
                 disabled={pushingOutgoings || pullingPl || loading || selectedColCount === 0}
+                title={includeUnreconciled
+                  ? "Saves selected checkboxes to PLComp!T87:Y87 and runs pushOutgoingsWithPLAddsToClientSheet"
+                  : "Saves selected checkboxes to PLComp!F87:K87 and runs pushOutgoingsToClientSheet"
+                }
                 style={{
                   padding: "7px 16px",
                   background: selectedColCount === 0 ? "#94a3b8" : "#0284c7",

@@ -1,6 +1,9 @@
 import React, { useState, useEffect, useCallback } from "react";
 import Spinner from "./Spinner";
 import KeyInfoSettingsForm from "./KeyInfoSettingsForm";
+import AccountingSettingsSuggestionModal from "./setup/AccountingSettingsSuggestionModal";
+import CategoryMappingSuggestionModal from "./setup/CategoryMappingSuggestionModal";
+import CrmMappingSuggestionModal from "./setup/CrmMappingSuggestionModal";
 
 export default function OnboardingChecklistView({
   clientName,
@@ -15,6 +18,11 @@ export default function OnboardingChecklistView({
   const [checklist, setChecklist] = useState(null);
   const [feedback, setFeedback] = useState(null);
   const [openPhaseId, setOpenPhaseId] = useState("phase_1");
+
+  // Automated Suggestions Modals state
+  const [showAccountingModal, setShowAccountingModal] = useState(false);
+  const [showCategoryModal, setShowCategoryModal] = useState(false);
+  const [showCrmModal, setShowCrmModal] = useState(false);
 
   // Script IDs form state
   const [clientScriptId, setClientScriptId] = useState("");
@@ -127,6 +135,24 @@ export default function OnboardingChecklistView({
       console.error("Error updating task:", err);
       setFeedback({ type: "error", message: `Failed to update task: ${err.message}` });
       loadChecklist(); // Revert on error
+    }
+  };
+
+  // Helper to mark a checklist task completed automatically (e.g. after suggestions applied)
+  const handleAutoCompleteTask = async (taskId) => {
+    try {
+      await fetch("/api/setup/checklist", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clientName,
+          taskId,
+          isCompleted: true
+        })
+      });
+      loadChecklist();
+    } catch (err) {
+      console.warn("Could not auto-complete task:", err.message);
     }
   };
 
@@ -288,7 +314,7 @@ export default function OnboardingChecklistView({
                 SETUP MODE ACTIVE
               </span>
               <h2 style={{ margin: 0, fontSize: "18px", fontWeight: "700", color: "#0F172A" }}>
-                Onboarding Progress: {clientName}
+                Onboarding progress: {clientName}
               </h2>
             </div>
             <p style={{ margin: "4px 0 0", fontSize: "13px", color: "#64748B" }}>
@@ -381,7 +407,7 @@ export default function OnboardingChecklistView({
                       {/* Deep Links Box */}
                       <div style={{ padding: "14px 18px", borderRadius: "10px", background: "#F8FAFC", border: "1px solid #E2E8F0" }}>
                         <span style={{ fontSize: "12px", fontWeight: "700", color: "#475569", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                          Quick Links & Authorisations
+                          Quick links & authorisations
                         </span>
                         <div style={{ display: "flex", gap: "16px", marginTop: "8px", flexWrap: "wrap" }}>
                           {masterSheetId && (
@@ -411,7 +437,7 @@ export default function OnboardingChecklistView({
                       <div style={{ padding: "16px", borderRadius: "10px", background: "#FFFBEB", border: "1px solid #FDE68A" }}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
                           <span style={{ fontSize: "13px", fontWeight: "700", color: "#B45309" }}>
-                            Master Sheet GAS Deployment URL (Task 6)
+                            Master sheet GAS deployment URL
                           </span>
                           {masterSheetId && (
                             <a
@@ -420,7 +446,7 @@ export default function OnboardingChecklistView({
                               rel="noreferrer"
                               style={{ fontSize: "12px", fontWeight: "600", color: "#0284C7", textDecoration: "none" }}
                             >
-                              Open Master Script Editor ↗
+                              Open master script editor ↗
                             </a>
                           )}
                         </div>
@@ -457,7 +483,7 @@ export default function OnboardingChecklistView({
                       {/* Script IDs Input */}
                       <div style={{ padding: "16px", borderRadius: "10px", background: "#F8FAFC", border: "1px solid #E2E8F0" }}>
                         <span style={{ display: "block", fontSize: "13px", fontWeight: "700", color: "#1E293B", marginBottom: "6px" }}>
-                          Record Script IDs into Version Tracker (Task 8)
+                          Record script IDs into version tracker
                         </span>
                         <p style={{ margin: "0 0 12px", fontSize: "12px", color: "#64748B" }}>
                           From Project Settings in each sheet’s Apps Script editor, copy the Script ID and paste below:
@@ -516,7 +542,7 @@ export default function OnboardingChecklistView({
                                 cursor: savingScriptIds ? "wait" : "pointer"
                               }}
                             >
-                              {savingScriptIds ? "Saving IDs..." : "Save Script IDs to Tracker"}
+                              {savingScriptIds ? "Saving IDs..." : "Save script IDs to tracker"}
                             </button>
                           </div>
                         </form>
@@ -527,9 +553,38 @@ export default function OnboardingChecklistView({
                   {/* Phase 2 Custom Widgets: Integrated KeyInfo Form & Tool Connections */}
                   {phase.id === "phase_2" && (
                     <div style={{ marginBottom: "20px" }}>
+                      <div style={{ padding: "16px", borderRadius: "10px", background: "#EFF6FF", border: "1px solid #BFDBFE", marginBottom: "16px" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
+                          <div>
+                            <span style={{ display: "block", fontSize: "13px", fontWeight: "700", color: "#1E40AF" }}>
+                              Auto-suggest accounting initial settings
+                            </span>
+                            <p style={{ margin: "2px 0 0", fontSize: "12px", color: "#3B82F6" }}>
+                              Inspects connected accounting tool (Xero/QuickBooks) to auto-suggest tracker start date (formatted d-Mmm-yy), VAT quarters, scheme, and PAYE cycle.
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setShowAccountingModal(true)}
+                            style={{
+                              padding: "8px 16px",
+                              borderRadius: "6px",
+                              border: "none",
+                              background: "#023f98",
+                              color: "#FFFFFF",
+                              fontSize: "12px",
+                              fontWeight: "700",
+                              cursor: "pointer"
+                            }}
+                          >
+                            Auto-suggest settings
+                          </button>
+                        </div>
+                      </div>
+
                       <div style={{ padding: "16px", borderRadius: "10px", background: "#F8FAFC", border: "1px solid #E2E8F0", marginBottom: "16px" }}>
                         <span style={{ display: "block", fontSize: "13px", fontWeight: "700", color: "#1E293B", marginBottom: "12px" }}>
-                          Master Sheet KeyInfo Settings Form (Task 12)
+                          Master sheet KeyInfo settings form
                         </span>
                         <KeyInfoSettingsForm
                           masterSheetId={masterSheetId}
@@ -540,83 +595,145 @@ export default function OnboardingChecklistView({
                     </div>
                   )}
 
-                  {/* Phase 3 Custom Widgets: Budget Editor */}
+                  {/* Phase 3 Custom Widgets: Category Mappings & Budget Editor */}
                   {phase.id === "phase_3" && (
-                    <div style={{ padding: "16px", borderRadius: "10px", background: "#F8FAFC", border: "1px solid #E2E8F0", marginBottom: "20px" }}>
-                      <span style={{ display: "block", fontSize: "13px", fontWeight: "700", color: "#1E293B", marginBottom: "8px" }}>
-                        Budget Table Editor
-                      </span>
-                      <p style={{ margin: "0 0 12px", fontSize: "12px", color: "#64748B" }}>
-                        Open the budget screen to populate client financial budget forecasts across financial years:
-                      </p>
-                      <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (onGoToBudget) onGoToBudget(clientName);
-                            else if (onOpenSheetEditor) onOpenSheetEditor("budget");
-                            else if (typeof window !== "undefined") window.location.href = `/pma?nav=budget&client=${encodeURIComponent(clientName || "")}`;
-                          }}
-                          style={{
-                            padding: "8px 14px",
-                            borderRadius: "6px",
-                            border: "1px solid #CBD5E1",
-                            background: "#FFFFFF",
-                            color: "#1E293B",
-                            fontWeight: "600",
-                            fontSize: "12px",
-                            cursor: "pointer"
-                          }}
-                        >
-                          📊 Edit Budget Table
-                        </button>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "16px", marginBottom: "20px" }}>
+                      <div style={{ padding: "16px", borderRadius: "10px", background: "#EFF6FF", border: "1px solid #BFDBFE" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
+                          <div>
+                            <span style={{ display: "block", fontSize: "13px", fontWeight: "700", color: "#1E40AF" }}>
+                              Auto-suggest category mappings
+                            </span>
+                            <p style={{ margin: "2px 0 0", fontSize: "12px", color: "#3B82F6" }}>
+                              Downloads P&L categories from accounting tool and auto-classifies into Revenue, CoS staff costs (Salaries, Wages, NI, Pension), Other CoS, Tax, Depreciation, and Ignore headers.
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setShowCategoryModal(true)}
+                            style={{
+                              padding: "8px 16px",
+                              borderRadius: "6px",
+                              border: "none",
+                              background: "#023f98",
+                              color: "#FFFFFF",
+                              fontSize: "12px",
+                              fontWeight: "700",
+                              cursor: "pointer"
+                            }}
+                          >
+                            Auto-suggest categories
+                          </button>
+                        </div>
+                      </div>
+
+                      <div style={{ padding: "16px", borderRadius: "10px", background: "#F8FAFC", border: "1px solid #E2E8F0" }}>
+                        <span style={{ display: "block", fontSize: "13px", fontWeight: "700", color: "#1E293B", marginBottom: "8px" }}>
+                          Budget table editor
+                        </span>
+                        <p style={{ margin: "0 0 12px", fontSize: "12px", color: "#64748B" }}>
+                          Open the budget screen to populate client financial budget forecasts across financial years:
+                        </p>
+                        <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (onGoToBudget) onGoToBudget(clientName);
+                              else if (onOpenSheetEditor) onOpenSheetEditor("budget");
+                              else if (typeof window !== "undefined") window.location.href = `/pma?nav=budget&client=${encodeURIComponent(clientName || "")}`;
+                            }}
+                            style={{
+                              padding: "8px 14px",
+                              borderRadius: "6px",
+                              border: "1px solid #CBD5E1",
+                              background: "#FFFFFF",
+                              color: "#1E293B",
+                              fontWeight: "600",
+                              fontSize: "12px",
+                              cursor: "pointer"
+                            }}
+                          >
+                            Edit budget table
+                          </button>
+                        </div>
                       </div>
                     </div>
                   )}
 
-                  {/* Phase 4 Custom Widgets: EoM Tasks */}
+                  {/* Phase 4 Custom Widgets: CRM Mappings & EoM Tasks */}
                   {phase.id === "phase_4" && (
-                    <div style={{ padding: "16px", borderRadius: "10px", background: "#F8FAFC", border: "1px solid #E2E8F0", marginBottom: "20px" }}>
-                      <span style={{ display: "block", fontSize: "13px", fontWeight: "700", color: "#1E293B", marginBottom: "8px" }}>
-                        End-of-Month (EoM) Client Tasks (Task 28)
-                      </span>
-                      <p style={{ margin: "0 0 12px", fontSize: "12px", color: "#64748B" }}>
-                        Default EoM tasks are automatically assigned to this client upon creation. You can apply or re-sync default tasks, or manage tasks directly in the EoM section:
-                      </p>
-                      <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", alignItems: "center" }}>
-                        <button
-                          type="button"
-                          onClick={() => handleApplyDefaultEomTasks()}
-                          disabled={applyingEomTasks}
-                          style={{
-                            padding: "8px 14px",
-                            borderRadius: "6px",
-                            border: "1px solid #CBD5E1",
-                            background: "#FFFFFF",
-                            color: "#1E293B",
-                            fontWeight: "600",
-                            fontSize: "12px",
-                            cursor: applyingEomTasks ? "wait" : "pointer"
-                          }}
-                        >
-                          {applyingEomTasks ? "Applying Defaults..." : "📋 Seed / Re-apply Default EoM Tasks"}
-                        </button>
-                        <a
-                          href={`/pma?nav=tasks&client=${encodeURIComponent(clientName)}`}
-                          style={{
-                            padding: "8px 14px",
-                            borderRadius: "6px",
-                            border: "none",
-                            background: "#023f98",
-                            color: "#FFFFFF",
-                            fontWeight: "600",
-                            fontSize: "12px",
-                            textDecoration: "none",
-                            display: "inline-block"
-                          }}
-                        >
-                          Manage in EoM section →
-                        </a>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "16px", marginBottom: "20px" }}>
+                      <div style={{ padding: "16px", borderRadius: "10px", background: "#EFF6FF", border: "1px solid #BFDBFE" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
+                          <div>
+                            <span style={{ display: "block", fontSize: "13px", fontWeight: "700", color: "#1E40AF" }}>
+                              Auto-suggest CRM mappings & rules
+                            </span>
+                            <p style={{ margin: "2px 0 0", fontSize: "12px", color: "#3B82F6" }}>
+                              Inspects 100+ sample deals from DataFromCRM to match the 13 Pulse fields, determine transformation rules, and suggest confirmed job criteria.
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setShowCrmModal(true)}
+                            style={{
+                              padding: "8px 16px",
+                              borderRadius: "6px",
+                              border: "none",
+                              background: "#023f98",
+                              color: "#FFFFFF",
+                              fontSize: "12px",
+                              fontWeight: "700",
+                              cursor: "pointer"
+                            }}
+                          >
+                            Auto-suggest CRM mappings
+                          </button>
+                        </div>
+                      </div>
+
+                      <div style={{ padding: "16px", borderRadius: "10px", background: "#F8FAFC", border: "1px solid #E2E8F0" }}>
+                        <span style={{ display: "block", fontSize: "13px", fontWeight: "700", color: "#1E293B", marginBottom: "8px" }}>
+                          End-of-month (EoM) client tasks
+                        </span>
+                        <p style={{ margin: "0 0 12px", fontSize: "12px", color: "#64748B" }}>
+                          Default EoM tasks are automatically assigned to this client upon creation. You can apply or re-sync default tasks, or manage tasks directly in the EoM section:
+                        </p>
+                        <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", alignItems: "center" }}>
+                          <button
+                            type="button"
+                            onClick={() => handleApplyDefaultEomTasks()}
+                            disabled={applyingEomTasks}
+                            style={{
+                              padding: "8px 14px",
+                              borderRadius: "6px",
+                              border: "1px solid #CBD5E1",
+                              background: "#FFFFFF",
+                              color: "#1E293B",
+                              fontWeight: "600",
+                              fontSize: "12px",
+                              cursor: applyingEomTasks ? "wait" : "pointer"
+                            }}
+                          >
+                            {applyingEomTasks ? "Applying defaults..." : "Seed / re-apply default EoM tasks"}
+                          </button>
+                          <a
+                            href={`/pma?nav=tasks&client=${encodeURIComponent(clientName)}`}
+                            style={{
+                              padding: "8px 14px",
+                              borderRadius: "6px",
+                              border: "none",
+                              background: "#023f98",
+                              color: "#FFFFFF",
+                              fontWeight: "600",
+                              fontSize: "12px",
+                              textDecoration: "none",
+                              display: "inline-block"
+                            }}
+                          >
+                            Manage in EoM section →
+                          </a>
+                        </div>
                       </div>
                     </div>
                   )}
@@ -659,6 +776,63 @@ export default function OnboardingChecklistView({
                             </span>
                           )}
                         </div>
+                        {task.id === "p2_keyinfo_settings" && (
+                          <button
+                            type="button"
+                            onClick={() => setShowAccountingModal(true)}
+                            style={{
+                              padding: "4px 10px",
+                              borderRadius: "6px",
+                              border: "1px solid #BFDBFE",
+                              background: "#EFF6FF",
+                              color: "#1E40AF",
+                              fontSize: "11px",
+                              fontWeight: "700",
+                              cursor: "pointer",
+                              whiteSpace: "nowrap"
+                            }}
+                          >
+                            Auto-suggest settings
+                          </button>
+                        )}
+                        {task.id === "p3_pull_pl" && (
+                          <button
+                            type="button"
+                            onClick={() => setShowCategoryModal(true)}
+                            style={{
+                              padding: "4px 10px",
+                              borderRadius: "6px",
+                              border: "1px solid #BFDBFE",
+                              background: "#EFF6FF",
+                              color: "#1E40AF",
+                              fontSize: "11px",
+                              fontWeight: "700",
+                              cursor: "pointer",
+                              whiteSpace: "nowrap"
+                            }}
+                          >
+                            Auto-suggest categories
+                          </button>
+                        )}
+                        {(task.id === "p4_review_crm" || task.id === "p4_crm_list_tab") && (
+                          <button
+                            type="button"
+                            onClick={() => setShowCrmModal(true)}
+                            style={{
+                              padding: "4px 10px",
+                              borderRadius: "6px",
+                              border: "1px solid #BFDBFE",
+                              background: "#EFF6FF",
+                              color: "#1E40AF",
+                              fontSize: "11px",
+                              fontWeight: "700",
+                              cursor: "pointer",
+                              whiteSpace: "nowrap"
+                            }}
+                          >
+                            Auto-suggest CRM mappings
+                          </button>
+                        )}
                         {task.autoCompletable && (
                           <span style={{ fontSize: "10px", fontWeight: "700", color: "#64748B", background: "#E2E8F0", padding: "2px 6px", borderRadius: "6px" }}>
                             Auto
@@ -718,6 +892,41 @@ export default function OnboardingChecklistView({
           <span>Complete Onboarding & Go Live →</span>
         </button>
       </div>
+
+      {/* Suggestion Modals */}
+      <AccountingSettingsSuggestionModal
+        clientName={clientName}
+        masterSheetId={masterSheetId}
+        isOpen={showAccountingModal}
+        onClose={() => setShowAccountingModal(false)}
+        onApplied={() => {
+          handleAutoCompleteTask("p2_keyinfo_settings");
+          setFeedback({ type: "success", message: "Initial accounting settings applied to Master Sheet." });
+        }}
+      />
+
+      <CategoryMappingSuggestionModal
+        clientName={clientName}
+        masterSheetId={masterSheetId}
+        isOpen={showCategoryModal}
+        onClose={() => setShowCategoryModal(false)}
+        onApplied={() => {
+          handleAutoCompleteTask("p3_pull_pl");
+          setFeedback({ type: "success", message: "Category mapping rules applied to Master Sheet KeyInfo!BA2:BA180." });
+        }}
+      />
+
+      <CrmMappingSuggestionModal
+        clientName={clientName}
+        masterSheetId={masterSheetId}
+        isOpen={showCrmModal}
+        onClose={() => setShowCrmModal(false)}
+        onApplied={() => {
+          handleAutoCompleteTask("p4_review_crm");
+          handleAutoCompleteTask("p4_crm_list_tab");
+          setFeedback({ type: "success", message: "CRM field mappings and job definitions applied to Master Sheet CRMList." });
+        }}
+      />
     </div>
   );
 }

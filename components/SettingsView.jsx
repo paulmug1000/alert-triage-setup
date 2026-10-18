@@ -16,6 +16,10 @@ export default function SettingsView({
   isAdmin = false,
   user,
   managedClient = null,
+  initialClientName = "",
+  initialSection = "",
+  initialSubsection = "",
+  onSelectClient,
   onRegisterNavGuard
 }) {
   const { clientsWithFlags, isLoading, refreshTriage } = useTriage();
@@ -27,7 +31,12 @@ export default function SettingsView({
 
   // Top tab mode: "system" vs "client"
   const [settingsMode, setSettingsMode] = useState(() => {
-    return managedClient ? "client" : "system";
+    if (managedClient || initialClientName) return "client";
+    if (typeof window !== "undefined") {
+      const p = new URLSearchParams(window.location.search);
+      if (p.get("client")) return "client";
+    }
+    return "system";
   });
 
   const handleSwitchMode = (targetMode) => {
@@ -40,10 +49,10 @@ export default function SettingsView({
   };
 
   useEffect(() => {
-    if (managedClient) {
+    if (managedClient || initialClientName) {
       setSettingsMode("client");
     }
-  }, [managedClient]);
+  }, [managedClient, initialClientName]);
 
   const [triggeringProactive, setTriggeringProactive] = useState(false);
   const [triggerProactiveMsg, setTriggerProactiveMsg] = useState("");
@@ -292,6 +301,10 @@ export default function SettingsView({
         <ClientSettingsView
           allClients={allOutgoingsClients || []}
           managedClient={managedClient}
+          initialClientName={managedClient?.clientName || initialClientName}
+          initialSection={initialSection}
+          initialSubsection={initialSubsection}
+          onSelectClient={onSelectClient}
           user={user}
           isAdmin={effectiveIsAdmin}
           onRegisterNavGuard={(guardFn) => {

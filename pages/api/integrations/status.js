@@ -77,20 +77,89 @@ export default async function handler(req, res) {
       }
     }
 
+function evaluateAutomationHealth({ frequency, isRunning, lastCommandTime, signalFeedback, lastRunEndTime, summary }) {
+  const freq = String(frequency || "").trim();
+  const running = Boolean(isRunning);
+  const feedback = String(signalFeedback || "").trim();
+  const sum = String(summary || "").trim();
+  const lastCmd = String(lastCommandTime || "").trim();
+  const lastEnd = String(lastRunEndTime || "").trim();
+
+  const isFailureFeedback = feedback.toLowerCase().includes("fail") || feedback.toLowerCase().includes("error") || feedback.startsWith("Flag:");
+  const isFailureSummary = sum.toLowerCase().includes("failure") || sum.toLowerCase().includes("error");
+
+  let status = "inactive";
+  let statusLabel = "Not scheduled";
+
+  if (isFailureFeedback || isFailureSummary) {
+    status = "error";
+    statusLabel = "Attention required";
+  } else if (running) {
+    status = "running";
+    statusLabel = "Sequence running";
+  } else if (feedback.includes("OK") || (sum && !isFailureSummary) || lastEnd) {
+    status = "healthy";
+    statusLabel = "Sequences running successfully";
+  } else if (!freq || freq === "-" || freq.toLowerCase() === "none") {
+    status = "inactive";
+    statusLabel = "Not scheduled";
+  } else if (lastCmd) {
+    status = "pending";
+    statusLabel = "Signal sent (pending run)";
+  }
+
+  return {
+    status,
+    statusLabel,
+    frequency: freq || "None",
+    isRunning: running,
+    lastCommandTime: lastCmd,
+    signalFeedback: feedback,
+    lastRunEndTime: lastEnd,
+    summary: sum
+  };
+}
+
     try {
       const sheets = await getSheetsClient();
       const resp = await sheets.spreadsheets.values.get({
         spreadsheetId: DEFAULT_AC_SHEET_ID,
-        range: "AutoUpdates!A2:N500"
+        range: "AutoUpdates!A2:AJ500"
       });
       const rows = resp.data.values || [];
       let clients = rows
-        .map((r, idx) => ({
-          clientName: String(r[0] || "").trim(),
-          clientSheetId: extractSheetIdFromUrl(r[11]) || String(r[11] || "").trim(),
-          masterSheetId: extractSheetIdFromUrl(r[12]) || String(r[12] || "").trim(),
-          autoUpdatesRow: idx + 2
-        }))
+        .map((r, idx) => {
+          const clientName = String(r[0] || "").trim();
+          const clientSheetId = extractSheetIdFromUrl(r[11]) || String(r[11] || "").trim();
+          const masterSheetId = extractSheetIdFromUrl(r[12]) || String(r[12] || "").trim();
+
+          const crmAuto = evaluateAutomationHealth({
+            frequency: r[15],
+            isRunning: String(r[20] || "").trim().toUpperCase() === "YES",
+            lastCommandTime: r[27],
+            signalFeedback: r[28],
+            lastRunEndTime: r[29],
+            summary: r[30]
+          });
+
+          const accAuto = evaluateAutomationHealth({
+            frequency: r[14],
+            isRunning: String(r[19] || "").trim().toUpperCase() === "YES",
+            lastCommandTime: r[22],
+            signalFeedback: r[23],
+            lastRunEndTime: r[24],
+            summary: r[25]
+          });
+
+          return {
+            clientName,
+            clientSheetId,
+            masterSheetId,
+            autoUpdatesRow: idx + 2,
+            crmAuto,
+            accAuto
+          };
+        })
         .filter(c => c.clientName && c.clientName.toLowerCase() !== "client" && c.clientName.toLowerCase() !== "client name" && c.masterSheetId);
 
       // Respect user permissions
@@ -134,7 +203,11 @@ export default async function handler(req, res) {
               isSetupMode: Boolean(cfg.setupMode),
               requestConnections: Boolean(cfg.requestConnections),
               allRequiredToolsConnected: Boolean(cfg.allRequiredToolsConnected),
-              integrations
+              integrations,
+              automationHealth: {
+                crm: c.crmAuto,
+                accounting: c.accAuto
+              }
             };
           } catch (cfgErr) {
             const integrations = {};
@@ -156,6 +229,10 @@ export default async function handler(req, res) {
               requestConnections: false,
               allRequiredToolsConnected: false,
               integrations,
+              automationHealth: {
+                crm: c.crmAuto,
+                accounting: c.accAuto
+              },
               error: cfgErr.message
             };
           }

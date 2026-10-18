@@ -135,6 +135,8 @@ export default function IntegrationsView({
   const [actionLoadingMap, setActionLoadingMap] = useState({});
   const [brokerTestingMap, setBrokerTestingMap] = useState({});
   const [brokerResultsMap, setBrokerResultsMap] = useState({});
+  const [sourceTestingMap, setSourceTestingMap] = useState({});
+  const [sourceResultsMap, setSourceResultsMap] = useState({});
   const [selectedTenantsMap, setSelectedTenantsMap] = useState({});
   const [switchingTenantMap, setSwitchingTenantMap] = useState({});
   const [verifyingAll, setVerifyingAll] = useState(false);
@@ -459,6 +461,30 @@ export default function IntegrationsView({
       setBrokerResultsMap((m) => ({ ...m, [testKey]: { success: false, error: err.message } }));
     } finally {
       setBrokerTestingMap((m) => ({ ...m, [testKey]: false }));
+    }
+  };
+
+  // --------------------------------------------------------------------------
+  // SPREADSHEET SOURCE TEST ACTIONS (Google Sheet / Excel)
+  // --------------------------------------------------------------------------
+  const handleTestSource = async (client, category, toolName) => {
+    const testKey = `${client.clientName}_${category}`;
+    setSourceTestingMap((m) => ({ ...m, [testKey]: true }));
+    setSourceResultsMap((m) => ({ ...m, [testKey]: null }));
+    try {
+      const q = new URLSearchParams({
+        clientKey: client.clientName,
+        masterSheetId: client.masterSheetId || "",
+        tool: toolName || "",
+        category: String(category).toLowerCase()
+      });
+      const res = await fetch(`/api/integrations/test-source?${q.toString()}`);
+      const data = await res.json();
+      setSourceResultsMap((m) => ({ ...m, [testKey]: data }));
+    } catch (err) {
+      setSourceResultsMap((m) => ({ ...m, [testKey]: { success: false, error: err.message } }));
+    } finally {
+      setSourceTestingMap((m) => ({ ...m, [testKey]: false }));
     }
   };
 
@@ -1012,28 +1038,33 @@ export default function IntegrationsView({
                     </div>
                   </div>
 
-                  <div style={{ marginTop: "16px" }}>
-                    <Link
-                      href="/pma?nav=setup"
-                      title="Adjust configured tools in PMA Setup"
-                      style={{
-                        fontSize: "12px",
-                        fontWeight: "600",
-                        color: "#0369a1",
-                        textDecoration: "none",
-                        padding: "6px 12px",
-                        borderRadius: "7px",
-                        background: "#f0f9ff",
-                        border: "1px solid #bae6fd",
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: "6px"
-                      }}
-                    >
-                      <span>⚙️</span>
-                      <span>Setup Screen</span>
-                    </Link>
-                  </div>
+                  {isAdmin && (
+                    <div style={{ marginTop: "16px" }}>
+                      <Link
+                        href={`/pma?nav=settings&client=${encodeURIComponent(client.clientName)}&section=main&subsection=integration-tools`}
+                        title="Configure integration tools in client settings"
+                        style={{
+                          fontSize: "12px",
+                          fontWeight: "600",
+                          color: "#0369a1",
+                          textDecoration: "none",
+                          padding: "6px 12px",
+                          borderRadius: "7px",
+                          background: "#f0f9ff",
+                          border: "1px solid #bae6fd",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "6px"
+                        }}
+                      >
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <circle cx="12" cy="12" r="3" />
+                          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                        </svg>
+                        <span>Settings</span>
+                      </Link>
+                    </div>
+                  )}
                 </div>
 
                 {/* ── RIGHT AREA: ACCOUNTING & CRM TOOL BOXES (~75% width) ── */}
@@ -1083,6 +1114,12 @@ export default function IntegrationsView({
                       <EmptyToolCard
                         category="Accounting"
                         configuredName={client.accountingTool}
+                        client={client}
+                        isAdmin={isAdmin}
+                        automationHealth={client.automationHealth}
+                        onTestSource={handleTestSource}
+                        sourceTesting={Boolean(sourceTestingMap[`${client.clientName}_Accounting`])}
+                        sourceTestResult={sourceResultsMap[`${client.clientName}_Accounting`]}
                       />
                     )}
                   </div>
@@ -1117,6 +1154,12 @@ export default function IntegrationsView({
                       <EmptyToolCard
                         category="CRM"
                         configuredName={client.crmTool}
+                        client={client}
+                        isAdmin={isAdmin}
+                        automationHealth={client.automationHealth}
+                        onTestSource={handleTestSource}
+                        sourceTesting={Boolean(sourceTestingMap[`${client.clientName}_CRM`])}
+                        sourceTestResult={sourceResultsMap[`${client.clientName}_CRM`]}
                       />
                     )}
                   </div>
@@ -1981,7 +2024,16 @@ function CrmCard({
 // ============================================================================
 // SUB-COMPONENT: EMPTY / UNCONFIGURED TOOL PLACEHOLDER
 // ============================================================================
-function EmptyToolCard({ category, configuredName }) {
+function EmptyToolCard({
+  category,
+  configuredName,
+  client,
+  isAdmin,
+  automationHealth,
+  onTestSource,
+  sourceTesting,
+  sourceTestResult
+}) {
   const displayVal = configuredName || "None";
   const norm = String(configuredName || "").trim().toLowerCase();
   const isOAuthTool = ["clickup", "close", "capsule", "hubspot", "monday", "pipedrive", "xero", "quickbooks"].some((t) => norm.includes(t));
@@ -1991,23 +2043,72 @@ function EmptyToolCard({ category, configuredName }) {
     const isGoogle = norm.includes("sheet");
     const isExcel = norm.includes("excel");
     const toolTitle = isGoogle ? "Google Sheet" : isExcel ? "Excel" : (configuredName || "Spreadsheet");
-    const iconText = isGoogle ? "GS" : isExcel ? "XL" : "📊";
+    const iconText = isGoogle ? "GS" : isExcel ? "XL" : "SP";
+
+    const health = category === "CRM" ? automationHealth?.crm : automationHealth?.accounting;
+    const status = health?.status || "inactive";
+
+    // Dynamic color coding based on automation run success / failure
+    let cardBg = "#f8fafc";
+    let cardBorder = "1px dashed #cbd5e1";
+    let badgeBg = "#f1f5f9";
+    let badgeColor = "#475569";
+    let badgeLabel = "Not scheduled";
+    let iconBg = "#e2e8f0";
+    let iconColor = "#475569";
+
+    if (status === "healthy") {
+      cardBg = "#f0fdf4";
+      cardBorder = "1px solid #86efac";
+      badgeBg = "#dcfce7";
+      badgeColor = "#15803d";
+      badgeLabel = "Healthy";
+      iconBg = "#dcfce7";
+      iconColor = "#16a34a";
+    } else if (status === "running") {
+      cardBg = "#f0f9ff";
+      cardBorder = "1px solid #93c5fd";
+      badgeBg = "#e0f2fe";
+      badgeColor = "#0369a1";
+      badgeLabel = "Running sequence";
+      iconBg = "#e0f2fe";
+      iconColor = "#0284c7";
+    } else if (status === "error") {
+      cardBg = "#fef2f2";
+      cardBorder = "1px solid #fca5a5";
+      badgeBg = "#fee2e2";
+      badgeColor = "#b91c1c";
+      badgeLabel = "Attention required";
+      iconBg = "#fee2e2";
+      iconColor = "#dc2626";
+    } else if (status === "pending") {
+      cardBg = "#fffbeb";
+      cardBorder = "1px solid #fde68a";
+      badgeBg = "#fef3c7";
+      badgeColor = "#b45309";
+      badgeLabel = "Pending run";
+      iconBg = "#fef3c7";
+      iconColor = "#d97706";
+    }
 
     return (
       <div
         style={{
-          background: "#f8fafc",
+          background: cardBg,
           borderRadius: "14px",
-          border: "1px dashed #cbd5e1",
+          border: cardBorder,
           padding: "18px",
           display: "flex",
           flexDirection: "column",
           justifyContent: "space-between",
-          height: "calc(100% - 24px)",
-          boxSizing: "border-box"
+          minHeight: "260px",
+          boxSizing: "border-box",
+          boxShadow: status === "healthy" ? "0 1px 3px rgba(34, 197, 94, 0.08)" : status === "error" ? "0 1px 3px rgba(239, 68, 68, 0.08)" : "none",
+          transition: "all 0.2s ease"
         }}
       >
         <div>
+          {/* Header */}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px" }}>
             <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
               <div
@@ -2015,8 +2116,8 @@ function EmptyToolCard({ category, configuredName }) {
                   width: "36px",
                   height: "36px",
                   borderRadius: "8px",
-                  background: "#e2e8f0",
-                  color: "#475569",
+                  background: iconBg,
+                  color: iconColor,
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
@@ -2031,7 +2132,7 @@ function EmptyToolCard({ category, configuredName }) {
                   {toolTitle}
                 </h3>
                 <span style={{ fontSize: "11.5px", color: "#64748b" }}>
-                  Spreadsheet source (no 3rd-party API required)
+                  Spreadsheet source (direct ingestion)
                 </span>
               </div>
             </div>
@@ -2039,46 +2140,167 @@ function EmptyToolCard({ category, configuredName }) {
               style={{
                 fontSize: "11px",
                 fontWeight: "600",
-                padding: "2px 8px",
+                padding: "3px 9px",
                 borderRadius: "20px",
-                background: "#e2e8f0",
-                color: "#475569"
+                background: badgeBg,
+                color: badgeColor,
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "5px"
               }}
             >
-              Spreadsheet
+              {status === "healthy" && (
+                <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "#16a34a" }} />
+              )}
+              {status === "running" && (
+                <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "#0284c7" }} />
+              )}
+              {status === "error" && (
+                <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "#dc2626" }} />
+              )}
+              {badgeLabel}
             </span>
           </div>
 
-          <p style={{ fontSize: "12.5px", color: "#64748b", lineHeight: "1.45", margin: "0 0 14px 0" }}>
-            This client uses {toolTitle} as their {category.toLowerCase()} data source. No third-party OAuth connection is required.
+          {/* Status descriptive summary */}
+          <p style={{ fontSize: "12.5px", color: "#475569", lineHeight: "1.45", margin: "0 0 14px 0" }}>
+            {status === "healthy"
+              ? `Automated ${category.toLowerCase()} sequences are running successfully on cadence and ingesting data.`
+              : status === "running"
+                ? `An automated ${category.toLowerCase()} sequence is currently executing on the client Master Sheet.`
+                : status === "error"
+                  ? `Automated sequence requires attention: ${health?.summary || health?.signalFeedback || "Latest run failed"}`
+                  : `This client uses ${toolTitle} as their ${category.toLowerCase()} data source without an active automation schedule.`}
           </p>
-        </div>
 
-        <div>
-          <Link
-            href="/pma?nav=setup"
+          {/* Compact sequence metrics grid */}
+          <div
             style={{
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: "6px",
-              width: "100%",
-              boxSizing: "border-box",
-              padding: "8px 12px",
-              borderRadius: "7px",
-              background: "#ffffff",
-              color: "#334155",
-              border: "1px solid #cbd5e1",
-              fontSize: "12px",
-              fontWeight: "600",
-              textDecoration: "none",
-              cursor: "pointer"
+              background: "rgba(255, 255, 255, 0.75)",
+              borderRadius: "8px",
+              padding: "10px 12px",
+              border: "1px solid rgba(0, 0, 0, 0.06)",
+              marginBottom: "14px",
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr",
+              gap: "8px",
+              fontSize: "11.5px"
             }}
           >
-            <span>⚙️</span>
-            <span>Configure {category} Tool in PMA Setup</span>
-          </Link>
+            <div>
+              <span style={{ color: "#64748b", display: "block", fontSize: "10.5px", fontWeight: "600" }}>
+                Cadence
+              </span>
+              <span style={{ color: "#1e293b", fontWeight: "600" }}>
+                {health?.frequency && health.frequency !== "None" && health.frequency !== "-"
+                  ? `Every ${health.frequency}`
+                  : "Manual / none"}
+              </span>
+            </div>
+            <div>
+              <span style={{ color: "#64748b", display: "block", fontSize: "10.5px", fontWeight: "600" }}>
+                Last run
+              </span>
+              <span style={{ color: "#1e293b", fontWeight: "500" }}>
+                {health?.lastRunEndTime || health?.lastCommandTime || "None recorded"}
+              </span>
+            </div>
+            <div style={{ gridColumn: "span 2" }}>
+              <span style={{ color: "#64748b", display: "block", fontSize: "10.5px", fontWeight: "600" }}>
+                Sequence summary
+              </span>
+              <span style={{ color: status === "error" ? "#dc2626" : "#334155", fontWeight: "500" }}>
+                {health?.summary || health?.signalFeedback || "No feedback recorded"}
+              </span>
+            </div>
+          </div>
+
+          {/* Live Test Source Result Banner */}
+          {sourceTestResult && (
+            <div
+              style={{
+                borderRadius: "8px",
+                padding: "8px 12px",
+                marginBottom: "14px",
+                fontSize: "11.5px",
+                background: sourceTestResult.success ? "#ecfdf5" : "#fef2f2",
+                border: `1px solid ${sourceTestResult.success ? "#a7f3d0" : "#fecaca"}`,
+                color: sourceTestResult.success ? "#065f46" : "#991b1b"
+              }}
+            >
+              <div style={{ fontWeight: "600", marginBottom: "2px" }}>
+                {sourceTestResult.success ? "✓ Source connected and verified" : "✕ Source verification failed"}
+              </div>
+              <div style={{ wordBreak: "break-word" }}>
+                {sourceTestResult.message || sourceTestResult.error}
+              </div>
+            </div>
+          )}
         </div>
+
+        {/* Action Buttons: Test source & Settings */}
+        {isAdmin && client && (
+          <div style={{ display: "flex", gap: "8px", marginTop: "12px", flexWrap: "wrap" }}>
+            <button
+              type="button"
+              disabled={sourceTesting}
+              onClick={() => onTestSource?.(client, category, toolTitle)}
+              style={{
+                flex: 1,
+                minWidth: "120px",
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: "6px",
+                padding: "8px 10px",
+                borderRadius: "7px",
+                background: "#ffffff",
+                color: "#1e293b",
+                border: "1px solid #cbd5e1",
+                fontSize: "12px",
+                fontWeight: "600",
+                cursor: sourceTesting ? "wait" : "pointer",
+                boxShadow: "0 1px 2px rgba(0,0,0,0.04)"
+              }}
+            >
+              {sourceTesting ? (
+                <span>Testing source...</span>
+              ) : (
+                <>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+                  </svg>
+                  <span>Test source</span>
+                </>
+              )}
+            </button>
+
+            <Link
+              href={`/pma?nav=settings&client=${encodeURIComponent(client.clientName)}&section=main&subsection=integration-tools`}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: "5px",
+                padding: "8px 12px",
+                borderRadius: "7px",
+                background: "#ffffff",
+                color: "#0369a1",
+                border: "1px solid #bae6fd",
+                fontSize: "12px",
+                fontWeight: "600",
+                textDecoration: "none",
+                cursor: "pointer"
+              }}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="3" />
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+              </svg>
+              <span>Settings</span>
+            </Link>
+          </div>
+        )}
       </div>
     );
   }
@@ -2131,31 +2353,36 @@ function EmptyToolCard({ category, configuredName }) {
         </p>
       </div>
 
-      <div>
-        <Link
-          href="/pma?nav=setup"
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: "6px",
-            width: "100%",
-            boxSizing: "border-box",
-            padding: "8px 12px",
-            borderRadius: "7px",
-            background: "#ffffff",
-            color: "#334155",
-            border: "1px solid #cbd5e1",
-            fontSize: "12px",
-            fontWeight: "600",
-            textDecoration: "none",
-            cursor: "pointer"
-          }}
-        >
-          <span>⚙️</span>
-          <span>Configure {category} Tool in PMA Setup</span>
-        </Link>
-      </div>
+      {isAdmin && client && (
+        <div>
+          <Link
+            href={`/pma?nav=settings&client=${encodeURIComponent(client.clientName)}&section=main&subsection=integration-tools`}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: "6px",
+              width: "100%",
+              boxSizing: "border-box",
+              padding: "8px 12px",
+              borderRadius: "7px",
+              background: "#ffffff",
+              color: "#334155",
+              border: "1px solid #cbd5e1",
+              fontSize: "12px",
+              fontWeight: "600",
+              textDecoration: "none",
+              cursor: "pointer"
+            }}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+            </svg>
+            <span>Configure in settings</span>
+          </Link>
+        </div>
+      )}
     </div>
   );
 }

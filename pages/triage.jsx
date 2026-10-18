@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import Head from "next/head";
+import { useRouter } from "next/router";
 import Spinner from "../components/Spinner";
 import TruncatedCode from "../components/TruncatedCode";
 import NavShell from "../components/NavShell";
@@ -124,6 +125,48 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
     }
     return "";
   });
+  const [settingsClientName, setSettingsClientName] = useState(() => {
+    if (typeof window !== "undefined") {
+      const p = new URLSearchParams(window.location.search);
+      return p.get("client") || "";
+    }
+    return "";
+  });
+  const [settingsSection, setSettingsSection] = useState(() => {
+    if (typeof window !== "undefined") {
+      const p = new URLSearchParams(window.location.search);
+      return p.get("section") || "main";
+    }
+    return "main";
+  });
+  const [settingsSubsection, setSettingsSubsection] = useState(() => {
+    if (typeof window !== "undefined") {
+      const p = new URLSearchParams(window.location.search);
+      return p.get("subsection") || "";
+    }
+    return "";
+  });
+  const router = useRouter();
+
+  // Watch router query changes for client-side Link navigations
+  useEffect(() => {
+    if (!router?.isReady) return;
+    const query = router.query;
+    const navParam = query.nav;
+    if (navParam && typeof navParam === "string" && navParam !== activeNav) {
+      setActiveNav(navParam);
+    }
+    if (query.client && typeof query.client === "string") {
+      setSetupClientName(query.client);
+      setSettingsClientName(query.client);
+    }
+    if (query.section && typeof query.section === "string") {
+      setSettingsSection(query.section);
+    }
+    if (query.subsection && typeof query.subsection === "string") {
+      setSettingsSubsection(query.subsection);
+    }
+  }, [router?.isReady, router?.asPath, router?.query]);
   const [invoicesInitialClient, setInvoicesInitialClient] = useState(null);
   const [outgoingsInitialClient, setOutgoingsInitialClient] = useState(null);
 
@@ -389,7 +432,20 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
   const handleNavTasks = () => navigateWithGuard(() => { fireOutgoingsPullIfPending(); setActiveNav("tasks"); setTasksFilter("active"); loadTasks("active", true); });
   const handleNavActivity = () => navigateWithGuard(() => { fireOutgoingsPullIfPending(); setActiveNav("activity"); loadClients(); });
   const handleNavAppLog = handleNavActivity;
-  const handleNavSettings = () => navigateWithGuard(() => { fireOutgoingsPullIfPending(); setActiveNav("settings"); loadClients(); });
+  const handleNavSettings = (clientName = "", section = "", subsection = "") => navigateWithGuard(() => {
+    fireOutgoingsPullIfPending();
+    if (typeof clientName === "string" && clientName.trim()) {
+      setSettingsClientName(clientName.trim());
+    }
+    if (typeof section === "string" && section.trim()) {
+      setSettingsSection(section.trim());
+    }
+    if (typeof subsection === "string" && subsection.trim()) {
+      setSettingsSubsection(subsection.trim());
+    }
+    setActiveNav("settings");
+    loadClients();
+  });
   const handleNavIntegrations = () => navigateWithGuard(() => { fireOutgoingsPullIfPending(); setActiveNav("integrations"); loadClients(); });
   const handleNavSetup = (clientName = "") => navigateWithGuard(() => {
     fireOutgoingsPullIfPending();
@@ -424,6 +480,14 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
     } else if (activeNav === "setup") {
       const activeClient = managedClient?.clientName || setupClientName;
       target = activeClient ? `/pma?nav=setup&client=${encodeURIComponent(activeClient)}` : `/pma?nav=setup`;
+    } else if (activeNav === "settings") {
+      const activeClient = managedClient?.clientName || settingsClientName;
+      const params = new URLSearchParams();
+      params.set("nav", "settings");
+      if (activeClient) params.set("client", activeClient);
+      if (settingsSection && settingsSection !== "main") params.set("section", settingsSection);
+      if (settingsSubsection) params.set("subsection", settingsSubsection);
+      target = `/pma?${params.toString()}`;
     } else if (activeNav !== "home") {
       target = `/pma?nav=${activeNav}`;
     }
@@ -431,7 +495,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
     if (current !== target && !window.location.search.includes("integration=")) {
       window.history.replaceState({ nav: activeNav }, "", target);
     }
-  }, [activeNav, setupClientName, managedClient]);
+  }, [activeNav, setupClientName, settingsClientName, settingsSection, settingsSubsection, managedClient]);
 
   useEffect(() => {
     const onPopState = (e) => {
@@ -440,7 +504,14 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
         if (typeof window !== "undefined") {
           const p = new URLSearchParams(window.location.search);
           const clientParam = p.get("client");
-          if (clientParam) setSetupClientName(clientParam);
+          if (clientParam) {
+            setSetupClientName(clientParam);
+            setSettingsClientName(clientParam);
+          }
+          const sectionParam = p.get("section");
+          if (sectionParam) setSettingsSection(sectionParam);
+          const subParam = p.get("subsection");
+          if (subParam) setSettingsSubsection(subParam);
         }
       } else if (typeof window !== "undefined") {
         const path = window.location.pathname.toLowerCase();
@@ -458,9 +529,14 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
       const p = new URLSearchParams(window.location.search);
       const navParam = p.get("nav");
       const clientParam = p.get("client");
+      const sectionParam = p.get("section");
+      const subsectionParam = p.get("subsection");
       if (clientParam) {
         setSetupClientName(clientParam);
+        setSettingsClientName(clientParam);
       }
+      if (sectionParam) setSettingsSection(sectionParam);
+      if (subsectionParam) setSettingsSubsection(subsectionParam);
       const path = window.location.pathname.toLowerCase();
       if (initialNav) {
         setActiveNav(initialNav);
@@ -826,6 +902,10 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
           isAdmin={isAdmin}
           user={user}
           managedClient={managedClient}
+          initialClientName={managedClient ? managedClient.clientName : settingsClientName}
+          initialSection={settingsSection}
+          initialSubsection={settingsSubsection}
+          onSelectClient={(cName) => setSettingsClientName(cName || "")}
           onRegisterNavGuard={registerNavGuard}
         />
       );

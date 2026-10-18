@@ -835,6 +835,9 @@ export default function ClientSettingsView({
   allClients = [],
   managedClient = null,
   initialClientName = "",
+  initialSection = "main",
+  initialSubsection = "",
+  onSelectClient,
   user,
   isAdmin = false,
   onRegisterNavGuard
@@ -846,11 +849,24 @@ export default function ClientSettingsView({
   const [selectedClientName, setSelectedClientName] = useState(() => {
     if (managedClient?.clientName) return managedClient.clientName;
     if (initialClientName) return initialClientName;
+    if (typeof window !== "undefined") {
+      const p = new URLSearchParams(window.location.search);
+      const c = p.get("client");
+      if (c) return c;
+    }
     return "";
   });
 
   // Active section in left sidebar
-  const [activeSection, setActiveSection] = useState("main");
+  const [activeSection, setActiveSection] = useState(() => {
+    if (initialSection) return initialSection;
+    if (typeof window !== "undefined") {
+      const p = new URLSearchParams(window.location.search);
+      const s = p.get("section");
+      if (s) return s;
+    }
+    return "main";
+  });
 
   // Data states
   const [loading, setLoading] = useState(false);
@@ -1009,9 +1025,10 @@ export default function ClientSettingsView({
     setPlError("");
     setLastSyncedAt(null);
     setSelectedClientName(nextClient);
-  }, [isDirty, selectedClientName]);
+    onSelectClient?.(nextClient);
+  }, [isDirty, selectedClientName, onSelectClient]);
 
-  // Keep selectedClientName synced with managedClient if present
+  // Keep selectedClientName synced with managedClient or initialClientName
   useEffect(() => {
     if (managedClient?.clientName && managedClient.clientName !== selectedClientName) {
       setSettings(null);
@@ -1020,8 +1037,47 @@ export default function ClientSettingsView({
       setErrorMsg("");
       setLastSyncedAt(null);
       setSelectedClientName(managedClient.clientName);
+    } else if (initialClientName && initialClientName !== selectedClientName && !managedClient) {
+      setSettings(null);
+      setIsDirty(false);
+      setSaveSuccessMsg("");
+      setErrorMsg("");
+      setLastSyncedAt(null);
+      setSelectedClientName(initialClientName);
     }
-  }, [managedClient, selectedClientName]);
+  }, [managedClient, initialClientName, selectedClientName]);
+
+  useEffect(() => {
+    if (initialSection && initialSection !== activeSection) {
+      setActiveSection(initialSection);
+    }
+  }, [initialSection, activeSection]);
+
+  // Auto-scroll to requested subsection (e.g. #settings-integration-tools)
+  useEffect(() => {
+    let targetSub = initialSubsection;
+    if (!targetSub && typeof window !== "undefined") {
+      const p = new URLSearchParams(window.location.search);
+      targetSub = p.get("subsection") || "";
+    }
+    if (targetSub === "integration-tools" && settings && activeSection === "main") {
+      const timer = setTimeout(() => {
+        const el = document.getElementById("settings-integration-tools");
+        if (el) {
+          el.scrollIntoView({ behavior: "smooth", block: "start" });
+          el.style.transition = "background-color 0.4s ease, border-color 0.4s ease";
+          el.style.backgroundColor = "rgba(14, 165, 233, 0.08)";
+          el.style.borderRadius = "8px";
+          el.style.padding = "16px";
+          setTimeout(() => {
+            el.style.backgroundColor = "transparent";
+            el.style.padding = "20px 0 0 0";
+          }, 2400);
+        }
+      }, 200);
+      return () => clearTimeout(timer);
+    }
+  }, [initialSubsection, settings, activeSection]);
 
   // Register navigation guard with parent views (e.g. NavShell tabs, PMA System settings tab)
   useEffect(() => {
@@ -3006,7 +3062,7 @@ export default function ClientSettingsView({
                   </div>
 
                   {/* Sub-group C: Integration tools (Admin only) */}
-                  <div style={{ marginTop: "24px", paddingTop: "20px", borderTop: "1px solid #F1F5F9", marginBottom: "24px" }}>
+                  <div id="settings-integration-tools" style={{ marginTop: "24px", paddingTop: "20px", borderTop: "1px solid #F1F5F9", marginBottom: "24px" }}>
                     <h4 style={{ margin: "0 0 12px", fontSize: "14px", fontWeight: "700", color: "#0F172A" }}>Integration tools</h4>
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "16px", marginBottom: "16px" }}>
                       <div>

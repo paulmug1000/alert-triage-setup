@@ -25,6 +25,7 @@ export const REPORTING_CONTROL_SHEET_ID = "1uAJS6ZWn0o-GPU9Ea3DIVU9nzQoRnXrMfmBc
 export const DEFAULT_CLIENTS_FOLDER_ID = "16qLMIFy1GyiEZ4DkKjVaFXOKGQKDW8Cj";
 export const CLIENT_SETUP_OVERVIEW_TAB = "ClientSetupOverview";
 export const CLIENT_SETUP_TASKS_TAB = "ClientSetupTasks";
+export const SETUP_PROCESS_TEMPLATE_TAB = "SetupProcessTemplate";
 
 function normalizeKey(str) {
   return String(str || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
@@ -111,6 +112,9 @@ export const SETUP_TASKS_CATALOG = [
   { id: "p5_add_users", phaseId: "phase_5", title: "Add users to Users tab in Automation Commander sheet" },
   { id: "p5_email_client", phaseId: "phase_5", title: "Email client with login details and launch live access" }
 ];
+
+export const DEFAULT_SETUP_PHASES = SETUP_PHASES;
+export const DEFAULT_SETUP_TASKS_CATALOG = SETUP_TASKS_CATALOG;
 
 export const OAUTH_TOOLS = [
   "xero",
@@ -532,7 +536,7 @@ export function revalidateClientsSetupInBackground(clients = []) {
 let setupTabsVerified = false;
 
 /**
- * Ensure ClientSetupOverview and ClientSetupTasks tabs exist on Automation Commander.
+ * Ensure ClientSetupOverview, ClientSetupTasks, and SetupProcessTemplate tabs exist on Automation Commander.
  */
 export async function ensureClientSetupTabs(sheets, automationCommanderSheetId = DEFAULT_AC_SHEET_ID) {
   const acId = automationCommanderSheetId || DEFAULT_AC_SHEET_ID;
@@ -562,6 +566,16 @@ export async function ensureClientSetupTabs(sheets, automationCommanderSheetId =
           properties: {
             title: CLIENT_SETUP_TASKS_TAB,
             gridProperties: { rowCount: 5000, columnCount: 10, frozenRowCount: 1 }
+          }
+        }
+      });
+    }
+    if (!titles.has(SETUP_PROCESS_TEMPLATE_TAB)) {
+      requests.push({
+        addSheet: {
+          properties: {
+            title: SETUP_PROCESS_TEMPLATE_TAB,
+            gridProperties: { rowCount: 200, columnCount: 15, frozenRowCount: 1 }
           }
         }
       });
@@ -601,11 +615,245 @@ export async function ensureClientSetupTabs(sheets, automationCommanderSheetId =
           }
         });
       }
+
+      if (!titles.has(SETUP_PROCESS_TEMPLATE_TAB)) {
+        await sheets.spreadsheets.values.update({
+          spreadsheetId: acId,
+          range: `${SETUP_PROCESS_TEMPLATE_TAB}!A1:L1`,
+          valueInputOption: "RAW",
+          requestBody: {
+            values: [[
+              "Phase ID", "Phase Title", "Phase Description", "Phase Order",
+              "Task ID", "Task Title", "Task Order", "Auto Completable",
+              "Notes", "Active", "Updated At", "Updated By"
+            ]]
+          }
+        });
+
+        // Seed default tasks
+        const defaultRows = DEFAULT_SETUP_TASKS_CATALOG.map((t, idx) => {
+          const phase = DEFAULT_SETUP_PHASES.find(p => p.id === t.phaseId);
+          const phaseOrder = phase ? (DEFAULT_SETUP_PHASES.indexOf(phase) + 1) : 1;
+          return [
+            t.phaseId,
+            phase?.title || "",
+            phase?.description || "",
+            phaseOrder,
+            t.id,
+            t.title,
+            (idx + 1) * 10,
+            t.autoCompletable ? "TRUE" : "FALSE",
+            "",
+            "TRUE",
+            new Date().toISOString(),
+            "System Initialiser"
+          ];
+        });
+        await sheets.spreadsheets.values.update({
+          spreadsheetId: acId,
+          range: `${SETUP_PROCESS_TEMPLATE_TAB}!A2:L${defaultRows.length + 1}`,
+          valueInputOption: "RAW",
+          requestBody: { values: defaultRows }
+        });
+      }
     }
     setupTabsVerified = true;
   } catch (err) {
     console.warn("⚠️ ensureClientSetupTabs error:", err.message);
   }
+}
+
+/**
+ * Returns full setup process template (Phases & Tasks catalog) with Redis caching.
+ */
+export async function getSetupProcessTemplate(sheets, forceRefresh = false) {
+  const cacheKey = "pulse:setup:process_template";
+  if (!forceRefresh) {
+    try {
+      const cached = await redisClient.get(cacheKey);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (parsed?.phases?.length && parsed?.tasks?.length) {
+          return parsed;
+        }
+      }
+    } catch (e) {
+      console.warn("Redis setup process template read error:", e.message);
+    }
+  }
+
+  await ensureClientSetupTabs(sheets);
+  const acId = DEFAULT_AC_SHEET_ID;
+
+  try {
+    const res = await withRetry(() =>
+      sheets.spreadsheets.values.get({
+        spreadsheetId: acId,
+        range: `${SETUP_PROCESS_TEMPLATE_TAB}!A2:L200`
+      })
+    );
+
+    const rows = res.data.values || [];
+    if (rows.length === 0) {
+      const seeded = await seedDefaultSetupProcessTemplate(sheets);
+      return seeded;
+    }
+
+    const phasesMap = new Map();
+    DEFAULT_SETUP_PHASES.forEach((p, idx) => {
+      phasesMap.set(p.id, { ...p, order: idx + 1 });
+    });
+
+    const tasks = [];
+
+    rows.forEach((r, idx) => {
+      const phaseId = String(r[0] || "").trim();
+      const phaseTitle = String(r[1] || "").trim();
+      const phaseDesc = String(r[2] || "").trim();
+      const phaseOrder = Number(r[3]) || (phasesMap.size + 1);
+
+      if (phaseId) {
+        if (!phasesMap.has(phaseId)) {
+          phasesMap.set(phaseId, {
+            id: phaseId,
+            title: phaseTitle || phaseId,
+            description: phaseDesc || "",
+            order: phaseOrder
+          });
+        } else {
+          const existing = phasesMap.get(phaseId);
+          if (phaseTitle) existing.title = phaseTitle;
+          if (phaseDesc) existing.description = phaseDesc;
+          if (r[3] !== undefined && r[3] !== "") existing.order = Number(r[3]);
+        }
+      }
+
+      const taskId = String(r[4] || "").trim();
+      const taskTitle = String(r[5] || "").trim();
+      if (taskId && taskTitle) {
+        const taskOrder = Number(r[6]) !== undefined && !isNaN(Number(r[6])) ? Number(r[6]) : ((idx + 1) * 10);
+        const autoCompletable = String(r[7] || "").toUpperCase() === "TRUE";
+        const description = String(r[8] || "").trim();
+        const active = r[9] === undefined || String(r[9] || "").toUpperCase() !== "FALSE";
+
+        tasks.push({
+          id: taskId,
+          phaseId,
+          title: taskTitle,
+          order: taskOrder,
+          autoCompletable,
+          description,
+          active
+        });
+      }
+    });
+
+    const phases = Array.from(phasesMap.values()).sort((a, b) => a.order - b.order);
+    tasks.sort((a, b) => a.order - b.order);
+
+    const templateData = { phases, tasks };
+    await redisClient.set(cacheKey, JSON.stringify(templateData), { EX: 86400 }).catch(() => {});
+    return templateData;
+  } catch (err) {
+    console.error("Error reading setup process template from sheet:", err.message);
+    return {
+      phases: DEFAULT_SETUP_PHASES,
+      tasks: DEFAULT_SETUP_TASKS_CATALOG.map((t, idx) => ({ ...t, order: (idx + 1) * 10, active: true, description: "" }))
+    };
+  }
+}
+
+/**
+ * Saves setup process template changes to Automation Commander and updates Redis cache.
+ */
+export async function saveSetupProcessTemplate(sheets, { phases, tasks }, userEmail = "admin@pulse") {
+  await ensureClientSetupTabs(sheets);
+  const acId = DEFAULT_AC_SHEET_ID;
+  const now = new Date().toISOString();
+
+  const phaseMap = new Map((phases || DEFAULT_SETUP_PHASES).map((p, idx) => [p.id, { ...p, order: p.order || (idx + 1) }]));
+
+  const rows = (tasks || []).map((t, idx) => {
+    const phase = phaseMap.get(t.phaseId) || { id: t.phaseId, title: t.phaseId, description: "", order: 1 };
+    const taskOrder = t.order !== undefined && !isNaN(Number(t.order)) ? Number(t.order) : ((idx + 1) * 10);
+    return [
+      phase.id || "",
+      phase.title || "",
+      phase.description || "",
+      phase.order || 1,
+      t.id,
+      t.title,
+      taskOrder,
+      t.autoCompletable ? "TRUE" : "FALSE",
+      t.description || "",
+      t.active !== false ? "TRUE" : "FALSE",
+      now,
+      userEmail
+    ];
+  });
+
+  // Clear existing rows
+  await withRetry(() =>
+    sheets.spreadsheets.values.clear({
+      spreadsheetId: acId,
+      range: `${SETUP_PROCESS_TEMPLATE_TAB}!A2:L300`
+    })
+  );
+
+  if (rows.length > 0) {
+    await withRetry(() =>
+      sheets.spreadsheets.values.update({
+        spreadsheetId: acId,
+        range: `${SETUP_PROCESS_TEMPLATE_TAB}!A2:L${rows.length + 1}`,
+        valueInputOption: "RAW",
+        requestBody: { values: rows }
+      })
+    );
+  }
+
+  const templateData = {
+    phases: Array.from(phaseMap.values()).sort((a, b) => a.order - b.order),
+    tasks: tasks.slice().sort((a, b) => a.order - b.order)
+  };
+
+  await redisClient.set("pulse:setup:process_template", JSON.stringify(templateData), { EX: 86400 }).catch(() => {});
+
+  // Clear client checklist caches so updated template displays immediately
+  try {
+    const keys = await redisClient.keys("pulse:setup:checklist:*");
+    if (keys && keys.length > 0) {
+      await redisClient.del(keys);
+    }
+  } catch (e) {
+    console.warn("Could not invalidate client checklist caches:", e.message);
+  }
+
+  // Log in PMA Activity
+  await logPmaActivity(sheets, {
+    client: "Global",
+    category: "Setup",
+    action: "edit_setup_process",
+    summary: `Updated setup process template: ${tasks.length} steps configured across ${phases.length} phases`,
+    user: userEmail
+  }).catch(() => {});
+
+  return templateData;
+}
+
+/**
+ * Resets setup process template back to system defaults.
+ */
+export async function seedDefaultSetupProcessTemplate(sheets, userEmail = "System Initialiser") {
+  const defaultTasks = DEFAULT_SETUP_TASKS_CATALOG.map((t, idx) => ({
+    ...t,
+    order: (idx + 1) * 10,
+    active: true,
+    description: ""
+  }));
+  return await saveSetupProcessTemplate(sheets, {
+    phases: DEFAULT_SETUP_PHASES,
+    tasks: defaultTasks
+  }, userEmail);
 }
 
 /**
@@ -772,12 +1020,16 @@ export async function getClientChecklistState(sheets, clientName, masterSheetId)
     t.metadata = `${config.crmTool} Connected`;
   }
 
-  // Build full phase structure
-  let totalTasks = SETUP_TASKS_CATALOG.length;
+  // Build full phase structure from dynamic setup process template
+  const template = await getSetupProcessTemplate(sheets);
+  const phasesCatalog = template?.phases || DEFAULT_SETUP_PHASES;
+  const tasksCatalog = (template?.tasks || DEFAULT_SETUP_TASKS_CATALOG).filter(t => t.active !== false);
+
+  let totalTasks = tasksCatalog.length;
   let completedCount = 0;
 
-  const phases = SETUP_PHASES.map(phase => {
-    const tasksInPhase = SETUP_TASKS_CATALOG.filter(t => t.phaseId === phase.id);
+  const phases = phasesCatalog.map(phase => {
+    const tasksInPhase = tasksCatalog.filter(t => t.phaseId === phase.id);
     let phaseCompleted = 0;
 
     const tasks = tasksInPhase.map(catalogTask => {
@@ -792,6 +1044,8 @@ export async function getClientChecklistState(sheets, clientName, masterSheetId)
         phaseId: catalogTask.phaseId,
         title: catalogTask.title,
         autoCompletable: Boolean(catalogTask.autoCompletable),
+        description: catalogTask.description || "",
+        order: catalogTask.order,
         isCompleted,
         completedAt: recorded?.completedAt || "",
         completedBy: recorded?.completedBy || "",
@@ -803,7 +1057,7 @@ export async function getClientChecklistState(sheets, clientName, masterSheetId)
       ...phase,
       totalCount: tasks.length,
       completedCount: phaseCompleted,
-      isPhaseComplete: phaseCompleted === tasks.length,
+      isPhaseComplete: phaseCompleted > 0 && phaseCompleted === tasks.length,
       tasks
     };
   });
@@ -842,7 +1096,8 @@ export async function updateClientChecklistTask(sheets, { clientName, taskId, is
 
   const acId = DEFAULT_AC_SHEET_ID;
   const now = new Date().toISOString();
-  const catalogItem = SETUP_TASKS_CATALOG.find(t => t.id === taskId);
+  const template = await getSetupProcessTemplate(sheets).catch(() => null);
+  const catalogItem = (template?.tasks || DEFAULT_SETUP_TASKS_CATALOG).find(t => t.id === taskId) || DEFAULT_SETUP_TASKS_CATALOG.find(t => t.id === taskId);
   const phaseId = catalogItem?.phaseId || "";
   const taskTitle = catalogItem?.title || taskId;
 
@@ -1403,7 +1658,10 @@ export async function provisionNewClientSystem({
       }
     });
 
-    const initialTaskRows = SETUP_TASKS_CATALOG.map(t => {
+    const template = await getSetupProcessTemplate(sheets).catch(() => null);
+    const catalogTasks = (template?.tasks || DEFAULT_SETUP_TASKS_CATALOG).filter(t => t.active !== false);
+
+    const initialTaskRows = catalogTasks.map(t => {
       const isAutoDone = [
         "p1_drive_folder",
         "p1_duplicate_templates",

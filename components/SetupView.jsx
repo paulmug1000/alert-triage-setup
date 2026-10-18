@@ -3,6 +3,7 @@ import Spinner from "./Spinner";
 import EditableSheetEditor from "./EditableSheetEditor";
 import OnboardClientModal from "./OnboardClientModal";
 import OnboardingChecklistView from "./OnboardingChecklistView";
+import EditSetupProcessView from "./EditSetupProcessView";
 
 export default function SetupView({
   allOutgoingsClients = [],
@@ -21,6 +22,40 @@ export default function SetupView({
   const [activeSheetEditor, setActiveSheetEditor] = useState(null); // 'budget' | 'contractors' | 'outgoings' | null
   const [isOnboardModalOpen, setIsOnboardModalOpen] = useState(false);
   const [showChecklistHistory, setShowChecklistHistory] = useState(false);
+
+  const [isEditingProcess, setIsEditingProcess] = useState(() => {
+    if (typeof window !== "undefined") {
+      const p = new URLSearchParams(window.location.search);
+      return p.get("action") === "edit-process" || p.get("mode") === "edit-process";
+    }
+    return false;
+  });
+
+  const handleOpenEditProcess = () => {
+    setIsEditingProcess(true);
+    if (typeof window !== "undefined") {
+      const p = new URLSearchParams(window.location.search);
+      p.set("nav", "setup");
+      p.set("action", "edit-process");
+      window.history.replaceState(null, "", `/pma?${p.toString()}`);
+    }
+  };
+
+  const handleCloseEditProcess = () => {
+    setIsEditingProcess(false);
+    if (typeof window !== "undefined") {
+      const p = new URLSearchParams(window.location.search);
+      p.delete("action");
+      p.delete("mode");
+      p.set("nav", "setup");
+      window.history.replaceState(null, "", `/pma?${p.toString()}`);
+    }
+    if (!selectedClientName && !managedClient) {
+      loadOverview();
+    } else if (selectedClient) {
+      loadConfig(selectedClient);
+    }
+  };
 
   // Determine initial selected client
   const [selectedClientName, setSelectedClientName] = useState(() => {
@@ -200,6 +235,19 @@ export default function SetupView({
   const isCrmOAuth = ["clickup", "close", "capsule", "hubspot", "monday", "pipedrive"].includes(crmTool.toLowerCase());
 
   // ============================================================================
+  // VIEW 0: EDIT SETUP PROCESS SCREEN (ADMIN ONLY)
+  // ============================================================================
+  if (isEditingProcess) {
+    return (
+      <EditSetupProcessView
+        onBack={handleCloseEditProcess}
+        user={user}
+        isAdmin={isUserAdmin}
+      />
+    );
+  }
+
+  // ============================================================================
   // VIEW 1: OVERVIEW SCREEN (NO CLIENT SELECTED & NOT MANAGED CLIENT)
   // ============================================================================
   if (!selectedClientName && !managedClient) {
@@ -229,7 +277,32 @@ export default function SetupView({
           </div>
 
           {isUserAdmin && (
-            <div style={{ display: "flex", gap: "10px" }}>
+            <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+              <button
+                type="button"
+                onClick={handleOpenEditProcess}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "8px",
+                  padding: "10px 16px",
+                  borderRadius: "8px",
+                  border: "1px solid #CBD5E1",
+                  background: "#FFFFFF",
+                  color: "#0F172A",
+                  fontSize: "13px",
+                  fontWeight: "600",
+                  cursor: "pointer",
+                  boxShadow: "0 1px 2px rgba(0, 0, 0, 0.05)",
+                  transition: "all 0.15s ease"
+                }}
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 20h9" />
+                  <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+                </svg>
+                <span>Edit setup process</span>
+              </button>
               <button
                 type="button"
                 onClick={() => setIsOnboardModalOpen(true)}
@@ -314,7 +387,7 @@ export default function SetupView({
                 color: overviewFilter === "all" ? "#FFFFFF" : "#475569"
               }}
             >
-              All Clients ({totalClientsCount})
+              All clients ({totalClientsCount})
             </button>
             <button
               type="button"
@@ -330,7 +403,7 @@ export default function SetupView({
                 color: overviewFilter === "setup" ? "#B45309" : "#475569"
               }}
             >
-              In Setup Mode ({setupClientsCount})
+              In setup mode ({setupClientsCount})
             </button>
             <button
               type="button"
@@ -388,7 +461,7 @@ export default function SetupView({
                   <th style={{ padding: "12px 16px", fontWeight: "700", color: "#475569" }}>Status</th>
                   <th style={{ padding: "12px 16px", fontWeight: "700", color: "#475569" }}>Accounting</th>
                   <th style={{ padding: "12px 16px", fontWeight: "700", color: "#475569" }}>CRM</th>
-                  <th style={{ padding: "12px 16px", fontWeight: "700", color: "#475569" }}>Onboarding Progress</th>
+                  <th style={{ padding: "12px 16px", fontWeight: "700", color: "#475569" }}>Onboarding progress</th>
                   <th style={{ padding: "12px 20px", fontWeight: "700", color: "#475569", textAlign: "right" }}>Actions</th>
                 </tr>
               </thead>
@@ -459,7 +532,7 @@ export default function SetupView({
                             cursor: "pointer"
                           }}
                         >
-                          Manage Setup →
+                          Manage setup →
                         </button>
                       </td>
                     </tr>
@@ -508,7 +581,7 @@ export default function SetupView({
                 marginBottom: "8px"
               }}
             >
-              <span>← All Clients Overview</span>
+              <span>← All clients overview</span>
             </button>
           )}
 
@@ -565,26 +638,52 @@ export default function SetupView({
           )}
 
           {isUserAdmin && (
-            <button
-              type="button"
-              onClick={() => setIsOnboardModalOpen(true)}
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: "6px",
-                padding: "8px 14px",
-                borderRadius: "8px",
-                border: "none",
-                background: "#023f98",
-                color: "#FFFFFF",
-                fontSize: "13px",
-                fontWeight: "700",
-                cursor: "pointer"
-              }}
-            >
-              <span>➕</span>
-              <span>New Client</span>
-            </button>
+            <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+              <button
+                type="button"
+                onClick={handleOpenEditProcess}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  padding: "8px 14px",
+                  borderRadius: "8px",
+                  border: "1px solid #CBD5E1",
+                  background: "#FFFFFF",
+                  color: "#0F172A",
+                  fontSize: "13px",
+                  fontWeight: "600",
+                  cursor: "pointer",
+                  transition: "all 0.15s ease"
+                }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 20h9" />
+                  <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+                </svg>
+                <span>Edit setup process</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsOnboardModalOpen(true)}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  padding: "8px 14px",
+                  borderRadius: "8px",
+                  border: "none",
+                  background: "#023f98",
+                  color: "#FFFFFF",
+                  fontSize: "13px",
+                  fontWeight: "700",
+                  cursor: "pointer"
+                }}
+              >
+                <span>➕</span>
+                <span>New client</span>
+              </button>
+            </div>
           )}
         </div>
       </div>
@@ -643,7 +742,7 @@ export default function SetupView({
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", flexWrap: "wrap", gap: "10px" }}>
                 <div>
                   <h2 style={{ margin: "0 0 4px 0", fontSize: "16px", fontWeight: "700", color: "#0F172A" }}>
-                    1. Setup Mode Lifecycle
+                    1. Setup mode lifecycle
                   </h2>
                   <p style={{ margin: 0, fontSize: "13px", color: "#64748B" }}>
                     When active, client users logging into Pulse are held on the onboarding holding screen instead of live dashboards.
@@ -673,7 +772,7 @@ export default function SetupView({
                 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
                     <label htmlFor="setup-mode-toggle" style={{ fontWeight: "700", fontSize: "14px", color: "#1E293B", cursor: "pointer" }}>
-                      Enable Setup Mode
+                      Enable setup mode
                     </label>
                     <input
                       id="setup-mode-toggle"
@@ -697,7 +796,7 @@ export default function SetupView({
                 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
                     <label htmlFor="request-conn-toggle" style={{ fontWeight: "700", fontSize: "14px", color: "#1E293B", cursor: "pointer" }}>
-                      Request Tool Connections
+                      Request tool connections
                     </label>
                     <input
                       id="request-conn-toggle"
@@ -718,7 +817,7 @@ export default function SetupView({
             <div style={{ background: "#FFFFFF", borderRadius: "12px", border: "1px solid #E2E8F0", padding: "20px", boxShadow: "0 1px 3px rgba(0,0,0,0.04)" }}>
               <div style={{ marginBottom: "16px" }}>
                 <h2 style={{ margin: "0 0 4px 0", fontSize: "16px", fontWeight: "700", color: "#0F172A" }}>
-                  2. Integrated Tools (Master Sheet KeyInfo Sync)
+                  2. Integrated tools (Master sheet KeyInfo sync)
                 </h2>
                 <p style={{ margin: 0, fontSize: "13px", color: "#64748B" }}>
                   Select which platforms this client uses.

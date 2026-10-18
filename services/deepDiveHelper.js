@@ -1061,8 +1061,8 @@ export const CashDeepDiveEngine = {
       if (hasReconConfig && reconEntry && !reconEntry.isReconciled) {
         // Fall through directly to modeled forecast allocations below
       } else {
-        // Month is reconciled (or client has no Recon Sheet): extract transactions from Row 300
-        // (which contains accounting tool transactions + Recon right-hand side unreconciled transactions)
+        // Month is reconciled (or client has no Recon Sheet):
+        // Gather all overhead bills from Row 300 across all months (used for authentic accounting category matching)
         const allOverheadTxns = [];
         const txnsByMonth = keyData.outgoings?.transactionsByMonth || {};
         for (const y of [1, 2, 3]) {
@@ -1075,55 +1075,157 @@ export const CashDeepDiveEngine = {
           }
         }
 
-        // Merge live unreconciled items from Recon Sheet (covers items entered before cost sync runs)
-        const liveReconUnrec = reconEntry?.unreconciledItems || [];
-        liveReconUnrec.forEach((uItem) => {
-          const alreadyInList = allOverheadTxns.some((t) => {
-            const sMatch = String(t.s || "").toLowerCase().trim() === String(uItem.s || "").toLowerCase().trim();
-            const gMatch = Math.abs((t.g || 0) - (uItem.g || 0)) < 0.05;
-            return sMatch && gMatch;
-          });
-          if (!alreadyInList) {
-            allOverheadTxns.push(uItem);
+        const normCat = (s) => String(s || "").replace(/^\d+\s*[-–]\s*/, "").trim().toLowerCase();
+        const allOutgoingsExpenses = keyData.outgoings?.expenses || [];
+        const knownExpMap = new Map();
+        allOutgoingsExpenses.forEach((e) => {
+          if (e.name && !e.name.toLowerCase().includes("depreciation") && e.name.toLowerCase() !== "hide") {
+            knownExpMap.set(normCat(e.name), e.name);
           }
         });
 
-        const paidTxns = allOverheadTxns.filter((t) => {
-          const dateStr = t.p || (t.u ? t.d : "");
-          const pd = CashDeepDiveEngine.parsePayDate(dateStr);
-          return pd && pd.getFullYear() === targetYear && pd.getMonth() === targetMonth;
-        });
+        const resolveCategory = (rawCat) => {
+          const nCat = normCat(rawCat);
+          if (knownExpMap.has(nCat)) return knownExpMap.get(nCat);
+          if (nCat.includes("travel - national") || nCat === "travel national") {
+            return knownExpMap.get("travel - national") || knownExpMap.get("travel - uk") || knownExpMap.get("travel") || "Travel - National";
+          }
+          if (nCat.includes("it software and consumables") || nCat.includes("software and consumables") || nCat.includes("it software & consumables")) {
+            return knownExpMap.get("it software and consumables") || knownExpMap.get("software & it subscriptions") || knownExpMap.get("it software and information") || "IT Software and Consumables";
+          }
+          return rawCat || "General Expenses";
+        };
 
-        if (paidTxns.length > 0) {
-          const normCat = (s) => String(s || "").replace(/^\d+\s*[-–]\s*/, "").trim().toLowerCase();
-          const allOutgoingsExpenses = keyData.outgoings?.expenses || [];
-          const knownExpMap = new Map();
-          allOutgoingsExpenses.forEach((e) => {
-            if (e.name && !e.name.toLowerCase().includes("depreciation") && e.name.toLowerCase() !== "hide") {
-              knownExpMap.set(normCat(e.name), e.name);
+        const bankOutgoings = reconEntry?.bankOutgoings || [];
+        const liveReconUnrec = reconEntry?.unreconciledItems || [];
+        const txnsToGroup = [];
+
+        // When Recon Sheet provides bank outgoings, build the exact cash list from bank transactions
+        // and match each against the accounting tool's bills to inherit the authentic category
+        if (bankOutgoings.length > 0) {
+          const supplierCategoryHistory = new Map();
+          allOverheadTxns.forEach((x) => {
+            const sNorm = String(x.s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+            if (sNorm && x.c) {
+              supplierCategoryHistory.set(sNorm.slice(0, 8), x.c);
             }
           });
 
-          const resolveCategory = (rawCat) => {
-            const nCat = normCat(rawCat);
-            if (knownExpMap.has(nCat)) return knownExpMap.get(nCat);
-            if (nCat.includes("travel - national") || nCat === "travel national") {
-              return knownExpMap.get("travel - national") || knownExpMap.get("travel - uk") || knownExpMap.get("travel") || "Travel - National";
-            }
-            if (nCat.includes("it software and consumables") || nCat.includes("software and consumables") || nCat.includes("it software & consumables")) {
-              return knownExpMap.get("it software and consumables") || knownExpMap.get("software & it subscriptions") || knownExpMap.get("it software and information") || "IT Software and Consumables";
-            }
-            return rawCat || "General Expenses";
-          };
+          bankOutgoings.forEach((b) => {
+            const bPayee = String(b.payee || "");
+            const bNorm = bPayee.toLowerCase().replace(/[^a-z0-9]/g, "");
+            let matchedCat = null;
+            let matchedDesc = bPayee;
 
-          const catMap = new Map();
-          paidTxns.forEach((t) => {
-            const displayName = resolveCategory(t.c);
-            if (!catMap.has(displayName)) {
-              catMap.set(displayName, { name: displayName, txns: [] });
+            // 1. Credit card balance transfers / payments
+            if (
+              bNorm.includes("capitalontap") ||
+              bNorm.includes("creditcard") ||
+              bNorm.includes("transferto") ||
+              bNorm.includes("barclaycard") ||
+              bNorm.includes("mastercard") ||
+              bNorm.includes("amex")
+            ) {
+              matchedCat = "Credit Card Settlement";
+              matchedDesc = bPayee;
             }
+
+            // 2. Direct bill match by exact gross amount + supplier prefix
+            if (!matchedCat) {
+              const direct = allOverheadTxns.find((x) => {
+                const gMatch = Math.abs((x.g || 0) - b.amount) < 0.05;
+                const xNorm = String(x.s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+                return gMatch && (bNorm.includes(xNorm.slice(0, 5)) || xNorm.includes(bNorm.slice(0, 5)));
+              });
+              if (direct) {
+                matchedCat = direct.c;
+                matchedDesc = direct.s || bPayee;
+              }
+            }
+
+            // 3. Multi-bill batch payment match (bills with same supplier summing to bank amount)
+            if (!matchedCat) {
+              const sameSupplierBills = allOverheadTxns.filter((x) => {
+                const xNorm = String(x.s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+                return bNorm.includes(xNorm.slice(0, 5)) || xNorm.includes(bNorm.slice(0, 5));
+              });
+              const sum = sameSupplierBills.reduce((acc, x) => acc + (x.g || 0), 0);
+              if (Math.abs(sum - b.amount) < 0.1 && sameSupplierBills.length > 0) {
+                matchedCat = sameSupplierBills[0].c;
+                matchedDesc = `${bPayee} (${sameSupplierBills.length} bills)`;
+              }
+            }
+
+            // 4. Supplier historical accounting category
+            if (!matchedCat) {
+              for (const [key, cat] of supplierCategoryHistory.entries()) {
+                if (bNorm.includes(key)) {
+                  matchedCat = cat;
+                  break;
+                }
+              }
+            }
+
+            // 5. Fallback
+            if (!matchedCat) {
+              matchedCat = "General Expenses";
+            }
+
+            txnsToGroup.push({
+              date: b.d || "",
+              paidDate: b.d || "",
+              supplier: matchedDesc || bPayee,
+              ref: b.ref || "",
+              account: b.account || "",
+              net: b.amount,
+              vat: 0,
+              gross: b.amount,
+              amount: -Math.abs(b.amount),
+              category: matchedCat,
+              isUnreconciled: false,
+              isCash: true,
+            });
+          });
+
+          // Append live unreconciled outgoings from Recon Sheet RHS (already categorized in Col CK)
+          liveReconUnrec.forEach((uItem) => {
+            const grossVal = uItem.g !== undefined ? uItem.g : (uItem.n !== undefined ? uItem.n + (uItem.v || 0) : (uItem.amount || 0));
+            txnsToGroup.push({
+              date: uItem.d || "",
+              paidDate: uItem.p || uItem.d || "",
+              supplier: uItem.s || "",
+              ref: uItem.r || "",
+              net: uItem.n !== undefined ? uItem.n : grossVal,
+              vat: uItem.v !== undefined ? uItem.v : 0,
+              gross: grossVal,
+              amount: -Math.abs(grossVal),
+              category: uItem.c || "General Expenses",
+              isUnreconciled: true,
+              isCash: true,
+            });
+          });
+        } else {
+          // Fallback for non-Recon clients: use Row 300 bills filtered by paid date
+          liveReconUnrec.forEach((uItem) => {
+            const alreadyInList = allOverheadTxns.some((t) => {
+              const sMatch = String(t.s || "").toLowerCase().trim() === String(uItem.s || "").toLowerCase().trim();
+              const gMatch = Math.abs((t.g || 0) - (uItem.g || 0)) < 0.05;
+              return sMatch && gMatch;
+            });
+            if (!alreadyInList) {
+              allOverheadTxns.push(uItem);
+            }
+          });
+
+          const paidTxns = allOverheadTxns.filter((t) => {
+            const dateStr = t.p || (t.u ? t.d : "");
+            const pd = CashDeepDiveEngine.parsePayDate(dateStr);
+            return pd && pd.getFullYear() === targetYear && pd.getMonth() === targetMonth;
+          });
+
+          paidTxns.forEach((t) => {
             const grossVal = t.g !== undefined ? t.g : (t.n !== undefined ? t.n + (t.v || 0) : (t.amount || 0));
-            catMap.get(displayName).txns.push({
+            txnsToGroup.push({
               date: t.d || "",
               paidDate: t.p || (t.u ? t.d : "") || "",
               supplier: t.s || "",
@@ -1132,9 +1234,21 @@ export const CashDeepDiveEngine = {
               vat: t.v !== undefined ? t.v : 0,
               gross: grossVal,
               amount: -Math.abs(grossVal),
+              category: t.c || "General Expenses",
               isUnreconciled: Boolean(t.u),
               isCash: true,
             });
+          });
+        }
+
+        if (txnsToGroup.length > 0) {
+          const catMap = new Map();
+          txnsToGroup.forEach((t) => {
+            const displayName = resolveCategory(t.category);
+            if (!catMap.has(displayName)) {
+              catMap.set(displayName, { name: displayName, txns: [] });
+            }
+            catMap.get(displayName).txns.push(t);
           });
 
           catMap.forEach(({ name, txns }) => {
@@ -1150,7 +1264,7 @@ export const CashDeepDiveEngine = {
             const grossSum = txns.reduce((sum, tx) => sum + Math.abs(tx.gross), 0);
             results.push({
               name,
-              amount: -Math.abs(Math.round(grossSum)),
+              amount: -Math.abs(Math.round(grossSum * 100) / 100),
               transactions: txns,
               isCash: true,
             });
@@ -2222,10 +2336,10 @@ export function buildDeepDiveData({
   if (ddType === "cashOutgoings" || ddType === "expCash") {
     const list = CashDeepDiveEngine.getOutgoingsCash(effectiveDate, "expCash", keyData);
     const targetCellVal = parseMoney(cellValue);
-    const total = list.reduce((sum, item) => sum + item.amount, 0);
-    const drift = Math.round(targetCellVal - total);
+    const total = list.reduce((sum, item) => sum + (item.amount || 0), 0);
+    const drift = Math.round((targetCellVal - total) * 100) / 100;
 
-    if (Math.abs(drift) > 2) {
+    if (Math.abs(drift) > 0.05) {
       list.push({
         name: formatAdjustmentLabel("Manual adjustment", cellNote),
         amount: drift,

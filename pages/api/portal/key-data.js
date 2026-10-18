@@ -894,6 +894,7 @@ export default async function handler(req, res) {
           targetTabNames.forEach((t) => {
             batchRanges.push(`'${t}'!CR2`);
             batchRanges.push(`'${t}'!CD4:CN30`);
+            batchRanges.push(`'${t}'!A3:Q200`);
           });
 
           const reconBatchResp = await withRetry(() =>
@@ -907,18 +908,25 @@ export default async function handler(req, res) {
           const valueRanges = reconBatchResp.data.valueRanges || [];
           for (let i = 0; i < targetTabNames.length; i++) {
             const tabName = targetTabNames[i];
-            const cr2Val = valueRanges[i * 2]?.values?.[0]?.[0];
+            const cr2Val = valueRanges[i * 3]?.values?.[0]?.[0];
             const isReconciled = Boolean(cr2Val === true || String(cr2Val || "").trim().toUpperCase() === "TRUE");
-            const unrecRows = valueRanges[i * 2 + 1]?.values || [];
+            const unrecRows = valueRanges[i * 3 + 1]?.values || [];
+            const bankRows = valueRanges[i * 3 + 2]?.values || [];
 
             const unreconciledItems = [];
             unrecRows.forEach((r) => {
               const dateVal = r[2]; // CF
               const payee = String(r[3] || "").trim(); // CG
+              const desc = String(r[4] || "").trim(); // CH
               const rawAmt = parseFloat(String(r[5] || "0").replace(/[£$€,\s]/g, "")) || 0; // CI
               const amt = Math.abs(rawAmt);
               const cat = String(r[9] || "").trim(); // CK
               const vatApplies = String(r[10] || "").trim().toLowerCase() === "yes"; // CL
+
+              // Credit card purchases are not cash account transactions: exclude them from cashflow
+              const isCreditCard = /master\s*card|credit\s*card|visa\s*credit|amex/i.test(`${desc} ${payee}`);
+              if (isCreditCard) return;
+
               if (amt > 0 && cat) {
                 const vatAmt = vatApplies ? Math.round(amt * (20 / 120) * 100) / 100 : 0;
                 const netAmt = Math.round((amt - vatAmt) * 100) / 100;
@@ -936,9 +944,26 @@ export default async function handler(req, res) {
               }
             });
 
+            const bankOutgoings = [];
+            bankRows.forEach((r) => {
+              const outAmt = parseFloat(String(r[8] || "0").replace(/[£$€,\s]/g, "")) || 0;
+              const cat = String(r[16] || "").trim();
+              if (outAmt > 0 && cat.toLowerCase() === "outgoings") {
+                bankOutgoings.push({
+                  d: String(r[0] || r[1] || "").trim(),
+                  account: String(r[2] || "").trim(),
+                  payee: String(r[3] || "").trim(),
+                  desc: String(r[4] || "").trim(),
+                  ref: String(r[5] || "").trim(),
+                  amount: Math.abs(outAmt),
+                });
+              }
+            });
+
             reconMonths[tabName] = {
               isReconciled,
               unreconciledItems,
+              bankOutgoings,
             };
           }
         }

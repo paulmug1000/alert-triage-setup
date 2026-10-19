@@ -947,16 +947,29 @@ export default async function handler(req, res) {
             const bankOutgoings = [];
             bankRows.forEach((r) => {
               const outAmt = parseFloat(String(r[8] || "0").replace(/[£$€,\s]/g, "")) || 0;
+              const inAmt = parseFloat(String(r[9] || "0").replace(/[£$€,\s]/g, "")) || 0;
               const cat = String(r[16] || "").trim();
-              if (outAmt > 0 && cat.toLowerCase() === "outgoings") {
-                bankOutgoings.push({
-                  d: String(r[0] || r[1] || "").trim(),
-                  account: String(r[2] || "").trim(),
-                  payee: String(r[3] || "").trim(),
-                  desc: String(r[4] || "").trim(),
-                  ref: String(r[5] || "").trim(),
-                  amount: Math.abs(outAmt),
-                });
+              if (cat.toLowerCase() === "outgoings") {
+                if (outAmt > 0) {
+                  bankOutgoings.push({
+                    d: String(r[0] || r[1] || "").trim(),
+                    account: String(r[2] || "").trim(),
+                    payee: String(r[3] || "").trim(),
+                    desc: String(r[4] || "").trim(),
+                    ref: String(r[5] || "").trim(),
+                    amount: Math.abs(outAmt),
+                  });
+                } else if (inAmt > 0) {
+                  bankOutgoings.push({
+                    d: String(r[0] || r[1] || "").trim(),
+                    account: String(r[2] || "").trim(),
+                    payee: String(r[3] || "").trim(),
+                    desc: String(r[4] || "").trim(),
+                    ref: String(r[5] || "").trim(),
+                    amount: -Math.abs(inAmt),
+                    isCredit: true,
+                  });
+                }
               }
             });
 

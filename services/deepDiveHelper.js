@@ -1056,9 +1056,10 @@ export const CashDeepDiveEngine = {
         keyData.outgoings?.reconMonths && Object.keys(keyData.outgoings.reconMonths).length > 0
       );
 
-      // If Recon Sheet is configured for this client and CR2 is unchecked, this is an unfinalized
-      // forecast month: return modeled forecast allocations with no transaction-level breakdown.
-      if (hasReconConfig && reconEntry && !reconEntry.isReconciled) {
+      // When Recon Sheet is configured for this client, a month is ONLY finalized/reconciled
+      // if its tab exists AND CR2 is checked. If no tab exists or CR2 is unchecked, this is
+      // an unfinalized forecast month: return modeled forecast allocations with no transaction breakdown.
+      if (hasReconConfig && (!reconEntry || !reconEntry.isReconciled)) {
         // Fall through directly to modeled forecast allocations below
       } else {
         // Month is reconciled (or client has no Recon Sheet):
@@ -1171,6 +1172,18 @@ export const CashDeepDiveEngine = {
               matchedCat = "General Expenses";
             }
 
+            // Check if this bank transaction matches an uncleared item from Recon RHS
+            const matchedUnrec = liveReconUnrec.find((u) => {
+              const amtMatch = Math.abs(u.g - Math.abs(b.amount)) < 0.05;
+              const bNormCheck = `${bNorm} ${String(b.desc || "").toLowerCase().replace(/[^a-z0-9]/g, "")}`;
+              const uNorm = String(u.s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+              const payeeMatch = bNormCheck.includes(uNorm.slice(0, 5)) || uNorm.includes(bNorm.slice(0, 5));
+              return amtMatch && payeeMatch;
+            });
+
+            const isUnreconciled = Boolean(matchedUnrec);
+            const finalCat = (isUnreconciled && matchedUnrec.c) ? matchedUnrec.c : matchedCat;
+
             txnsToGroup.push({
               date: b.d || "",
               paidDate: b.d || "",
@@ -1180,29 +1193,38 @@ export const CashDeepDiveEngine = {
               net: b.amount,
               vat: 0,
               gross: b.amount,
-              amount: -Math.abs(b.amount),
-              category: matchedCat,
-              isUnreconciled: false,
+              amount: b.isCredit ? Math.abs(b.amount) : -Math.abs(b.amount),
+              category: finalCat,
+              isCredit: Boolean(b.isCredit),
+              isUnreconciled,
               isCash: true,
             });
           });
 
-          // Append live unreconciled outgoings from Recon Sheet RHS (already categorized in Col CK)
+          // Only append unreconciled outgoings from Recon Sheet RHS if not already present in bankOutgoings
           liveReconUnrec.forEach((uItem) => {
-            const grossVal = uItem.g !== undefined ? uItem.g : (uItem.n !== undefined ? uItem.n + (uItem.v || 0) : (uItem.amount || 0));
-            txnsToGroup.push({
-              date: uItem.d || "",
-              paidDate: uItem.p || uItem.d || "",
-              supplier: uItem.s || "",
-              ref: uItem.r || "",
-              net: uItem.n !== undefined ? uItem.n : grossVal,
-              vat: uItem.v !== undefined ? uItem.v : 0,
-              gross: grossVal,
-              amount: -Math.abs(grossVal),
-              category: uItem.c || "General Expenses",
-              isUnreconciled: true,
-              isCash: true,
+            const alreadyInBank = txnsToGroup.some((t) => {
+              const amtMatch = Math.abs(Math.abs(t.gross) - uItem.g) < 0.05;
+              const tNorm = String(t.supplier || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+              const uNorm = String(uItem.s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+              return amtMatch && (tNorm.includes(uNorm.slice(0, 5)) || uNorm.includes(tNorm.slice(0, 5)));
             });
+            if (!alreadyInBank) {
+              const grossVal = uItem.g !== undefined ? uItem.g : (uItem.n !== undefined ? uItem.n + (uItem.v || 0) : (uItem.amount || 0));
+              txnsToGroup.push({
+                date: uItem.d || "",
+                paidDate: uItem.p || uItem.d || "",
+                supplier: uItem.s || "",
+                ref: uItem.r || "",
+                net: uItem.n !== undefined ? uItem.n : grossVal,
+                vat: uItem.v !== undefined ? uItem.v : 0,
+                gross: grossVal,
+                amount: -Math.abs(grossVal),
+                category: uItem.c || "General Expenses",
+                isUnreconciled: true,
+                isCash: true,
+              });
+            }
           });
         } else {
           // Fallback for non-Recon clients: use Row 300 bills filtered by paid date
@@ -1261,7 +1283,7 @@ export const CashDeepDiveEngine = {
               return String(a.supplier || "").localeCompare(String(b.supplier || ""));
             });
 
-            const grossSum = txns.reduce((sum, tx) => sum + Math.abs(tx.gross), 0);
+            const grossSum = txns.reduce((sum, tx) => sum + (tx.isCredit ? -Math.abs(tx.gross) : Math.abs(tx.gross)), 0);
             results.push({
               name,
               amount: -Math.abs(Math.round(grossSum * 100) / 100),

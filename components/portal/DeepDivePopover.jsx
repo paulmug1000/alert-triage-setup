@@ -44,7 +44,7 @@ export default function DeepDivePopover({
       return { isAbove: false, top: "0px", bottom: "auto", left: "0px", maxHeight: "400px" };
     }
 
-    const popoverWidth = 380;
+    const popoverWidth = 480;
     const padding = 20;
 
     // Viewport coordinates
@@ -139,7 +139,7 @@ export default function DeepDivePopover({
           top: placement.top,
           bottom: placement.bottom,
           left: placement.left,
-          width: "380px",
+          width: "480px",
           maxHeight: placement.maxHeight,
           background: "#ffffff",
           border: "1px solid #cbd5e1",
@@ -199,7 +199,7 @@ export default function DeepDivePopover({
               left: auto !important;
               right: auto !important;
               width: 100% !important;
-              max-width: 500px !important;
+              max-width: 520px !important;
               max-height: 85vh !important;
               border-radius: 16px 16px 0 0 !important;
               border-bottom: none !important;
@@ -251,9 +251,9 @@ export default function DeepDivePopover({
           <div style={{ fontSize: "16px", fontWeight: 700, color: "#0047AB", letterSpacing: "-0.2px" }}>
             {title}
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "12px", flexShrink: 0 }}>
             {total !== undefined && (
-              <div style={{ fontSize: "16px", fontWeight: 700, color: "#0047AB" }}>
+              <div style={{ fontSize: "16px", fontWeight: 700, color: "#0047AB", whiteSpace: "nowrap" }}>
                 {formatGBP(total)}
               </div>
             )}
@@ -302,8 +302,10 @@ export default function DeepDivePopover({
                     key={secKey}
                     style={{
                       display: "flex",
+                      alignItems: "flex-start",
                       justifyContent: "space-between",
-                      padding: "6px 14px",
+                      gap: "20px",
+                      padding: "8px 14px",
                       color: "#64748b",
                       fontStyle: "italic",
                       fontSize: "12px",
@@ -311,8 +313,8 @@ export default function DeepDivePopover({
                       marginTop: "6px",
                     }}
                   >
-                    <span>{sec.title}</span>
-                    <span style={{ fontWeight: 600, color: "#0047AB" }}>{formatGBP(sec.amount)}</span>
+                    <span style={{ flex: 1, minWidth: 0, lineHeight: 1.4 }}>{sec.title}</span>
+                    <span style={{ fontWeight: 600, color: "#0047AB", whiteSpace: "nowrap", flexShrink: 0, minWidth: "95px", textAlign: "right" }}>{formatGBP(sec.amount)}</span>
                   </div>
                 );
               }
@@ -335,6 +337,7 @@ export default function DeepDivePopover({
                         display: "flex",
                         justifyContent: "space-between",
                         alignItems: "center",
+                        gap: "20px",
                         padding: "10px 14px",
                         background: "#f8fafc",
                         cursor: "pointer",
@@ -344,7 +347,7 @@ export default function DeepDivePopover({
                         userSelect: "none",
                       }}
                     >
-                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px", flex: 1, minWidth: 0 }}>
                         <span
                           style={{
                             fontSize: "10px",
@@ -357,7 +360,7 @@ export default function DeepDivePopover({
                         </span>
                         <span>{sec.title}</span>
                       </div>
-                      <span>{formatGBP(sec.amount)}</span>
+                      <span style={{ whiteSpace: "nowrap", flexShrink: 0, minWidth: "95px", textAlign: "right" }}>{formatGBP(sec.amount)}</span>
                     </div>
 
                     {isExpanded && (
@@ -382,14 +385,15 @@ export default function DeepDivePopover({
                                 borderBottom: iIdx === sec.items.length - 1 ? "none" : "1px solid #f1f5f9",
                                 display: "flex",
                                 justifyContent: "space-between",
-                                alignItems: "center",
+                                alignItems: "flex-start",
+                                gap: "20px",
                                 fontSize: "13px",
                               }}
                             >
-                              <div style={{ color: "#111827", fontWeight: 500, paddingRight: "10px" }}>
+                              <div style={{ color: "#111827", fontWeight: 500, flex: 1, minWidth: 0, lineHeight: 1.4 }}>
                                 {item.name}{item.role ? ` – ${item.role}` : ""}
                               </div>
-                              <div style={{ fontWeight: 600, color: "#0047AB", whiteSpace: "nowrap" }}>
+                              <div style={{ fontWeight: 600, color: "#0047AB", whiteSpace: "nowrap", flexShrink: 0, minWidth: "95px", textAlign: "right" }}>
                                 {formatGBP(item.amount)}
                               </div>
                             </div>
@@ -413,12 +417,13 @@ export default function DeepDivePopover({
                       padding: "8px 14px",
                       display: "flex",
                       justifyContent: "space-between",
-                      alignItems: "center",
+                      alignItems: "flex-start",
+                      gap: "20px",
                       fontSize: "13px",
                     }}
                   >
-                    <span style={{ color: "#64748b", fontStyle: "italic", fontSize: "12px" }}>{sec.title}</span>
-                    <span style={{ fontWeight: 700, color: "#0047AB" }}>{formatGBP(sec.amount)}</span>
+                    <span style={{ color: "#64748b", fontStyle: "italic", fontSize: "12px", flex: 1, minWidth: 0, lineHeight: 1.4 }}>{sec.title}</span>
+                    <span style={{ fontWeight: 700, color: "#0047AB", whiteSpace: "nowrap", flexShrink: 0, minWidth: "95px", textAlign: "right" }}>{formatGBP(sec.amount)}</span>
                   </div>
                 );
               }
@@ -436,14 +441,15 @@ export default function DeepDivePopover({
                     display: "flex",
                     justifyContent: "space-between",
                     alignItems: "center",
+                    gap: "20px",
                     fontWeight: 600,
                     color: "#0047AB",
                     fontSize: "14px",
                     userSelect: "none",
                   }}
                 >
-                  <span>{sec.title}</span>
-                  <span>{formatGBP(sec.amount)}</span>
+                  <span style={{ flex: 1, minWidth: 0 }}>{sec.title}</span>
+                  <span style={{ whiteSpace: "nowrap", flexShrink: 0, minWidth: "95px", textAlign: "right" }}>{formatGBP(sec.amount)}</span>
                 </div>
               );
             })}
@@ -483,15 +489,26 @@ export default function DeepDivePopover({
                         borderTop: "1px dashed #cbd5e1",
                         background: "#f8fafc",
                         display: "flex",
-                        alignItems: "center",
+                        alignItems: "flex-start",
                         justifyContent: "space-between",
+                        gap: "20px",
                         fontSize: "12px",
                       }}
                     >
-                      <div style={{ color: "#64748b", fontStyle: "italic", fontSize: "11.5px" }}>
+                      <div style={{ color: "#64748b", fontStyle: "italic", fontSize: "11.5px", flex: 1, minWidth: 0, lineHeight: 1.4 }}>
                         {item.name}
                       </div>
-                      <div style={{ fontWeight: 700, color: "#0047AB", fontSize: "13px" }}>
+                      <div
+                        style={{
+                          fontWeight: 700,
+                          color: "#0047AB",
+                          fontSize: "13px",
+                          whiteSpace: "nowrap",
+                          flexShrink: 0,
+                          minWidth: "95px",
+                          textAlign: "right",
+                        }}
+                      >
                         {formatGBP(item.amount)}
                       </div>
                     </div>
@@ -535,7 +552,7 @@ export default function DeepDivePopover({
                           display: "flex",
                           alignItems: "center",
                           justifyContent: "space-between",
-                          gap: "8px",
+                          gap: "20px",
                           fontSize: "12px",
                           cursor: "pointer",
                           background: isExpanded ? "#f8fafc" : "transparent",
@@ -568,7 +585,17 @@ export default function DeepDivePopover({
                             {item.transactions.length}
                           </span>
                         </div>
-                        <div style={{ fontWeight: 700, color: "#0047AB", fontSize: "13px", whiteSpace: "nowrap" }}>
+                        <div
+                          style={{
+                            fontWeight: 700,
+                            color: "#0047AB",
+                            fontSize: "13px",
+                            whiteSpace: "nowrap",
+                            flexShrink: 0,
+                            minWidth: "95px",
+                            textAlign: "right",
+                          }}
+                        >
                           {formatGBP(item.amount)}
                         </div>
                       </div>
@@ -586,14 +613,15 @@ export default function DeepDivePopover({
                                 key={tIdx}
                                 style={{
                                   display: "flex",
-                                  alignItems: "center",
+                                  alignItems: "flex-start",
                                   justifyContent: "space-between",
+                                  gap: "20px",
                                   padding: "5px 0",
                                   borderBottom: tIdx === item.transactions.length - 1 ? "none" : "1px dashed #e2e8f0",
                                   fontSize: "11px",
                                 }}
                               >
-                                <div style={{ minWidth: 0, paddingRight: "8px" }}>
+                                <div style={{ flex: 1, minWidth: 0, paddingRight: "4px" }}>
                                   <div style={{ color: "#0f172a", fontWeight: 500, display: "flex", alignItems: "center", gap: "4px" }}>
                                     <span style={{ color: "#64748b", fontSize: "10px" }}>{dateDisplay}</span>
                                     <span>{t.supplier}</span>
@@ -638,7 +666,16 @@ export default function DeepDivePopover({
                                     )
                                   )}
                                 </div>
-                                <div style={{ fontWeight: 600, color: isCashTxn ? "#0047AB" : "#334155", whiteSpace: "nowrap" }}>
+                                <div
+                                  style={{
+                                    fontWeight: 600,
+                                    color: isCashTxn ? "#0047AB" : "#334155",
+                                    whiteSpace: "nowrap",
+                                    flexShrink: 0,
+                                    minWidth: "95px",
+                                    textAlign: "right",
+                                  }}
+                                >
                                   {formatGBP(isCashTxn ? (t.amount !== undefined ? t.amount : -Math.abs(t.gross || 0)) : (t.net !== undefined ? t.net : (t.amount || t.gross || 0)))}
                                 </div>
                               </div>
@@ -661,12 +698,12 @@ export default function DeepDivePopover({
                       display: "flex",
                       alignItems: "flex-start",
                       justifyContent: "space-between",
-                      gap: "10px",
+                      gap: "20px",
                       fontSize: "12px",
                     }}
                   >
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontWeight: 600, color: "#111827", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                      <div style={{ fontWeight: 600, color: "#111827", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap", lineHeight: 1.35 }}>
                         {item.client ? (
                           <span>
                             <span style={{ fontWeight: 600, color: "#0f172a" }}>{item.client}</span>
@@ -679,7 +716,7 @@ export default function DeepDivePopover({
                       </div>
 
                       {hasCashMeta ? (
-                        <div style={{ color: "#64748b", fontSize: "11px", marginTop: "2px" }}>
+                        <div style={{ color: "#64748b", fontSize: "11px", marginTop: "2px", lineHeight: 1.35 }}>
                           {item.isPipeline ? (
                             <span>Expected: {item.payDateStr}</span>
                           ) : (
@@ -696,7 +733,7 @@ export default function DeepDivePopover({
                           )}
                         </div>
                       ) : item.detail ? (
-                        <div style={{ color: "#64748b", fontSize: "11px", marginTop: "2px" }}>
+                        <div style={{ color: "#64748b", fontSize: "11px", marginTop: "2px", lineHeight: 1.35 }}>
                           {item.detail}
                         </div>
                       ) : null}
@@ -707,6 +744,8 @@ export default function DeepDivePopover({
                         fontWeight: 700,
                         color: "#0047AB",
                         whiteSpace: "nowrap",
+                        flexShrink: 0,
+                        minWidth: "95px",
                         textAlign: "right",
                         fontSize: "13px",
                       }}

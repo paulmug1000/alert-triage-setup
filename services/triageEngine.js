@@ -1315,7 +1315,23 @@ export async function handleStorePrecomputed(req, res, sheets) {
       if (newAlertsFromMemory.length > 0 || newNoActionFromMemory.length > 0 || newProactiveFromMemory.length > 0) {
         finalAlerts = [...mergedAlerts, ...newAlertsFromMemory];
         finalNoActionAlerts = [...mergedNoActionAlerts, ...newNoActionFromMemory];
-        finalProactiveAlerts = newProactiveFromMemory;
+
+        // Precedence rule: "uninvoiced_revenue" takes precedence over "uninvoiced_new_job" for the same job
+        const completedRevenueKeys = new Set(
+          newProactiveFromMemory
+            .filter(a => a.alertType === "uninvoiced_revenue")
+            .map(a => `${a.clientName}:::${a.stableJobKey || a.metadata?.stableJobKey}`)
+            .filter(k => !k.endsWith(":::undefined"))
+        );
+        finalProactiveAlerts = completedRevenueKeys.size > 0
+          ? newProactiveFromMemory.filter(a => {
+              if (a.alertType === "uninvoiced_new_job") {
+                const k = `${a.clientName}:::${a.stableJobKey || a.metadata?.stableJobKey}`;
+                if (completedRevenueKeys.has(k)) return false;
+              }
+              return true;
+            })
+          : newProactiveFromMemory;
 
         finalClientsWithFlags = reconciledClients.map(c => {
           const extra = extraFlagsByClient.get(c.clientName);
@@ -1765,6 +1781,22 @@ export async function handleRunFlagSweep(req, res, sheets) {
 
             const proResults = await Promise.all(proChecks);
             const proAlerts = proResults.flat();
+
+            // Precedence rule: "uninvoiced_revenue" takes precedence over "uninvoiced_new_job" for the same job
+            const completedJobKeys = new Set(
+              proAlerts
+                .filter(a => a.alertType === "uninvoiced_revenue" && a.stableJobKey)
+                .map(a => a.stableJobKey)
+            );
+            const activeProAlerts = completedJobKeys.size > 0
+              ? proAlerts.filter(a => {
+                  if (a.alertType === "uninvoiced_new_job" && a.stableJobKey && completedJobKeys.has(a.stableJobKey)) {
+                    console.log(`  Superseding uninvoiced_new_job alert for ${client.clientName} [${a.stableJobKey}] in favour of uninvoiced_revenue`);
+                    return false;
+                  }
+                  return true;
+                })
+              : proAlerts;
             
             const proactiveTypes = [
               "retainer_invoice", "crm_wipe", "revenue_mismatch", "direct_costs_mismatch",
@@ -1777,7 +1809,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
             const groupedProactive = {};
             proactiveTypes.forEach(t => groupedProactive[t] = []);
             
-            proAlerts.forEach(a => {
+            activeProAlerts.forEach(a => {
               const fpInput = a.alertKey;
               a._fingerprint = createHash("sha256").update(fpInput).digest("hex").substring(0, 16);
               if (a.legacyAlertKey) {
@@ -1797,8 +1829,8 @@ export async function handleRunFlagSweep(req, res, sheets) {
               });
             });
             
-            if (proAlerts.length > 0) {
-              console.log(`  ✓ Proactive checks found ${proAlerts.length} alerts for ${client.clientName}`);
+            if (activeProAlerts.length > 0) {
+              console.log(`  ✓ Proactive checks found ${activeProAlerts.length} alerts for ${client.clientName}`);
             }
           } else {
             console.log(`  ⏭ Skipping proactive checks for ${client.clientName} due to fetch failure to prevent false auto-resolves.`);
@@ -1841,6 +1873,60 @@ export async function handleRunFlagSweep(req, res, sheets) {
           console.log(`  🩹 AUTO-RESOLVED skipped duplicate crmCopiedConfChecked row for ${invRow.clientName}: ${invRow.fingerprintHash}`);
         } catch (e) {
           console.log(`  ⚠️ Failed to auto-resolve invalid crmCopiedConfChecked row: ${e.message}`);
+        }
+      }
+
+      // Auto-resolve any legacy/cached "uninvoiced_new_job" rows superseded by "uninvoiced_revenue" for the same job
+      const revenueJobKeys = new Set();
+      memoryRows.forEach(r => {
+        if (r.alertType === "uninvoiced_revenue" && (r.status === "cached" || r.status === "task" || r.status === "accepted" || r.status === "pending_automation")) {
+          try {
+            const snap = JSON.parse(r.dataSnapshot || "{}");
+            const jobKey = snap.stableJobKey || snap.metadata?.stableJobKey;
+            if (jobKey) revenueJobKeys.add(`${r.clientName}:::${jobKey}`);
+          } catch (e) {}
+        }
+      });
+      sweepItems.forEach(item => {
+        if (item.alertType === "uninvoiced_revenue") {
+          (item.alerts || []).forEach(a => {
+            const jobKey = a.stableJobKey || a.metadata?.stableJobKey;
+            if (jobKey) revenueJobKeys.add(`${item.clientName}:::${jobKey}`);
+          });
+        }
+      });
+
+      if (revenueJobKeys.size > 0) {
+        const supersededNewJobRows = memoryRows.filter(r =>
+          r.alertType === "uninvoiced_new_job" &&
+          (r.status === "cached" || r.status === "pending_automation") &&
+          (() => {
+            try {
+              const snap = JSON.parse(r.dataSnapshot || "{}");
+              const jobKey = snap.stableJobKey || snap.metadata?.stableJobKey;
+              return jobKey && revenueJobKeys.has(`${r.clientName}:::${jobKey}`);
+            } catch (e) { return false; }
+          })()
+        );
+        for (const sRow of supersededNewJobRows) {
+          try {
+            let updatedSnapshot = sRow.dataSnapshot;
+            try {
+              const snap = JSON.parse(sRow.dataSnapshot || "{}");
+              snap.autoResolvedReason = "Superseded by completed job uninvoiced revenue alert";
+              updatedSnapshot = JSON.stringify(snap);
+            } catch (e) {}
+            await updateAlertMemoryRow(sheets, acIdSweep, sRow.rowIndex, {
+              ...sRow,
+              status: "auto_resolved",
+              lastRechecked: new Date().toISOString(),
+              dataSnapshot: updatedSnapshot
+            });
+            sRow.status = "auto_resolved";
+            console.log(`  Auto-resolved superseded uninvoiced_new_job row for ${sRow.clientName} (Row ${sRow.rowIndex}) in favour of uninvoiced_revenue`);
+          } catch (e) {
+            console.log(`  Failed to auto-resolve superseded uninvoiced_new_job row: ${e.message}`);
+          }
         }
       }
 

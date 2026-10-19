@@ -944,30 +944,126 @@ export default async function handler(req, res) {
               }
             });
 
+            const isDateStr = (val) => {
+              if (!val || typeof val !== "string") return false;
+              const s = val.trim();
+              if (/^\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}$/.test(s)) return true;
+              if (/^\d{4}[\/\-\.]\d{1,2}[\/\-\.]\d{1,2}$/.test(s)) return true;
+              if (/^\d{1,2}\s+[A-Za-z]{3,}\s+\d{2,4}$/.test(s)) return true;
+              return false;
+            };
+
+            const isTypeStr = (val) =>
+              /^(expense|payment|bill payment|debit|credit|transfer|check)$/i.test(
+                String(val || "").trim()
+              );
+            const isTaxRate = (val) =>
+              /^(\d+(\.\d+)?%|no vat|zero|exempt)/i.test(String(val || "").trim()) ||
+              /%/.test(String(val || ""));
+            const isAccountStr = (val) =>
+              /bank account|business account|revolut|starling|tide|barclays|hsbc|current account/i.test(
+                String(val || "").trim()
+              );
+
+            const normCatKey = (s) =>
+              String(s || "").replace(/^\d+\s*[-–]\s*/, "").trim().toLowerCase();
+            const knownCategorySet = new Set(
+              (expensesList || []).map((e) => normCatKey(e.name)).filter(Boolean)
+            );
+            [
+              "debtors",
+              "creditors",
+              "freelancer",
+              "net pay control",
+              "dividend paid",
+              "bank charges",
+              "sales",
+              "revenue",
+            ].forEach((c) => knownCategorySet.add(c));
+
             const bankOutgoings = [];
             bankRows.forEach((r) => {
-              const outAmt = parseFloat(String(r[8] || "0").replace(/[£$€,\s]/g, "")) || 0;
-              const inAmt = parseFloat(String(r[9] || "0").replace(/[£$€,\s]/g, "")) || 0;
-              const cat = String(r[16] || "").trim();
-              if (cat.toLowerCase() === "outgoings") {
-                if (outAmt > 0) {
+              const c = (idx) => String(r[idx] || "").trim();
+              const outAmt = parseFloat(c(8).replace(/[£$€,\s]/g, "")) || 0;
+              const inAmt = parseFloat(c(9).replace(/[£$€,\s]/g, "")) || 0;
+              const catFormula = c(16);
+
+              if (catFormula.toLowerCase() === "outgoings") {
+                // Collect non-empty cells across columns 0..7 with their column indices
+                const cells = [];
+                for (let i = 0; i <= 7; i++) {
+                  const val = c(i);
+                  if (val) cells.push({ col: i, val });
+                }
+
+                // 1. Identify Date: first cell matching isDateStr
+                const dateCell = cells.find((item) => isDateStr(item.val));
+                const date = dateCell ? dateCell.val : "";
+
+                // 2. Filter out date, transaction types (Expense, Payment, etc.), and tax rates
+                const remaining = cells.filter((item) => {
+                  if (item === dateCell) return false;
+                  if (isDateStr(item.val)) return false;
+                  if (isTypeStr(item.val)) return false;
+                  if (isTaxRate(item.val)) return false;
+                  return true;
+                });
+
+                // 3. Identify Category among remaining cells
+                let sheetCategory = "";
+                const catIdx = remaining.findIndex((item) =>
+                  knownCategorySet.has(normCatKey(item.val))
+                );
+                let catCell = null;
+                if (catIdx !== -1) {
+                  catCell = remaining[catIdx];
+                  sheetCategory = catCell.val;
+                }
+
+                // 4. Remaining cells after removing category
+                const nonCat = remaining.filter((item) => item !== catCell);
+
+                // 5. Account Name detection
+                let account = "";
+                const accIdx = nonCat.findIndex((item) => isAccountStr(item.val));
+                let accCell = null;
+                if (accIdx !== -1 && nonCat.length > 1) {
+                  accCell = nonCat[accIdx];
+                  account = accCell.val;
+                }
+
+                const payloadCells = nonCat.filter((item) => item !== accCell);
+
+                // 6. Payee and Description
+                let payee = "";
+                let desc = "";
+                if (payloadCells.length === 1) {
+                  payee = payloadCells[0].val;
+                } else if (payloadCells.length >= 2) {
+                  payee = payloadCells[0].val;
+                  desc = payloadCells[1].val;
+                }
+
+                // If no category was explicitly recognized from knownCategorySet,
+                // but we had multiple payload cells, check if one of them was in col 5, 6 or 7
+                if (!sheetCategory && payloadCells.length >= 2) {
+                  const candidateCat = payloadCells[payloadCells.length - 1];
+                  if (candidateCat.col >= 5) {
+                    sheetCategory = candidateCat.val;
+                    payee = payloadCells[0].val;
+                  }
+                }
+
+                const netAmount = outAmt > 0 ? Math.abs(outAmt) : (inAmt > 0 ? -Math.abs(inAmt) : 0);
+                if (netAmount !== 0) {
                   bankOutgoings.push({
-                    d: String(r[0] || r[1] || "").trim(),
-                    account: String(r[2] || "").trim(),
-                    payee: String(r[3] || "").trim(),
-                    desc: String(r[4] || "").trim(),
-                    ref: String(r[5] || "").trim(),
-                    amount: Math.abs(outAmt),
-                  });
-                } else if (inAmt > 0) {
-                  bankOutgoings.push({
-                    d: String(r[0] || r[1] || "").trim(),
-                    account: String(r[2] || "").trim(),
-                    payee: String(r[3] || "").trim(),
-                    desc: String(r[4] || "").trim(),
-                    ref: String(r[5] || "").trim(),
-                    amount: -Math.abs(inAmt),
-                    isCredit: true,
+                    d: date,
+                    account,
+                    payee,
+                    desc,
+                    sheetCategory,
+                    amount: netAmount,
+                    isCredit: inAmt > 0 && outAmt === 0,
                   });
                 }
               }

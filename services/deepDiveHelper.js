@@ -1094,6 +1094,14 @@ export const CashDeepDiveEngine = {
           if (nCat.includes("it software and consumables") || nCat.includes("software and consumables") || nCat.includes("it software & consumables")) {
             return knownExpMap.get("it software and consumables") || knownExpMap.get("software & it subscriptions") || knownExpMap.get("it software and information") || "IT Software and Consumables";
           }
+          const alphaCat = nCat.replace(/[^a-z0-9]/g, "");
+          if (alphaCat) {
+            for (const [k, v] of knownExpMap.entries()) {
+              if (k.replace(/[^a-z0-9]/g, "") === alphaCat) {
+                return v;
+              }
+            }
+          }
           return rawCat || "General Expenses";
         };
 
@@ -1144,7 +1152,15 @@ export const CashDeepDiveEngine = {
               }
             }
 
-            // 3. Multi-bill batch payment match (bills with same supplier summing to bank amount)
+            // 3. Authentic in-sheet category from Recon Sheet (e.g. QuickBooks layout Col H / Col G)
+            if (!matchedCat && b.sheetCategory && !/^(creditors|debtors|net pay|balance sheet|control)/i.test(b.sheetCategory)) {
+              const resCat = resolveCategory(b.sheetCategory);
+              if (resCat && resCat !== "General Expenses") {
+                matchedCat = resCat;
+              }
+            }
+
+            // 4. Multi-bill batch payment match (bills with same supplier summing to bank amount)
             if (!matchedCat) {
               const sameSupplierBills = allOverheadTxns.filter((x) => {
                 const xNorm = String(x.s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -1157,7 +1173,7 @@ export const CashDeepDiveEngine = {
               }
             }
 
-            // 4. Supplier historical accounting category
+            // 5. Supplier historical accounting category
             if (!matchedCat) {
               for (const [key, cat] of supplierCategoryHistory.entries()) {
                 if (bNorm.includes(key)) {
@@ -1167,7 +1183,12 @@ export const CashDeepDiveEngine = {
               }
             }
 
-            // 5. Fallback
+            // 6. Direct in-sheet category fallback (if non-control account)
+            if (!matchedCat && b.sheetCategory && !/^(creditors|debtors|net pay|balance sheet|control)/i.test(b.sheetCategory)) {
+              matchedCat = b.sheetCategory;
+            }
+
+            // 7. Fallback
             if (!matchedCat) {
               matchedCat = "General Expenses";
             }

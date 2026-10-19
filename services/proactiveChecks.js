@@ -767,6 +767,17 @@ export async function checkUninvoicedNewJobs_(clientName, clientSheetId, sharedD
       const startDate = parseConfirmedDate_(startVal);
       if (!startDate || startDate > oneMonthAgo) { r += collectJobRows_(data, r).length; continue; }
 
+      // Completed jobs with uninvoiced revenue are handled with higher precedence by checkUninvoicedRevenue_
+      const jobType = String(row[35] || "").toLowerCase();
+      const isRetainer = jobType.includes("retainer");
+      const endDate = endVal ? parseConfirmedDate_(endVal) : null;
+      const TWO_WEEKS_MS = 14 * 24 * 60 * 60 * 1000;
+      const isCompletedPastGrace = !isRetainer && endDate && (today.getTime() - endDate.getTime()) > TWO_WEEKS_MS;
+      if (isCompletedPastGrace) {
+        r += collectJobRows_(data, r).length;
+        continue;
+      }
+
       const jobClient = String(row[0] || "").trim();
       const jobName = String(row[1] || "").trim();
       const projectCode = String(row[2] || "").trim();

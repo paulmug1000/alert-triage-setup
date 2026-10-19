@@ -714,6 +714,28 @@ export async function handleGetProactiveAlerts(req, res, sheets) {
         };
       });
 
+    // Precedence rule: "uninvoiced_revenue" takes precedence over "uninvoiced_new_job" for the same job
+    const completedRevenueKeys = new Set();
+    all.forEach(r => {
+      if (r.alertType === "uninvoiced_revenue" && (r.status === "cached" || r.status === "task" || r.status === "accepted" || r.status === "pending_automation")) {
+        try {
+          const snap = JSON.parse(r.dataSnapshot || "{}");
+          const jobKey = snap.stableJobKey || snap.metadata?.stableJobKey;
+          if (jobKey) completedRevenueKeys.add(`${r.clientName}:::${jobKey}`);
+        } catch (e) {}
+      }
+    });
+
+    if (completedRevenueKeys.size > 0) {
+      active = active.filter(a => {
+        if (a.alertType === "uninvoiced_new_job") {
+          const k = `${a.clientName}:::${a.stableJobKey || a.metadata?.stableJobKey}`;
+          if (completedRevenueKeys.has(k)) return false;
+        }
+        return true;
+      });
+    }
+
     const sessionUser = getSessionUser(req);
     if (!sessionUser) {
       return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });

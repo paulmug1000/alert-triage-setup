@@ -587,7 +587,7 @@ export default function OutgoingsView({
                   }}
                   title={viewMode === "modern" ? "Switch to traditional spreadsheet view" : "Switch to improved modern view"}
                 >
-                  <span>{viewMode === "modern" ? "📋 Legacy View" : "✨ Modern View"}</span>
+                  <span>{viewMode === "modern" ? "📋 Legacy view" : "✨ Modern view"}</span>
                 </button>
               )}
               {isAdmin && outgoingsClient.clientSheetId && (

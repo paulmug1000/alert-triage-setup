@@ -317,19 +317,19 @@ export default function PortalJobsView({
       childRowNumbers: Array.isArray(job.childRowNumbers) ? job.childRowNumbers : [],
       invoices: Array.isArray(job.invoices) && job.invoices.length > 0
         ? job.invoices.map((inv, i) => ({
-            ...inv,
-            num: i + 1,
-            amount: normalizeAmount(inv.amount),
-            status: inv.status || "",
-          }))
+          ...inv,
+          num: i + 1,
+          amount: normalizeAmount(inv.amount),
+          status: inv.status || "",
+        }))
         : [{ num: 1, amount: "", ref: "", sendDate: "", days: "30", status: "" }],
       directExpenses: Array.isArray(job.directExpenses) && job.directExpenses.length > 0
         ? job.directExpenses.map((exp, i) => ({
-            ...exp,
-            num: i + 1,
-            amount: normalizeAmount(exp.amount),
-            status: exp.status || "",
-          }))
+          ...exp,
+          num: i + 1,
+          amount: normalizeAmount(exp.amount),
+          status: exp.status || "",
+        }))
         : [{ num: 1, desc: "", amount: "", vat: "Yes", recDate: "", days: "30", status: "" }],
     });
   };
@@ -738,7 +738,7 @@ export default function PortalJobsView({
               }}
             >
               <span>+</span>
-              <span>Add Job</span>
+              <span>Add job</span>
             </button>
           )}
 
@@ -1214,648 +1214,648 @@ export default function PortalJobsView({
               {/* Form */}
               <form id="job-modal-form" onSubmit={handleSaveJob} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
                 <fieldset disabled={isReadOnly} style={{ border: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: "1rem" }}>
-              {/* Row 1: Client Name (25%) | Job Name (75%) */}
-              <div className="modal-form-row modal-form-row-1" style={{ display: "grid", gridTemplateColumns: "1fr 3fr", gap: "0.75rem" }}>
-                <div>
-                  <label style={formLabelStyle}>Client Name *</label>
-                  <input
-                    type="text"
-                    required
-                    value={editingJob.client || ""}
-                    onChange={(e) => setEditingJob({ ...editingJob, client: e.target.value })}
-                    style={formInputStyle}
-                  />
-                </div>
-                <div>
-                  <label style={formLabelStyle}>Job Name *</label>
-                  <input
-                    type="text"
-                    required
-                    value={editingJob.jobName || ""}
-                    onChange={(e) => setEditingJob({ ...editingJob, jobName: e.target.value })}
-                    style={formInputStyle}
-                  />
-                </div>
-              </div>
-
-              {/* Row 2: Type | Status | % Likelihood | Project Code */}
-              <div className="modal-form-row modal-form-row-2" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "0.75rem" }}>
-                <div>
-                  <label style={formLabelStyle}>Type *</label>
-                  <select
-                    value={editingJob.projectRetainer || "Project"}
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      setEditingJob({ ...editingJob, projectRetainer: val });
-                      if (val === "Retainer") {
-                        setEnableSplit(false);
-                        setLockedMonths({});
-                      }
-                    }}
-                    style={formInputStyle}
-                  >
-                    <option value="Project">Project</option>
-                    <option value="Retainer">Retainer</option>
-                  </select>
-                </div>
-                <div>
-                  <label style={formLabelStyle}>Status *</label>
-                  <select
-                    value={editingJob.type || "Confirmed"}
-                    onChange={(e) => {
-                      const newType = e.target.value;
-                      if (newType === "Confirmed") {
-                        setEditingJob({ ...editingJob, type: "Confirmed", likelihood: "100%" });
-                      } else {
-                        setEditingJob({
-                          ...editingJob,
-                          type: "Pipeline",
-                          likelihood: (editingJob.likelihood === "100%" || !editingJob.likelihood) ? "50%" : editingJob.likelihood,
-                        });
-                      }
-                    }}
-                    style={formInputStyle}
-                  >
-                    <option value="Confirmed">Confirmed</option>
-                    <option value="Pipeline">Pipeline</option>
-                  </select>
-                </div>
-                <div>
-                  <label style={formLabelStyle}>% Likelihood</label>
-                  <input
-                    type="text"
-                    value={editingJob.likelihood || (editingJob.type === "Confirmed" ? "100%" : "50%")}
-                    disabled={editingJob.type === "Confirmed"}
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      const num = parseFloat(String(val).replace(/[%,\s]/g, ""));
-                      if (!isNaN(num) && num >= 100) {
-                        setEditingJob({ ...editingJob, likelihood: "100%", type: "Confirmed" });
-                      } else {
-                        setEditingJob({ ...editingJob, likelihood: val });
-                      }
-                    }}
-                    style={{
-                      ...formInputStyle,
-                      opacity: editingJob.type === "Confirmed" ? 0.6 : 1,
-                    }}
-                  />
-                </div>
-                <div>
-                  <label style={formLabelStyle}>Project Code</label>
-                  <input
-                    type="text"
-                    value={editingJob.projectCode || ""}
-                    onChange={(e) => setEditingJob({ ...editingJob, projectCode: e.target.value })}
-                    style={formInputStyle}
-                  />
-                </div>
-              </div>
-
-              {/* Row 3: Revenue | Direct Costs | VAT | Date Confirmed */}
-              <div className="modal-form-row modal-form-row-3" style={{ display: "grid", gridTemplateColumns: "2fr 2fr 1fr 2fr", gap: "0.75rem" }}>
-                <div>
-                  <label style={formLabelStyle}>Revenue (excl. VAT) *</label>
-                  <input
-                    type="text"
-                    required
-                    value={editingJob.revenue || ""}
-                    onChange={(e) => setEditingJob({ ...editingJob, revenue: e.target.value })}
-                    style={formInputStyle}
-                  />
-                </div>
-                <div>
-                  <label style={formLabelStyle}>Direct Costs (excl. VAT) *</label>
-                  <input
-                    type="text"
-                    required
-                    value={editingJob.directCosts || ""}
-                    onChange={(e) => setEditingJob({ ...editingJob, directCosts: e.target.value })}
-                    style={formInputStyle}
-                  />
-                </div>
-                <div>
-                  <label style={formLabelStyle}>VAT? *</label>
-                  <select
-                    value={editingJob.vat || "Yes"}
-                    onChange={(e) => setEditingJob({ ...editingJob, vat: e.target.value })}
-                    style={formInputStyle}
-                  >
-                    <option value="Yes">Yes</option>
-                    <option value="No">No</option>
-                  </select>
-                </div>
-                <div>
-                  <label style={formLabelStyle}>
-                    {editingJob.type === "Pipeline" ? "Date Added" : "Date Confirmed"}
-                  </label>
-                  <input
-                    type="date"
-                    value={editingJob.dateConfirmed || ""}
-                    onChange={(e) => setEditingJob({ ...editingJob, dateConfirmed: e.target.value })}
-                    style={formInputStyle}
-                  />
-                </div>
-              </div>
-
-              {/* Row 4: Start Date | End Date | Product Line | Lead Source */}
-              <div className="modal-form-row modal-form-row-4" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "0.75rem" }}>
-                <div>
-                  <label style={formLabelStyle}>Start Date *</label>
-                  <input
-                    type="date"
-                    required
-                    value={editingJob.startDate || ""}
-                    onChange={(e) => setEditingJob({ ...editingJob, startDate: e.target.value })}
-                    style={formInputStyle}
-                  />
-                </div>
-                <div>
-                  <label style={formLabelStyle}>End Date *</label>
-                  <input
-                    type="date"
-                    required
-                    value={editingJob.endDate || ""}
-                    onChange={(e) => setEditingJob({ ...editingJob, endDate: e.target.value })}
-                    style={formInputStyle}
-                  />
-                </div>
-                <div>
-                  <label style={formLabelStyle}>Product Line</label>
-                  <select
-                    value={editingJob.productLine || ""}
-                    onChange={(e) => setEditingJob({ ...editingJob, productLine: e.target.value })}
-                    style={formInputStyle}
-                  >
-                    <option value="">Select...</option>
-                    {productLineOptions.map((opt) => (
-                      <option key={opt} value={opt}>
-                        {opt}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label style={formLabelStyle}>Lead Source</label>
-                  <select
-                    value={editingJob.leadSource || ""}
-                    onChange={(e) => setEditingJob({ ...editingJob, leadSource: e.target.value })}
-                    style={formInputStyle}
-                  >
-                    <option value="">Select...</option>
-                    {leadSourceOptions.map((opt) => (
-                      <option key={opt} value={opt}>
-                        {opt}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              {/* Uneven Revenue Split Section */}
-              {isSplitSectionVisible && (
-                <div
-                  id="split-revenue-section"
-                  style={{
-                    marginTop: "1rem",
-                    marginBottom: "0.75rem",
-                    padding: "1rem",
-                    border: `1px solid ${isSplitError ? "#ef4444" : "#cbd5e1"}`,
-                    borderRadius: "8px",
-                    background: "#f8fafc",
-                    transition: "border-color 0.2s ease",
-                  }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-                    <input
-                      type="checkbox"
-                      id="enable-split"
-                      name="enableSplit"
-                      checked={enableSplit}
-                      onChange={(e) => {
-                        const checked = e.target.checked;
-                        setEnableSplit(checked);
-                        if (!checked) {
-                          setLockedMonths({});
-                          lockedMonthsRef.current = {};
-                        }
-                      }}
-                      style={{ width: "18px", height: "18px", cursor: "pointer" }}
-                    />
-                    <label
-                      htmlFor="enable-split"
-                      style={{
-                        fontWeight: 600,
-                        color: "#0047AB",
-                        cursor: "pointer",
-                        userSelect: "none",
-                        fontSize: "14px",
-                      }}
-                    >
-                      Uneven revenue split?
-                    </label>
+                  {/* Row 1: Client Name (25%) | Job Name (75%) */}
+                  <div className="modal-form-row modal-form-row-1" style={{ display: "grid", gridTemplateColumns: "1fr 3fr", gap: "0.75rem" }}>
+                    <div>
+                      <label style={formLabelStyle}>Client Name *</label>
+                      <input
+                        type="text"
+                        required
+                        value={editingJob.client || ""}
+                        onChange={(e) => setEditingJob({ ...editingJob, client: e.target.value })}
+                        style={formInputStyle}
+                      />
+                    </div>
+                    <div>
+                      <label style={formLabelStyle}>Job Name *</label>
+                      <input
+                        type="text"
+                        required
+                        value={editingJob.jobName || ""}
+                        onChange={(e) => setEditingJob({ ...editingJob, jobName: e.target.value })}
+                        style={formInputStyle}
+                      />
+                    </div>
                   </div>
 
-                  {enableSplit && isSplitError && (
+                  {/* Row 2: Type | Status | % Likelihood | Project Code */}
+                  <div className="modal-form-row modal-form-row-2" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "0.75rem" }}>
+                    <div>
+                      <label style={formLabelStyle}>Type *</label>
+                      <select
+                        value={editingJob.projectRetainer || "Project"}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setEditingJob({ ...editingJob, projectRetainer: val });
+                          if (val === "Retainer") {
+                            setEnableSplit(false);
+                            setLockedMonths({});
+                          }
+                        }}
+                        style={formInputStyle}
+                      >
+                        <option value="Project">Project</option>
+                        <option value="Retainer">Retainer</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label style={formLabelStyle}>Status *</label>
+                      <select
+                        value={editingJob.type || "Confirmed"}
+                        onChange={(e) => {
+                          const newType = e.target.value;
+                          if (newType === "Confirmed") {
+                            setEditingJob({ ...editingJob, type: "Confirmed", likelihood: "100%" });
+                          } else {
+                            setEditingJob({
+                              ...editingJob,
+                              type: "Pipeline",
+                              likelihood: (editingJob.likelihood === "100%" || !editingJob.likelihood) ? "50%" : editingJob.likelihood,
+                            });
+                          }
+                        }}
+                        style={formInputStyle}
+                      >
+                        <option value="Confirmed">Confirmed</option>
+                        <option value="Pipeline">Pipeline</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label style={formLabelStyle}>% Likelihood</label>
+                      <input
+                        type="text"
+                        value={editingJob.likelihood || (editingJob.type === "Confirmed" ? "100%" : "50%")}
+                        disabled={editingJob.type === "Confirmed"}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          const num = parseFloat(String(val).replace(/[%,\s]/g, ""));
+                          if (!isNaN(num) && num >= 100) {
+                            setEditingJob({ ...editingJob, likelihood: "100%", type: "Confirmed" });
+                          } else {
+                            setEditingJob({ ...editingJob, likelihood: val });
+                          }
+                        }}
+                        style={{
+                          ...formInputStyle,
+                          opacity: editingJob.type === "Confirmed" ? 0.6 : 1,
+                        }}
+                      />
+                    </div>
+                    <div>
+                      <label style={formLabelStyle}>Project Code</label>
+                      <input
+                        type="text"
+                        value={editingJob.projectCode || ""}
+                        onChange={(e) => setEditingJob({ ...editingJob, projectCode: e.target.value })}
+                        style={formInputStyle}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Row 3: Revenue | Direct Costs | VAT | Date Confirmed */}
+                  <div className="modal-form-row modal-form-row-3" style={{ display: "grid", gridTemplateColumns: "2fr 2fr 1fr 2fr", gap: "0.75rem" }}>
+                    <div>
+                      <label style={formLabelStyle}>Revenue (excl. VAT) *</label>
+                      <input
+                        type="text"
+                        required
+                        value={editingJob.revenue || ""}
+                        onChange={(e) => setEditingJob({ ...editingJob, revenue: e.target.value })}
+                        style={formInputStyle}
+                      />
+                    </div>
+                    <div>
+                      <label style={formLabelStyle}>Direct Costs (excl. VAT) *</label>
+                      <input
+                        type="text"
+                        required
+                        value={editingJob.directCosts || ""}
+                        onChange={(e) => setEditingJob({ ...editingJob, directCosts: e.target.value })}
+                        style={formInputStyle}
+                      />
+                    </div>
+                    <div>
+                      <label style={formLabelStyle}>VAT? *</label>
+                      <select
+                        value={editingJob.vat || "Yes"}
+                        onChange={(e) => setEditingJob({ ...editingJob, vat: e.target.value })}
+                        style={formInputStyle}
+                      >
+                        <option value="Yes">Yes</option>
+                        <option value="No">No</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label style={formLabelStyle}>
+                        {editingJob.type === "Pipeline" ? "Date Added" : "Date Confirmed"}
+                      </label>
+                      <input
+                        type="date"
+                        value={editingJob.dateConfirmed || ""}
+                        onChange={(e) => setEditingJob({ ...editingJob, dateConfirmed: e.target.value })}
+                        style={formInputStyle}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Row 4: Start Date | End Date | Product Line | Lead Source */}
+                  <div className="modal-form-row modal-form-row-4" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "0.75rem" }}>
+                    <div>
+                      <label style={formLabelStyle}>Start Date *</label>
+                      <input
+                        type="date"
+                        required
+                        value={editingJob.startDate || ""}
+                        onChange={(e) => setEditingJob({ ...editingJob, startDate: e.target.value })}
+                        style={formInputStyle}
+                      />
+                    </div>
+                    <div>
+                      <label style={formLabelStyle}>End Date *</label>
+                      <input
+                        type="date"
+                        required
+                        value={editingJob.endDate || ""}
+                        onChange={(e) => setEditingJob({ ...editingJob, endDate: e.target.value })}
+                        style={formInputStyle}
+                      />
+                    </div>
+                    <div>
+                      <label style={formLabelStyle}>Product Line</label>
+                      <select
+                        value={editingJob.productLine || ""}
+                        onChange={(e) => setEditingJob({ ...editingJob, productLine: e.target.value })}
+                        style={formInputStyle}
+                      >
+                        <option value="">Select...</option>
+                        {productLineOptions.map((opt) => (
+                          <option key={opt} value={opt}>
+                            {opt}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label style={formLabelStyle}>Lead Source</label>
+                      <select
+                        value={editingJob.leadSource || ""}
+                        onChange={(e) => setEditingJob({ ...editingJob, leadSource: e.target.value })}
+                        style={formInputStyle}
+                      >
+                        <option value="">Select...</option>
+                        {leadSourceOptions.map((opt) => (
+                          <option key={opt} value={opt}>
+                            {opt}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Uneven Revenue Split Section */}
+                  {isSplitSectionVisible && (
                     <div
-                      id="split-error-message"
+                      id="split-revenue-section"
                       style={{
-                        color: "#ef4444",
-                        fontSize: "0.85rem",
-                        marginTop: "0.5rem",
-                        fontWeight: 600,
+                        marginTop: "1rem",
+                        marginBottom: "0.75rem",
+                        padding: "1rem",
+                        border: `1px solid ${isSplitError ? "#ef4444" : "#cbd5e1"}`,
+                        borderRadius: "8px",
+                        background: "#f8fafc",
+                        transition: "border-color 0.2s ease",
                       }}
                     >
-                      {splitErrorText || "Revenue split must be updated to match the total before saving."}
-                    </div>
-                  )}
+                      <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                        <input
+                          type="checkbox"
+                          id="enable-split"
+                          name="enableSplit"
+                          checked={enableSplit}
+                          onChange={(e) => {
+                            const checked = e.target.checked;
+                            setEnableSplit(checked);
+                            if (!checked) {
+                              setLockedMonths({});
+                              lockedMonthsRef.current = {};
+                            }
+                          }}
+                          style={{ width: "18px", height: "18px", cursor: "pointer" }}
+                        />
+                        <label
+                          htmlFor="enable-split"
+                          style={{
+                            fontWeight: 600,
+                            color: "#0047AB",
+                            cursor: "pointer",
+                            userSelect: "none",
+                            fontSize: "14px",
+                          }}
+                        >
+                          Uneven revenue split?
+                        </label>
+                      </div>
 
-                  {enableSplit && (
-                    <div id="split-grid-container" style={{ marginTop: "0.75rem" }}>
-                      {splitDateError ? (
-                        <p style={{ color: "#64748b", fontSize: "0.9rem", margin: "0.5rem 0" }}>
-                          {splitDateError}
-                        </p>
-                      ) : (
-                        <>
-                          <div
-                            style={{
-                              display: "grid",
-                              gridTemplateColumns: "repeat(auto-fill, minmax(165px, 1fr))",
-                              gap: "0.75rem",
-                              marginBottom: "1rem",
-                            }}
-                          >
-                            {splitMonths.map((m) => {
-                              const mKey = m.toLowerCase();
-                              const isLocked = validLocked[mKey] !== undefined;
-                              const val = isLocked ? validLocked[mKey] : evenSplit;
-                              const valStr = Number.isInteger(val) ? val.toString() : val.toFixed(2);
+                      {enableSplit && isSplitError && (
+                        <div
+                          id="split-error-message"
+                          style={{
+                            color: "#ef4444",
+                            fontSize: "0.85rem",
+                            marginTop: "0.5rem",
+                            fontWeight: 600,
+                          }}
+                        >
+                          {splitErrorText || "Revenue split must be updated to match the total before saving."}
+                        </div>
+                      )}
 
-                              return (
-                                <SplitMonthCard
-                                  key={m}
-                                  month={m}
-                                  mKey={mKey}
-                                  isLocked={isLocked}
-                                  displayVal={valStr}
-                                  currencySymbol={currencySymbol}
-                                  onCommit={(k, newVal) => {
-                                    setLockedMonths((prev) => {
-                                      const next = { ...prev };
-                                      if (newVal === null || newVal === undefined || isNaN(newVal)) {
-                                        delete next[k];
-                                      } else {
-                                        next[k] = newVal;
-                                      }
-                                      lockedMonthsRef.current = next;
-                                      return next;
-                                    });
+                      {enableSplit && (
+                        <div id="split-grid-container" style={{ marginTop: "0.75rem" }}>
+                          {splitDateError ? (
+                            <p style={{ color: "#64748b", fontSize: "0.9rem", margin: "0.5rem 0" }}>
+                              {splitDateError}
+                            </p>
+                          ) : (
+                            <>
+                              <div
+                                style={{
+                                  display: "grid",
+                                  gridTemplateColumns: "repeat(auto-fill, minmax(165px, 1fr))",
+                                  gap: "0.75rem",
+                                  marginBottom: "1rem",
+                                }}
+                              >
+                                {splitMonths.map((m) => {
+                                  const mKey = m.toLowerCase();
+                                  const isLocked = validLocked[mKey] !== undefined;
+                                  const val = isLocked ? validLocked[mKey] : evenSplit;
+                                  const valStr = Number.isInteger(val) ? val.toString() : val.toFixed(2);
+
+                                  return (
+                                    <SplitMonthCard
+                                      key={m}
+                                      month={m}
+                                      mKey={mKey}
+                                      isLocked={isLocked}
+                                      displayVal={valStr}
+                                      currencySymbol={currencySymbol}
+                                      onCommit={(k, newVal) => {
+                                        setLockedMonths((prev) => {
+                                          const next = { ...prev };
+                                          if (newVal === null || newVal === undefined || isNaN(newVal)) {
+                                            delete next[k];
+                                          } else {
+                                            next[k] = newVal;
+                                          }
+                                          lockedMonthsRef.current = next;
+                                          return next;
+                                        });
+                                      }}
+                                    />
+                                  );
+                                })}
+                              </div>
+
+                              <div style={{ marginTop: "-0.5rem", marginBottom: "0.75rem", fontSize: "11px", color: "#64748b", textAlign: "right", fontStyle: "italic" }}>
+                                Click 🔒 Locked to unlock, or delete an amount to return that month to automatic allocation.
+                              </div>
+
+                              <div
+                                style={{
+                                  display: "flex",
+                                  justifyContent: "flex-end",
+                                  alignItems: "center",
+                                  flexWrap: "wrap",
+                                  gap: "1.25rem",
+                                  paddingTop: "0.75rem",
+                                  borderTop: "1px dashed #cbd5e1",
+                                  fontSize: "0.85rem",
+                                }}
+                              >
+                                <div>
+                                  <span style={{ color: "#64748b" }}>Job Revenue:</span>{" "}
+                                  <strong style={{ color: "#1e293b" }}>
+                                    {currencySymbol}{formatSummaryNum(totRev)}
+                                  </strong>
+                                </div>
+                                <div>
+                                  <span style={{ color: "#64748b" }}>Locked Assigned:</span>{" "}
+                                  <strong style={{ color: "#0047AB" }}>
+                                    {currencySymbol}{formatSummaryNum(lockedSum)}
+                                  </strong>
+                                </div>
+                                <div
+                                  style={{
+                                    color:
+                                      (unlockedCount === 0 && Math.abs(remaining) > 0.05) || lockedSum > totRev + 0.05
+                                        ? "#ef4444"
+                                        : "#64748b",
                                   }}
-                                />
-                              );
-                            })}
-                          </div>
+                                >
+                                  <span style={{ opacity: 0.9 }}>
+                                    {unlockedCount === 0 ? "Unassigned:" : "Remaining (Auto-spread):"}
+                                  </span>{" "}
+                                  <strong>
+                                    {currencySymbol}{formatSummaryNum(remaining)}
+                                  </strong>
+                                </div>
+                              </div>
+                              <div
+                                style={{
+                                  textAlign: "right",
+                                  marginTop: "0.5rem",
+                                  fontSize: "0.8rem",
+                                  color: "#64748b",
+                                  fontStyle: "italic",
+                                }}
+                              >
+                                Delete an amount to unlock that month and return to automatic allocations.
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
 
-                          <div style={{ marginTop: "-0.5rem", marginBottom: "0.75rem", fontSize: "11px", color: "#64748b", textAlign: "right", fontStyle: "italic" }}>
-                            Click 🔒 Locked to unlock, or delete an amount to return that month to automatic allocation.
-                          </div>
+                  {/* Invoices Section */}
+                  <div
+                    style={{
+                      marginTop: "0.5rem",
+                      borderTop: "1px solid #e2e8f0",
+                      paddingTop: "0.75rem",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        marginBottom: "0.6rem",
+                      }}
+                    >
+                      <h4 style={{ margin: 0, fontSize: "13px", fontWeight: 700, color: "#0047AB" }}>
+                        Invoices
+                      </h4>
+                      {!isReadOnly && (
+                        <button
+                          type="button"
+                          onClick={addInvoice}
+                          style={{
+                            background: "#f0fdf4",
+                            border: "1px solid #bbf7d0",
+                            color: "#166534",
+                            fontSize: "11px",
+                            fontWeight: 700,
+                            padding: "3px 10px",
+                            borderRadius: "4px",
+                            cursor: "pointer",
+                          }}
+                        >
+                          + Add Invoice
+                        </button>
+                      )}
+                    </div>
 
-                          <div
-                            style={{
-                              display: "flex",
-                              justifyContent: "flex-end",
-                              alignItems: "center",
-                              flexWrap: "wrap",
-                              gap: "1.25rem",
-                              paddingTop: "0.75rem",
-                              borderTop: "1px dashed #cbd5e1",
-                              fontSize: "0.85rem",
-                            }}
-                          >
-                            <div>
-                              <span style={{ color: "#64748b" }}>Job Revenue:</span>{" "}
-                              <strong style={{ color: "#1e293b" }}>
-                                {currencySymbol}{formatSummaryNum(totRev)}
-                              </strong>
-                            </div>
-                            <div>
-                              <span style={{ color: "#64748b" }}>Locked Assigned:</span>{" "}
-                              <strong style={{ color: "#0047AB" }}>
-                                {currencySymbol}{formatSummaryNum(lockedSum)}
-                              </strong>
-                            </div>
-                            <div
-                              style={{
-                                color:
-                                  (unlockedCount === 0 && Math.abs(remaining) > 0.05) || lockedSum > totRev + 0.05
-                                    ? "#ef4444"
-                                    : "#64748b",
-                              }}
+                    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                      {(editingJob.invoices || []).map((inv, idx) => (
+                        <div
+                          key={idx}
+                          className="modal-sub-grid-row"
+                          style={{
+                            display: "grid",
+                            gridTemplateColumns: isReadOnly ? "1.2fr 1fr 1.2fr 0.7fr 1fr" : "1.2fr 1fr 1.2fr 0.7fr 1fr 28px",
+                            gap: "6px",
+                            alignItems: "center",
+                            background: "#f8fafc",
+                            padding: "6px 8px",
+                            borderRadius: "6px",
+                            border: "1px solid #e2e8f0",
+                          }}
+                        >
+                          <div>
+                            <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>
+                              Amount ({idx + 1})
+                            </label>
+                            <input
+                              type="text"
+                              placeholder="Amount"
+                              value={inv.amount || ""}
+                              onChange={(e) => updateInvoice(idx, "amount", e.target.value)}
+                              style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
+                            />
+                          </div>
+                          <div>
+                            <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Ref</label>
+                            <input
+                              type="text"
+                              placeholder="Ref"
+                              value={inv.ref || ""}
+                              onChange={(e) => updateInvoice(idx, "ref", e.target.value)}
+                              style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
+                            />
+                          </div>
+                          <div>
+                            <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Send Date</label>
+                            <input
+                              type="date"
+                              value={inv.sendDate || ""}
+                              onChange={(e) => updateInvoice(idx, "sendDate", e.target.value)}
+                              style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
+                            />
+                          </div>
+                          <div>
+                            <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Days</label>
+                            <input
+                              type="number"
+                              placeholder="30"
+                              value={inv.days || ""}
+                              onChange={(e) => updateInvoice(idx, "days", e.target.value)}
+                              style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
+                            />
+                          </div>
+                          <div>
+                            <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Status</label>
+                            <select
+                              value={inv.status || ""}
+                              onChange={(e) => updateInvoice(idx, "status", e.target.value)}
+                              style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
                             >
-                              <span style={{ opacity: 0.9 }}>
-                                {unlockedCount === 0 ? "Unassigned:" : "Remaining (Auto-spread):"}
-                              </span>{" "}
-                              <strong>
-                                {currencySymbol}{formatSummaryNum(remaining)}
-                              </strong>
+                              <option value="">Select...</option>
+                              <option value="Draft">Draft</option>
+                              <option value="Invoiced">Invoiced</option>
+                              <option value="Paid">Paid</option>
+                              <option value="Overdue">Overdue</option>
+                            </select>
+                          </div>
+                          {!isReadOnly && (
+                            <div style={{ paddingTop: "14px", textAlign: "center" }}>
+                              <button
+                                type="button"
+                                onClick={() => removeInvoice(idx)}
+                                title="Delete invoice"
+                                style={{
+                                  background: "transparent",
+                                  border: "none",
+                                  color: "#ef4444",
+                                  cursor: "pointer",
+                                  fontSize: "14px",
+                                  padding: "2px",
+                                }}
+                              >
+                                ✕
+                              </button>
                             </div>
-                          </div>
-                          <div
-                            style={{
-                              textAlign: "right",
-                              marginTop: "0.5rem",
-                              fontSize: "0.8rem",
-                              color: "#64748b",
-                              fontStyle: "italic",
-                            }}
-                          >
-                            Delete an amount to unlock that month and return to automatic allocations.
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Invoices Section */}
-              <div
-                style={{
-                  marginTop: "0.5rem",
-                  borderTop: "1px solid #e2e8f0",
-                  paddingTop: "0.75rem",
-                }}
-              >
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    marginBottom: "0.6rem",
-                  }}
-                >
-                  <h4 style={{ margin: 0, fontSize: "13px", fontWeight: 700, color: "#0047AB" }}>
-                    Invoices
-                  </h4>
-                  {!isReadOnly && (
-                    <button
-                      type="button"
-                      onClick={addInvoice}
-                      style={{
-                        background: "#f0fdf4",
-                        border: "1px solid #bbf7d0",
-                        color: "#166534",
-                        fontSize: "11px",
-                        fontWeight: 700,
-                        padding: "3px 10px",
-                        borderRadius: "4px",
-                        cursor: "pointer",
-                      }}
-                    >
-                      + Add Invoice
-                    </button>
-                  )}
-                </div>
-
-                <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                  {(editingJob.invoices || []).map((inv, idx) => (
-                    <div
-                      key={idx}
-                      className="modal-sub-grid-row"
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns: isReadOnly ? "1.2fr 1fr 1.2fr 0.7fr 1fr" : "1.2fr 1fr 1.2fr 0.7fr 1fr 28px",
-                        gap: "6px",
-                        alignItems: "center",
-                        background: "#f8fafc",
-                        padding: "6px 8px",
-                        borderRadius: "6px",
-                        border: "1px solid #e2e8f0",
-                      }}
-                    >
-                      <div>
-                        <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>
-                          Amount ({idx + 1})
-                        </label>
-                        <input
-                          type="text"
-                          placeholder="Amount"
-                          value={inv.amount || ""}
-                          onChange={(e) => updateInvoice(idx, "amount", e.target.value)}
-                          style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
-                        />
-                      </div>
-                      <div>
-                        <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Ref</label>
-                        <input
-                          type="text"
-                          placeholder="Ref"
-                          value={inv.ref || ""}
-                          onChange={(e) => updateInvoice(idx, "ref", e.target.value)}
-                          style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
-                        />
-                      </div>
-                      <div>
-                        <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Send Date</label>
-                        <input
-                          type="date"
-                          value={inv.sendDate || ""}
-                          onChange={(e) => updateInvoice(idx, "sendDate", e.target.value)}
-                          style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
-                        />
-                      </div>
-                      <div>
-                        <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Days</label>
-                        <input
-                          type="number"
-                          placeholder="30"
-                          value={inv.days || ""}
-                          onChange={(e) => updateInvoice(idx, "days", e.target.value)}
-                          style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
-                        />
-                      </div>
-                      <div>
-                        <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Status</label>
-                        <select
-                          value={inv.status || ""}
-                          onChange={(e) => updateInvoice(idx, "status", e.target.value)}
-                          style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
-                        >
-                          <option value="">Select...</option>
-                          <option value="Draft">Draft</option>
-                          <option value="Invoiced">Invoiced</option>
-                          <option value="Paid">Paid</option>
-                          <option value="Overdue">Overdue</option>
-                        </select>
-                      </div>
-                      {!isReadOnly && (
-                        <div style={{ paddingTop: "14px", textAlign: "center" }}>
-                          <button
-                            type="button"
-                            onClick={() => removeInvoice(idx)}
-                            title="Delete invoice"
-                            style={{
-                              background: "transparent",
-                              border: "none",
-                              color: "#ef4444",
-                              cursor: "pointer",
-                              fontSize: "14px",
-                              padding: "2px",
-                            }}
-                          >
-                            ✕
-                          </button>
+                          )}
                         </div>
-                      )}
+                      ))}
                     </div>
-                  ))}
-                </div>
-              </div>
+                  </div>
 
-              {/* Direct Expenses Section */}
-              <div
-                style={{
-                  marginTop: "0.25rem",
-                  borderTop: "1px solid #e2e8f0",
-                  paddingTop: "0.75rem",
-                }}
-              >
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    marginBottom: "0.6rem",
-                  }}
-                >
-                  <h4 style={{ margin: 0, fontSize: "13px", fontWeight: 700, color: "#0047AB" }}>
-                    Direct Expenses
-                  </h4>
-                  {!isReadOnly && (
-                    <button
-                      type="button"
-                      onClick={addExpense}
-                      style={{
-                        background: "#f0fdf4",
-                        border: "1px solid #bbf7d0",
-                        color: "#166534",
-                        fontSize: "11px",
-                        fontWeight: 700,
-                        padding: "3px 10px",
-                        borderRadius: "4px",
-                        cursor: "pointer",
-                      }}
-                    >
-                      + Add Direct Expense
-                    </button>
-                  )}
-                </div>
-
-                <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                  {(editingJob.directExpenses || []).map((exp, idx) => (
+                  {/* Direct Expenses Section */}
+                  <div
+                    style={{
+                      marginTop: "0.25rem",
+                      borderTop: "1px solid #e2e8f0",
+                      paddingTop: "0.75rem",
+                    }}
+                  >
                     <div
-                      key={idx}
-                      className="modal-sub-grid-row"
                       style={{
-                        display: "grid",
-                        gridTemplateColumns: isReadOnly ? "1.2fr 1fr 0.7fr 1.2fr 0.6fr 1fr" : "1.2fr 1fr 0.7fr 1.2fr 0.6fr 1fr 28px",
-                        gap: "6px",
+                        display: "flex",
+                        justifyContent: "space-between",
                         alignItems: "center",
-                        background: "#f8fafc",
-                        padding: "6px 8px",
-                        borderRadius: "6px",
-                        border: "1px solid #e2e8f0",
+                        marginBottom: "0.6rem",
                       }}
                     >
-                      <div>
-                        <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>
-                          Description ({idx + 1})
-                        </label>
-                        <input
-                          type="text"
-                          placeholder="Description"
-                          value={exp.desc || ""}
-                          onChange={(e) => updateExpense(idx, "desc", e.target.value)}
-                          style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
-                        />
-                      </div>
-                      <div>
-                        <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Amount</label>
-                        <input
-                          type="text"
-                          placeholder="Amount"
-                          value={exp.amount || ""}
-                          onChange={(e) => updateExpense(idx, "amount", e.target.value)}
-                          style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
-                        />
-                      </div>
-                      <div>
-                        <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>VAT?</label>
-                        <select
-                          value={exp.vat || "Yes"}
-                          onChange={(e) => updateExpense(idx, "vat", e.target.value)}
-                          style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
-                        >
-                          <option value="Yes">Yes</option>
-                          <option value="No">No</option>
-                        </select>
-                      </div>
-                      <div>
-                        <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Receive Date</label>
-                        <input
-                          type="date"
-                          value={exp.recDate || ""}
-                          onChange={(e) => updateExpense(idx, "recDate", e.target.value)}
-                          style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
-                        />
-                      </div>
-                      <div>
-                        <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Days</label>
-                        <input
-                          type="number"
-                          placeholder="30"
-                          value={exp.days || ""}
-                          onChange={(e) => updateExpense(idx, "days", e.target.value)}
-                          style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
-                        />
-                      </div>
-                      <div>
-                        <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Status</label>
-                        <select
-                          value={exp.status || ""}
-                          onChange={(e) => updateExpense(idx, "status", e.target.value)}
-                          style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
-                        >
-                          <option value="">Select...</option>
-                          <option value="Received">Received</option>
-                          <option value="Paid">Paid</option>
-                          <option value="Overdue">Overdue</option>
-                        </select>
-                      </div>
+                      <h4 style={{ margin: 0, fontSize: "13px", fontWeight: 700, color: "#0047AB" }}>
+                        Direct Expenses
+                      </h4>
                       {!isReadOnly && (
-                        <div style={{ paddingTop: "14px", textAlign: "center" }}>
-                          <button
-                            type="button"
-                            onClick={() => removeExpense(idx)}
-                            title="Delete expense"
-                            style={{
-                              background: "transparent",
-                              border: "none",
-                              color: "#ef4444",
-                              cursor: "pointer",
-                              fontSize: "14px",
-                              padding: "2px",
-                            }}
-                          >
-                            ✕
-                          </button>
-                        </div>
+                        <button
+                          type="button"
+                          onClick={addExpense}
+                          style={{
+                            background: "#f0fdf4",
+                            border: "1px solid #bbf7d0",
+                            color: "#166534",
+                            fontSize: "11px",
+                            fontWeight: 700,
+                            padding: "3px 10px",
+                            borderRadius: "4px",
+                            cursor: "pointer",
+                          }}
+                        >
+                          + Add Direct Expense
+                        </button>
                       )}
                     </div>
-                  ))}
-                </div>
-              </div>
+
+                    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                      {(editingJob.directExpenses || []).map((exp, idx) => (
+                        <div
+                          key={idx}
+                          className="modal-sub-grid-row"
+                          style={{
+                            display: "grid",
+                            gridTemplateColumns: isReadOnly ? "1.2fr 1fr 0.7fr 1.2fr 0.6fr 1fr" : "1.2fr 1fr 0.7fr 1.2fr 0.6fr 1fr 28px",
+                            gap: "6px",
+                            alignItems: "center",
+                            background: "#f8fafc",
+                            padding: "6px 8px",
+                            borderRadius: "6px",
+                            border: "1px solid #e2e8f0",
+                          }}
+                        >
+                          <div>
+                            <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>
+                              Description ({idx + 1})
+                            </label>
+                            <input
+                              type="text"
+                              placeholder="Description"
+                              value={exp.desc || ""}
+                              onChange={(e) => updateExpense(idx, "desc", e.target.value)}
+                              style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
+                            />
+                          </div>
+                          <div>
+                            <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Amount</label>
+                            <input
+                              type="text"
+                              placeholder="Amount"
+                              value={exp.amount || ""}
+                              onChange={(e) => updateExpense(idx, "amount", e.target.value)}
+                              style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
+                            />
+                          </div>
+                          <div>
+                            <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>VAT?</label>
+                            <select
+                              value={exp.vat || "Yes"}
+                              onChange={(e) => updateExpense(idx, "vat", e.target.value)}
+                              style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
+                            >
+                              <option value="Yes">Yes</option>
+                              <option value="No">No</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Receive Date</label>
+                            <input
+                              type="date"
+                              value={exp.recDate || ""}
+                              onChange={(e) => updateExpense(idx, "recDate", e.target.value)}
+                              style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
+                            />
+                          </div>
+                          <div>
+                            <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Days</label>
+                            <input
+                              type="number"
+                              placeholder="30"
+                              value={exp.days || ""}
+                              onChange={(e) => updateExpense(idx, "days", e.target.value)}
+                              style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
+                            />
+                          </div>
+                          <div>
+                            <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Status</label>
+                            <select
+                              value={exp.status || ""}
+                              onChange={(e) => updateExpense(idx, "status", e.target.value)}
+                              style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
+                            >
+                              <option value="">Select...</option>
+                              <option value="Received">Received</option>
+                              <option value="Paid">Paid</option>
+                              <option value="Overdue">Overdue</option>
+                            </select>
+                          </div>
+                          {!isReadOnly && (
+                            <div style={{ paddingTop: "14px", textAlign: "center" }}>
+                              <button
+                                type="button"
+                                onClick={() => removeExpense(idx)}
+                                title="Delete expense"
+                                style={{
+                                  background: "transparent",
+                                  border: "none",
+                                  color: "#ef4444",
+                                  cursor: "pointer",
+                                  fontSize: "14px",
+                                  padding: "2px",
+                                }}
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
 
                 </fieldset>
               </form>

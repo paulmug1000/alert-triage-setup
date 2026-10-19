@@ -804,8 +804,15 @@ export async function handleUpdateCellNote(req, res, sheets) {
   } else if (targetTabNormalized.includes("salaries")) {
     targetTab = "Salaries";
     targetSpreadsheetId = masterSheetId;
+  } else if (targetTabNormalized.includes("confirmed")) {
+    targetTab = "Confirmed";
+    targetSpreadsheetId = clientSheetId;
+  } else if (targetTabNormalized.includes("pipeline")) {
+    targetTab = "Pipeline";
+    targetSpreadsheetId = clientSheetId;
   } else {
     targetTab = tab;
+    targetSpreadsheetId = clientSheetId || masterSheetId;
   }
 
   try {

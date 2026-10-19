@@ -150,7 +150,7 @@ export async function getAllUsers(sheets, automationCommanderSheetId = DEFAULT_A
 
     return users;
   } catch (err) {
-    console.error("❌ Error fetching users from sheet:", err.message);
+    console.error("❌ Error fetching users from database:", err.message);
     return [];
   }
 }
@@ -187,7 +187,7 @@ export async function updateUserLastLogin(email, sheets, automationCommanderShee
     // Invalidate Redis cache
     try {
       await redisClient.del(REDIS_USERS_KEY);
-    } catch (e) {}
+    } catch (e) { }
   } catch (e) {
     console.warn("⚠️ Failed to update user last login:", e.message);
   }
@@ -217,7 +217,7 @@ export async function updateUserDailyAlertsEmail(email, dailyAlertsEmail, sheets
     // Invalidate Redis cache so subsequent reads see the updated preference
     try {
       await redisClient.del(REDIS_USERS_KEY);
-    } catch (e) {}
+    } catch (e) { }
 
     return { success: true, dailyAlertsEmail: val };
   } catch (e) {
@@ -308,7 +308,7 @@ export async function verifyUserAuthorizedForSheet(sessionUser, sheetId, clientN
       if (resolvedClient) {
         clientSheetIdToNameCache.set(cleanId, resolvedClient);
       }
-    } catch (e) {}
+    } catch (e) { }
   }
 
   if (!resolvedClient) {

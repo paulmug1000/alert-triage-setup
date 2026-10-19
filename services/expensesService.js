@@ -317,7 +317,7 @@ export async function saveExpenseMetadata({
   try {
     if (redisClient?.isOpen) await redisClient.del(cacheKey);
     else memoryCache.delete(cacheKey);
-  } catch {}
+  } catch { }
 
   await logPmaActivity({
     userEmail: userEmail || "system",
@@ -366,13 +366,13 @@ export async function toggleExpenseDelivery({
   try {
     if (redisClient?.isOpen) await redisClient.del(cacheKey);
     else memoryCache.delete(cacheKey);
-  } catch {}
+  } catch { }
 
   await logPmaActivity({
     userEmail: userEmail || "system",
     action: "MOVE_EXPENSE_CATEGORY",
     clientName,
-    details: `Moved expense row ${rowNum} to ${isDel ? "Delivery" : "Non-Delivery"} (${newDelPct})`,
+    details: `Moved expense row ${rowNum} to ${isDel ? "Delivery" : "Non-delivery"} (${newDelPct})`,
   });
 
   return { success: true, sheetRow: rowNum, deliveryPct: newDelPct };
@@ -466,7 +466,7 @@ export async function saveExpenseAmount({
   try {
     if (redisClient?.isOpen) await redisClient.del(cacheKey);
     else memoryCache.delete(cacheKey);
-  } catch {}
+  } catch { }
 
   await logPmaActivity({
     userEmail: userEmail || "system",

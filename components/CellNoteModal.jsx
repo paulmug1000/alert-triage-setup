@@ -160,9 +160,6 @@ export default function CellNoteModal({
               resize: "vertical",
             }}
           />
-          <div style={{ fontSize: "11px", color: "#64748b", marginTop: "6px" }}>
-            This note is synced directly to the corresponding cell in Google Sheets.
-          </div>
         </div>
 
         {/* Footer */}

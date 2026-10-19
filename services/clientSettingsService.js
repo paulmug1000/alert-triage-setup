@@ -1195,12 +1195,12 @@ export async function refreshChartOfAccountsService({ clientName, masterSheetId 
   if (redisClient?.isOpen && clientName) {
     try {
       await redisClient.del(getSettingsRedisKey(clientName));
-    } catch (e) {}
+    } catch (e) { }
   }
 
   return {
     success: true,
-    message: gasResult?.message || "Successfully fetched chart of accounts from sheet.",
+    message: gasResult?.message || "Successfully fetched chart of accounts.",
     chartOfAccounts
   };
 }
@@ -1247,7 +1247,7 @@ export async function pullFreshPlCategoriesService({ clientName, masterSheetId }
   if (redisClient?.isOpen && clientName) {
     try {
       await redisClient.del(getSettingsRedisKey(clientName));
-    } catch (e) {}
+    } catch (e) { }
   }
 
   return {

@@ -3,6 +3,8 @@ import Spinner from "./Spinner";
 import UnevenSplitModal from "./UnevenSplitModal";
 import InvoicesEditModal from "./InvoicesEditModal";
 import DirectCostsEditModal from "./DirectCostsEditModal";
+import CellNoteModal from "./CellNoteModal";
+import NoteIndicatorButton from "./NoteIndicatorButton";
 import {
   JobDateInput,
   parseSheetDate,
@@ -36,6 +38,7 @@ export default function JobDetailModal({
   const [invoicesEditSlot, setInvoicesEditSlot] = useState(null);
   const [directCostsEditSlot, setDirectCostsEditSlot] = useState(null);
   const [jobsEditSplit, setJobsEditSplit] = useState(null);
+  const [cellNoteModalConfig, setCellNoteModalConfig] = useState(null);
 
   // Combine global map and fallback loaded map
   const activeClientsMap = useMemo(() => {
@@ -213,7 +216,7 @@ export default function JobDetailModal({
               }
             }
           }
-        } catch (_) {}
+        } catch (_) { }
 
         if (dynamicSheetId) {
           await executeFetch(dynamicSheetId);
@@ -502,6 +505,96 @@ export default function JobDetailModal({
     return { backgroundColor: "#f1f5f9", color: "#475569", border: "1px solid #e2e8f0" };
   };
 
+  const openJobNoteModal = () => {
+    if (!job) return;
+    const currentNote = job.note || parentRow.note || "";
+    setCellNoteModalConfig({
+      isOpen: true,
+      title: "Job note",
+      subtitle: `${clientVal || job.client || ""} · ${jobNameVal || job.jobName || ""} (${tabName} Row ${parentRow.rowNum})`,
+      initialNote: currentNote,
+      tabName,
+      sheetRow: parentRow.rowNum,
+      colLetter: "A",
+      onSaveSuccess: (savedNote) => {
+        setJob((prev) => {
+          if (!prev) return prev;
+          const updatedRows = (prev.rows || []).map((r, rIdx) =>
+            rIdx === 0 ? { ...r, note: savedNote } : r
+          );
+          return { ...prev, note: savedNote, rows: updatedRows };
+        });
+      }
+    });
+  };
+
+  const openSlotNoteModal = ({ item, type }) => {
+    if (!job) return;
+    const rowNum = item.rowNum;
+    const slotNum = item.slotNum;
+    const currentTab = item.row?.tabName || tabName || "Confirmed";
+    const colLetter = type === "invoice"
+      ? (slotNum === 1 ? "AP" : slotNum === 2 ? "AW" : "BD")
+      : (slotNum === 1 ? "BX" : slotNum === 2 ? "CE" : "CL");
+    const currentNote = item.slot?.note || "";
+
+    setCellNoteModalConfig({
+      isOpen: true,
+      title: type === "invoice" ? `Invoice note (${item.label})` : `Direct cost note (${item.label})`,
+      subtitle: `${clientVal || job.client || ""} · ${jobNameVal || job.jobName || ""} (${currentTab} Row ${rowNum})`,
+      initialNote: currentNote,
+      tabName: currentTab,
+      sheetRow: rowNum,
+      colLetter,
+      onSaveSuccess: (savedNote) => {
+        setJob((prev) => {
+          if (!prev) return prev;
+          const updatedRows = (prev.rows || []).map((r) => {
+            if (r.rowNum === rowNum) {
+              if (type === "invoice") {
+                const nextInvoiceSlots = (r.invoiceSlots || []).map((s) =>
+                  s.slotNum === slotNum ? { ...s, note: savedNote } : s
+                );
+                return { ...r, invoiceSlots: nextInvoiceSlots };
+              } else {
+                const nextExpenseSlots = (r.expenseSlots || []).map((s) =>
+                  s.slotNum === slotNum ? { ...s, note: savedNote } : s
+                );
+                return { ...r, expenseSlots: nextExpenseSlots };
+              }
+            }
+            return r;
+          });
+          return { ...prev, rows: updatedRows };
+        });
+      }
+    });
+  };
+
+  const handleSaveCellNote = async (newNote) => {
+    const { clientSheetId, client } = resolvedClientInfo;
+    if (!cellNoteModalConfig || !clientSheetId) return;
+    const { tabName: noteTab, sheetRow, colLetter, onSaveSuccess } = cellNoteModalConfig;
+    const res = await fetch("/api/triage", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "update_cell_note",
+        clientSheetId,
+        clientName: client?.clientName || target?.clientName || "",
+        tab: noteTab,
+        sheetRow,
+        colLetter,
+        note: newNote,
+      }),
+    });
+    const data = await res.json();
+    if (!data.success) {
+      throw new Error(data.error || "Failed to update cell note");
+    }
+    if (onSaveSuccess) onSaveSuccess(newNote);
+  };
+
   // Save changes handler
   const handleSaveJob = async () => {
     const { clientSheetId, client } = resolvedClientInfo;
@@ -622,9 +715,9 @@ export default function JobDetailModal({
                   r.rowNum !== rNum
                     ? r
                     : {
-                        ...r,
-                        invoiceSlots: (r.invoiceSlots || []).map((sl) => (sl.slotNum !== sNum ? sl : { ...sl, ...newData }))
-                      }
+                      ...r,
+                      invoiceSlots: (r.invoiceSlots || []).map((sl) => (sl.slotNum !== sNum ? sl : { ...sl, ...newData }))
+                    }
                 )
               };
             });
@@ -647,9 +740,9 @@ export default function JobDetailModal({
                   r.rowNum !== rNum
                     ? r
                     : {
-                        ...r,
-                        expenseSlots: (r.expenseSlots || []).map((sl) => (sl.slotNum !== sNum ? sl : { ...sl, ...newData }))
-                      }
+                      ...r,
+                      expenseSlots: (r.expenseSlots || []).map((sl) => (sl.slotNum !== sNum ? sl : { ...sl, ...newData }))
+                    }
                 )
               };
             });
@@ -681,6 +774,17 @@ export default function JobDetailModal({
               };
             });
           }}
+        />
+      )}
+
+      {cellNoteModalConfig && (
+        <CellNoteModal
+          isOpen={cellNoteModalConfig.isOpen}
+          title={cellNoteModalConfig.title}
+          subtitle={cellNoteModalConfig.subtitle}
+          initialNote={cellNoteModalConfig.initialNote}
+          onSave={handleSaveCellNote}
+          onClose={() => setCellNoteModalConfig(null)}
         />
       )}
 
@@ -758,6 +862,11 @@ export default function JobDetailModal({
                   ({tabName} Row {parentRow.rowNum}{job?.rows?.length > 1 ? `-${job.rows[job.rows.length - 1].rowNum}` : ""})
                 </span>
               )}
+              <NoteIndicatorButton
+                note={job?.note || parentRow?.note || ""}
+                onClick={openJobNoteModal}
+                title={job?.note || parentRow?.note ? `Job note: ${job?.note || parentRow?.note}` : "Add note to job"}
+              />
             </div>
 
             <button
@@ -840,8 +949,19 @@ export default function JobDetailModal({
                     boxShadow: "0 1px 3px rgba(0,0,0,0.03)"
                   }}
                 >
-                  <div style={{ fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.04em", color: "#64748b", marginBottom: "10px" }}>
-                    Primary Job Fields
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
+                    <div style={{ fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.04em", color: "#64748b" }}>
+                      Primary Job Fields
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                      <span style={{ fontSize: "11px", color: "#64748b" }}>Job note:</span>
+                      <NoteIndicatorButton
+                        size="sm"
+                        note={job?.note || parentRow?.note || ""}
+                        onClick={openJobNoteModal}
+                        title={job?.note || parentRow?.note ? `Job note: ${job?.note || parentRow?.note}` : "Add note to job"}
+                      />
+                    </div>
                   </div>
 
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: "12px" }}>
@@ -1112,13 +1232,13 @@ export default function JobDetailModal({
                       <div style={{ gridColumn: "span 2", marginTop: "4px", padding: "8px 10px", background: "#f8fafc", borderRadius: "6px", border: "1px solid #e2e8f0" }}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                           <div>
-                            <div style={{ fontSize: "11px", fontWeight: "700", color: "#334155" }}>Revenue Split</div>
+                            <div style={{ fontSize: "11px", fontWeight: "700", color: "#334155" }}>Revenue split</div>
                             <div style={{ fontSize: "11px", color: "#64748b" }}>
                               {isRetainer
                                 ? "Even monthly (Retainer)"
                                 : String(unevenSplitVal).toLowerCase().startsWith("[split]")
-                                ? "Custom uneven split active"
-                                : "Even monthly distribution"}
+                                  ? "Custom uneven split active"
+                                  : "Even monthly distribution"}
                             </div>
                           </div>
                           {!isRetainer && (
@@ -1214,7 +1334,15 @@ export default function JobDetailModal({
                               onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#e2e8f0"; e.currentTarget.style.background = hasData ? "#f8fafc" : "#ffffff"; }}
                             >
                               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                                <span style={{ fontSize: "11px", fontWeight: "700", color: "#475569" }}>{item.label}</span>
+                                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                  <span style={{ fontSize: "11px", fontWeight: "700", color: "#475569" }}>{item.label}</span>
+                                  <NoteIndicatorButton
+                                    size="sm"
+                                    note={slot.note || ""}
+                                    onClick={() => openSlotNoteModal({ item, type: "invoice" })}
+                                    title={slot.note ? `Invoice note: ${slot.note}` : "Add note to invoice slot"}
+                                  />
+                                </div>
                                 <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
                                   {item.subLabel && <span style={{ fontSize: "10px", color: "#94a3b8" }}>{item.subLabel}</span>}
                                   {slot.status && <span style={{ fontSize: "10px", padding: "1px 5px", borderRadius: "8px", fontWeight: "600", ...pillStyle }}>{slot.status}</span>}
@@ -1316,7 +1444,15 @@ export default function JobDetailModal({
                               onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#e2e8f0"; e.currentTarget.style.background = hasData ? "#f8fafc" : "#ffffff"; }}
                             >
                               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                                <span style={{ fontSize: "11px", fontWeight: "700", color: "#475569" }}>{item.label}</span>
+                                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                  <span style={{ fontSize: "11px", fontWeight: "700", color: "#475569" }}>{item.label}</span>
+                                  <NoteIndicatorButton
+                                    size="sm"
+                                    note={slot.note || ""}
+                                    onClick={() => openSlotNoteModal({ item, type: "expense" })}
+                                    title={slot.note ? `Cost note: ${slot.note}` : "Add note to direct cost slot"}
+                                  />
+                                </div>
                                 <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
                                   {item.subLabel && <span style={{ fontSize: "10px", color: "#94a3b8" }}>{item.subLabel}</span>}
                                   {slot.status && <span style={{ fontSize: "10px", padding: "1px 5px", borderRadius: "8px", fontWeight: "600", ...pillStyle }}>{slot.status}</span>}

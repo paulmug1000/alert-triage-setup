@@ -200,7 +200,7 @@ export default function RetainersView({
               onClick={() => setShowCreateRetainerModal(true)}
               style={{ ...styles.button, fontSize: "12px", padding: "6px 14px" }}
             >
-              + Create Retainer
+              + Create retainer
             </button>
           </div>
         )}
@@ -243,7 +243,7 @@ export default function RetainersView({
                 </colgroup>
                 <thead>
                   <tr style={{ background: "#f5f6fa" }}>
-                    {["","Row","Client","Job name","Monthly £","Start","End","InvSlot1","InvSlot2","InvSlot3"].map(h => (
+                    {["", "Row", "Client", "Job name", "Monthly £", "Start", "End", "InvSlot1", "InvSlot2", "InvSlot3"].map(h => (
                       <th key={h} style={{ padding: "8px 10px", textAlign: "left", borderBottom: "2px solid #ddd", whiteSpace: "nowrap" }}>{h}</th>
                     ))}
                   </tr>

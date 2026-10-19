@@ -209,7 +209,7 @@ export default function ExpensesView({
       });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || "Failed to move expense");
-      showSuccess(`Moved "${exp.category}" to ${targetIsDelivery ? "Delivery" : "Non-Delivery"}.`);
+      showSuccess(`Moved "${exp.category}" to ${targetIsDelivery ? "Delivery" : "Non-delivery"}.`);
       await fetchExpenses(selectedClient, true);
     } catch (err) {
       console.error("Move expense error:", err);
@@ -383,7 +383,7 @@ export default function ExpensesView({
                 color: exp.isDelivery ? "#475569" : "#166534",
                 fontWeight: 700,
               }}
-              title={exp.isDelivery ? "Click to move to Non-Delivery" : "Click to move to Delivery"}
+              title={exp.isDelivery ? "Click to move to non-delivery" : "Click to move to Delivery"}
             >
               {exp.isDelivery ? "↓" : "↑"}
             </button>
@@ -569,7 +569,7 @@ export default function ExpensesView({
               <span>Expenses</span>
               {selectedClient && expensesData && (
                 <span style={{ fontSize: "12px", background: "#f1f5f9", color: "#475569", padding: "2px 8px", borderRadius: "12px", fontWeight: 600 }}>
-                  {deliveryExpenses.length} Delivery · {nonDeliveryExpenses.length} Non-Delivery
+                  {deliveryExpenses.length} Delivery · {nonDeliveryExpenses.length} Non-delivery
                 </span>
               )}
             </h1>
@@ -803,7 +803,7 @@ export default function ExpensesView({
                   boxShadow: activeTab === "non-delivery" ? "0 1px 2px rgba(0,0,0,0.08)" : "none",
                 }}
               >
-                Non-Delivery ({nonDeliveryExpenses.length})
+                Non-delivery ({nonDeliveryExpenses.length})
               </button>
             </div>
 
@@ -938,7 +938,7 @@ export default function ExpensesView({
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                               <span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", background: "#94a3b8" }} />
-                              <span>Non-Delivery Expenses ({nonDeliveryExpenses.length})</span>
+                              <span>Non-delivery expenses ({nonDeliveryExpenses.length})</span>
                             </div>
                             <span style={{ fontSize: "11px", fontWeight: 500, color: "#64748b" }}>
                               (Column E = 0% · Drag rows or use arrow button to move)

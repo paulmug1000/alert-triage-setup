@@ -2360,7 +2360,7 @@ export default function ClientSettingsView({
 
           {settings && lastSyncedAt && !loading && (
             <span style={{ fontSize: "11px", color: "#64748B", marginLeft: "6px" }}>
-              {fromCache ? "⚡ Loaded from cache" : "☁️ Loaded from sheets"}
+              {fromCache ? "⚡ Loaded from cache" : "☁️ Loaded from database"}
               {" · "}
               {new Date(lastSyncedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
             </span>
@@ -3656,386 +3656,386 @@ export default function ClientSettingsView({
                         </div>
                       </div>
 
-                    {/* Active Accounts List */}
-                    <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: "14px" }}>
-                      {(settings.accounting?.bankAccounts || []).length === 0 ? (
-                        <div style={{ padding: "20px", background: "#F8FAFC", borderRadius: "8px", border: "1px dashed #CBD5E1", textAlign: "center", color: "#64748B", fontSize: "13px" }}>
-                          <p style={{ margin: "0 0 6px", fontWeight: "600", color: "#334155" }}>No bank accounts configured</p>
-                          <p style={{ margin: 0, fontSize: "12px" }}>
-                            Click &quot;Show accounts in {settings.accounting?.toolInUse && settings.accounting?.toolInUse !== "None" ? settings.accounting?.toolInUse : "accounting tool"}&quot; to fetch accounts or type an account name below.
-                          </p>
-                        </div>
-                      ) : (
-                        (settings.accounting?.bankAccounts || []).map((accountName, idx) => {
-                          const cellRow = 12 + idx;
-                          const matchDetail = (settings.accounting?.bankAccountDetails || []).find(d => d.name === accountName);
-                          return (
-                            <div
-                              key={idx}
-                              style={{
-                                display: "flex",
-                                alignItems: "center",
-                                gap: "10px",
-                                background: "#F8FAFC",
-                                padding: "7px 12px",
-                                borderRadius: "6px",
-                                border: "1px solid #E2E8F0"
-                              }}
-                            >
-                              <span style={{ fontSize: "11px", fontWeight: "700", color: "#64748B", width: "52px", flexShrink: 0, fontFamily: "monospace" }}>
-                                #{idx + 1} <span style={{ fontSize: "10px", color: "#94A3B8" }}>(H{cellRow})</span>
-                              </span>
+                      {/* Active Accounts List */}
+                      <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: "14px" }}>
+                        {(settings.accounting?.bankAccounts || []).length === 0 ? (
+                          <div style={{ padding: "20px", background: "#F8FAFC", borderRadius: "8px", border: "1px dashed #CBD5E1", textAlign: "center", color: "#64748B", fontSize: "13px" }}>
+                            <p style={{ margin: "0 0 6px", fontWeight: "600", color: "#334155" }}>No bank accounts configured</p>
+                            <p style={{ margin: 0, fontSize: "12px" }}>
+                              Click &quot;Show accounts in {settings.accounting?.toolInUse && settings.accounting?.toolInUse !== "None" ? settings.accounting?.toolInUse : "accounting tool"}&quot; to fetch accounts or type an account name below.
+                            </p>
+                          </div>
+                        ) : (
+                          (settings.accounting?.bankAccounts || []).map((accountName, idx) => {
+                            const cellRow = 12 + idx;
+                            const matchDetail = (settings.accounting?.bankAccountDetails || []).find(d => d.name === accountName);
+                            return (
+                              <div
+                                key={idx}
+                                style={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: "10px",
+                                  background: "#F8FAFC",
+                                  padding: "7px 12px",
+                                  borderRadius: "6px",
+                                  border: "1px solid #E2E8F0"
+                                }}
+                              >
+                                <span style={{ fontSize: "11px", fontWeight: "700", color: "#64748B", width: "52px", flexShrink: 0, fontFamily: "monospace" }}>
+                                  #{idx + 1} <span style={{ fontSize: "10px", color: "#94A3B8" }}>(H{cellRow})</span>
+                                </span>
 
-                              <div style={{ flex: 1, display: "flex", alignItems: "center", gap: "8px" }}>
+                                <div style={{ flex: 1, display: "flex", alignItems: "center", gap: "8px" }}>
+                                  <input
+                                    type="text"
+                                    value={accountName}
+                                    onChange={(e) => handleUpdateBankAccountName(idx, e.target.value)}
+                                    placeholder="Bank account name"
+                                    style={{
+                                      flex: 1,
+                                      padding: "6px 10px",
+                                      borderRadius: "5px",
+                                      border: "1px solid #CBD5E1",
+                                      fontSize: "13px",
+                                      background: "#FFFFFF",
+                                      boxSizing: "border-box"
+                                    }}
+                                  />
+                                  {matchDetail?.id && (
+                                    <span
+                                      style={{
+                                        fontSize: "10px",
+                                        fontFamily: "monospace",
+                                        color: "#475569",
+                                        background: "#F1F5F9",
+                                        border: "1px solid #E2E8F0",
+                                        padding: "2px 6px",
+                                        borderRadius: "4px",
+                                        whiteSpace: "nowrap"
+                                      }}
+                                      title={`Accounting Tool ID stored in KeyInfo!I${cellRow}`}
+                                    >
+                                      ID: {matchDetail.id}
+                                    </span>
+                                  )}
+                                </div>
+
+                                {/* Reorder Buttons */}
+                                <div style={{ display: "flex", gap: "2px", flexShrink: 0 }}>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleMoveBankAccount(idx, idx - 1)}
+                                    disabled={idx === 0}
+                                    title="Move up"
+                                    style={{
+                                      padding: "4px 7px",
+                                      borderRadius: "4px",
+                                      border: "1px solid #CBD5E1",
+                                      background: idx === 0 ? "#F1F5F9" : "#FFFFFF",
+                                      color: idx === 0 ? "#CBD5E1" : "#475569",
+                                      cursor: idx === 0 ? "not-allowed" : "pointer",
+                                      fontSize: "10px"
+                                    }}
+                                  >
+                                    ▲
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleMoveBankAccount(idx, idx + 1)}
+                                    disabled={idx === (settings.accounting?.bankAccounts || []).length - 1}
+                                    title="Move down"
+                                    style={{
+                                      padding: "4px 7px",
+                                      borderRadius: "4px",
+                                      border: "1px solid #CBD5E1",
+                                      background: idx === (settings.accounting?.bankAccounts || []).length - 1 ? "#F1F5F9" : "#FFFFFF",
+                                      color: idx === (settings.accounting?.bankAccounts || []).length - 1 ? "#CBD5E1" : "#475569",
+                                      cursor: idx === (settings.accounting?.bankAccounts || []).length - 1 ? "not-allowed" : "pointer",
+                                      fontSize: "10px"
+                                    }}
+                                  >
+                                    ▼
+                                  </button>
+                                </div>
+
+                                {/* Delete Button */}
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveBankAccount(idx)}
+                                  title="Remove account"
+                                  style={{
+                                    padding: "4px 8px",
+                                    borderRadius: "4px",
+                                    border: "1px solid #FCA5A5",
+                                    background: "#FEF2F2",
+                                    color: "#DC2626",
+                                    cursor: "pointer",
+                                    fontSize: "12px",
+                                    fontWeight: "600",
+                                    flexShrink: 0
+                                  }}
+                                >
+                                  ✕
+                                </button>
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+
+                      {/* Manual add input row (if under 10) */}
+                      {(settings.accounting?.bankAccounts || []).length < 10 && (
+                        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                          <input
+                            type="text"
+                            value={newManualAccountName}
+                            onChange={(e) => setNewManualAccountName(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                handleAddManualBankAccount();
+                              }
+                            }}
+                            placeholder="Enter bank account name to add manually..."
+                            style={{
+                              flex: 1,
+                              padding: "7px 10px",
+                              borderRadius: "6px",
+                              border: "1px solid #CBD5E1",
+                              fontSize: "12px",
+                              boxSizing: "border-box"
+                            }}
+                          />
+                          <button
+                            type="button"
+                            onClick={handleAddManualBankAccount}
+                            disabled={!newManualAccountName.trim()}
+                            style={{
+                              padding: "7px 12px",
+                              borderRadius: "6px",
+                              border: "1px solid #CBD5E1",
+                              background: newManualAccountName.trim() ? "#F8FAFC" : "#F1F5F9",
+                              color: newManualAccountName.trim() ? "#0F172A" : "#94A3B8",
+                              fontSize: "12px",
+                              fontWeight: "600",
+                              cursor: newManualAccountName.trim() ? "pointer" : "not-allowed",
+                              flexShrink: 0
+                            }}
+                          >
+                            + Add cash account
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Divider between Cash and Non-Cash */}
+                    <div style={{ borderTop: "1px solid #E2E8F0", margin: "24px 0" }} />
+
+                    {/* ── Sub-section 2: Non-cash bank accounts ── */}
+                    <div>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "12px", marginBottom: "14px" }}>
+                        <div>
+                          <h5 style={{ margin: "0 0 4px", fontSize: "14px", fontWeight: "700", color: "#0F172A" }}>
+                            Non-cash bank accounts
+                          </h5>
+                          <p style={{ margin: 0, fontSize: "12px", color: "#64748B" }}>
+                            Accounts (e.g. corporate credit cards, Capital on Tap, or loan cards) tracked strictly for matching and clearing unreconciled P&amp;L additions. Transactions from these accounts are never added to the main cash flow bank reconciliation. Names in KeyInfo!H23:H28, Accounting Tool IDs in KeyInfo!I23:I28.
+                          </p>
+                          {renderCellRef("KeyInfo!H23:I28")}
+                        </div>
+
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                          <button
+                            type="button"
+                            onClick={() => handleFetchBankAccounts("non-cash")}
+                            disabled={fetchingBankAccounts}
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "6px",
+                              padding: "7px 13px",
+                              borderRadius: "6px",
+                              border: "1px solid #7C3AED",
+                              background: "#F5F3FF",
+                              color: "#7C3AED",
+                              fontSize: "12px",
+                              fontWeight: "600",
+                              cursor: fetchingBankAccounts ? "not-allowed" : "pointer",
+                              opacity: fetchingBankAccounts ? 0.7 : 1,
+                              transition: "all 0.15s ease"
+                            }}
+                          >
+                            {fetchingBankAccounts && bankModalTarget === "non-cash" ? (
+                              <>
+                                <span style={{ display: "inline-block", width: "12px", height: "12px", border: "2px solid #7C3AED", borderTopColor: "transparent", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
+                                <span>Fetching accounts...</span>
+                              </>
+                            ) : (
+                              <>
+                                <span>💳</span>
+                                <span>Show accounts in {settings.accounting?.toolInUse && settings.accounting?.toolInUse !== "None" ? settings.accounting?.toolInUse : "accounting tool"}</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Active Non-Cash Accounts List */}
+                      <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: "14px" }}>
+                        {(settings.accounting?.nonCashBankAccounts || []).length === 0 ? (
+                          <div style={{ padding: "16px", background: "#F8FAFC", borderRadius: "8px", border: "1px dashed #CBD5E1", textAlign: "center", color: "#64748B", fontSize: "12px" }}>
+                            <p style={{ margin: "0 0 4px", fontWeight: "600", color: "#334155" }}>No non-cash bank accounts configured</p>
+                            <p style={{ margin: 0 }}>
+                              Type a credit card or non-cash account name below (e.g. &quot;Capital on Tap - Credit Card&quot;) to enable automated P&L clearing.
+                            </p>
+                          </div>
+                        ) : (
+                          (settings.accounting?.nonCashBankAccounts || []).map((accountName, idx) => {
+                            const cellRow = 23 + idx;
+                            const matchDetail = (settings.accounting?.nonCashBankAccountDetails || []).find(d => d.name === accountName);
+                            return (
+                              <div
+                                key={idx}
+                                style={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: "10px",
+                                  padding: "8px 12px",
+                                  background: "#F8FAFC",
+                                  borderRadius: "6px",
+                                  border: "1px solid #E2E8F0"
+                                }}
+                              >
+                                <span style={{ fontSize: "11px", fontWeight: "700", color: "#6B7280", minWidth: "55px" }}>
+                                  H{cellRow}:
+                                </span>
+                                <span style={{ fontSize: "14px" }}>💳</span>
                                 <input
                                   type="text"
                                   value={accountName}
-                                  onChange={(e) => handleUpdateBankAccountName(idx, e.target.value)}
-                                  placeholder="Bank account name"
+                                  onChange={(e) => handleUpdateNonCashBankAccountName(idx, e.target.value)}
                                   style={{
                                     flex: 1,
-                                    padding: "6px 10px",
-                                    borderRadius: "5px",
+                                    padding: "5px 8px",
+                                    borderRadius: "4px",
                                     border: "1px solid #CBD5E1",
-                                    fontSize: "13px",
-                                    background: "#FFFFFF",
-                                    boxSizing: "border-box"
+                                    fontSize: "12px",
+                                    fontWeight: "600",
+                                    color: "#0F172A",
+                                    background: "#FFFFFF"
                                   }}
                                 />
                                 {matchDetail?.id && (
-                                  <span
-                                    style={{
-                                      fontSize: "10px",
-                                      fontFamily: "monospace",
-                                      color: "#475569",
-                                      background: "#F1F5F9",
-                                      border: "1px solid #E2E8F0",
-                                      padding: "2px 6px",
-                                      borderRadius: "4px",
-                                      whiteSpace: "nowrap"
-                                    }}
-                                    title={`Accounting Tool ID stored in KeyInfo!I${cellRow}`}
-                                  >
+                                  <span style={{ fontSize: "10px", color: "#64748B", background: "#E2E8F0", padding: "2px 6px", borderRadius: "4px", maxWidth: "160px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={`Tool ID: ${matchDetail.id}`}>
                                     ID: {matchDetail.id}
                                   </span>
                                 )}
-                              </div>
-
-                              {/* Reorder Buttons */}
-                              <div style={{ display: "flex", gap: "2px", flexShrink: 0 }}>
+                                <div style={{ display: "flex", gap: "2px" }}>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleMoveNonCashBankAccount(idx, idx - 1)}
+                                    disabled={idx === 0}
+                                    title="Move up"
+                                    style={{
+                                      padding: "4px 7px",
+                                      borderRadius: "4px",
+                                      border: "1px solid #CBD5E1",
+                                      background: idx === 0 ? "#F1F5F9" : "#FFFFFF",
+                                      color: idx === 0 ? "#CBD5E1" : "#475569",
+                                      cursor: idx === 0 ? "not-allowed" : "pointer",
+                                      fontSize: "10px"
+                                    }}
+                                  >
+                                    ▲
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleMoveNonCashBankAccount(idx, idx + 1)}
+                                    disabled={idx === (settings.accounting?.nonCashBankAccounts || []).length - 1}
+                                    title="Move down"
+                                    style={{
+                                      padding: "4px 7px",
+                                      borderRadius: "4px",
+                                      border: "1px solid #CBD5E1",
+                                      background: idx === (settings.accounting?.nonCashBankAccounts || []).length - 1 ? "#F1F5F9" : "#FFFFFF",
+                                      color: idx === (settings.accounting?.nonCashBankAccounts || []).length - 1 ? "#CBD5E1" : "#475569",
+                                      cursor: idx === (settings.accounting?.nonCashBankAccounts || []).length - 1 ? "not-allowed" : "pointer",
+                                      fontSize: "10px"
+                                    }}
+                                  >
+                                    ▼
+                                  </button>
+                                </div>
                                 <button
                                   type="button"
-                                  onClick={() => handleMoveBankAccount(idx, idx - 1)}
-                                  disabled={idx === 0}
-                                  title="Move up"
+                                  onClick={() => handleRemoveNonCashBankAccount(idx)}
+                                  title="Remove non-cash account"
                                   style={{
-                                    padding: "4px 7px",
+                                    padding: "4px 8px",
                                     borderRadius: "4px",
-                                    border: "1px solid #CBD5E1",
-                                    background: idx === 0 ? "#F1F5F9" : "#FFFFFF",
-                                    color: idx === 0 ? "#CBD5E1" : "#475569",
-                                    cursor: idx === 0 ? "not-allowed" : "pointer",
-                                    fontSize: "10px"
+                                    border: "1px solid #FCA5A5",
+                                    background: "#FEF2F2",
+                                    color: "#DC2626",
+                                    cursor: "pointer",
+                                    fontSize: "12px",
+                                    fontWeight: "600",
+                                    flexShrink: 0
                                   }}
                                 >
-                                  ▲
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleMoveBankAccount(idx, idx + 1)}
-                                  disabled={idx === (settings.accounting?.bankAccounts || []).length - 1}
-                                  title="Move down"
-                                  style={{
-                                    padding: "4px 7px",
-                                    borderRadius: "4px",
-                                    border: "1px solid #CBD5E1",
-                                    background: idx === (settings.accounting?.bankAccounts || []).length - 1 ? "#F1F5F9" : "#FFFFFF",
-                                    color: idx === (settings.accounting?.bankAccounts || []).length - 1 ? "#CBD5E1" : "#475569",
-                                    cursor: idx === (settings.accounting?.bankAccounts || []).length - 1 ? "not-allowed" : "pointer",
-                                    fontSize: "10px"
-                                  }}
-                                >
-                                  ▼
+                                  ✕
                                 </button>
                               </div>
-
-                              {/* Delete Button */}
-                              <button
-                                type="button"
-                                onClick={() => handleRemoveBankAccount(idx)}
-                                title="Remove account"
-                                style={{
-                                  padding: "4px 8px",
-                                  borderRadius: "4px",
-                                  border: "1px solid #FCA5A5",
-                                  background: "#FEF2F2",
-                                  color: "#DC2626",
-                                  cursor: "pointer",
-                                  fontSize: "12px",
-                                  fontWeight: "600",
-                                  flexShrink: 0
-                                }}
-                              >
-                                ✕
-                              </button>
-                            </div>
-                          );
-                        })
-                      )}
-                    </div>
-
-                    {/* Manual add input row (if under 10) */}
-                    {(settings.accounting?.bankAccounts || []).length < 10 && (
-                      <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-                        <input
-                          type="text"
-                          value={newManualAccountName}
-                          onChange={(e) => setNewManualAccountName(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                              e.preventDefault();
-                              handleAddManualBankAccount();
-                            }
-                          }}
-                          placeholder="Enter bank account name to add manually..."
-                          style={{
-                            flex: 1,
-                            padding: "7px 10px",
-                            borderRadius: "6px",
-                            border: "1px solid #CBD5E1",
-                            fontSize: "12px",
-                            boxSizing: "border-box"
-                          }}
-                        />
-                        <button
-                          type="button"
-                          onClick={handleAddManualBankAccount}
-                          disabled={!newManualAccountName.trim()}
-                          style={{
-                            padding: "7px 12px",
-                            borderRadius: "6px",
-                            border: "1px solid #CBD5E1",
-                            background: newManualAccountName.trim() ? "#F8FAFC" : "#F1F5F9",
-                            color: newManualAccountName.trim() ? "#0F172A" : "#94A3B8",
-                            fontSize: "12px",
-                            fontWeight: "600",
-                            cursor: newManualAccountName.trim() ? "pointer" : "not-allowed",
-                            flexShrink: 0
-                          }}
-                        >
-                          + Add cash account
-                        </button>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Divider between Cash and Non-Cash */}
-                  <div style={{ borderTop: "1px solid #E2E8F0", margin: "24px 0" }} />
-
-                  {/* ── Sub-section 2: Non-cash bank accounts ── */}
-                  <div>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "12px", marginBottom: "14px" }}>
-                      <div>
-                        <h5 style={{ margin: "0 0 4px", fontSize: "14px", fontWeight: "700", color: "#0F172A" }}>
-                          Non-cash bank accounts
-                        </h5>
-                        <p style={{ margin: 0, fontSize: "12px", color: "#64748B" }}>
-                          Accounts (e.g. corporate credit cards, Capital on Tap, or loan cards) tracked strictly for matching and clearing unreconciled P&amp;L additions. Transactions from these accounts are never added to the main cash flow bank reconciliation. Names in KeyInfo!H23:H28, Accounting Tool IDs in KeyInfo!I23:I28.
-                        </p>
-                        {renderCellRef("KeyInfo!H23:I28")}
+                            );
+                          })
+                        )}
                       </div>
 
-                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                        <button
-                          type="button"
-                          onClick={() => handleFetchBankAccounts("non-cash")}
-                          disabled={fetchingBankAccounts}
-                          style={{
-                            display: "inline-flex",
-                            alignItems: "center",
-                            gap: "6px",
-                            padding: "7px 13px",
-                            borderRadius: "6px",
-                            border: "1px solid #7C3AED",
-                            background: "#F5F3FF",
-                            color: "#7C3AED",
-                            fontSize: "12px",
-                            fontWeight: "600",
-                            cursor: fetchingBankAccounts ? "not-allowed" : "pointer",
-                            opacity: fetchingBankAccounts ? 0.7 : 1,
-                            transition: "all 0.15s ease"
-                          }}
-                        >
-                          {fetchingBankAccounts && bankModalTarget === "non-cash" ? (
-                            <>
-                              <span style={{ display: "inline-block", width: "12px", height: "12px", border: "2px solid #7C3AED", borderTopColor: "transparent", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
-                              <span>Fetching accounts...</span>
-                            </>
-                          ) : (
-                            <>
-                              <span>💳</span>
-                              <span>Show accounts in {settings.accounting?.toolInUse && settings.accounting?.toolInUse !== "None" ? settings.accounting?.toolInUse : "accounting tool"}</span>
-                            </>
-                          )}
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Active Non-Cash Accounts List */}
-                    <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: "14px" }}>
-                      {(settings.accounting?.nonCashBankAccounts || []).length === 0 ? (
-                        <div style={{ padding: "16px", background: "#F8FAFC", borderRadius: "8px", border: "1px dashed #CBD5E1", textAlign: "center", color: "#64748B", fontSize: "12px" }}>
-                          <p style={{ margin: "0 0 4px", fontWeight: "600", color: "#334155" }}>No non-cash bank accounts configured</p>
-                          <p style={{ margin: 0 }}>
-                            Type a credit card or non-cash account name below (e.g. &quot;Capital on Tap - Credit Card&quot;) to enable automated P&L clearing.
-                          </p>
+                      {/* Manual add input row (if under 6) */}
+                      {(settings.accounting?.nonCashBankAccounts || []).length < 6 && (
+                        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                          <input
+                            type="text"
+                            value={newManualNonCashAccountName}
+                            onChange={(e) => setNewManualNonCashAccountName(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                handleAddManualNonCashBankAccount();
+                              }
+                            }}
+                            placeholder="Enter non-cash bank account name to add (e.g. Capital on Tap)..."
+                            style={{
+                              flex: 1,
+                              padding: "7px 10px",
+                              borderRadius: "6px",
+                              border: "1px solid #CBD5E1",
+                              fontSize: "12px",
+                              boxSizing: "border-box"
+                            }}
+                          />
+                          <button
+                            type="button"
+                            onClick={handleAddManualNonCashBankAccount}
+                            disabled={!newManualNonCashAccountName.trim()}
+                            style={{
+                              padding: "7px 12px",
+                              borderRadius: "6px",
+                              border: "1px solid #CBD5E1",
+                              background: newManualNonCashAccountName.trim() ? "#F8FAFC" : "#F1F5F9",
+                              color: newManualNonCashAccountName.trim() ? "#0F172A" : "#94A3B8",
+                              fontSize: "12px",
+                              fontWeight: "600",
+                              cursor: newManualNonCashAccountName.trim() ? "pointer" : "not-allowed",
+                              flexShrink: 0
+                            }}
+                          >
+                            + Add non-cash account
+                          </button>
                         </div>
-                      ) : (
-                        (settings.accounting?.nonCashBankAccounts || []).map((accountName, idx) => {
-                          const cellRow = 23 + idx;
-                          const matchDetail = (settings.accounting?.nonCashBankAccountDetails || []).find(d => d.name === accountName);
-                          return (
-                            <div
-                              key={idx}
-                              style={{
-                                display: "flex",
-                                alignItems: "center",
-                                gap: "10px",
-                                padding: "8px 12px",
-                                background: "#F8FAFC",
-                                borderRadius: "6px",
-                                border: "1px solid #E2E8F0"
-                              }}
-                            >
-                              <span style={{ fontSize: "11px", fontWeight: "700", color: "#6B7280", minWidth: "55px" }}>
-                                H{cellRow}:
-                              </span>
-                              <span style={{ fontSize: "14px" }}>💳</span>
-                              <input
-                                type="text"
-                                value={accountName}
-                                onChange={(e) => handleUpdateNonCashBankAccountName(idx, e.target.value)}
-                                style={{
-                                  flex: 1,
-                                  padding: "5px 8px",
-                                  borderRadius: "4px",
-                                  border: "1px solid #CBD5E1",
-                                  fontSize: "12px",
-                                  fontWeight: "600",
-                                  color: "#0F172A",
-                                  background: "#FFFFFF"
-                                }}
-                              />
-                              {matchDetail?.id && (
-                                <span style={{ fontSize: "10px", color: "#64748B", background: "#E2E8F0", padding: "2px 6px", borderRadius: "4px", maxWidth: "160px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={`Tool ID: ${matchDetail.id}`}>
-                                  ID: {matchDetail.id}
-                                </span>
-                              )}
-                              <div style={{ display: "flex", gap: "2px" }}>
-                                <button
-                                  type="button"
-                                  onClick={() => handleMoveNonCashBankAccount(idx, idx - 1)}
-                                  disabled={idx === 0}
-                                  title="Move up"
-                                  style={{
-                                    padding: "4px 7px",
-                                    borderRadius: "4px",
-                                    border: "1px solid #CBD5E1",
-                                    background: idx === 0 ? "#F1F5F9" : "#FFFFFF",
-                                    color: idx === 0 ? "#CBD5E1" : "#475569",
-                                    cursor: idx === 0 ? "not-allowed" : "pointer",
-                                    fontSize: "10px"
-                                  }}
-                                >
-                                  ▲
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleMoveNonCashBankAccount(idx, idx + 1)}
-                                  disabled={idx === (settings.accounting?.nonCashBankAccounts || []).length - 1}
-                                  title="Move down"
-                                  style={{
-                                    padding: "4px 7px",
-                                    borderRadius: "4px",
-                                    border: "1px solid #CBD5E1",
-                                    background: idx === (settings.accounting?.nonCashBankAccounts || []).length - 1 ? "#F1F5F9" : "#FFFFFF",
-                                    color: idx === (settings.accounting?.nonCashBankAccounts || []).length - 1 ? "#CBD5E1" : "#475569",
-                                    cursor: idx === (settings.accounting?.nonCashBankAccounts || []).length - 1 ? "not-allowed" : "pointer",
-                                    fontSize: "10px"
-                                  }}
-                                >
-                                  ▼
-                                </button>
-                              </div>
-                              <button
-                                type="button"
-                                onClick={() => handleRemoveNonCashBankAccount(idx)}
-                                title="Remove non-cash account"
-                                style={{
-                                  padding: "4px 8px",
-                                  borderRadius: "4px",
-                                  border: "1px solid #FCA5A5",
-                                  background: "#FEF2F2",
-                                  color: "#DC2626",
-                                  cursor: "pointer",
-                                  fontSize: "12px",
-                                  fontWeight: "600",
-                                  flexShrink: 0
-                                }}
-                              >
-                                ✕
-                              </button>
-                            </div>
-                          );
-                        })
                       )}
                     </div>
-
-                    {/* Manual add input row (if under 6) */}
-                    {(settings.accounting?.nonCashBankAccounts || []).length < 6 && (
-                      <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-                        <input
-                          type="text"
-                          value={newManualNonCashAccountName}
-                          onChange={(e) => setNewManualNonCashAccountName(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                              e.preventDefault();
-                              handleAddManualNonCashBankAccount();
-                            }
-                          }}
-                          placeholder="Enter non-cash bank account name to add (e.g. Capital on Tap)..."
-                          style={{
-                            flex: 1,
-                            padding: "7px 10px",
-                            borderRadius: "6px",
-                            border: "1px solid #CBD5E1",
-                            fontSize: "12px",
-                            boxSizing: "border-box"
-                          }}
-                        />
-                        <button
-                          type="button"
-                          onClick={handleAddManualNonCashBankAccount}
-                          disabled={!newManualNonCashAccountName.trim()}
-                          style={{
-                            padding: "7px 12px",
-                            borderRadius: "6px",
-                            border: "1px solid #CBD5E1",
-                            background: newManualNonCashAccountName.trim() ? "#F8FAFC" : "#F1F5F9",
-                            color: newManualNonCashAccountName.trim() ? "#0F172A" : "#94A3B8",
-                            fontSize: "12px",
-                            fontWeight: "600",
-                            cursor: newManualNonCashAccountName.trim() ? "pointer" : "not-allowed",
-                            flexShrink: 0
-                          }}
-                        >
-                          + Add non-cash account
-                        </button>
-                      </div>
-                    )}
                   </div>
-                </div>
 
                   {/* Invoice number formatting (InvAppList!F1) */}
                   <div style={{ marginBottom: "28px", background: "#FFFFFF", borderRadius: "10px", padding: "20px", border: "1px solid #E2E8F0", boxShadow: "0 1px 3px rgba(0,0,0,0.02)" }}>
@@ -5097,98 +5097,98 @@ export default function ClientSettingsView({
                           {settings.crmStatusMapping.map((item, idx) => {
                             const isCrmStatus = item.fromCrm === true || (!item.isManual && knownCrmStatuses.has(String(item.status || "").trim().toLowerCase()));
                             return (
-                            <tr key={idx} style={{ borderBottom: "1px solid #F1F5F9" }}>
-                              <td style={{ padding: "6px 12px" }}>
-                                <input
-                                  type="text"
-                                  value={item.status || ""}
-                                  readOnly={isCrmStatus}
-                                  onChange={(e) => {
-                                    if (isCrmStatus) return;
-                                    const val = e.target.value;
-                                    updateSettingsField(prev => {
-                                      const next = [...prev.crmStatusMapping];
-                                      next[idx] = { ...next[idx], status: val };
-                                      return { ...prev, crmStatusMapping: next };
-                                    });
-                                  }}
-                                  placeholder={isCrmStatus ? "CRM Stage Name" : "e.g. Qualified, Presentation, Closed Won"}
-                                  title={isCrmStatus ? "CRM status name is pulled from CRM and is not editable" : "Manually added status name"}
-                                  style={{
-                                    width: "100%",
-                                    padding: "5px 8px",
-                                    borderRadius: "4px",
-                                    border: isCrmStatus ? "1px solid #E2E8F0" : "1px solid #CBD5E1",
-                                    fontSize: "12px",
-                                    boxSizing: "border-box",
-                                    background: isCrmStatus ? "#F1F5F9" : "#FFFFFF",
-                                    color: isCrmStatus ? "#475569" : "#0F172A",
-                                    cursor: isCrmStatus ? "not-allowed" : "text"
-                                  }}
-                                />
-                              </td>
-                              <td style={{ padding: "6px 12px" }}>
-                                <input
-                                  type="text"
-                                  value={item.likelihood || ""}
-                                  onChange={(e) => {
-                                    const val = e.target.value;
-                                    updateSettingsField(prev => {
-                                      const next = [...prev.crmStatusMapping];
-                                      next[idx] = { ...next[idx], likelihood: val };
-                                      return { ...prev, crmStatusMapping: next };
-                                    });
-                                  }}
-                                  placeholder="e.g. 50%"
-                                  style={{ width: "100%", padding: "5px 8px", borderRadius: "4px", border: "1px solid #CBD5E1", fontSize: "12px", boxSizing: "border-box" }}
-                                />
-                              </td>
-                              <td style={{ padding: "6px 12px" }}>
-                                <select
-                                  value={item.startDateRule || ""}
-                                  onChange={(e) => {
-                                    const val = e.target.value;
-                                    updateSettingsField(prev => {
-                                      const next = [...prev.crmStatusMapping];
-                                      next[idx] = { ...next[idx], startDateRule: val };
-                                      return { ...prev, crmStatusMapping: next };
-                                    });
-                                  }}
-                                  style={{
-                                    width: "100%",
-                                    padding: "5px 8px",
-                                    borderRadius: "4px",
-                                    border: "1px solid #CBD5E1",
-                                    fontSize: "12px",
-                                    boxSizing: "border-box",
-                                    background: "#FFFFFF",
-                                    color: item.startDateRule ? "#0F172A" : "#64748B"
-                                  }}
-                                >
-                                  <option value="">-- None --</option>
-                                  {CRM_START_DATE_RULES.map(r => (
-                                    <option key={r} value={r}>
-                                      {r} {r === "1" ? "month" : "months"} in the future
-                                    </option>
-                                  ))}
-                                </select>
-                              </td>
-                              <td style={{ padding: "6px 12px", textAlign: "right" }}>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    updateSettingsField(prev => ({
-                                      ...prev,
-                                      crmStatusMapping: prev.crmStatusMapping.filter((_, i) => i !== idx)
-                                    }));
-                                  }}
-                                  style={{ background: "none", border: "none", color: "#DC2626", cursor: "pointer", fontSize: "14px" }}
-                                  title="Delete row"
-                                >
-                                  ✕
-                                </button>
-                              </td>
-                            </tr>
+                              <tr key={idx} style={{ borderBottom: "1px solid #F1F5F9" }}>
+                                <td style={{ padding: "6px 12px" }}>
+                                  <input
+                                    type="text"
+                                    value={item.status || ""}
+                                    readOnly={isCrmStatus}
+                                    onChange={(e) => {
+                                      if (isCrmStatus) return;
+                                      const val = e.target.value;
+                                      updateSettingsField(prev => {
+                                        const next = [...prev.crmStatusMapping];
+                                        next[idx] = { ...next[idx], status: val };
+                                        return { ...prev, crmStatusMapping: next };
+                                      });
+                                    }}
+                                    placeholder={isCrmStatus ? "CRM Stage Name" : "e.g. Qualified, Presentation, Closed Won"}
+                                    title={isCrmStatus ? "CRM status name is pulled from CRM and is not editable" : "Manually added status name"}
+                                    style={{
+                                      width: "100%",
+                                      padding: "5px 8px",
+                                      borderRadius: "4px",
+                                      border: isCrmStatus ? "1px solid #E2E8F0" : "1px solid #CBD5E1",
+                                      fontSize: "12px",
+                                      boxSizing: "border-box",
+                                      background: isCrmStatus ? "#F1F5F9" : "#FFFFFF",
+                                      color: isCrmStatus ? "#475569" : "#0F172A",
+                                      cursor: isCrmStatus ? "not-allowed" : "text"
+                                    }}
+                                  />
+                                </td>
+                                <td style={{ padding: "6px 12px" }}>
+                                  <input
+                                    type="text"
+                                    value={item.likelihood || ""}
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      updateSettingsField(prev => {
+                                        const next = [...prev.crmStatusMapping];
+                                        next[idx] = { ...next[idx], likelihood: val };
+                                        return { ...prev, crmStatusMapping: next };
+                                      });
+                                    }}
+                                    placeholder="e.g. 50%"
+                                    style={{ width: "100%", padding: "5px 8px", borderRadius: "4px", border: "1px solid #CBD5E1", fontSize: "12px", boxSizing: "border-box" }}
+                                  />
+                                </td>
+                                <td style={{ padding: "6px 12px" }}>
+                                  <select
+                                    value={item.startDateRule || ""}
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      updateSettingsField(prev => {
+                                        const next = [...prev.crmStatusMapping];
+                                        next[idx] = { ...next[idx], startDateRule: val };
+                                        return { ...prev, crmStatusMapping: next };
+                                      });
+                                    }}
+                                    style={{
+                                      width: "100%",
+                                      padding: "5px 8px",
+                                      borderRadius: "4px",
+                                      border: "1px solid #CBD5E1",
+                                      fontSize: "12px",
+                                      boxSizing: "border-box",
+                                      background: "#FFFFFF",
+                                      color: item.startDateRule ? "#0F172A" : "#64748B"
+                                    }}
+                                  >
+                                    <option value="">-- None --</option>
+                                    {CRM_START_DATE_RULES.map(r => (
+                                      <option key={r} value={r}>
+                                        {r} {r === "1" ? "month" : "months"} in the future
+                                      </option>
+                                    ))}
+                                  </select>
+                                </td>
+                                <td style={{ padding: "6px 12px", textAlign: "right" }}>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      updateSettingsField(prev => ({
+                                        ...prev,
+                                        crmStatusMapping: prev.crmStatusMapping.filter((_, i) => i !== idx)
+                                      }));
+                                    }}
+                                    style={{ background: "none", border: "none", color: "#DC2626", cursor: "pointer", fontSize: "14px" }}
+                                    title="Delete row"
+                                  >
+                                    ✕
+                                  </button>
+                                </td>
+                              </tr>
                             );
                           })}
                         </tbody>

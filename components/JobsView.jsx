@@ -5,6 +5,8 @@ import InvoicesEditModal from "./InvoicesEditModal";
 import DirectCostsEditModal from "./DirectCostsEditModal";
 import JobsNewJobModal from "./JobsNewJobModal";
 import EditClientSelector from "./EditClientSelector";
+import CellNoteModal from "./CellNoteModal";
+import NoteIndicatorButton from "./NoteIndicatorButton";
 import { useJobs } from "../hooks/useJobs";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { isPlaceholderInvoice, isPlaceholderExpense, getRetainerRowMonthLabel } from "../utils/helpers";
@@ -13,7 +15,7 @@ export const parseSheetDate = (dStr) => {
   if (!dStr) return null;
   if (dStr instanceof Date) return isNaN(dStr.getTime()) ? null : dStr;
   const s = String(dStr).trim();
-  const months = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
+  const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
 
   // 1. ISO format: YYYY-MM-DD
   const isoMatch = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
@@ -542,6 +544,106 @@ export default function JobsView({
   const [invoicesEditSlot, setInvoicesEditSlot] = useState(null);
   const [directCostsEditSlot, setDirectCostsEditSlot] = useState(null);
   const [showAddJobModal, setShowAddJobModal] = useState(false);
+  const [cellNoteModalConfig, setCellNoteModalConfig] = useState(null);
+
+  const openJobNoteModal = (job) => {
+    const parentRow = job.rows?.[0] || {};
+    const tabName = job.tabName || parentRow.tabName || "Confirmed";
+    const currentNote = job.note || parentRow.note || "";
+    setCellNoteModalConfig({
+      isOpen: true,
+      title: "Job note",
+      subtitle: `${job.client || parentRow.client || ""} · ${job.jobName || parentRow.jobName || ""} (${tabName} Row ${parentRow.rowNum})`,
+      initialNote: currentNote,
+      tabName,
+      sheetRow: parentRow.rowNum,
+      colLetter: "A",
+      onSaveSuccess: (savedNote) => {
+        setJobsData((prev) => {
+          if (!prev) return prev;
+          return prev.map((j) => {
+            if (getJobKey(j) === getJobKey(job)) {
+              const updatedRows = (j.rows || []).map((r, rIdx) =>
+                rIdx === 0 ? { ...r, note: savedNote } : r
+              );
+              return { ...j, note: savedNote, rows: updatedRows };
+            }
+            return j;
+          });
+        });
+      }
+    });
+  };
+
+  const openSlotNoteModal = ({ item, type, job }) => {
+    const rowNum = item.rowNum;
+    const slotNum = item.slotNum;
+    const tabName = item.row?.tabName || job?.tabName || "Confirmed";
+    const colLetter = type === "invoice"
+      ? (slotNum === 1 ? "AP" : slotNum === 2 ? "AW" : "BD")
+      : (slotNum === 1 ? "BX" : slotNum === 2 ? "CE" : "CL");
+    const currentNote = item.slot?.note || "";
+
+    setCellNoteModalConfig({
+      isOpen: true,
+      title: type === "invoice" ? `Invoice note (${item.label})` : `Direct cost note (${item.label})`,
+      subtitle: `${job?.client || ""} · ${job?.jobName || ""} (${tabName} Row ${rowNum})`,
+      initialNote: currentNote,
+      tabName,
+      sheetRow: rowNum,
+      colLetter,
+      onSaveSuccess: (savedNote) => {
+        setJobsData((prev) => {
+          if (!prev) return prev;
+          return prev.map((j) => {
+            if (getJobKey(j) === getJobKey(job)) {
+              const updatedRows = (j.rows || []).map((r) => {
+                if (r.rowNum === rowNum) {
+                  if (type === "invoice") {
+                    const nextInvoiceSlots = (r.invoiceSlots || []).map((s) =>
+                      s.slotNum === slotNum ? { ...s, note: savedNote } : s
+                    );
+                    return { ...r, invoiceSlots: nextInvoiceSlots };
+                  } else {
+                    const nextExpenseSlots = (r.expenseSlots || []).map((s) =>
+                      s.slotNum === slotNum ? { ...s, note: savedNote } : s
+                    );
+                    return { ...r, expenseSlots: nextExpenseSlots };
+                  }
+                }
+                return r;
+              });
+              return { ...j, rows: updatedRows };
+            }
+            return j;
+          });
+        });
+      }
+    });
+  };
+
+  const handleSaveCellNote = async (newNote) => {
+    if (!cellNoteModalConfig || !jobsClient?.clientSheetId) return;
+    const { tabName, sheetRow, colLetter, onSaveSuccess } = cellNoteModalConfig;
+    const res = await fetch("/api/triage", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "update_cell_note",
+        clientSheetId: jobsClient.clientSheetId,
+        clientName: jobsClient.clientName || "",
+        tab: tabName,
+        sheetRow,
+        colLetter,
+        note: newNote,
+      }),
+    });
+    const data = await res.json();
+    if (!data.success) {
+      throw new Error(data.error || "Failed to update cell note");
+    }
+    if (onSaveSuccess) onSaveSuccess(newNote);
+  };
 
   const noJobsClient = !jobsClient;
 
@@ -1387,8 +1489,8 @@ export default function JobsView({
           if (colLetter === "AM") updated.endDate = newValue;
           if (colLetter === "AN") updated.likelihood = newValue;
           if (colLetter === "DD") updated.copiedToConf = newValue;
-          if (colLetter === "D")  updated.dateConf = newValue;
-          if (colLetter === "E")  updated.leadSrc = newValue;
+          if (colLetter === "D") updated.dateConf = newValue;
+          if (colLetter === "E") updated.leadSrc = newValue;
           if (colLetter === "AK") updated.prodLine = newValue;
           return updated;
         })
@@ -1594,11 +1696,11 @@ export default function JobsView({
                   r.rowNum !== rNum
                     ? r
                     : {
-                        ...r,
-                        invoiceSlots: r.invoiceSlots.map((sl) =>
-                          sl.slotNum !== sNum ? sl : { ...sl, ...newData }
-                        )
-                      }
+                      ...r,
+                      invoiceSlots: r.invoiceSlots.map((sl) =>
+                        sl.slotNum !== sNum ? sl : { ...sl, ...newData }
+                      )
+                    }
                 )
               }))
             );
@@ -1621,11 +1723,11 @@ export default function JobsView({
                   r.rowNum !== rNum
                     ? r
                     : {
-                        ...r,
-                        expenseSlots: r.expenseSlots.map((sl) =>
-                          sl.slotNum !== sNum ? sl : { ...sl, ...newData }
-                        )
-                      }
+                      ...r,
+                      expenseSlots: r.expenseSlots.map((sl) =>
+                        sl.slotNum !== sNum ? sl : { ...sl, ...newData }
+                      )
+                    }
                 )
               }))
             );
@@ -1654,6 +1756,17 @@ export default function JobsView({
               setExpandedJobIds((prev) => new Set(prev).add(newKey));
             }
           }}
+        />
+      )}
+
+      {cellNoteModalConfig && (
+        <CellNoteModal
+          isOpen={cellNoteModalConfig.isOpen}
+          title={cellNoteModalConfig.title}
+          subtitle={cellNoteModalConfig.subtitle}
+          initialNote={cellNoteModalConfig.initialNote}
+          onSave={handleSaveCellNote}
+          onClose={() => setCellNoteModalConfig(null)}
         />
       )}
 
@@ -1722,7 +1835,7 @@ export default function JobsView({
                 <span>Jobs</span>
                 {jobsClient && (
                   <span style={{ fontSize: "12px", background: "#f1f5f9", color: "#475569", padding: "2px 8px", borderRadius: "12px", fontWeight: "600" }}>
-                    {viewMode === "modern" ? "Modern View" : "Legacy View"}
+                    {viewMode === "modern" ? "Modern view" : "Legacy view"}
                   </span>
                 )}
               </h1>
@@ -1760,10 +1873,10 @@ export default function JobsView({
                 }}
                 title={viewMode === "modern" ? "Switch to traditional spreadsheet view" : "Switch to improved modern view"}
               >
-                <span>{viewMode === "modern" ? "📋 Legacy View" : "✨ Modern View"}</span>
+                <span>{viewMode === "modern" ? "📋 Legacy view" : "✨ Modern view"}</span>
               </button>
 
-              {/* Add Job Button */}
+              {/* Add job Button */}
               <button
                 type="button"
                 onClick={() => setShowAddJobModal(true)}
@@ -1782,7 +1895,7 @@ export default function JobsView({
                   boxShadow: "0 1px 3px rgba(37,99,235,0.3)"
                 }}
               >
-                <span style={{ fontSize: "15px", fontWeight: "bold" }}>+</span> Add Job
+                <span style={{ fontSize: "15px", fontWeight: "bold" }}>+</span> Add job
               </button>
             </div>
           )}
@@ -1835,7 +1948,7 @@ export default function JobsView({
                   {/* Filter Pills (All / Confirmed / Pipeline) */}
                   <div style={{ display: "inline-flex", background: "#f1f5f9", padding: "3px", borderRadius: "8px" }}>
                     {[
-                      { key: "all", label: "All Jobs", count: counts.all },
+                      { key: "all", label: "All jobs", count: counts.all },
                       { key: "confirmed", label: "Confirmed", count: counts.confirmed },
                       { key: "pipeline", label: "Pipeline", count: counts.pipeline }
                     ].map((tab) => {
@@ -2083,6 +2196,7 @@ export default function JobsView({
                         <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0", color: "#475569", fontWeight: "600", fontSize: "12px", textTransform: "uppercase", letterSpacing: "0.03em" }}>
                           <th style={{ padding: "10px 10px", width: "36px", textAlign: "center" }}></th>
                           <th style={{ padding: "10px 10px", width: "95px" }}>Status</th>
+                          <th style={{ padding: "10px 4px", width: "36px", textAlign: "center" }} title="Job notes"></th>
                           <th style={{ padding: "10px 10px", width: "160px" }}>Client</th>
                           <th style={{ padding: "10px 10px", width: "210px" }}>Job Name</th>
                           <th style={{ padding: "10px 10px", width: "115px" }}>Type</th>
@@ -2193,6 +2307,15 @@ export default function JobsView({
                                   >
                                     {isConfirmed ? "Confirmed" : "Pipeline"}
                                   </span>
+                                </td>
+
+                                {/* Job Note Indicator / Button */}
+                                <td style={{ padding: "9px 4px", textAlign: "center", verticalAlign: "middle" }} onClick={(e) => e.stopPropagation()}>
+                                  <NoteIndicatorButton
+                                    note={job.note || parentRow.note || ""}
+                                    onClick={() => openJobNoteModal(job)}
+                                    title={job.note || parentRow.note ? `Job note: ${job.note || parentRow.note}` : "Add note to job"}
+                                  />
                                 </td>
 
                                 {/* Client Name (Inline Editable) */}
@@ -2570,7 +2693,7 @@ export default function JobsView({
                               {/* Expanded Panel Details */}
                               {isExpanded && (
                                 <tr>
-                                  <td colSpan={11} style={{ padding: 0, borderBottom: "1px solid #e2e8f0" }}>
+                                  <td colSpan={12} style={{ padding: 0, borderBottom: "1px solid #e2e8f0" }}>
                                     <div
                                       style={{
                                         background: "#f8fafc",
@@ -2752,8 +2875,8 @@ export default function JobsView({
                                                     {isRetainer
                                                       ? "Even monthly (Retainer)"
                                                       : String(unevenSplitVal).toLowerCase().startsWith("[split]")
-                                                      ? "Custom uneven split active"
-                                                      : "Even monthly distribution"}
+                                                        ? "Custom uneven split active"
+                                                        : "Even monthly distribution"}
                                                   </div>
                                                 </div>
                                                 {!isRetainer && (
@@ -2897,9 +3020,17 @@ export default function JobsView({
                                                         onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#e2e8f0"; e.currentTarget.style.background = hasData ? "#f8fafc" : "#ffffff"; }}
                                                       >
                                                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                                                          <span style={{ fontSize: "11px", fontWeight: "700", color: "#475569" }}>
-                                                            {item.label}
-                                                          </span>
+                                                          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                                            <span style={{ fontSize: "11px", fontWeight: "700", color: "#475569" }}>
+                                                              {item.label}
+                                                            </span>
+                                                            <NoteIndicatorButton
+                                                              size="sm"
+                                                              note={slot.note || ""}
+                                                              onClick={() => openSlotNoteModal({ item, type: "invoice", job })}
+                                                              title={slot.note ? `Invoice note: ${slot.note}` : "Add note to invoice slot"}
+                                                            />
+                                                          </div>
                                                           <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
                                                             {item.subLabel && (
                                                               <span style={{ fontSize: "10px", color: "#94a3b8" }}>{item.subLabel}</span>
@@ -3049,9 +3180,17 @@ export default function JobsView({
                                                         onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#e2e8f0"; e.currentTarget.style.background = hasData ? "#f8fafc" : "#ffffff"; }}
                                                       >
                                                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                                                          <span style={{ fontSize: "11px", fontWeight: "700", color: "#475569" }}>
-                                                            {item.label}
-                                                          </span>
+                                                          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                                            <span style={{ fontSize: "11px", fontWeight: "700", color: "#475569" }}>
+                                                              {item.label}
+                                                            </span>
+                                                            <NoteIndicatorButton
+                                                              size="sm"
+                                                              note={slot.note || ""}
+                                                              onClick={() => openSlotNoteModal({ item, type: "expense", job })}
+                                                              title={slot.note ? `Cost note: ${slot.note}` : "Add note to direct cost slot"}
+                                                            />
+                                                          </div>
                                                           <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
                                                             {item.subLabel && (
                                                               <span style={{ fontSize: "10px", color: "#94a3b8" }}>{item.subLabel}</span>
@@ -3122,7 +3261,7 @@ export default function JobsView({
                                             }}
                                             onMouseEnter={(e) => { e.currentTarget.style.background = "#fef2f2"; }}
                                             onMouseLeave={(e) => { e.currentTarget.style.background = "#ffffff"; }}
-                                            title="Delete job entirely from sheet"
+                                            title="Delete job entirely"
                                           >
                                             <span>🗑️ Delete job</span>
                                           </button>
@@ -3358,7 +3497,7 @@ export default function JobsView({
                       disabled={jobsLoading}
                       style={{ background: "none", border: "none", color: "#666", cursor: "pointer", fontSize: "13px", display: "inline-flex", alignItems: "center", gap: "4px" }}
                     >
-                      {jobsLoading ? <><Spinner size={12}/> Refreshing</> : "↻ Refresh"}
+                      {jobsLoading ? <><Spinner size={12} /> Refreshing</> : "↻ Refresh"}
                     </button>
                   </div>
                 </div>
@@ -3374,8 +3513,8 @@ export default function JobsView({
                             ...(jobsTab === "Pipeline" ? ["Likelihood", "Copied?"] : []),
                             "InvSlot1", "InvSlot2", "InvSlot3", "Left to inv.",
                             "ExpSlot1", "ExpSlot2", "ExpSlot3", "Costs outst."].map((h, i) => (
-                            <th key={i} style={{ padding: "8px 10px", textAlign: "left", borderBottom: "2px solid #ddd", whiteSpace: "nowrap" }}>{h}</th>
-                          ))}
+                              <th key={i} style={{ padding: "8px 10px", textAlign: "left", borderBottom: "2px solid #ddd", whiteSpace: "nowrap" }}>{h}</th>
+                            ))}
                         </tr>
                       </thead>
                       <tbody>

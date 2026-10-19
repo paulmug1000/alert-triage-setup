@@ -797,6 +797,27 @@ export async function handleGetAllClientJobs(req, res, sheets) {
     let pipeRows = [];
     let productLines = [];
     let leadSources = [];
+    const notesBySheet = { Confirmed: [], Pipeline: [] };
+
+    // Fetch cell notes in parallel with grid values
+    const notesRanges = (tabName === "All" || !tabName)
+      ? ["Confirmed!A1:CL1000", "Pipeline!A1:CL1000"]
+      : [`${tabName}!A1:CL1000`];
+
+    const fetchNotesPromise = sheets.spreadsheets.get({
+      spreadsheetId: sheetIdClean,
+      ranges: notesRanges,
+      fields: "sheets(properties.title,data.rowData.values.note)",
+    }).then((res) => {
+      (res.data?.sheets || []).forEach((s) => {
+        const title = s.properties?.title;
+        if (title) {
+          notesBySheet[title] = s.data?.[0]?.rowData || [];
+        }
+      });
+    }).catch((err) => {
+      console.warn("⚠️ get_all_client_jobs: could not fetch cell notes:", err?.message);
+    });
 
     if (tabName === "All" || !tabName) {
       try {
@@ -853,7 +874,18 @@ export async function handleGetAllClientJobs(req, res, sheets) {
       } catch (_) {}
     }
 
+    // Await cell notes fetch if still in flight
+    await fetchNotesPromise;
+
     const colVal = (row, idx) => row[idx] !== undefined ? row[idx] : "";
+
+    const getNote = (sheetTitle, rowNum, colIdx) => {
+      const sData = notesBySheet[sheetTitle];
+      if (!sData) return "";
+      const r = sData[rowNum - 1];
+      if (!r || !r.values) return "";
+      return r.values[colIdx]?.note || "";
+    };
 
     // Dynamically locate "Copied to confirmed tab?" column in Pipeline headers, fallback to 107 (Column DD)
     let pipelineCopiedColIdx = 107;
@@ -873,6 +905,7 @@ export async function handleGetAllClientJobs(req, res, sheets) {
 
     const buildRowData = (rowNum, row, isParent, currentTab) => ({
       rowNum, isParent, tabName: currentTab,
+      note: getNote(currentTab, rowNum, 0),
       client: colVal(row, 0), jobName: colVal(row, 1), projectCode: colVal(row, 2),
       dateConf: colVal(row, 3), 
       leadSrc: colVal(row, 4), 
@@ -886,14 +919,31 @@ export async function handleGetAllClientJobs(req, res, sheets) {
       costsOutstanding: colVal(row, 106), 
       invoiceSlots: [1,2,3].map(n => {
         const base = n === 1 ? 41 : n === 2 ? 48 : 55;
-        return { slotNum: n, amount: colVal(row,base), ref: colVal(row,base+1), sentDate: colVal(row,base+2),
-          daysToPay: colVal(row,base+3), status: colVal(row,base+4), highlighted: false };
+        return {
+          slotNum: n,
+          amount: colVal(row, base),
+          ref: colVal(row, base + 1),
+          sentDate: colVal(row, base + 2),
+          daysToPay: colVal(row, base + 3),
+          status: colVal(row, base + 4),
+          highlighted: false,
+          note: getNote(currentTab, rowNum, base)
+        };
       }),
       expenseSlots: [1,2,3].map(n => {
         const base = n === 1 ? 75 : n === 2 ? 82 : 89;
-        return { slotNum: n, description: colVal(row,base), amount: colVal(row,base+1), vat: colVal(row,base+2),
-          date: colVal(row,base+3), daysToPay: colVal(row,base+4), status: colVal(row,base+5),
-          transactionId: colVal(row,base+6), highlighted: false };
+        return {
+          slotNum: n,
+          description: colVal(row, base),
+          amount: colVal(row, base + 1),
+          vat: colVal(row, base + 2),
+          date: colVal(row, base + 3),
+          daysToPay: colVal(row, base + 4),
+          status: colVal(row, base + 5),
+          transactionId: colVal(row, base + 6),
+          highlighted: false,
+          note: getNote(currentTab, rowNum, base)
+        };
       }),
     });
 
@@ -950,6 +1000,7 @@ export async function handleGetAllClientJobs(req, res, sheets) {
           jobName,
           projectCode: row[2] || "",
           copiedToConf: currentTab === "Pipeline" ? colVal(row, pipelineCopiedColIdx) : null,
+          note: getNote(currentTab, parentRowNum, 0),
           rows: jobRows
         });
       }

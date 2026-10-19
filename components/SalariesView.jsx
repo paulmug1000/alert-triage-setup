@@ -900,7 +900,7 @@ export default function SalariesView({
                           >
                             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                               <span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", background: "#94a3b8" }} />
-                              <span>Former Employees ({formerEmployees.length})</span>
+                              <span>Former employees ({formerEmployees.length})</span>
                             </div>
                           </td>
                         </tr>
@@ -1204,37 +1204,37 @@ export default function SalariesView({
                     </div>
 
                     <div style={{ background: "#fff", padding: "8px 12px", borderRadius: "6px", border: "1px solid #e2e8f0" }}>
-                      <div style={{ fontSize: "11px", color: "#64748b" }}>Delivery Staff Cost (post-EA)</div>
+                      <div style={{ fontSize: "11px", color: "#64748b" }}>Delivery staff cost (post-EA)</div>
                       <div style={{ fontSize: "14px", fontWeight: 700, color: "#166534" }}>{currentMonth.summary.totalDeliveryStaffCostPostEA}</div>
                     </div>
 
                     <div style={{ background: "#fff", padding: "8px 12px", borderRadius: "6px", border: "1px solid #e2e8f0" }}>
-                      <div style={{ fontSize: "11px", color: "#64748b" }}>Non-Delivery Staff Cost (post-EA)</div>
+                      <div style={{ fontSize: "11px", color: "#64748b" }}>Non-delivery staff cost (post-EA)</div>
                       <div style={{ fontSize: "14px", fontWeight: 600, color: "#475569" }}>{currentMonth.summary.totalNonDeliveryStaffCostPostEA}</div>
                     </div>
 
                     <div style={{ background: "#eff6ff", padding: "8px 12px", borderRadius: "6px", border: "1px solid #bfdbfe" }}>
-                      <div style={{ fontSize: "11px", color: "#1e40af" }}>Total Due to HMRC for Month</div>
+                      <div style={{ fontSize: "11px", color: "#1e40af" }}>Total due to HMRC for month</div>
                       <div style={{ fontSize: "14px", fontWeight: 700, color: "#1d4ed8" }}>{currentMonth.summary.totalDueHmrc}</div>
                     </div>
 
                     <div style={{ background: "#fdf4ff", padding: "8px 12px", borderRadius: "6px", border: "1px solid #f0abfc" }}>
-                      <div style={{ fontSize: "11px", color: "#86198f" }}>Bank Outflow: Payroll</div>
+                      <div style={{ fontSize: "11px", color: "#86198f" }}>Bank outflow: Payroll</div>
                       <div style={{ fontSize: "14px", fontWeight: 700, color: "#a21caf" }}>{currentMonth.summary.totalLeavingBankPayroll}</div>
                     </div>
 
                     <div style={{ background: "#fff", padding: "8px 12px", borderRadius: "6px", border: "1px solid #e2e8f0" }}>
-                      <div style={{ fontSize: "11px", color: "#64748b" }}>Bank Outflow: HMRC (prev period)</div>
+                      <div style={{ fontSize: "11px", color: "#64748b" }}>Bank outflow: HMRC (prev period)</div>
                       <div style={{ fontSize: "14px", fontWeight: 600, color: "#334155" }}>{currentMonth.summary.totalLeavingBankHmrc}</div>
                     </div>
 
                     <div style={{ background: "#fff", padding: "8px 12px", borderRadius: "6px", border: "1px solid #e2e8f0" }}>
-                      <div style={{ fontSize: "11px", color: "#64748b" }}>Bank Outflow: Pension</div>
+                      <div style={{ fontSize: "11px", color: "#64748b" }}>Bank outflow: pension</div>
                       <div style={{ fontSize: "14px", fontWeight: 600, color: "#334155" }}>{currentMonth.summary.totalLeavingBankPension}</div>
                     </div>
 
                     <div style={{ background: "#f0fdf4", padding: "8px 12px", borderRadius: "6px", border: "1px solid #bbf7d0", gridColumn: "span 2" }}>
-                      <div style={{ fontSize: "11px", color: "#166534", fontWeight: 600 }}>Total Leaving Bank Account this Month</div>
+                      <div style={{ fontSize: "11px", color: "#166534", fontWeight: 600 }}>Total leaving bank account this month</div>
                       <div style={{ fontSize: "16px", fontWeight: 800, color: "#15803d" }}>{currentMonth.summary.totalLeavingBankMonth}</div>
                     </div>
                   </div>

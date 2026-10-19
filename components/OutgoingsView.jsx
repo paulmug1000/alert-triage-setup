@@ -4,6 +4,8 @@ import OutgoingsEditModal from "./OutgoingsEditModal";
 import DirectCostsEditModal from "./DirectCostsEditModal";
 import OutgoingsEstimateModal from "./OutgoingsEstimateModal";
 import OutgoingsNewVendorModal from "./OutgoingsNewVendorModal";
+import CellNoteIndicator from "./CellNoteIndicator";
+import EditClientSelector from "./EditClientSelector";
 import { useOutgoings } from "../hooks/useOutgoings";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useTriage } from "../contexts/TriageContext";
@@ -222,14 +224,16 @@ export default function OutgoingsView({
     setOutgoingsPlacing(null);
   };
 
-  const updateCell = async (contractor, colLetter, newBlocks) => {
+  const updateCell = async (contractor, colLetter, newBlocks, newTopNote) => {
+    const existingTopNote = contractor.cells[colLetter]?.topNote || "";
+    const topNoteToSave = newTopNote !== undefined ? newTopNote : existingTopNote;
     setOutgoingsData(prev => {
       if (!prev) return prev;
       return {
         ...prev,
         contractors: prev.contractors.map(c =>
           c.sheetRow === contractor.sheetRow
-            ? { ...c, cells: { ...c.cells, [colLetter]: { ...c.cells[colLetter], blocks: newBlocks } } }
+            ? { ...c, cells: { ...c.cells, [colLetter]: { ...c.cells[colLetter], blocks: newBlocks, topNote: topNoteToSave } } }
             : c
         ),
       };
@@ -246,6 +250,7 @@ export default function OutgoingsView({
           sheetRow: contractor.sheetRow,
           colLetter,
           blocks: newBlocks,
+          topNote: topNoteToSave,
         }),
       });
       if (outgoingsClient?.masterSheetId) {
@@ -484,28 +489,85 @@ export default function OutgoingsView({
         );
       })()}
 
-      <div style={{ padding: "20px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "16px" }}>
+      <div style={{ maxWidth: "1600px", margin: "0 auto", padding: "16px 24px 60px" }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            flexWrap: "wrap",
+            gap: "16px",
+            marginBottom: "20px",
+            background: "#ffffff",
+            padding: "16px 20px",
+            borderRadius: "8px",
+            boxShadow: "0 1px 3px rgba(0,0,0,0.06)",
+            border: "1px solid #e2e8f0",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+            {outgoingsClient && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (managedClient && onClearManagedClient) {
+                    onClearManagedClient();
+                  } else {
+                    setOutgoingsData(null);
+                    setOutgoingsClient(null);
+                    setOutgoingsInbox([]);
+                    clearInboxSelection();
+                  }
+                }}
+                style={{
+                  background: "#ffffff",
+                  border: "1px solid #cbd5e1",
+                  borderRadius: "6px",
+                  cursor: "pointer",
+                  padding: "6px 12px",
+                  fontSize: "16px",
+                  color: "#475569",
+                  lineHeight: 1,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  transition: "all 0.15s ease",
+                  boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = "#f1f5f9";
+                  e.currentTarget.style.borderColor = "#94a3b8";
+                  e.currentTarget.style.color = "#0f172a";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = "#ffffff";
+                  e.currentTarget.style.borderColor = "#cbd5e1";
+                  e.currentTarget.style.color = "#475569";
+                }}
+                title="Back to client list"
+              >
+                ←
+              </button>
+            )}
+            <div>
+              <h1 style={{ margin: 0, fontSize: "20px", fontWeight: 700, color: "#1e293b", display: "flex", alignItems: "center", gap: "8px" }}>
+                <span>Contractors</span>
+              </h1>
+              {outgoingsClient ? (
+                <div style={{ margin: "3px 0 0", fontSize: "14px", fontWeight: 600, color: "#0047AB" }}>
+                  {outgoingsClient.clientName}
+                </div>
+              ) : (
+                <p style={{ margin: "4px 0 0", fontSize: "13px", color: "#64748b" }}>
+                  Select a client to view contractor expenses
+                </p>
+              )}
+            </div>
+          </div>
+
           {outgoingsClient && (
-            <button onClick={() => {
-              if (managedClient && onClearManagedClient) {
-                onClearManagedClient();
-              } else {
-                setOutgoingsData(null);
-                setOutgoingsClient(null);
-                setOutgoingsInbox([]);
-                clearInboxSelection();
-              }
-            }}
-              style={{ background: "none", border: "1px solid #ccc", borderRadius: "6px", cursor: "pointer", padding: "4px 10px", fontSize: "16px", color: "#555", lineHeight: 1 }}
-              title="Back to client list">&#8592;</button>
-          )}
-          <h2 style={{ margin: 0, fontSize: "20px", fontWeight: "700" }}>
-            {outgoingsClient ? outgoingsClient.clientName : "Contractors"}
-          </h2>
-          {isAdmin && outgoingsClient && (
-            <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "8px" }}>
-              {vendorsSubTab === "directCosts" && (
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              {isAdmin && vendorsSubTab === "directCosts" && (
                 <button
                   type="button"
                   onClick={() => setViewMode(prev => prev === "modern" ? "legacy" : "modern")}
@@ -528,83 +590,46 @@ export default function OutgoingsView({
                   <span>{viewMode === "modern" ? "📋 Legacy View" : "✨ Modern View"}</span>
                 </button>
               )}
-              <button className="triage-btn"
-                onClick={() => {
-                  if (outgoingsClient.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${outgoingsClient.clientSheetId}/edit`, "_blank");
-                }}
-                style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#1d4ed8", borderColor: "#93c5fd" }}>
-                📊 Open Sheets
-              </button>
+              {isAdmin && outgoingsClient.clientSheetId && (
+                <button
+                  className="triage-btn"
+                  onClick={() => {
+                    window.open(`https://docs.google.com/spreadsheets/d/${outgoingsClient.clientSheetId}/edit`, "_blank");
+                  }}
+                  style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 12px", color: "#1d4ed8", borderColor: "#93c5fd" }}
+                >
+                  📊 Open sheets
+                </button>
+              )}
             </div>
           )}
         </div>
 
         {noClient && (
-          <div style={{ background: "#fff", borderRadius: "12px", border: "1px solid #e0e0e0", padding: "24px" }}>
-            {outgoingsLoading ? (
-              <div style={{ textAlign: "center", color: "#999", padding: "24px" }}>Loading...</div>
-            ) : (
-              <>
-                <p style={{ margin: "0 0 16px", fontSize: "14px", color: "#666" }}>Select a client to view contractor expenses:</p>
-                {(() => {
-                  const getClientRemainingCount = (c) => {
-                    if (clearedClients.has(c.clientName)) return 0;
-                    const f = clientsWithFlags?.find(item => item.clientName === c.clientName);
-                    if (!f) return 0;
-                    const hasFlag = !!(f.flags?.expenseDashboardDiscr || f.flags?.dirCompMismatch);
-                    if (!hasFlag) return 0;
-                    const assignedSet = assignedByClient[c.clientName] || new Set();
-                    const expenseIds = f.activeExpenseIds || [];
-                    const validAssignedExp = expenseIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
-                    const rawCount = (f.alertCounts?.expenseDashboardDiscr || 0) + (f.alertCounts?.dirCompMismatch || 0);
-                    return Math.max(0, (rawCount > 0 ? rawCount : 1) - validAssignedExp);
-                  };
-
-                  const clientsWithInbox = allClients.filter(c => getClientRemainingCount(c) > 0);
-                  const clientsNoInbox = allClients.filter(c => !clientsWithInbox.includes(c));
-                  const renderClientBtn = (c) => {
-                    const remainingCount = getClientRemainingCount(c);
-                    return (
-                      <button key={c.clientName} className="triage-btn" onClick={() => loadOutgoings(c)}
-                        style={{
-                          ...styles.buttonSecondary,
-                          textAlign: "left",
-                          padding: "12px 16px",
-                          fontSize: "14px",
-                          display: "flex",
-                          justifyContent: "space-between",
-                          alignItems: "center",
-                          ...(remainingCount > 0 ? {
-                            background: "#fff7ed",
-                            borderColor: "#fed7aa"
-                          } : {})
-                        }}>
-                        <span>{c.clientName}</span>
-                        {remainingCount > 0 && (
-                          <span style={{ fontSize: "11px", background: "#f97316", color: "#fff", borderRadius: "10px", padding: "1px 7px", fontWeight: "600" }}>
-                            {remainingCount} to assign
-                          </span>
-                        )}
-                      </button>
-                    );
-                  };
-                  return (
-                    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                      {clientsWithInbox.length > 0 && clientsNoInbox.length > 0 && (
-                        <div style={{ fontSize: "11px", fontWeight: "700", color: "#f97316", textTransform: "uppercase", letterSpacing: "0.05em", padding: "6px 0 2px" }}>Expenses to assign</div>
-                      )}
-                      {clientsWithInbox.map(renderClientBtn)}
-                      {clientsNoInbox.length > 0 && clientsWithInbox.length > 0 && (
-                        <div style={{ fontSize: "11px", fontWeight: "700", color: "#888", textTransform: "uppercase", letterSpacing: "0.05em", padding: "6px 0 2px" }}>No expenses to assign</div>
-                      )}
-                      {clientsNoInbox.map(renderClientBtn)}
-                      {allClients.length === 0 && <p style={{ color: "#999", fontSize: "13px" }}>No clients loaded yet - go to Home and refresh first.</p>}
-                    </div>
-                  );
-                })()}
-              </>
-            )}
-          </div>
+          <EditClientSelector
+            clients={allClients}
+            onSelectClient={(c) => loadOutgoings(c)}
+            loading={outgoingsLoading}
+            title="Select a client to view contractor expenses:"
+            renderExtra={(c) => {
+              if (clearedClients.has(c.clientName)) return null;
+              const f = clientsWithFlags?.find(item => item.clientName === c.clientName);
+              if (!f) return null;
+              const hasFlag = !!(f.flags?.expenseDashboardDiscr || f.flags?.dirCompMismatch);
+              if (!hasFlag) return null;
+              const assignedSet = assignedByClient[c.clientName] || new Set();
+              const expenseIds = f.activeExpenseIds || [];
+              const validAssignedExp = expenseIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
+              const rawCount = (f.alertCounts?.expenseDashboardDiscr || 0) + (f.alertCounts?.dirCompMismatch || 0);
+              const remainingCount = Math.max(0, (rawCount > 0 ? rawCount : 1) - validAssignedExp);
+              if (remainingCount <= 0) return null;
+              return (
+                <span style={{ fontSize: "11px", background: "#f97316", color: "#fff", borderRadius: "10px", padding: "1px 7px", fontWeight: "600" }}>
+                  {remainingCount} to assign
+                </span>
+              );
+            }}
+          />
         )}
 
         {!noClient && (
@@ -888,19 +913,20 @@ export default function OutgoingsView({
                             decrementClientExpenseCount(outgoingsClient?.clientName, toPlace.length);
                             clearInboxSelection();
                           } else {
-                            setOutgoingsEditCell({ contractor, colLetter: m.colLetter, monthLabel: m.label });
+                            setOutgoingsEditCell({ contractor, colLetter: m.colLetter, monthLabel: m.label, topNote: cell.topNote || "" });
                           }
                         };
 
                         return (
                           <td key={m.colLetter} onClick={handleCellClick}
                             style={{
-                              padding: "6px 8px", borderBottom: "1px solid #eee", borderRight: "1px solid #e0e0e0", verticalAlign: "top", cursor: "pointer", minHeight: "52px",
+                              padding: "6px 8px", borderBottom: "1px solid #eee", borderRight: "1px solid #e0e0e0", verticalAlign: "top", cursor: "pointer", minHeight: "52px", position: "relative",
                               background: isTarget ? "#f0f4ff" : isCurr && !isEmpty ? "#f0f8f0" : isEmpty ? "transparent" : "#f8fff8",
                               outline: isTarget ? "2px dashed #1a56db" : "none", outlineOffset: "-2px"
                             }}
                             onMouseEnter={e => { e.currentTarget.style.background = "#f0f4ff"; }}
                             onMouseLeave={e => { e.currentTarget.style.background = isTarget ? "#f0f4ff" : isCurr && !isEmpty ? "#f0f8f0" : isEmpty ? "transparent" : "#f8fff8"; }}>
+                            <CellNoteIndicator note={cell.topNote} />
                             {!isEmpty ? (
                               <>
                                 <div style={{ fontWeight: "700", fontSize: "12px", color: "#1a56db", marginBottom: "3px" }}>

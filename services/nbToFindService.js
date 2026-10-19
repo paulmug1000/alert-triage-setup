@@ -17,7 +17,7 @@
  * ============================================================================
  */
 
-import { getSheetsClient, withRetry } from "./sheetsClient.js";
+import { getSheetsClient, withRetry, getSheetGid, colLetterToNum } from "./sheetsClient.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { sanitizeFormulaInput } from "./userPermissions.js";
 import { memoryCache } from "./cacheService.js";
@@ -72,20 +72,30 @@ export async function fetchNBToFindData(clientName, clientSheetId, bypassCache =
 
   const sheets = await getSheetsClient();
 
-  const response = await withRetry(async () => {
-    return await sheets.spreadsheets.values.batchGet({
-      spreadsheetId: clientSheetId,
-      ranges: [
-        "NBtoFind!A1:AV25",
-        "KeyInfo!B15",
-        "KeyInfo!C4:D5",
-      ],
-      valueRenderOption: "FORMATTED_VALUE",
-    });
-  });
+  const [response, gridResponse] = await Promise.all([
+    withRetry(async () => {
+      return await sheets.spreadsheets.values.batchGet({
+        spreadsheetId: clientSheetId,
+        ranges: [
+          "NBtoFind!A1:AV25",
+          "KeyInfo!B15",
+          "KeyInfo!C4:D5",
+        ],
+        valueRenderOption: "FORMATTED_VALUE",
+      });
+    }),
+    withRetry(async () => {
+      return await sheets.spreadsheets.get({
+        spreadsheetId: clientSheetId,
+        ranges: ["NBtoFind!A1:AV25"],
+        fields: "sheets.data.rowData.values(formattedValue,note)",
+      });
+    }),
+  ]);
 
   const valueRanges = response.data.valueRanges || [];
   const rows = valueRanges[0]?.values || [];
+  const gridRowData = gridResponse.data?.sheets?.[0]?.data?.[0]?.rowData || [];
   const keyInfoB15 = String(valueRanges[1]?.values?.[0]?.[0] || "").trim();
   const currencyRows = valueRanges[2]?.values || [];
 
@@ -176,6 +186,7 @@ export async function fetchNBToFindData(clientName, clientSheetId, bypassCache =
   // Helper to extract a row's data across each FY
   const extractRowData = (rowIdx, defaultLabel) => {
     const r = rows[rowIdx] || [];
+    const rGrid = gridRowData[rowIdx]?.values || [];
     const label = String(r[0] || defaultLabel).trim();
     const result = {};
 
@@ -184,6 +195,7 @@ export async function fetchNBToFindData(clientName, clientSheetId, bypassCache =
         colLetter: m.colLetter,
         monthLabel: m.label,
         value: r[m.colIdx] || "",
+        note: rGrid[m.colIdx]?.note || "",
       }));
       const total = r[fy.totalCol] || "£0";
       result[fy.id] = { label, months, total };
@@ -213,6 +225,7 @@ export async function fetchNBToFindData(clientName, clientSheetId, bypassCache =
 
   // Row 25: "Use NB to find?" Yes/No dropdown for each month
   const row25Raw = rows[24] || [];
+  const rGrid25 = gridRowData[24]?.values || [];
   const row25Label = String(row25Raw[0] || "Use NB to find?").trim();
   const row25 = { label: row25Label, fyData: {} };
 
@@ -223,6 +236,7 @@ export async function fetchNBToFindData(clientName, clientSheetId, bypassCache =
         colLetter: m.colLetter,
         monthLabel: m.label,
         value: val.toLowerCase() === "no" ? "No" : "Yes",
+        note: rGrid25[m.colIdx]?.note || "",
       };
     });
     row25.fyData[fy.id] = { label: row25Label, months };
@@ -353,8 +367,9 @@ export async function saveNBToFindSettings({
 export async function saveNBToFindMonthlyValues({
   clientName,
   clientSheetId,
-  sheetRow, // 3, 10, or 25
+  sheetRow, // 3, 5, 10, or 25
   monthlyValues, // { [colLetter]: value }
+  cellNotes, // { [colLetter]: note }
   userEmail,
 }) {
   if (!clientSheetId) throw new Error("Client Sheet ID is required");
@@ -363,39 +378,74 @@ export async function saveNBToFindMonthlyValues({
     throw new Error(`Invalid NBtoFind editable row: ${sheetRow}. Allowed rows are 3, 5, 10, or 25.`);
   }
 
-  if (!monthlyValues || typeof monthlyValues !== "object") {
-    throw new Error("monthlyValues object is required");
-  }
-
   const updates = [];
-  for (const [colLetter, val] of Object.entries(monthlyValues)) {
-    const cleanLetter = String(colLetter).toUpperCase().trim();
-    if (!/^[A-Z]{1,2}$/.test(cleanLetter)) continue;
-    let cleanVal = String(val ?? "").trim();
-    if (rowNum === 25) {
-      cleanVal = cleanVal.toLowerCase() === "no" ? "No" : "Yes";
-    } else {
-      cleanVal = sanitizeFormulaInput(cleanVal);
+  if (monthlyValues && typeof monthlyValues === "object") {
+    for (const [colLetter, val] of Object.entries(monthlyValues)) {
+      const cleanLetter = String(colLetter).toUpperCase().trim();
+      if (!/^[A-Z]{1,2}$/.test(cleanLetter)) continue;
+      let cleanVal = String(val ?? "").trim();
+      if (rowNum === 25) {
+        cleanVal = cleanVal.toLowerCase() === "no" ? "No" : "Yes";
+      } else {
+        cleanVal = sanitizeFormulaInput(cleanVal);
+      }
+      updates.push({
+        range: `NBtoFind!${cleanLetter}${rowNum}`,
+        values: [[cleanVal]],
+      });
     }
-    updates.push({
-      range: `NBtoFind!${cleanLetter}${rowNum}`,
-      values: [[cleanVal]],
-    });
   }
-
-  if (updates.length === 0) return { success: true, updated: 0 };
 
   const sheets = await getSheetsClient();
 
-  await withRetry(async () => {
-    return await sheets.spreadsheets.values.batchUpdate({
-      spreadsheetId: clientSheetId,
-      requestBody: {
-        valueInputOption: "USER_ENTERED",
-        data: updates,
-      },
+  if (updates.length > 0) {
+    await withRetry(async () => {
+      return await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: clientSheetId,
+        requestBody: {
+          valueInputOption: "USER_ENTERED",
+          data: updates,
+        },
+      });
     });
-  });
+  }
+
+  // Update cell notes if provided
+  if (cellNotes && typeof cellNotes === "object") {
+    const gid = await getSheetGid(sheets, clientSheetId, "NBtoFind");
+    const noteRequests = [];
+    for (const [colLetter, noteVal] of Object.entries(cellNotes)) {
+      const cleanLetter = String(colLetter).toUpperCase().trim();
+      if (!/^[A-Z]{1,2}$/.test(cleanLetter)) continue;
+      const colIdx = colLetterToNum(cleanLetter) - 1;
+      noteRequests.push({
+        updateCells: {
+          range: {
+            sheetId: gid,
+            startRowIndex: rowNum - 1,
+            endRowIndex: rowNum,
+            startColumnIndex: colIdx,
+            endColumnIndex: colIdx + 1,
+          },
+          rows: [{ values: [{ note: String(noteVal ?? "") }] }],
+          fields: "note",
+        },
+      });
+    }
+
+    if (noteRequests.length > 0) {
+      await withRetry(async () => {
+        return await sheets.spreadsheets.batchUpdate({
+          spreadsheetId: clientSheetId,
+          requestBody: { requests: noteRequests },
+        });
+      });
+    }
+  }
+
+  if (updates.length === 0 && (!cellNotes || Object.keys(cellNotes).length === 0)) {
+    return { success: true, updated: 0 };
+  }
 
   // Invalidate cache
   const cacheKey = `pma_nbtofind_${clientSheetId}`;

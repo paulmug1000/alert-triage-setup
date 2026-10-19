@@ -76,7 +76,7 @@ import {
   handleAcceptOption, handleDeleteJob, handleAnalyzeNoActionFlag,
   handleRehashIgnoredAlerts, PRECOMPUTED_KEY
 } from "../../services/triageEngine";
-import { getClientViewData, handleUpdateViewCell, handleSpreadViewRow } from "../../services/viewsService";
+import { getClientViewData, handleUpdateViewCell, handleSpreadViewRow, handleUpdateCellNote } from "../../services/viewsService";
 import {
   getCashflowReconData,
   updateCashAdjustment,
@@ -434,6 +434,8 @@ export default async function handler(req, res) {
       }
     } else if (action === "update_view_cell") {
       return await handleUpdateViewCell(req, res, sheets);
+    } else if (action === "update_cell_note") {
+      return await handleUpdateCellNote(req, res, sheets);
     } else if (action === "spread_view_row") {
       return await handleSpreadViewRow(req, res, sheets);
     } else if (action === "get_cashflow_recon_data") {

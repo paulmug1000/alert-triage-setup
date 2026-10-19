@@ -18,7 +18,7 @@
  * ============================================================================
  */
 
-import { getSheetsClient, withRetry } from "./sheetsClient.js";
+import { getSheetsClient, withRetry, getSheetGid } from "./sheetsClient.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { sanitizeFormulaInput } from "./userPermissions.js";
 import { memoryCache } from "./cacheService.js";
@@ -90,7 +90,7 @@ export async function getSalariesData({ clientName, masterSheetId, clientSheetId
 
   const sheets = await getSheetsClient();
 
-  // 1. Batch get from Master Sheet:
+  // 1. Batch get from Master Sheet and fetch metadata notes:
   // - Salaries!A1:JC3 (Headers)
   // - Salaries!A4:I53 (Employees metadata)
   // - Salaries!L4:JC53 (Effective amounts)
@@ -98,21 +98,40 @@ export async function getSalariesData({ clientName, masterSheetId, clientSheetId
   // - Salaries!L60:JC77 (Summary rows 60 to 77)
   // - Salaries!L154:JC203 (Forecast amounts)
   // - Salaries!L304:JC353 (Actuals / Hardcoded adjustments)
-  const masterBatchResp = await withRetry(() =>
-    sheets.spreadsheets.values.batchGet({
-      spreadsheetId: masterSheetId,
-      ranges: [
-        "Salaries!A1:JC3",
-        "Salaries!A4:I53",
-        "Salaries!L4:JC53",
-        "Salaries!L54:JC58",
-        "Salaries!L60:JC77",
-        "Salaries!L154:JC203",
-        "Salaries!L304:JC353",
-      ],
-      valueRenderOption: "FORMATTED_VALUE",
-    })
-  );
+  const [masterBatchResp, employeesGetResp, clientBatchResp] = await Promise.all([
+    withRetry(() =>
+      sheets.spreadsheets.values.batchGet({
+        spreadsheetId: masterSheetId,
+        ranges: [
+          "Salaries!A1:JC3",
+          "Salaries!A4:I53",
+          "Salaries!L4:JC53",
+          "Salaries!L54:JC58",
+          "Salaries!L60:JC77",
+          "Salaries!L154:JC203",
+          "Salaries!L304:JC353",
+        ],
+        valueRenderOption: "FORMATTED_VALUE",
+      })
+    ),
+    withRetry(() =>
+      sheets.spreadsheets.get({
+        spreadsheetId: masterSheetId,
+        ranges: ["Salaries!A4:I53"],
+        fields: "sheets.data.rowData.values(formattedValue,note)",
+      })
+    ),
+    withRetry(() =>
+      sheets.spreadsheets.values.batchGet({
+        spreadsheetId: clientSheetId,
+        ranges: [
+          "Outgoings!A1:BA1",
+          "Outgoings!A118:BA121",
+        ],
+        valueRenderOption: "FORMATTED_VALUE",
+      })
+    ),
+  ]);
 
   const masterRanges = masterBatchResp.data.valueRanges || [];
   const masterHeaders = masterRanges[0]?.values || [];
@@ -123,19 +142,7 @@ export async function getSalariesData({ clientName, masterSheetId, clientSheetId
   const forecastAmountsRaw = masterRanges[5]?.values || [];
   const actualAmountsRaw = masterRanges[6]?.values || [];
 
-  // 2. Batch get from Client Sheet:
-  // - Outgoings!A1:BA1 (Headers)
-  // - Outgoings!A118:BA121 (Dividends rows 118:121)
-  const clientBatchResp = await withRetry(() =>
-    sheets.spreadsheets.values.batchGet({
-      spreadsheetId: clientSheetId,
-      ranges: [
-        "Outgoings!A1:BA1",
-        "Outgoings!A118:BA121",
-      ],
-      valueRenderOption: "FORMATTED_VALUE",
-    })
-  );
+  const employeeRowData = employeesGetResp.data?.sheets?.[0]?.data?.[0]?.rowData || [];
 
   const clientRanges = clientBatchResp.data.valueRanges || [];
   const outgoingsHeaders = clientRanges[0]?.values?.[0] || [];
@@ -147,6 +154,7 @@ export async function getSalariesData({ clientName, masterSheetId, clientSheetId
   const employees = [];
   for (let i = 0; i < 50; i++) {
     const row = employeesRaw[i] || [];
+    const rowCells = employeeRowData[i]?.values || [];
     const sheetRow = 4 + i;
     const name = String(row[0] || "").trim();
     const role = String(row[1] || "").trim();
@@ -157,6 +165,18 @@ export async function getSalariesData({ clientName, masterSheetId, clientSheetId
     const deliveryPct = String(row[6] || "").trim();
     const studentLoan = String(row[7] || "").trim();
     const pension = String(row[8] || "").trim();
+
+    const notes = {
+      name: rowCells[0]?.note || "",
+      role: rowCells[1]?.note || "",
+      fteSalary: rowCells[2]?.note || "",
+      fte: rowCells[3]?.note || "",
+      startDate: rowCells[4]?.note || "",
+      endDate: rowCells[5]?.note || "",
+      deliveryPct: rowCells[6]?.note || "",
+      studentLoan: rowCells[7]?.note || "",
+      pension: rowCells[8]?.note || "",
+    };
 
     employees.push({
       sheetRow,
@@ -170,6 +190,7 @@ export async function getSalariesData({ clientName, masterSheetId, clientSheetId
       deliveryPct,
       studentLoan,
       pension,
+      notes,
       isPopulated: !!name,
     });
   }
@@ -514,6 +535,39 @@ export async function saveEmployeeData({
       requestBody: { values: [vals] },
     })
   );
+
+  // Update cell notes if provided
+  if (employeeData.notes && typeof employeeData.notes === "object") {
+    const gid = await getSheetGid(sheets, masterSheetId, "Salaries");
+    const colKeys = ["name", "role", "fteSalary", "fte", "startDate", "endDate", "deliveryPct", "studentLoan", "pension"];
+    const noteRequests = [];
+    colKeys.forEach((key, colIdx) => {
+      if (employeeData.notes[key] !== undefined) {
+        noteRequests.push({
+          updateCells: {
+            range: {
+              sheetId: gid,
+              startRowIndex: sheetRow - 1,
+              endRowIndex: sheetRow,
+              startColumnIndex: colIdx,
+              endColumnIndex: colIdx + 1,
+            },
+            rows: [{ values: [{ note: String(employeeData.notes[key] ?? "") }] }],
+            fields: "note",
+          },
+        });
+      }
+    });
+
+    if (noteRequests.length > 0) {
+      await withRetry(() =>
+        sheets.spreadsheets.batchUpdate({
+          spreadsheetId: masterSheetId,
+          requestBody: { requests: noteRequests },
+        })
+      );
+    }
+  }
 
   await invalidateSalariesCache(masterSheetId, clientSheetId);
 

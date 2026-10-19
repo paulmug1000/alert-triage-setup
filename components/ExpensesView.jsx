@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import Spinner from "./Spinner";
+import CellNoteIndicator from "./CellNoteIndicator";
+import EditClientSelector from "./EditClientSelector";
 import { useAuth } from "../hooks/useAuth";
 
 const formatCurrency = (val) => {
@@ -41,8 +43,9 @@ export default function ExpensesView({
   const [dragOverSection, setDragOverSection] = useState(null); // "delivery" | "nonDelivery"
 
   // Quick Inline/Modal Amount Editing
-  const [editingCell, setEditingCell] = useState(null); // { sheetRow, colLetter, label, value, category }
+  const [editingCell, setEditingCell] = useState(null); // { sheetRow, colLetter, label, value, category, note }
   const [cellInputValue, setCellInputValue] = useState("");
+  const [cellNoteValue, setCellNoteValue] = useState("");
 
   // Category Edit State
   const [editingCategory, setEditingCategory] = useState(null); // { sheetRow, category, vat, deliveryPct }
@@ -71,12 +74,19 @@ export default function ExpensesView({
         return;
       }
     }
-    if (!selectedClient && allOutgoingsClients.length > 0) {
-      const saved = typeof window !== "undefined" ? sessionStorage.getItem("pma_expenses_client") : null;
-      const found = saved ? allOutgoingsClients.find((c) => c.clientName === saved) : null;
-      setSelectedClient(found || allOutgoingsClients[0]);
+  }, [managedClient, initialClient, allOutgoingsClients]);
+
+  const handleBackToClients = () => {
+    if (managedClient && onClearManagedClient) {
+      onClearManagedClient();
+    } else {
+      setSelectedClient(null);
+      setExpensesData(null);
+      if (typeof window !== "undefined") {
+        sessionStorage.removeItem("pma_expenses_client");
+      }
     }
-  }, [managedClient, initialClient, allOutgoingsClients, selectedClient]);
+  };
 
   // Fetch Expenses Data
   const fetchExpenses = useCallback(async (client, bypassCache = false) => {
@@ -259,6 +269,9 @@ export default function ExpensesView({
           sheetRow: editingCell.sheetRow,
           monthlyAmounts: {
             [editingCell.colLetter]: cellInputValue,
+          },
+          cellNotes: {
+            [editingCell.colLetter]: cellNoteValue,
           },
         }),
       });
@@ -462,11 +475,14 @@ export default function ExpensesView({
                   label: m.monthLabel,
                   value: m.value,
                   category: exp.category,
+                  note: m.note || "",
                 });
                 setCellInputValue(m.value);
+                setCellNoteValue(m.note || "");
               }
             }}
             style={{
+              position: "relative",
               padding: "8px 10px",
               textAlign: "right",
               color: "#0f172a",
@@ -480,8 +496,9 @@ export default function ExpensesView({
             onMouseLeave={(e) => {
               if (isAdmin) e.currentTarget.style.background = "transparent";
             }}
-            title={isAdmin ? `Click to edit ${m.monthLabel} amount` : undefined}
+            title={isAdmin ? `Click to edit ${m.monthLabel} amount & note` : undefined}
           >
+            <CellNoteIndicator note={m.note} />
             {m.value || "£0"}
           </td>
         ))}
@@ -512,178 +529,168 @@ export default function ExpensesView({
           border: "1px solid #e2e8f0",
         }}
       >
-        <div>
-          <h1 style={{ margin: 0, fontSize: "20px", fontWeight: 700, color: "#1e293b", display: "flex", alignItems: "center", gap: "8px" }}>
-            <span>Expenses</span>
-            {expensesData && (
-              <span style={{ fontSize: "12px", background: "#f1f5f9", color: "#475569", padding: "2px 8px", borderRadius: "12px", fontWeight: 600 }}>
-                {deliveryExpenses.length} Delivery · {nonDeliveryExpenses.length} Non-Delivery
-              </span>
-            )}
-          </h1>
-          <p style={{ margin: "4px 0 0", fontSize: "13px", color: "#64748b" }}>
-            Client Sheet Outgoings tab (rows 126–225) categorized by Delivery % (Col E)
-          </p>
-        </div>
-
-        <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
-          {/* Client Selector (if not managed) */}
-          {!managedClient && (
-            <div style={{ position: "relative" }}>
-              <select
-                value={selectedClient?.clientName || ""}
-                onChange={(e) => {
-                  const match = allOutgoingsClients.find((c) => c.clientName === e.target.value);
-                  if (match) setSelectedClient(match);
-                }}
-                style={{
-                  padding: "7px 12px",
-                  fontSize: "13px",
-                  borderRadius: "6px",
-                  border: "1px solid #cbd5e1",
-                  background: "#fff",
-                  color: "#1e293b",
-                  fontWeight: 600,
-                  cursor: "pointer",
-                  outline: "none",
-                }}
-              >
-                {filteredClients.map((c) => (
-                  <option key={c.clientName} value={c.clientName}>
-                    {c.clientName}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-
-          {managedClient && (
-            <div
+        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+          {selectedClient && (
+            <button
+              type="button"
+              onClick={handleBackToClients}
               style={{
+                background: "#ffffff",
+                border: "1px solid #cbd5e1",
+                borderRadius: "6px",
+                cursor: "pointer",
+                padding: "6px 12px",
+                fontSize: "16px",
+                color: "#475569",
+                lineHeight: 1,
                 display: "inline-flex",
                 alignItems: "center",
-                gap: "8px",
-                background: "#eff6ff",
-                border: "1px solid #bfdbfe",
-                padding: "6px 12px",
+                justifyContent: "center",
+                transition: "all 0.15s ease",
+                boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.backgroundColor = "#f1f5f9";
+                e.currentTarget.style.borderColor = "#94a3b8";
+                e.currentTarget.style.color = "#0f172a";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.backgroundColor = "#ffffff";
+                e.currentTarget.style.borderColor = "#cbd5e1";
+                e.currentTarget.style.color = "#475569";
+              }}
+              title="Back to client list"
+            >
+              ←
+            </button>
+          )}
+          <div>
+            <h1 style={{ margin: 0, fontSize: "20px", fontWeight: 700, color: "#1e293b", display: "flex", alignItems: "center", gap: "8px" }}>
+              <span>Expenses</span>
+              {selectedClient && expensesData && (
+                <span style={{ fontSize: "12px", background: "#f1f5f9", color: "#475569", padding: "2px 8px", borderRadius: "12px", fontWeight: 600 }}>
+                  {deliveryExpenses.length} Delivery · {nonDeliveryExpenses.length} Non-Delivery
+                </span>
+              )}
+            </h1>
+            {selectedClient ? (
+              <div style={{ margin: "3px 0 0", fontSize: "14px", fontWeight: 600, color: "#0047AB" }}>
+                {selectedClient.clientName}
+              </div>
+            ) : (
+              <p style={{ margin: "4px 0 0", fontSize: "13px", color: "#64748b" }}>
+                Select a client to view and edit expenses
+              </p>
+            )}
+          </div>
+        </div>
+
+        {selectedClient && (
+          <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+            {/* FY Navigator */}
+            {expensesData?.fyConfigs && (
+              <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                <button
+                  type="button"
+                  onClick={() => setSelectedFyIdx((prev) => Math.max(0, prev - 1))}
+                  disabled={selectedFyIdx <= 0}
+                  style={{
+                    background: "#fff",
+                    border: "1px solid #cbd5e1",
+                    borderRadius: "4px",
+                    padding: "5px 8px",
+                    cursor: selectedFyIdx <= 0 ? "not-allowed" : "pointer",
+                    fontSize: "12px",
+                    color: selectedFyIdx <= 0 ? "#cbd5e1" : "#1e293b",
+                    fontWeight: 700,
+                  }}
+                  title="Previous financial year"
+                >
+                  ◀
+                </button>
+
+                <select
+                  value={selectedFyIdx}
+                  onChange={(e) => setSelectedFyIdx(parseInt(e.target.value, 10))}
+                  style={{
+                    padding: "6px 10px",
+                    borderRadius: "6px",
+                    border: "1px solid #cbd5e1",
+                    background: "#fff",
+                    fontSize: "13px",
+                    fontWeight: 700,
+                    color: "#0047AB",
+                    cursor: "pointer",
+                    outline: "none",
+                  }}
+                >
+                  {expensesData.fyConfigs.map((fy, idx) => (
+                    <option key={fy.id} value={idx}>
+                      {fy.label}
+                    </option>
+                  ))}
+                </select>
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    setSelectedFyIdx((prev) => Math.min(expensesData.fyConfigs.length - 1, prev + 1))
+                  }
+                  disabled={selectedFyIdx >= expensesData.fyConfigs.length - 1}
+                  style={{
+                    background: "#fff",
+                    border: "1px solid #cbd5e1",
+                    borderRadius: "4px",
+                    padding: "5px 8px",
+                    cursor:
+                      selectedFyIdx >= expensesData.fyConfigs.length - 1 ? "not-allowed" : "pointer",
+                    fontSize: "12px",
+                    color: selectedFyIdx >= expensesData.fyConfigs.length - 1 ? "#cbd5e1" : "#1e293b",
+                    fontWeight: 700,
+                  }}
+                  title="Next financial year"
+                >
+                  ▶
+                </button>
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={() => selectedClient && fetchExpenses(selectedClient, true)}
+              disabled={loading || saving}
+              style={{
+                padding: "7px 14px",
+                background: "#f8fafc",
+                border: "1px solid #cbd5e1",
                 borderRadius: "6px",
                 fontSize: "13px",
                 fontWeight: 600,
-                color: "#1d4ed8",
+                color: "#334155",
+                cursor: loading ? "not-allowed" : "pointer",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "6px",
               }}
             >
-              <span>Managing: {managedClient.clientName}</span>
-              <button
-                type="button"
-                onClick={onClearManagedClient}
-                style={{
-                  background: "none",
-                  border: "none",
-                  color: "#dc2626",
-                  cursor: "pointer",
-                  fontSize: "13px",
-                  padding: "0 2px",
-                }}
-                title="Clear managed client"
-              >
-                ✕
-              </button>
-            </div>
-          )}
-
-          {/* FY Navigator */}
-          {expensesData?.fyConfigs && (
-            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-              <button
-                type="button"
-                onClick={() => setSelectedFyIdx((prev) => Math.max(0, prev - 1))}
-                disabled={selectedFyIdx <= 0}
-                style={{
-                  background: "#fff",
-                  border: "1px solid #cbd5e1",
-                  borderRadius: "4px",
-                  padding: "5px 8px",
-                  cursor: selectedFyIdx <= 0 ? "not-allowed" : "pointer",
-                  fontSize: "12px",
-                  color: selectedFyIdx <= 0 ? "#cbd5e1" : "#1e293b",
-                  fontWeight: 700,
-                }}
-                title="Previous Financial Year"
-              >
-                ◀
-              </button>
-
-              <select
-                value={selectedFyIdx}
-                onChange={(e) => setSelectedFyIdx(parseInt(e.target.value, 10))}
-                style={{
-                  padding: "6px 10px",
-                  borderRadius: "6px",
-                  border: "1px solid #cbd5e1",
-                  background: "#fff",
-                  fontSize: "13px",
-                  fontWeight: 700,
-                  color: "#0047AB",
-                  cursor: "pointer",
-                  outline: "none",
-                }}
-              >
-                {expensesData.fyConfigs.map((fy, idx) => (
-                  <option key={fy.id} value={idx}>
-                    {fy.label}
-                  </option>
-                ))}
-              </select>
-
-              <button
-                type="button"
-                onClick={() =>
-                  setSelectedFyIdx((prev) => Math.min(expensesData.fyConfigs.length - 1, prev + 1))
-                }
-                disabled={selectedFyIdx >= expensesData.fyConfigs.length - 1}
-                style={{
-                  background: "#fff",
-                  border: "1px solid #cbd5e1",
-                  borderRadius: "4px",
-                  padding: "5px 8px",
-                  cursor:
-                    selectedFyIdx >= expensesData.fyConfigs.length - 1 ? "not-allowed" : "pointer",
-                  fontSize: "12px",
-                  color: selectedFyIdx >= expensesData.fyConfigs.length - 1 ? "#cbd5e1" : "#1e293b",
-                  fontWeight: 700,
-                }}
-                title="Next Financial Year"
-              >
-                ▶
-              </button>
-            </div>
-          )}
-
-          <button
-            type="button"
-            onClick={() => selectedClient && fetchExpenses(selectedClient, true)}
-            disabled={loading || saving}
-            style={{
-              padding: "7px 14px",
-              background: "#f8fafc",
-              border: "1px solid #cbd5e1",
-              borderRadius: "6px",
-              fontSize: "13px",
-              fontWeight: 600,
-              color: "#334155",
-              cursor: loading ? "not-allowed" : "pointer",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "6px",
-            }}
-          >
-            {loading ? <Spinner size={14} color="#0066cc" /> : "↻"} Refresh
-          </button>
-        </div>
+              {loading ? <Spinner size={14} color="#0066cc" /> : "↻"} Refresh
+            </button>
+          </div>
+        )}
       </div>
 
+      {/* ── CLIENT SELECTOR SCREEN (WHEN NO CLIENT SELECTED) ── */}
+      {!selectedClient && (
+        <EditClientSelector
+          clients={allOutgoingsClients}
+          onSelectClient={(c) => setSelectedClient(c)}
+          loading={loading}
+          title="Select a client to view and edit expenses:"
+        />
+      )}
+
       {/* Notifications */}
-      {error && (
+      {selectedClient && error && (
         <div
           style={{
             background: "#fef2f2",
@@ -708,7 +715,7 @@ export default function ExpensesView({
         </div>
       )}
 
-      {saveSuccessMsg && (
+      {selectedClient && saveSuccessMsg && (
         <div
           style={{
             background: "#f0fdf4",
@@ -724,7 +731,7 @@ export default function ExpensesView({
         </div>
       )}
 
-      {loading && !expensesData && (
+      {selectedClient && loading && !expensesData && (
         <div style={{ textAlign: "center", padding: "80px 20px" }}>
           <Spinner size={32} color="#0047AB" />
           <div style={{ marginTop: "14px", color: "#64748b", fontSize: "14px" }}>
@@ -733,7 +740,7 @@ export default function ExpensesView({
         </div>
       )}
 
-      {expensesData && currentFy && (
+      {selectedClient && expensesData && currentFy && (
         <>
           {/* Filter Bar & Search */}
           <div
@@ -1151,7 +1158,7 @@ export default function ExpensesView({
                 onChange={(e) => setCellInputValue(e.target.value)}
                 autoFocus
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") handleSaveAmount();
+                  if (e.key === "Enter" && !e.shiftKey) handleSaveAmount();
                   if (e.key === "Escape") setEditingCell(null);
                 }}
                 style={{
@@ -1162,6 +1169,28 @@ export default function ExpensesView({
                   border: "1px solid #cbd5e1",
                   outline: "none",
                   boxSizing: "border-box",
+                }}
+              />
+            </div>
+            <div style={{ marginBottom: "16px" }}>
+              <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "#334155", marginBottom: "4px" }}>
+                Cell note
+              </label>
+              <textarea
+                value={cellNoteValue}
+                onChange={(e) => setCellNoteValue(e.target.value)}
+                placeholder="Add note..."
+                rows={3}
+                style={{
+                  width: "100%",
+                  padding: "8px 10px",
+                  fontSize: "13px",
+                  borderRadius: "6px",
+                  border: "1px solid #cbd5e1",
+                  outline: "none",
+                  boxSizing: "border-box",
+                  fontFamily: "inherit",
+                  resize: "vertical",
                 }}
               />
             </div>

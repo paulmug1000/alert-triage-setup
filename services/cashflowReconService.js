@@ -25,6 +25,12 @@ function parseNumeric(val) {
   return isNaN(num) ? 0 : num;
 }
 
+function formatGBP(num) {
+  if (num == null || isNaN(num)) return "£0.00";
+  const sign = num < 0 ? "-" : "";
+  return `${sign}£${Math.abs(num).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
 function colorToCss(rgbColor) {
   if (!rgbColor) return null;
   const r = Math.round((rgbColor.red ?? 0) * 255);
@@ -69,8 +75,13 @@ export function colIndexToLetter(colNum) {
  */
 export function sanitizeCashAdjustmentInput(val) {
   if (val === null || val === undefined) return "";
-  const str = String(val).trim();
+  let str = String(val).trim();
   if (!str) return "";
+
+  // If input has an accidental leading apostrophe before a formula, strip it for evaluation
+  if (/^['’]=/.test(str)) {
+    str = str.replace(/^['’]=/, "=").trim();
+  }
 
   // 1. Valid finite numbers are always safe
   if (!isNaN(Number(str))) return str;
@@ -97,10 +108,10 @@ export function sanitizeCashAdjustmentInput(val) {
     let stripped = str.slice(1);
     // Strip allowed function names
     stripped = stripped.replace(/\b(SUM|ROUND|ABS|MIN|MAX|AVERAGE|SUBTOTAL|IF|INT)\s*\(/gi, "(");
-    // Strip sheet references e.g. Cash! or 'Cash'!
-    stripped = stripped.replace(/('?[A-Za-z0-9_ ]+'?!)?[A-Z]+[0-9]+(:[A-Z]+[0-9]+)?/gi, "1");
-    // Strip numbers
-    stripped = stripped.replace(/[0-9]+(\.[0-9]+)?/g, "1");
+    // Strip sheet references e.g. Cash! or 'Cash'! and cell coordinates (e.g. E6, $E$6, CD4, E6:E10)
+    stripped = stripped.replace(/('?[A-Za-z0-9_ ]+'?!)?\$?[A-Z]+\$?[0-9]+(:?\$?[A-Z]+\$?[0-9]+)?/gi, "");
+    // Strip numbers (integer and decimal)
+    stripped = stripped.replace(/[0-9]+(\.[0-9]+)?/g, "");
     // Strip operators, parentheses, commas, whitespace
     stripped = stripped.replace(/[\+\-\*\/\^\%\(\)\,\s]/g, "");
 
@@ -170,7 +181,7 @@ export async function getCashflowReconData({
   const reconTabName = `${String(targetYear).slice(-2)}${String(targetMonth + 1).padStart(2, "0")}`;
 
   // 2. Fetch Cash tab from Client Sheet
-  const FIELDS = "sheets(properties(sheetId,title),data.rowData.values(formattedValue,note,userEnteredValue,effectiveFormat(backgroundColor,textFormat(bold,italic,foregroundColor),horizontalAlignment,borders)))";
+  const FIELDS = "sheets(properties(sheetId,title),data.rowData.values(formattedValue,effectiveValue,note,userEnteredValue,effectiveFormat(backgroundColor,textFormat(bold,italic,foregroundColor),horizontalAlignment,borders)))";
   const res = await withRetry(() => sheets.spreadsheets.get({
     spreadsheetId: cleanClientSheetId,
     ranges: ["Cash!A1:AK45"],
@@ -351,8 +362,13 @@ export async function getCashflowReconData({
                      cell.userEnteredValue?.stringValue ??
                      null;
 
+      const numVal = (typeof cell.effectiveValue?.numberValue === "number")
+        ? cell.effectiveValue.numberValue
+        : (typeof cell.userEnteredValue?.numberValue === "number" ? cell.userEnteredValue.numberValue : null);
+
       return {
-        v: cell.formattedValue ?? "",
+        v: numVal !== null ? formatGBP(numVal) : (cell.formattedValue ?? ""),
+        numVal,
         rawVal,
         note: cell.note || "",
         bg,
@@ -1046,7 +1062,8 @@ export async function updateCashAdjustment({
   const rowNum = parseInt(sheetRow, 10);
   const cellRange = `Cash!${colLetter}${rowNum}`;
 
-  const safeValue = sanitizeCashAdjustmentInput(value ?? "");
+  const cleanValue = typeof value === "string" ? value.trim().replace(/^['’]=/, "=") : value;
+  const safeValue = sanitizeCashAdjustmentInput(cleanValue ?? "");
 
   await withRetry(() => sheets.spreadsheets.values.update({
     spreadsheetId: cleanClientSheetId,
@@ -1254,10 +1271,13 @@ export async function batchMatchCashflowActuals({
 
   // 1. Batch update adjustment formulas
   if (adjustments.length > 0) {
-    const dataUpdates = adjustments.map(adj => ({
-      range: `Cash!${colLetter}${adj.sheetRow}`,
-      values: [[sanitizeCashAdjustmentInput(adj.formula)]]
-    }));
+    const dataUpdates = adjustments.map(adj => {
+      const cleanFormula = typeof adj.formula === "string" ? adj.formula.trim().replace(/^['’]=/, "=") : adj.formula;
+      return {
+        range: `Cash!${colLetter}${adj.sheetRow}`,
+        values: [[sanitizeCashAdjustmentInput(cleanFormula)]]
+      };
+    });
 
     await withRetry(() => sheets.spreadsheets.values.batchUpdate({
       spreadsheetId: cleanClientSheetId,

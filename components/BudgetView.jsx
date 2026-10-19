@@ -3,6 +3,9 @@ import Spinner from "./Spinner";
 import { useAuth } from "../hooks/useAuth";
 import { formatMoney as universalFormatMoney, parseMoney } from "../services/deepDiveHelper";
 import { downloadCsv } from "../utils/helpers";
+import CellNoteIndicator from "./CellNoteIndicator";
+import CellNoteModal from "./CellNoteModal";
+import EditClientSelector from "./EditClientSelector";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPERS
@@ -142,6 +145,9 @@ export default function BudgetView({
   const [error, setError] = useState(null);
   const [saveSuccessMsg, setSaveSuccessMsg] = useState("");
 
+  // Cell Note Modal State
+  const [noteModalData, setNoteModalData] = useState(null); // { sheetRow, colIdx, title, subtitle, initialNote }
+
   // FY Navigation
   const [selectedFyIdx, setSelectedFyIdx] = useState(0);
 
@@ -250,12 +256,19 @@ export default function BudgetView({
         return;
       }
     }
-    if (!selectedClient && allOutgoingsClients.length > 0) {
-      const saved = typeof window !== "undefined" ? sessionStorage.getItem("pma_budget_client") : null;
-      const found = saved ? allOutgoingsClients.find((c) => c.clientName === saved) : null;
-      setSelectedClient(found || allOutgoingsClients[0]);
+  }, [managedClient, initialClient, allOutgoingsClients]);
+
+  const handleBackToClients = () => {
+    if (managedClient && onClearManagedClient) {
+      onClearManagedClient();
+    } else {
+      setSelectedClient(null);
+      setBudgetData(null);
+      if (typeof window !== "undefined") {
+        sessionStorage.removeItem("pma_budget_client");
+      }
     }
-  }, [managedClient, initialClient, allOutgoingsClients, selectedClient]);
+  };
 
   // Fetch Budget Data & Key Data
   const fetchBudgetData = useCallback(async (client, bypassCache = false) => {
@@ -754,6 +767,71 @@ export default function BudgetView({
   };
 
   // ───────────────────────────────────────────────────────────────────────────
+  // CELL NOTE HANDLERS (VIEW / EDIT / DELETE CELL NOTES)
+  // ───────────────────────────────────────────────────────────────────────────
+  const handleOpenNoteModal = (sheetRow, colIdx, title, subtitle = "") => {
+    const currentNote = matrix[sheetRow - 1]?.[colIdx]?.note || "";
+    setNoteModalData({
+      sheetRow,
+      colIdx,
+      title: title || "Cell note",
+      subtitle: subtitle || `Budget row ${sheetRow}, column ${colIndexToLetter(colIdx + 1)}`,
+      initialNote: currentNote,
+    });
+  };
+
+  const handleSaveCellNote = async (newNote) => {
+    if (!noteModalData || !selectedClient) return;
+    const { sheetRow, colIdx } = noteModalData;
+    const clientKey = selectedClient.clientSpreadsheetId || selectedClient.spreadsheetId;
+    const masterKey = selectedClient.masterSpreadsheetId || selectedClient.masterSheetId;
+
+    // Optimistically update local matrix
+    setBudgetData((prev) => {
+      if (!prev || !prev.matrix) return prev;
+      const newMatrix = [...prev.matrix];
+      const rIdx = sheetRow - 1;
+      if (newMatrix[rIdx]) {
+        const newRow = [...newMatrix[rIdx]];
+        const currentCell = newRow[colIdx] || {};
+        newRow[colIdx] = { ...currentCell, note: newNote || undefined };
+        newMatrix[rIdx] = newRow;
+      }
+      return { ...prev, matrix: newMatrix };
+    });
+
+    try {
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "update_cell_note",
+          clientSheetId: clientKey,
+          masterSheetId: masterKey,
+          tab: "Budget",
+          sheetRow,
+          colIdx,
+          note: newNote,
+          clientName: selectedClient.clientName,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data?.error || "Failed to update cell note");
+      }
+
+      setSaveSuccessMsg(`Updated note on Row ${sheetRow}`);
+      setTimeout(() => setSaveSuccessMsg(""), 3000);
+    } catch (err) {
+      console.error("update_cell_note error:", err);
+      setError(err.message || "Failed to update cell note");
+      fetchBudgetData(selectedClient, true);
+      throw err;
+    }
+  };
+
+  // ───────────────────────────────────────────────────────────────────────────
   // SPREAD ROW HANDLER (FOR ROWS 5 & 13 ACROSS ACTIVE FY)
   // ───────────────────────────────────────────────────────────────────────────
   const handleSpreadRow = async (sheetRow, annualValStr) => {
@@ -997,9 +1075,9 @@ export default function BudgetView({
   return (
     <div
       style={{
-        padding: "24px 32px",
-        maxWidth: "1680px",
+        maxWidth: "1600px",
         margin: "0 auto",
+        padding: "16px 24px 60px",
         boxSizing: "border-box",
         fontFamily: "'Kumbh Sans', sans-serif",
       }}
@@ -1023,248 +1101,247 @@ export default function BudgetView({
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
-          <h1
-            style={{
-              margin: 0,
-              fontSize: "22px",
-              fontWeight: 700,
-              color: "#0047AB",
-              display: "flex",
-              alignItems: "center",
-              gap: "10px",
-            }}
-          >
-            <span>Budget</span>
-          </h1>
-          <span
-            style={{
-              fontSize: "12px",
-              fontWeight: 700,
-              color: "#0047AB",
-              background: "rgba(0, 71, 171, 0.08)",
-              padding: "3px 10px",
-              borderRadius: "4px",
-            }}
-          >
-            {activeFyLabel}
-          </span>
-          <span
-            style={{
-              fontSize: "12px",
-              background: "#eff6ff",
-              color: "#1d4ed8",
-              padding: "2px 8px",
-              borderRadius: "12px",
-              fontWeight: 600,
-            }}
-          >
-            {isIncomeMode ? "Income mode" : "Revenue mode"}
-          </span>
-        </div>
-
-        <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
-          {/* Client Selector (if not managed) */}
-          {!managedClient && (
-            <select
-              value={selectedClient?.clientName || ""}
-              onChange={(e) => {
-                const match = allOutgoingsClients.find((c) => c.clientName === e.target.value);
-                if (match) setSelectedClient(match);
-              }}
+          {selectedClient && (
+            <button
+              type="button"
+              onClick={handleBackToClients}
               style={{
-                padding: "6px 12px",
-                fontSize: "13px",
-                borderRadius: "6px",
+                background: "#ffffff",
                 border: "1px solid #cbd5e1",
-                background: "#fff",
-                color: "#1e293b",
-                fontWeight: 600,
+                borderRadius: "6px",
                 cursor: "pointer",
-                outline: "none",
-              }}
-            >
-              {filteredClients.map((c) => (
-                <option key={c.clientName} value={c.clientName}>
-                  {c.clientName}
-                </option>
-              ))}
-            </select>
-          )}
-
-          {managedClient && (
-            <div
-              style={{
+                padding: "6px 12px",
+                fontSize: "16px",
+                color: "#475569",
+                lineHeight: 1,
                 display: "inline-flex",
                 alignItems: "center",
+                justifyContent: "center",
+                transition: "all 0.15s ease",
+                boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.backgroundColor = "#f1f5f9";
+                e.currentTarget.style.borderColor = "#94a3b8";
+                e.currentTarget.style.color = "#0f172a";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.backgroundColor = "#ffffff";
+                e.currentTarget.style.borderColor = "#cbd5e1";
+                e.currentTarget.style.color = "#475569";
+              }}
+              title="Back to client list"
+            >
+              ←
+            </button>
+          )}
+          <div>
+            <h1
+              style={{
+                margin: 0,
+                fontSize: "20px",
+                fontWeight: 700,
+                color: "#1e293b",
+                display: "flex",
+                alignItems: "center",
                 gap: "8px",
-                background: "#eff6ff",
-                border: "1px solid #bfdbfe",
-                padding: "5px 10px",
-                borderRadius: "6px",
-                fontSize: "13px",
-                fontWeight: 600,
-                color: "#1d4ed8",
               }}
             >
-              <span>Managing: {managedClient.clientName}</span>
-              <button
-                type="button"
-                onClick={onClearManagedClient}
-                style={{
-                  background: "none",
-                  border: "none",
-                  color: "#dc2626",
-                  cursor: "pointer",
-                  fontSize: "13px",
-                  padding: "0 2px",
-                }}
-                title="Clear managed client"
-              >
-                ✕
-              </button>
-            </div>
-          )}
+              <span>Budget</span>
+              {selectedClient && budgetData && (
+                <>
+                  <span
+                    style={{
+                      fontSize: "12px",
+                      fontWeight: 700,
+                      color: "#0047AB",
+                      background: "rgba(0, 71, 171, 0.08)",
+                      padding: "2px 8px",
+                      borderRadius: "4px",
+                    }}
+                  >
+                    {activeFyLabel}
+                  </span>
+                  <span
+                    style={{
+                      fontSize: "12px",
+                      background: "#eff6ff",
+                      color: "#1d4ed8",
+                      padding: "2px 8px",
+                      borderRadius: "12px",
+                      fontWeight: 600,
+                    }}
+                  >
+                    {isIncomeMode ? "Income mode" : "Revenue mode"}
+                  </span>
+                </>
+              )}
+            </h1>
+            {selectedClient ? (
+              <div style={{ margin: "3px 0 0", fontSize: "14px", fontWeight: 600, color: "#0047AB" }}>
+                {selectedClient.clientName}
+              </div>
+            ) : (
+              <p style={{ margin: "4px 0 0", fontSize: "13px", color: "#64748b" }}>
+                Select a client to view and edit budget
+              </p>
+            )}
+          </div>
+        </div>
 
-          {/* FY Navigator */}
-          {fyConfigs.length > 0 && (
-            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-              <button
-                type="button"
-                onClick={() => setSelectedFyIdx((prev) => Math.max(0, prev - 1))}
-                disabled={selectedFyIdx <= 0}
-                style={{
-                  background: "#fff",
-                  border: "1px solid #cbd5e1",
-                  borderRadius: "4px",
-                  padding: "5px 8px",
-                  cursor: selectedFyIdx <= 0 ? "not-allowed" : "pointer",
-                  fontSize: "12px",
-                  color: selectedFyIdx <= 0 ? "#cbd5e1" : "#1e293b",
-                  fontWeight: 700,
-                }}
-                title="Previous financial year"
-              >
-                ◀
-              </button>
+        {selectedClient && (
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+            {/* FY Navigator */}
+            {fyConfigs.length > 0 && (
+              <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                <button
+                  type="button"
+                  onClick={() => setSelectedFyIdx((prev) => Math.max(0, prev - 1))}
+                  disabled={selectedFyIdx <= 0}
+                  style={{
+                    background: "#fff",
+                    border: "1px solid #cbd5e1",
+                    borderRadius: "4px",
+                    padding: "5px 8px",
+                    cursor: selectedFyIdx <= 0 ? "not-allowed" : "pointer",
+                    fontSize: "12px",
+                    color: selectedFyIdx <= 0 ? "#cbd5e1" : "#1e293b",
+                    fontWeight: 700,
+                  }}
+                  title="Previous financial year"
+                >
+                  ◀
+                </button>
 
-              <select
-                value={selectedFyIdx}
-                onChange={(e) => setSelectedFyIdx(parseInt(e.target.value, 10))}
-                style={{
-                  padding: "6px 10px",
-                  borderRadius: "6px",
-                  border: "1px solid #cbd5e1",
-                  background: "#fff",
-                  fontSize: "13px",
-                  fontWeight: 700,
-                  color: "#0047AB",
-                  cursor: "pointer",
-                  outline: "none",
-                }}
-              >
-                {fyConfigs.map((fy, idx) => (
-                  <option key={idx} value={idx}>
-                    {fy.label || `FY${idx + 1}`}
-                  </option>
-                ))}
-              </select>
+                <select
+                  value={selectedFyIdx}
+                  onChange={(e) => setSelectedFyIdx(parseInt(e.target.value, 10))}
+                  style={{
+                    padding: "6px 10px",
+                    borderRadius: "6px",
+                    border: "1px solid #cbd5e1",
+                    background: "#fff",
+                    fontSize: "13px",
+                    fontWeight: 700,
+                    color: "#0047AB",
+                    cursor: "pointer",
+                    outline: "none",
+                  }}
+                >
+                  {fyConfigs.map((fy, idx) => (
+                    <option key={idx} value={idx}>
+                      {fy.label || `FY${idx + 1}`}
+                    </option>
+                  ))}
+                </select>
 
-              <button
-                type="button"
-                onClick={() => setSelectedFyIdx((prev) => Math.min(maxFyIdx, prev + 1))}
-                disabled={selectedFyIdx >= maxFyIdx}
-                style={{
-                  background: "#fff",
-                  border: "1px solid #cbd5e1",
-                  borderRadius: "4px",
-                  padding: "5px 8px",
-                  cursor: selectedFyIdx >= maxFyIdx ? "not-allowed" : "pointer",
-                  fontSize: "12px",
-                  color: selectedFyIdx >= maxFyIdx ? "#cbd5e1" : "#1e293b",
-                  fontWeight: 700,
-                }}
-                title="Next financial year"
-              >
-                ▶
-              </button>
-            </div>
-          )}
+                <button
+                  type="button"
+                  onClick={() => setSelectedFyIdx((prev) => Math.min(maxFyIdx, prev + 1))}
+                  disabled={selectedFyIdx >= maxFyIdx}
+                  style={{
+                    background: "#fff",
+                    border: "1px solid #cbd5e1",
+                    borderRadius: "4px",
+                    padding: "5px 8px",
+                    cursor: selectedFyIdx >= maxFyIdx ? "not-allowed" : "pointer",
+                    fontSize: "12px",
+                    color: selectedFyIdx >= maxFyIdx ? "#cbd5e1" : "#1e293b",
+                    fontWeight: 700,
+                  }}
+                  title="Next financial year"
+                >
+                  ▶
+                </button>
+              </div>
+            )}
 
-          {/* Refresh Button */}
-          <button
-            type="button"
-            onClick={() => selectedClient && fetchBudgetData(selectedClient, true)}
-            disabled={loading}
-            title="Refresh budget data from master sheet"
-            style={{
-              padding: "6px 12px",
-              background: "#f8fafc",
-              border: "1px solid #cbd5e1",
-              borderRadius: "6px",
-              fontSize: "13px",
-              fontWeight: 600,
-              color: "#334155",
-              cursor: loading ? "not-allowed" : "pointer",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "6px",
-            }}
-          >
-            {loading ? <Spinner size={14} color="#0066cc" /> : "↻"} Refresh
-          </button>
-
-          {/* CSV Export Button */}
-          <button
-            type="button"
-            onClick={handleDownloadCSV}
-            title="Export budget overview to CSV"
-            style={{
-              padding: "6px 12px",
-              background: "#f8fafc",
-              border: "1px solid #cbd5e1",
-              borderRadius: "6px",
-              fontSize: "13px",
-              fontWeight: 600,
-              color: "#334155",
-              cursor: "pointer",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "6px",
-            }}
-          >
-            📥 Export CSV
-          </button>
-
-          {/* Admin: Open in Sheets */}
-          {isAdmin && targetSheetId && (
-            <a
-              href={`https://docs.google.com/spreadsheets/d/${targetSheetId}/edit#gid=0`}
-              target="_blank"
-              rel="noreferrer"
+            {/* Refresh Button */}
+            <button
+              type="button"
+              onClick={() => selectedClient && fetchBudgetData(selectedClient, true)}
+              disabled={loading}
+              title="Refresh budget data from master sheet"
               style={{
                 padding: "6px 12px",
+                background: "#f8fafc",
+                border: "1px solid #cbd5e1",
                 borderRadius: "6px",
-                border: "1px solid #166534",
-                background: "#15803d",
-                color: "#ffffff",
                 fontSize: "13px",
                 fontWeight: 600,
-                textDecoration: "none",
+                color: "#334155",
+                cursor: loading ? "not-allowed" : "pointer",
                 display: "inline-flex",
                 alignItems: "center",
                 gap: "6px",
               }}
-              title="Open master sheet in Google Sheets"
             >
-              <span>📊</span>
-              <span>Open in sheets</span>
-            </a>
-          )}
-        </div>
+              {loading ? <Spinner size={14} color="#0066cc" /> : "↻"} Refresh
+            </button>
+
+            {/* CSV Export Button */}
+            <button
+              type="button"
+              onClick={handleDownloadCSV}
+              title="Export budget overview to CSV"
+              style={{
+                padding: "6px 12px",
+                background: "#f8fafc",
+                border: "1px solid #cbd5e1",
+                borderRadius: "6px",
+                fontSize: "13px",
+                fontWeight: 600,
+                color: "#334155",
+                cursor: "pointer",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "6px",
+              }}
+            >
+              📥 Export CSV
+            </button>
+
+            {/* Admin: Open in Sheets */}
+            {isAdmin && targetSheetId && (
+              <a
+                href={`https://docs.google.com/spreadsheets/d/${targetSheetId}/edit#gid=0`}
+                target="_blank"
+                rel="noreferrer"
+                style={{
+                  padding: "6px 12px",
+                  borderRadius: "6px",
+                  border: "1px solid #166534",
+                  background: "#15803d",
+                  color: "#ffffff",
+                  fontSize: "13px",
+                  fontWeight: 600,
+                  textDecoration: "none",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                }}
+                title="Open master sheet in Google Sheets"
+              >
+                <span>📊</span>
+                <span>Open in sheets</span>
+              </a>
+            )}
+          </div>
+        )}
       </div>
 
+      {/* ── CLIENT SELECTOR SCREEN (WHEN NO CLIENT SELECTED) ── */}
+      {!selectedClient && (
+        <EditClientSelector
+          clients={allOutgoingsClients}
+          onSelectClient={(c) => setSelectedClient(c)}
+          loading={loading}
+          title="Select a client to view and edit budget:"
+        />
+      )}
+
       {/* Notifications */}
-      {error && (
+      {selectedClient && error && (
         <div
           style={{
             background: "#fef2f2",
@@ -1289,7 +1366,7 @@ export default function BudgetView({
         </div>
       )}
 
-      {saveSuccessMsg && (
+      {selectedClient && saveSuccessMsg && (
         <div
           style={{
             background: "#f0fdf4",
@@ -1306,7 +1383,7 @@ export default function BudgetView({
       )}
 
       {/* Main Loading Spinner */}
-      {loading && !budgetData && (
+      {selectedClient && loading && !budgetData && (
         <div
           style={{
             textAlign: "center",
@@ -1326,7 +1403,7 @@ export default function BudgetView({
       {/* ───────────────────────────────────────────────────────────────────── */}
       {/* 1. TOP FULL-YEAR BUDGET OVERVIEW TABLE                                */}
       {/* ───────────────────────────────────────────────────────────────────── */}
-      {budgetData && computedModel && (
+      {selectedClient && budgetData && computedModel && (
         <div
           style={{
             background: "#ffffff",
@@ -1653,6 +1730,7 @@ export default function BudgetView({
                         // Editable month cell for Row 5 or Row 13
                         if (r.isEditable && r.sheetRow) {
                           const opts = getEditableOpts(r.sheetRow, cIdx, val);
+                          const cellNote = matrix[r.sheetRow - 1]?.[cIdx]?.note || "";
                           return (
                             <EditableBudgetCell
                               key={mIdx}
@@ -1661,6 +1739,15 @@ export default function BudgetView({
                               editableOpts={opts}
                               isHighlighted={true}
                               align="right"
+                              note={cellNote}
+                              onNoteClick={() =>
+                                handleOpenNoteModal(
+                                  r.sheetRow,
+                                  cIdx,
+                                  `Cell note: ${r.label}`,
+                                  `${monthHeaders[mIdx] || `Month ${mIdx + 1}`} (Row ${r.sheetRow}, Col ${colIndexToLetter(cIdx + 1)})`
+                                )
+                              }
                             />
                           );
                         }
@@ -1874,6 +1961,10 @@ export default function BudgetView({
                             value={name}
                             align="left"
                             editableOpts={getEditableOpts(sheetRow, 0, name)}
+                            note={row[0]?.note || ""}
+                            onNoteClick={() =>
+                              handleOpenNoteModal(sheetRow, 0, `Cell note: ${name || "Employee"} (Name)`, `Row ${sheetRow}, Col A`)
+                            }
                           />
 
                           {/* Col B: Equiv Salary */}
@@ -1884,6 +1975,10 @@ export default function BudgetView({
                             align="right"
                             isCurrency={true}
                             editableOpts={getEditableOpts(sheetRow, 1, equivSalary)}
+                            note={row[1]?.note || ""}
+                            onNoteClick={() =>
+                              handleOpenNoteModal(sheetRow, 1, `Cell note: ${name || "Employee"} (Salary)`, `Row ${sheetRow}, Col B`)
+                            }
                           />
 
                           {/* Col C: Start Month */}
@@ -1893,6 +1988,10 @@ export default function BudgetView({
                             value={startMth}
                             align="center"
                             editableOpts={getEditableOpts(sheetRow, 2, startMth)}
+                            note={row[2]?.note || ""}
+                            onNoteClick={() =>
+                              handleOpenNoteModal(sheetRow, 2, `Cell note: ${name || "Employee"} (Start month)`, `Row ${sheetRow}, Col C`)
+                            }
                           />
 
                           {/* Col D: End Month */}
@@ -1902,6 +2001,10 @@ export default function BudgetView({
                             value={endMth}
                             align="center"
                             editableOpts={getEditableOpts(sheetRow, 3, endMth)}
+                            note={row[3]?.note || ""}
+                            onNoteClick={() =>
+                              handleOpenNoteModal(sheetRow, 3, `Cell note: ${name || "Employee"} (End month)`, `Row ${sheetRow}, Col D`)
+                            }
                           />
 
                           {/* Col E: Del % */}
@@ -1912,6 +2015,10 @@ export default function BudgetView({
                             align="center"
                             isPercent={true}
                             editableOpts={getEditableOpts(sheetRow, 4, delPct)}
+                            note={row[4]?.note || ""}
+                            onNoteClick={() =>
+                              handleOpenNoteModal(sheetRow, 4, `Cell note: ${name || "Employee"} (Delivery %)`, `Row ${sheetRow}, Col E`)
+                            }
                           />
 
                           {/* Col F: Cost pm (formula in sheet) */}
@@ -1983,12 +2090,16 @@ export default function BudgetView({
                           align="center"
                           isPercent={true}
                           editableOpts={getEditableOpts(119, 4, matrix[118][4]?.v || "0%")}
+                          note={matrix[118][4]?.note || ""}
+                          onNoteClick={() =>
+                            handleOpenNoteModal(119, 4, "Cell note: Dividends (Delivery %)", "Row 119, Col E")
+                          }
                         />
 
                         <td style={{ padding: "6px 8px", textAlign: "right", color: "#94a3b8" }}>—</td>
 
                         {/* Monthly Dividend Cells - Editable */}
-                        {fyCols.map((cIdx) => {
+                        {fyCols.map((cIdx, mIdx) => {
                           const cell = matrix[118][cIdx];
                           const opts = getEditableOpts(119, cIdx, cell?.v);
                           return (
@@ -2000,6 +2111,15 @@ export default function BudgetView({
                               align="right"
                               isCurrency={true}
                               editableOpts={opts}
+                              note={cell?.note || ""}
+                              onNoteClick={() =>
+                                handleOpenNoteModal(
+                                  119,
+                                  cIdx,
+                                  "Cell note: Dividends",
+                                  `${monthHeaders[mIdx] || `Month ${mIdx + 1}`} (Row 119, Col ${colIndexToLetter(cIdx + 1)})`
+                                )
+                              }
                             />
                           );
                         })}
@@ -2232,6 +2352,10 @@ export default function BudgetView({
                             value={name}
                             align="left"
                             editableOpts={getEditableOpts(sheetRow, 0, name)}
+                            note={row[0]?.note || ""}
+                            onNoteClick={() =>
+                              handleOpenNoteModal(sheetRow, 0, `Cell note: ${name || "Contractor"} (Name)`, `Row ${sheetRow}, Col A`)
+                            }
                           />
 
                           {/* Del % */}
@@ -2242,10 +2366,14 @@ export default function BudgetView({
                             align="center"
                             isPercent={true}
                             editableOpts={getEditableOpts(sheetRow, 4, delPct)}
+                            note={row[4]?.note || ""}
+                            onNoteClick={() =>
+                              handleOpenNoteModal(sheetRow, 4, `Cell note: ${name || "Contractor"} (Delivery %)`, `Row ${sheetRow}, Col E`)
+                            }
                           />
 
                           {/* Monthly Columns (Editable) */}
-                          {fyCols.map((cIdx) => {
+                          {fyCols.map((cIdx, mIdx) => {
                             const cell = row[cIdx];
                             const opts = getEditableOpts(sheetRow, cIdx, cell?.v);
                             return (
@@ -2257,6 +2385,15 @@ export default function BudgetView({
                                 align="right"
                                 isCurrency={true}
                                 editableOpts={opts}
+                                note={cell?.note || ""}
+                                onNoteClick={() =>
+                                  handleOpenNoteModal(
+                                    sheetRow,
+                                    cIdx,
+                                    `Cell note: ${name || "Contractor"}`,
+                                    `${monthHeaders[mIdx] || `Month ${mIdx + 1}`} (Row ${sheetRow}, Col ${colIndexToLetter(cIdx + 1)})`
+                                  )
+                                }
                               />
                             );
                           })}
@@ -2481,6 +2618,10 @@ export default function BudgetView({
                             value={name}
                             align="left"
                             editableOpts={getEditableOpts(sheetRow, 0, name)}
+                            note={row[0]?.note || ""}
+                            onNoteClick={() =>
+                              handleOpenNoteModal(sheetRow, 0, `Cell note: ${name || "Expense"} (Name)`, `Row ${sheetRow}, Col A`)
+                            }
                           />
 
                           {/* Del % */}
@@ -2491,10 +2632,14 @@ export default function BudgetView({
                             align="center"
                             isPercent={true}
                             editableOpts={getEditableOpts(sheetRow, 4, delPct)}
+                            note={row[4]?.note || ""}
+                            onNoteClick={() =>
+                              handleOpenNoteModal(sheetRow, 4, `Cell note: ${name || "Expense"} (Delivery %)`, `Row ${sheetRow}, Col E`)
+                            }
                           />
 
                           {/* Monthly Columns (Editable) */}
-                          {fyCols.map((cIdx) => {
+                          {fyCols.map((cIdx, mIdx) => {
                             const cell = row[cIdx];
                             const opts = getEditableOpts(sheetRow, cIdx, cell?.v);
                             return (
@@ -2506,6 +2651,15 @@ export default function BudgetView({
                                 align="right"
                                 isCurrency={true}
                                 editableOpts={opts}
+                                note={cell?.note || ""}
+                                onNoteClick={() =>
+                                  handleOpenNoteModal(
+                                    sheetRow,
+                                    cIdx,
+                                    `Cell note: ${name || "Expense"}`,
+                                    `${monthHeaders[mIdx] || `Month ${mIdx + 1}`} (Row ${sheetRow}, Col ${colIndexToLetter(cIdx + 1)})`
+                                  )
+                                }
                               />
                             );
                           })}
@@ -2698,6 +2852,16 @@ export default function BudgetView({
           </div>
         </div>
       )}
+
+      {/* Cell Note Modal */}
+      <CellNoteModal
+        isOpen={Boolean(noteModalData)}
+        title={noteModalData?.title || "Cell note"}
+        subtitle={noteModalData?.subtitle || ""}
+        initialNote={noteModalData?.initialNote || ""}
+        onSave={handleSaveCellNote}
+        onClose={() => setNoteModalData(null)}
+      />
     </div>
   );
 }
@@ -2705,11 +2869,28 @@ export default function BudgetView({
 // ─────────────────────────────────────────────────────────────────────────────
 // TOP TABLE EDITABLE MONTH CELL (ROWS 5 & 13)
 // ─────────────────────────────────────────────────────────────────────────────
-function EditableBudgetCell({ value, displayValue, editableOpts, isHighlighted = false, align = "right" }) {
+function EditableBudgetCell({
+  value,
+  displayValue,
+  editableOpts,
+  isHighlighted = false,
+  align = "right",
+  note = "",
+  onNoteClick,
+}) {
   if (!editableOpts || !editableOpts.isEditable) {
     return (
-      <td style={{ padding: "4px 4px", textAlign: align, fontSize: "11.5px", fontVariantNumeric: "tabular-nums" }}>
+      <td
+        style={{
+          position: "relative",
+          padding: "4px 4px",
+          textAlign: align,
+          fontSize: "11.5px",
+          fontVariantNumeric: "tabular-nums",
+        }}
+      >
         {displayValue}
+        <CellNoteIndicator note={note} onClick={onNoteClick} />
       </td>
     );
   }
@@ -2718,7 +2899,7 @@ function EditableBudgetCell({ value, displayValue, editableOpts, isHighlighted =
 
   if (isSaving) {
     return (
-      <td style={{ padding: "4px 4px", textAlign: align, background: "#fef9c3" }}>
+      <td style={{ position: "relative", padding: "4px 4px", textAlign: align, background: "#fef9c3" }}>
         <Spinner size={12} color="#ca8a04" />
       </td>
     );
@@ -2726,7 +2907,7 @@ function EditableBudgetCell({ value, displayValue, editableOpts, isHighlighted =
 
   if (isEditing) {
     return (
-      <td style={{ padding: "2px", textAlign: align, background: "#eff6ff" }}>
+      <td style={{ position: "relative", padding: "2px", textAlign: align, background: "#eff6ff" }}>
         <input
           type="text"
           value={editValue}
@@ -2758,6 +2939,7 @@ function EditableBudgetCell({ value, displayValue, editableOpts, isHighlighted =
       onClick={onStartEdit}
       title="Click to edit cell amount"
       style={{
+        position: "relative",
         padding: "3px 4px",
         textAlign: align,
         fontSize: "11.5px",
@@ -2779,6 +2961,7 @@ function EditableBudgetCell({ value, displayValue, editableOpts, isHighlighted =
       }}
     >
       {displayValue}
+      <CellNoteIndicator note={note} onClick={onNoteClick} showAddOnHover={Boolean(editableOpts?.isEditable)} />
     </td>
   );
 }
@@ -2794,11 +2977,14 @@ function EditableGridCell({
   isCurrency = false,
   isPercent = false,
   editableOpts,
+  note = "",
+  onNoteClick,
 }) {
   if (!editableOpts || !editableOpts.isEditable) {
     return (
       <td
         style={{
+          position: "relative",
           padding: "5px 8px",
           textAlign: align,
           fontSize: "12px",
@@ -2807,6 +2993,7 @@ function EditableGridCell({
         }}
       >
         {value ?? ""}
+        <CellNoteIndicator note={note} onClick={onNoteClick} />
       </td>
     );
   }
@@ -2815,7 +3002,7 @@ function EditableGridCell({
 
   if (isSaving) {
     return (
-      <td style={{ padding: "5px 8px", textAlign: align, background: "#fef9c3", borderRight: "1px solid #fde047" }}>
+      <td style={{ position: "relative", padding: "5px 8px", textAlign: align, background: "#fef9c3", borderRight: "1px solid #fde047" }}>
         <Spinner size={12} color="#ca8a04" />
       </td>
     );
@@ -2823,7 +3010,7 @@ function EditableGridCell({
 
   if (isEditing) {
     return (
-      <td style={{ padding: "2px", textAlign: align, background: "#eff6ff" }}>
+      <td style={{ position: "relative", padding: "2px", textAlign: align, background: "#eff6ff" }}>
         <input
           type="text"
           value={editValue}
@@ -2854,6 +3041,7 @@ function EditableGridCell({
       onClick={onStartEdit}
       title="Click to edit cell"
       style={{
+        position: "relative",
         padding: "5px 8px",
         textAlign: align,
         fontSize: "12px",
@@ -2871,6 +3059,7 @@ function EditableGridCell({
       }}
     >
       {value ?? ""}
+      <CellNoteIndicator note={note} onClick={onNoteClick} showAddOnHover={Boolean(editableOpts?.isEditable)} />
     </td>
   );
 }

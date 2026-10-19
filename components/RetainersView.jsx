@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import Spinner from "./Spinner";
 import RetainersEditModal from "./RetainersEditModal";
 import CreateRetainerModal from "./CreateRetainerModal";
+import EditClientSelector from "./EditClientSelector";
 import { useRetainers } from "../hooks/useRetainers";
 import { useAuth } from "../hooks/useAuth";
 
@@ -44,7 +45,7 @@ export default function RetainersView({
   const noRetClient = !retainersClient;
 
   return (
-    <div style={{ padding: "20px" }}>
+    <div style={{ maxWidth: "1600px", margin: "0 auto", padding: "16px 24px 60px" }}>
       {showTidyConfirm && (
         <div style={styles.modalOverlay} onClick={e => { if (e.target === e.currentTarget) setShowTidyConfirm(false); }}>
           <div style={styles.modalCard}>
@@ -107,53 +108,114 @@ export default function RetainersView({
           onCreated={() => loadRetainersJobs(retainersClient)}
         />
       )}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
-        <h2 style={{ margin: 0, fontSize: "20px", fontWeight: "700" }}>
-          {retainersClient ? retainersClient.clientName : "Retainers"}
-        </h2>
-        <div style={{ display: "flex", gap: "8px" }}>
-          {isAdmin && retainersClient && (
-            <button className="triage-btn" onClick={() => setShowTidyConfirm(true)} disabled={isTidying}
-              style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 12px", color: "#1d4ed8", borderColor: "#93c5fd" }}>
-              {isTidying ? <><Spinner size={12} color="#1d4ed8" />Tidying...</> : "🧹 Tidy up retainers"}
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          flexWrap: "wrap",
+          gap: "16px",
+          marginBottom: "20px",
+          background: "#ffffff",
+          padding: "16px 20px",
+          borderRadius: "8px",
+          boxShadow: "0 1px 3px rgba(0,0,0,0.06)",
+          border: "1px solid #e2e8f0",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+          {retainersClient && (
+            <button
+              type="button"
+              onClick={() => {
+                if (managedClient && onClearManagedClient) {
+                  onClearManagedClient();
+                } else {
+                  setRetainersClient(null);
+                  setRetainersJobs(null);
+                }
+              }}
+              style={{
+                background: "#ffffff",
+                border: "1px solid #cbd5e1",
+                borderRadius: "6px",
+                cursor: "pointer",
+                padding: "6px 12px",
+                fontSize: "16px",
+                color: "#475569",
+                lineHeight: 1,
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                transition: "all 0.15s ease",
+                boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.backgroundColor = "#f1f5f9";
+                e.currentTarget.style.borderColor = "#94a3b8";
+                e.currentTarget.style.color = "#0f172a";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.backgroundColor = "#ffffff";
+                e.currentTarget.style.borderColor = "#cbd5e1";
+                e.currentTarget.style.color = "#475569";
+              }}
+              title="Back to client list"
+            >
+              ←
             </button>
           )}
-          {retainersClient && (
-            <button className="triage-btn" onClick={() => setShowCreateRetainerModal(true)}
-              style={{ ...styles.button, fontSize: "12px", padding: "5px 12px" }}>
+          <div>
+            <h1 style={{ margin: 0, fontSize: "20px", fontWeight: 700, color: "#1e293b", display: "flex", alignItems: "center", gap: "8px" }}>
+              <span>Retainers</span>
+            </h1>
+            {retainersClient ? (
+              <div style={{ margin: "3px 0 0", fontSize: "14px", fontWeight: 600, color: "#0047AB" }}>
+                {retainersClient.clientName}
+              </div>
+            ) : (
+              <p style={{ margin: "4px 0 0", fontSize: "13px", color: "#64748b" }}>
+                Select a client to manage their retainer jobs
+              </p>
+            )}
+          </div>
+        </div>
+
+        {retainersClient && (
+          <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+            {isAdmin && (
+              <button
+                type="button"
+                className="triage-btn"
+                onClick={() => setShowTidyConfirm(true)}
+                disabled={isTidying}
+                style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 12px", color: "#1d4ed8", borderColor: "#93c5fd" }}
+              >
+                {isTidying ? <><Spinner size={12} color="#1d4ed8" />Tidying...</> : "🧹 Tidy up retainers"}
+              </button>
+            )}
+            <button
+              type="button"
+              className="triage-btn"
+              onClick={() => setShowCreateRetainerModal(true)}
+              style={{ ...styles.button, fontSize: "12px", padding: "6px 14px" }}
+            >
               + Create Retainer
             </button>
-          )}
-          {retainersClient && (
-            <button className="triage-btn" onClick={() => {
-              if (managedClient && onClearManagedClient) {
-                onClearManagedClient();
-              } else {
-                setRetainersClient(null);
-                setRetainersJobs(null);
-              }
-            }}
-              style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px" }}>
-              ← Back to Clients
-            </button>
-          )}
-        </div>
+          </div>
+        )}
       </div>
 
       {noRetClient && (
-        <div style={{ background: "#fff", borderRadius: "12px", border: "1px solid #e0e0e0", padding: "24px" }}>
-          <p style={{ margin: "0 0 16px", fontSize: "14px", color: "#666" }}>Select a client to manage their retainer jobs:</p>
-          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-            {(allOutgoingsClients || []).map(c => (
-              <button key={c.clientName} className="triage-btn"
-                onClick={() => { setRetainersClient(c); loadRetainersJobs(c); }}
-                style={{ ...styles.buttonSecondary, textAlign: "left", padding: "12px 16px", fontSize: "14px" }}>
-                {c.clientName}
-              </button>
-            ))}
-            {(!allOutgoingsClients || allOutgoingsClients.length === 0) && <p style={{ color: "#999", fontSize: "13px" }}>No clients loaded yet - go to Home and refresh first.</p>}
-          </div>
-        </div>
+        <EditClientSelector
+          clients={allOutgoingsClients || []}
+          onSelectClient={(c) => {
+            setRetainersClient(c);
+            loadRetainersJobs(c);
+          }}
+          loading={retainersJobsLoading}
+          title="Select a client to manage retainer jobs:"
+        />
       )}
 
       {!noRetClient && (

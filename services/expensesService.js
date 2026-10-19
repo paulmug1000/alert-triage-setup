@@ -14,7 +14,7 @@
  * ============================================================================
  */
 
-import { getSheetsClient, withRetry } from "./sheetsClient.js";
+import { getSheetsClient, withRetry, getSheetGid, colLetterToNum } from "./sheetsClient.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { sanitizeFormulaInput } from "./userPermissions.js";
 import { memoryCache } from "./cacheService.js";
@@ -81,22 +81,26 @@ export async function fetchExpensesData(clientName, clientSheetId, bypassCache =
 
   const sheets = await getSheetsClient();
 
-  const response = await withRetry(async () => {
-    return await sheets.spreadsheets.values.batchGet({
-      spreadsheetId: clientSheetId,
-      ranges: [
-        "Outgoings!A1:AZ2",      // Headers & FY month columns
-        "Outgoings!A126:AZ228",  // Expense rows 126 to 225, plus totals 227 & 228
-      ],
-      valueRenderOption: "FORMATTED_VALUE",
-    });
-  });
+  const [headerResp, gridResp] = await Promise.all([
+    withRetry(async () => {
+      return await sheets.spreadsheets.values.get({
+        spreadsheetId: clientSheetId,
+        range: "Outgoings!A1:AZ2",
+        valueRenderOption: "FORMATTED_VALUE",
+      });
+    }),
+    withRetry(async () => {
+      return await sheets.spreadsheets.get({
+        spreadsheetId: clientSheetId,
+        ranges: ["Outgoings!A126:AZ228"],
+        includeGridData: true,
+        fields: "sheets.data.rowData.values(formattedValue,note)",
+      });
+    }),
+  ]);
 
-  const valueRanges = response.data.valueRanges || [];
-  const headerRows = valueRanges[0]?.values || [];
-  const expenseRowsRaw = valueRanges[1]?.values || [];
-
-  const row1 = headerRows[0] || [];
+  const row1 = headerResp.data.values?.[0] || [];
+  const rowData = gridResp.data.sheets?.[0]?.data?.[0]?.rowData || [];
 
   // Define the 3 Financial Year configurations
   const fyConfigs = [
@@ -158,16 +162,16 @@ export async function fetchExpensesData(clientName, clientSheetId, bypassCache =
     fy.monthCols = monthCols;
   });
 
-  // Parse Expense Rows (Rows 126 to 225, i.e. indices 0 to 99 in expenseRowsRaw)
+  // Parse Expense Rows (Rows 126 to 225, i.e. indices 0 to 99 in rowData)
   const expenses = [];
   let firstEmptyRow = null;
 
   for (let i = 0; i < 100; i++) {
     const sheetRow = 126 + i;
-    const r = expenseRowsRaw[i] || [];
-    const category = String(r[0] || "").trim();
-    const vat = String(r[1] || "").trim() || "No";
-    const deliveryPct = String(r[4] || "").trim() || "0%";
+    const rValues = rowData[i]?.values || [];
+    const category = String(rValues[0]?.formattedValue || "").trim();
+    const vat = String(rValues[1]?.formattedValue || "").trim() || "No";
+    const deliveryPct = String(rValues[4]?.formattedValue || "").trim() || "0%";
     const isPopulated = category !== "";
 
     if (!isPopulated && firstEmptyRow === null) {
@@ -182,13 +186,15 @@ export async function fetchExpensesData(clientName, clientSheetId, bypassCache =
     const fyData = {};
     fyConfigs.forEach((fy) => {
       const months = fy.monthCols.map((m) => {
+        const cell = rValues[m.colIdx];
         return {
           colLetter: m.colLetter,
           monthLabel: m.label,
-          value: r[m.colIdx] || "£0",
+          value: cell?.formattedValue || "£0",
+          note: cell?.note || "",
         };
       });
-      const total = r[fy.totalCol] || "£0";
+      const total = rValues[fy.totalCol]?.formattedValue || "£0";
       fyData[fy.id] = { months, total };
     });
 
@@ -207,25 +213,25 @@ export async function fetchExpensesData(clientName, clientSheetId, bypassCache =
   // Parse Totals Rows (Row 227 and Row 228)
   // Row 227 is at index (227 - 126) = 101
   // Row 228 is at index (228 - 126) = 102
-  const row227 = expenseRowsRaw[101] || [];
-  const row228 = expenseRowsRaw[102] || [];
+  const row227Values = rowData[101]?.values || [];
+  const row228Values = rowData[102]?.values || [];
 
   const totals = {};
   fyConfigs.forEach((fy) => {
-    const deliveryMonths = fy.monthCols.map((m) => row227[m.colIdx] || "£0");
-    const deliveryTotal = row227[fy.totalCol] || "£0";
+    const deliveryMonths = fy.monthCols.map((m) => row227Values[m.colIdx]?.formattedValue || "£0");
+    const deliveryTotal = row227Values[fy.totalCol]?.formattedValue || "£0";
 
-    const nonDeliveryMonths = fy.monthCols.map((m) => row228[m.colIdx] || "£0");
-    const nonDeliveryTotal = row228[fy.totalCol] || "£0";
+    const nonDeliveryMonths = fy.monthCols.map((m) => row228Values[m.colIdx]?.formattedValue || "£0");
+    const nonDeliveryTotal = row228Values[fy.totalCol]?.formattedValue || "£0";
 
     totals[fy.id] = {
       delivery: {
-        label: String(row227[0] || "Total other expenses - delivery").trim(),
+        label: String(row227Values[0]?.formattedValue || "Total other expenses - delivery").trim(),
         months: deliveryMonths,
         total: deliveryTotal,
       },
       nonDelivery: {
-        label: String(row228[0] || "Total other expenses - non-del").trim(),
+        label: String(row228Values[0]?.formattedValue || "Total other expenses - non-del").trim(),
         months: nonDeliveryMonths,
         total: nonDeliveryTotal,
       },
@@ -373,13 +379,14 @@ export async function toggleExpenseDelivery({
 }
 
 /**
- * Save a single monthly expense amount or multiple amounts
+ * Save a single monthly expense amount or multiple amounts, plus optional cell notes
  */
 export async function saveExpenseAmount({
   clientName,
   clientSheetId,
   sheetRow,
   monthlyAmounts, // { [colLetter]: value }
+  cellNotes, // { [colLetter]: note }
   userEmail,
 }) {
   if (!clientSheetId) throw new Error("Client Sheet ID is required");
@@ -388,34 +395,71 @@ export async function saveExpenseAmount({
     throw new Error(`Invalid expense sheet row: ${sheetRow}. Must be between 126 and 225.`);
   }
 
-  if (!monthlyAmounts || typeof monthlyAmounts !== "object") {
-    throw new Error("monthlyAmounts object is required");
-  }
-
   const dataUpdates = [];
-  for (const [colLetter, val] of Object.entries(monthlyAmounts)) {
-    const cleanLetter = String(colLetter).toUpperCase().trim();
-    if (!/^[A-Z]{1,2}$/.test(cleanLetter)) continue;
-    const cleanVal = sanitizeFormulaInput(String(val ?? "").trim());
-    dataUpdates.push({
-      range: `Outgoings!${cleanLetter}${rowNum}`,
-      values: [[cleanVal]],
-    });
+  if (monthlyAmounts && typeof monthlyAmounts === "object") {
+    for (const [colLetter, val] of Object.entries(monthlyAmounts)) {
+      const cleanLetter = String(colLetter).toUpperCase().trim();
+      if (!/^[A-Z]{1,2}$/.test(cleanLetter)) continue;
+      const cleanVal = sanitizeFormulaInput(String(val ?? "").trim());
+      dataUpdates.push({
+        range: `Outgoings!${cleanLetter}${rowNum}`,
+        values: [[cleanVal]],
+      });
+    }
   }
-
-  if (dataUpdates.length === 0) return { success: true, updated: 0 };
 
   const sheets = await getSheetsClient();
 
-  await withRetry(async () => {
-    return await sheets.spreadsheets.values.batchUpdate({
-      spreadsheetId: clientSheetId,
-      requestBody: {
-        valueInputOption: "USER_ENTERED",
-        data: dataUpdates,
-      },
+  if (dataUpdates.length > 0) {
+    await withRetry(async () => {
+      return await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: clientSheetId,
+        requestBody: {
+          valueInputOption: "USER_ENTERED",
+          data: dataUpdates,
+        },
+      });
     });
-  });
+  }
+
+  // Update cell notes if provided
+  if (cellNotes && typeof cellNotes === "object") {
+    const gid = await getSheetGid(sheets, clientSheetId, "Outgoings");
+    const noteRequests = [];
+    for (const [colLetter, noteVal] of Object.entries(cellNotes)) {
+      const cleanLetter = String(colLetter).toUpperCase().trim();
+      if (!/^[A-Z]{1,2}$/.test(cleanLetter)) continue;
+      const colIdx = colLetterToNum(cleanLetter) - 1;
+      noteRequests.push({
+        updateCells: {
+          range: {
+            sheetId: gid,
+            startRowIndex: rowNum - 1,
+            endRowIndex: rowNum,
+            startColumnIndex: colIdx,
+            endColumnIndex: colIdx + 1,
+          },
+          rows: [{ values: [{ note: String(noteVal ?? "") }] }],
+          fields: "note",
+        },
+      });
+    }
+
+    if (noteRequests.length > 0) {
+      await withRetry(async () => {
+        return await sheets.spreadsheets.batchUpdate({
+          spreadsheetId: clientSheetId,
+          requestBody: {
+            requests: noteRequests,
+          },
+        });
+      });
+    }
+  }
+
+  if (dataUpdates.length === 0 && (!cellNotes || Object.keys(cellNotes).length === 0)) {
+    return { success: true, updated: 0 };
+  }
 
   // Invalidate cache
   const cacheKey = `pma_expenses_${clientSheetId}`;

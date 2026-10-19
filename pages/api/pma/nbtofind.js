@@ -99,7 +99,7 @@ export default async function handler(req, res) {
         return res.status(200).json(result);
       }
 
-      // Action: save_monthly_values (Row 3, Row 10, or Row 25)
+      // Action: save_monthly_values (Row 3, Row 5, Row 10, or Row 25)
       if (action === "save_monthly_values") {
         if (!sheetRow) return res.status(400).json({ success: false, error: "sheetRow is required" });
         const result = await saveNBToFindMonthlyValues({
@@ -107,6 +107,7 @@ export default async function handler(req, res) {
           clientSheetId,
           sheetRow,
           monthlyValues,
+          cellNotes: req.body?.cellNotes,
           userEmail: sessionUser.email,
         });
         return res.status(200).json(result);

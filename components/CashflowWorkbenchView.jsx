@@ -97,51 +97,239 @@ export function buildAlignedComparison(bankItems = [], pulseItems = []) {
 
   const parseAmt = (v) => parseFloat(String(v || "0").replace(/[£,\s]/g, "")) || 0;
 
-  const extractRefNumber = (str) => {
-    if (!str) return null;
-    const m = String(str).match(/INV-(\d+)/i) || String(str).match(/\b(\d{4,5})\b/);
-    return m ? m[1] : null;
+  // Extract candidate reference numbers from text (e.g. "Invoice RV-1198 payment" -> ["1198"], "INV-1539" -> ["1539"])
+  const extractCandidateRefs = (str) => {
+    if (!str) return [];
+    const refs = new Set();
+    const s = String(str);
+    // 1. Explicit pattern: e.g. RV-1198, INV-1198, Invoice 1198, #1198, RV1198
+    const explicit = s.match(/(?:INV|INVOICE|RV|REF|BILL)?[-:\s#]*([A-Z]{0,4}[-:\s#]*\d{2,7})/gi);
+    if (explicit) {
+      explicit.forEach(ex => {
+        const digits = ex.replace(/\D/g, "");
+        if (digits.length >= 2) refs.add(digits);
+      });
+    }
+    // 2. Standalone digits (2 to 6 digits)
+    const numMatches = s.match(/\b\d{2,6}\b/g);
+    if (numMatches) {
+      numMatches.forEach(num => refs.add(num));
+    }
+    return Array.from(refs);
   };
 
-  // 1. Group partial bank payments matching Pulse invoice reference (e.g. INV-1539, INV-1540)
+  const getBankRefs = (b) => {
+    const list = [
+      ...extractCandidateRefs(b.particulars),
+      ...extractCandidateRefs(b.ref),
+      ...extractCandidateRefs(b.payee)
+    ];
+    return Array.from(new Set(list));
+  };
+
+  const getPulseRef = (p) => {
+    if (!p.ref) return null;
+    const refs = extractCandidateRefs(p.ref);
+    return refs.length > 0 ? refs[0] : String(p.ref).trim().replace(/\D/g, "") || String(p.ref).trim();
+  };
+
+  const namesMatch = (nameA, nameB) => {
+    if (!nameA || !nameB) return false;
+    const a = String(nameA).toLowerCase().replace(/[^a-z0-9]/g, "");
+    const b = String(nameB).toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (!a || !b) return false;
+    return a.includes(b) || b.includes(a);
+  };
+
+  // Helper for finding combinations of items that sum to targetAmt
+  const findSubsetSum = (items, targetAmt, tolerance = 0.05) => {
+    const totalSum = items.reduce((acc, it) => acc + it.amount, 0);
+    if (Math.abs(totalSum - targetAmt) < tolerance) {
+      return items;
+    }
+    if (items.length <= 12) {
+      for (let size = 2; size < items.length; size++) {
+        const combo = findCombo(items, size, targetAmt, tolerance);
+        if (combo) return combo;
+      }
+    }
+    return null;
+  };
+
+  const findCombo = (items, k, target, tolerance) => {
+    const backtrack = (start, combo, currentSum) => {
+      if (combo.length === k) {
+        if (Math.abs(currentSum - target) < tolerance) return [...combo];
+        return null;
+      }
+      for (let i = start; i < items.length; i++) {
+        if (currentSum + items[i].amount > target + tolerance && items[i].amount > 0) continue;
+        combo.push(items[i]);
+        const res = backtrack(i + 1, combo, currentSum + items[i].amount);
+        if (res) return res;
+        combo.pop();
+      }
+      return null;
+    };
+    return backtrack(0, [], 0);
+  };
+
+  // 1A. Exact 1-to-1 ref + amount match
+  cleanBank.forEach((b, bIdx) => {
+    if (usedBankIndices.has(bIdx)) return;
+    const bAmt = parseAmt(b.inAmt || b.outAmt || b.amount);
+    if (bAmt <= 0) return;
+    const bRefs = getBankRefs(b);
+    if (bRefs.length === 0) return;
+
+    const pIdx = cleanPulse.findIndex((p, idx) => {
+      if (usedPulseIndices.has(idx)) return false;
+      const pRef = getPulseRef(p);
+      if (!pRef || !bRefs.includes(pRef)) return false;
+      const pAmt = parseAmt(p.amount);
+      return Math.abs(bAmt - pAmt) < 0.05;
+    });
+
+    if (pIdx !== -1) {
+      matchedPairs.push({ bank: b, pulse: cleanPulse[pIdx], matchType: "ref_exact" });
+      usedBankIndices.add(bIdx);
+      usedPulseIndices.add(pIdx);
+    }
+  });
+
+  // 1B. 1 Bank item matches MULTIPLE Pulse items sharing an invoice reference (e.g. multi-line invoice)
+  cleanBank.forEach((b, bIdx) => {
+    if (usedBankIndices.has(bIdx)) return;
+    const bAmt = parseAmt(b.inAmt || b.outAmt || b.amount);
+    if (bAmt <= 0) return;
+    const bRefs = getBankRefs(b);
+    if (bRefs.length === 0) return;
+
+    for (const ref of bRefs) {
+      const candidatePulseIndices = [];
+      let sumPulse = 0;
+      cleanPulse.forEach((p, pIdx) => {
+        if (usedPulseIndices.has(pIdx)) return;
+        const pRef = getPulseRef(p);
+        if (pRef === ref) {
+          candidatePulseIndices.push(pIdx);
+          sumPulse += parseAmt(p.amount);
+        }
+      });
+
+      if (candidatePulseIndices.length > 1) {
+        if (Math.abs(sumPulse - bAmt) < 0.05) {
+          const matchedPulseItems = candidatePulseIndices.map(i => cleanPulse[i]);
+          matchedPairs.push({
+            bank: b,
+            pulse: matchedPulseItems,
+            isMultiPulse: true,
+            matchType: "ref_multi_pulse"
+          });
+          usedBankIndices.add(bIdx);
+          candidatePulseIndices.forEach(i => usedPulseIndices.add(i));
+          break;
+        } else {
+          // Check if a subset of items for this invoice sums to the bank payment
+          const candidateItems = candidatePulseIndices.map(i => ({ idx: i, amount: parseAmt(cleanPulse[i].amount) }));
+          const subset = findSubsetSum(candidateItems, bAmt);
+          if (subset && subset.length > 1) {
+            const matchedPulseItems = subset.map(s => cleanPulse[s.idx]);
+            matchedPairs.push({
+              bank: b,
+              pulse: matchedPulseItems,
+              isMultiPulse: true,
+              matchType: "ref_multi_pulse"
+            });
+            usedBankIndices.add(bIdx);
+            subset.forEach(s => usedPulseIndices.add(s.idx));
+            break;
+          }
+        }
+      }
+    }
+  });
+
+  // 1C. Multiple Bank partial payments matching 1 Pulse item by reference (instalments)
   cleanPulse.forEach((p, pIdx) => {
     if (usedPulseIndices.has(pIdx) || !p.ref) return;
     const pAmt = parseAmt(p.amount);
-    const pRef = String(p.ref).trim();
+    if (pAmt <= 0) return;
+    const pRef = getPulseRef(p);
+    if (!pRef) return;
 
     const candidateBankIndices = [];
     let sumBank = 0;
     cleanBank.forEach((b, bIdx) => {
       if (usedBankIndices.has(bIdx)) return;
-      const bRef = extractRefNumber(b.particulars) || extractRefNumber(b.ref) || extractRefNumber(b.payee);
-      if (bRef && bRef === pRef) {
+      const bRefs = getBankRefs(b);
+      if (bRefs.includes(pRef)) {
         candidateBankIndices.push(bIdx);
         sumBank += parseAmt(b.inAmt || b.outAmt || b.amount);
       }
     });
 
-    if (candidateBankIndices.length > 0) {
-      if (candidateBankIndices.length === 1 && Math.abs(sumBank - pAmt) < 0.05) {
-        const bIdx = candidateBankIndices[0];
-        matchedPairs.push({ bank: cleanBank[bIdx], pulse: p, matchType: "ref_exact" });
-        usedBankIndices.add(bIdx);
-        usedPulseIndices.add(pIdx);
-      } else if (candidateBankIndices.length > 1 && Math.abs(sumBank - pAmt) < 0.05) {
-        // Multi partial payments matching single invoice
-        const matchedBankItems = candidateBankIndices.map(i => cleanBank[i]);
+    if (candidateBankIndices.length > 1 && Math.abs(sumBank - pAmt) < 0.05) {
+      const matchedBankItems = candidateBankIndices.map(i => cleanBank[i]);
+      matchedPairs.push({
+        bank: matchedBankItems,
+        pulse: p,
+        isMultiBank: true,
+        matchType: "ref_partial_sum"
+      });
+      candidateBankIndices.forEach(i => usedBankIndices.add(i));
+      usedPulseIndices.add(pIdx);
+    }
+  });
+
+  // 2A. 1 Bank item matches MULTIPLE Pulse items for the same client (payee match, sum equals bank)
+  cleanBank.forEach((b, bIdx) => {
+    if (usedBankIndices.has(bIdx)) return;
+    const bAmt = parseAmt(b.inAmt || b.outAmt || b.amount);
+    if (bAmt <= 0) return;
+    const bPayee = b.payee || b.particulars || "";
+    if (!bPayee) return;
+
+    const candidatePulseIndices = [];
+    let sumPulse = 0;
+    cleanPulse.forEach((p, pIdx) => {
+      if (usedPulseIndices.has(pIdx)) return;
+      if (namesMatch(bPayee, p.client)) {
+        candidatePulseIndices.push(pIdx);
+        sumPulse += parseAmt(p.amount);
+      }
+    });
+
+    if (candidatePulseIndices.length > 1) {
+      if (Math.abs(sumPulse - bAmt) < 0.05) {
+        const matchedPulseItems = candidatePulseIndices.map(i => cleanPulse[i]);
         matchedPairs.push({
-          bank: matchedBankItems,
-          pulse: p,
-          isMultiBank: true,
-          matchType: "ref_partial_sum"
+          bank: b,
+          pulse: matchedPulseItems,
+          isMultiPulse: true,
+          matchType: "payee_multi_pulse"
         });
-        candidateBankIndices.forEach(i => usedBankIndices.add(i));
-        usedPulseIndices.add(pIdx);
+        usedBankIndices.add(bIdx);
+        candidatePulseIndices.forEach(i => usedPulseIndices.add(i));
+      } else {
+        const candidateItems = candidatePulseIndices.map(i => ({ idx: i, amount: parseAmt(cleanPulse[i].amount) }));
+        const subset = findSubsetSum(candidateItems, bAmt);
+        if (subset && subset.length > 1) {
+          const matchedPulseItems = subset.map(s => cleanPulse[s.idx]);
+          matchedPairs.push({
+            bank: b,
+            pulse: matchedPulseItems,
+            isMultiPulse: true,
+            matchType: "payee_multi_pulse"
+          });
+          usedBankIndices.add(bIdx);
+          subset.forEach(s => usedPulseIndices.add(s.idx));
+        }
       }
     }
   });
 
-  // 1b. Group partial bank payments with matching payee that sum to pulse invoice
+  // 2B. Multiple Bank items matching 1 Pulse item by payee/client (partial deposits summing to pulse invoice)
   cleanPulse.forEach((p, pIdx) => {
     if (usedPulseIndices.has(pIdx)) return;
     const pAmt = parseAmt(p.amount);
@@ -172,7 +360,7 @@ export function buildAlignedComparison(bankItems = [], pulseItems = []) {
     }
   });
 
-  // 2. Match by sheet matched ID (b.matched points to p.pulseId)
+  // 3. Match by sheet matched ID (b.matched points to p.pulseId)
   cleanBank.forEach((b, bIdx) => {
     if (usedBankIndices.has(bIdx)) return;
     if (!b.matched || b.matched === "No Match" || b.matched === "Matched") return;
@@ -188,19 +376,18 @@ export function buildAlignedComparison(bankItems = [], pulseItems = []) {
     });
   });
 
-  // 3. Match by exact amount + payee/client similarity
+  // 4. Match by exact amount + payee/client similarity
   cleanBank.forEach((b, bIdx) => {
     if (usedBankIndices.has(bIdx)) return;
     const bAmt = parseAmt(b.inAmt || b.outAmt || b.amount);
     if (bAmt <= 0) return;
 
-    const bPayee = String(b.payee || "").toLowerCase().trim();
+    const bPayee = b.payee || b.particulars || "";
     const pIdx = cleanPulse.findIndex((p, idx) => {
       if (usedPulseIndices.has(idx)) return false;
       const pAmt = parseAmt(p.amount);
       if (Math.abs(bAmt - pAmt) > 0.01) return false;
-      const pClient = String(p.client || "").toLowerCase().trim();
-      return bPayee && pClient && (bPayee.includes(pClient) || pClient.includes(bPayee));
+      return namesMatch(bPayee, p.client);
     });
 
     if (pIdx !== -1) {
@@ -210,7 +397,7 @@ export function buildAlignedComparison(bankItems = [], pulseItems = []) {
     }
   });
 
-  // 4. Match by exact amount fallback
+  // 5. Match by exact amount fallback
   cleanBank.forEach((b, bIdx) => {
     if (usedBankIndices.has(bIdx)) return;
     const bAmt = parseAmt(b.inAmt || b.outAmt || b.amount);
@@ -341,10 +528,14 @@ function AlignedBreakdownView({
 
           <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
             {matchedPairs.map((pair, idx) => {
-              const isMulti = pair.isMultiBank && Array.isArray(pair.bank);
-              const totalBank = isMulti
+              const isMultiBank = pair.isMultiBank && Array.isArray(pair.bank);
+              const isMultiPulse = pair.isMultiPulse && Array.isArray(pair.pulse);
+              const totalBank = isMultiBank
                 ? pair.bank.reduce((acc, b) => acc + parseAmount(getBankAmt(b)), 0)
                 : parseAmount(getBankAmt(pair.bank));
+              const totalPulse = isMultiPulse
+                ? pair.pulse.reduce((acc, p) => acc + parseAmount(p.amount), 0)
+                : parseAmount(pair.pulse?.amount);
 
               return (
                 <div key={idx} style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", alignItems: "stretch" }}>
@@ -361,7 +552,7 @@ function AlignedBreakdownView({
                       boxShadow: "0 1px 2px rgba(0,0,0,0.02)"
                     }}
                   >
-                    {isMulti ? (
+                    {isMultiBank ? (
                       <div style={{ display: "flex", flexDirection: "column", gap: "5px" }}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px" }}>
                           <div>
@@ -385,7 +576,9 @@ function AlignedBreakdownView({
                           ))}
                         </div>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", color: "#64748b", marginTop: "2px" }}>
-                          <span>Combined match to {pair.pulse.ref ? `Inv ${pair.pulse.ref}` : "Pulse item"}</span>
+                          <span>
+                            Combined match to {Array.isArray(pair.pulse) ? (pair.pulse[0]?.ref ? `Inv ${pair.pulse[0].ref}` : "Pulse items") : (pair.pulse.ref ? `Inv ${pair.pulse.ref}` : "Pulse item")}
+                          </span>
                           <span
                             style={{
                               display: "inline-flex",
@@ -444,7 +637,7 @@ function AlignedBreakdownView({
                     )}
                   </div>
 
-                  {/* Right: Pulse Item */}
+                  {/* Right: Pulse Item(s) */}
                   <div
                     style={{
                       padding: "8px 10px",
@@ -457,33 +650,84 @@ function AlignedBreakdownView({
                       boxShadow: "0 1px 2px rgba(0,0,0,0.02)"
                     }}
                   >
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px" }}>
-                      <span style={{ fontWeight: "600", fontSize: "12px", color: "#1e293b", wordBreak: "break-word" }}>
-                        {getPulseDesc(pair.pulse)}
-                      </span>
-                      <span style={{ fontWeight: "700", fontSize: "12px", color: pulseTheme.text, whiteSpace: "nowrap" }}>
-                        £{pair.pulse.amount}
-                      </span>
-                    </div>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", color: "#64748b", marginTop: "6px" }}>
-                      <span>{pair.pulse.ref ? `Inv ${pair.pulse.ref}` : "Pulse item"} • {pair.pulse.status || "Paid"}</span>
-                      <span
-                        style={{
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: "3px",
-                          padding: "2px 6px",
-                          background: "#dcfce7",
-                          color: "#166534",
-                          borderRadius: "4px",
-                          fontSize: "10px",
-                          fontWeight: "700",
-                          border: "1px solid #86efac"
-                        }}
-                      >
-                        ✓ Matched
-                      </span>
-                    </div>
+                    {isMultiPulse ? (
+                      <div style={{ display: "flex", flexDirection: "column", gap: "5px" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px" }}>
+                          <div>
+                            <span style={{ fontWeight: "700", fontSize: "12px", color: "#1e293b" }}>
+                              {pair.pulse[0]?.client || "Multiple items"}
+                            </span>
+                            <span style={{ display: "inline-block", marginLeft: "6px", fontSize: "10px", background: "#dbeafe", color: "#1e40af", padding: "1px 5px", borderRadius: "4px", fontWeight: "700" }}>
+                              {pair.pulse.length} items
+                            </span>
+                          </div>
+                          <span style={{ fontWeight: "700", fontSize: "12px", color: pulseTheme.text, whiteSpace: "nowrap" }}>
+                            £{totalPulse.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </span>
+                        </div>
+                        <div style={{ display: "flex", flexDirection: "column", gap: "3px", background: "rgba(255,255,255,0.7)", padding: "4px 6px", borderRadius: "4px", border: "1px solid rgba(0,0,0,0.06)" }}>
+                          {pair.pulse.map((p, pIdx) => (
+                            <div key={pIdx} style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", color: "#475569" }}>
+                              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginRight: "8px" }} title={p.job || p.description}>
+                                {p.job || p.description || (p.ref ? `Inv ${p.ref}` : "Pulse item")}
+                              </span>
+                              <strong style={{ color: "#1e293b", whiteSpace: "nowrap" }}>£{p.amount}</strong>
+                            </div>
+                          ))}
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", color: "#64748b", marginTop: "2px" }}>
+                          <span>
+                            {pair.pulse[0]?.ref ? `Inv ${pair.pulse[0].ref}` : "Combined Pulse items"} • {pair.pulse[0]?.status || "Paid"}
+                          </span>
+                          <span
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "3px",
+                              padding: "2px 6px",
+                              background: "#dcfce7",
+                              color: "#166534",
+                              borderRadius: "4px",
+                              fontSize: "10px",
+                              fontWeight: "700",
+                              border: "1px solid #86efac"
+                            }}
+                          >
+                            ✓ Matched sum
+                          </span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px" }}>
+                          <span style={{ fontWeight: "600", fontSize: "12px", color: "#1e293b", wordBreak: "break-word" }}>
+                            {getPulseDesc(pair.pulse)}
+                          </span>
+                          <span style={{ fontWeight: "700", fontSize: "12px", color: pulseTheme.text, whiteSpace: "nowrap" }}>
+                            £{pair.pulse.amount}
+                          </span>
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", color: "#64748b", marginTop: "4px" }}>
+                          <span>{pair.pulse.ref ? `Inv ${pair.pulse.ref}` : "Pulse item"} • {pair.pulse.status || "Paid"}</span>
+                          <span
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "3px",
+                              padding: "2px 6px",
+                              background: "#dcfce7",
+                              color: "#166534",
+                              borderRadius: "4px",
+                              fontSize: "10px",
+                              fontWeight: "700",
+                              border: "1px solid #86efac"
+                            }}
+                          >
+                            ✓ Matched
+                          </span>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               );
@@ -1961,9 +2205,9 @@ export default function CashflowWorkbenchView({
             }}
             style={{
               padding: "6px 14px",
-              background: "#f8fafc",
-              color: "#334155",
-              border: "1px solid #cbd5e1",
+              background: "#0284c7",
+              color: "#ffffff",
+              border: "none",
               borderRadius: "6px",
               fontSize: "12px",
               fontWeight: "600",

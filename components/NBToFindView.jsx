@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import Spinner from "./Spinner";
+import CellNoteIndicator from "./CellNoteIndicator";
+import EditClientSelector from "./EditClientSelector";
 import { useAuth } from "../hooks/useAuth";
 
 const formatCurrency = (val) => {
@@ -47,8 +49,9 @@ export default function NBToFindView({
   const [targetInputs, setTargetInputs] = useState({}); // { [colLetter]: value }
 
   // Quick Single Cell Edit (Row 3, Row 5, or Row 10)
-  const [editingSingleCell, setEditingSingleCell] = useState(null); // { rowNum, colLetter, label, value, title }
+  const [editingSingleCell, setEditingSingleCell] = useState(null); // { rowNum, colLetter, label, value, title, note }
   const [singleCellValue, setSingleCellValue] = useState("");
+  const [singleCellNoteValue, setSingleCellNoteValue] = useState("");
 
   // Resolve active client
   useEffect(() => {
@@ -68,12 +71,19 @@ export default function NBToFindView({
         return;
       }
     }
-    if (!selectedClient && allOutgoingsClients.length > 0) {
-      const saved = typeof window !== "undefined" ? sessionStorage.getItem("pma_nbtofind_client") : null;
-      const found = saved ? allOutgoingsClients.find((c) => c.clientName === saved) : null;
-      setSelectedClient(found || allOutgoingsClients[0]);
+  }, [managedClient, initialClient, allOutgoingsClients]);
+
+  const handleBackToClients = () => {
+    if (managedClient && onClearManagedClient) {
+      onClearManagedClient();
+    } else {
+      setSelectedClient(null);
+      setNbData(null);
+      if (typeof window !== "undefined") {
+        sessionStorage.removeItem("pma_nbtofind_client");
+      }
     }
-  }, [managedClient, initialClient, allOutgoingsClients, selectedClient]);
+  };
 
   // Fetch NBtoFind Data
   const fetchNBData = useCallback(async (client, bypassCache = false) => {
@@ -251,6 +261,9 @@ export default function NBToFindView({
           monthlyValues: {
             [editingSingleCell.colLetter]: singleCellValue,
           },
+          cellNotes: {
+            [editingSingleCell.colLetter]: singleCellNoteValue,
+          },
         }),
       });
       const data = await res.json();
@@ -311,209 +324,197 @@ export default function NBToFindView({
           border: "1px solid #e2e8f0",
         }}
       >
-        <div>
-          <h1 style={{ margin: 0, fontSize: "20px", fontWeight: 700, color: "#1e293b", display: "flex", alignItems: "center", gap: "8px" }}>
-            <span>New business to find</span>
-            {nbData && (
-              <span style={{ fontSize: "12px", background: "#f0fdf4", color: "#166534", padding: "2px 8px", borderRadius: "12px", fontWeight: 700, border: "1px solid #bbf7d0" }}>
-                Target: {fyRow18?.total || `${currencySymbol}0`}
-              </span>
-            )}
-          </h1>
-          <p style={{ margin: "4px 0 0", fontSize: "13px", color: "#64748b" }}>
-            Future {modeTermLower} targets, budget alignment options, and monthly allocations (NBtoFind Tab)
-          </p>
-        </div>
-
-        <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
-          {/* Client Selector (if not managed) */}
-          {!managedClient && (
-            <div style={{ position: "relative" }}>
-              <select
-                value={selectedClient?.clientName || ""}
-                onChange={(e) => {
-                  const match = allOutgoingsClients.find((c) => c.clientName === e.target.value);
-                  if (match) setSelectedClient(match);
-                }}
-                style={{
-                  padding: "7px 12px",
-                  fontSize: "13px",
-                  borderRadius: "6px",
-                  border: "1px solid #cbd5e1",
-                  background: "#fff",
-                  color: "#1e293b",
-                  fontWeight: 600,
-                  cursor: "pointer",
-                  outline: "none",
-                }}
-              >
-                {filteredClients.map((c) => (
-                  <option key={c.clientName} value={c.clientName}>
-                    {c.clientName}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-
-          {managedClient && (
-            <div
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: "8px",
-                background: "#eff6ff",
-                border: "1px solid #bfdbfe",
-                padding: "6px 12px",
-                borderRadius: "6px",
-                fontSize: "13px",
-                fontWeight: 600,
-                color: "#1d4ed8",
-              }}
-            >
-              <span>Managing: {managedClient.clientName}</span>
-              <button
-                type="button"
-                onClick={onClearManagedClient}
-                style={{
-                  background: "none",
-                  border: "none",
-                  color: "#dc2626",
-                  cursor: "pointer",
-                  fontSize: "13px",
-                  padding: "0 2px",
-                }}
-                title="Clear managed client"
-              >
-                ✕
-              </button>
-            </div>
-          )}
-
-          {/* FY Navigator */}
-          {nbData?.fyConfigs && (
-            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-              <button
-                type="button"
-                onClick={() => setSelectedFyIdx((prev) => Math.max(0, prev - 1))}
-                disabled={selectedFyIdx <= 0}
-                style={{
-                  background: "#fff",
-                  border: "1px solid #cbd5e1",
-                  borderRadius: "4px",
-                  padding: "5px 8px",
-                  cursor: selectedFyIdx <= 0 ? "not-allowed" : "pointer",
-                  fontSize: "12px",
-                  color: selectedFyIdx <= 0 ? "#cbd5e1" : "#1e293b",
-                  fontWeight: 700,
-                }}
-                title="Previous Financial Year"
-              >
-                ◀
-              </button>
-
-              <select
-                value={selectedFyIdx}
-                onChange={(e) => setSelectedFyIdx(parseInt(e.target.value, 10))}
-                style={{
-                  padding: "6px 10px",
-                  borderRadius: "6px",
-                  border: "1px solid #cbd5e1",
-                  background: "#fff",
-                  fontSize: "13px",
-                  fontWeight: 700,
-                  color: "#0047AB",
-                  cursor: "pointer",
-                  outline: "none",
-                }}
-              >
-                {nbData.fyConfigs.map((fy, idx) => (
-                  <option key={fy.id} value={idx}>
-                    {fy.label}
-                  </option>
-                ))}
-              </select>
-
-              <button
-                type="button"
-                onClick={() => setSelectedFyIdx((prev) => Math.min(nbData.fyConfigs.length - 1, prev + 1))}
-                disabled={selectedFyIdx >= nbData.fyConfigs.length - 1}
-                style={{
-                  background: "#fff",
-                  border: "1px solid #cbd5e1",
-                  borderRadius: "4px",
-                  padding: "5px 8px",
-                  cursor: selectedFyIdx >= nbData.fyConfigs.length - 1 ? "not-allowed" : "pointer",
-                  fontSize: "12px",
-                  color: selectedFyIdx >= nbData.fyConfigs.length - 1 ? "#cbd5e1" : "#1e293b",
-                  fontWeight: 700,
-                }}
-                title="Next Financial Year"
-              >
-                ▶
-              </button>
-            </div>
-          )}
-
-
-          <button
-            type="button"
-            onClick={() => selectedClient && fetchNBData(selectedClient, true)}
-            disabled={loading || saving}
-            title="Refresh data"
-            style={{
-              padding: "7px 14px",
-              background: "#f8fafc",
-              border: "1px solid #cbd5e1",
-              borderRadius: "6px",
-              fontSize: "13px",
-              fontWeight: 600,
-              color: "#334155",
-              cursor: loading || saving ? "not-allowed" : "pointer",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "6px",
-            }}
-          >
-            {loading ? <Spinner size={14} color="#0066cc" /> : "↻"} Refresh
-          </button>
-
-          {isAdmin && (
+        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+          {selectedClient && (
             <button
               type="button"
-              onClick={startEditingAllTargets}
-              disabled={loading || saving || !nbData || (targetsSetting === "Yes" && budgetSetting === "Yes")}
-              title={
-                targetsSetting === "Yes" && budgetSetting === "Yes"
-                  ? "Targets are derived from Budget!Row 26"
-                  : targetsSetting === "Yes"
-                  ? `Edit monthly total ${modeTermLower} targets (Row 10)`
-                  : `Edit monthly new business ${modeTermLower} figures (Row 3)`
-              }
+              onClick={handleBackToClients}
+              style={{
+                background: "#ffffff",
+                border: "1px solid #cbd5e1",
+                borderRadius: "6px",
+                cursor: "pointer",
+                padding: "6px 12px",
+                fontSize: "16px",
+                color: "#475569",
+                lineHeight: 1,
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                transition: "all 0.15s ease",
+                boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.backgroundColor = "#f1f5f9";
+                e.currentTarget.style.borderColor = "#94a3b8";
+                e.currentTarget.style.color = "#0f172a";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.backgroundColor = "#ffffff";
+                e.currentTarget.style.borderColor = "#cbd5e1";
+                e.currentTarget.style.color = "#475569";
+              }}
+              title="Back to client list"
+            >
+              ←
+            </button>
+          )}
+          <div>
+            <h1 style={{ margin: 0, fontSize: "20px", fontWeight: 700, color: "#1e293b", display: "flex", alignItems: "center", gap: "8px" }}>
+              <span>New business to find</span>
+              {selectedClient && nbData && (
+                <span style={{ fontSize: "12px", background: "#f0fdf4", color: "#166534", padding: "2px 8px", borderRadius: "12px", fontWeight: 700, border: "1px solid #bbf7d0" }}>
+                  Target: {fyRow18?.total || `${currencySymbol}0`}
+                </span>
+              )}
+            </h1>
+            {selectedClient ? (
+              <div style={{ margin: "3px 0 0", fontSize: "14px", fontWeight: 600, color: "#0047AB" }}>
+                {selectedClient.clientName}
+              </div>
+            ) : (
+              <p style={{ margin: "4px 0 0", fontSize: "13px", color: "#64748b" }}>
+                Select a client to view and edit new business to find
+              </p>
+            )}
+          </div>
+        </div>
+
+        {selectedClient && (
+          <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+            {/* FY Navigator */}
+            {nbData?.fyConfigs && (
+              <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                <button
+                  type="button"
+                  onClick={() => setSelectedFyIdx((prev) => Math.max(0, prev - 1))}
+                  disabled={selectedFyIdx <= 0}
+                  style={{
+                    background: "#fff",
+                    border: "1px solid #cbd5e1",
+                    borderRadius: "4px",
+                    padding: "5px 8px",
+                    cursor: selectedFyIdx <= 0 ? "not-allowed" : "pointer",
+                    fontSize: "12px",
+                    color: selectedFyIdx <= 0 ? "#cbd5e1" : "#1e293b",
+                    fontWeight: 700,
+                  }}
+                  title="Previous financial year"
+                >
+                  ◀
+                </button>
+
+                <select
+                  value={selectedFyIdx}
+                  onChange={(e) => setSelectedFyIdx(parseInt(e.target.value, 10))}
+                  style={{
+                    padding: "6px 10px",
+                    borderRadius: "6px",
+                    border: "1px solid #cbd5e1",
+                    background: "#fff",
+                    fontSize: "13px",
+                    fontWeight: 700,
+                    color: "#0047AB",
+                    cursor: "pointer",
+                    outline: "none",
+                  }}
+                >
+                  {nbData.fyConfigs.map((fy, idx) => (
+                    <option key={fy.id} value={idx}>
+                      {fy.label}
+                    </option>
+                  ))}
+                </select>
+
+                <button
+                  type="button"
+                  onClick={() => setSelectedFyIdx((prev) => Math.min(nbData.fyConfigs.length - 1, prev + 1))}
+                  disabled={selectedFyIdx >= nbData.fyConfigs.length - 1}
+                  style={{
+                    background: "#fff",
+                    border: "1px solid #cbd5e1",
+                    borderRadius: "4px",
+                    padding: "5px 8px",
+                    cursor: selectedFyIdx >= nbData.fyConfigs.length - 1 ? "not-allowed" : "pointer",
+                    fontSize: "12px",
+                    color: selectedFyIdx >= nbData.fyConfigs.length - 1 ? "#cbd5e1" : "#1e293b",
+                    fontWeight: 700,
+                  }}
+                  title="Next financial year"
+                >
+                  ▶
+                </button>
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={() => selectedClient && fetchNBData(selectedClient, true)}
+              disabled={loading || saving}
+              title="Refresh data"
               style={{
                 padding: "7px 14px",
-                background: targetsSetting === "Yes" && budgetSetting === "Yes" ? "#94a3b8" : "#0047AB",
-                border: `1px solid ${targetsSetting === "Yes" && budgetSetting === "Yes" ? "#94a3b8" : "#0047AB"}`,
+                background: "#f8fafc",
+                border: "1px solid #cbd5e1",
                 borderRadius: "6px",
                 fontSize: "13px",
                 fontWeight: 600,
-                color: "#ffffff",
-                cursor: targetsSetting === "Yes" && budgetSetting === "Yes" ? "not-allowed" : "pointer",
+                color: "#334155",
+                cursor: loading || saving ? "not-allowed" : "pointer",
                 display: "inline-flex",
                 alignItems: "center",
                 gap: "6px",
-                boxShadow: "0 1px 2px rgba(0,0,0,0.1)",
               }}
             >
-              ✎ Edit Monthly {targetsSetting === "Yes" ? `Total ${modeTerm} Targets` : `${modeTerm} Targets`}
+              {loading ? <Spinner size={14} color="#0066cc" /> : "↻"} Refresh
             </button>
-          )}
-        </div>
+
+            {isAdmin && (
+              <button
+                type="button"
+                onClick={startEditingAllTargets}
+                disabled={loading || saving || !nbData || (targetsSetting === "Yes" && budgetSetting === "Yes")}
+                title={
+                  targetsSetting === "Yes" && budgetSetting === "Yes"
+                    ? "Targets are derived from Budget!Row 26"
+                    : targetsSetting === "Yes"
+                    ? `Edit monthly total ${modeTermLower} targets (Row 10)`
+                    : `Edit monthly new business ${modeTermLower} figures (Row 3)`
+                }
+                style={{
+                  padding: "7px 14px",
+                  background: targetsSetting === "Yes" && budgetSetting === "Yes" ? "#94a3b8" : "#0047AB",
+                  border: `1px solid ${targetsSetting === "Yes" && budgetSetting === "Yes" ? "#94a3b8" : "#0047AB"}`,
+                  borderRadius: "6px",
+                  fontSize: "13px",
+                  fontWeight: 600,
+                  color: "#ffffff",
+                  cursor: targetsSetting === "Yes" && budgetSetting === "Yes" ? "not-allowed" : "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  boxShadow: "0 1px 2px rgba(0,0,0,0.1)",
+                }}
+              >
+                ✎ Edit Monthly {targetsSetting === "Yes" ? `Total ${modeTerm} Targets` : `${modeTerm} Targets`}
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
-      {/* Notifications */}
+      {/* ── CLIENT SELECTOR SCREEN (WHEN NO CLIENT SELECTED) ── */}
+      {!selectedClient && (
+        <EditClientSelector
+          clients={allOutgoingsClients}
+          onSelectClient={(c) => setSelectedClient(c)}
+          loading={loading}
+          title="Select a client to view and edit new business to find:"
+        />
+      )}
 
-      {error && (
+      {/* Notifications */}
+      {selectedClient && error && (
         <div
           style={{
             background: "#fef2f2",
@@ -538,7 +539,7 @@ export default function NBToFindView({
         </div>
       )}
 
-      {saveSuccessMsg && (
+      {selectedClient && saveSuccessMsg && (
         <div
           style={{
             background: "#f0fdf4",
@@ -554,7 +555,7 @@ export default function NBToFindView({
         </div>
       )}
 
-      {loading && !nbData && (
+      {selectedClient && loading && !nbData && (
         <div style={{ textAlign: "center", padding: "80px 20px" }}>
           <Spinner size={32} color="#0047AB" />
           <div style={{ marginTop: "14px", color: "#64748b", fontSize: "14px" }}>
@@ -563,7 +564,7 @@ export default function NBToFindView({
         </div>
       )}
 
-      {nbData && currentFy && (
+      {selectedClient && nbData && currentFy && (
         <>
           {/* ── TOP CONFIGURATION CARDS (CELLS A9, A12 & A21) ── */}
           <div
@@ -1010,11 +1011,14 @@ export default function NBToFindView({
                                 label: m.monthLabel,
                                 value: m.value,
                                 title: `New business to find ${modeTermLower} target`,
+                                note: m.note || "",
                               });
                               setSingleCellValue(normalizeCurrency(m.value));
+                              setSingleCellNoteValue(m.note || "");
                             }
                           }}
                           style={{
+                            position: "relative",
                             padding: "9px 10px",
                             color: "#0f172a",
                             fontWeight: 600,
@@ -1027,8 +1031,9 @@ export default function NBToFindView({
                           onMouseLeave={(e) => {
                             if (isAdmin) e.currentTarget.style.background = "transparent";
                           }}
-                          title={isAdmin ? `Click to edit ${m.monthLabel} target` : undefined}
+                          title={isAdmin ? `Click to edit ${m.monthLabel} target & note` : undefined}
                         >
+                          <CellNoteIndicator note={m.note} />
                           {m.value || "-"}
                         </td>
                       ))}
@@ -1060,11 +1065,14 @@ export default function NBToFindView({
                                 label: m.monthLabel,
                                 value: m.value,
                                 title: `Total ${modeTermLower} target`,
+                                note: m.note || "",
                               });
                               setSingleCellValue(normalizeCurrency(m.value));
+                              setSingleCellNoteValue(m.note || "");
                             }
                           }}
                           style={{
+                            position: "relative",
                             padding: "9px 10px",
                             color: "#0f172a",
                             fontWeight: 600,
@@ -1077,8 +1085,9 @@ export default function NBToFindView({
                           onMouseLeave={(e) => {
                             if (isAdmin) e.currentTarget.style.background = "transparent";
                           }}
-                          title={isAdmin ? `Click to edit ${m.monthLabel} total ${modeTermLower} target` : undefined}
+                          title={isAdmin ? `Click to edit ${m.monthLabel} total ${modeTermLower} target & note` : undefined}
                         >
+                          <CellNoteIndicator note={m.note} />
                           {m.value || "-"}
                         </td>
                       ))}
@@ -1149,11 +1158,14 @@ export default function NBToFindView({
                                 label: m.monthLabel,
                                 value: m.value,
                                 title: "NB to find direct costs",
+                                note: m.note || "",
                               });
                               setSingleCellValue(normalizeCurrency(m.value));
+                              setSingleCellNoteValue(m.note || "");
                             }
                           }}
                           style={{
+                            position: "relative",
                             padding: "9px 10px",
                             color: "#0f172a",
                             fontWeight: 600,
@@ -1166,8 +1178,9 @@ export default function NBToFindView({
                           onMouseLeave={(e) => {
                             if (isAdmin) e.currentTarget.style.background = "transparent";
                           }}
-                          title={isAdmin ? `Click to edit ${m.monthLabel} direct costs` : undefined}
+                          title={isAdmin ? `Click to edit ${m.monthLabel} direct costs & note` : undefined}
                         >
+                          <CellNoteIndicator note={m.note} />
                           {m.value || "-"}
                         </td>
                       ))}
@@ -1245,7 +1258,8 @@ export default function NBToFindView({
                         </div>
                       </td>
                       {fyRow25.months.map((m) => (
-                        <td key={m.colLetter} style={{ padding: "8px 10px", textAlign: "center" }}>
+                        <td key={m.colLetter} style={{ position: "relative", padding: "8px 10px", textAlign: "center" }}>
+                          <CellNoteIndicator note={m.note} />
                           {isAdmin ? (
                             <button
                               type="button"
@@ -1448,7 +1462,7 @@ export default function NBToFindView({
                 onChange={(e) => setSingleCellValue(e.target.value)}
                 autoFocus
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") handleSaveSingleCell();
+                  if (e.key === "Enter" && !e.shiftKey) handleSaveSingleCell();
                   if (e.key === "Escape") setEditingSingleCell(null);
                 }}
                 style={{
@@ -1459,6 +1473,28 @@ export default function NBToFindView({
                   border: "1px solid #cbd5e1",
                   outline: "none",
                   boxSizing: "border-box",
+                }}
+              />
+            </div>
+            <div style={{ marginBottom: "16px" }}>
+              <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "#334155", marginBottom: "4px" }}>
+                Cell note
+              </label>
+              <textarea
+                value={singleCellNoteValue}
+                onChange={(e) => setSingleCellNoteValue(e.target.value)}
+                placeholder="Add note..."
+                rows={3}
+                style={{
+                  width: "100%",
+                  padding: "8px 10px",
+                  fontSize: "13px",
+                  borderRadius: "6px",
+                  border: "1px solid #cbd5e1",
+                  outline: "none",
+                  boxSizing: "border-box",
+                  fontFamily: "inherit",
+                  resize: "vertical",
                 }}
               />
             </div>

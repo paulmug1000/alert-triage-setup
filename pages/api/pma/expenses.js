@@ -125,6 +125,7 @@ export default async function handler(req, res) {
           clientSheetId,
           sheetRow,
           monthlyAmounts,
+          cellNotes: req.body?.cellNotes,
           userEmail: sessionUser.email,
         });
         return res.status(200).json(result);

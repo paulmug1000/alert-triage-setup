@@ -9,9 +9,12 @@ const RESOLVED_GREEN = "#d9ead3";
 function parseAmount(val) {
   if (val == null || val === "") return 0;
   if (typeof val === "number") return isNaN(val) ? 0 : val;
-  const clean = String(val).replace(/[£,\s]/g, "");
+  const str = String(val).trim();
+  const isParen = /^\(.*\)$/.test(str);
+  const clean = str.replace(/[£,\s()]/g, "");
   const num = parseFloat(clean);
-  return isNaN(num) ? 0 : num;
+  if (isNaN(num)) return 0;
+  return isParen ? -num : num;
 }
 
 function formatGBP(num) {
@@ -161,20 +164,21 @@ export default function CashflowReconTab({
     const adjRowObj = reconData.rows.find(r => r.sheetRow === row.targetAdjustmentRow);
     const adjCell = adjRowObj?.cells.find(c => c.colIdx === targetCol?.colIdx);
     const raw = adjCell?.rawVal;
-    if (typeof raw === "string" && raw.startsWith("=")) {
+    if (typeof raw === "string" && (raw.startsWith("=") || /^['’]=/.test(raw))) {
       let reconVal = 0;
       if (row.mappedItemType === "confirmed_cash") reconVal = reconData.reconActuals.revenue;
       else if (row.mappedItemType === "salaries") reconVal = reconData.reconActuals.salaries;
       else if (row.mappedItemType === "dividends") reconVal = reconData.reconActuals.dividends;
       else if (row.mappedItemType === "contractors") reconVal = reconData.reconActuals.contractors;
       else if (row.mappedItemType === "direct_costs") reconVal = reconData.reconActuals.directCosts;
+      else if (row.mappedItemType === "other_expenses") reconVal = reconData.reconActuals.outgoings;
       else if (row.mappedItemType === "corporation_tax") reconVal = reconData.reconActuals.corpTax;
       else if (row.mappedItemType === "vat") reconVal = reconData.reconActuals.vat;
       else if (row.mappedItemType === "non_operating_income") reconVal = reconData.reconActuals.nonOperatingIncome;
       else if (row.mappedItemType === "non_operating_expenses") reconVal = reconData.reconActuals.nonOperatingExpenses;
 
       const reconFixed = reconVal !== undefined ? reconVal.toFixed(2) : "";
-      if (reconFixed && raw.includes(reconFixed)) {
+      if (reconFixed && (raw.includes(reconFixed) || raw.replace(/^['’]/, "").includes(reconFixed))) {
         return true;
       }
     }
@@ -238,7 +242,9 @@ export default function CashflowReconTab({
       currentValue: cell.v,
       rawValue: cell.rawVal ?? cell.v
     });
-    setEditValue(cell.rawVal !== null && cell.rawVal !== undefined ? String(cell.rawVal) : (cell.v || ""));
+    const rawStr = cell.rawVal !== null && cell.rawVal !== undefined ? String(cell.rawVal) : (cell.v || "");
+    const initialVal = rawStr.replace(/^['’]=/, "=");
+    setEditValue(initialVal);
   };
 
   // Save Adjustment Edit
@@ -247,6 +253,7 @@ export default function CashflowReconTab({
     setSavingEdit(true);
     setError("");
     try {
+      const cleanVal = typeof editValue === "string" ? editValue.trim().replace(/^['’]=/, "=") : editValue;
       const resp = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -255,7 +262,7 @@ export default function CashflowReconTab({
           clientSheetId: currentClientInfo.clientSheetId,
           colLetter: editingCell.colLetter,
           sheetRow: editingCell.sheetRow,
-          value: editValue,
+          value: cleanVal,
           clientName: selectedClient,
           automationCommanderSheetId
         })
@@ -339,7 +346,7 @@ export default function CashflowReconTab({
     const adjCell = adjRowObj?.cells.find(c => c.colIdx === targetMonthCell.colIdx);
     const currentVal = adjCell?.v ?? "";
     const rawVal = adjCell?.rawVal ?? "";
-    const currentFormula = (typeof rawVal === "string" && rawVal.startsWith("=")) ? rawVal : "";
+    const currentFormula = (typeof rawVal === "string" && (rawVal.startsWith("=") || /^['’]=/.test(rawVal))) ? rawVal.replace(/^['’]/, "") : "";
 
     // Check if cell has a non-zero value or formula
     const cleanStr = String(rawVal || currentVal).replace(/[£,\s]/g, "").trim();
@@ -455,6 +462,7 @@ export default function CashflowReconTab({
     setApplyingRecon(true);
     setError("");
     try {
+      const cleanFormula = typeof formula === "string" ? formula.trim().replace(/^['’]=/, "=") : formula;
       const resp = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -463,7 +471,7 @@ export default function CashflowReconTab({
           clientSheetId: currentClientInfo.clientSheetId,
           colLetter,
           sheetRow: targetRow,
-          value: formula,
+          value: cleanFormula,
           clientName: selectedClient,
           automationCommanderSheetId
         })
@@ -472,7 +480,7 @@ export default function CashflowReconTab({
       if (!res.success) throw new Error(res.error || "Failed to apply recon formula");
       setReconAppliedRows(prev => new Set([...prev, targetRow]));
       setOverwriteModal(null);
-      setSuccessMsg(`Applied formula ${formula} to Cash!${colLetter}${targetRow}`);
+      setSuccessMsg(`Applied formula ${cleanFormula} to Cash!${colLetter}${targetRow}`);
       // Reload table to recalculate all rows
       await loadData(selectedClient);
     } catch (err) {
@@ -654,31 +662,82 @@ export default function CashflowReconTab({
     return elements;
   }, [reconData]);
 
+  // Helper: retrieves transaction amount for a given category from recon actuals
+  const getCategoryTxAmount = useCallback((itemType, rowLabel = "") => {
+    if (!reconData?.reconActuals) return null;
+    const recon = reconData.reconActuals;
+    if (itemType === "confirmed_cash") return recon.revenue ?? 0;
+    if (itemType === "salaries") return recon.salaries ?? 0;
+    if (itemType === "dividends") return recon.dividends ?? 0;
+    if (itemType === "contractors") return recon.contractors ?? 0;
+    if (itemType === "direct_costs") return recon.directCosts ?? 0;
+    if (itemType === "other_expenses") return recon.outgoings ?? 0;
+    if (itemType === "corporation_tax") return recon.corpTax ?? 0;
+    if (itemType === "vat") return recon.vat ?? 0;
+    if (itemType === "non_operating_income") return recon.nonOperatingIncome ?? 0;
+    if (itemType === "non_operating_expenses") return recon.nonOperatingExpenses ?? 0;
+
+    // Fallback based on label text if mappedItemType was not set
+    const l = (rowLabel || "").toLowerCase();
+    if (l.includes("revenue") || l.includes("confirmed cash") || l.includes("incoming cash")) return recon.revenue ?? 0;
+    if (l.includes("salar") || l.includes("payroll") || l.includes("paye") || l.includes("pension")) return recon.salaries ?? 0;
+    if (l.includes("dividend")) return recon.dividends ?? 0;
+    if (l.includes("contractor")) return recon.contractors ?? 0;
+    if (l.includes("direct cost")) return recon.directCosts ?? 0;
+    if (l.includes("other expense") || l.includes("outgoing") || l.includes("overhead")) return recon.outgoings ?? 0;
+    if (l.includes("corp")) return recon.corpTax ?? 0;
+    if (l.includes("vat")) return recon.vat ?? 0;
+    if (l.includes("non-operating income")) return recon.nonOperatingIncome ?? 0;
+    if (l.includes("non-operating expense")) return recon.nonOperatingExpenses ?? 0;
+
+    return null;
+  }, [reconData]);
+
   // Dynamic grid column coordinates for modern card view
-  const { gridTemplateColumns, colPositions, totalColPosition } = useMemo(() => {
+  const { gridTemplateColumns, colPositions, totalColPosition, txColPosition, spacerBeforeTarget, spacerAfterTarget } = useMemo(() => {
     if (!reconData?.selectedCols || reconData.selectedCols.length === 0) {
       return {
-        gridTemplateColumns: "minmax(210px, 1.4fr) 120px 170px 125px 120px",
-        colPositions: [2, 3, 5],
-        totalColPosition: 4
+        gridTemplateColumns: "175px 150px 16px 215px 120px 130px 16px 150px",
+        colPositions: [2, 4, 8],
+        totalColPosition: 5,
+        txColPosition: 6,
+        spacerBeforeTarget: 3,
+        spacerAfterTarget: 7
       };
     }
 
-    const parts = ["minmax(210px, 1.4fr)"];
+    const parts = ["175px"];
     const positions = [];
     let currentGridCol = 2;
     let totalPos = null;
+    let txPos = null;
+    let spacerBefore = null;
+    let spacerAfter = null;
 
-    reconData.selectedCols.forEach((col) => {
-      positions.push(currentGridCol);
+    reconData.selectedCols.forEach((col, idx) => {
       if (col.type === "target") {
-        parts.push("170px");
+        if (idx > 0) {
+          parts.push("16px"); // blank space between previous month and target month
+          spacerBefore = currentGridCol;
+          currentGridCol++;
+        }
+        positions.push(currentGridCol); // Target month column
+        parts.push("215px"); // Target month column (~26% wider than original for button room)
         currentGridCol++;
         totalPos = currentGridCol;
-        parts.push("125px");
+        parts.push("120px"); // Total (Net)
         currentGridCol++;
+        txPos = currentGridCol;
+        parts.push("130px"); // Transaction amount
+        currentGridCol++;
+        if (idx < reconData.selectedCols.length - 1) {
+          parts.push("16px"); // blank space between transaction amount and next month
+          spacerAfter = currentGridCol;
+          currentGridCol++;
+        }
       } else {
-        parts.push("120px");
+        positions.push(currentGridCol);
+        parts.push("150px"); // 150px provides ample room so note buttons never spill out
         currentGridCol++;
       }
     });
@@ -686,7 +745,10 @@ export default function CashflowReconTab({
     return {
       gridTemplateColumns: parts.join(" "),
       colPositions: positions,
-      totalColPosition: totalPos
+      totalColPosition: totalPos,
+      txColPosition: txPos,
+      spacerBeforeTarget: spacerBefore,
+      spacerAfterTarget: spacerAfter
     };
   }, [reconData?.selectedCols]);
 
@@ -715,12 +777,15 @@ export default function CashflowReconTab({
           gap: "2px",
           lineHeight: 1,
           flexShrink: 0,
-          transition: "color 0.15s, background 0.15s"
+          opacity: hasNote ? 1 : 0.4,
+          transition: "color 0.15s, background 0.15s, opacity 0.15s"
         }}
         onMouseEnter={(e) => {
+          e.currentTarget.style.opacity = "1";
           if (!hasNote) e.currentTarget.style.color = "#d97706";
         }}
         onMouseLeave={(e) => {
+          e.currentTarget.style.opacity = hasNote ? "1" : "0.4";
           if (!hasNote) e.currentTarget.style.color = "#cbd5e1";
         }}
       >
@@ -986,7 +1051,7 @@ export default function CashflowReconTab({
           isAdmin={isAdmin}
         />
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: "12px", maxWidth: "880px" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "12px", width: "fit-content", maxWidth: "100%" }}>
           {/* Cashflow Finalisation Toolbar: Match Actuals + Legend */}
           <div style={{
             padding: "10px 16px",
@@ -1027,52 +1092,71 @@ export default function CashflowReconTab({
               </span>
             </div>
 
-            <div style={{ display: "flex", alignItems: "center", gap: "12px", fontSize: "11px", color: "#64748b" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "12px", fontSize: "11px", color: "#64748b", flexWrap: "wrap" }}>
               <span style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
-                <span style={{ width: "12px", height: "12px", background: RESOLVED_GREEN, border: "1px solid #86efac", borderRadius: "2px", display: "inline-block" }}></span>
+                <span style={{ width: "10px", height: "10px", background: "#dcfce7", border: "1px solid #86efac", borderRadius: "2px", display: "inline-block" }}></span>
+                Matched transaction
+              </span>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                <span style={{ width: "10px", height: "10px", background: "#fee2e2", border: "1px solid #fca5a5", borderRadius: "2px", display: "inline-block" }}></span>
+                Variance
+              </span>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                <span style={{ width: "10px", height: "10px", background: RESOLVED_GREEN, border: "1px solid #86efac", borderRadius: "2px", display: "inline-block" }}></span>
                 Resolved actual
               </span>
               <span style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
-                <span style={{ width: "12px", height: "12px", background: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: "2px", display: "inline-block" }}></span>
+                <span style={{ width: "10px", height: "10px", background: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: "2px", display: "inline-block" }}></span>
                 Editable adjustment
               </span>
             </div>
           </div>
 
           {/* Overhauled Modern Cashflow Finalisation: Grouped Category Cards with Dedicated Total Column */}
-          <div style={{ maxWidth: "900px" }}>
+          <div style={{ width: "fit-content", maxWidth: "100%" }}>
             <div style={{ overflowX: "auto", paddingBottom: "12px" }}>
-              <div style={{ minWidth: "780px" }}>
-                {/* 1. Header Bar: Unified Green for Target Month & Total Column */}
+              <div style={{ minWidth: "972px", width: "fit-content" }}>
+                {/* 1. Header Bar: Segmented with clear blank space around Target Month */}
                 <div style={{
                   display: "grid",
                   gridTemplateColumns: gridTemplateColumns,
-                  alignItems: "center",
-                  background: DARK_GREEN,
-                  borderRadius: "10px",
-                  overflow: "hidden",
+                  alignItems: "stretch",
+                  background: "transparent",
                   color: "#ffffff",
-                  boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
                   fontSize: "12px",
                   fontWeight: "700",
                   marginBottom: "10px"
                 }}>
-                  <div style={{ padding: "10px 14px", gridColumn: "1" }}>
+                  <div style={{
+                    padding: "10px 14px",
+                    gridColumn: "1",
+                    background: DARK_GREEN,
+                    borderTopLeftRadius: "10px",
+                    borderBottomLeftRadius: "10px",
+                    display: "flex",
+                    alignItems: "center"
+                  }}>
                     Cash movement
                   </div>
 
                   {reconData.selectedCols.map((col, cIndex) => {
                     const isTarget = col.type === "target";
                     const gridCol = colPositions[cIndex];
+                    const isPrev = cIndex === 0 || col.type === "prev";
+                    const isLast = cIndex === reconData.selectedCols.length - 1;
 
                     return (
                       <React.Fragment key={col.colIdx}>
                         <div
                           style={{
                             gridColumn: `${gridCol}`,
-                            padding: "10px 12px",
+                            padding: "10px 10px",
                             textAlign: "right",
-                            background: isTarget ? "#15803d" : "transparent",
+                            background: isTarget ? "#15803d" : DARK_GREEN,
+                            borderTopLeftRadius: isTarget ? "10px" : (!isPrev && !isTarget ? "10px" : "0"),
+                            borderBottomLeftRadius: isTarget ? "10px" : (!isPrev && !isTarget ? "10px" : "0"),
+                            borderTopRightRadius: isPrev && !isTarget ? "10px" : (isLast ? "10px" : "0"),
+                            borderBottomRightRadius: isPrev && !isTarget ? "10px" : (isLast ? "10px" : "0"),
                             display: "flex",
                             alignItems: "center",
                             justifyContent: "flex-end",
@@ -1096,18 +1180,40 @@ export default function CashflowReconTab({
                         </div>
 
                         {isTarget && (
-                          <div
-                            style={{
-                              gridColumn: `${totalColPosition}`,
-                              padding: "10px 10px",
-                              textAlign: "center",
-                              background: "#15803d",
-                              borderLeft: "1px solid rgba(255, 255, 255, 0.2)",
-                              fontWeight: "700"
-                            }}
-                          >
-                            Total (Net)
-                          </div>
+                          <>
+                            <div
+                              style={{
+                                gridColumn: `${totalColPosition}`,
+                                padding: "10px 10px",
+                                textAlign: "center",
+                                background: "#15803d",
+                                borderLeft: "1px solid rgba(255, 255, 255, 0.2)",
+                                fontWeight: "700",
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center"
+                              }}
+                            >
+                              Total (Net)
+                            </div>
+                            <div
+                              style={{
+                                gridColumn: `${txColPosition}`,
+                                padding: "10px 10px",
+                                textAlign: "center",
+                                background: "#15803d",
+                                borderLeft: "1px solid rgba(255, 255, 255, 0.2)",
+                                borderTopRightRadius: "10px",
+                                borderBottomRightRadius: "10px",
+                                fontWeight: "700",
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center"
+                              }}
+                            >
+                              Transaction amount
+                            </div>
+                          </>
                         )}
                       </React.Fragment>
                     );
@@ -1158,14 +1264,38 @@ export default function CashflowReconTab({
                             <span>{elem.title}</span>
                           </div>
 
+                          {/* Spacers before/after Target Month */}
+                          {spacerBeforeTarget && (
+                            <div
+                              style={{
+                                gridColumn: `${spacerBeforeTarget}`,
+                                gridRow: "1 / span 2",
+                                background: "#f8fafc",
+                                borderLeft: "1px solid #e2e8f0",
+                                borderRight: "1px solid #e2e8f0"
+                              }}
+                            />
+                          )}
+                          {spacerAfterTarget && (
+                            <div
+                              style={{
+                                gridColumn: `${spacerAfterTarget}`,
+                                gridRow: "1 / span 2",
+                                background: "#f8fafc",
+                                borderLeft: "1px solid #e2e8f0",
+                                borderRight: "1px solid #e2e8f0"
+                              }}
+                            />
+                          )}
+
                           {/* Row 1: Forecast Month Columns */}
                           {reconData.selectedCols.map((col, cIndex) => {
                             const isTargetCol = col.type === "target";
                             const gridCol = colPositions[cIndex];
                             const baseCell = elem.baseRow.cells[cIndex];
                             const adjCell = elem.adjRow?.cells[cIndex];
-                            const baseVal = parseAmount(baseCell?.v);
-                            const adjVal = parseAmount(adjCell?.v);
+                            const baseVal = (baseCell?.numVal !== undefined && baseCell?.numVal !== null) ? baseCell.numVal : parseAmount(baseCell?.v);
+                            const adjVal = (adjCell?.numVal !== undefined && adjCell?.numVal !== null) ? adjCell.numVal : parseAmount(adjCell?.v);
                             const totalVal = baseVal + adjVal;
                             const totalFmt = formatGBP(totalVal);
                             let cellBg = baseCell?.isResolved ? RESOLVED_GREEN : (isTargetCol ? "#f8fafc" : "#ffffff");
@@ -1176,7 +1306,7 @@ export default function CashflowReconTab({
                                   style={{
                                     gridColumn: `${gridCol}`,
                                     gridRow: "1",
-                                    padding: "8px 12px",
+                                    padding: "8px 10px",
                                     background: cellBg,
                                     borderBottom: "1px dashed #f1f5f9",
                                     display: "flex",
@@ -1187,7 +1317,7 @@ export default function CashflowReconTab({
                                 >
                                   {isTargetCol ? (
                                     <>
-                                      <div style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                                      <div style={{ display: "inline-flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
                                         {renderNoteButton(elem.baseRow, baseCell)}
                                         <button
                                           onClick={() => handleToggleResolved(baseCell)}
@@ -1201,27 +1331,55 @@ export default function CashflowReconTab({
                                             fontSize: "9px",
                                             fontWeight: "700",
                                             textTransform: "uppercase",
-                                            cursor: "pointer"
+                                            cursor: "pointer",
+                                            flexShrink: 0
                                           }}
                                         >
                                           {baseCell?.isResolved ? "Resolved" : "Resolve"}
                                         </button>
                                       </div>
-                                      <span style={{ fontWeight: "700", fontVariantNumeric: "tabular-nums", color: "#0f172a", fontSize: "12px" }}>
+                                      <span
+                                        style={{
+                                          display: "inline-block",
+                                          minWidth: "80px",
+                                          textAlign: "right",
+                                          padding: "3px 8px",
+                                          border: "1px solid transparent",
+                                          boxSizing: "border-box",
+                                          fontWeight: "700",
+                                          fontVariantNumeric: "tabular-nums",
+                                          color: "#0f172a",
+                                          fontSize: "12px",
+                                          whiteSpace: "nowrap"
+                                        }}
+                                      >
                                         {baseCell?.v || "£0.00"}
                                       </span>
                                     </>
                                   ) : (
-                                    <div style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                                    <div style={{ display: "inline-flex", alignItems: "center", gap: "6px", flexShrink: 0 }}>
                                       {renderNoteButton(elem.baseRow, baseCell)}
-                                      <span style={{ fontVariantNumeric: "tabular-nums", color: "#334155", fontSize: "12px" }}>
+                                      <span
+                                        style={{
+                                          display: "inline-block",
+                                          minWidth: "80px",
+                                          textAlign: "right",
+                                          padding: "3px 8px",
+                                          border: "1px solid transparent",
+                                          boxSizing: "border-box",
+                                          fontVariantNumeric: "tabular-nums",
+                                          color: "#334155",
+                                          fontSize: "12px",
+                                          whiteSpace: "nowrap"
+                                        }}
+                                      >
                                         {baseCell?.v || "£0.00"}
                                       </span>
                                     </div>
                                   )}
                                 </div>
 
-                                {/* Spanning Net Total Pill Column */}
+                                {/* Spanning Net Total Column (Unshaded) */}
                                 {isTargetCol && (
                                   <div
                                     style={{
@@ -1238,16 +1396,11 @@ export default function CashflowReconTab({
                                   >
                                     <span
                                       style={{
-                                        padding: "4px 10px",
-                                        borderRadius: "14px",
-                                        fontSize: "11px",
+                                        fontSize: "12px",
                                         fontWeight: "700",
                                         fontVariantNumeric: "tabular-nums",
-                                        background: totalVal >= 0 ? "#ecfdf5" : "#fef2f2",
-                                        color: totalVal >= 0 ? "#166534" : "#991b1b",
-                                        border: totalVal >= 0 ? "1px solid #a7f3d0" : "1px solid #fecaca",
-                                        display: "inline-block",
-                                        boxShadow: "0 1px 2px rgba(0,0,0,0.02)"
+                                        color: "#0f172a",
+                                        display: "inline-block"
                                       }}
                                       title={`Forecast: ${baseCell?.v || "£0.00"} + Adjustment: ${adjCell?.v || "£0.00"} = Net: ${totalFmt}`}
                                     >
@@ -1255,6 +1408,55 @@ export default function CashflowReconTab({
                                     </span>
                                   </div>
                                 )}
+
+                                {/* Spanning Transaction Amount Column */}
+                                {isTargetCol && (() => {
+                                  const txVal = getCategoryTxAmount(elem.mappedItemType, elem.title);
+                                  const isAvailable = txVal !== null && txVal !== undefined;
+                                  const isMatch = isAvailable && (
+                                    Math.abs(totalVal - txVal) < 0.05 ||
+                                    (Math.sign(totalVal) !== Math.sign(txVal) && Math.abs(Math.abs(totalVal) - Math.abs(txVal)) < 0.05)
+                                  );
+                                  return (
+                                    <div
+                                      style={{
+                                        gridColumn: `${txColPosition}`,
+                                        gridRow: "1 / span 2",
+                                        padding: "6px 10px",
+                                        background: "#f8fafc",
+                                        borderRight: "1px solid #e2e8f0",
+                                        display: "flex",
+                                        alignItems: "center",
+                                        justifyContent: "center"
+                                      }}
+                                    >
+                                      {isAvailable ? (
+                                        <span
+                                          style={{
+                                            padding: "4px 10px",
+                                            borderRadius: "14px",
+                                            fontSize: "11px",
+                                            fontWeight: "700",
+                                            fontVariantNumeric: "tabular-nums",
+                                            background: isMatch ? "#dcfce7" : "#fee2e2",
+                                            color: isMatch ? "#166534" : "#991b1b",
+                                            border: isMatch ? "1px solid #86efac" : "1px solid #fca5a5",
+                                            display: "inline-block",
+                                            boxShadow: "0 1px 2px rgba(0,0,0,0.02)"
+                                          }}
+                                          title={isMatch
+                                            ? `Matches Total (Net): ${formatGBP(txVal)}`
+                                            : `Mismatch: Transaction amount ${formatGBP(txVal)} vs Total (Net) ${formatGBP(totalVal)} (Diff: ${formatGBP(txVal - totalVal)})`
+                                          }
+                                        >
+                                          {formatGBP(txVal)}
+                                        </span>
+                                      ) : (
+                                        <span style={{ color: "#94a3b8", fontSize: "12px" }}>—</span>
+                                      )}
+                                    </div>
+                                  );
+                                })()}
                               </React.Fragment>
                             );
                           })}
@@ -1288,7 +1490,7 @@ export default function CashflowReconTab({
                                 style={{
                                   gridColumn: `${gridCol}`,
                                   gridRow: "2",
-                                  padding: "5px 12px 6px",
+                                  padding: "5px 10px 6px",
                                   background: isTargetCol ? "#f8fafc" : "#fafbfc",
                                   display: "flex",
                                   alignItems: "center",
@@ -1298,7 +1500,7 @@ export default function CashflowReconTab({
                               >
                                 {isTargetCol ? (
                                   <>
-                                    <div style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                                    <div style={{ display: "inline-flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
                                       {renderNoteButton(elem.adjRow, adjCell)}
                                       {isAdmin && (() => {
                                         const isReconUsed = isReconUsedForRow(elem.baseRow);
@@ -1315,7 +1517,8 @@ export default function CashflowReconTab({
                                               fontSize: "9px",
                                               fontWeight: "700",
                                               textTransform: "uppercase",
-                                              cursor: "pointer"
+                                              cursor: "pointer",
+                                              flexShrink: 0
                                             }}
                                           >
                                             Recon
@@ -1330,7 +1533,9 @@ export default function CashflowReconTab({
                                       title="Click to edit adjustment"
                                       style={{
                                         display: "inline-block",
-                                        padding: "2px 7px",
+                                        minWidth: "80px",
+                                        textAlign: "right",
+                                        padding: "3px 8px",
                                         background: "#ffffff",
                                         border: "1px solid #cbd5e1",
                                         borderRadius: "4px",
@@ -1339,21 +1544,25 @@ export default function CashflowReconTab({
                                         fontSize: "11px",
                                         color: "#334155",
                                         fontWeight: "600",
-                                        boxShadow: "0 1px 2px rgba(0,0,0,0.02)"
+                                        boxShadow: "0 1px 2px rgba(0,0,0,0.02)",
+                                        whiteSpace: "nowrap",
+                                        boxSizing: "border-box"
                                       }}
                                     >
                                       {adjCell?.v || "£0.00"}
                                     </span>
                                   </>
                                 ) : (
-                                  <div style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                                  <div style={{ display: "inline-flex", alignItems: "center", gap: "6px", flexShrink: 0 }}>
                                     {renderNoteButton(elem.adjRow, adjCell)}
                                     <span
                                       onClick={() => handleStartEdit(elem.adjRow, adjCell)}
                                       title="Click to edit adjustment"
                                       style={{
                                         display: "inline-block",
-                                        padding: "2px 7px",
+                                        minWidth: "80px",
+                                        textAlign: "right",
+                                        padding: "3px 8px",
                                         background: "#ffffff",
                                         border: "1px solid #cbd5e1",
                                         borderRadius: "4px",
@@ -1361,7 +1570,9 @@ export default function CashflowReconTab({
                                         fontVariantNumeric: "tabular-nums",
                                         fontSize: "11px",
                                         color: "#334155",
-                                        fontWeight: "600"
+                                        fontWeight: "600",
+                                        whiteSpace: "nowrap",
+                                        boxSizing: "border-box"
                                       }}
                                     >
                                       {adjCell?.v || "£0.00"}
@@ -1391,6 +1602,29 @@ export default function CashflowReconTab({
                           overflow: "hidden"
                         }}
                       >
+                        {/* Spacers before/after Target Month */}
+                        {spacerBeforeTarget && (
+                          <div
+                            style={{
+                              gridColumn: `${spacerBeforeTarget}`,
+                              background: "#f8fafc",
+                              borderLeft: "1px solid #e2e8f0",
+                              borderRight: "1px solid #e2e8f0",
+                              alignSelf: "stretch"
+                            }}
+                          />
+                        )}
+                        {spacerAfterTarget && (
+                          <div
+                            style={{
+                              gridColumn: `${spacerAfterTarget}`,
+                              background: "#f8fafc",
+                              borderLeft: "1px solid #e2e8f0",
+                              borderRight: "1px solid #e2e8f0",
+                              alignSelf: "stretch"
+                            }}
+                          />
+                        )}
                         <div style={{ gridColumn: "1", padding: "8px 14px", fontWeight: "600", fontSize: "12px", color: "#1e293b" }}>
                           {elem.title}
                         </div>
@@ -1402,8 +1636,8 @@ export default function CashflowReconTab({
                               <div
                                 key={cell.colIdx}
                                 style={{
-                                  gridColumn: `${gridCol} / ${gridCol + 2}`,
-                                  padding: "8px 12px",
+                                  gridColumn: `${gridCol} / ${gridCol + 3}`,
+                                  padding: "8px 10px",
                                   textAlign: "right",
                                   display: "flex",
                                   alignItems: "center",
@@ -1412,7 +1646,20 @@ export default function CashflowReconTab({
                                 }}
                               >
                                 {renderNoteButton(row, cell)}
-                                <span style={{ fontVariantNumeric: "tabular-nums", fontSize: "12px" }}>
+                                <span
+                                  style={{
+                                    display: "inline-block",
+                                    minWidth: "80px",
+                                    textAlign: "right",
+                                    padding: "3px 8px",
+                                    border: "1px solid transparent",
+                                    boxSizing: "border-box",
+                                    fontVariantNumeric: "tabular-nums",
+                                    fontSize: "12px",
+                                    color: "#334155",
+                                    whiteSpace: "nowrap"
+                                  }}
+                                >
                                   {cell.v || ""}
                                 </span>
                               </div>
@@ -1423,7 +1670,7 @@ export default function CashflowReconTab({
                               key={cell.colIdx}
                               style={{
                                 gridColumn: `${gridCol}`,
-                                padding: "8px 12px",
+                                padding: "8px 10px",
                                 textAlign: "right",
                                 display: "flex",
                                 alignItems: "center",
@@ -1432,7 +1679,20 @@ export default function CashflowReconTab({
                               }}
                             >
                               {renderNoteButton(row, cell)}
-                              <span style={{ fontVariantNumeric: "tabular-nums", fontSize: "12px" }}>
+                              <span
+                                style={{
+                                  display: "inline-block",
+                                  minWidth: "80px",
+                                  textAlign: "right",
+                                  padding: "3px 8px",
+                                  border: "1px solid transparent",
+                                  boxSizing: "border-box",
+                                  fontVariantNumeric: "tabular-nums",
+                                  fontSize: "12px",
+                                  color: "#334155",
+                                  whiteSpace: "nowrap"
+                                }}
+                              >
                                 {cell.v || ""}
                               </span>
                             </div>
@@ -1508,6 +1768,29 @@ export default function CashflowReconTab({
                               overflow: "hidden"
                             }}
                           >
+                            {/* Spacers before/after Target Month */}
+                            {spacerBeforeTarget && (
+                              <div
+                                style={{
+                                  gridColumn: `${spacerBeforeTarget}`,
+                                  background: "#f8fafc",
+                                  borderLeft: "1px solid #e2e8f0",
+                                  borderRight: "1px solid #e2e8f0",
+                                  alignSelf: "stretch"
+                                }}
+                              />
+                            )}
+                            {spacerAfterTarget && (
+                              <div
+                                style={{
+                                  gridColumn: `${spacerAfterTarget}`,
+                                  background: "#f8fafc",
+                                  borderLeft: "1px solid #e2e8f0",
+                                  borderRight: "1px solid #e2e8f0",
+                                  alignSelf: "stretch"
+                                }}
+                              />
+                            )}
                             {/* Title */}
                             <div
                               style={{
@@ -1548,8 +1831,8 @@ export default function CashflowReconTab({
                                   <div
                                     key={cell.colIdx}
                                     style={{
-                                      gridColumn: `${gridCol} / ${gridCol + 2}`,
-                                      padding: "9px 12px",
+                                      gridColumn: `${gridCol} / ${gridCol + 3}`,
+                                      padding: "9px 10px",
                                       textAlign: "right",
                                       display: "flex",
                                       alignItems: "center",
@@ -1561,7 +1844,18 @@ export default function CashflowReconTab({
                                     }}
                                   >
                                     {renderNoteButton(row, cell)}
-                                    <span style={{ fontVariantNumeric: "tabular-nums" }}>
+                                    <span
+                                      style={{
+                                        display: "inline-block",
+                                        minWidth: "80px",
+                                        textAlign: "right",
+                                        padding: "3px 8px",
+                                        border: "1px solid transparent",
+                                        boxSizing: "border-box",
+                                        fontVariantNumeric: "tabular-nums",
+                                        whiteSpace: "nowrap"
+                                      }}
+                                    >
                                       {isDiff && cellValNum === 0 ? "✓ £0.00" : (cell.v || "")}
                                     </span>
                                   </div>
@@ -1573,7 +1867,7 @@ export default function CashflowReconTab({
                                   key={cell.colIdx}
                                   style={{
                                     gridColumn: `${gridCol}`,
-                                    padding: "9px 12px",
+                                    padding: "9px 10px",
                                     textAlign: "right",
                                     display: "flex",
                                     alignItems: "center",
@@ -1585,7 +1879,18 @@ export default function CashflowReconTab({
                                   }}
                                 >
                                   {renderNoteButton(row, cell)}
-                                  <span style={{ fontVariantNumeric: "tabular-nums" }}>
+                                  <span
+                                    style={{
+                                      display: "inline-block",
+                                      minWidth: "80px",
+                                      textAlign: "right",
+                                      padding: "3px 8px",
+                                      border: "1px solid transparent",
+                                      boxSizing: "border-box",
+                                      fontVariantNumeric: "tabular-nums",
+                                      whiteSpace: "nowrap"
+                                    }}
+                                  >
                                     {isDiff && cellValNum === 0 ? "✓ £0.00" : (cell.v || "")}
                                   </span>
                                 </div>

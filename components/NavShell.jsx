@@ -160,7 +160,7 @@ export default function NavShell({
 
   // Close dropdowns when clicking outside
   useEffect(() => {
-    if (!showMore && !manageDropdownOpen && !pulseDropdownOpen && !profileDropdownOpen) return;
+    if (!showMore && !manageDropdownOpen && !pulseDropdownOpen && !profileDropdownOpen && !editDropdownOpen) return;
     const close = (e) => {
       if (showMore && !e.target.closest(".nav-more-dropdown") && !e.target.closest(".nav-more-btn")) {
         setShowMore(false);
@@ -291,6 +291,7 @@ export default function NavShell({
                   setManageDropdownOpen((v) => !v);
                   setPulseDropdownOpen(false);
                   setProfileDropdownOpen(false);
+                  setEditDropdownOpen(false);
                 }}
                 style={{
                   background: managedClient ? "#0047AB" : "rgba(255, 255, 255, 0.12)",
@@ -478,6 +479,8 @@ export default function NavShell({
                 onClick={() => {
                   setPulseDropdownOpen((v) => !v);
                   setProfileDropdownOpen(false);
+                  setManageDropdownOpen(false);
+                  setEditDropdownOpen(false);
                 }}
                 style={{
                   background: "#0047AB",
@@ -615,6 +618,8 @@ export default function NavShell({
                 onClick={() => {
                   setProfileDropdownOpen((v) => !v);
                   setPulseDropdownOpen(false);
+                  setManageDropdownOpen(false);
+                  setEditDropdownOpen(false);
                 }}
                 style={{
                   background: "rgba(255, 255, 255, 0.15)",
@@ -730,6 +735,9 @@ export default function NavShell({
                   onClick={(e) => {
                     e.stopPropagation();
                     setEditDropdownOpen((v) => !v);
+                    setManageDropdownOpen(false);
+                    setPulseDropdownOpen(false);
+                    setProfileDropdownOpen(false);
                   }}
                   style={{
                     ...navBtnStyle(item.key),

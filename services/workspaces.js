@@ -529,12 +529,24 @@ export async function handleGetOutgoings(req, res, sheets) {
       }
     }
 
-    const parseNoteBlocks = (note) => {
-      if (!note) return [];
+    const parseNoteParts = (note) => {
+      if (!note) return { topNote: "", blocks: [] };
+      const firstBlockIdx = note.indexOf("{App ID:");
+      let topNote = "";
+      let blockText = "";
+      if (firstBlockIdx !== -1) {
+        topNote = note.substring(0, firstBlockIdx).trim();
+        blockText = note.substring(firstBlockIdx);
+      } else if (note.includes("{") && note.includes("}")) {
+        blockText = note;
+      } else {
+        topNote = note.trim();
+      }
+
       const blocks = [];
       const blockRegex = /\{App ID:\s*([^}]+)\}\{Amt:\s*([^}]+)\}(?:\{Status:\s*([^}]*)\})?(?:\{Rec date:\s*([^}]*)\})?(?:\{Pay date:\s*([^}]*)\})?(?:\{Description:\s*([^}]*)\})?/g;
       let match;
-      while ((match = blockRegex.exec(note)) !== null) {
+      while ((match = blockRegex.exec(blockText)) !== null) {
         blocks.push({
           appId:       match[1]?.trim() || "",
           amount:      parseFloat(String(match[2] || "").replace(/[£$€,\s]/g, "")) || 0,
@@ -544,7 +556,7 @@ export async function handleGetOutgoings(req, res, sheets) {
           description: match[6]?.trim() || "",
         });
       }
-      return blocks;
+      return { topNote, blocks };
     };
 
     const contractors = [];
@@ -563,7 +575,8 @@ export async function handleGetOutgoings(req, res, sheets) {
         const cellData = rowCells[month.colIndex];
         const note = cellData?.note || "";
         const value = cellData?.formattedValue || "";
-        cells[month.colLetter] = { value, note, blocks: parseNoteBlocks(note) };
+        const { topNote, blocks } = parseNoteParts(note);
+        cells[month.colLetter] = { value, note, topNote, blocks };
       }
 
       contractors.push({ sheetRow: 13 + r, name, vatFlag, invTiming, payTiming, cells });
@@ -2393,25 +2406,53 @@ export async function handleAddNewJob(req, res, sheets) {
 }
 
 export async function handleUpdateOutgoingNote(req, res, sheets) {
-  const { clientSheetId, sheetRow, colLetter, blocks } = req.body;
+  const { clientSheetId, sheetRow, colLetter, blocks, topNote } = req.body;
   if (!clientSheetId || !sheetRow || !colLetter) return res.status(400).json({ success: false, error: "Missing required fields" });
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
-    const noteStr = (blocks || []).map(b =>
+
+    let finalTopNote = typeof topNote === "string" ? topNote.trim() : "";
+    if (topNote === undefined) {
+      try {
+        const existingNoteResp = await withRetry(() =>
+          sheets.spreadsheets.get({
+            spreadsheetId: sheetIdClean,
+            ranges: [`Outgoings!${colLetter}${sheetRow}`],
+            includeGridData: true,
+            fields: "sheets.data.rowData.values.note",
+          })
+        );
+        const curNote = existingNoteResp.data.sheets?.[0]?.data?.[0]?.rowData?.[0]?.values?.[0]?.note || "";
+        const firstIdx = curNote.indexOf("{App ID:");
+        if (firstIdx !== -1) {
+          finalTopNote = curNote.substring(0, firstIdx).trim();
+        } else if (!curNote.includes("{")) {
+          finalTopNote = curNote.trim();
+        }
+      } catch (e) {}
+    }
+
+    const blockStr = (blocks || []).map(b =>
       `{App ID: ${b.appId}}{Amt: ${b.amount}}{Status:${b.status ? " " + b.status : ""}}{Rec date:${b.recDate ? " " + b.recDate : ""}}{Pay date:${b.payDate ? " " + b.payDate : ""}}{Description:${b.description ? " " + b.description : ""}}`
     ).join("\n");
+
+    const noteStr = finalTopNote
+      ? (finalTopNote + (blockStr ? "\n" + blockStr : ""))
+      : blockStr;
 
     const cellTotal = (blocks || [])
       .filter(b => !b.appId.startsWith("UNRECON-GAP"))
       .reduce((sum, b) => sum + (parseFloat(b.amount) || 0), 0);
 
     const cellRef = `Outgoings!${colLetter}${sheetRow}`;
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: sheetIdClean,
-      range: cellRef,
-      valueInputOption: "USER_ENTERED",
-      requestBody: { values: [[cellTotal || ""]] },
-    });
+    if (blocks !== undefined) {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: sheetIdClean,
+        range: cellRef,
+        valueInputOption: "USER_ENTERED",
+        requestBody: { values: [[cellTotal || ""]] },
+      });
+    }
 
     const colIndex = colLetterToNum(colLetter) - 1; 
     const rowIndex = sheetRow - 1; 

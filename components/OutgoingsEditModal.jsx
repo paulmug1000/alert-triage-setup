@@ -24,11 +24,14 @@ export default function OutgoingsEditModal({ editCellData, outgoingsData, update
   const [blocks, setBlocks] = useState(
     (contractor.cells[colLetter]?.blocks || []).filter(b => !b.appId.startsWith("UNRECON-GAP"))
   );
+  const [topNote, setTopNote] = useState(
+    editCellData.topNote ?? contractor.cells[colLetter]?.topNote ?? ""
+  );
   const [saving, setSaving] = useState(false);
   const [savedMsg, setSavedMsg] = useState("");
   const [splitAmts, setSplitAmts] = useState({});
   
-  // Track whether blocks have been modified since last write
+  // Track whether blocks or note have been modified since last write
   const dirtyRef = useRef(false);
   const blocksRef = useRef(blocks);
   useEffect(() => { blocksRef.current = blocks; }, [blocks]);
@@ -46,7 +49,7 @@ export default function OutgoingsEditModal({ editCellData, outgoingsData, update
     if (!dirtyRef.current) { onClose(); return; }
     setSaving(true);
     setSavedMsg("");
-    await updateCell(contractor, colLetter, blocksRef.current);
+    await updateCell(contractor, colLetter, blocksRef.current, topNote);
     setSaving(false);
     setSavedMsg("Saved ✓");
     await new Promise(r => setTimeout(r, 600));
@@ -100,6 +103,36 @@ export default function OutgoingsEditModal({ editCellData, outgoingsData, update
             <div style={{ fontSize: "12px", color: "#666", marginTop: "2px" }}>{fmtMonthLabel(monthLabel)}</div>
           </div>
           <button onClick={onClose} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}>x</button>
+        </div>
+
+        {/* Top-level cell note (synced to Google Sheet cell note) */}
+        <div style={{ marginBottom: "16px", background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "8px", padding: "12px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+            <label style={{ fontSize: "12px", fontWeight: 700, color: "#334155" }}>
+              Cell note
+            </label>
+            <span style={{ fontSize: "11px", color: "#64748b" }}>Synced to Google Sheet cell note</span>
+          </div>
+          <textarea
+            value={topNote}
+            onChange={(e) => {
+              dirtyRef.current = true;
+              setTopNote(e.target.value);
+            }}
+            placeholder="Add note for this cell..."
+            rows={2}
+            style={{
+              width: "100%",
+              padding: "8px 10px",
+              fontSize: "12px",
+              lineHeight: "1.4",
+              borderRadius: "6px",
+              border: "1px solid #cbd5e1",
+              boxSizing: "border-box",
+              fontFamily: "inherit",
+              resize: "vertical",
+            }}
+          />
         </div>
 
         {blocks.length === 0 && <div style={{ color: "#bbb", fontSize: "13px", textAlign: "center", padding: "24px 0" }}>No expenses in this cell</div>}

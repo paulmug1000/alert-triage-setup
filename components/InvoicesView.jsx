@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import Spinner from "./Spinner";
 import InvoicesEditModal from "./InvoicesEditModal";
 import InvoicesNewJobModal from "./InvoicesNewJobModal";
+import EditClientSelector from "./EditClientSelector";
 import { useInvoices } from "../hooks/useInvoices";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useTriage } from "../contexts/TriageContext";
@@ -550,11 +551,81 @@ export default function InvoicesView({
         />
       )}
 
-      <div style={{ padding: "20px" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
-          <h2 style={{ margin: 0, fontSize: "20px", fontWeight: "700" }}>
-            {invoicesClient ? invoicesClient.clientName : "Invoices"}
-          </h2>
+      <div style={{ maxWidth: "1600px", margin: "0 auto", padding: "16px 24px 60px" }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            flexWrap: "wrap",
+            gap: "16px",
+            marginBottom: "20px",
+            background: "#ffffff",
+            padding: "16px 20px",
+            borderRadius: "8px",
+            boxShadow: "0 1px 3px rgba(0,0,0,0.06)",
+            border: "1px solid #e2e8f0",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+            {invoicesClient && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (managedClient && onClearManagedClient) {
+                    onClearManagedClient();
+                  } else {
+                    setInvoicesClient(null);
+                    setInvoicesInbox([]);
+                    setInvoicesJobs(null);
+                  }
+                }}
+                style={{
+                  background: "#ffffff",
+                  border: "1px solid #cbd5e1",
+                  borderRadius: "6px",
+                  cursor: "pointer",
+                  padding: "6px 12px",
+                  fontSize: "16px",
+                  color: "#475569",
+                  lineHeight: 1,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  transition: "all 0.15s ease",
+                  boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = "#f1f5f9";
+                  e.currentTarget.style.borderColor = "#94a3b8";
+                  e.currentTarget.style.color = "#0f172a";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = "#ffffff";
+                  e.currentTarget.style.borderColor = "#cbd5e1";
+                  e.currentTarget.style.color = "#475569";
+                }}
+                title="Back to client list"
+              >
+                ←
+              </button>
+            )}
+            <div>
+              <h1 style={{ margin: 0, fontSize: "20px", fontWeight: 700, color: "#1e293b", display: "flex", alignItems: "center", gap: "8px" }}>
+                <span>Invoices</span>
+              </h1>
+              {invoicesClient ? (
+                <div style={{ margin: "3px 0 0", fontSize: "14px", fontWeight: 600, color: "#0047AB" }}>
+                  {invoicesClient.clientName}
+                </div>
+              ) : (
+                <p style={{ margin: "4px 0 0", fontSize: "13px", color: "#64748b" }}>
+                  Select a client to view and edit invoices
+                </p>
+              )}
+            </div>
+          </div>
+
           {invoicesClient && (
             <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
               {isAdmin && (
@@ -580,83 +651,44 @@ export default function InvoicesView({
                   <span>{viewMode === "modern" ? "📋 Legacy View" : "✨ Modern View"}</span>
                 </button>
               )}
-              <button className="triage-btn" onClick={() => {
-                loadInvoicesInbox(invoicesClient);
-                loadInvoicesJobs(invoicesClient, invoicesShowAll);
-              }}
-                style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px" }}
-                title="Refresh jobs and invoices from live sheets">
+              <button
+                className="triage-btn"
+                onClick={() => {
+                  loadInvoicesInbox(invoicesClient);
+                  loadInvoicesJobs(invoicesClient, invoicesShowAll);
+                }}
+                style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 12px" }}
+                title="Refresh jobs and invoices from live sheets"
+              >
                 ↻ Refresh
-              </button>
-              <button className="triage-btn" onClick={() => {
-                if (managedClient && onClearManagedClient) {
-                  onClearManagedClient();
-                } else {
-                  setInvoicesClient(null);
-                  setInvoicesInbox([]);
-                  setInvoicesJobs(null);
-                }
-              }}
-                style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px" }}>
-                ← Back to Clients
               </button>
             </div>
           )}
         </div>
 
         {noInvClient && (
-          <div style={{ background: "#fff", borderRadius: "12px", border: "1px solid #e0e0e0", padding: "24px" }}>
-            <p style={{ margin: "0 0 16px", fontSize: "14px", color: "#666" }}>Select a client to view invoices:</p>
-            {(() => {
-              const allClients = allOutgoingsClients || [];
-              const clientsWithInbox = allClients.filter(c =>
-                clientsWithFlags?.some(f => f.clientName === c.clientName &&
-                  (f.flags?.invoiceDashboardDiscr))
+          <EditClientSelector
+            clients={allOutgoingsClients || []}
+            onSelectClient={(c) => {
+              setInvoicesClient(c);
+              loadInvoicesInbox(c);
+              loadInvoicesJobs(c, false);
+              setInvoicesShowAll(false);
+            }}
+            loading={invoicesJobsLoading || invoicesInboxLoading}
+            title="Select a client to view and edit invoices:"
+            renderExtra={(c) => {
+              const hasFlag = clientsWithFlags?.some(
+                f => f.clientName === c.clientName && f.flags?.invoiceDashboardDiscr
               );
-              const clientsNoInbox = allClients.filter(c => !clientsWithInbox.includes(c));
-              const renderClientBtn = (c) => (
-                <button key={c.clientName} className="triage-btn"
-                  onClick={() => {
-                    setInvoicesClient(c);
-                    loadInvoicesInbox(c);
-                    loadInvoicesJobs(c, false);
-                    setInvoicesShowAll(false);
-                  }}
-                  style={{
-                    padding: "10px 16px", background: "#fff8e1",
-                    border: "1px solid #ffe082",
-                    borderRadius: "8px", cursor: "pointer", textAlign: "left", fontSize: "14px", fontWeight: "500", width: "100%"
-                  }}>
-                  {c.clientName}
-                </button>
-              );
-              const renderClientBtnPlain = (c) => (
-                <button key={c.clientName} className="triage-btn"
-                  onClick={() => {
-                    setInvoicesClient(c);
-                    loadInvoicesInbox(c);
-                    loadInvoicesJobs(c, false);
-                    setInvoicesShowAll(false);
-                  }}
-                  style={{ ...styles.buttonSecondary, textAlign: "left", padding: "12px 16px", fontSize: "14px" }}>
-                  {c.clientName}
-                </button>
-              );
+              if (!hasFlag) return null;
               return (
-                <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                  {clientsWithInbox.length > 0 && clientsNoInbox.length > 0 && (
-                    <div style={{ fontSize: "11px", fontWeight: "700", color: "#e65100", textTransform: "uppercase", letterSpacing: "0.05em", padding: "6px 0 2px" }}>Invoices to assign</div>
-                  )}
-                  {clientsWithInbox.map(renderClientBtn)}
-                  {clientsNoInbox.length > 0 && clientsWithInbox.length > 0 && (
-                    <div style={{ fontSize: "11px", fontWeight: "700", color: "#888", textTransform: "uppercase", letterSpacing: "0.05em", padding: "6px 0 2px" }}>No invoices to assign</div>
-                  )}
-                  {clientsNoInbox.map(renderClientBtnPlain)}
-                  {allClients.length === 0 && <p style={{ color: "#999", fontSize: "13px" }}>No clients loaded yet - go to Home and refresh first.</p>}
-                </div>
+                <span style={{ fontSize: "11px", background: "#f59e0b", color: "#fff", borderRadius: "10px", padding: "1px 7px", fontWeight: "600" }}>
+                  Invoices to assign
+                </span>
               );
-            })()}
-          </div>
+            }}
+          />
         )}
 
         {!noInvClient && (

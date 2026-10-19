@@ -1,4 +1,4 @@
-import { getSheetsClient, withRetry, colLetterToNum, extractSheetIdFromUrl } from "./sheetsClient";
+import { getSheetsClient, withRetry, colLetterToNum, colIndexToLetter, getSheetGid, extractSheetIdFromUrl } from "./sheetsClient";
 import { resolveClientNameBySheetId } from "./workspaces";
 import { logPmaActivity } from "./pmaLogger";
 import { getSessionUser } from "./authService";
@@ -77,6 +77,7 @@ export function parseCell(cell) {
 
   const res = {};
   if (val !== "") res.v = val;
+  if (cell.note) res.note = cell.note;
   if (bg) res.bg = bg;
   if (fg) res.c = fg;
   if (tf.bold) res.b = true;
@@ -90,7 +91,7 @@ export function parseCell(cell) {
   return Object.keys(res).length > 0 ? res : null;
 }
 
-const FIELDS = "sheets(properties.title,data.rowData.values(formattedValue,effectiveFormat(backgroundColor,textFormat(bold,italic,foregroundColor),horizontalAlignment,borders)))";
+const FIELDS = "sheets(properties.title,data.rowData.values(formattedValue,note,effectiveFormat(backgroundColor,textFormat(bold,italic,foregroundColor),horizontalAlignment,borders)))";
 
 export function isBudgetCellEditable(sheetRow, colIdx) {
   const isMonthCol =
@@ -762,3 +763,119 @@ export async function handleSpreadViewRow(req, res, sheets) {
     return res.status(500).json({ success: false, error: err.message });
   }
 }
+
+/**
+ * Update or clear a cell note on any spreadsheet tab (Budget, Salaries, Outgoings, NBtoFind)
+ */
+export async function handleUpdateCellNote(req, res, sheets) {
+  const { clientSheetId, masterSheetId, tab = "Budget", sheetRow, colLetter, colIdx, note = "", clientName } = req.body;
+
+  if (!clientSheetId && !masterSheetId) {
+    return res.status(400).json({ success: false, error: "Missing sheet ID" });
+  }
+  if (!sheetRow) {
+    return res.status(400).json({ success: false, error: "Missing sheetRow" });
+  }
+
+  const rowNum = parseInt(sheetRow, 10);
+  let colIndex = 0;
+  let finalColLetter = colLetter || "A";
+  if (colIdx !== undefined) {
+    colIndex = parseInt(colIdx, 10);
+    finalColLetter = colIndexToLetter(colIndex + 1);
+  } else if (colLetter) {
+    colIndex = colLetterToNum(colLetter) - 1;
+    finalColLetter = String(colLetter).toUpperCase();
+  }
+
+  const targetTabNormalized = String(tab || "").toLowerCase();
+  let targetTab = "Budget";
+  let targetSpreadsheetId = masterSheetId || clientSheetId;
+
+  if (targetTabNormalized.includes("budget")) {
+    targetTab = "Budget";
+    targetSpreadsheetId = masterSheetId || clientSheetId;
+  } else if (targetTabNormalized.includes("outgoings")) {
+    targetTab = "Outgoings";
+    targetSpreadsheetId = clientSheetId;
+  } else if (targetTabNormalized.includes("nbtofind")) {
+    targetTab = "NBtoFind";
+    targetSpreadsheetId = clientSheetId;
+  } else if (targetTabNormalized.includes("salaries")) {
+    targetTab = "Salaries";
+    targetSpreadsheetId = masterSheetId;
+  } else {
+    targetTab = tab;
+  }
+
+  try {
+    const sheetIdClean = extractSheetIdFromUrl(targetSpreadsheetId) || targetSpreadsheetId;
+    const gid = await getSheetGid(sheets, sheetIdClean, targetTab);
+    const cleanNote = String(note ?? "");
+
+    await withRetry(() =>
+      sheets.spreadsheets.batchUpdate({
+        spreadsheetId: sheetIdClean,
+        requestBody: {
+          requests: [
+            {
+              updateCells: {
+                range: {
+                  sheetId: gid,
+                  startRowIndex: rowNum - 1,
+                  endRowIndex: rowNum,
+                  startColumnIndex: colIndex,
+                  endColumnIndex: colIndex + 1,
+                },
+                rows: [{ values: [{ note: cleanNote }] }],
+                fields: "note",
+              },
+            },
+          ],
+        },
+      })
+    );
+
+    // Invalidate caches
+    const cleanId = extractSheetIdFromUrl(sheetIdClean) || sheetIdClean;
+    memoryCache.del(`pulse:view_data:${cleanId}:*`);
+    if (redisClient?.isOpen) {
+      redisClient.del(`pulse:view_data:${cleanId}:*`).catch(() => {});
+    }
+
+    let resolvedClient = clientName || "";
+    if (!resolvedClient) {
+      resolvedClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
+    }
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId: req.body.automationCommanderSheetId,
+      clientName: resolvedClient,
+      category: "NOTE",
+      action: cleanNote ? "Cell Note Updated" : "Cell Note Cleared",
+      summary: cleanNote
+        ? `Updated cell note on ${targetTab}!${finalColLetter}${rowNum}`
+        : `Cleared cell note on ${targetTab}!${finalColLetter}${rowNum}`,
+      details: {
+        tab: targetTab,
+        cellRef: `${finalColLetter}${rowNum}`,
+        sheetRow: rowNum,
+        colLetter: finalColLetter,
+        note: cleanNote,
+        clientName: resolvedClient,
+      },
+    }).catch((e) => console.error("PMA log failed:", e));
+
+    return res.status(200).json({
+      success: true,
+      tab: targetTab,
+      sheetRow: rowNum,
+      colLetter: finalColLetter,
+      note: cleanNote,
+    });
+  } catch (err) {
+    console.error("❌ handleUpdateCellNote error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+

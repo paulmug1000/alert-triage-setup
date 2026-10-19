@@ -4,6 +4,7 @@ import UnevenSplitModal from "./UnevenSplitModal";
 import InvoicesEditModal from "./InvoicesEditModal";
 import DirectCostsEditModal from "./DirectCostsEditModal";
 import JobsNewJobModal from "./JobsNewJobModal";
+import EditClientSelector from "./EditClientSelector";
 import { useJobs } from "../hooks/useJobs";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { isPlaceholderInvoice, isPlaceholderExpense, getRetainerRowMonthLabel } from "../utils/helpers";
@@ -1656,23 +1657,85 @@ export default function JobsView({
         />
       )}
 
-      <div style={{ padding: "24px", maxWidth: "1560px", margin: "0 auto", boxSizing: "border-box" }}>
-        {/* Top Header Bar */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "20px", flexWrap: "wrap", gap: "12px" }}>
-          <div>
-            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-              <h1 style={{ margin: 0, fontSize: "22px", fontWeight: "700", color: "#0f172a" }}>
-                {jobsClient ? jobsClient.clientName : "Jobs Management"}
+      <div style={{ maxWidth: "1600px", margin: "0 auto", padding: "16px 24px 60px" }}>
+        {/* Top Header Card */}
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            flexWrap: "wrap",
+            gap: "16px",
+            marginBottom: "20px",
+            background: "#ffffff",
+            padding: "16px 20px",
+            borderRadius: "8px",
+            boxShadow: "0 1px 3px rgba(0,0,0,0.06)",
+            border: "1px solid #e2e8f0",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+            {jobsClient && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (managedClient && onClearManagedClient) {
+                    onClearManagedClient();
+                  } else {
+                    setJobsClient(null);
+                    setJobsData(null);
+                    setDraftEdits({});
+                  }
+                }}
+                style={{
+                  background: "#ffffff",
+                  border: "1px solid #cbd5e1",
+                  borderRadius: "6px",
+                  cursor: "pointer",
+                  padding: "6px 12px",
+                  fontSize: "16px",
+                  color: "#475569",
+                  lineHeight: 1,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  transition: "all 0.15s ease",
+                  boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = "#f1f5f9";
+                  e.currentTarget.style.borderColor = "#94a3b8";
+                  e.currentTarget.style.color = "#0f172a";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = "#ffffff";
+                  e.currentTarget.style.borderColor = "#cbd5e1";
+                  e.currentTarget.style.color = "#475569";
+                }}
+                title="Back to client list"
+              >
+                ←
+              </button>
+            )}
+            <div>
+              <h1 style={{ margin: 0, fontSize: "20px", fontWeight: 700, color: "#1e293b", display: "flex", alignItems: "center", gap: "8px" }}>
+                <span>Jobs</span>
+                {jobsClient && (
+                  <span style={{ fontSize: "12px", background: "#f1f5f9", color: "#475569", padding: "2px 8px", borderRadius: "12px", fontWeight: "600" }}>
+                    {viewMode === "modern" ? "Modern View" : "Legacy View"}
+                  </span>
+                )}
               </h1>
-              {jobsClient && (
-                <span style={{ fontSize: "12px", background: "#f1f5f9", color: "#475569", padding: "3px 8px", borderRadius: "12px", fontWeight: "600" }}>
-                  {viewMode === "modern" ? "Modern View" : "Legacy View"}
-                </span>
+              {jobsClient ? (
+                <div style={{ margin: "3px 0 0", fontSize: "14px", fontWeight: 600, color: "#0047AB" }}>
+                  {jobsClient.clientName}
+                </div>
+              ) : (
+                <p style={{ margin: "4px 0 0", fontSize: "13px", color: "#64748b" }}>
+                  Select a client to view and manage jobs
+                </p>
               )}
             </div>
-            <p style={{ margin: "4px 0 0", fontSize: "13px", color: "#64748b" }}>
-              {jobsClient ? "Manage client confirmed and pipeline jobs, revenue splits, and cost allocations." : "Select a client to view and manage jobs."}
-            </p>
           </div>
 
           {jobsClient && (
@@ -1721,32 +1784,6 @@ export default function JobsView({
               >
                 <span style={{ fontSize: "15px", fontWeight: "bold" }}>+</span> Add Job
               </button>
-
-              {/* Back to Clients */}
-              <button
-                type="button"
-                onClick={() => {
-                  if (managedClient && onClearManagedClient) {
-                    onClearManagedClient();
-                  } else {
-                    setJobsClient(null);
-                    setJobsData(null);
-                    setDraftEdits({});
-                  }
-                }}
-                style={{
-                  padding: "7px 12px",
-                  borderRadius: "7px",
-                  border: "1px solid #e2e8f0",
-                  background: "#ffffff",
-                  color: "#64748b",
-                  fontSize: "13px",
-                  fontWeight: "500",
-                  cursor: "pointer"
-                }}
-              >
-                ← Back to Clients
-              </button>
             </div>
           )}
         </div>
@@ -1761,48 +1798,15 @@ export default function JobsView({
 
         {/* Client Selection Screen (when no client chosen) */}
         {noJobsClient && (
-          <div style={{ background: "#ffffff", borderRadius: "12px", border: "1px solid #e2e8f0", padding: "28px", boxShadow: "0 1px 3px rgba(0,0,0,0.05)" }}>
-            <h3 style={{ margin: "0 0 8px", fontSize: "16px", fontWeight: "600", color: "#1e293b" }}>Select a Client</h3>
-            <p style={{ margin: "0 0 20px", fontSize: "13px", color: "#64748b" }}>Choose a tenant client to inspect, edit, or configure jobs:</p>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "10px" }}>
-              {(allOutgoingsClients || []).map((c) => (
-                <button
-                  key={c.clientName}
-                  type="button"
-                  onClick={() => {
-                    setJobsClient(c);
-                    loadJobsData(c, "All");
-                  }}
-                  style={{
-                    textAlign: "left",
-                    padding: "14px 18px",
-                    background: "#f8fafc",
-                    border: "1px solid #e2e8f0",
-                    borderRadius: "8px",
-                    fontSize: "14px",
-                    fontWeight: "600",
-                    color: "#1e293b",
-                    cursor: "pointer",
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    transition: "all 0.15s ease"
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.background = "#eff6ff";
-                    e.currentTarget.style.borderColor = "#93c5fd";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = "#f8fafc";
-                    e.currentTarget.style.borderColor = "#e2e8f0";
-                  }}
-                >
-                  <span>{c.clientName}</span>
-                  <span style={{ color: "#94a3b8", fontSize: "12px" }}>→</span>
-                </button>
-              ))}
-            </div>
-          </div>
+          <EditClientSelector
+            clients={allOutgoingsClients || []}
+            onSelectClient={(c) => {
+              setJobsClient(c);
+              loadJobsData(c, "All");
+            }}
+            loading={jobsLoading}
+            title="Select a client to view and manage jobs:"
+          />
         )}
 
         {/* Main Content when Client is selected */}

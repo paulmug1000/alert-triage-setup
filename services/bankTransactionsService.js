@@ -17,6 +17,8 @@ import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "./sheetsClien
 import { getIntegrationTokens, updateRefreshedTokens, getSharedXeroGrant, updateSharedXeroGrantTokens } from "./vaultService.js";
 import { fetchXeroBankAccounts, fetchXeroAccountTransactions, refreshXeroTokens } from "./xeroService.js";
 import { fetchQuickBooksBankAccounts, fetchQuickBooksAccountTransactions, refreshQBTokens } from "./quickbooksService.js";
+import { syncReconBankTransactions, syncReconUnreconciledItems } from "./cashflowReconService.js";
+import { logPmaActivity } from "./pmaLogger.js";
 
 /**
  * Standard category set matching the Recon Sheet U3:U16 range
@@ -953,5 +955,309 @@ export async function recategoriseTransactions({
     success: true,
     total: updated.length,
     transactions: updated
+  };
+}
+
+import {
+  parseAmount,
+  normalizeDateStr,
+  matchAndRemoveFromUnreconPool,
+  performTransactionsUpdate
+} from "./reconTransactionsMerge.js";
+
+export {
+  parseAmount,
+  normalizeDateStr,
+  matchAndRemoveFromUnreconPool,
+  performTransactionsUpdate
+};
+
+
+/**
+ * Automatically reconciles client bank transactions against the Recon Sheet:
+ * 1. Resolves Master Sheet and Recon Sheet IDs.
+ * 2. Identifies target month tabs (e.g. "2609").
+ * 3. Fetches reconciled bank transactions from QuickBooks or Xero.
+ * 4. Reads existing transactions (A3:Q) and unreconciled items (CD4:CN) for each target month.
+ * 5. Executes performTransactionsUpdate to gradually clear reconciled items from CD4:CN.
+ * 6. Saves updated bank transactions and updated unreconciled items back to the Recon Sheet.
+ */
+export async function autoReconcileClientBankTransactions({
+  clientName,
+  masterSheetId,
+  reconSheetId,
+  monthKey, // optional: "YYYY-MM" or array of monthKeys
+  automationCommanderSheetId
+}) {
+  if (!clientName && !masterSheetId) {
+    throw new Error("Missing clientName or masterSheetId");
+  }
+
+  const sheets = await getSheetsClient();
+  let cleanMasterId = masterSheetId ? (extractSheetIdFromUrl(masterSheetId) || masterSheetId) : null;
+  let cleanReconId = reconSheetId ? (extractSheetIdFromUrl(reconSheetId) || reconSheetId) : null;
+  let resolvedClient = clientName || "";
+
+  // 1. Resolve missing clientName, masterSheetId, or reconSheetId
+  if ((!cleanMasterId || !cleanReconId) && (resolvedClient || cleanMasterId)) {
+    try {
+      const acId = automationCommanderSheetId || process.env.AUTOMATION_COMMANDER_SHEET_ID || "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
+      const resp = await withRetry(() => sheets.spreadsheets.values.get({
+        spreadsheetId: acId,
+        range: "AutoUpdates!A2:M500"
+      }));
+      const rows = resp.data.values || [];
+      const match = rows.find(r => {
+        const cName = String(r[0] || "").trim().toLowerCase();
+        const mUrl = String(r[12] || "").trim();
+        const mId = extractSheetIdFromUrl(mUrl) || mUrl;
+        if (cleanMasterId && mId === cleanMasterId) return true;
+        if (resolvedClient && cName.includes(resolvedClient.toLowerCase().trim())) return true;
+        return false;
+      });
+      if (match) {
+        if (!resolvedClient) resolvedClient = String(match[0] || "").trim();
+        if (!cleanMasterId) cleanMasterId = extractSheetIdFromUrl(match[12]) || String(match[12] || "").trim();
+        if (!cleanReconId && match[9]) cleanReconId = extractSheetIdFromUrl(match[9]) || String(match[9] || "").trim();
+      }
+    } catch (e) {
+      console.warn("⚠️ Could not lookup client in AutoUpdates:", e.message);
+    }
+  }
+
+  // Fallback: Read Recon Sheet URL from KeyInfo!G1 on Master Sheet
+  if (!cleanReconId && cleanMasterId) {
+    try {
+      const g1Resp = await withRetry(() => sheets.spreadsheets.values.get({
+        spreadsheetId: cleanMasterId,
+        range: "KeyInfo!G1"
+      }));
+      const g1Val = g1Resp.data.values?.[0]?.[0];
+      if (g1Val) cleanReconId = extractSheetIdFromUrl(g1Val) || g1Val;
+    } catch (e) {
+      console.warn("⚠️ Could not read KeyInfo!G1 from master sheet:", e.message);
+    }
+  }
+
+  if (!cleanReconId) {
+    throw new Error(`Recon Sheet ID not configured for client: ${resolvedClient || masterSheetId}`);
+  }
+
+  // 2. Determine target tabs in the Recon Sheet
+  const reconMeta = await withRetry(() => sheets.spreadsheets.get({
+    spreadsheetId: cleanReconId,
+    fields: "sheets.properties.title"
+  }));
+  const allTabs = (reconMeta.data.sheets || []).map(s => s.properties.title);
+  const monthlyTabs = allTabs.filter(t => /^\d{4}$/.test(t));
+
+  let targetTabs = [];
+
+  if (monthKey) {
+    const keys = Array.isArray(monthKey) ? monthKey : [monthKey];
+    keys.forEach(k => {
+      if (/^\d{4}-\d{2}$/.test(k)) {
+        const tab = `${k.slice(2, 4)}${k.slice(5, 7)}`;
+        if (monthlyTabs.includes(tab) && !targetTabs.includes(tab)) {
+          targetTabs.push(tab);
+        }
+      } else if (/^\d{4}$/.test(k)) {
+        if (monthlyTabs.includes(k) && !targetTabs.includes(k)) {
+          targetTabs.push(k);
+        }
+      }
+    });
+  } else {
+    // Auto-detect: inspect which tabs have unreconciled items in CD4:CN, plus the latest 2 monthly tabs
+    const checkRanges = monthlyTabs.map(t => `'${t}'!CD4:CI10`);
+    const tabsWithUnrecon = new Set();
+    if (checkRanges.length > 0) {
+      try {
+        const batchCheck = await withRetry(() => sheets.spreadsheets.values.batchGet({
+          spreadsheetId: cleanReconId,
+          ranges: checkRanges,
+          valueRenderOption: "FORMATTED_VALUE"
+        }));
+        (batchCheck.data.valueRanges || []).forEach((vr, idx) => {
+          const tabName = monthlyTabs[idx];
+          const hasRows = (vr.values || []).some(row => (row[2] || row[3] || row[5]));
+          if (hasRows) {
+            tabsWithUnrecon.add(tabName);
+          }
+        });
+      } catch (err) {
+        console.warn("⚠️ Could not batch check unreconciled ranges:", err.message);
+      }
+    }
+
+    // Always include any tab with unreconciled items, plus the latest 2 monthly tabs
+    monthlyTabs.forEach((t, idx) => {
+      if (tabsWithUnrecon.has(t) || idx < 2) {
+        if (!targetTabs.includes(t)) targetTabs.push(t);
+      }
+    });
+  }
+
+  if (targetTabs.length === 0) {
+    return {
+      success: true,
+      clientName: resolvedClient,
+      message: "No active monthly tabs found to reconcile",
+      reconciledMonths: []
+    };
+  }
+
+  const results = [];
+
+  for (const tabName of targetTabs) {
+    const yy = parseInt(tabName.slice(0, 2), 10);
+    const mm = parseInt(tabName.slice(2, 4), 10);
+    const fullYear = yy < 100 ? 2000 + yy : yy;
+    const tabMonthKey = `${fullYear}-${String(mm).padStart(2, "0")}`;
+
+    // Read existing bank transactions, unreconciled items, and tracked bank accounts
+    const rangesToFetch = [
+      `'${tabName}'!A3:Q200`,
+      `'${tabName}'!CD4:CN60`,
+      `'KeyInfo'!H12:H21`
+    ];
+
+    const batchRes = await withRetry(() => sheets.spreadsheets.values.batchGet({
+      spreadsheetId: cleanReconId,
+      ranges: rangesToFetch,
+      valueRenderOption: "FORMATTED_VALUE"
+    }));
+
+    const rawTx = batchRes.data.valueRanges?.[0]?.values || [];
+    const rawUnrecon = batchRes.data.valueRanges?.[1]?.values || [];
+    const rawAccounts = batchRes.data.valueRanges?.[2]?.values || [];
+
+    const trackedBankAccounts = rawAccounts
+      .map(r => String(r[0] || "").trim())
+      .filter(acc => acc && !acc.toLowerCase().includes("non-cash") && !acc.endsWith(":"));
+
+    const defaultAccount = trackedBankAccounts[0] || "";
+
+    const currentBankTxns = rawTx.map((r, i) => {
+      const date = r[1] || r[0] || "";
+      const accountName = String(r[2] || "").trim();
+      const payee = r[3] || r[4] || "";
+      const particulars = r[4] || "";
+      const ref = r[6] || r[5] || "";
+      const outAmt = r[8] || "";
+      const inAmt = r[9] || "";
+      const category = String(r[16] || "").trim();
+      return {
+        rowNum: i + 3,
+        date,
+        accountName: accountName || defaultAccount,
+        payee,
+        particulars,
+        reference: ref,
+        outAmount: outAmt,
+        inAmount: inAmt,
+        category,
+        suggestedCategory: category
+      };
+    }).filter(t => t.date || t.payee || t.outAmount || t.inAmount);
+
+    const currentUnreconItems = rawUnrecon.map((r, i) => {
+      const date = r[2] || "";
+      const payee = r[3] || "";
+      const particulars = r[4] || "";
+      const amount = r[5] || "";
+      const category = String(r[9] || "").trim();
+      const vatApplies = String(r[10] || "").trim() || "No";
+      return {
+        rowNum: i + 4,
+        date,
+        payee,
+        particulars,
+        amount,
+        outAmount: amount,
+        category,
+        vatApplies
+      };
+    }).filter(u => u.date || u.payee || u.amount);
+
+    // Fetch live API transactions
+    let apiData = null;
+    try {
+      apiData = await fetchClientReconciledBankTransactions({
+        clientName: resolvedClient,
+        masterSheetId: cleanMasterId,
+        reconSheetId: cleanReconId,
+        monthKey: tabMonthKey
+      });
+    } catch (apiErr) {
+      console.warn(`⚠️ Failed to fetch API bank transactions for ${resolvedClient} (${tabMonthKey}):`, apiErr.message);
+      results.push({
+        tabName,
+        monthKey: tabMonthKey,
+        success: false,
+        error: apiErr.message
+      });
+      continue;
+    }
+
+    const incomingApiTxns = apiData.transactions || [];
+    const incomingNonCashTxns = apiData.nonCashTransactions || [];
+
+    // Perform intelligent delta reconciliation update
+    const updateResult = performTransactionsUpdate({
+      currentBankTxns,
+      currentUnreconItems,
+      incomingApiTxns,
+      incomingNonCashTxns,
+      defaultAccount
+    });
+
+    // Save updated transactions and unreconciled items back to the Recon Sheet
+    await Promise.all([
+      syncReconBankTransactions({
+        reconSheetId: cleanReconId,
+        tabName,
+        transactions: updateResult.nextBankTxns
+      }),
+      syncReconUnreconciledItems({
+        reconSheetId: cleanReconId,
+        tabName,
+        unreconciledItems: updateResult.nextUnreconItems
+      })
+    ]);
+
+    results.push({
+      tabName,
+      monthKey: tabMonthKey,
+      success: true,
+      matchedFromUnreconCount: updateResult.matchedFromUnreconCount,
+      matchedNonCashCount: updateResult.matchedNonCashCount,
+      newAddedCount: updateResult.newAddedCount,
+      updatedCount: updateResult.updatedCount,
+      deletedCount: updateResult.deletedCount,
+      remainingUnreconCount: updateResult.nextUnreconItems.length
+    });
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId,
+      clientName: resolvedClient,
+      category: "CASH_RECON",
+      action: "Auto Reconcile Bank Feeds",
+      summary: `Auto-reconciled ${tabName}: ${updateResult.matchedFromUnreconCount} cash unreconciled cleared, ${updateResult.matchedNonCashCount} non-cash cleared, ${updateResult.newAddedCount} new added`,
+      details: {
+        tabName,
+        monthKey: tabMonthKey,
+        matchedFromUnrecon: updateResult.matchedFromUnreconCount,
+        matchedNonCash: updateResult.matchedNonCashCount,
+        remainingUnrecon: updateResult.nextUnreconItems.length,
+        clientName: resolvedClient
+      }
+    }).catch(e => console.error("PMA log failed:", e));
+  }
+
+  return {
+    success: true,
+    clientName: resolvedClient,
+    reconciledMonths: results
   };
 }

@@ -1,11 +1,11 @@
-import { getSheetsClient, withRetry, extractSheetIdFromUrl, colLetterToNum, colIndexToLetter, getSheetGid, getSheetId, applySheetFontFormat } from "./sheetsClient";
-import { setMasterSwitch, checkAllGASLocks, fetchJobRowsForDisplay } from "./sharedHelpers";
-import { logPmaActivity, DEFAULT_AC_SHEET_ID } from "./pmaLogger";
-import { isPlaceholderInvoice, toSheetDateFormat } from "../utils/helpers";
-import { getSessionUser } from "./authService";
-import { isUserAuthorizedForClient, matchesClientName, sanitizeFormulaInput, getClientManagerClientMap } from "./userPermissions";
-import { redisClient } from "./redisClient";
-import { memoryCache } from "./cacheService";
+import { getSheetsClient, withRetry, extractSheetIdFromUrl, colLetterToNum, colIndexToLetter, getSheetGid, getSheetId, applySheetFontFormat } from "./sheetsClient.js";
+import { setMasterSwitch, checkAllGASLocks, fetchJobRowsForDisplay } from "./sharedHelpers.js";
+import { logPmaActivity, DEFAULT_AC_SHEET_ID } from "./pmaLogger.js";
+import { isPlaceholderInvoice, toSheetDateFormat } from "../utils/helpers.js";
+import { getSessionUser } from "./authService.js";
+import { isUserAuthorizedForClient, matchesClientName, sanitizeFormulaInput, getClientManagerClientMap } from "./userPermissions.js";
+import { redisClient } from "./redisClient.js";
+import { memoryCache } from "./cacheService.js";
 
 let _allClientsMemoryCache = null;
 let _allClientsCachedAt = 0;

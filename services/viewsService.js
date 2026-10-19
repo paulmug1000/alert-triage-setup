@@ -1,10 +1,10 @@
-import { getSheetsClient, withRetry, colLetterToNum, colIndexToLetter, getSheetGid, extractSheetIdFromUrl } from "./sheetsClient";
-import { resolveClientNameBySheetId } from "./workspaces";
-import { logPmaActivity } from "./pmaLogger";
-import { getSessionUser } from "./authService";
-import { isUserAuthorizedForClient, sanitizeFormulaInput } from "./userPermissions";
-import { memoryCache } from "./cacheService";
-import { redisClient } from "./redisClient";
+import { getSheetsClient, withRetry, colLetterToNum, colIndexToLetter, getSheetGid, extractSheetIdFromUrl } from "./sheetsClient.js";
+import { resolveClientNameBySheetId } from "./workspaces.js";
+import { logPmaActivity } from "./pmaLogger.js";
+import { getSessionUser } from "./authService.js";
+import { isUserAuthorizedForClient, sanitizeFormulaInput } from "./userPermissions.js";
+import { memoryCache } from "./cacheService.js";
+import { redisClient } from "./redisClient.js";
 
 
 const MONTH_NAMES = {

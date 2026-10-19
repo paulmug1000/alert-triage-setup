@@ -255,14 +255,81 @@ export async function fetchQuickBooksAccountTransactions({ accessToken, realmId,
 
   const results = [];
 
-  // 1. Deposits (Money In)
+  // 1. Customer Payments (Money In on sales invoices)
   try {
-    const depQuery = `select * from Deposit where DepositToAccountRef = '${accountId}' and TxnDate >= '${startDate}' and TxnDate <= '${endDate}' maxresults 1000`;
+    const payQuery = `select * from Payment where TxnDate >= '${startDate}' and TxnDate <= '${endDate}' maxresults 1000`;
+    const payUrl = `https://quickbooks.api.intuit.com/v3/company/${realmId}/query?query=${encodeURIComponent(payQuery)}&minorversion=73`;
+    const payRes = await fetch(payUrl, { method: "GET", headers });
+    if (payRes.ok) {
+      const payData = await payRes.json();
+      (payData?.QueryResponse?.Payment || []).forEach(p => {
+        if (p.DepositToAccountRef?.value !== String(accountId)) return;
+        const total = Math.abs(parseFloat(p.TotalAmt) || 0);
+        const payee = p.CustomerRef?.name || "";
+        const memo = p.PrivateNote || `Payment from ${payee}`;
+
+        results.push({
+          sourceId: p.Id,
+          sourceType: "qb_payment",
+          date: p.TxnDate,
+          payee,
+          particulars: memo,
+          reference: p.PaymentRefNum || p.DocNumber || "",
+          outAmount: 0,
+          inAmount: total,
+          rawType: "Payment",
+          isReconciled: true,
+          suggestedCategory: "Revenue",
+          category: "Revenue"
+        });
+      });
+    }
+  } catch (err) {
+    console.warn("⚠️ Error fetching QB Payments:", err.message);
+  }
+
+  // 2. Sales Receipts (Money In on direct sales)
+  try {
+    const srQuery = `select * from SalesReceipt where TxnDate >= '${startDate}' and TxnDate <= '${endDate}' maxresults 1000`;
+    const srUrl = `https://quickbooks.api.intuit.com/v3/company/${realmId}/query?query=${encodeURIComponent(srQuery)}&minorversion=73`;
+    const srRes = await fetch(srUrl, { method: "GET", headers });
+    if (srRes.ok) {
+      const srData = await srRes.json();
+      (srData?.QueryResponse?.SalesReceipt || []).forEach(sr => {
+        if (sr.DepositToAccountRef?.value !== String(accountId)) return;
+        const total = Math.abs(parseFloat(sr.TotalAmt) || 0);
+        const payee = sr.CustomerRef?.name || "";
+        const memo = sr.PrivateNote || sr.Line?.[0]?.Description || `Sales receipt from ${payee}`;
+
+        results.push({
+          sourceId: sr.Id,
+          sourceType: "qb_sales_receipt",
+          date: sr.TxnDate,
+          payee,
+          particulars: memo,
+          reference: sr.DocNumber || "",
+          outAmount: 0,
+          inAmount: total,
+          rawType: "SalesReceipt",
+          isReconciled: true,
+          suggestedCategory: "Revenue",
+          category: "Revenue"
+        });
+      });
+    }
+  } catch (err) {
+    console.warn("⚠️ Error fetching QB SalesReceipts:", err.message);
+  }
+
+  // 3. Deposits (Money In)
+  try {
+    const depQuery = `select * from Deposit where TxnDate >= '${startDate}' and TxnDate <= '${endDate}' maxresults 1000`;
     const depUrl = `https://quickbooks.api.intuit.com/v3/company/${realmId}/query?query=${encodeURIComponent(depQuery)}&minorversion=73`;
     const depRes = await fetch(depUrl, { method: "GET", headers });
     if (depRes.ok) {
       const depData = await depRes.json();
       (depData?.QueryResponse?.Deposit || []).forEach(dep => {
+        if (dep.DepositToAccountRef?.value !== String(accountId)) return;
         const total = Math.abs(parseFloat(dep.TotalAmt) || 0);
         const payee = dep.Line?.[0]?.DepositLineDetail?.Entity?.DisplayName || "";
         const memo = dep.PrivateNote || dep.Line?.[0]?.Description || payee;
@@ -278,7 +345,8 @@ export async function fetchQuickBooksAccountTransactions({ accessToken, realmId,
           inAmount: total,
           rawType: "Deposit",
           isReconciled: true,
-          suggestedCategory: "Revenue"
+          suggestedCategory: "Revenue",
+          category: "Revenue"
         });
       });
     }
@@ -286,14 +354,64 @@ export async function fetchQuickBooksAccountTransactions({ accessToken, realmId,
     console.warn("⚠️ Error fetching QB Deposits:", err.message);
   }
 
-  // 2. Purchases (Money Out)
+  // 4. Transfers (Money between accounts)
   try {
-    const purQuery = `select * from Purchase where AccountRef = '${accountId}' and TxnDate >= '${startDate}' and TxnDate <= '${endDate}' maxresults 1000`;
+    const trQuery = `select * from Transfer where TxnDate >= '${startDate}' and TxnDate <= '${endDate}' maxresults 1000`;
+    const trUrl = `https://quickbooks.api.intuit.com/v3/company/${realmId}/query?query=${encodeURIComponent(trQuery)}&minorversion=73`;
+    const trRes = await fetch(trUrl, { method: "GET", headers });
+    if (trRes.ok) {
+      const trData = await trRes.json();
+      (trData?.QueryResponse?.Transfer || []).forEach(tr => {
+        const toAcc = tr.ToAccountRef?.value;
+        const fromAcc = tr.FromAccountRef?.value;
+        const amount = Math.abs(parseFloat(tr.Amount) || 0);
+
+        if (toAcc === String(accountId)) {
+          results.push({
+            sourceId: tr.Id,
+            sourceType: "qb_transfer",
+            date: tr.TxnDate,
+            payee: tr.FromAccountRef?.name || "Bank transfer",
+            particulars: tr.PrivateNote || `Transfer from ${tr.FromAccountRef?.name || "account"}`,
+            reference: "",
+            outAmount: 0,
+            inAmount: amount,
+            rawType: "Transfer",
+            isReconciled: true,
+            suggestedCategory: "Transfer",
+            category: "Transfer"
+          });
+        } else if (fromAcc === String(accountId)) {
+          results.push({
+            sourceId: tr.Id,
+            sourceType: "qb_transfer",
+            date: tr.TxnDate,
+            payee: tr.ToAccountRef?.name || "Bank transfer",
+            particulars: tr.PrivateNote || `Transfer to ${tr.ToAccountRef?.name || "account"}`,
+            reference: "",
+            outAmount: amount,
+            inAmount: 0,
+            rawType: "Transfer",
+            isReconciled: true,
+            suggestedCategory: "Transfer",
+            category: "Transfer"
+          });
+        }
+      });
+    }
+  } catch (err) {
+    console.warn("⚠️ Error fetching QB Transfers:", err.message);
+  }
+
+  // 5. Purchases (Money Out)
+  try {
+    const purQuery = `select * from Purchase where TxnDate >= '${startDate}' and TxnDate <= '${endDate}' maxresults 1000`;
     const purUrl = `https://quickbooks.api.intuit.com/v3/company/${realmId}/query?query=${encodeURIComponent(purQuery)}&minorversion=73`;
     const purRes = await fetch(purUrl, { method: "GET", headers });
     if (purRes.ok) {
       const purData = await purRes.json();
       (purData?.QueryResponse?.Purchase || []).forEach(pur => {
+        if (pur.AccountRef?.value !== String(accountId)) return;
         const total = Math.abs(parseFloat(pur.TotalAmt) || 0);
         const payee = pur.EntityRef?.name || "";
         const memo = pur.PrivateNote || pur.Line?.[0]?.Description || payee;
@@ -316,14 +434,16 @@ export async function fetchQuickBooksAccountTransactions({ accessToken, realmId,
     console.warn("⚠️ Error fetching QB Purchases:", err.message);
   }
 
-  // 3. Bill Payments (Money Out)
+  // 6. Bill Payments (Money Out)
   try {
-    const bpQuery = `select * from BillPayment where CheckPayment.BankAccountRef = '${accountId}' and TxnDate >= '${startDate}' and TxnDate <= '${endDate}' maxresults 1000`;
+    const bpQuery = `select * from BillPayment where TxnDate >= '${startDate}' and TxnDate <= '${endDate}' maxresults 1000`;
     const bpUrl = `https://quickbooks.api.intuit.com/v3/company/${realmId}/query?query=${encodeURIComponent(bpQuery)}&minorversion=73`;
     const bpRes = await fetch(bpUrl, { method: "GET", headers });
     if (bpRes.ok) {
       const bpData = await bpRes.json();
       (bpData?.QueryResponse?.BillPayment || []).forEach(bp => {
+        const bankRef = bp.CheckPayment?.BankAccountRef?.value || bp.CreditCardPayment?.CCAccountRef?.value;
+        if (bankRef !== String(accountId)) return;
         const total = Math.abs(parseFloat(bp.TotalAmt) || 0);
         const payee = bp.VendorRef?.name || "";
 

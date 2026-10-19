@@ -937,41 +937,63 @@ export async function syncReconBankTransactions({
     }
   }));
 
-  // Apply light green background shading (#dcfce7) to newly imported transactions (Cols B:P)
-  const newRowIndices = [];
-  transactions.forEach((tx, idx) => {
-    if (tx.isNew) newRowIndices.push(idx + 2); // 0-indexed row (row 3 is index 2)
-  });
+  // Manage background formatting: reset regular rows to white, and highlight newly reconciled rows green (#dcfce7)
+  try {
+    const tabGid = await getSheetGid(sheets, cleanId, tabName);
+    const WHITE_RGB = { red: 1, green: 1, blue: 1 };
+    const NEW_GREEN_RGB = { red: 0.862745, green: 0.988235, blue: 0.905882 }; // #dcfce7
 
-  if (newRowIndices.length > 0) {
-    try {
-      const tabGid = await getSheetGid(sheets, cleanId, tabName);
-      const NEW_GREEN_RGB = { red: 0.862745, green: 0.988235, blue: 0.905882 }; // #dcfce7
-      const colorRequests = newRowIndices.map(rIdx => ({
+    // 1. Reset all active bank feed rows (and clear any past highlights up to row 150) to white
+    const maxRowToClear = Math.max(2 + transactions.length, 120);
+    const colorRequests = [
+      {
         repeatCell: {
           range: {
             sheetId: tabGid,
-            startRowIndex: rIdx,
-            endRowIndex: rIdx + 1,
+            startRowIndex: 2, // Row 3 (0-indexed)
+            endRowIndex: maxRowToClear,
             startColumnIndex: 1, // Col B
             endColumnIndex: 16   // Col P
           },
           cell: {
             userEnteredFormat: {
-              backgroundColor: NEW_GREEN_RGB
+              backgroundColor: WHITE_RGB
             }
           },
           fields: "userEnteredFormat.backgroundColor"
         }
-      }));
+      }
+    ];
 
-      await withRetry(() => sheets.spreadsheets.batchUpdate({
-        spreadsheetId: cleanId,
-        requestBody: { requests: colorRequests }
-      }));
-    } catch (colorErr) {
-      console.warn("Could not set green fill on new bank transaction rows:", colorErr.message);
-    }
+    // 2. Highlight only genuinely newly reconciled transactions in light green
+    transactions.forEach((tx, idx) => {
+      if (tx.isNew) {
+        colorRequests.push({
+          repeatCell: {
+            range: {
+              sheetId: tabGid,
+              startRowIndex: idx + 2,
+              endRowIndex: idx + 3,
+              startColumnIndex: 1, // Col B
+              endColumnIndex: 16   // Col P
+            },
+            cell: {
+              userEnteredFormat: {
+                backgroundColor: NEW_GREEN_RGB
+              }
+            },
+            fields: "userEnteredFormat.backgroundColor"
+          }
+        });
+      }
+    });
+
+    await withRetry(() => sheets.spreadsheets.batchUpdate({
+      spreadsheetId: cleanId,
+      requestBody: { requests: colorRequests }
+    }));
+  } catch (colorErr) {
+    console.warn("Could not update bank transaction background formatting:", colorErr.message);
   }
 
   return { success: true, count: transactions.length };

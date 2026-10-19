@@ -97,7 +97,8 @@ import {
 import {
   fetchClientReconciledBankTransactions,
   parseUnreconciledItems,
-  recategoriseTransactions
+  recategoriseTransactions,
+  autoReconcileClientBankTransactions
 } from "../../services/bankTransactionsService";
 import { handleClassifyPLCategory } from "../../services/proactiveChecks";
 import { getSessionUser, sendOtp, verifyOtp, clearSessionCookie } from "../../services/authService";
@@ -227,7 +228,7 @@ export default async function handler(req, res) {
     // Public endpoints that do not require an active user session
     const PUBLIC_ACTIONS = new Set(["send_otp", "verify_otp", "get_session", "logout"]);
 
-    // Background jobs allowed with verified CRON_SECRET or AGENT_TRIGGER_SECRET
+    // Background jobs allowed with verified CRON_SECRET, AGENT_TRIGGER_SECRET, or PULSE_INTERNAL_SECRET
     const cronSecret = process.env.CRON_SECRET;
     const isCronAuthorized = cronSecret && (
       req.body?.secret === cronSecret ||
@@ -240,6 +241,13 @@ export default async function handler(req, res) {
       req.body?.secret === agentSecret ||
       req.headers.authorization === `Bearer ${agentSecret}`
     );
+    const internalSecret = process.env.PULSE_INTERNAL_SECRET || "pulse-sec-35588181c0c3ed96c191aae2caa23354d3e668173e5e558d";
+    const isInternalAuthorized = internalSecret && (
+      req.body?.secret === internalSecret ||
+      req.query?.secret === internalSecret ||
+      req.headers["x-internal-secret"] === internalSecret ||
+      req.headers.authorization === `Bearer ${internalSecret}`
+    );
 
     const isSystemAuthorized =
       (isCronAuthorized && (
@@ -251,9 +259,11 @@ export default async function handler(req, res) {
         action === "store_precomputed" ||
         action === "send_daily_alerts_summary" ||
         action === "get_activity" ||
-        action === "auto_provision_recon_tabs"
+        action === "auto_provision_recon_tabs" ||
+        action === "auto_reconcile_bank_feeds"
       )) ||
-      (isAgentAuthorized && action === "agent_progress");
+      (isAgentAuthorized && action === "agent_progress") ||
+      (isInternalAuthorized && (action === "auto_reconcile_bank_feeds" || action === "fetch_api_bank_transactions"));
 
     req.isSystemAuthorized = Boolean(isSystemAuthorized);
 
@@ -587,7 +597,7 @@ export default async function handler(req, res) {
     } else if (action === "fetch_api_bank_transactions") {
       try {
         const { clientName, masterSheetId, reconSheetId, monthKey } = req.body;
-        if (!sessionUser?.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
+        if (!req.isSystemAuthorized && !sessionUser?.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
           return res.status(403).json({ success: false, error: "Access denied to this client" });
         }
         const result = await fetchClientReconciledBankTransactions({
@@ -599,6 +609,25 @@ export default async function handler(req, res) {
         return res.status(200).json(result);
       } catch (err) {
         console.error("❌ fetch_api_bank_transactions error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "auto_reconcile_bank_feeds") {
+      try {
+        const { clientName, masterSheetId, reconSheetId, monthKey, automationCommanderSheetId } = req.body;
+        if (!req.isSystemAuthorized && !sessionUser?.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
+          return res.status(403).json({ success: false, error: "Access denied to this client" });
+        }
+        const result = await autoReconcileClientBankTransactions({
+          clientName,
+          masterSheetId,
+          reconSheetId,
+          monthKey,
+          automationCommanderSheetId
+        });
+        return res.status(200).json(result);
+      } catch (err) {
+        console.error("❌ auto_reconcile_bank_feeds error:", err);
         return res.status(500).json({ success: false, error: err.message });
       }
 

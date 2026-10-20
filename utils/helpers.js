@@ -36,6 +36,55 @@ export function isPlaceholderExpense(appId, description, status) {
   );
 }
 
+export function parseYearMonth(val) {
+  if (!val) return null;
+  if (val instanceof Date && !isNaN(val.getTime())) {
+    return { year: val.getFullYear(), month: val.getMonth() + 1 };
+  }
+  const s = String(val).trim();
+  // 1. ISO format: YYYY-MM or YYYY-MM-DD
+  const isoMatch = s.match(/^(\d{4})[-/](\d{1,2})/);
+  if (isoMatch) {
+    return { year: parseInt(isoMatch[1], 10), month: parseInt(isoMatch[2], 10) };
+  }
+  // 2. Month name and year: e.g. "Oct-26", "16-Oct-26", "Oct 2026", "October-2026"
+  const monthMap = {
+    jan: 1, january: 1,
+    feb: 2, february: 2,
+    mar: 3, march: 3,
+    apr: 4, april: 4,
+    may: 5,
+    jun: 6, june: 6,
+    jul: 7, july: 7,
+    aug: 8, august: 8,
+    sep: 9, sept: 9, september: 9,
+    oct: 10, october: 10,
+    nov: 11, november: 11,
+    dec: 12, december: 12
+  };
+  const mMatch = s.match(/(?:^|\b|\d{1,2}[-/ ])([a-zA-Z]{3,9})[-/ ]?(\d{2,4})(?:$|\b)/i);
+  if (mMatch) {
+    const mStr = mMatch[1].toLowerCase();
+    const mNum = monthMap[mStr];
+    let yr = parseInt(mMatch[2], 10);
+    if (yr < 100) yr += 2000;
+    if (mNum && yr) return { year: yr, month: mNum };
+  }
+  const revMatch = s.match(/(?:^|\b)(\d{2,4})[-/ ]([a-zA-Z]{3,9})(?:$|\b)/i);
+  if (revMatch) {
+    const mStr = revMatch[2].toLowerCase();
+    const mNum = monthMap[mStr];
+    let yr = parseInt(revMatch[1], 10);
+    if (yr < 100) yr += 2000;
+    if (mNum && yr) return { year: yr, month: mNum };
+  }
+  const d = new Date(s);
+  if (!isNaN(d.getTime()) && d.getFullYear() > 2000) {
+    return { year: d.getFullYear(), month: d.getMonth() + 1 };
+  }
+  return null;
+}
+
 export function getAlertSummary(alert) {
   if (alert.type === "invoice" || alert.flagType === "invoiceDashboardDiscr") {
     const inv = alert.summary;
@@ -472,7 +521,13 @@ export function parseInfoAlertDetail(flagType, detail = "") {
       res.rowNum = confMatch[2] ? parseInt(confMatch[2], 10) : null;
       res.confirmedRow = res.rowNum;
       res.client = confMatch[3] ? confMatch[3].trim() : "";
-      res.job = confMatch[4] ? confMatch[4].trim() : "";
+      let rawJob = confMatch[4] ? confMatch[4].trim() : "";
+      const pCodeMatch = rawJob.match(/\[([A-Za-z0-9_-]+)\]/);
+      if (pCodeMatch) {
+        res.projectCode = pCodeMatch[1];
+        rawJob = rawJob.replace(/\[[A-Za-z0-9_-]+\]/, "").trim();
+      }
+      res.job = rawJob;
       res.slot = confMatch[5] ? parseInt(confMatch[5], 10) : null;
       res.changes = [{
         type: "Send",
@@ -798,8 +853,15 @@ export function getAlertJobTarget(alertOrNa, isInfo = false, clientInfo = null) 
 
   const m = alertOrNa.metadata || {};
   const cName = alertOrNa.clientName || clientInfo?.clientName || m.clientName || "";
-  const cSheetId = alertOrNa.clientSheetId || alertOrNa.clientId || clientInfo?.clientSheetId || clientInfo?.sheetId || null;
-  const effectiveClient = clientInfo || (cName ? { clientName: cName, clientSheetId: cSheetId } : null);
+  const cSheetId =
+    alertOrNa.clientSheetId ||
+    clientInfo?.clientSheetId ||
+    clientInfo?.sheetId ||
+    (alertOrNa.clientId && alertOrNa.clientId !== clientInfo?.masterSheetId ? alertOrNa.clientId : null) ||
+    null;
+  const effectiveClient = clientInfo
+    ? { ...clientInfo, clientSheetId: cSheetId || clientInfo.clientSheetId }
+    : (cName ? { clientName: cName, clientSheetId: cSheetId } : null);
 
   if (isInfo) {
     const flagType = alertOrNa.flagType;

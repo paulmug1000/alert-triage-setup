@@ -3,7 +3,7 @@ import { getSheetsClient, extractSheetIdFromUrl } from "./sheetsClient";
 import {
   readAlertMemory, updateAlertMemoryRow, appendAlertMemoryRow,
   ensureAlertMemoryTab, findMemoryRow, buildAlertFingerprint,
-  extractCrmComparisonSnapshot, deleteAlertMemoryRows
+  extractCrmComparisonSnapshot, deleteAlertMemoryRows, updateHandledAlertHash
 } from "./alertMemory";
 import { createHash } from "crypto";
 import { logPmaActivity } from "./pmaLogger";
@@ -300,6 +300,58 @@ export async function handleRecordDecision(req, res, sheets) {
       spreadsheetId: automationCommanderSheetId, range: "TriageLog!A:H", valueInputOption: "USER_ENTERED",
       requestBody: { values: [logRow] },
     });
+
+    if (decision.action === "ACCEPTED") {
+      try {
+        await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
+        const memRows = await readAlertMemory(sheets, automationCommanderSheetId);
+        const fp = alert.fingerprintHash || buildAlertFingerprint(alert);
+        const mr = findMemoryRow(memRows, fp);
+        const alertSummary = alert.summary?.summary || `${alert.type || alert.flagType || "alert"} ${alert.summary?.invoiceNo || alert.summary?.description || ""} £${alert.summary?.amount || ""}`.trim();
+        if (mr) {
+          await updateAlertMemoryRow(sheets, automationCommanderSheetId, mr.rowIndex, { ...mr, status: "accepted" });
+        } else {
+          await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
+            fingerprintHash: fp,
+            alertType: alert.type || alert.flagType || "unknown",
+            clientName: alert.clientName || "",
+            alertSummary,
+            cachedOptionsJSON: "",
+            status: "accepted",
+            ignoreReason: "",
+            dataSnapshot: "",
+          });
+        }
+        await updateHandledAlertHash(automationCommanderSheetId, fp, "accepted");
+      } catch (memErr) {
+        console.warn(`  ⚠️ Could not update AlertMemory in handleRecordDecision: ${memErr.message}`);
+      }
+
+      try {
+        const fp = alert.fingerprintHash || buildAlertFingerprint(alert);
+        const alertId = `${alert.sheetName}-${alert.rowNumber}`;
+        const txnId = alert.summary?.transactionId || alert.summary?.appId || "";
+        const targetIds = [alertId, fp, `${alert.flagType || alert.type}-${alert.sheetName}-${alert.rowNumber}`, txnId].filter(Boolean);
+
+        const preRaw = await redisClient?.get(PRECOMPUTED_KEY);
+        if (preRaw) {
+          const pre = JSON.parse(preRaw);
+          applyAlertRemovalToTriageData(pre, targetIds);
+          await redisClient?.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
+        }
+        if (req.body.sessionId) {
+          const sRaw = await redisClient?.get(`triage_alerts:${req.body.sessionId}`);
+          if (sRaw) {
+            const sData = JSON.parse(sRaw);
+            applyAlertRemovalToTriageData(sData, targetIds);
+            await redisClient?.set(`triage_alerts:${req.body.sessionId}`, JSON.stringify(sData), { EX: 86400 * 7 });
+          }
+        }
+      } catch (rErr) {
+        console.warn(`  ⚠️ Could not sync Redis in handleRecordDecision: ${rErr.message}`);
+      }
+    }
+
     return res.status(200).json({ success: true, message: "Decision recorded" });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });

@@ -74,6 +74,7 @@ import {
   handleRehashAlertMemory, handleGetPrecomputed, handleStorePrecomputed,
   handleRunFlagSweep, handleBuildCachedAlertOptions, handleAnalyzeAlert,
   handleAcceptOption, handleDeleteJob, handleAnalyzeNoActionFlag,
+  handleCheckOutgoingsCell,
   handleRehashIgnoredAlerts, PRECOMPUTED_KEY
 } from "../../services/triageEngine";
 import { getClientViewData, handleUpdateViewCell, handleSpreadViewRow, handleUpdateCellNote } from "../../services/viewsService";
@@ -362,6 +363,8 @@ export default async function handler(req, res) {
       return await handleCreateOutgoingsVendor(req, res, sheets);
     } else if (action === "get_outgoings") {
       return await handleGetOutgoings(req, res, sheets);
+    } else if (action === "check_outgoings_cell") {
+      return await handleCheckOutgoingsCell(req, res, sheets);
     } else if (action === "get_direct_costs_jobs") {
       return await handleGetDirectCostsJobs(req, res, sheets);
     } else if (action === "get_invoice_jobs") {

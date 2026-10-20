@@ -192,7 +192,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
 
   const triageEngine = useTriageEngine({
     automationCommanderSheetId, screen, setScreen, activeNav, assignedAppIds,
-    assignedByClient, existingTaskBanner, setExistingTaskBanner, allClientsMap, isLoading, setIsLoading,
+    assignedByClient, addAssignedAppId, existingTaskBanner, setExistingTaskBanner, allClientsMap, isLoading, setIsLoading,
     error, setError, setBulkMode: () => { }, setBulkSelected: () => { },
     user,
     onRefreshTasks: refreshTaskCount

@@ -62,23 +62,19 @@ export default function JobDetailModal({
       target?.endClientName
     ].filter(Boolean);
 
-    if (!clientSheetId && activeClientsMap && Object.keys(activeClientsMap).length > 0) {
+    if (activeClientsMap && Object.keys(activeClientsMap).length > 0) {
       for (const name of candidateNames) {
         const trimmed = String(name).trim();
-        // 1. Direct match
-        if (activeClientsMap[trimmed]) {
-          const matched = activeClientsMap[trimmed];
-          clientSheetId = matched.clientSheetId || matched.sheetId || null;
-          client = { ...(matched || {}), ...(client || {}), clientSheetId, clientName: trimmed };
-          break;
-        }
-        // 2. Case-insensitive match
-        const lower = trimmed.toLowerCase();
-        const foundKey = Object.keys(activeClientsMap).find((k) => k.toLowerCase() === lower);
-        if (foundKey && activeClientsMap[foundKey]) {
-          const matched = activeClientsMap[foundKey];
-          clientSheetId = matched.clientSheetId || matched.sheetId || null;
-          client = { ...(matched || {}), ...(client || {}), clientSheetId, clientName: foundKey };
+        const matched = activeClientsMap[trimmed] || Object.values(activeClientsMap).find((c) => c.clientName?.toLowerCase() === trimmed.toLowerCase());
+        if (matched) {
+          // Guard: If clientSheetId was erroneously populated with the Master Sheet ID, correct it to the actual Client Sheet ID
+          if (matched.masterSheetId && clientSheetId === matched.masterSheetId && matched.clientSheetId) {
+            clientSheetId = matched.clientSheetId;
+          }
+          if (!clientSheetId) {
+            clientSheetId = matched.clientSheetId || matched.sheetId || null;
+          }
+          client = { ...(matched || {}), ...(client || {}), clientSheetId, clientName: matched.clientName || trimmed };
           break;
         }
       }
@@ -128,15 +124,96 @@ export default function JobDetailModal({
           if (data.productLines) setProductLines(data.productLines);
           if (data.leadSources) setLeadSources(data.leadSources);
 
+          const targetProjectCode = String(target?.projectCode || "").trim().toLowerCase();
+          const targetJobName = String(target?.jobName || "").trim().toLowerCase();
+          const targetEndClient = String(target?.endClientName || (target?.client && typeof target.client === "string" ? target.client : "")).trim().toLowerCase();
           const targetRow = target?.rowNum ? Number(target.rowNum) : null;
-          let found = null;
+          const targetTab = String(target?.tabName || "").trim().toLowerCase();
 
-          // 1. Match by row number in rows array (checking preferred tab first)
-          if (targetRow) {
-            if (target?.tabName) {
+          let found = null;
+          const tabMatches = (j) => !targetTab || String(j.tabName || "").toLowerCase() === targetTab;
+
+          // 1. Match by Project Code (Highest fidelity, unique ID)
+          if (targetProjectCode) {
+            found = data.jobs.find(
+              (j) => tabMatches(j) && String(j.projectCode || j.rows?.[0]?.projectCode || "").trim().toLowerCase() === targetProjectCode
+            );
+            if (!found) {
+              found = data.jobs.find(
+                (j) => String(j.projectCode || j.rows?.[0]?.projectCode || "").trim().toLowerCase() === targetProjectCode
+              );
+            }
+          }
+
+          // 2. Match by End Client Name + Job Name (Exact normalized)
+          if (!found && targetJobName && targetEndClient) {
+            const matches = data.jobs.filter((j) => {
+              if (!tabMatches(j)) return false;
+              const jClient = String(j.client || j.rows?.[0]?.client || "").trim().toLowerCase();
+              const jJob = String(j.jobName || j.rows?.[0]?.jobName || "").trim().toLowerCase();
+              return jClient === targetEndClient && jJob === targetJobName;
+            });
+
+            if (matches.length === 1) {
+              found = matches[0];
+            } else if (matches.length > 1) {
+              // Disambiguate by row if available (e.g. multi-month retainer rows)
+              if (targetRow) {
+                found = matches.find((j) => (j.rows || []).some((r) => Number(r.rowNum) === targetRow)) || matches[0];
+              } else {
+                found = matches[0];
+              }
+            } else {
+              const anyTabMatches = data.jobs.filter((j) => {
+                const jClient = String(j.client || j.rows?.[0]?.client || "").trim().toLowerCase();
+                const jJob = String(j.jobName || j.rows?.[0]?.jobName || "").trim().toLowerCase();
+                return jClient === targetEndClient && jJob === targetJobName;
+              });
+              if (anyTabMatches.length === 1) {
+                found = anyTabMatches[0];
+              } else if (anyTabMatches.length > 1 && targetRow) {
+                found = anyTabMatches.find((j) => (j.rows || []).some((r) => Number(r.rowNum) === targetRow)) || anyTabMatches[0];
+              }
+            }
+          }
+
+          // 3. Match by End Client Name + Job Name (Flexible contains / trimmed)
+          if (!found && targetJobName && targetEndClient) {
+            const flexMatches = data.jobs.filter((j) => {
+              if (!tabMatches(j)) return false;
+              const jClient = String(j.client || j.rows?.[0]?.client || "").trim().toLowerCase();
+              const jJob = String(j.jobName || j.rows?.[0]?.jobName || "").trim().toLowerCase();
+              const clientMatch = jClient === targetEndClient || jClient.includes(targetEndClient) || targetEndClient.includes(jClient);
+              const jobMatch = jJob === targetJobName || jJob.includes(targetJobName) || targetJobName.includes(jJob);
+              return clientMatch && jobMatch;
+            });
+            if (flexMatches.length === 1) {
+              found = flexMatches[0];
+            } else if (flexMatches.length > 1 && targetRow) {
+              found = flexMatches.find((j) => (j.rows || []).some((r) => Number(r.rowNum) === targetRow)) || flexMatches[0];
+            }
+          }
+
+          // 4. Match by Job Name alone (if unique)
+          if (!found && targetJobName) {
+            const jobOnlyMatches = data.jobs.filter((j) => {
+              if (!tabMatches(j)) return false;
+              const jJob = String(j.jobName || j.rows?.[0]?.jobName || "").trim().toLowerCase();
+              return jJob === targetJobName || jJob.includes(targetJobName) || targetJobName.includes(jJob);
+            });
+            if (jobOnlyMatches.length === 1) {
+              found = jobOnlyMatches[0];
+            } else if (jobOnlyMatches.length > 1 && targetRow) {
+              found = jobOnlyMatches.find((j) => (j.rows || []).some((r) => Number(r.rowNum) === targetRow));
+            }
+          }
+
+          // 5. Match by row number as LAST RESORT (Fragile fallback only)
+          if (!found && targetRow) {
+            if (targetTab) {
               found = data.jobs.find(
                 (j) =>
-                  String(j.tabName || "").toLowerCase() === String(target.tabName).toLowerCase() &&
+                  String(j.tabName || "").toLowerCase() === targetTab &&
                   (j.rows || []).some((r) => Number(r.rowNum) === targetRow)
               );
             }
@@ -145,24 +222,16 @@ export default function JobDetailModal({
             }
           }
 
-          // 2. Fallback matching by job name and client name
-          if (!found && target?.jobName) {
-            const qJob = String(target.jobName).toLowerCase().trim();
-            const qClient = String(target.endClientName || target.clientName || target.client?.clientName || "").toLowerCase().trim();
-
-            found = data.jobs.find((j) => {
-              const jName = String(j.jobName || j.rows?.[0]?.jobName || "").toLowerCase().trim();
-              const cName = String(j.client || j.rows?.[0]?.client || "").toLowerCase().trim();
-              const jobMatches = jName === qJob || jName.includes(qJob) || qJob.includes(jName);
-              const clientMatches = !qClient || cName === qClient || cName.includes(qClient) || qClient.includes(cName);
-              return jobMatches && clientMatches;
-            });
-          }
-
           if (found) {
             setJob(found);
           } else {
-            setError(`Job ${targetRow ? `on row ${targetRow}` : ""} "${target?.jobName || ""}" could not be found in the client sheet.`);
+            const desc = [
+              targetProjectCode ? `[${target.projectCode}]` : null,
+              targetEndClient ? targetEndClient : null,
+              target.jobName ? `"${target.jobName}"` : null,
+              targetRow ? `(row ${targetRow})` : null
+            ].filter(Boolean).join(" ");
+            setError(`Job ${desc} could not be found in the client sheet.`);
           }
         } else {
           setError(data.error || "Failed to load job details from spreadsheet.");

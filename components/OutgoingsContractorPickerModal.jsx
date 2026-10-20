@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from "react";
 import Spinner from "./Spinner";
 import { formatCurrency } from "./JobsView";
+import { isPlaceholderExpense } from "../utils/helpers";
 
 export default function OutgoingsContractorPickerModal({
   isOpen,
@@ -17,6 +18,7 @@ export default function OutgoingsContractorPickerModal({
   const [months, setMonths] = useState([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [monthWindowOffset, setMonthWindowOffset] = useState(0);
+  const [replacePrompt, setReplacePrompt] = useState(null);
 
   useEffect(() => {
     if (!isOpen || !clientSheetId) {
@@ -420,13 +422,39 @@ export default function OutgoingsContractorPickerModal({
                                   <button
                                     type="button"
                                     className="triage-btn"
-                                    onClick={() => onSelectCell && onSelectCell({
-                                      contractor: c,
-                                      month: m,
-                                      colLetter: m.colLetter,
-                                      sheetRow: c.sheetRow,
-                                      cell
-                                    })}
+                                    onClick={() => {
+                                      const allBlocks = cell.blocks || [];
+                                      const placeholderBlocks = allBlocks.filter(b => isPlaceholderExpense(b.appId, b.description, b.status));
+                                      const expAmt = parseFloat(String(expense?.amount || "0").replace(/[£$€,\s]/g, "")) || 0;
+
+                                      if (placeholderBlocks.length > 0) {
+                                        const totalManual = placeholderBlocks.reduce((s, b) => s + (parseFloat(b.amount) || 0), 0);
+                                        setReplacePrompt({
+                                          contractor: c,
+                                          month: m,
+                                          colLetter: m.colLetter,
+                                          sheetRow: c.sheetRow,
+                                          cell,
+                                          totalManual,
+                                          placeholderBlocks,
+                                          allBlocks,
+                                          expAmount: expAmt,
+                                          canUseUp: expAmt <= totalManual + 0.001
+                                        });
+                                        return;
+                                      }
+
+                                      if (onSelectCell) {
+                                        onSelectCell({
+                                          contractor: c,
+                                          month: m,
+                                          colLetter: m.colLetter,
+                                          sheetRow: c.sheetRow,
+                                          cell,
+                                          mode: "add_alongside"
+                                        });
+                                      }
+                                    }}
                                     style={{
                                       padding: "4px 8px",
                                       borderRadius: "4px",
@@ -453,6 +481,93 @@ export default function OutgoingsContractorPickerModal({
             </div>
           )}
         </div>
+
+        {/* Replace / Use Up / Add Alongside prompt */}
+        {replacePrompt && (() => {
+          const { contractor, month, colLetter, sheetRow, cell, totalManual, expAmount, canUseUp } = replacePrompt;
+          return (
+            <div
+              style={{
+                position: "fixed",
+                inset: 0,
+                background: "rgba(15, 23, 42, 0.65)",
+                backdropFilter: "blur(2px)",
+                zIndex: 2000,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                padding: "20px"
+              }}
+              onClick={(e) => {
+                if (e.target === e.currentTarget) setReplacePrompt(null);
+              }}
+            >
+              <div
+                style={{
+                  background: "#ffffff",
+                  borderRadius: "12px",
+                  padding: "24px",
+                  width: "min(92vw, 500px)",
+                  boxShadow: "0 25px 60px rgba(0,0,0,0.3)"
+                }}
+              >
+                <h3 style={{ margin: "0 0 12px", fontSize: "16px", fontWeight: "700", color: "#0f172a" }}>
+                  Placeholder / unrecon gap exists
+                </h3>
+                <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#475569", lineHeight: "1.5" }}>
+                  This cell already contains a placeholder / gap of <strong>£{totalManual.toFixed(2)}</strong>.<br />
+                  You are placing 1 expense totaling <strong>£{expAmount.toFixed(2)}</strong> against <strong>{contractor.name}</strong> ({month.label}).<br /><br />
+                  Would you like to replace it, keep both, or use up part of the estimate?
+                </p>
+                <div style={{ display: "flex", gap: "10px", justifyContent: "flex-end", flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    className="triage-btn"
+                    onClick={() => setReplacePrompt(null)}
+                    style={{ padding: "8px 16px", background: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: "6px", cursor: "pointer", fontSize: "13px", color: "#475569" }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="triage-btn"
+                    onClick={() => {
+                      setReplacePrompt(null);
+                      if (onSelectCell) onSelectCell({ contractor, month, colLetter, sheetRow, cell, mode: "add_alongside" });
+                    }}
+                    style={{ padding: "8px 16px", background: "#f0f9ff", border: "1px solid #93c5fd", borderRadius: "6px", cursor: "pointer", fontSize: "13px", fontWeight: "600", color: "#1d4ed8" }}
+                  >
+                    Add alongside
+                  </button>
+                  {canUseUp && (
+                    <button
+                      type="button"
+                      className="triage-btn"
+                      onClick={() => {
+                        setReplacePrompt(null);
+                        if (onSelectCell) onSelectCell({ contractor, month, colLetter, sheetRow, cell, mode: "use_up" });
+                      }}
+                      style={{ padding: "8px 16px", background: "#f0fdf4", border: "1px solid #86efac", borderRadius: "6px", cursor: "pointer", fontSize: "13px", fontWeight: "600", color: "#166534" }}
+                    >
+                      Use up
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="triage-btn"
+                    onClick={() => {
+                      setReplacePrompt(null);
+                      if (onSelectCell) onSelectCell({ contractor, month, colLetter, sheetRow, cell, mode: "replace" });
+                    }}
+                    style={{ padding: "8px 16px", background: "#0284c7", color: "#ffffff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "13px", fontWeight: "600" }}
+                  >
+                    Replace
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
       </div>
     </div>
   );

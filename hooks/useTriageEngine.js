@@ -8,6 +8,7 @@ export function useTriageEngine({
   activeNav,
   assignedAppIds,
   assignedByClient,
+  addAssignedAppId,
   existingTaskBanner,
   setExistingTaskBanner,
   allClientsMap,
@@ -524,12 +525,12 @@ export function useTriageEngine({
     }
   };
 
-  const acceptOption = async (option) => {
+  const acceptOption = async (option, mode = null) => {
     const alert = clientAlerts[currentClientAlertIndex];
     try {
       setIsAccepting(true);
       setAcceptError("");
-      console.log(`Accepting option: ${option.title}`);
+      console.log(`Accepting option: ${option.title}${mode ? ` (mode: ${mode})` : ""}`);
 
       const action = option.matchType === "delete" ? "delete_job" : "accept_option";
       
@@ -540,6 +541,7 @@ export function useTriageEngine({
           action,
           alert,
           option,
+          mode: mode || option.outgoingsData?.mode || undefined,
           automationCommanderSheetId,
         }),
       });
@@ -568,7 +570,20 @@ export function useTriageEngine({
         }).catch(() => {});
       }
       
-      const updatedAlerts = clientAlerts.filter((_, idx) => idx !== currentClientAlertIndex);
+      const targetFingerprint = alert.fingerprintHash;
+      const targetSheetRow = `${alert.sheetName}-${alert.rowNumber}`;
+      const targetTxn = alert.summary?.transactionId || alert.summary?.appId || option.outgoingsData?.transactionId || option.outgoingsData?.appId;
+      if (addAssignedAppId && targetTxn) {
+        addAssignedAppId(targetTxn, selectedClient?.clientName);
+      }
+
+      const updatedAlerts = clientAlerts.filter(a => {
+        if (targetFingerprint && a.fingerprintHash === targetFingerprint) return false;
+        if (targetSheetRow && `${a.sheetName}-${a.rowNumber}` === targetSheetRow) return false;
+        const aTxn = a.summary?.transactionId || a.summary?.appId;
+        if (targetTxn && aTxn && String(aTxn) === String(targetTxn)) return false;
+        return true;
+      });
       setClientAlerts(updatedAlerts);
 
       let acceptedFlagType = alert.flagType || alert.alertType || alert.type || "";

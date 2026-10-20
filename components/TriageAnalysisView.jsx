@@ -4,7 +4,7 @@ import TruncatedCode from "./TruncatedCode";
 import { useTriage } from "../contexts/TriageContext";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useTasks } from "../contexts/TaskContext";
-import { stripRowInfo, cleanUserFacingText, formatSeenTimestamp } from "../utils/helpers";
+import { stripRowInfo, cleanUserFacingText, formatSeenTimestamp, isPlaceholderExpense } from "../utils/helpers";
 import JobMatchCard, { buildJobsFromRows } from "./JobMatchCard";
 import ExploreJobsModal from "./ExploreJobsModal";
 import OutgoingsContractorPickerModal from "./OutgoingsContractorPickerModal";
@@ -30,7 +30,7 @@ export default function TriageAnalysisView({
     allNoActionResolved, resolvedNoActionFlags, handlePostClear
   } = useTriage();
 
-  const { allClientsMap, automationCommanderSheetId } = useAppGlobals();
+  const { allClientsMap, automationCommanderSheetId, addAssignedAppId } = useAppGlobals();
 
   // Modals & Placement State
   const [exploreJobsOpen, setExploreJobsOpen] = useState(false);
@@ -40,6 +40,9 @@ export default function TriageAnalysisView({
   const [confirmJobModal, setConfirmJobModal] = useState(null);
   const [viewingJobTarget, setViewingJobTarget] = useState(null);
   const [isSavingPlacement, setIsSavingPlacement] = useState(false);
+  const [outgoingsOptionPrompt, setOutgoingsOptionPrompt] = useState(null);
+  const [isCheckingCell, setIsCheckingCell] = useState(false);
+  const [feedbackMessage, setFeedbackMessage] = useState("");
 
   let clientInfo = (clientsWithFlags || []).find(c => c.clientName === selectedClient?.clientName);
   if (!clientInfo?.clientSheetId && !clientInfo?.masterSheetId) {
@@ -83,7 +86,28 @@ export default function TriageAnalysisView({
       }).catch(() => { });
     }
 
-    const updatedAlerts = clientAlerts.filter((_, idx) => idx !== currentClientAlertIndex);
+    if (selectedClient?.masterSheetId) {
+      fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "fire_outgoings_pull",
+          clientSheetId: targetClientSheetId,
+          masterSheetId: selectedClient.masterSheetId
+        })
+      }).catch(() => { });
+    }
+
+    const targetFingerprint = targetAlert.fingerprintHash;
+    const targetSheetRow = `${targetAlert.sheetName}-${targetAlert.rowNumber}`;
+    const targetTxn = targetAlert.summary?.transactionId || targetAlert.summary?.appId;
+    const updatedAlerts = clientAlerts.filter(a => {
+      if (targetFingerprint && a.fingerprintHash === targetFingerprint) return false;
+      if (targetSheetRow && `${a.sheetName}-${a.rowNumber}` === targetSheetRow) return false;
+      const aTxn = a.summary?.transactionId || a.summary?.appId;
+      if (targetTxn && aTxn && String(aTxn) === String(targetTxn)) return false;
+      return true;
+    });
     setClientAlerts(updatedAlerts);
 
     let acceptedFlagType = targetAlert.flagType || targetAlert.alertType || targetAlert.type || "";
@@ -193,24 +217,124 @@ export default function TriageAnalysisView({
     }
   };
 
-  const handleInitiatePlaceOnContractor = ({ contractor, month, colLetter, sheetRow, cell }) => {
+  const handleInitiatePlaceOnContractor = async ({ contractor, month, colLetter, sheetRow, cell, mode = "add_alongside" }) => {
     const amt = parseFloat(String(alert.summary?.amount || alert.data?.accounting?.[2] || "0").replace(/[£$€,\s]/g, "")) || 0;
     const desc = alert.summary?.description || alert.summary?.reference || alert.data?.accounting?.[1] || "Expense";
     const date = alert.summary?.date || alert.data?.accounting?.[0] || "";
     const status = alert.summary?.status || alert.data?.accounting?.[5] || "Received";
+    const payDate = alert.summary?.datePaid || alert.summary?.payDate || alert.data?.accounting?.[7] || (status === "Paid" ? date : "");
 
-    setPlacementPrompt({
-      type: "expense_contractor",
-      contractorName: contractor.name,
-      sheetRow,
-      colLetter,
-      monthLabel: month.label,
-      cell,
-      amount: amt,
-      description: desc,
-      date,
-      status
-    });
+    setIsSavingPlacement(true);
+    setAcceptError("");
+    try {
+      const newBlock = {
+        appId: alert.summary?.transactionId || alert.summary?.appId || alert.data?.accounting?.[11] || `EXP-${Date.now()}`,
+        amount: amt,
+        status: status || "",
+        recDate: date || "",
+        payDate: payDate || "",
+        description: desc || ""
+      };
+
+      const existingBlocks = cell?.blocks || [];
+      const placeholderBlocks = existingBlocks.filter(b => isPlaceholderExpense(b.appId, b.description, b.status));
+      const nonPlaceholderBlocks = existingBlocks.filter(b => !isPlaceholderExpense(b.appId, b.description, b.status));
+
+      let updatedBlocks = [];
+      if (mode === "replace") {
+        updatedBlocks = [...nonPlaceholderBlocks, newBlock];
+      } else if (mode === "use_up") {
+        let remainingToDeduct = amt;
+        const reducedPlaceholders = [];
+        for (const pb of placeholderBlocks) {
+          const pbAmount = parseFloat(pb.amount) || 0;
+          const used = Math.min(remainingToDeduct, pbAmount);
+          const newAmount = Math.round((pbAmount - used) * 100) / 100;
+          remainingToDeduct -= used;
+          if (newAmount > 0.004) {
+            reducedPlaceholders.push({ ...pb, amount: newAmount });
+          }
+        }
+        updatedBlocks = [...nonPlaceholderBlocks, ...reducedPlaceholders, newBlock];
+      } else {
+        updatedBlocks = [...existingBlocks, newBlock];
+      }
+
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "update_outgoing_note",
+          clientSheetId: targetClientSheetId,
+          clientName: selectedClient?.clientName || "",
+          contractorName: contractor.name,
+          sheetRow,
+          colLetter,
+          blocks: updatedBlocks,
+          automationCommanderSheetId
+        })
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || "Failed to update contractor note in Outgoings");
+
+      if (addAssignedAppId && newBlock.appId) {
+        addAssignedAppId(newBlock.appId, selectedClient?.clientName);
+      }
+
+      setOutgoingsPickerOpen(false);
+      setPlacementPrompt(null);
+      setFeedbackMessage(`✓ Placed expense of £${amt.toFixed(2)} on contractor ${contractor.name} (${month.label})`);
+      await handleResolveAlertAfterPlacement(alert, `Placed expense of £${amt.toFixed(2)} on contractor ${contractor.name} (${month.label})`);
+    } catch (err) {
+      setAcceptError(`Error placing expense: ${err.message}`);
+    } finally {
+      setIsSavingPlacement(false);
+    }
+  };
+
+  const handleOutgoingsOptionClick = async (option) => {
+    setIsCheckingCell(true);
+    setAcceptError("");
+    try {
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "check_outgoings_cell",
+          clientSheetId: targetClientSheetId,
+          categoryName: option.outgoingsData.categoryName,
+          expenseMonth: option.outgoingsData.expenseMonth,
+          expenseDate: option.outgoingsData.recDate || alert.summary?.date || "",
+          amount: option.outgoingsData.amount
+        })
+      });
+      const data = await res.json();
+      if (!data.success) {
+        await acceptOption(option, "add_alongside");
+        return;
+      }
+
+      if (data.placeholderBlocks && data.placeholderBlocks.length > 0) {
+        setOutgoingsOptionPrompt({
+          option,
+          contractorName: option.outgoingsData.categoryName,
+          monthLabel: data.monthLabel,
+          colLetter: data.colLetter,
+          sheetRow: data.sheetRow,
+          totalManual: data.totalManual,
+          expAmount: parseFloat(option.outgoingsData.amount) || 0,
+          canUseUp: data.canUseUp
+        });
+        return;
+      }
+
+      await acceptOption(option, "add_alongside");
+    } catch (e) {
+      console.error("check_outgoings_cell failed:", e);
+      await acceptOption(option, "add_alongside");
+    } finally {
+      setIsCheckingCell(false);
+    }
   };
 
   const executeConfirmedPlacement = async () => {
@@ -400,6 +524,30 @@ export default function TriageAnalysisView({
       </div>
 
       <div style={styles.card}>
+        {feedbackMessage && (
+          <div style={{
+            marginBottom: "16px",
+            padding: "10px 16px",
+            background: "#ecfdf5",
+            border: "1px solid #6ee7b7",
+            borderRadius: "8px",
+            color: "#065f46",
+            fontSize: "13px",
+            fontWeight: "600",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between"
+          }}>
+            <span>{feedbackMessage}</span>
+            <button
+              type="button"
+              onClick={() => setFeedbackMessage("")}
+              style={{ background: "none", border: "none", color: "#065f46", cursor: "pointer", fontSize: "14px", fontWeight: "700" }}
+            >
+              ✕
+            </button>
+          </div>
+        )}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
           <button className="triage-btn" onClick={() => { setAcceptError(""); setCurrentClientAlertIndex(0); setScreen("alertSelection"); }} style={{ ...styles.buttonSecondary, fontSize: "13px" }}>
             ← Back to Alerts
@@ -1181,10 +1329,14 @@ export default function TriageAnalysisView({
                                         else { setScreen("alertSelection"); setCurrentClientAlertIndex(0); }
                                       } else { setScreen("alertSelection"); setCurrentClientAlertIndex(0); }
                                     } else {
-                                      acceptOption(option);
+                                      if ((alert.type === "expense" || alert.sheetName === "DirComp") && option.matchType === "category" && option.outgoingsData) {
+                                        handleOutgoingsOptionClick(option);
+                                      } else {
+                                        acceptOption(option);
+                                      }
                                     }
                                   }}
-                                  disabled={isAccepting}
+                                  disabled={isAccepting || isCheckingCell}
                                   style={{
                                     ...styles.decisionButton,
                                     ...(isDeleteAction
@@ -1194,10 +1346,10 @@ export default function TriageAnalysisView({
                                         : styles.approveButton),
                                     marginTop: "12px",
                                     width: "100%",
-                                    opacity: isAccepting ? 0.5 : 1
+                                    opacity: (isAccepting || isCheckingCell) ? 0.5 : 1
                                   }}
                                 >
-                                  {isAccepting ? (
+                                  {(isAccepting || isCheckingCell) ? (
                                     <><Spinner color="white" />Writing to sheet...</>
                                   ) : (
                                     option.actionButtonText || (option.matchType === "info" ? "✓ Mark as resolved" : `✓ Accept ${isDataMismatch ? 'action' : 'option'} ${candidateJobOptions.length + idx + 1}`)
@@ -1680,10 +1832,97 @@ export default function TriageAnalysisView({
           />
         )}
 
+        {/* Outgoings Option Replacement Prompt (when Accept Option is clicked on cell with placeholder) */}
+        {outgoingsOptionPrompt && (() => {
+          const { option, contractorName, monthLabel, totalManual, expAmount, canUseUp } = outgoingsOptionPrompt;
+          return (
+            <div
+              style={{
+                position: "fixed",
+                inset: 0,
+                background: "rgba(15, 23, 42, 0.65)",
+                backdropFilter: "blur(2px)",
+                zIndex: 2000,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                padding: "20px"
+              }}
+              onClick={(e) => {
+                if (e.target === e.currentTarget) setOutgoingsOptionPrompt(null);
+              }}
+            >
+              <div
+                style={{
+                  background: "#ffffff",
+                  borderRadius: "12px",
+                  padding: "24px",
+                  width: "min(92vw, 500px)",
+                  boxShadow: "0 25px 60px rgba(0,0,0,0.3)"
+                }}
+              >
+                <h3 style={{ margin: "0 0 12px", fontSize: "16px", fontWeight: "700", color: "#0f172a" }}>
+                  Placeholder / unrecon gap exists
+                </h3>
+                <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#475569", lineHeight: "1.5" }}>
+                  This cell already contains a placeholder / gap of <strong>£{totalManual.toFixed(2)}</strong>.<br />
+                  You are placing 1 expense totaling <strong>£{expAmount.toFixed(2)}</strong> against <strong>{contractorName}</strong> ({monthLabel}).<br /><br />
+                  Would you like to replace it, keep both, or use up part of the estimate?
+                </p>
+                <div style={{ display: "flex", gap: "10px", justifyContent: "flex-end", flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    className="triage-btn"
+                    onClick={() => setOutgoingsOptionPrompt(null)}
+                    style={{ padding: "8px 16px", background: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: "6px", cursor: "pointer", fontSize: "13px", color: "#475569" }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="triage-btn"
+                    onClick={() => {
+                      setOutgoingsOptionPrompt(null);
+                      acceptOption(option, "add_alongside");
+                    }}
+                    style={{ padding: "8px 16px", background: "#f0f9ff", border: "1px solid #93c5fd", borderRadius: "6px", cursor: "pointer", fontSize: "13px", fontWeight: "600", color: "#1d4ed8" }}
+                  >
+                    Add alongside
+                  </button>
+                  {canUseUp && (
+                    <button
+                      type="button"
+                      className="triage-btn"
+                      onClick={() => {
+                        setOutgoingsOptionPrompt(null);
+                        acceptOption(option, "use_up");
+                      }}
+                      style={{ padding: "8px 16px", background: "#f0fdf4", border: "1px solid #86efac", borderRadius: "6px", cursor: "pointer", fontSize: "13px", fontWeight: "600", color: "#166534" }}
+                    >
+                      Use up
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="triage-btn"
+                    onClick={() => {
+                      setOutgoingsOptionPrompt(null);
+                      acceptOption(option, "replace");
+                    }}
+                    style={{ padding: "8px 16px", background: "#0284c7", color: "#ffffff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "13px", fontWeight: "600" }}
+                  >
+                    Replace
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
         {/* Confirm Placement Dialog */}
         {placementPrompt && (
           <div
-            style={styles.modalOverlay}
+            style={{ ...styles.modalOverlay, zIndex: 1200 }}
             onClick={(e) => {
               if (e.target === e.currentTarget && !isSavingPlacement) {
                 setPlacementPrompt(null);

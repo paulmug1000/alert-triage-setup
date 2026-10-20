@@ -3,10 +3,12 @@ import { extractSheetIdFromUrl, withRetry, getSheetsClient, getSheetId, colIndex
 import { 
   buildAlertFingerprint, buildAlertFingerprintLegacy, ensureAlertMemoryTab, readAlertMemory, 
   readHandledAlertHashes, findMemoryRow, appendAlertMemoryRow, updateAlertMemoryRow, 
-  deleteAlertMemoryRows, purgeOldAlertMemoryRows,
+  deleteAlertMemoryRows, purgeOldAlertMemoryRows, updateHandledAlertHash,
   getHandledFingerprintHashes_, findPreviousIgnoreReason,
   normaliseArrayForFingerprint
 } from "./alertMemory";
+import { handleFireOutgoingsPull, handleMarkExpenseAssigned } from "./workspaces.js";
+import { applyAlertRemovalToTriageData } from "./alertState.js";
 import {
   checkRetainerInvoices_, checkCRMWipe_, checkRevenueMismatch_, checkDirectCostsMismatch_,
   checkPipelineConfirmedOverlap_, checkRetainerShrinkBlocked_, checkUninvoicedNewJobs_,
@@ -21,7 +23,7 @@ import {
 import { redisClient } from "./redisClient";
 import { logPmaActivity } from "./pmaLogger";
 import { logPrecomputeRun, logFlagSweepRun, logBuildOptionsRun } from "./systemLogs";
-import { isPlaceholderInvoice, isPlaceholderExpense, parseStaleExpenseDetail } from "../utils/helpers";
+import { isPlaceholderInvoice, isPlaceholderExpense, parseYearMonth, parseStaleExpenseDetail } from "../utils/helpers";
 import { getSessionUser } from "./authService";
 import { matchesClientName, getClientManagerClientMap } from "./userPermissions";
 
@@ -1287,6 +1289,8 @@ export async function handleStorePrecomputed(req, res, sheets) {
           }
           newNoActionFromMemory.push({
             clientId: clientMeta.masterSheetId,
+            clientSheetId: clientMeta.clientSheetId,
+            masterSheetId: clientMeta.masterSheetId,
             clientName: row.clientName,
             type: "info",
             alertType: row.alertType,
@@ -1449,12 +1453,93 @@ export async function handleStorePrecomputed(req, res, sheets) {
   }
 }
 
+export async function isInvoicePlaceholderStillActive_(line, clientSheetId, sharedData, sheets) {
+  if (!line || !clientSheetId) return true;
+
+  if (line.includes("[Confirmed]")) {
+    const cMatch = line.match(/\[Confirmed\]\s*(?:Stale Invoice\s*[-–]\s*)?(?:Row\s*(\d+),\s*)?([^|]+)\|\s*(.+?),\s*Slot\s*(\d+)/i);
+    if (!cMatch) return true;
+    const rowNum = cMatch[1] ? parseInt(cMatch[1], 10) : 0;
+    const clientName = cMatch[2].trim().toLowerCase();
+    const jobName = cMatch[3].trim().toLowerCase();
+    const slotNum = parseInt(cMatch[4], 10);
+    if (!slotNum || slotNum < 1 || slotNum > 3) return true;
+
+    let confirmedRows = sharedData?.confirmedData || [];
+    if (!confirmedRows || confirmedRows.length < 2) {
+      try {
+        const resp = await withRetry(() => sheets.spreadsheets.values.get({
+          spreadsheetId: clientSheetId, range: "Confirmed!A1:CR5000", valueRenderOption: "UNFORMATTED_VALUE"
+        }));
+        confirmedRows = resp.data.values || [];
+        if (sharedData) sharedData.confirmedData = confirmedRows;
+      } catch (e) {
+        return true;
+      }
+    }
+    if (confirmedRows.length < 2) return true;
+
+    let targetRow = null;
+    if (rowNum > 0 && rowNum <= confirmedRows.length) {
+      const r = confirmedRows[rowNum - 1] || [];
+      if (String(r[0] || "").trim().toLowerCase() === clientName && (String(r[1] || "").trim().toLowerCase() === jobName || String(r[1] || "").trim().toLowerCase().includes(jobName))) {
+        targetRow = r;
+      }
+    }
+    if (!targetRow) {
+      for (let i = 1; i < confirmedRows.length; i++) {
+        const r = confirmedRows[i] || [];
+        if (String(r[0] || "").trim().toLowerCase() === clientName && (String(r[1] || "").trim().toLowerCase() === jobName || String(r[1] || "").trim().toLowerCase().includes(jobName))) {
+          targetRow = r;
+          break;
+        }
+      }
+    }
+    if (!targetRow) return false; // Job gone from Confirmed -> resolved!
+
+    const headers = (confirmedRows[0] || []).map(h => String(h || "").toLowerCase().trim());
+    const findHeaderIdx = (patterns) => {
+      for (const pat of patterns) {
+        const idx = headers.indexOf(pat.toLowerCase().trim());
+        if (idx !== -1) return idx;
+      }
+      return -1;
+    };
+
+    let colInvNo = findHeaderIdx([`inv ${slotNum} no`, `inv. ${slotNum} no`, `inv ${slotNum} ref`, `inv. ${slotNum} ref`, `invoice ${slotNum} no`, `invoice ${slotNum} ref`]);
+    let colAmt   = findHeaderIdx([`inv ${slotNum} amt`, `inv. ${slotNum} amt`, `inv ${slotNum} amount`, `invoice ${slotNum} amt`, `invoice ${slotNum} amount`]);
+    let colStat  = findHeaderIdx([`inv ${slotNum} status`, `inv. ${slotNum} status`, `invoice ${slotNum} status`]);
+
+    const defaultCols = {
+      1: { amt: 41, ref: 42, stat: 45 },
+      2: { amt: 48, ref: 49, stat: 52 },
+      3: { amt: 55, ref: 56, stat: 59 },
+    }[slotNum];
+
+    if (colInvNo === -1 && defaultCols) colInvNo = defaultCols.ref;
+    if (colAmt === -1 && defaultCols) colAmt = defaultCols.amt;
+    if (colStat === -1 && defaultCols) colStat = defaultCols.stat;
+
+    const currentRef = colInvNo !== -1 ? String(targetRow[colInvNo] || "").trim() : "";
+    const currentAmt = colAmt !== -1 ? String(targetRow[colAmt] || "").trim() : "";
+    const currentStatus = colStat !== -1 ? String(targetRow[colStat] || "").trim().toLowerCase() : "";
+
+    if (currentRef && !isPlaceholderInvoice(currentRef)) return false; // Real invoice matched -> resolved!
+    if (currentStatus === "paid" || currentStatus === "sent") return false; // Marked sent or paid -> resolved!
+    if (!currentRef && (!currentAmt || currentAmt === "0" || currentAmt === "£0.00")) return false; // Placeholder removed -> resolved!
+
+    return true; // Still active placeholder
+  }
+
+  return true;
+}
+
 export async function isExpensePlaceholderStillActive_(line, clientSheetId, sharedData, sheets) {
   if (!line || !clientSheetId) return true;
 
   // 1. Confirmed tab check:
   if (line.includes("[Confirmed]")) {
-    const cMatch = line.match(/\[Confirmed\]\s*(?:Stale Expense\s*[-–]\s*)?(?:Row\s*(\d+),\s*)?([^|]+)\|\s*([^,]+),\s*Slot\s*(\d+)/i);
+    const cMatch = line.match(/\[Confirmed\]\s*(?:Stale Expense\s*[-–]\s*)?(?:Row\s*(\d+),\s*)?([^|]+)\|\s*(.+?),\s*Slot\s*(\d+)/i);
     if (!cMatch) return true;
     const rowNum = cMatch[1] ? parseInt(cMatch[1], 10) : 0;
     const clientName = cMatch[2].trim().toLowerCase();
@@ -1719,6 +1804,10 @@ export async function handleRunFlagSweep(req, res, sheets) {
                   const isActive = await isExpensePlaceholderStillActive_(line, client.clientSheetId, null, sheets);
                   if (!isActive) continue; // Skip: underlying expense already resolved in sheet
                 }
+                if (autoLogType === "invoiceStaleUnsentChanges") {
+                  const isActive = await isInvoicePlaceholderStillActive_(line, client.clientSheetId, null, sheets);
+                  if (!isActive) continue; // Skip: underlying invoice already resolved in sheet
+                }
                 const fingerprintInput = `${client.clientName}|${autoLogType}|${ts}|${line}`;
                 const legacyFingerprintInput = `${client.clientName}|${autoLogType}|${line}`;
                 matchedAlerts.push({
@@ -1731,7 +1820,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
                 });
               }
             }
-            if (matchedAlerts.length > 0 || autoLogType === "expenseUnreconGaps") {
+            if (matchedAlerts.length > 0 || autoLogType === "expenseUnreconGaps" || autoLogType === "invoiceStaleUnsentChanges") {
               sweepItems.push({ clientName: client.clientName, alertType: autoLogType, alerts: matchedAlerts, autoUpdatesRow: client.sheetRowNum, category: "info" });
             }
           }
@@ -1931,7 +2020,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
       }
 
       for (const item of sweepItems) {
-        if (item.category === "discrepancy" || item.category === "proactive" || item.alertType === "expenseUnreconGaps") {
+        if (item.category === "discrepancy" || item.category === "proactive" || item.alertType === "expenseUnreconGaps" || item.alertType === "invoiceStaleUnsentChanges") {
           const freshHashes = new Set();
           (item.alerts || []).forEach(a => {
             if (a._fingerprint) freshHashes.add(a._fingerprint);
@@ -2650,41 +2739,42 @@ async function applyBoldItalic(sheets, spreadsheetId, sheetId, startRowIndex, en
 }
 
 async function writeOutgoingsExpense(sheets, clientSheetId, outgoingsData) {
-  const { categoryName, expenseMonth, transactionId, amount, description, status, recDate, payDate, vatCharged } = outgoingsData;
+  const { categoryName, expenseMonth, transactionId, amount, description, status, recDate, payDate, vatCharged, mode = "add_alongside" } = outgoingsData;
 
-  console.log(`  📝 Writing Outgoings expense: ${categoryName} / ${expenseMonth} / £${amount}`);
+  console.log(`  📝 Writing Outgoings expense: ${categoryName} / ${expenseMonth} / £${amount} (mode: ${mode})`);
 
-  // Read the full Outgoings sheet - use UNFORMATTED_VALUE so header dates come back
-  // as serial numbers (e.g. 46083.0) rather than locale-dependent strings like "1/3/2026"
+  const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
   const sheetRange = "Outgoings!A1:AX500";
   const valuesResp = await sheets.spreadsheets.values.get({
-    spreadsheetId: clientSheetId,
+    spreadsheetId: sheetIdClean,
     range: sheetRange,
     valueRenderOption: "UNFORMATTED_VALUE",
   });
   const rows = valuesResp.data.values || [];
   if (rows.length === 0) throw new Error("Outgoings tab is empty");
 
-  // Parse the target month from "YYYY-MM"
-  const [targetYear, targetMonth] = expenseMonth.split("-").map(Number);
+  // Parse target month using robust parseYearMonth
+  const ym = parseYearMonth(expenseMonth || recDate);
+  if (!ym) throw new Error(`Could not parse month from "${expenseMonth || recDate}"`);
+  const targetYear = ym.year;
+  const targetMonth = ym.month;
 
   // Find the column index whose header date matches the target month.
-  // Header cells are date serials (days since 30-Dec-1899). Convert to JS Date and compare.
   const headerRow = rows[0];
   let targetColIndex = -1;
   for (let c = 0; c < headerRow.length; c++) {
     const headerVal = headerRow[c];
-    if (!headerVal) continue;
-    let parsed = null;
+    if (headerVal === null || headerVal === undefined || headerVal === "") continue;
+    let parsedYM = null;
     if (typeof headerVal === "number") {
-      // Sheets serial → JS Date (UTC)
-      parsed = new Date((headerVal - 25569) * 86400 * 1000);
+      const d = new Date((headerVal - 25569) * 86400 * 1000);
+      if (!isNaN(d.getTime())) {
+        parsedYM = { year: d.getUTCFullYear(), month: d.getUTCMonth() + 1 };
+      }
     } else {
-      // Fallback: try direct parse for ISO-format strings
-      const d = new Date(headerVal);
-      if (!isNaN(d.getTime())) parsed = d;
+      parsedYM = parseYearMonth(headerVal);
     }
-    if (parsed && parsed.getUTCFullYear() === targetYear && parsed.getUTCMonth() + 1 === targetMonth) {
+    if (parsedYM && parsedYM.year === targetYear && parsedYM.month === targetMonth) {
       targetColIndex = c;
       break;
     }
@@ -2741,18 +2831,18 @@ async function writeOutgoingsExpense(sheets, clientSheetId, outgoingsData) {
   // If new vendor, write the fixed fields first (A=name, B=VAT, C=Next, D=Next, E=100%, F=100%)
   if (isNewVendor) {
     await sheets.spreadsheets.values.update({
-      spreadsheetId: clientSheetId,
+      spreadsheetId: sheetIdClean,
       range: `Outgoings!A${sheetRow}:F${sheetRow}`,
       valueInputOption: "USER_ENTERED",
       requestBody: { values: [[categoryName, vatCharged || "No", "Next", "Next", "100%", "100%"]] },
     });
-    await applySheetFontFormat(sheets, clientSheetId, "Outgoings", sheetRow - 1, sheetRow, 0, 50, "Arial", 9);
+    await applySheetFontFormat(sheets, sheetIdClean, "Outgoings", sheetRow - 1, sheetRow, 0, 50, "Arial", 9);
     console.log(`  ✅ New vendor row written: ${categoryName}`);
   }
 
   // Read existing cell value and note
   const cellResp = await sheets.spreadsheets.get({
-    spreadsheetId: clientSheetId,
+    spreadsheetId: sheetIdClean,
     ranges: [cellA1],
     fields: "sheets(data(rowData(values(userEnteredValue,note))))",
   });
@@ -2766,35 +2856,102 @@ async function writeOutgoingsExpense(sheets, clientSheetId, outgoingsData) {
 
   console.log(`  Existing cell value: ${existingValue}, note length: ${existingNote.length}`);
 
-  const newValue = Math.round((existingValue + amount) * 100) / 100;
-  const newBlock = `{App ID: ${transactionId}}{Amt: ${amount}}{Status:${status ? " " + status : ""}}{Rec date:${recDate ? " " + recDate : ""}}{Pay date:${payDate ? " " + payDate : ""}}{Description:${description ? " " + description : ""}}`;
+  // Parse note parts
+  const parseNoteParts = (note) => {
+    if (!note) return { topNote: "", blocks: [] };
+    const firstBlockIdx = note.indexOf("{App ID:");
+    let topNote = "";
+    let blockText = "";
+    if (firstBlockIdx !== -1) {
+      topNote = note.substring(0, firstBlockIdx).trim();
+      blockText = note.substring(firstBlockIdx);
+    } else if (note.includes("{") && note.includes("}")) {
+      blockText = note;
+    } else {
+      topNote = note.trim();
+    }
 
-  let newNote;
-  if (existingNote.includes(`{App ID: ${transactionId}}`)) {
-    const escapedId = transactionId.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&");
-    newNote = existingNote.replace(
-      new RegExp(`\\{App ID: ${escapedId}\\}.*?(\\n|$)`, "s"),
-      newBlock + "\n"
-    ).trim();
-    console.log(`  Updating existing App ID block for ${transactionId}`);
+    const blocks = [];
+    const blockRegex = /\{App ID:\s*([^}]+)\}\{Amt:\s*([^}]+)\}(?:\{Status:\s*([^}]*)\})?(?:\{Rec date:\s*([^}]*)\})?(?:\{Pay date:\s*([^}]*)\})?(?:\{Description:\s*([^}]*)\})?/g;
+    let match;
+    while ((match = blockRegex.exec(blockText)) !== null) {
+      blocks.push({
+        appId:       match[1]?.trim() || "",
+        amount:      parseFloat(String(match[2] || "").replace(/[£$€,\s]/g, "")) || 0,
+        status:      match[3]?.trim() || "",
+        recDate:     match[4]?.trim() || "",
+        payDate:     match[5]?.trim() || "",
+        description: match[6]?.trim() || "",
+      });
+    }
+    return { topNote, blocks };
+  };
+
+  const { topNote, blocks: existingBlocks } = parseNoteParts(existingNote);
+  const placeholderBlocks = existingBlocks.filter(b => isPlaceholderExpense(b.appId, b.description, b.status));
+  const nonPlaceholderBlocks = existingBlocks.filter(b => !isPlaceholderExpense(b.appId, b.description, b.status));
+
+  const placedAmount = parseFloat(amount) || 0;
+  const newBlock = {
+    appId: transactionId || `EXP-${Date.now()}`,
+    amount: placedAmount,
+    status: status ? String(status).trim() : "",
+    recDate: recDate ? String(recDate).trim() : "",
+    payDate: payDate ? String(payDate).trim() : "",
+    description: description ? String(description).trim() : ""
+  };
+
+  let resultingBlocks = [];
+  const placementMode = mode || "add_alongside";
+
+  if (placementMode === "replace") {
+    // Strip all placeholder blocks, keep real expense blocks, append new block
+    resultingBlocks = [...nonPlaceholderBlocks, newBlock];
+  } else if (placementMode === "use_up") {
+    // Reduce placeholder blocks by placedAmount
+    let remainingToDeduct = placedAmount;
+    const reducedPlaceholders = [];
+    for (const pb of placeholderBlocks) {
+      const pbAmount = parseFloat(pb.amount) || 0;
+      const used = Math.min(remainingToDeduct, pbAmount);
+      const newAmount = Math.round((pbAmount - used) * 100) / 100;
+      remainingToDeduct -= used;
+      if (newAmount > 0.004) {
+        reducedPlaceholders.push({ ...pb, amount: newAmount });
+      }
+    }
+    resultingBlocks = [...nonPlaceholderBlocks, ...reducedPlaceholders, newBlock];
   } else {
-    newNote = existingNote ? `${existingNote}\n\n${newBlock}` : newBlock;
-    console.log(`  Appending new App ID block for ${transactionId}`);
+    // "add_alongside": keep all existing blocks, append new block (or update if same appId)
+    const existingIndex = existingBlocks.findIndex(b => b.appId && b.appId === newBlock.appId);
+    if (existingIndex >= 0) {
+      resultingBlocks = [...existingBlocks];
+      resultingBlocks[existingIndex] = newBlock;
+    } else {
+      resultingBlocks = [...existingBlocks, newBlock];
+    }
   }
+
+  const newValue = Math.round(resultingBlocks.reduce((sum, b) => sum + (parseFloat(b.amount) || 0), 0) * 100) / 100;
+
+  const blockStr = resultingBlocks.map(b =>
+    `{App ID: ${b.appId}}{Amt: ${b.amount}}{Status:${b.status ? " " + b.status : ""}}{Rec date:${b.recDate ? " " + b.recDate : ""}}{Pay date:${b.payDate ? " " + b.payDate : ""}}{Description:${b.description ? " " + b.description : ""}}`
+  ).join("\n");
+
+  const newNote = topNote ? `${topNote}\n\n${blockStr}` : blockStr;
 
   // Write value
   await sheets.spreadsheets.values.update({
-    spreadsheetId: clientSheetId,
+    spreadsheetId: sheetIdClean,
     range: cellA1,
     valueInputOption: "USER_ENTERED",
     requestBody: { values: [[newValue]] },
   });
-  console.log(`  ✅ Value written: ${existingValue} → ${newValue}`);
+  console.log(`  ✅ Value written: ${existingValue} → ${newValue} (${placementMode})`);
 
   // Write note + apply bold/italic formatting in one batchUpdate
-  const outgoingsSheetId = await getSheetId(sheets, clientSheetId, "Outgoings");
+  const outgoingsSheetId = await getSheetId(sheets, sheetIdClean, "Outgoings");
   const formatRequests = [
-    // Format the value cell (bold + italic)
     {
       repeatCell: {
         range: {
@@ -2806,7 +2963,6 @@ async function writeOutgoingsExpense(sheets, clientSheetId, outgoingsData) {
         fields: "userEnteredFormat.textFormat.bold,userEnteredFormat.textFormat.italic",
       },
     },
-    // Write the note
     {
       updateCells: {
         range: {
@@ -2820,7 +2976,6 @@ async function writeOutgoingsExpense(sheets, clientSheetId, outgoingsData) {
     },
   ];
 
-  // If new vendor row, also format cols A:F bold+italic
   if (isNewVendor) {
     formatRequests.push({
       repeatCell: {
@@ -2836,12 +2991,12 @@ async function writeOutgoingsExpense(sheets, clientSheetId, outgoingsData) {
   }
 
   await sheets.spreadsheets.batchUpdate({
-    spreadsheetId: clientSheetId,
+    spreadsheetId: sheetIdClean,
     requestBody: { requests: formatRequests },
   });
   console.log(`  ✅ Note written and formatting applied`);
 
-  return { sheetRow, colLetter, newValue, prevValue: existingValue, isNewVendor };
+  return { sheetRow, colLetter, newValue, prevValue: existingValue, isNewVendor, mode: placementMode, resultingBlocks };
 }
 
 export async function handleAnalyzeAlert(req, res, sheets) {
@@ -3805,7 +3960,10 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               },
               outgoingsData: {
                 categoryName: vm.vendorName,
-                expenseMonth: expenseDate ? expenseDate.slice(3) : "",
+                expenseMonth: (() => {
+                  const ym = parseYearMonth(expenseDate);
+                  return ym ? `${ym.year}-${String(ym.month).padStart(2, "0")}` : (expenseDate ? expenseDate.slice(3) : "");
+                })(),
                 transactionId: alert.summary?.transactionId || "",
                 amount: expenseAmount,
                 description: expenseDescription || expenseRef,
@@ -4027,7 +4185,10 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               },
               outgoingsData: {
                 categoryName: guessedVendorName,
-                expenseMonth: expenseDate ? expenseDate.slice(3) : "",
+                expenseMonth: (() => {
+                  const ym = parseYearMonth(expenseDate);
+                  return ym ? `${ym.year}-${String(ym.month).padStart(2, "0")}` : (expenseDate ? expenseDate.slice(3) : "");
+                })(),
                 transactionId: alert.summary?.transactionId || "",
                 amount: expenseAmount,
                 description: expenseDescription || expenseRef,
@@ -6420,8 +6581,96 @@ export async function handleAcceptOption(req, res, sheets) {
         ) {
           console.log(`  → Outgoings category write`);
 
-          const result = await writeOutgoingsExpense(sheets, alert.clientId, option.outgoingsData);
-          console.log(`  ✅ Outgoings write complete: row ${result.sheetRow}, col ${result.colLetter}, £${result.prevValue} → £${result.newValue}`);
+          const rawPayDate = option.outgoingsData.payDate 
+            || alert.summary?.datePaid 
+            || alert.summary?.payDate 
+            || alert.data?.accounting?.[7] 
+            || (option.outgoingsData.status === "Paid" ? (option.outgoingsData.recDate || alert.summary?.date) : "");
+          const rawTxnId = option.outgoingsData.transactionId 
+            || alert.summary?.transactionId 
+            || alert.summary?.appId 
+            || alert.data?.accounting?.[6] 
+            || alert.data?.accounting?.[11] 
+            || "";
+
+          const outgoingsData = {
+            ...option.outgoingsData,
+            payDate: rawPayDate ? String(rawPayDate).trim() : "",
+            transactionId: rawTxnId ? String(rawTxnId).trim() : "",
+            mode: req.body.mode || option.outgoingsData.mode || "add_alongside",
+          };
+          const result = await writeOutgoingsExpense(sheets, alert.clientId, outgoingsData);
+          console.log(`  ✅ Outgoings write complete: row ${result.sheetRow}, col ${result.colLetter}, £${result.prevValue} → £${result.newValue} (mode: ${result.mode})`);
+
+          // Mark alert as accepted in AlertMemory
+          const fp = alert.fingerprintHash || buildAlertFingerprint(alert);
+          const alertSummary = alert.summary?.summary || `Expense ${alert.summary?.date || outgoingsData.recDate || ""} • £${alert.summary?.amount || outgoingsData.amount || ""} • ${alert.summary?.description || outgoingsData.description || ""}`.trim();
+          try {
+            await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
+            const memRows = await readAlertMemory(sheets, automationCommanderSheetId);
+            const mr = findMemoryRow(memRows, fp);
+            if (mr) {
+              await updateAlertMemoryRow(sheets, automationCommanderSheetId, mr.rowIndex, { ...mr, status: "accepted" });
+            } else {
+              await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
+                fingerprintHash: fp,
+                alertType: alert.type || alert.flagType || "expenseDashboardDiscr",
+                clientName: alert.clientName || "",
+                alertSummary,
+                cachedOptionsJSON: "",
+                status: "accepted",
+                ignoreReason: "",
+                dataSnapshot: "",
+              });
+            }
+            await updateHandledAlertHash(automationCommanderSheetId, fp, "accepted");
+          } catch (memErr) {
+            console.warn(`  ⚠️ Could not update AlertMemory on outgoings accept: ${memErr.message}`);
+          }
+
+          // Record as assigned expense to suppress on frontend by transactionId/appId
+          if (rawTxnId && alert.clientName) {
+            try {
+              await handleMarkExpenseAssigned({
+                body: {
+                  automationCommanderSheetId,
+                  clientName: alert.clientName,
+                  appId: String(rawTxnId).trim()
+                }
+              }, { status: () => ({ json: () => {} }) }, sheets);
+            } catch (aeErr) {
+              console.warn(`  ⚠️ Could not mark expense assigned: ${aeErr.message}`);
+            }
+          }
+
+          // Remove alert from active Redis sessions & precomputed cache
+          const alertId = `${alert.sheetName}-${alert.rowNumber}`;
+          const targetIds = [alertId, fp, `${alert.flagType || alert.type}-${alert.sheetName}-${alert.rowNumber}`, String(rawTxnId).trim()].filter(Boolean);
+          try {
+            const preRaw = await redisClient?.get(PRECOMPUTED_KEY);
+            if (preRaw) {
+              const pre = JSON.parse(preRaw);
+              applyAlertRemovalToTriageData(pre, targetIds);
+              await redisClient?.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
+            }
+            if (req.body.sessionId) {
+              const sRaw = await redisClient?.get(`triage_alerts:${req.body.sessionId}`);
+              if (sRaw) {
+                const sData = JSON.parse(sRaw);
+                applyAlertRemovalToTriageData(sData, targetIds);
+                await redisClient?.set(`triage_alerts:${req.body.sessionId}`, JSON.stringify(sData), { EX: 86400 * 7 });
+              }
+            }
+          } catch (rErr) {
+            console.warn(`  ⚠️ Could not sync Redis on outgoings accept: ${rErr.message}`);
+          }
+
+          // Fire GAS outgoings pull non-blockingly so Master Sheet syncs notes and clears DirComp
+          if (alert.masterSheetId) {
+            handleFireOutgoingsPull({
+              body: { clientSheetId: alert.clientId, masterSheetId: alert.masterSheetId }
+            }, { status: () => ({ json: () => {} }) }, sheets).catch(() => {});
+          }
 
           // Log to TriageLog
           const timestamp = new Date().toISOString();
@@ -6431,7 +6680,7 @@ export async function handleAcceptOption(req, res, sheets) {
             `${alert.sheetName}-${alert.rowNumber}`,
             alert.clientName || "",
             alert.summary?.amount || "",
-            JSON.stringify({ matchAnalysis: option.matchAnalysis, outgoingsData: option.outgoingsData }),
+            JSON.stringify({ matchAnalysis: option.matchAnalysis, outgoingsData }),
             "ACCEPTED",
             `Option: ${option.title}`,
           ];
@@ -8415,7 +8664,7 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
             // Each AutoLog row may contain multiple stale invoice lines in col D (details)
             // Parse each line of the form:
             // "[Confirmed] Stale Invoice - Row N, CLIENT | JOB, Slot N: Date moved DD-Mon-YY -> DD-Mon-YY"
-            const stalePattern = /\[([^\]]+)\]\s*Stale Invoice\s*[-–]\s*Row\s*(\d+),\s*([^|]+)\|\s*([^,\n]+),\s*Slot\s*(\d+):\s*Date moved\s*([\d\-A-Za-z]+)\s*->\s*([\d\-A-Za-z]+)/gi;
+            const stalePattern = /\[([^\]]+)\]\s*Stale Invoice\s*[-–]\s*Row\s*(\d+),\s*([^|]+)\|\s*(.+?),\s*Slot\s*(\d+):\s*Date moved\s*([\d\-A-Za-z]+)\s*->\s*([\d\-A-Za-z]+)/gi;
 
             for (const entry of staleEntriesToUse) {
               const details = String(entry[3] || "");
@@ -8442,11 +8691,15 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
                 let targetSheetRow = null;
                 let actualRowNum = rowNum;
 
+                const targetClient = jobClient.trim().toLowerCase();
+                const targetJob = jobName.trim().toLowerCase();
+
                 // 1. Try original row
                 if (tab === "Confirmed" && rowNum > 0 && rowNum <= confirmedRows.length) {
                   const r = confirmedRows[rowNum - 1] || [];
-                  if (String(r[0]||"").trim().toLowerCase() === jobClient.toLowerCase() && 
-                      String(r[1]||"").trim().toLowerCase() === jobName.toLowerCase()) {
+                  const rClient = String(r[0]||"").trim().toLowerCase();
+                  const rJob = String(r[1]||"").trim().toLowerCase();
+                  if (rClient === targetClient && (rJob === targetJob || rJob.includes(targetJob))) {
                     targetSheetRow = r;
                   }
                 }
@@ -8456,8 +8709,9 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
                   const matchingRows = [];
                   for (let i = 0; i < confirmedRows.length; i++) {
                     const r = confirmedRows[i] || [];
-                    if (String(r[0]||"").trim().toLowerCase() === jobClient.toLowerCase() && 
-                        String(r[1]||"").trim().toLowerCase() === jobName.toLowerCase()) {
+                    const rClient = String(r[0]||"").trim().toLowerCase();
+                    const rJob = String(r[1]||"").trim().toLowerCase();
+                    if (rClient === targetClient && (rJob === targetJob || rJob.includes(targetJob))) {
                       matchingRows.push({ row: r, index: i + 1 });
                     }
                   }
@@ -9253,4 +9507,148 @@ export async function logClaudeUsage_(sheets, automationCommanderSheetId, client
     },
   }));
   console.log(`  📊 Logged Claude usage: ${clientName} ${alertType} - ${inputTokens}+${outputTokens} tokens, $${costUsd.toFixed(4)}`);
+}
+
+export async function handleCheckOutgoingsCell(req, res, sheets) {
+  const { clientSheetId, categoryName, expenseMonth, expenseDate, amount } = req.body;
+  if (!clientSheetId || !categoryName) {
+    return res.status(400).json({ success: false, error: "Missing clientSheetId or categoryName" });
+  }
+
+  try {
+    const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+    const ym = parseYearMonth(expenseMonth || expenseDate);
+    if (!ym) {
+      return res.status(400).json({ success: false, error: `Could not parse expense month: "${expenseMonth || expenseDate}"` });
+    }
+
+    const resp = await sheets.spreadsheets.values.get({
+      spreadsheetId: sheetIdClean,
+      range: "Outgoings!A1:AX115",
+      valueRenderOption: "UNFORMATTED_VALUE",
+    });
+    const rows = resp.data.values || [];
+    if (rows.length === 0) return res.status(200).json({ success: false, error: "Outgoings tab is empty" });
+
+    const headerRow = rows[0] || [];
+    let targetColIndex = -1;
+    for (let c = 0; c < headerRow.length; c++) {
+      const headerVal = headerRow[c];
+      if (headerVal === null || headerVal === undefined || headerVal === "") continue;
+      let parsedYM = null;
+      if (typeof headerVal === "number") {
+        const d = new Date((headerVal - 25569) * 86400 * 1000);
+        if (!isNaN(d.getTime())) {
+          parsedYM = { year: d.getUTCFullYear(), month: d.getUTCMonth() + 1 };
+        }
+      } else {
+        parsedYM = parseYearMonth(headerVal);
+      }
+      if (parsedYM && parsedYM.year === ym.year && parsedYM.month === ym.month) {
+        targetColIndex = c;
+        break;
+      }
+    }
+
+    if (targetColIndex === -1) {
+      return res.status(200).json({ success: true, found: false, error: `Month column not found for ${ym.year}-${String(ym.month).padStart(2, "0")}` });
+    }
+
+    const categoryLower = categoryName.toLowerCase().trim();
+    let targetRowIndex = -1;
+    for (let r = 12; r <= Math.min(109, rows.length - 1); r++) {
+      const rowVendorName = String(rows[r][0] || "").toLowerCase().trim();
+      if (rowVendorName === categoryLower) {
+        targetRowIndex = r;
+        break;
+      }
+    }
+
+    if (targetRowIndex === -1) {
+      return res.status(200).json({ success: true, found: false, isNewVendor: true });
+    }
+
+    const sheetRow = targetRowIndex + 1;
+    const sheetCol = targetColIndex + 1;
+    const colLetter = (() => {
+      let col = sheetCol;
+      let letter = "";
+      while (col > 0) {
+        const r = (col - 1) % 26;
+        letter = String.fromCharCode(65 + r) + letter;
+        col = Math.floor((col - 1) / 26);
+      }
+      return letter;
+    })();
+
+    const cellA1 = `Outgoings!${colLetter}${sheetRow}`;
+    const cellResp = await sheets.spreadsheets.get({
+      spreadsheetId: sheetIdClean,
+      ranges: [cellA1],
+      fields: "sheets(data(rowData(values(userEnteredValue,note))))",
+    });
+
+    const cellData = cellResp.data.sheets?.[0]?.data?.[0]?.rowData?.[0]?.values?.[0];
+    const existingValueRaw = cellData?.userEnteredValue?.numberValue
+      ?? cellData?.userEnteredValue?.stringValue
+      ?? 0;
+    const existingNote = cellData?.note || "";
+    const existingValue = parseFloat(existingValueRaw) || 0;
+
+    const parseNoteParts = (note) => {
+      if (!note) return { topNote: "", blocks: [] };
+      const firstBlockIdx = note.indexOf("{App ID:");
+      let topNote = "";
+      let blockText = "";
+      if (firstBlockIdx !== -1) {
+        topNote = note.substring(0, firstBlockIdx).trim();
+        blockText = note.substring(firstBlockIdx);
+      } else if (note.includes("{") && note.includes("}")) {
+        blockText = note;
+      } else {
+        topNote = note.trim();
+      }
+
+      const blocks = [];
+      const blockRegex = /\{App ID:\s*([^}]+)\}\{Amt:\s*([^}]+)\}(?:\{Status:\s*([^}]*)\})?(?:\{Rec date:\s*([^}]*)\})?(?:\{Pay date:\s*([^}]*)\})?(?:\{Description:\s*([^}]*)\})?/g;
+      let match;
+      while ((match = blockRegex.exec(blockText)) !== null) {
+        blocks.push({
+          appId:       match[1]?.trim() || "",
+          amount:      parseFloat(String(match[2] || "").replace(/[£$€,\s]/g, "")) || 0,
+          status:      match[3]?.trim() || "",
+          recDate:     match[4]?.trim() || "",
+          payDate:     match[5]?.trim() || "",
+          description: match[6]?.trim() || "",
+        });
+      }
+      return { topNote, blocks };
+    };
+
+    const { topNote, blocks } = parseNoteParts(existingNote);
+    const placeholderBlocks = blocks.filter(b => isPlaceholderExpense(b.appId, b.description, b.status));
+    const totalManual = placeholderBlocks.reduce((sum, b) => sum + (parseFloat(b.amount) || 0), 0);
+    const expenseAmt = parseFloat(amount) || 0;
+    const canUseUp = totalManual > 0 && expenseAmt <= totalManual + 0.001;
+
+    const monthDateObj = new Date(ym.year, ym.month - 1, 1);
+    const monthLabel = monthDateObj.toLocaleString("en-GB", { month: "short", year: "2-digit" });
+
+    return res.status(200).json({
+      success: true,
+      found: true,
+      sheetRow,
+      colLetter,
+      monthLabel,
+      existingValue,
+      topNote,
+      allBlocks: blocks,
+      placeholderBlocks,
+      totalManual,
+      canUseUp
+    });
+  } catch (err) {
+    console.error("❌ check_outgoings_cell error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
 }

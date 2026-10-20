@@ -645,7 +645,16 @@ export function useTriageEngine({
   };
 
   const allNoActionResolved = () => {
-    const infoDone = clientNoActionAlerts.every(na => resolvedNoActionFlags.has(na.fingerprintHash || na.flagType));
+    const infoDone = clientNoActionAlerts.every(na => {
+      const alertId = na.fingerprintHash || `${na.flagType}-${na.flagDetail || ""}`;
+      return (
+        resolvedNoActionFlags.has(alertId) ||
+        (na.fingerprintHash && resolvedNoActionFlags.has(na.fingerprintHash)) ||
+        (na.id && resolvedNoActionFlags.has(na.id)) ||
+        (na.flagDetail && resolvedNoActionFlags.has(`${na.flagType}-${na.flagDetail}`)) ||
+        resolvedNoActionFlags.has(na.flagType)
+      );
+    });
     const proactiveDone = proactiveAlerts.filter(a => a.clientName === selectedClient?.clientName).length === 0;
     return infoDone && proactiveDone;
   };

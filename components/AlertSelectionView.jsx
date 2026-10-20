@@ -137,6 +137,17 @@ export default function AlertSelectionView({
     infoBulkTaskSnoozeTime, setInfoBulkTaskSnoozeTime
   } = useBulkActions();
 
+  const isNoActionResolved = (na, resolvedSet = resolvedNoActionFlags) => {
+    if (!resolvedSet || resolvedSet.size === 0) return false;
+    const alertId = na.fingerprintHash || `${na.flagType}-${na.flagDetail || ""}`;
+    return (
+      resolvedSet.has(alertId) ||
+      (na.fingerprintHash && resolvedSet.has(na.fingerprintHash)) ||
+      (na.id && resolvedSet.has(na.id)) ||
+      (na.flagDetail && resolvedSet.has(`${na.flagType}-${na.flagDetail}`))
+    );
+  };
+
   const acknowledgeProactiveAlert = async (alertKey, rowIndex) => {
     const activeKey = alertKey || (rowIndex != null ? `row-${rowIndex}` : null);
     try {
@@ -183,7 +194,7 @@ export default function AlertSelectionView({
       setProactiveAlerts(remaining);
       const remainingProactiveCount = remaining.filter(a => a.clientName === selectedClient?.clientName).length;
 
-      const infoDone = clientNoActionAlerts.every(na => resolvedNoActionFlags.has(na.fingerprintHash || `${na.flagType}-${na.flagDetail || ""}`));
+      const infoDone = clientNoActionAlerts.every(na => isNoActionResolved(na));
       if (clientAlerts.length === 0 && infoDone && remainingProactiveCount === 0) {
         handlePostClear([], resolvedNoActionFlags);
       }
@@ -271,7 +282,7 @@ export default function AlertSelectionView({
       setProactiveAlerts(remaining);
       const remainingProactiveCount = remaining.filter(a => a.clientName === selectedClient?.clientName).length;
 
-      const infoDone = clientNoActionAlerts.every(na => resolvedNoActionFlags.has(na.fingerprintHash || `${na.flagType}-${na.flagDetail || ""}`));
+      const infoDone = clientNoActionAlerts.every(na => isNoActionResolved(na));
       if (clientAlerts.length === 0 && infoDone && remainingProactiveCount === 0) {
         handlePostClear([], resolvedNoActionFlags);
       }
@@ -285,9 +296,10 @@ export default function AlertSelectionView({
     (isAdmin || !ADMIN_ONLY_ALERT_TYPES.has(a.alertType))
   );
 
-  const visibleNoActionAlerts = isAdmin
+  const visibleNoActionAlerts = (isAdmin
     ? clientNoActionAlerts
-    : clientNoActionAlerts.filter(na => !ADMIN_ONLY_ALERT_TYPES.has(na.flagType));
+    : clientNoActionAlerts.filter(na => !ADMIN_ONLY_ALERT_TYPES.has(na.flagType))
+  ).filter(na => !isNoActionResolved(na));
 
   const freqLabel = (days) => {
     if (days <= 31) return "monthly";
@@ -315,8 +327,14 @@ export default function AlertSelectionView({
     const alertId = na.fingerprintHash || `${na.flagType}-${na.flagDetail || ""}`;
     const newResolved = new Set([...resolvedNoActionFlags, alertId]);
     setResolvedNoActionFlags(newResolved);
+    setInfoBulkSelected(prev => {
+      if (!prev.has(alertId)) return prev;
+      const next = new Set(prev);
+      next.delete(alertId);
+      return next;
+    });
 
-    const remainingOfType = clientNoActionAlerts.filter(n => n.flagType === na.flagType && !newResolved.has(n.fingerprintHash || `${n.flagType}-${n.flagDetail || ""}`));
+    const remainingOfType = clientNoActionAlerts.filter(n => n.flagType === na.flagType && !isNoActionResolved(n, newResolved));
     const isLastOfType = remainingOfType.length === 0;
 
     setClientsWithFlags(prev => prev.map(c => {
@@ -331,7 +349,7 @@ export default function AlertSelectionView({
     if (sessionId && selectedClient) {
       fetch("/api/triage", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "resolve_noaction_flag", sessionId, clientName: selectedClient.clientName, flagType: na.flagType, fingerprintHash: na.fingerprintHash, automationCommanderSheetId }),
+        body: JSON.stringify({ action: "resolve_noaction_flag", sessionId, clientName: selectedClient.clientName, flagType: na.flagType, fingerprintHash: na.fingerprintHash || alertId, automationCommanderSheetId }),
       }).catch(() => { });
 
       if (isLastOfType) {
@@ -345,7 +363,7 @@ export default function AlertSelectionView({
     if (RICH_NOACTION_FLAG_GROUP[na.flagType] && isLastOfType) {
       autoClearFlags(clientAlerts, newResolved).catch(() => { });
     }
-    const allResolved = clientNoActionAlerts.every(n => newResolved.has(n.fingerprintHash || `${n.flagType}-${n.flagDetail || ""}`));
+    const allResolved = clientNoActionAlerts.every(n => isNoActionResolved(n, newResolved));
     const proactiveDone = proactiveAlerts.filter(a => a.clientName === selectedClient?.clientName).length === 0;
     if (allResolved && proactiveDone && clientAlerts.length === 0) {
       handlePostClear([], newResolved);
@@ -534,7 +552,7 @@ export default function AlertSelectionView({
 
         alerts.forEach(na => {
           if (updatedCounts[na.flagType] > 0) updatedCounts[na.flagType]--;
-          const remainingOfType = clientNoActionAlerts.filter(n => n.flagType === na.flagType && !newResolved.has(n.fingerprintHash || n.flagType));
+          const remainingOfType = clientNoActionAlerts.filter(n => n.flagType === na.flagType && !isNoActionResolved(n, newResolved));
           if (remainingOfType.length === 0) {
             updatedFlags[na.flagType] = false;
             typesToClear.add(na.flagType);
@@ -544,12 +562,13 @@ export default function AlertSelectionView({
       }));
 
       if (sessionId && selectedClient) {
-        await Promise.all(alerts.map(na =>
-          fetch("/api/triage", {
+        await Promise.all(alerts.map(na => {
+          const alertId = na.fingerprintHash || `${na.flagType}-${na.flagDetail || ""}`;
+          return fetch("/api/triage", {
             method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "resolve_noaction_flag", sessionId, clientName: selectedClient.clientName, flagType: na.flagType, fingerprintHash: na.fingerprintHash, automationCommanderSheetId }),
-          }).catch(() => { })
-        ));
+            body: JSON.stringify({ action: "resolve_noaction_flag", sessionId, clientName: selectedClient.clientName, flagType: na.flagType, fingerprintHash: na.fingerprintHash || alertId, automationCommanderSheetId }),
+          }).catch(() => { });
+        }));
 
         if (typesToClear.size > 0) {
           fetch("/api/triage", {
@@ -559,7 +578,7 @@ export default function AlertSelectionView({
         }
       }
 
-      const allResolved = clientNoActionAlerts.every(n => newResolved.has(n.fingerprintHash || n.flagType));
+      const allResolved = clientNoActionAlerts.every(n => isNoActionResolved(n, newResolved));
       const proactiveDone = proactiveAlerts.filter(a => a.clientName === selectedClient?.clientName).length === 0;
       if (allResolved && proactiveDone && clientAlerts.length === 0) {
         handlePostClear([], newResolved);
@@ -642,7 +661,7 @@ export default function AlertSelectionView({
 
         alerts.forEach(na => {
           if (updatedCounts[na.flagType] > 0) updatedCounts[na.flagType]--;
-          const remainingOfType = clientNoActionAlerts.filter(n => n.flagType === na.flagType && !newResolved.has(n.fingerprintHash || n.flagType));
+          const remainingOfType = clientNoActionAlerts.filter(n => n.flagType === na.flagType && !isNoActionResolved(n, newResolved));
           if (remainingOfType.length === 0) {
             updatedFlags[na.flagType] = false;
             typesToClear.add(na.flagType);
@@ -661,7 +680,7 @@ export default function AlertSelectionView({
       if (!infoBulkTaskSnoozeDate) setNavTaskCount(prev => prev + successCount);
       else setSnoozedTaskCount(prev => prev + successCount);
 
-      const allResolved = clientNoActionAlerts.every(n => newResolved.has(n.fingerprintHash || n.flagType));
+      const allResolved = clientNoActionAlerts.every(n => isNoActionResolved(n, newResolved));
       const proactiveDone = proactiveAlerts.filter(a => a.clientName === selectedClient?.clientName).length === 0;
       if (allResolved && proactiveDone && clientAlerts.length === 0) {
         handlePostClear([], newResolved);
@@ -710,7 +729,7 @@ export default function AlertSelectionView({
       setProactiveBulkSelected(new Set());
       setProactiveBulkMode(false);
 
-      const infoDone = clientNoActionAlerts.every(na => resolvedNoActionFlags.has(na.fingerprintHash || `${na.flagType}-${na.flagDetail || ""}`));
+      const infoDone = clientNoActionAlerts.every(na => isNoActionResolved(na));
       if (clientAlerts.length === 0 && infoDone && remainingProactiveCount === 0) {
         handlePostClear([], resolvedNoActionFlags);
       }
@@ -798,7 +817,7 @@ export default function AlertSelectionView({
       setProactiveBulkTaskSnoozeDate("");
       setProactiveBulkTaskSnoozeTime("07:00");
 
-      const infoDone = clientNoActionAlerts.every(na => resolvedNoActionFlags.has(na.fingerprintHash || `${na.flagType}-${na.flagDetail || ""}`));
+      const infoDone = clientNoActionAlerts.every(na => isNoActionResolved(na));
       if (clientAlerts.length === 0 && infoDone && remainingProactiveCount === 0) {
         handlePostClear([], resolvedNoActionFlags);
       }
@@ -1394,46 +1413,6 @@ export default function AlertSelectionView({
                               : (rawAnalysis?.overallOk ?? true);
                             const analysis = rawAnalysis ? { ...rawAnalysis, results: displayedResults, overallOk } : null;
 
-                            const handleMarkResolved = () => {
-                              const newResolved = new Set([...resolvedNoActionFlags, alertId]);
-                              setResolvedNoActionFlags(newResolved);
-
-                              const remainingOfType = clientNoActionAlerts.filter(n => n.flagType === na.flagType && !newResolved.has(n.fingerprintHash || `${n.flagType}-${n.flagDetail || ""}`));
-                              const isLastOfType = remainingOfType.length === 0;
-
-                              setClientsWithFlags(prev => prev.map(c => {
-                                if (c.clientName !== selectedClient?.clientName) return c;
-                                const updatedCounts = { ...c.alertCounts };
-                                if (updatedCounts[na.flagType] > 0) updatedCounts[na.flagType]--;
-                                const updatedFlags = { ...c.flags };
-                                if (isLastOfType) updatedFlags[na.flagType] = false;
-                                return { ...c, alertCounts: updatedCounts, flags: updatedFlags };
-                              }));
-
-                              if (sessionId && selectedClient) {
-                                fetch("/api/triage", {
-                                  method: "POST", headers: { "Content-Type": "application/json" },
-                                  body: JSON.stringify({ action: "resolve_noaction_flag", sessionId, clientName: selectedClient.clientName, flagType: na.flagType, fingerprintHash: na.fingerprintHash, automationCommanderSheetId }),
-                                }).catch(() => { });
-
-                                if (isLastOfType) {
-                                  fetch("/api/triage", {
-                                    method: "POST", headers: { "Content-Type": "application/json" },
-                                    body: JSON.stringify({ action: "update_session_flags", sessionId, clientName: selectedClient.clientName, clearedFlagKeys: [na.flagType] }),
-                                  }).catch(() => { });
-                                }
-                              }
-
-                              if (RICH_NOACTION_FLAG_GROUP[na.flagType] && isLastOfType) {
-                                autoClearFlags(clientAlerts, newResolved).catch(() => { });
-                              }
-                              const allResolved = clientNoActionAlerts.every(n => newResolved.has(n.fingerprintHash || `${n.flagType}-${n.flagDetail || ""}`));
-                              const proactiveDone = proactiveAlerts.filter(a => a.clientName === selectedClient?.clientName).length === 0;
-                              if (allResolved && proactiveDone && clientAlerts.length === 0) {
-                                handlePostClear([], newResolved);
-                              }
-                            };
-
                               const cName = na.clientName || selectedClient?.clientName;
                               const clientInfo = (clientsWithFlags || []).find(c => c.clientName === cName) || (allClientsMap && (allClientsMap[cName] || Object.values(allClientsMap).find(cl => cl.clientName?.toLowerCase() === cName?.toLowerCase()))) || selectedClient;
                               const parsed = parseInfoAlertDetail(na.flagType, na.flagDetail);
@@ -1452,8 +1431,8 @@ export default function AlertSelectionView({
                                 <div key={alertId} style={{
                                   padding: "14px 16px",
                                   borderRadius: "8px",
-                                  border: isResolved ? "1px solid #c8e6c9" : (infoBulkMode && isBulkSelected ? "1px solid #7c3aed" : "1px solid #cbd5e1"),
-                                  background: isResolved ? "#f1f8f2" : (infoBulkMode && isBulkSelected ? "#ede9fe" : "#ffffff"),
+                                  border: infoBulkMode && isBulkSelected ? "1px solid #7c3aed" : "1px solid #cbd5e1",
+                                  background: infoBulkMode && isBulkSelected ? "#ede9fe" : "#ffffff",
                                   display: "flex",
                                   flexDirection: "column",
                                   gap: "4px",
@@ -1463,7 +1442,7 @@ export default function AlertSelectionView({
                                   <div style={{
                                     fontWeight: "600",
                                     fontSize: "13.5px",
-                                    color: isResolved ? "#2e7d32" : "#0f172a",
+                                    color: "#0f172a",
                                     display: "flex",
                                     alignItems: "center",
                                     justifyContent: "space-between",
@@ -1471,7 +1450,7 @@ export default function AlertSelectionView({
                                     gap: "8px",
                                   }}>
                                     <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", minWidth: 0 }}>
-                                      {infoBulkMode && !isResolved && (
+                                      {infoBulkMode && (
                                         <input type="checkbox" checked={isBulkSelected} onChange={() => {
                                           setInfoBulkSelected(prev => {
                                             const next = new Set(prev);
@@ -1480,12 +1459,9 @@ export default function AlertSelectionView({
                                           });
                                         }} style={{ accentColor: "#7c3aed", cursor: "pointer", flexShrink: 0 }} />
                                       )}
-                                      <span style={{ textDecoration: isResolved ? "line-through" : "none" }}>{cardTitle}</span>
+                                      <span>{cardTitle}</span>
                                       {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(na.flagType) && <AdminBadge show={clientHasManager} />}
                                     </div>
-                                    {isResolved && (
-                                      <span style={{ fontSize: "12px", color: "#2e7d32", fontWeight: "600", whiteSpace: "nowrap" }}>✓ Resolved</span>
-                                    )}
                                   </div>
 
                                   <div style={{
@@ -1514,9 +1490,9 @@ export default function AlertSelectionView({
                                           {parsed.changes.map((ch, ci) => (
                                             <span key={ci} style={{
                                               padding: "2px 7px", borderRadius: "4px", fontSize: "11px", fontWeight: "600",
-                                              background: isResolved ? "#f1f8f2" : "#f1f5f9",
-                                              color: isResolved ? "#2e7d32" : "#334155",
-                                              border: `1px solid ${isResolved ? "#bbf7d0" : "#cbd5e1"}`,
+                                              background: "#f1f5f9",
+                                              color: "#334155",
+                                              border: "1px solid #cbd5e1",
                                             }}>
                                               {ch.label}
                                             </span>
@@ -1525,18 +1501,18 @@ export default function AlertSelectionView({
                                       </div>
                                     )}
                                     {parsed.highlight && (
-                                      <div style={{ marginTop: "4px", fontWeight: "600", color: isResolved ? "#2e7d32" : "#0284c7" }}>
+                                      <div style={{ marginTop: "4px", fontWeight: "600", color: "#0284c7" }}>
                                         {parsed.highlight}
                                       </div>
                                     )}
                                     {parsed.rawText && (
-                                      <div style={{ marginTop: "2px", color: isResolved ? "#2e7d32" : "#666", lineHeight: "1.4" }}>
+                                      <div style={{ marginTop: "2px", color: "#666", lineHeight: "1.4" }}>
                                         {isAdmin ? parsed.rawText : stripRowInfo(parsed.rawText)}
                                       </div>
                                     )}
                                   </div>
 
-                                  {analysis && !isLoading && !isResolved && (
+                                  {analysis && !isLoading && (
                                     <div style={{ marginTop: "2px" }}>
                                       <div style={{
                                         padding: "6px 10px", borderRadius: "4px", marginBottom: "8px", fontSize: "12px", fontWeight: "600",
@@ -1592,7 +1568,7 @@ export default function AlertSelectionView({
                                       ))}
                                     </div>
                                   )}
-                                  {analysis && !analysis.success && !isResolved && (
+                                  {analysis && !analysis.success && (
                                     <div style={{ fontSize: "12px", color: "#c62828", marginTop: "4px" }}>Error: {analysis.error}</div>
                                   )}
 
@@ -1602,8 +1578,7 @@ export default function AlertSelectionView({
                                       {na.firstSeen && na.lastSeen ? " · " : ""}
                                       {na.lastSeen ? `Last seen: ${formatSeenTimestamp(na.lastSeen)}` : ""}
                                     </div>
-                                    {!isResolved && (
-                                      <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+                                    <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
                                         {(() => {
                                           const jobTarget = getAlertJobTarget(na, true, clientInfo);
                                           if (!jobTarget) return null;
@@ -1650,13 +1625,12 @@ export default function AlertSelectionView({
                                           📋 Create Task
                                         </button>
                                         <button className="triage-btn"
-                                          onClick={handleMarkResolved}
+                                          onClick={() => handleMarkNoActionResolved(na)}
                                           style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px" }}
                                         >
                                           ✓ Mark resolved
                                         </button>
                                       </div>
-                                    )}
                                   </div>
                                 </div>
                               );
@@ -1893,7 +1867,7 @@ export default function AlertSelectionView({
                                         <div style={{ marginTop: "4px", color: "#d97706" }}>
                                           {pCount} expense{pCount > 1 ? "s" : ""} totalling £{pTotal.toFixed(2)} {pCount > 1 ? "are placeholders - not counted as received above." : "is a placeholder - not counted as received above."}
                                         </div>
-                                      )}
+                                       )}
                                     </div>
                                   );
                                 })()}

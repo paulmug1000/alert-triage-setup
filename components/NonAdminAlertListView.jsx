@@ -230,7 +230,16 @@ export default function NonAdminAlertListView({
 
       {/* 2. Informational Groups */}
       {Object.keys(groupedInfoAlerts).map(type => {
-        const groupAlerts = groupedInfoAlerts[type];
+        const groupAlerts = (groupedInfoAlerts[type] || []).filter(na => {
+          const alertId = na.fingerprintHash || `${na.flagType}-${na.flagDetail || ""}`;
+          return (
+            !resolvedNoActionFlags.has(alertId) &&
+            (!na.fingerprintHash || !resolvedNoActionFlags.has(na.fingerprintHash)) &&
+            (!na.id || !resolvedNoActionFlags.has(na.id)) &&
+            (!na.flagDetail || !resolvedNoActionFlags.has(`${na.flagType}-${na.flagDetail}`))
+          );
+        });
+        if (groupAlerts.length === 0) return null;
         return (
           <div key={`info-${type}`}>
             <h3 style={{ fontSize: "14px", fontWeight: "bold", color: "#1976d2", margin: "0 0 10px 0" }}>
@@ -258,8 +267,8 @@ export default function NonAdminAlertListView({
                   <div key={alertId} style={{
                     padding: "14px 16px",
                     borderRadius: "8px",
-                    border: isResolved ? "1px solid #c8e6c9" : "1px solid #cbd5e1",
-                    background: isResolved ? "#f1f8f2" : "#ffffff",
+                    border: "1px solid #cbd5e1",
+                    background: "#ffffff",
                     display: "flex",
                     flexDirection: "column",
                     gap: "4px",
@@ -269,7 +278,7 @@ export default function NonAdminAlertListView({
                     <div style={{
                       fontWeight: "600",
                       fontSize: "13.5px",
-                      color: isResolved ? "#2e7d32" : "#0f172a",
+                      color: "#0f172a",
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "space-between",
@@ -277,11 +286,8 @@ export default function NonAdminAlertListView({
                       gap: "8px",
                     }}>
                       <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", minWidth: 0 }}>
-                        <span style={{ textDecoration: isResolved ? "line-through" : "none" }}>{cardTitle}</span>
+                        <span>{cardTitle}</span>
                       </div>
-                      {isResolved && (
-                        <span style={{ fontSize: "12px", color: "#2e7d32", fontWeight: "600", whiteSpace: "nowrap" }}>✓ Resolved</span>
-                      )}
                     </div>
 
                     <div style={{
@@ -305,9 +311,9 @@ export default function NonAdminAlertListView({
                             {parsed.changes.map((ch, ci) => (
                               <span key={ci} style={{
                                 padding: "2px 7px", borderRadius: "4px", fontSize: "11px", fontWeight: "600",
-                                background: isResolved ? "#f1f8f2" : "#f1f5f9",
-                                color: isResolved ? "#2e7d32" : "#334155",
-                                border: `1px solid ${isResolved ? "#bbf7d0" : "#cbd5e1"}`,
+                                background: "#f1f5f9",
+                                color: "#334155",
+                                border: "1px solid #cbd5e1",
                               }}>
                                 {ch.label}
                               </span>
@@ -316,18 +322,18 @@ export default function NonAdminAlertListView({
                         </div>
                       )}
                       {parsed.highlight && (
-                        <div style={{ marginTop: "4px", fontWeight: "600", color: isResolved ? "#2e7d32" : "#0284c7" }}>
+                        <div style={{ marginTop: "4px", fontWeight: "600", color: "#0284c7" }}>
                           {parsed.highlight}
                         </div>
                       )}
                       {parsed.rawText && (
-                        <div style={{ marginTop: "2px", color: isResolved ? "#2e7d32" : "#666", lineHeight: "1.4" }}>
+                        <div style={{ marginTop: "2px", color: "#666", lineHeight: "1.4" }}>
                           {stripRowInfo(parsed.rawText)}
                         </div>
                       )}
                     </div>
 
-                    {analysis && !isLoading && !isResolved && (
+                    {analysis && !isLoading && (
                       <div style={{ marginTop: "2px" }}>
                         <div style={{
                           padding: "6px 10px", borderRadius: "4px", marginBottom: "8px", fontSize: "12px", fontWeight: "600",
@@ -363,7 +369,7 @@ export default function NonAdminAlertListView({
                         ))}
                       </div>
                     )}
-                    {analysis && !analysis.success && !isResolved && (
+                    {analysis && !analysis.success && (
                       <div style={{ fontSize: "12px", color: "#c62828", marginTop: "4px" }}>Error: {analysis.error}</div>
                     )}
 
@@ -373,8 +379,7 @@ export default function NonAdminAlertListView({
                         {na.firstSeen && na.lastSeen ? " · " : ""}
                         {na.lastSeen ? `Last seen: ${formatSeenTimestamp(na.lastSeen)}` : ""}
                       </div>
-                      {!isResolved && (
-                        <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+                      <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
                           {isRichFlag && !analysis && !isLoading && (
                             <button className="triage-btn"
                               onClick={() => analyzeNoActionFlag(na)}
@@ -423,7 +428,6 @@ export default function NonAdminAlertListView({
                             ✓ Mark resolved
                           </button>
                         </div>
-                      )}
                     </div>
                   </div>
                 );

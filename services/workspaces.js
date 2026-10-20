@@ -2007,13 +2007,6 @@ export async function handleUpdateInvoiceSlot(req, res, sheets) {
       actualSlotNum = 1;
     }
 
-    const slotCols = {
-      1: { a: "AP", ref: "AQ", sent: "AR", days: "AS", st: "AT" },
-      2: { a: "AW", ref: "AX", sent: "AY", days: "AZ", st: "BA" },
-      3: { a: "BD", ref: "BE", sent: "BF", days: "BG", st: "BH" },
-    }[actualSlotNum];
-    if (!slotCols) return res.status(400).json({ success: false, error: "Invalid slotNum" });
-
     if (!createNewRow && (jobClient || jobName)) {
       try {
         const checkResp = await sheets.spreadsheets.values.get({
@@ -2051,6 +2044,53 @@ export async function handleUpdateInvoiceSlot(req, res, sheets) {
         console.warn(`Row verification check failed in update_invoice_slot on ${targetTab}:`, checkErr.message);
       }
     }
+
+    if (req.body.invoiceRef) {
+      const cleanTargetRef = String(req.body.invoiceRef).trim().toLowerCase();
+      try {
+        const slotCheckResp = await sheets.spreadsheets.values.get({
+          spreadsheetId: sheetIdClean,
+          range: `${targetTab}!AQ${actualRowNum}:BE${actualRowNum}`,
+          valueRenderOption: "UNFORMATTED_VALUE"
+        });
+        const slotVals = slotCheckResp.data.values?.[0] || [];
+        const ref1 = String(slotVals[0] || "").trim().toLowerCase();
+        const ref2 = String(slotVals[7] || "").trim().toLowerCase();
+        const ref3 = String(slotVals[14] || "").trim().toLowerCase();
+        if (ref1 === cleanTargetRef) {
+          actualSlotNum = 1;
+        } else if (ref2 === cleanTargetRef) {
+          actualSlotNum = 2;
+        } else if (ref3 === cleanTargetRef) {
+          actualSlotNum = 3;
+        } else {
+          const scanResp = await sheets.spreadsheets.values.get({
+            spreadsheetId: sheetIdClean,
+            range: `${targetTab}!AQ1:BE5000`,
+            valueRenderOption: "UNFORMATTED_VALUE"
+          });
+          const allScanRows = scanResp.data.values || [];
+          for (let r = 0; r < allScanRows.length; r++) {
+            const rowArr = allScanRows[r] || [];
+            const r1 = String(rowArr[0] || "").trim().toLowerCase();
+            const r2 = String(rowArr[7] || "").trim().toLowerCase();
+            const r3 = String(rowArr[14] || "").trim().toLowerCase();
+            if (r1 === cleanTargetRef) { actualRowNum = r + 1; actualSlotNum = 1; break; }
+            if (r2 === cleanTargetRef) { actualRowNum = r + 1; actualSlotNum = 2; break; }
+            if (r3 === cleanTargetRef) { actualRowNum = r + 1; actualSlotNum = 3; break; }
+          }
+        }
+      } catch (scanErr) {
+        console.warn("Invoice slot ref verification check skipped:", scanErr.message);
+      }
+    }
+
+    const slotCols = {
+      1: { a: "AP", ref: "AQ", sent: "AR", days: "AS", st: "AT" },
+      2: { a: "AW", ref: "AX", sent: "AY", days: "AZ", st: "BA" },
+      3: { a: "BD", ref: "BE", sent: "BF", days: "BG", st: "BH" },
+    }[actualSlotNum];
+    if (!slotCols) return res.status(400).json({ success: false, error: "Invalid slotNum" });
 
     const values = deleteSlot
       ? ["", "", "", "", ""]

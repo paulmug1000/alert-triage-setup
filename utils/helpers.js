@@ -987,6 +987,27 @@ export function getAlertJobTarget(alertOrNa, isInfo = false, clientInfo = null) 
     };
   }
 
+  if (alertType === "deleted_invoice") {
+    const rowNum = m.confirmedRow || alertOrNa.confirmedRow || (alertOrNa.detail && alertOrNa.detail.match(/row\s*(\d+)/i)?.[1]);
+    const slotNum = m.slotNum || alertOrNa.slotNum || (alertOrNa.detail && alertOrNa.detail.match(/invoice slot\s*(\d+)/i)?.[1]);
+    const invoiceRef = m.stableJobKey || alertOrNa.stableJobKey || m.invoiceRef || alertOrNa.invoiceRef || (alertOrNa.detail && alertOrNa.detail.match(/Invoice\s+([^\s(]+)/i)?.[1]);
+    return {
+      isOutgoings: false,
+      client: effectiveClient,
+      clientName: cName,
+      clientSheetId: cSheetId,
+      rowNum: rowNum ? Number(rowNum) : null,
+      tabName: "Confirmed",
+      jobName: m.jobName || alertOrNa.jobName,
+      endClientName: m.endClientName || alertOrNa.endClientName,
+      projectCode: m.projectCode || alertOrNa.projectCode,
+      slotNum: slotNum ? Number(slotNum) : null,
+      invoiceRef: invoiceRef ? String(invoiceRef).trim() : "",
+      amount: m.amount || alertOrNa.amount,
+      sentDate: m.sentDate || alertOrNa.sentDate,
+    };
+  }
+
   return null;
 }
 

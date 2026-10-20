@@ -938,6 +938,12 @@ export async function checkDeletedInvoices_(clientName, clientSheetId, masterShe
         heading: "Invoice reference no longer found in accounting system",
         detail: `Invoice ${candidateRef} (${found.foundClientName}${found.jobName ? ` - ${found.jobName}` : ""}), sent ${sentDateStr}${amountNum > 0 ? `, £${amountNum.toFixed(2)}` : ""}, has a real reference on the Confirmed tab (row ${found.rowNum}, invoice slot ${found.slotNum}) but no longer appears in the accounting system. It may have been deleted or voided - check Xero directly.`,
         jobName: found.jobName, endClientName: found.foundClientName, projectCode: found.projectCode, confirmedRow: found.rowNum, stableJobKey: candidateRef,
+        slotNum: found.slotNum, invoiceRef: candidateRef, amount: amountNum > 0 ? String(amountNum.toFixed(2)) : "", sentDate: sentDateStr,
+        metadata: {
+          jobName: found.jobName, endClientName: found.foundClientName, projectCode: found.projectCode, confirmedRow: found.rowNum,
+          stableJobKey: candidateRef, slotNum: found.slotNum, invoiceRef: candidateRef, amount: amountNum > 0 ? String(amountNum.toFixed(2)) : "", sentDate: sentDateStr,
+          clientName
+        }
       });
     }
   } catch(e) {}

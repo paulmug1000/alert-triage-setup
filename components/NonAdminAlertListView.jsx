@@ -51,7 +51,8 @@ export default function NonAdminAlertListView({
   acknowledgingKey,
   freqLabel,
   totalVisibleAlertsCount,
-  onViewJob
+  onViewJob,
+  onDeleteInvoice
 }) {
   const [selectedClassifications, setSelectedClassifications] = React.useState({});
   const [applyingClassification, setApplyingClassification] = React.useState({});
@@ -796,7 +797,9 @@ export default function NonAdminAlertListView({
                       <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                         {(m.endClientName || alert.endClientName) && <div><strong>End client:</strong> {m.endClientName || alert.endClientName}</div>}
                         {(m.jobName || alert.jobName) && <div><strong>Job:</strong> {m.jobName || alert.jobName}{(m.projectCode || alert.projectCode) ? ` [${m.projectCode || alert.projectCode}]` : ""}</div>}
-                        {(m.stableJobKey || alert.stableJobKey) && <div><strong>Invoice ref:</strong> {m.stableJobKey || alert.stableJobKey}</div>}
+                        {(m.stableJobKey || alert.stableJobKey || m.invoiceRef || alert.invoiceRef) && <div><strong>Invoice ref:</strong> {m.stableJobKey || alert.stableJobKey || m.invoiceRef || alert.invoiceRef}</div>}
+                        {(m.amount || alert.amount) && <div><strong>Amount:</strong> £{parseFloat(String(m.amount || alert.amount).replace(/[£,\s]/g, "")).toFixed(2)}</div>}
+                        {(m.sentDate || alert.sentDate) && <div><strong>Sent date:</strong> {m.sentDate || alert.sentDate}</div>}
                         <div style={{ marginTop: "4px", color: "#c62828" }}>
                           Invoice reference appears on Confirmed tab but was not found in the accounting system (it may have been deleted or voided in Xero).
                         </div>
@@ -859,6 +862,35 @@ export default function NonAdminAlertListView({
                                   title={jobTarget.isOutgoings ? "View Outgoings expense details" : "View and edit job details in pop-up"}
                                 >
                                   {jobTarget.isOutgoings ? "🔍 View expense" : "🔍 View job"}
+                                </button>
+                              )}
+                              {alert.alertType === "deleted_invoice" && onDeleteInvoice && (
+                                <button
+                                  className="triage-btn"
+                                  onClick={() => {
+                                    const rowNum = m.confirmedRow || alert.confirmedRow || (alert.detail && alert.detail.match(/row\s*(\d+)/i)?.[1]);
+                                    const slotNum = m.slotNum || alert.slotNum || (alert.detail && alert.detail.match(/invoice slot\s*(\d+)/i)?.[1]);
+                                    const invoiceRef = m.stableJobKey || alert.stableJobKey || m.invoiceRef || alert.invoiceRef || (alert.detail && alert.detail.match(/Invoice\s+([^\s(]+)/i)?.[1]);
+                                    onDeleteInvoice({
+                                      alert,
+                                      clientInfo,
+                                      clientName: cName,
+                                      clientSheetId: clientInfo?.clientSheetId || alert.clientSheetId,
+                                      masterSheetId: clientInfo?.masterSheetId || alert.masterSheetId,
+                                      confirmedRow: rowNum ? Number(rowNum) : null,
+                                      slotNum: slotNum ? Number(slotNum) : null,
+                                      invoiceRef: invoiceRef ? String(invoiceRef).trim() : "",
+                                      jobName: m.jobName || alert.jobName,
+                                      endClientName: m.endClientName || alert.endClientName,
+                                      projectCode: m.projectCode || alert.projectCode,
+                                      amount: m.amount || alert.amount,
+                                      sentDate: m.sentDate || alert.sentDate,
+                                    });
+                                  }}
+                                  style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#dc2626", borderColor: "#fecaca" }}
+                                  title="Delete this invoice entry from the Confirmed tab in Pulse"
+                                >
+                                  Delete invoice from Pulse
                                 </button>
                               )}
                               {alert.alertType === "expenseDashboardDiscr" && clientInfo && (

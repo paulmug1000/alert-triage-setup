@@ -6,6 +6,7 @@ import RetainerSplitInvoiceModal from "./RetainerSplitInvoiceModal";
 import NonAdminAlertListView from "./NonAdminAlertListView";
 import JobDetailModal from "./JobDetailModal";
 import OutgoingsDetailModal from "./OutgoingsDetailModal";
+import DeleteInvoiceFromPulseModal from "./DeleteInvoiceFromPulseModal";
 import { useBulkActions } from "../hooks/useBulkActions";
 import { useTasks } from "../contexts/TaskContext";
 import { useTriage } from "../contexts/TriageContext";
@@ -89,6 +90,7 @@ export default function AlertSelectionView({
   const [classificationMsg, setClassificationMsg] = useState({});
   const [viewingJobTarget, setViewingJobTarget] = useState(null);
   const [viewingOutgoingsTarget, setViewingOutgoingsTarget] = useState(null);
+  const [deleteInvoiceTarget, setDeleteInvoiceTarget] = useState(null);
 
   const handleViewJobOrExpense = (target) => {
     if (!target) return;
@@ -1186,6 +1188,7 @@ export default function AlertSelectionView({
             freqLabel={freqLabel}
             totalVisibleAlertsCount={totalVisibleAlertsCount}
             onViewJob={handleViewJobOrExpense}
+            onDeleteInvoice={setDeleteInvoiceTarget}
           />
         ) : (
           <>
@@ -2171,7 +2174,10 @@ export default function AlertSelectionView({
                                     {(m.endClientName || alert.endClientName) && <div><strong>End client:</strong> {m.endClientName || alert.endClientName}</div>}
                                     {(m.jobName || alert.jobName) && <div><strong>Job:</strong> {m.jobName || alert.jobName}{(m.projectCode || alert.projectCode) ? ` [${m.projectCode || alert.projectCode}]` : ""}</div>}
                                     {(m.confirmedRow || alert.confirmedRow) && <div><strong>Confirmed tab row:</strong> {m.confirmedRow || alert.confirmedRow}</div>}
-                                    {(m.stableJobKey || alert.stableJobKey) && <div><strong>Invoice ref:</strong> {m.stableJobKey || alert.stableJobKey}</div>}
+                                    {(m.stableJobKey || alert.stableJobKey || m.invoiceRef || alert.invoiceRef) && <div><strong>Invoice ref:</strong> {m.stableJobKey || alert.stableJobKey || m.invoiceRef || alert.invoiceRef}</div>}
+                                    {(m.amount || alert.amount) && <div><strong>Amount:</strong> £{parseFloat(String(m.amount || alert.amount).replace(/[£,\s]/g, "")).toFixed(2)}</div>}
+                                    {(m.sentDate || alert.sentDate) && <div><strong>Sent date:</strong> {m.sentDate || alert.sentDate}</div>}
+                                    {(m.slotNum || alert.slotNum) && <div><strong>Invoice slot:</strong> Slot {m.slotNum || alert.slotNum}</div>}
                                     <div style={{ marginTop: "4px", color: "#c62828" }}>
                                       Invoice reference appears on Confirmed tab but was not found in the accounting system (it may have been deleted or voided in Xero).
                                     </div>
@@ -2237,6 +2243,35 @@ export default function AlertSelectionView({
                                               title={jobTarget.isOutgoings ? "View Outgoings expense details" : "View and edit job details in pop-up"}
                                             >
                                               {jobTarget.isOutgoings ? "🔍 View expense" : "🔍 View job"}
+                                            </button>
+                                          )}
+                                          {alert.alertType === "deleted_invoice" && (
+                                            <button
+                                              className="triage-btn"
+                                              onClick={() => {
+                                                const rowNum = m.confirmedRow || alert.confirmedRow || (alert.detail && alert.detail.match(/row\s*(\d+)/i)?.[1]);
+                                                const slotNum = m.slotNum || alert.slotNum || (alert.detail && alert.detail.match(/invoice slot\s*(\d+)/i)?.[1]);
+                                                const invoiceRef = m.stableJobKey || alert.stableJobKey || m.invoiceRef || alert.invoiceRef || (alert.detail && alert.detail.match(/Invoice\s+([^\s(]+)/i)?.[1]);
+                                                setDeleteInvoiceTarget({
+                                                  alert,
+                                                  clientInfo,
+                                                  clientName: cName,
+                                                  clientSheetId: clientInfo?.clientSheetId || alert.clientSheetId,
+                                                  masterSheetId: clientInfo?.masterSheetId || alert.masterSheetId,
+                                                  confirmedRow: rowNum ? Number(rowNum) : null,
+                                                  slotNum: slotNum ? Number(slotNum) : null,
+                                                  invoiceRef: invoiceRef ? String(invoiceRef).trim() : "",
+                                                  jobName: m.jobName || alert.jobName,
+                                                  endClientName: m.endClientName || alert.endClientName,
+                                                  projectCode: m.projectCode || alert.projectCode,
+                                                  amount: m.amount || alert.amount,
+                                                  sentDate: m.sentDate || alert.sentDate,
+                                                });
+                                              }}
+                                              style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#dc2626", borderColor: "#fecaca" }}
+                                              title="Delete this invoice entry from the Confirmed tab in Pulse"
+                                            >
+                                              Delete invoice from Pulse
                                             </button>
                                           )}
                                           {isAdmin && (clientInfo?.clientSheetId || clientInfo?.masterSheetId) && (
@@ -2465,7 +2500,10 @@ export default function AlertSelectionView({
         <JobDetailModal
           isOpen={Boolean(viewingJobTarget)}
           target={viewingJobTarget}
-          onClose={() => setViewingJobTarget(null)}
+          onClose={() => {
+            setViewingJobTarget(null);
+            loadProactiveAlerts();
+          }}
         />
       )}
 
@@ -2475,6 +2513,32 @@ export default function AlertSelectionView({
           target={viewingOutgoingsTarget}
           onClose={() => setViewingOutgoingsTarget(null)}
           isAdmin={isAdmin}
+        />
+      )}
+
+      {deleteInvoiceTarget && (
+        <DeleteInvoiceFromPulseModal
+          isOpen={Boolean(deleteInvoiceTarget)}
+          target={deleteInvoiceTarget}
+          automationCommanderSheetId={automationCommanderSheetId}
+          sessionId={sessionId}
+          isAdmin={isAdmin}
+          onClose={() => setDeleteInvoiceTarget(null)}
+          onDeleted={(alertKey, rowIndex) => {
+            setDeleteInvoiceTarget(null);
+            const remaining = proactiveAlerts.filter(a => {
+              if (rowIndex != null && a.rowIndex != null) return a.rowIndex !== rowIndex;
+              return a.alertKey !== alertKey;
+            });
+            const counts = {};
+            remaining.forEach(a => {
+              const cName = a.clientName || a.metadata?.endClientName || a.metadata?.clientName;
+              if (cName) counts[cName] = (counts[cName] || 0) + 1;
+            });
+            setProactiveCountsByClient(counts);
+            setProactiveAlerts(remaining);
+            loadProactiveAlerts();
+          }}
         />
       )}
     </div>

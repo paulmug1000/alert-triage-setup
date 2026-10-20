@@ -745,7 +745,8 @@ export async function handleGetProactiveAlerts(req, res, sheets) {
       "possibleMatchInvoiceNo","possibleMatchAmount","possibleMatchSentDate","possibleMatchConfidence","possibleMatchConfirmedRow","possibleMatchVatAmount","possibleMatchStatus","possibleMatchCase",
       "uninvoicedAmount","projectCode","draftCount","draftTotal","stableJobKey","isRetainer","tab",
       "directCosts","unreceivedAmount","placeholderCount","placeholderTotal",
-      "categoryName","cleanName","quarantineRow"
+      "categoryName","cleanName","quarantineRow",
+      "slotNum","invoiceRef","amount","sentDate"
     ];
       
     let active = all

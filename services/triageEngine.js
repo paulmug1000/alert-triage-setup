@@ -1020,17 +1020,23 @@ export async function handleGetPrecomputed(req, res, sheets) {
       alertCountsByClientAndFlag[key][flagKey] = (alertCountsByClientAndFlag[key][flagKey] || 0) + 1;
       
       if (flagKey === "expenseDashboardDiscr") {
-         const txId = alert.summary?.transactionId || alert.summary?.appId;
-         if (txId) {
+         const txId = alert.summary?.transactionId || alert.summary?.appId || alert.summary?.reference || alert.summary?.id;
+         if (txId !== undefined && txId !== null && txId !== "") {
             if (!activeExpenseIdsByClient[key]) activeExpenseIdsByClient[key] = [];
-            activeExpenseIdsByClient[key].push(txId);
+            const s = String(txId).trim();
+            const clean = s.replace(/^#/, "");
+            activeExpenseIdsByClient[key].push(s);
+            if (clean !== s) activeExpenseIdsByClient[key].push(clean);
          }
       }
       if (flagKey === "invoiceDashboardDiscr") {
-         const invNo = alert.summary?.invoiceNo;
-         if (invNo) {
+         const invNo = alert.summary?.invoiceNo || alert.summary?.reference || alert.summary?.id || alert.data?.accounting?.[5];
+         if (invNo !== undefined && invNo !== null && invNo !== "") {
             if (!activeInvoiceIdsByClient[key]) activeInvoiceIdsByClient[key] = [];
-            activeInvoiceIdsByClient[key].push(invNo);
+            const s = String(invNo).trim();
+            const clean = s.replace(/^#/, "");
+            activeInvoiceIdsByClient[key].push(s);
+            if (clean !== s) activeInvoiceIdsByClient[key].push(clean);
          }
       }
     }
@@ -1122,9 +1128,11 @@ export async function handleGetPrecomputed(req, res, sheets) {
         clientName: c.clientName,
         clientSheetId: c.clientSheetId,
         masterSheetId: c.masterSheetId,
+        hasClientManager: c.hasClientManager || false,
         flags: c.flags,
         alertCounts: c.alertCounts || {},
         activeExpenseIds: c.activeExpenseIds || [],
+        activeInvoiceIds: c.activeInvoiceIds || [],
       })),
       computedAt: data.computedAt,
       computedMinutesAgo: Math.round(ageMs / 60000),
@@ -1254,7 +1262,7 @@ export async function handleStorePrecomputed(req, res, sheets) {
                 "possibleMatchInvoiceNo","possibleMatchAmount","possibleMatchSentDate","possibleMatchConfidence","possibleMatchConfirmedRow","possibleMatchVatAmount","possibleMatchStatus","possibleMatchCase",
                 "uninvoicedAmount","projectCode","draftCount","draftTotal","stableJobKey","isRetainer","tab",
                 "directCosts","unreceivedAmount","placeholderCount","placeholderTotal",
-                "errorSnippet","occurrenceCount","category","entityKey","fieldName","transition1","transition2","conflictType","suggestion","rawLogSnippet","invoiceNo"];
+                "errorSnippet","occurrenceCount","category","entityKey","fieldName","transition1","transition2","conflictType","suggestion","rawLogSnippet","invoiceNo","rawSnippet"];
               const metadata = {};
               for (const f of metaFields) { if (alertObj[f] !== undefined) metadata[f] = alertObj[f]; }
               newProactiveFromMemory.push({

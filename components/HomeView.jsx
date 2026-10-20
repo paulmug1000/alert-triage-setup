@@ -101,11 +101,28 @@ export default function HomeView({
     const counts = {};
     for (const c of clientsWithFlags || []) {
       if (!isUserAuthorizedForClient(user, c.clientName)) continue;
-      const assignedSet = assignedByClient[c.clientName] || new Set();
+      const normClient = String(c.clientName || "").trim().toLowerCase();
+      let assignedSet = new Set();
+      for (const [k, s] of Object.entries(assignedByClient || {})) {
+        if (String(k).trim().toLowerCase() === normClient) {
+          assignedSet = s;
+          break;
+        }
+      }
+      const isIdMatch = (id) => {
+        if (id === null || id === undefined || id === "") return false;
+        const s = String(id).trim();
+        const clean = s.replace(/^#/, "");
+        if (assignedSet.has(id) || assignedSet.has(s) || assignedSet.has(clean)) return true;
+        if (!isNaN(Number(clean)) && clean !== "" && assignedSet.has(Number(clean))) return true;
+        if (assignedAppIds.has(id) || assignedAppIds.has(s) || assignedAppIds.has(clean)) return true;
+        if (!isNaN(Number(clean)) && clean !== "" && assignedAppIds.has(Number(clean))) return true;
+        return false;
+      };
       const expenseIds = c.activeExpenseIds || [];
       const invoiceIds = c.activeInvoiceIds || [];
-      const validAssignedExp = expenseIds.filter((id) => assignedSet.has(id) || assignedAppIds.has(id)).length;
-      const validAssignedInv = invoiceIds.filter((id) => assignedSet.has(id) || assignedAppIds.has(id)).length;
+      const validAssignedExp = expenseIds.filter(isIdMatch).length;
+      const validAssignedInv = invoiceIds.filter(isIdMatch).length;
 
       let clientTotal = 0;
       Object.entries(c.flags || {}).forEach(([flagKey, isSet]) => {

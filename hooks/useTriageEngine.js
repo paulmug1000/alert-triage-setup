@@ -86,6 +86,24 @@ export function useTriageEngine({
   const [noActionAnalysisLoading, setNoActionAnalysisLoading] = useState({});
   const [precomputedNoActionResults, setPrecomputedNoActionResults] = useState({});
 
+  const isAssigned = useCallback((id, clientName) => {
+    if (id === null || id === undefined || id === "") return false;
+    const s = String(id).trim();
+    const clean = s.replace(/^#/, "");
+    if (assignedAppIds.has(id) || assignedAppIds.has(s) || assignedAppIds.has(clean)) return true;
+    if (!isNaN(Number(clean)) && clean !== "" && assignedAppIds.has(Number(clean))) return true;
+    if (clientName) {
+      const normClient = String(clientName).trim().toLowerCase();
+      for (const [k, set] of Object.entries(assignedByClient || {})) {
+        if (String(k).trim().toLowerCase() === normClient) {
+          if (set.has(id) || set.has(s) || set.has(clean)) return true;
+          if (!isNaN(Number(clean)) && clean !== "" && set.has(Number(clean))) return true;
+        }
+      }
+    }
+    return false;
+  }, [assignedAppIds, assignedByClient]);
+
   const checkExistingTask = async (alert) => {
     try {
       setExistingTaskBanner(null);
@@ -345,9 +363,16 @@ export function useTriageEngine({
       
       console.log(`  ✅ Loaded ${data.alerts.length} total alerts from Redis`);
       
-      const filteredAlerts = data.alerts.filter(alert => 
-        alert.clientName === client.clientName && !processedAlerts.has(alert.fingerprintHash || `${alert.flagType || alert.type}-${alert.sheetName}-${alert.rowNumber}`)
-      );
+      const filteredAlerts = data.alerts.filter(alert => {
+        if (alert.clientName !== client.clientName) return false;
+        const hash = alert.fingerprintHash || `${alert.flagType || alert.type}-${alert.sheetName}-${alert.rowNumber}`;
+        if (processedAlerts.has(hash)) return false;
+        const txId = alert.summary?.transactionId || alert.summary?.appId || alert.summary?.reference || alert.summary?.id;
+        if (txId && isAssigned(txId, client.clientName)) return false;
+        const invNo = alert.summary?.invoiceNo || alert.summary?.reference || alert.summary?.id || alert.data?.accounting?.[5];
+        if (invNo && isAssigned(invNo, client.clientName)) return false;
+        return true;
+      });
       
       const filteredNoAction = (data.noActionAlerts || []).filter(
         na => (na.clientName && na.clientName === client.clientName) || na.clientId === client.masterSheetId
@@ -696,24 +721,6 @@ export function useTriageEngine({
 
   const groupedAlerts = useMemo(() => {
     const g = {};
-    const isAssigned = (id, clientName) => {
-      if (id === null || id === undefined || id === "") return false;
-      const s = String(id).trim();
-      const clean = s.replace(/^#/, "");
-      if (assignedAppIds.has(id) || assignedAppIds.has(s) || assignedAppIds.has(clean)) return true;
-      if (!isNaN(Number(clean)) && clean !== "" && assignedAppIds.has(Number(clean))) return true;
-      if (clientName) {
-        const normClient = String(clientName).trim().toLowerCase();
-        for (const [k, set] of Object.entries(assignedByClient || {})) {
-          if (String(k).trim().toLowerCase() === normClient) {
-            if (set.has(id) || set.has(s) || set.has(clean)) return true;
-            if (!isNaN(Number(clean)) && clean !== "" && set.has(Number(clean))) return true;
-          }
-        }
-      }
-      return false;
-    };
-
     const filteredAlerts = (clientAlerts || []).filter(alert => {
       const txId = alert.summary?.transactionId || alert.summary?.appId || alert.summary?.reference || alert.summary?.id;
       if (txId && isAssigned(txId, selectedClient?.clientName)) return false;
@@ -727,7 +734,7 @@ export function useTriageEngine({
       g[type].push(alert);
     });
     return g;
-  }, [clientAlerts, assignedAppIds, assignedByClient, selectedClient]);
+  }, [clientAlerts, isAssigned, selectedClient]);
 
   const liveAlertCount = useMemo(() => {
     const ACTIONABLE_FLAG_KEYS_SET = new Set([
@@ -738,25 +745,7 @@ export function useTriageEngine({
     const INVOICE_TYPES = new Set(["invoiceDashboardDiscr"]);
 
     return clientsWithFlags.reduce((total, c) => {
-      const normClient = String(c.clientName || "").trim().toLowerCase();
-      let assignedSet = new Set();
-      for (const [k, s] of Object.entries(assignedByClient || {})) {
-        if (String(k).trim().toLowerCase() === normClient) {
-          assignedSet = s;
-          break;
-        }
-      }
-      const isIdMatch = (id) => {
-        if (id === null || id === undefined || id === "") return false;
-        const s = String(id).trim();
-        const clean = s.replace(/^#/, "");
-        if (assignedSet.has(id) || assignedSet.has(s) || assignedSet.has(clean)) return true;
-        if (!isNaN(Number(clean)) && clean !== "" && assignedSet.has(Number(clean))) return true;
-        if (assignedAppIds.has(id) || assignedAppIds.has(s) || assignedAppIds.has(clean)) return true;
-        if (!isNaN(Number(clean)) && clean !== "" && assignedAppIds.has(Number(clean))) return true;
-        return false;
-      };
-
+      const isIdMatch = (id) => isAssigned(id, c.clientName);
       const expenseIds = c.activeExpenseIds || [];
       const invoiceIds = c.activeInvoiceIds || [];
       const validAssignedExp = expenseIds.filter(isIdMatch).length;
@@ -784,7 +773,7 @@ export function useTriageEngine({
 
       return total + clientTotal;
     }, 0);
-  }, [clientsWithFlags, assignedByClient, assignedAppIds]);
+  }, [clientsWithFlags, isAssigned]);
 
   const computeAlertCheckCount = (clientName, categoriesStr) => {
     const client = (clientsWithFlags || []).find(c => c.clientName === clientName);

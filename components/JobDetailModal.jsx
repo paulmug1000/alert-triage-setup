@@ -968,7 +968,7 @@ export default function JobDetailModal({
               <div style={{ padding: "60px 0", textAlign: "center", color: "#64748b" }}>
                 <Spinner size={24} color="#0284c7" />
                 <div style={{ marginTop: "12px", fontSize: "14px", fontWeight: "500" }}>
-                  Loading job details from spreadsheet…
+                  Loading job details…
                 </div>
               </div>
             )}

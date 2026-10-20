@@ -232,11 +232,28 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
 
     let flagCount = 0;
     if (client) {
-      const assignedSet = assignedByClient[client.clientName] || new Set();
+      const normClient = String(client.clientName || "").trim().toLowerCase();
+      let assignedSet = new Set();
+      for (const [k, s] of Object.entries(assignedByClient || {})) {
+        if (String(k).trim().toLowerCase() === normClient) {
+          assignedSet = s;
+          break;
+        }
+      }
+      const isIdMatch = (id) => {
+        if (id === null || id === undefined || id === "") return false;
+        const s = String(id).trim();
+        const clean = s.replace(/^#/, "");
+        if (assignedSet.has(id) || assignedSet.has(s) || assignedSet.has(clean)) return true;
+        if (!isNaN(Number(clean)) && clean !== "" && assignedSet.has(Number(clean))) return true;
+        if (assignedAppIds.has(id) || assignedAppIds.has(s) || assignedAppIds.has(clean)) return true;
+        if (!isNaN(Number(clean)) && clean !== "" && assignedAppIds.has(Number(clean))) return true;
+        return false;
+      };
       const expenseIds = client.activeExpenseIds || [];
       const invoiceIds = client.activeInvoiceIds || [];
-      const validAssignedExp = expenseIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
-      const validAssignedInv = invoiceIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
+      const validAssignedExp = expenseIds.filter(isIdMatch).length;
+      const validAssignedInv = invoiceIds.filter(isIdMatch).length;
 
       Object.entries(client.flags || {}).forEach(([flagKey, isSet]) => {
         if (!isSet) return;

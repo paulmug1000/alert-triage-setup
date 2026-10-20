@@ -2109,9 +2109,10 @@ export default function AlertSelectionView({
 
                                 {alert.alertType === "autolog_error" && (() => {
                                   const md = alert.metadata || {};
+                                  const fullDetails = md.detailsSnippet || md.rawSnippet;
                                   return (
                                     <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
-                                      {md.category && <div style={{ marginBottom: "2px" }}><strong>Category / Step:</strong> {md.category}</div>}
+                                      {md.category && <div style={{ marginBottom: "2px" }}><strong>Category / step:</strong> {md.category}</div>}
                                       {md.occurrenceCount && <div style={{ marginBottom: "2px" }}><strong>Occurrences (last 100 log rows):</strong> {md.occurrenceCount}</div>}
                                       {md.timestamp && <div style={{ marginBottom: "2px" }}><strong>Last seen in log:</strong> {md.timestamp}</div>}
                                       {md.errorSnippet && (
@@ -2122,11 +2123,11 @@ export default function AlertSelectionView({
                                           </div>
                                         </div>
                                       )}
-                                      {md.rawSnippet && md.rawSnippet !== md.errorSnippet && (
+                                      {fullDetails && fullDetails.trim() !== (md.errorSnippet || "").trim() && (
                                         <div style={{ marginTop: "4px" }}>
-                                          <strong>AutoLog context:</strong>
+                                          <strong>AutoLog details:</strong>
                                           <div style={{ fontFamily: "monospace", fontSize: "11px", color: "#666", backgroundColor: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "4px", padding: "6px 8px", marginTop: "2px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                                            {md.rawSnippet}
+                                            {fullDetails}
                                           </div>
                                         </div>
                                       )}

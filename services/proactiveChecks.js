@@ -1256,11 +1256,37 @@ export async function checkAutoLogErrors_(clientName, masterSheetId, sharedData)
       const summary = String(row[2] || "").trim();
       const details = String(row[3] || "").trim();
 
-      const combinedText = `${summary}\n${details}`;
-      const match = combinedText.match(errorRegex);
-      if (!match) continue;
+      // Extract error text, prioritizing the richer/more descriptive message
+      const detailsMatch = details.match(errorRegex);
+      const summaryMatch = summary.match(errorRegex);
 
-      const rawErrorText = match[1].trim();
+      let rawErrorText = "";
+      if (detailsMatch && detailsMatch[1]?.trim()) {
+        const detailsErr = detailsMatch[1].trim();
+        const summaryErr = summaryMatch ? summaryMatch[1]?.trim() : "";
+        if (!summaryErr || detailsErr.length >= summaryErr.length) {
+          rawErrorText = detailsErr;
+        } else {
+          rawErrorText = summaryErr;
+        }
+      } else if (summaryMatch && summaryMatch[1]?.trim()) {
+        const summaryErr = summaryMatch[1].trim();
+        if (details && !details.toLowerCase().includes(summaryErr.toLowerCase())) {
+          rawErrorText = `${summaryErr} - ${details}`;
+        } else if (details && details.length > summaryErr.length) {
+          rawErrorText = details;
+        } else {
+          rawErrorText = summaryErr;
+        }
+      } else {
+        const combinedText = `${summary}\n${details}`;
+        const match = combinedText.match(errorRegex);
+        if (match && match[1]?.trim()) {
+          rawErrorText = match[1].trim();
+        }
+      }
+
+      rawErrorText = rawErrorText.replace(/[\r\n]+/g, " ").trim();
       if (!rawErrorText) continue;
 
       const cleanSignature = rawErrorText
@@ -1272,6 +1298,7 @@ export async function checkAutoLogErrors_(clientName, masterSheetId, sharedData)
         .slice(0, 80);
 
       const tsStr = timestamp instanceof Date ? timestamp.toISOString() : String(timestamp || "");
+      const detailsText = (details || rawErrorText).slice(0, 500);
 
       if (!errorsBySignature.has(cleanSignature)) {
         errorsBySignature.set(cleanSignature, {
@@ -1280,7 +1307,7 @@ export async function checkAutoLogErrors_(clientName, masterSheetId, sharedData)
           category,
           summary,
           errorText: rawErrorText,
-          detailsSnippet: details.slice(0, 300),
+          detailsSnippet: detailsText,
         });
       } else {
         const item = errorsBySignature.get(cleanSignature);
@@ -1303,6 +1330,7 @@ export async function checkAutoLogErrors_(clientName, masterSheetId, sharedData)
         errorSnippet: info.errorText,
         occurrenceCount: String(info.count),
         detailsSnippet: info.detailsSnippet,
+        rawSnippet: info.detailsSnippet,
       });
     }
   } catch (e) {

@@ -735,7 +735,7 @@ export default function ExpensesView({
         <div style={{ textAlign: "center", padding: "80px 20px" }}>
           <Spinner size={32} color="#0047AB" />
           <div style={{ marginTop: "14px", color: "#64748b", fontSize: "14px" }}>
-            Loading expenses from Client Sheet...
+            Loading expenses
           </div>
         </div>
       )}

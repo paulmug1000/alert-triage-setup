@@ -1990,6 +1990,115 @@ export async function handleAssignInvoiceToJob(req, res, sheets) {
   }
 }
 
+export async function handleVerifyInvoiceSlot(req, res, sheets) {
+  const { clientSheetId, rowNum, slotNum, invoiceRef, tabName } = req.body;
+  if (!clientSheetId || !invoiceRef) {
+    return res.status(400).json({ success: false, error: "Missing clientSheetId or invoiceRef" });
+  }
+
+  try {
+    const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+    const targetTab = tabName ? String(tabName).trim() : "Confirmed";
+    const cleanTargetRef = String(invoiceRef).trim().toLowerCase();
+    const parsedRowNum = rowNum ? parseInt(rowNum, 10) : null;
+
+    // 1. If rowNum provided as hint, check that row first
+    if (parsedRowNum && parsedRowNum > 0) {
+      try {
+        const checkResp = await sheets.spreadsheets.values.get({
+          spreadsheetId: sheetIdClean,
+          range: `${targetTab}!A${parsedRowNum}:BH${parsedRowNum}`,
+          valueRenderOption: "FORMATTED_VALUE"
+        });
+        const rowVals = checkResp.data.values?.[0] || [];
+        const client = String(rowVals[0] || "").trim();
+        const job = String(rowVals[1] || "").trim();
+        const pCode = String(rowVals[2] || "").trim();
+
+        const slots = [
+          { slotNum: 1, ref: String(rowVals[42] || "").trim(), amt: rowVals[41], sent: rowVals[43], status: rowVals[45] },
+          { slotNum: 2, ref: String(rowVals[49] || "").trim(), amt: rowVals[48], sent: rowVals[50], status: rowVals[52] },
+          { slotNum: 3, ref: String(rowVals[56] || "").trim(), amt: rowVals[55], sent: rowVals[57], status: rowVals[59] },
+        ];
+
+        const match = slots.find(s => s.ref.toLowerCase() === cleanTargetRef);
+        if (match) {
+          return res.status(200).json({
+            success: true,
+            found: true,
+            liveRowNum: parsedRowNum,
+            liveSlotNum: match.slotNum,
+            liveClient: client,
+            liveJobName: job,
+            liveProjectCode: pCode,
+            liveAmount: match.amt || "",
+            liveSentDate: match.sent || "",
+            liveStatus: match.status || "",
+            rowShifted: false
+          });
+        }
+      } catch (rowErr) {
+        console.warn(`handleVerifyInvoiceSlot single-row check failed for row ${parsedRowNum}:`, rowErr.message);
+      }
+    }
+
+    // 2. Scan the Confirmed tab live to find where the invoiceRef actually lives
+    const scanResp = await sheets.spreadsheets.values.get({
+      spreadsheetId: sheetIdClean,
+      range: `${targetTab}!A1:BH5000`,
+      valueRenderOption: "FORMATTED_VALUE"
+    });
+    const allRows = scanResp.data.values || [];
+
+    for (let r = 0; r < allRows.length; r++) {
+      const rowArr = allRows[r] || [];
+      const s1 = String(rowArr[42] || "").trim().toLowerCase();
+      const s2 = String(rowArr[49] || "").trim().toLowerCase();
+      const s3 = String(rowArr[56] || "").trim().toLowerCase();
+
+      let matchedSlot = null;
+      let slotData = null;
+      if (s1 === cleanTargetRef) {
+        matchedSlot = 1;
+        slotData = { amt: rowArr[41], sent: rowArr[43], status: rowArr[45] };
+      } else if (s2 === cleanTargetRef) {
+        matchedSlot = 2;
+        slotData = { amt: rowArr[48], sent: rowArr[50], status: rowArr[52] };
+      } else if (s3 === cleanTargetRef) {
+        matchedSlot = 3;
+        slotData = { amt: rowArr[55], sent: rowArr[57], status: rowArr[59] };
+      }
+
+      if (matchedSlot) {
+        const liveRowNum = r + 1;
+        return res.status(200).json({
+          success: true,
+          found: true,
+          liveRowNum,
+          liveSlotNum: matchedSlot,
+          liveClient: String(rowArr[0] || "").trim(),
+          liveJobName: String(rowArr[1] || "").trim(),
+          liveProjectCode: String(rowArr[2] || "").trim(),
+          liveAmount: slotData?.amt || "",
+          liveSentDate: slotData?.sent || "",
+          liveStatus: slotData?.status || "",
+          rowShifted: parsedRowNum ? liveRowNum !== parsedRowNum : false
+        });
+      }
+    }
+
+    // 3. Not found anywhere on the tab
+    return res.status(200).json({
+      success: true,
+      found: false,
+      message: `Invoice reference "${invoiceRef}" was not found on ${targetTab}.`
+    });
+  } catch (err) {
+    console.error("❌ handleVerifyInvoiceSlot error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
 export async function handleUpdateInvoiceSlot(req, res, sheets) {
   const { clientSheetId, rowNum, slotNum, invoice, deleteSlot, jobClient, jobName, tabName, createNewRow } = req.body;
   if (!clientSheetId || !rowNum || (!slotNum && !createNewRow)) return res.status(400).json({ success: false, error: "Missing clientSheetId, rowNum, or slotNum" });
@@ -2045,6 +2154,7 @@ export async function handleUpdateInvoiceSlot(req, res, sheets) {
       }
     }
 
+    let invoiceRefFound = false;
     if (req.body.invoiceRef) {
       const cleanTargetRef = String(req.body.invoiceRef).trim().toLowerCase();
       try {
@@ -2059,10 +2169,13 @@ export async function handleUpdateInvoiceSlot(req, res, sheets) {
         const ref3 = String(slotVals[14] || "").trim().toLowerCase();
         if (ref1 === cleanTargetRef) {
           actualSlotNum = 1;
+          invoiceRefFound = true;
         } else if (ref2 === cleanTargetRef) {
           actualSlotNum = 2;
+          invoiceRefFound = true;
         } else if (ref3 === cleanTargetRef) {
           actualSlotNum = 3;
+          invoiceRefFound = true;
         } else {
           const scanResp = await sheets.spreadsheets.values.get({
             spreadsheetId: sheetIdClean,
@@ -2075,13 +2188,23 @@ export async function handleUpdateInvoiceSlot(req, res, sheets) {
             const r1 = String(rowArr[0] || "").trim().toLowerCase();
             const r2 = String(rowArr[7] || "").trim().toLowerCase();
             const r3 = String(rowArr[14] || "").trim().toLowerCase();
-            if (r1 === cleanTargetRef) { actualRowNum = r + 1; actualSlotNum = 1; break; }
-            if (r2 === cleanTargetRef) { actualRowNum = r + 1; actualSlotNum = 2; break; }
-            if (r3 === cleanTargetRef) { actualRowNum = r + 1; actualSlotNum = 3; break; }
+            if (r1 === cleanTargetRef) { actualRowNum = r + 1; actualSlotNum = 1; invoiceRefFound = true; break; }
+            if (r2 === cleanTargetRef) { actualRowNum = r + 1; actualSlotNum = 2; invoiceRefFound = true; break; }
+            if (r3 === cleanTargetRef) { actualRowNum = r + 1; actualSlotNum = 3; invoiceRefFound = true; break; }
           }
         }
       } catch (scanErr) {
         console.warn("Invoice slot ref verification check skipped:", scanErr.message);
+      }
+
+      // If deleteSlot is true and the invoiceRef was not found anywhere, do not write to arbitrary row
+      if (deleteSlot && !invoiceRefFound) {
+        console.log(`ℹ Invoice "${req.body.invoiceRef}" is no longer on ${targetTab}; already deleted.`);
+        return res.status(200).json({
+          success: true,
+          alreadyDeleted: true,
+          message: "Invoice reference was not found on the Confirmed tab. It appears to have already been removed."
+        });
       }
     }
 

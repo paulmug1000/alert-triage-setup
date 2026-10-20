@@ -36,7 +36,7 @@ import {
   handleCreateOutgoingsVendor, handleGetOutgoings, handleGetDirectCostsJobs,
   handleGetInvoiceJobs, handleGetAllClientJobs, handleUpdateJobField, handleUpdateJobFields,
   handleAssignExpenseToJob, handleUpdateExpenseSlot, handleAssignInvoiceToJob,
-  handleUpdateInvoiceSlot, handleCreateJobFromInvoice, handleAddNewJob, handleUpdateOutgoingNote,
+  handleUpdateInvoiceSlot, handleVerifyInvoiceSlot, handleCreateJobFromInvoice, handleAddNewJob, handleUpdateOutgoingNote,
   handleFireOutgoingsPull, handleMarkPipelineCopied, handleDeleteDirectJob, handleMarkPipelineAlreadyConfirmed, getClientWebAppUrl
 } from "../../services/workspaces";
 import {
@@ -210,7 +210,8 @@ export default async function handler(req, res) {
       "eom_get_pl_comp_data",
       "get_cash_cells",
       "get_cash_inbox",
-      "get_cash_adjustments"
+      "get_cash_adjustments",
+      "verify_invoice_slot"
     ]);
 
     if (req.method === "GET" && !READ_ONLY_ACTIONS.has(action)) {
@@ -383,6 +384,8 @@ export default async function handler(req, res) {
       return await handleAssignInvoiceToJob(req, res, sheets);
     } else if (action === "update_invoice_slot") {
       return await handleUpdateInvoiceSlot(req, res, sheets);
+    } else if (action === "verify_invoice_slot") {
+      return await handleVerifyInvoiceSlot(req, res, sheets);
     } else if (action === "create_job_from_invoice") {
       return await handleCreateJobFromInvoice(req, res, sheets);
     } else if (action === "add_new_job") {

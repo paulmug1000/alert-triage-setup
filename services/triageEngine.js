@@ -6,7 +6,7 @@ import {
   deleteAlertMemoryRows, purgeOldAlertMemoryRows, updateHandledAlertHash,
   getHandledFingerprintHashes_, findPreviousIgnoreReason,
   normaliseArrayForFingerprint
-} from "./alertMemory";
+} from "./alertMemory.js";
 import { handleFireOutgoingsPull, handleMarkExpenseAssigned } from "./workspaces.js";
 import { applyAlertRemovalToTriageData } from "./alertState.js";
 import {
@@ -15,17 +15,17 @@ import {
   checkUninvoicedRevenue_, checkDeletedInvoices_, checkJobStructureErrors_,
   checkDeletedExpenses_, checkUnreceivedExpenses_, checkAutoLogErrors_, checkAutoLogInfiniteLoops_,
   checkStaleUnreconGapExpenses_, checkRetroactiveOutgoingsChanges_, checkQuarantinedPLCategories_
-} from "./proactiveChecks";
+} from "./proactiveChecks.js";
 import {
   checkAllGASLocks, setCRMMode, getToleranceValues,
   getCRMMatchingMode, fetchJobRowsForDisplay
-} from "./sharedHelpers";
-import { redisClient } from "./redisClient";
-import { logPmaActivity } from "./pmaLogger";
-import { logPrecomputeRun, logFlagSweepRun, logBuildOptionsRun } from "./systemLogs";
-import { isPlaceholderInvoice, isPlaceholderExpense, parseYearMonth, parseStaleExpenseDetail } from "../utils/helpers";
-import { getSessionUser } from "./authService";
-import { matchesClientName, getClientManagerClientMap } from "./userPermissions";
+} from "./sharedHelpers.js";
+import { redisClient } from "./redisClient.js";
+import { logPmaActivity } from "./pmaLogger.js";
+import { logPrecomputeRun, logFlagSweepRun, logBuildOptionsRun } from "./systemLogs.js";
+import { isPlaceholderInvoice, isPlaceholderExpense, parseYearMonth, parseStaleExpenseDetail } from "../utils/helpers.js";
+import { getSessionUser } from "./authService.js";
+import { matchesClientName, getClientManagerClientMap } from "./userPermissions.js";
 
 const ALERT_MEMORY_TAB = "AlertMemory";
 
@@ -129,6 +129,7 @@ export async function runBackgroundTriageRefresh({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "build_cached_alert_options",
+          baseUrl,
           secret: cronSecret,
           automationCommanderSheetId,
           isContinuation: buildCount > 1,
@@ -2664,9 +2665,12 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
     const { clientRows } = await readAutoUpdatesClientRows_(sheets, acIdBuild);
     const clientByName = new Map(clientRows.map(c => [c.clientName, c]));
 
-    const baseUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL
+    const host = req?.headers?.["x-forwarded-host"] || req?.headers?.host || `127.0.0.1:${process.env.PORT || 3000}`;
+    const protocol = req?.headers?.["x-forwarded-proto"] || (host.includes("localhost") || host.includes("127.0.0.1") ? "http" : "https");
+    const prodUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL
       ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
-      : `https://${process.env.VERCEL_URL}`;
+      : (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null);
+    const baseUrl = req?.body?.baseUrl || prodUrl || `${protocol}://${host}`;
 
     let built = 0, notFound = 0, errors = 0;
     let hasMore = false;

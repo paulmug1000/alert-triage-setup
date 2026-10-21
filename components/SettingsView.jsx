@@ -365,9 +365,9 @@ export default function SettingsView({
             <>
               {/* Run Client Automation */}
               <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
-                <h3 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: "700" }}>Run Client Automation</h3>
+                <h3 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: "700" }}>Run client automation</h3>
                 <p style={{ margin: "0 0 14px", fontSize: "12px", color: "#666" }}>
-                  Runs a client&apos;s invoice/CRM/expense automation sequence on demand, via that client&apos;s Web App deployment - instead of checking a box in Automation Commander and waiting for the 30-minute poll.
+                  Runs a client&apos;s invoice/CRM/expense automation sequence on demand via that client&apos;s Master Sheet Web App. Executes immediately and reports live progress below.
                 </p>
 
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "16px", marginBottom: "14px" }}>
@@ -397,7 +397,7 @@ export default function SettingsView({
                   </div>
                 </div>
 
-                <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+                <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
                   <button
                     disabled={!agentRunClient || agentRunStatus === "running" || !Object.values(agentRunTypes).some(Boolean)}
                     onClick={async () => {
@@ -411,7 +411,7 @@ export default function SettingsView({
                         });
                         const d = await r.json();
                         if (d.success) {
-                          setAgentRunMsg("Triggered - Apps Script doesn&apos;t guarantee exact timing, so this may take a few minutes to actually start. Progress will appear below once it does.");
+                          setAgentRunMsg("Automation started - live progress is streamed below.");
                           setAgentRunId(d.runId || null);
                         } else {
                           setAgentRunStatus("error");
@@ -430,19 +430,39 @@ export default function SettingsView({
                     {agentRunStatus === "running" ? "Running..." : "Run"}
                   </button>
                   {agentRunMsg && (
-                    <span style={{ fontSize: "13px", color: agentRunStatus === "success" ? "#166534" : agentRunStatus === "error" ? "#dc2626" : "#666" }}>{agentRunMsg}</span>
+                    <span style={{ fontSize: "13px", fontWeight: 500, color: agentRunStatus === "success" ? "#166534" : agentRunStatus === "error" ? "#dc2626" : "#2563eb" }}>{agentRunMsg}</span>
                   )}
                 </div>
 
                 {agentProgressEntries.length > 0 && (
-                  <div style={{ marginTop: "12px", background: "#f8f9ff", border: "1px solid #e8eaf0", borderRadius: "6px", padding: "10px 12px", maxHeight: "180px", overflowY: "auto" }}>
-                    {agentProgressEntries.map((entry, i) => (
-                      <div key={i} style={{ fontSize: "12px", color: "#333", padding: "3px 0", borderBottom: i < agentProgressEntries.length - 1 ? "1px solid #eceef5" : "none" }}>
-                        <span style={{ color: "#888", fontFamily: "monospace" }}>{entry.at ? new Date(entry.at).toLocaleTimeString() : ""}</span>
-                        {" - "}
-                        <strong style={{ textTransform: "capitalize" }}>{entry.stage}:</strong> {entry.message}
-                      </div>
-                    ))}
+                  <div style={{ marginTop: "14px", background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "8px", padding: "12px 14px", maxHeight: "240px", overflowY: "auto" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px", borderBottom: "1px solid #e2e8f0", paddingBottom: "6px" }}>
+                      <span style={{ fontSize: "12px", fontWeight: "700", color: "#334155", textTransform: "uppercase", letterSpacing: "0.5px" }}>Live execution log</span>
+                      {agentRunStatus === "running" && (
+                        <span style={{ fontSize: "11px", color: "#0284c7", fontWeight: 600 }}>Active</span>
+                      )}
+                    </div>
+                    {agentProgressEntries.map((entry, i) => {
+                      const stageColor = {
+                        init: "#64748b",
+                        invoice: "#2563eb",
+                        crm: "#7c3aed",
+                        expense: "#d97706",
+                        done: "#16a34a",
+                        error: "#dc2626"
+                      }[entry.stage] || "#475569";
+                      return (
+                        <div key={i} style={{ fontSize: "12px", color: "#334155", padding: "4px 0", display: "flex", gap: "8px", alignItems: "baseline", borderBottom: i < agentProgressEntries.length - 1 ? "1px solid #f1f5f9" : "none" }}>
+                          <span style={{ color: "#94a3b8", fontFamily: "monospace", fontSize: "11px", flexShrink: 0 }}>
+                            {entry.at ? new Date(entry.at).toLocaleTimeString() : ""}
+                          </span>
+                          <span style={{ fontSize: "11px", fontWeight: 700, color: stageColor, textTransform: "uppercase", padding: "1px 6px", borderRadius: "4px", background: `${stageColor}15`, flexShrink: 0 }}>
+                            {entry.stage}
+                          </span>
+                          <span style={{ flex: 1, wordBreak: "break-word" }}>{entry.message}</span>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>

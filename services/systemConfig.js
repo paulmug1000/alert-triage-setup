@@ -1,3 +1,4 @@
+import { waitUntil } from "@vercel/functions";
 import { redisClient } from "./redisClient";
 import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "./sheetsClient";
 
@@ -327,19 +328,56 @@ export async function handleTriggerAgentRun(req, res, sheets) {
     }
 
     const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const gasResp = await fetch(webAppUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ secret: agentSecret, types, clientName: targetClientName, runId }),
-    });
-    const gasData = await gasResp.json().catch(() => null);
-    if (!gasData) {
-      return res.status(502).json({ success: false, error: "No valid response from the client's Web App - check the deployment URL and that it's still active" });
-    }
-    if (!gasData.success) {
-      return res.status(200).json({ success: false, error: gasData.error || "Client Web App reported failure" });
-    }
-    return res.status(200).json({ success: true, triggered: gasData.triggered || types, runId });
+
+    // Initialize Redis tracking so user can navigate away and return
+    const activeRunObj = { runId, clientName: targetClientName, types, startedAt: Date.now(), status: "running" };
+    await redisClient.set(`active_agent_run:${targetClientName}`, JSON.stringify(activeRunObj), { EX: 1800 });
+    await redisClient.set("active_agent_run:latest", JSON.stringify(activeRunObj), { EX: 1800 });
+
+    const progressKey = `agent_run:${targetClientName}:${runId}`;
+    await redisClient.set(progressKey, JSON.stringify({
+      entries: [{ stage: "init", message: "Contacting client Master Sheet Web App...", at: new Date().toISOString() }],
+      done: false
+    }), { EX: 1800 });
+
+    // Execute via Vercel Pro waitUntil so the response returns to the browser in < 300ms
+    const task = (async () => {
+      try {
+        console.log(`🚀 [Agent Run] Invoking Web App for ${targetClientName} (runId: ${runId})...`);
+        const gasResp = await fetch(webAppUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ secret: agentSecret, types, clientName: targetClientName, runId }),
+        });
+        const gasData = await gasResp.json().catch(() => null);
+        if (!gasData || !gasData.success) {
+          const errMsg = gasData?.error || "Client Web App reported an error during execution";
+          console.error(`❌ [Agent Run] Web App reported failure for ${targetClientName}:`, errMsg);
+          const raw = await redisClient.get(progressKey).catch(() => null);
+          const existing = raw ? JSON.parse(raw) : { entries: [], done: false };
+          existing.entries.push({ stage: "error", message: errMsg, at: new Date().toISOString() });
+          existing.done = true;
+          await redisClient.set(progressKey, JSON.stringify(existing), { EX: 1800 }).catch(() => {});
+          await redisClient.set(`active_agent_run:${targetClientName}`, JSON.stringify({
+            runId, clientName: targetClientName, status: "error", error: errMsg, completedAt: Date.now()
+          }), { EX: 600 }).catch(() => {});
+        }
+      } catch (fetchErr) {
+        console.error(`❌ [Agent Run] Background fetch failed for ${targetClientName}:`, fetchErr);
+        const raw = await redisClient.get(progressKey).catch(() => null);
+        const existing = raw ? JSON.parse(raw) : { entries: [], done: false };
+        existing.entries.push({ stage: "error", message: fetchErr.message, at: new Date().toISOString() });
+        existing.done = true;
+        await redisClient.set(progressKey, JSON.stringify(existing), { EX: 1800 }).catch(() => {});
+        await redisClient.set(`active_agent_run:${targetClientName}`, JSON.stringify({
+          runId, clientName: targetClientName, status: "error", error: fetchErr.message, completedAt: Date.now()
+        }), { EX: 600 }).catch(() => {});
+      }
+    })();
+
+    waitUntil(task);
+
+    return res.status(200).json({ success: true, triggered: types, runId });
   } catch (err) {
     console.error(`❌ trigger_agent_run error for "${targetClientName}":`, err);
     return res.status(500).json({ success: false, error: `Failed to reach client Web App: ${err.message}` });
@@ -359,7 +397,12 @@ export async function handleAgentProgress(req, res) {
     const existingRaw = await redisClient.get(progressKey);
     const existing = existingRaw ? JSON.parse(existingRaw) : { entries: [], done: false };
     existing.entries.push({ stage: stage || "", message: message || "", at: new Date().toISOString() });
-    if (done) existing.done = true;
+    if (done) {
+      existing.done = true;
+      await redisClient.set(`active_agent_run:${progressClientName}`, JSON.stringify({
+        runId: progressRunId, clientName: progressClientName, status: "completed", done: true, completedAt: Date.now()
+      }), { EX: 600 }).catch(() => {});
+    }
     await redisClient.set(progressKey, JSON.stringify(existing), { EX: 1800 });
     return res.status(200).json({ success: true });
   } catch (err) {
@@ -380,6 +423,20 @@ export async function handleGetAgentRunProgress(req, res) {
     return res.status(200).json({ success: true, entries: data.entries, done: data.done });
   } catch (err) {
     console.error(`❌ get_agent_run_progress error for "${pollClientName}"/"${pollRunId}":`, err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function handleGetActiveAgentRun(req, res) {
+  const { clientName } = req.body || {};
+  try {
+    let key = clientName ? `active_agent_run:${clientName}` : "active_agent_run:latest";
+    const raw = await redisClient.get(key);
+    if (!raw) return res.status(200).json({ success: true, activeRun: null });
+    const activeRun = JSON.parse(raw);
+    return res.status(200).json({ success: true, activeRun });
+  } catch (err) {
+    console.error("❌ get_active_agent_run error:", err);
     return res.status(500).json({ success: false, error: err.message });
   }
 }

@@ -29,7 +29,7 @@ import {
   handleGetClaudeSettings, handleSaveClaudeSettings, handleCheckClaudeBudget,
   handleLogClaudeUsage, handleGetAppLog, handleTriggerProactiveChecks,
   handleGetSweepSchedule, handleSaveSweepFrequency, handleTriggerAgentRun,
-  handleAgentProgress, handleGetAgentRunProgress
+  handleAgentProgress, handleGetAgentRunProgress, handleGetActiveAgentRun
 } from "../../services/systemConfig";
 import {
   handleGetAllClients, handleGetAssignedExpenses, handleMarkExpenseAssigned,
@@ -882,7 +882,7 @@ export default async function handler(req, res) {
           console.log(`🔄 start_triage (build): building options...`);
           const buildResp = await fetch(`${baseUrl}/api/triage`, {
             method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "build_cached_alert_options", secret: cronSecret, automationCommanderSheetId, isContinuation: req.body.isContinuation }),
+            body: JSON.stringify({ action: "build_cached_alert_options", baseUrl, secret: cronSecret, automationCommanderSheetId, isContinuation: req.body.isContinuation }),
           });
           const buildData = await buildResp.json();
           return res.status(200).json({ success: true, hasMore: buildData.hasMore });
@@ -1042,6 +1042,8 @@ export default async function handler(req, res) {
       return await handleAgentProgress(req, res);
     } else if (action === "get_agent_run_progress") {
       return await handleGetAgentRunProgress(req, res);
+    } else if (action === "get_active_agent_run") {
+      return await handleGetActiveAgentRun(req, res);
 
     } else if (action === "debug_compare_triage") {
       if (!sessionUser || !sessionUser.isAdmin) {

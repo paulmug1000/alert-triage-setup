@@ -1,7 +1,19 @@
 import React from "react";
 import Spinner from "./Spinner";
+import { useAppGlobals } from "../hooks/useAppGlobals";
 
-export default function RetainerSplitInvoiceModal({ alertMeta, alertKey, automationCommanderSheetId, clientSheetId, masterSheetId, onClose, onResolved }) {
+export default function RetainerSplitInvoiceModal({ alertMeta, alertKey, automationCommanderSheetId, clientSheetId, masterSheetId, clientName, onClose, onResolved }) {
+  const { allClientsMap } = useAppGlobals();
+  const effectiveClientName = clientName || alertMeta?.clientName || "";
+  const resolvedClientSheetId = clientSheetId
+    || alertMeta?.clientSheetId
+    || (effectiveClientName && allClientsMap?.[effectiveClientName]?.clientSheetId)
+    || (effectiveClientName && Object.values(allClientsMap || {}).find(c => c.clientName?.toLowerCase() === effectiveClientName.toLowerCase())?.clientSheetId);
+  const resolvedMasterSheetId = masterSheetId
+    || alertMeta?.masterSheetId
+    || (effectiveClientName && allClientsMap?.[effectiveClientName]?.masterSheetId)
+    || (effectiveClientName && Object.values(allClientsMap || {}).find(c => c.clientName?.toLowerCase() === effectiveClientName.toLowerCase())?.masterSheetId);
+
   const [loading, setLoading] = React.useState(true);
   const [preview, setPreview] = React.useState(null);
   const [applying, setApplying] = React.useState(false);
@@ -9,13 +21,20 @@ export default function RetainerSplitInvoiceModal({ alertMeta, alertKey, automat
 
   React.useEffect(() => {
     let cancelled = false;
+    if (!resolvedClientSheetId) {
+      setError("Could not find the client's spreadsheet ID. Please ensure the client sheet is configured.");
+      setLoading(false);
+      return;
+    }
     (async () => {
       try {
         const res = await fetch("/api/triage", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             action: "compute_retainer_split_invoice_preview",
-            clientSheetId,
+            clientSheetId: resolvedClientSheetId,
+            masterSheetId: resolvedMasterSheetId,
+            clientName: effectiveClientName,
             client: alertMeta.endClientName, jobName: alertMeta.jobName, parentRowNum: alertMeta.confirmedRow,
             lastInvoiceDate: alertMeta.lastInvoiceDate,
             possibleMatchSentDate: alertMeta.possibleMatchSentDate,
@@ -36,7 +55,7 @@ export default function RetainerSplitInvoiceModal({ alertMeta, alertKey, automat
       }
     })();
     return () => { cancelled = true; };
-  }, [alertMeta, clientSheetId]);
+  }, [alertMeta, resolvedClientSheetId, resolvedMasterSheetId, effectiveClientName]);
 
   const close = () => { if (!applying) onClose(); };
 
@@ -48,8 +67,9 @@ export default function RetainerSplitInvoiceModal({ alertMeta, alertKey, automat
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "apply_retainer_split_invoice",
-          clientSheetId, masterSheetId,
-          clientName: alertMeta.clientName || "",
+          clientSheetId: resolvedClientSheetId, masterSheetId: resolvedMasterSheetId,
+          automationCommanderSheetId,
+          clientName: effectiveClientName,
           client: alertMeta.endClientName, jobName: alertMeta.jobName, parentRowNum: alertMeta.confirmedRow,
           missingRowNum: preview.missingRowNum,
           standardMonthlyAmount: preview.standardMonthlyAmount,
@@ -69,7 +89,7 @@ export default function RetainerSplitInvoiceModal({ alertMeta, alertKey, automat
             body: JSON.stringify({
               action: "resolve_proactive_alert",
               automationCommanderSheetId, alertKey,
-              clientName: alertMeta?.clientName || alertMeta?.endClientName || "",
+              clientName: effectiveClientName || alertMeta?.endClientName || "",
               resolution: "Invoice split between retainer and extra revenue job",
             }),
           });

@@ -1,7 +1,19 @@
 import React from "react";
 import Spinner from "./Spinner";
+import { useAppGlobals } from "../hooks/useAppGlobals";
 
-export default function RetainerAlertResolutionModal({ resolutionType, alertMeta, alertKey, automationCommanderSheetId, clientSheetId, masterSheetId, onClose, onResolved }) {
+export default function RetainerAlertResolutionModal({ resolutionType, alertMeta, alertKey, automationCommanderSheetId, clientSheetId, masterSheetId, clientName, onClose, onResolved }) {
+  const { allClientsMap } = useAppGlobals();
+  const effectiveClientName = clientName || alertMeta?.clientName || "";
+  const resolvedClientSheetId = clientSheetId
+    || alertMeta?.clientSheetId
+    || (effectiveClientName && allClientsMap?.[effectiveClientName]?.clientSheetId)
+    || (effectiveClientName && Object.values(allClientsMap || {}).find(c => c.clientName?.toLowerCase() === effectiveClientName.toLowerCase())?.clientSheetId);
+  const resolvedMasterSheetId = masterSheetId
+    || alertMeta?.masterSheetId
+    || (effectiveClientName && allClientsMap?.[effectiveClientName]?.masterSheetId)
+    || (effectiveClientName && Object.values(allClientsMap || {}).find(c => c.clientName?.toLowerCase() === effectiveClientName.toLowerCase())?.masterSheetId);
+
   const [loading, setLoading] = React.useState(true);
   const [preview, setPreview] = React.useState(null);
   const [applying, setApplying] = React.useState(false);
@@ -9,13 +21,19 @@ export default function RetainerAlertResolutionModal({ resolutionType, alertMeta
 
   React.useEffect(() => {
     let cancelled = false;
+    if (!resolvedClientSheetId) {
+      setError("Could not find the client's spreadsheet ID. Please ensure the client sheet is configured.");
+      setLoading(false);
+      return;
+    }
     (async () => {
       try {
         const res = await fetch("/api/triage", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             action: "compute_retainer_alert_resolution",
-            clientSheetId, masterSheetId,
+            clientSheetId: resolvedClientSheetId, masterSheetId: resolvedMasterSheetId,
+            clientName: effectiveClientName,
             client: alertMeta.endClientName, jobName: alertMeta.jobName, parentRowNum: alertMeta.confirmedRow,
             resolutionType,
             lastInvoiceDate: alertMeta.lastInvoiceDate,
@@ -35,7 +53,7 @@ export default function RetainerAlertResolutionModal({ resolutionType, alertMeta
       }
     })();
     return () => { cancelled = true; };
-  }, [alertMeta, clientSheetId, masterSheetId, resolutionType]);
+  }, [alertMeta, resolvedClientSheetId, resolvedMasterSheetId, effectiveClientName, resolutionType]);
 
   const close = () => { if (!applying) onClose(); };
 
@@ -49,8 +67,9 @@ export default function RetainerAlertResolutionModal({ resolutionType, alertMeta
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             action: "change_retainer_end_date",
-            clientSheetId, masterSheetId,
-            clientName: alertMeta?.clientName || "",
+            clientSheetId: resolvedClientSheetId, masterSheetId: resolvedMasterSheetId,
+            automationCommanderSheetId,
+            clientName: effectiveClientName,
             client: alertMeta.endClientName, jobName: alertMeta.jobName, parentRowNum: alertMeta.confirmedRow,
             newEndDate: preview.computedEndDate,
           }),
@@ -60,8 +79,10 @@ export default function RetainerAlertResolutionModal({ resolutionType, alertMeta
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             action: "change_retainer_monthly_amount",
-            clientSheetId,
-            clientName: alertMeta?.clientName || "",
+            clientSheetId: resolvedClientSheetId,
+            masterSheetId: resolvedMasterSheetId,
+            automationCommanderSheetId,
+            clientName: effectiveClientName,
             client: alertMeta.endClientName, jobName: alertMeta.jobName, parentRowNum: alertMeta.confirmedRow,
             changeMonth: preview.changeMonth, changeYear: preview.changeYear, newMonthlyAmount: preview.newMonthlyAmount,
             sourceInvoiceRef: preview.sourceInvoiceRef,

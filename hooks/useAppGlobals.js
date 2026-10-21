@@ -7,7 +7,24 @@ export function AppGlobalsProvider({ children }) {
   const [automationCommanderSheetId] = useState(AUTOMATION_COMMANDER_SHEET_ID);
   
   const outgoingsPullPendingRef = useRef(null);
-  const [allClientsMap, setAllClientsMap] = useState({});
+  const [allClientsMap, setAllClientsMap] = useState(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const stored = localStorage.getItem("pulse_cached_all_clients");
+        if (stored) {
+          const list = JSON.parse(stored);
+          if (Array.isArray(list) && list.length > 0) {
+            const map = {};
+            for (const c of list) {
+              if (c.clientName) map[c.clientName] = c;
+            }
+            return map;
+          }
+        }
+      } catch {}
+    }
+    return {};
+  });
 
   const [managedClient, setManagedClientState] = useState(() => {
     if (typeof window !== "undefined") {

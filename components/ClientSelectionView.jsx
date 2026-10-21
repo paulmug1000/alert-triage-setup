@@ -196,7 +196,10 @@ export default function ClientSelectionView({
               const combinedClientList = [
                 ...authorizedClientsWithFlags,
                 ...proactiveOnlyNames.map(name => {
-                  const info = allClientsMap[name] || {};
+                  let info = allClientsMap[name];
+                  if (!info?.clientSheetId) {
+                    info = Object.values(allClientsMap || {}).find(c => c.clientName?.toLowerCase() === name.toLowerCase()) || {};
+                  }
                   return { clientName: name, masterSheetId: info.masterSheetId, clientSheetId: info.clientSheetId, flags: {}, alertCounts: {} };
                 }),
               ].filter(c => isUserAuthorizedForClient(currentUser, c.clientName));

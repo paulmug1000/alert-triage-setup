@@ -120,14 +120,19 @@ export default function InvoicesView({
   } = useInvoices(assignedAppIds);
 
   const prevInitialClientRef = React.useRef(null);
+  const prevManagedClientRef = React.useRef(managedClient?.clientName || null);
   // Auto-select managedClient when in manage mode, or initialClient when passed, or clear when cancelled
   useEffect(() => {
     if (managedClient) {
-      const clientObj = (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === managedClient.clientName?.toLowerCase()) || managedClient;
-      setInvoicesClient(clientObj);
-      loadInvoicesInbox(clientObj);
-      loadInvoicesJobs(clientObj, false);
-      setInvoicesShowAll(false);
+      const currentName = managedClient.clientName?.toLowerCase();
+      if (prevManagedClientRef.current !== currentName) {
+        prevManagedClientRef.current = currentName;
+        const clientObj = (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === currentName) || managedClient;
+        setInvoicesClient(clientObj);
+        loadInvoicesInbox(clientObj);
+        loadInvoicesJobs(clientObj, false);
+        setInvoicesShowAll(false);
+      }
     } else if (initialClient && initialClient !== prevInitialClientRef.current) {
       prevInitialClientRef.current = initialClient;
       const clientObj = (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === initialClient.clientName?.toLowerCase()) || initialClient;
@@ -135,7 +140,8 @@ export default function InvoicesView({
       loadInvoicesInbox(clientObj);
       loadInvoicesJobs(clientObj, false);
       setInvoicesShowAll(false);
-    } else if (!managedClient && !initialClient) {
+    } else if (prevManagedClientRef.current && !managedClient) {
+      prevManagedClientRef.current = null;
       setInvoicesClient(null);
       setInvoicesInbox([]);
       setInvoicesJobs(null);

@@ -1,7 +1,7 @@
 import { getSheetsClient, withRetry, extractSheetIdFromUrl, colIndexToLetter } from "./sheetsClient";
 import { getToleranceValues, checkAllGASLocks } from "./sharedHelpers";
 import { logPmaActivity } from "./pmaLogger";
-import { resolveClientNameBySheetId } from "./workspaces";
+import { resolveClientNameBySheetId, getAllClients } from "./workspaces";
 import { isPlaceholderInvoice, isPlaceholderExpense } from "../utils/helpers";
 import { getSessionUser } from "./authService";
 
@@ -1779,10 +1779,27 @@ export async function handleTidyUpRetainers(req, res, sheets) {
 }
 
 export async function handleComputeRetainerAlertResolution(req, res, sheets) {
-  const { clientSheetId, masterSheetId, client, jobName, parentRowNum, resolutionType,
+  let { clientSheetId, masterSheetId, client, clientName, jobName, parentRowNum, resolutionType,
     lastInvoiceDate, possibleMatchSentDate, possibleMatchAmount, possibleMatchInvoiceNo, possibleMatchConfirmedRow } = req.body;
-  if (!clientSheetId || !jobName || !parentRowNum || !resolutionType) {
-    return res.status(400).json({ success: false, error: "Missing required fields" });
+
+  if (!clientSheetId && clientName) {
+    try {
+      const { clientsArray } = await getAllClients(sheets, { isAdmin: true }, false);
+      const found = clientsArray?.find(c => c.clientName?.toLowerCase() === clientName.toLowerCase());
+      if (found?.clientSheetId) clientSheetId = found.clientSheetId;
+      if (found?.masterSheetId && !masterSheetId) masterSheetId = found.masterSheetId;
+    } catch (lookupErr) {
+      console.warn("Could not resolve clientSheetId from clientName in compute resolution:", lookupErr.message);
+    }
+  }
+
+  const missing = [];
+  if (!clientSheetId) missing.push("clientSheetId");
+  if (!jobName) missing.push("jobName");
+  if (!parentRowNum) missing.push("parentRowNum");
+  if (!resolutionType) missing.push("resolutionType");
+  if (missing.length > 0) {
+    return res.status(400).json({ success: false, error: `Missing required fields: ${missing.join(", ")}` });
   }
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
@@ -1911,11 +1928,30 @@ export async function handleComputeRetainerAlertResolution(req, res, sheets) {
 }
 
 export async function handleComputeRetainerSplitInvoicePreview(req, res, sheets) {
-  const { clientSheetId, client, jobName, parentRowNum,
+  let { clientSheetId, masterSheetId, client, clientName, jobName, parentRowNum,
     lastInvoiceDate, possibleMatchSentDate, possibleMatchAmount, possibleMatchInvoiceNo,
     possibleMatchVatAmount, possibleMatchStatus, possibleMatchConfirmedRow } = req.body;
-  if (!clientSheetId || !jobName || !parentRowNum || !lastInvoiceDate || !possibleMatchSentDate || possibleMatchAmount === undefined) {
-    return res.status(400).json({ success: false, error: "Missing required fields" });
+
+  if (!clientSheetId && clientName) {
+    try {
+      const { clientsArray } = await getAllClients(sheets, { isAdmin: true }, false);
+      const found = clientsArray?.find(c => c.clientName?.toLowerCase() === clientName.toLowerCase());
+      if (found?.clientSheetId) clientSheetId = found.clientSheetId;
+      if (found?.masterSheetId && !masterSheetId) masterSheetId = found.masterSheetId;
+    } catch (lookupErr) {
+      console.warn("Could not resolve clientSheetId from clientName in split preview:", lookupErr.message);
+    }
+  }
+
+  const missing = [];
+  if (!clientSheetId) missing.push("clientSheetId");
+  if (!jobName) missing.push("jobName");
+  if (!parentRowNum) missing.push("parentRowNum");
+  if (!lastInvoiceDate) missing.push("lastInvoiceDate");
+  if (!possibleMatchSentDate) missing.push("possibleMatchSentDate");
+  if (possibleMatchAmount === undefined || possibleMatchAmount === null || possibleMatchAmount === "") missing.push("possibleMatchAmount");
+  if (missing.length > 0) {
+    return res.status(400).json({ success: false, error: `Missing required fields: ${missing.join(", ")}` });
   }
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
@@ -1996,13 +2032,31 @@ export async function handleComputeRetainerSplitInvoicePreview(req, res, sheets)
 }
 
 export async function handleApplyRetainerSplitInvoice(req, res, sheets) {
-  const {
-    clientSheetId, masterSheetId, client, jobName, parentRowNum, missingRowNum,
+  let {
+    clientSheetId, masterSheetId, client, clientName, jobName, parentRowNum, missingRowNum,
     standardMonthlyAmount, altAmount, altSentDate, altInvoiceNo, altStatus, vatAmount, difference,
     extraJobName, extraJobMonth, extraJobYear, existingConfirmedRow,
   } = req.body;
-  if (!clientSheetId || !jobName || !parentRowNum || !missingRowNum || difference === undefined) {
-    return res.status(400).json({ success: false, error: "Missing required fields" });
+
+  if (!clientSheetId && clientName) {
+    try {
+      const { clientsArray } = await getAllClients(sheets, { isAdmin: true }, false);
+      const found = clientsArray?.find(c => c.clientName?.toLowerCase() === clientName.toLowerCase());
+      if (found?.clientSheetId) clientSheetId = found.clientSheetId;
+      if (found?.masterSheetId && !masterSheetId) masterSheetId = found.masterSheetId;
+    } catch (lookupErr) {
+      console.warn("Could not resolve clientSheetId from clientName in apply split:", lookupErr.message);
+    }
+  }
+
+  const missing = [];
+  if (!clientSheetId) missing.push("clientSheetId");
+  if (!jobName) missing.push("jobName");
+  if (!parentRowNum) missing.push("parentRowNum");
+  if (!missingRowNum) missing.push("missingRowNum");
+  if (difference === undefined || difference === null || difference === "") missing.push("difference");
+  if (missing.length > 0) {
+    return res.status(400).json({ success: false, error: `Missing required fields: ${missing.join(", ")}` });
   }
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;

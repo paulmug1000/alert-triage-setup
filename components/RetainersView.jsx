@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import Spinner from "./Spinner";
 import RetainersEditModal from "./RetainersEditModal";
 import CreateRetainerModal from "./CreateRetainerModal";
@@ -30,13 +30,19 @@ export default function RetainersView({
   const [retainersEditJob, setRetainersEditJob] = useState(null);
   const [expandedRetainerJobs, setExpandedRetainerJobs] = useState(new Set());
 
+  const prevManagedClientRef = useRef(managedClient?.clientName || null);
   // Auto-select managedClient when in manage mode, or clear when manage mode cancelled
   useEffect(() => {
     if (managedClient) {
-      const clientObj = (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === managedClient.clientName?.toLowerCase()) || managedClient;
-      setRetainersClient(clientObj);
-      loadRetainersJobs(clientObj);
-    } else {
+      const currentName = managedClient.clientName?.toLowerCase();
+      if (prevManagedClientRef.current !== currentName) {
+        prevManagedClientRef.current = currentName;
+        const clientObj = (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === currentName) || managedClient;
+        setRetainersClient(clientObj);
+        loadRetainersJobs(clientObj);
+      }
+    } else if (prevManagedClientRef.current) {
+      prevManagedClientRef.current = null;
       setRetainersClient(null);
       setRetainersJobs(null);
     }

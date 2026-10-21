@@ -121,6 +121,34 @@ export default function AlertSelectionView({
     const match = Object.values(allClientsMap).find(c => c.clientName && c.clientName.toLowerCase() === cName.toLowerCase());
     return !!match?.hasClientManager;
   }, [selectedClient, allClientsMap]);
+
+  const getClientInfoForAlert = (alertObj) => {
+    const cName = alertObj?.clientName || selectedClient?.clientName;
+    const fromFlags = (clientsWithFlags || []).find(c => c.clientName === cName);
+    if (fromFlags?.clientSheetId || fromFlags?.masterSheetId) return fromFlags;
+
+    if (allClientsMap && cName) {
+      if (allClientsMap[cName]?.clientSheetId || allClientsMap[cName]?.masterSheetId) {
+        return allClientsMap[cName];
+      }
+      const match = Object.values(allClientsMap).find(cl => cl.clientName && cl.clientName.toLowerCase() === cName.toLowerCase());
+      if (match?.clientSheetId || match?.masterSheetId) return match;
+    }
+
+    if (selectedClient && (!cName || selectedClient.clientName?.toLowerCase() === cName.toLowerCase())) {
+      if (selectedClient.clientSheetId || selectedClient.masterSheetId) return selectedClient;
+    }
+
+    if (alertObj?.metadata?.clientSheetId || alertObj?.metadata?.masterSheetId) {
+      return {
+        clientName: cName,
+        clientSheetId: alertObj.metadata.clientSheetId,
+        masterSheetId: alertObj.metadata.masterSheetId,
+      };
+    }
+
+    return selectedClient || null;
+  };
   const {
     bulkMode, setBulkMode, bulkSelected, setBulkSelected,
     showBulkIgnoreModal, setShowBulkIgnoreModal, showBulkTaskModal, setShowBulkTaskModal,
@@ -1288,7 +1316,7 @@ export default function AlertSelectionView({
                                       <button className="triage-btn"
                                         onClick={() => onNavInvoices ? onNavInvoices(selectedClient) : setActiveNav("invoices")}
                                         style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 14px", color: "#ea580c", borderColor: "#fdba74" }}>
-                                        📥 Assign Invoices
+                                        📥 Assign invoices
                                       </button>
                                     </div>
                                   )}
@@ -1325,7 +1353,7 @@ export default function AlertSelectionView({
                                   <button className="triage-btn"
                                     onClick={() => onNavOutgoings ? onNavOutgoings(selectedClient) : setActiveNav("outgoings")}
                                     style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 14px", color: "#059669", borderColor: "#6ee7b7" }}>
-                                    📤 Assign Expense
+                                    📤 Assign expenses
                                   </button>
                                 </div>
                               )]
@@ -1335,7 +1363,7 @@ export default function AlertSelectionView({
                                     <button className="triage-btn"
                                       onClick={() => onNavInvoices ? onNavInvoices(selectedClient) : setActiveNav("invoices")}
                                       style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 14px", color: "#ea580c", borderColor: "#fdba74" }}>
-                                      📥 Assign Invoices
+                                      📥 Assign invoices
                                     </button>
                                   </div>
                                 )]
@@ -1413,228 +1441,228 @@ export default function AlertSelectionView({
                               : (rawAnalysis?.overallOk ?? true);
                             const analysis = rawAnalysis ? { ...rawAnalysis, results: displayedResults, overallOk } : null;
 
-                              const cName = na.clientName || selectedClient?.clientName;
-                              const clientInfo = (clientsWithFlags || []).find(c => c.clientName === cName) || (allClientsMap && (allClientsMap[cName] || Object.values(allClientsMap).find(cl => cl.clientName?.toLowerCase() === cName?.toLowerCase()))) || selectedClient;
-                              const parsed = parseInfoAlertDetail(na.flagType, na.flagDetail);
-                              const isBulkSelected = infoBulkSelected.has(alertId);
+                            const cName = na.clientName || selectedClient?.clientName;
+                            const clientInfo = (clientsWithFlags || []).find(c => c.clientName === cName) || (allClientsMap && (allClientsMap[cName] || Object.values(allClientsMap).find(cl => cl.clientName?.toLowerCase() === cName?.toLowerCase()))) || selectedClient;
+                            const parsed = parseInfoAlertDetail(na.flagType, na.flagDetail);
+                            const isBulkSelected = infoBulkSelected.has(alertId);
 
-                              let cardTitle = getFlagName(na.flagType) || na.flagName;
-                              if (na.flagType === "expenseUnreconGaps") {
-                                cardTitle = parsed?.tab === "Outgoings"
-                                  ? (parsed.contractor ? `Stale placeholder expense date moved (${parsed.contractor})` : "Stale placeholder expense date moved")
-                                  : (parsed?.client ? `Stale placeholder expense date moved (${parsed.client})` : "Stale placeholder expense date moved");
-                              } else if (na.flagType === "invoiceStaleUnsentChanges") {
-                                cardTitle = parsed?.client ? `Stale unsent invoice send date changed (${parsed.client})` : "Stale unsent invoice send date changed";
-                              }
+                            let cardTitle = getFlagName(na.flagType) || na.flagName;
+                            if (na.flagType === "expenseUnreconGaps") {
+                              cardTitle = parsed?.tab === "Outgoings"
+                                ? (parsed.contractor ? `Stale placeholder expense date moved (${parsed.contractor})` : "Stale placeholder expense date moved")
+                                : (parsed?.client ? `Stale placeholder expense date moved (${parsed.client})` : "Stale placeholder expense date moved");
+                            } else if (na.flagType === "invoiceStaleUnsentChanges") {
+                              cardTitle = parsed?.client ? `Stale unsent invoice send date changed (${parsed.client})` : "Stale unsent invoice send date changed";
+                            }
 
-                              return (
-                                <div key={alertId} style={{
-                                  padding: "14px 16px",
-                                  borderRadius: "8px",
-                                  border: infoBulkMode && isBulkSelected ? "1px solid #7c3aed" : "1px solid #cbd5e1",
-                                  background: infoBulkMode && isBulkSelected ? "#ede9fe" : "#ffffff",
+                            return (
+                              <div key={alertId} style={{
+                                padding: "14px 16px",
+                                borderRadius: "8px",
+                                border: infoBulkMode && isBulkSelected ? "1px solid #7c3aed" : "1px solid #cbd5e1",
+                                background: infoBulkMode && isBulkSelected ? "#ede9fe" : "#ffffff",
+                                display: "flex",
+                                flexDirection: "column",
+                                gap: "4px",
+                                boxSizing: "border-box",
+                                width: "100%",
+                              }}>
+                                <div style={{
+                                  fontWeight: "600",
+                                  fontSize: "13.5px",
+                                  color: "#0f172a",
                                   display: "flex",
-                                  flexDirection: "column",
-                                  gap: "4px",
-                                  boxSizing: "border-box",
-                                  width: "100%",
+                                  alignItems: "center",
+                                  justifyContent: "space-between",
+                                  flexWrap: "wrap",
+                                  gap: "8px",
                                 }}>
-                                  <div style={{
-                                    fontWeight: "600",
-                                    fontSize: "13.5px",
-                                    color: "#0f172a",
-                                    display: "flex",
-                                    alignItems: "center",
-                                    justifyContent: "space-between",
-                                    flexWrap: "wrap",
-                                    gap: "8px",
-                                  }}>
-                                    <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", minWidth: 0 }}>
-                                      {infoBulkMode && (
-                                        <input type="checkbox" checked={isBulkSelected} onChange={() => {
-                                          setInfoBulkSelected(prev => {
-                                            const next = new Set(prev);
-                                            if (next.has(alertId)) next.delete(alertId); else next.add(alertId);
-                                            return next;
-                                          });
-                                        }} style={{ accentColor: "#7c3aed", cursor: "pointer", flexShrink: 0 }} />
-                                      )}
-                                      <span>{cardTitle}</span>
-                                      {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(na.flagType) && <AdminBadge show={clientHasManager} />}
-                                    </div>
-                                  </div>
-
-                                  <div style={{
-                                    fontSize: "12px",
-                                    color: "#555",
-                                    display: "flex",
-                                    flexDirection: "column",
-                                    gap: "2px",
-                                    marginTop: "2px",
-                                  }}>
-                                    {parsed.tab && <div><strong>Tab:</strong> {parsed.tab}{parsed.slot ? ` (Slot ${parsed.slot})` : ""}</div>}
-                                    {parsed.month && <div><strong>Month:</strong> {parsed.month}</div>}
-                                    {parsed.client && <div><strong>End client:</strong> {parsed.client}</div>}
-                                    {parsed.contractor && <div><strong>{parsed.tab === "Outgoings" ? "Vendor:" : "Contractor:"}</strong> {parsed.contractor}</div>}
-                                    {parsed.job && <div><strong>Job:</strong> {parsed.job}{parsed.projectCode ? ` [${parsed.projectCode}]` : ""}</div>}
-                                    {isAdmin && parsed.confirmedRow && <div><strong>Confirmed tab row:</strong> {parsed.confirmedRow}</div>}
-                                    {isAdmin && parsed.pipelineRow && <div><strong>Pipeline tab row:</strong> {parsed.pipelineRow}</div>}
-                                    {isAdmin && parsed.rowNum && !parsed.confirmedRow && !parsed.pipelineRow && (
-                                      <div><strong>{parsed.tab ? `${parsed.tab} tab row:` : "Row:"}</strong> {parsed.rowNum}</div>
+                                  <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", minWidth: 0 }}>
+                                    {infoBulkMode && (
+                                      <input type="checkbox" checked={isBulkSelected} onChange={() => {
+                                        setInfoBulkSelected(prev => {
+                                          const next = new Set(prev);
+                                          if (next.has(alertId)) next.delete(alertId); else next.add(alertId);
+                                          return next;
+                                        });
+                                      }} style={{ accentColor: "#7c3aed", cursor: "pointer", flexShrink: 0 }} />
                                     )}
-                                    {parsed.amount && <div><strong>Amount:</strong> {parsed.amount}</div>}
-                                    {parsed.changes && parsed.changes.length > 0 && (
-                                      <div style={{ marginTop: "3px" }}>
-                                        <strong style={{ display: "block", marginBottom: "3px" }}>Date updates:</strong>
-                                        <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
-                                          {parsed.changes.map((ch, ci) => (
-                                            <span key={ci} style={{
-                                              padding: "2px 7px", borderRadius: "4px", fontSize: "11px", fontWeight: "600",
-                                              background: "#f1f5f9",
-                                              color: "#334155",
-                                              border: "1px solid #cbd5e1",
-                                            }}>
-                                              {ch.label}
-                                            </span>
-                                          ))}
-                                        </div>
-                                      </div>
-                                    )}
-                                    {parsed.highlight && (
-                                      <div style={{ marginTop: "4px", fontWeight: "600", color: "#0284c7" }}>
-                                        {parsed.highlight}
-                                      </div>
-                                    )}
-                                    {parsed.rawText && (
-                                      <div style={{ marginTop: "2px", color: "#666", lineHeight: "1.4" }}>
-                                        {isAdmin ? parsed.rawText : stripRowInfo(parsed.rawText)}
-                                      </div>
-                                    )}
-                                  </div>
-
-                                  {analysis && !isLoading && (
-                                    <div style={{ marginTop: "2px" }}>
-                                      <div style={{
-                                        padding: "6px 10px", borderRadius: "4px", marginBottom: "8px", fontSize: "12px", fontWeight: "600",
-                                        background: overallOk ? "#e8f5e9" : "#fbe9e7", color: overallOk ? "#2e7d32" : "#bf360c",
-                                        border: `1px solid ${overallOk ? "#c8e6c9" : "#ffccbc"}`
-                                      }}>
-                                        {overallOk ? "✓ Everything looks correct" : "⚠ Issues found - review below"}
-                                      </div>
-                                      {(analysis.results || []).map((r, ri) => (
-                                        <div key={ri} style={{
-                                          marginBottom: "8px", padding: "8px 10px", borderRadius: "4px",
-                                          border: `1px solid ${r.status === "ok" ? "#c8e6c9" : r.status === "issue" ? "#ffccbc" : "#e0e0e0"}`,
-                                          background: "#ffffff",
-                                        }}>
-                                          {(r.jobName || r.projectCode || r.contractor) && (
-                                            <div style={{ fontSize: "12px", fontWeight: "600", color: "#333", marginBottom: "4px" }}>
-                                              {r.clientName && <span style={{ fontWeight: "400", color: "#666" }}>{r.clientName} - </span>}
-                                              {r.contractor && !r.jobName && <span style={{ fontWeight: "600", color: "#333" }}>{r.contractor}</span>}
-                                              {r.jobName || r.projectCode}
-                                              {r.projectCode && r.jobName && <TruncatedCode code={r.projectCode} />}
-                                              {r.periodLabel && <span style={{ fontWeight: "400", color: "#666", marginLeft: "6px" }}> - {r.periodLabel}</span>}
-                                              {isAdmin && r.parentSheetRow && <span style={{ fontWeight: "400", color: "#aaa", marginLeft: "6px", fontSize: "11px" }}>{r.tab || "Confirmed"} row {r.parentSheetRow}</span>}
-                                              {isAdmin && (r.pipelineRow || r.confirmedRow) && (
-                                                <span style={{ fontWeight: "400", color: "#aaa", marginLeft: "6px", fontSize: "11px" }}>
-                                                  {r.pipelineRow ? `Pipeline row ${r.pipelineRow}` : ""}
-                                                  {r.pipelineRow && r.confirmedRow ? " · " : ""}
-                                                  {r.confirmedRow ? `Confirmed row ${r.confirmedRow}` : ""}
-                                                </span>
-                                              )}
-                                            </div>
-                                          )}
-                                          {r.message && (!r.checks || r.checks.length === 0) && (
-                                            <div style={{ fontSize: "12px", color: "#666" }}>{r.message}</div>
-                                          )}
-                                          {(r.checks || []).map((chk, ci) => (
-                                            <div key={ci} style={{ fontSize: "12px", color: chk.ok ? "#2e7d32" : "#c62828", marginTop: "2px" }}>
-                                              {(() => {
-                                                const parts = [];
-                                                const re = /\(([^)]{17,})\)/g;
-                                                let last = 0, m;
-                                                const msg = chk.message || "";
-                                                while ((m = re.exec(msg)) !== null) {
-                                                  if (m.index > last) parts.push(msg.slice(last, m.index));
-                                                  parts.push(<TruncatedCode key={m.index} code={m[1]} />);
-                                                  last = m.index + m[0].length;
-                                                }
-                                                if (last < msg.length) parts.push(msg.slice(last));
-                                                return parts.length > 1 ? parts : msg;
-                                              })()}
-                                            </div>
-                                          ))}
-                                        </div>
-                                      ))}
-                                    </div>
-                                  )}
-                                  {analysis && !analysis.success && (
-                                    <div style={{ fontSize: "12px", color: "#c62828", marginTop: "4px" }}>Error: {analysis.error}</div>
-                                  )}
-
-                                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", marginTop: "6px" }}>
-                                    <div style={{ fontSize: "11px", color: "#888" }}>
-                                      {na.firstSeen ? `First seen: ${formatSeenTimestamp(na.firstSeen)}` : ""}
-                                      {na.firstSeen && na.lastSeen ? " · " : ""}
-                                      {na.lastSeen ? `Last seen: ${formatSeenTimestamp(na.lastSeen)}` : ""}
-                                    </div>
-                                    <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
-                                        {(() => {
-                                          const jobTarget = getAlertJobTarget(na, true, clientInfo);
-                                          if (!jobTarget) return null;
-                                          return (
-                                            <button
-                                              className="triage-btn"
-                                              onClick={() => handleViewJobOrExpense(jobTarget)}
-                                              style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#0284c7", borderColor: "#bae6fd" }}
-                                              title={jobTarget.isOutgoings ? "View Outgoings expense details" : "View and edit job details in pop-up"}
-                                            >
-                                              {jobTarget.isOutgoings ? "🔍 View expense" : "🔍 View job"}
-                                            </button>
-                                          );
-                                        })()}
-                                        {isAdmin && clientInfo && (clientInfo.clientSheetId || clientInfo.masterSheetId) && (
-                                          <button className="triage-btn" onClick={() => {
-                                            if (clientInfo.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.clientSheetId}/edit`, "_blank");
-                                            if (clientInfo.masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.masterSheetId}/edit`, "_blank");
-                                          }} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#1d4ed8", borderColor: "#93c5fd" }}>📊 Open Sheets</button>
-                                        )}
-                                        {isRichFlag && !analysis && !isLoading && (
-                                          <button className="triage-btn"
-                                            onClick={() => analyzeNoActionFlag(na)}
-                                            style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px" }}
-                                          >
-                                            🔍 Analyse
-                                          </button>
-                                        )}
-                                        {isRichFlag && isLoading && (
-                                          <span style={{ fontSize: "12px", color: "#888", padding: "4px 12px", display: "inline-flex", alignItems: "center", gap: "6px" }}><Spinner size={12} />Analysing…</span>
-                                        )}
-                                        {isRichFlag && analysis && !isLoading && (
-                                          <button className="triage-btn"
-                                            onClick={() => analyzeNoActionFlag(na)}
-                                            style={{ ...styles.buttonSecondary, fontSize: "11px", padding: "4px 8px" }}
-                                          >
-                                            ↻ Re-run
-                                          </button>
-                                        )}
-                                        <button className="triage-btn"
-                                          onClick={() => openCreateTaskModal(na, false, true)}
-                                          style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#7c3aed", borderColor: "#c4b5fd" }}
-                                        >
-                                          📋 Create Task
-                                        </button>
-                                        <button className="triage-btn"
-                                          onClick={() => handleMarkNoActionResolved(na)}
-                                          style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px" }}
-                                        >
-                                          ✓ Mark resolved
-                                        </button>
-                                      </div>
+                                    <span>{cardTitle}</span>
+                                    {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(na.flagType) && <AdminBadge show={clientHasManager} />}
                                   </div>
                                 </div>
-                              );
-                            })}
+
+                                <div style={{
+                                  fontSize: "12px",
+                                  color: "#555",
+                                  display: "flex",
+                                  flexDirection: "column",
+                                  gap: "2px",
+                                  marginTop: "2px",
+                                }}>
+                                  {parsed.tab && <div><strong>Tab:</strong> {parsed.tab}{parsed.slot ? ` (Slot ${parsed.slot})` : ""}</div>}
+                                  {parsed.month && <div><strong>Month:</strong> {parsed.month}</div>}
+                                  {parsed.client && <div><strong>End client:</strong> {parsed.client}</div>}
+                                  {parsed.contractor && <div><strong>{parsed.tab === "Outgoings" ? "Vendor:" : "Contractor:"}</strong> {parsed.contractor}</div>}
+                                  {parsed.job && <div><strong>Job:</strong> {parsed.job}{parsed.projectCode ? ` [${parsed.projectCode}]` : ""}</div>}
+                                  {isAdmin && parsed.confirmedRow && <div><strong>Confirmed tab row:</strong> {parsed.confirmedRow}</div>}
+                                  {isAdmin && parsed.pipelineRow && <div><strong>Pipeline tab row:</strong> {parsed.pipelineRow}</div>}
+                                  {isAdmin && parsed.rowNum && !parsed.confirmedRow && !parsed.pipelineRow && (
+                                    <div><strong>{parsed.tab ? `${parsed.tab} tab row:` : "Row:"}</strong> {parsed.rowNum}</div>
+                                  )}
+                                  {parsed.amount && <div><strong>Amount:</strong> {parsed.amount}</div>}
+                                  {parsed.changes && parsed.changes.length > 0 && (
+                                    <div style={{ marginTop: "3px" }}>
+                                      <strong style={{ display: "block", marginBottom: "3px" }}>Date updates:</strong>
+                                      <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                                        {parsed.changes.map((ch, ci) => (
+                                          <span key={ci} style={{
+                                            padding: "2px 7px", borderRadius: "4px", fontSize: "11px", fontWeight: "600",
+                                            background: "#f1f5f9",
+                                            color: "#334155",
+                                            border: "1px solid #cbd5e1",
+                                          }}>
+                                            {ch.label}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+                                  {parsed.highlight && (
+                                    <div style={{ marginTop: "4px", fontWeight: "600", color: "#0284c7" }}>
+                                      {parsed.highlight}
+                                    </div>
+                                  )}
+                                  {parsed.rawText && (
+                                    <div style={{ marginTop: "2px", color: "#666", lineHeight: "1.4" }}>
+                                      {isAdmin ? parsed.rawText : stripRowInfo(parsed.rawText)}
+                                    </div>
+                                  )}
+                                </div>
+
+                                {analysis && !isLoading && (
+                                  <div style={{ marginTop: "2px" }}>
+                                    <div style={{
+                                      padding: "6px 10px", borderRadius: "4px", marginBottom: "8px", fontSize: "12px", fontWeight: "600",
+                                      background: overallOk ? "#e8f5e9" : "#fbe9e7", color: overallOk ? "#2e7d32" : "#bf360c",
+                                      border: `1px solid ${overallOk ? "#c8e6c9" : "#ffccbc"}`
+                                    }}>
+                                      {overallOk ? "✓ Everything looks correct" : "⚠ Issues found - review below"}
+                                    </div>
+                                    {(analysis.results || []).map((r, ri) => (
+                                      <div key={ri} style={{
+                                        marginBottom: "8px", padding: "8px 10px", borderRadius: "4px",
+                                        border: `1px solid ${r.status === "ok" ? "#c8e6c9" : r.status === "issue" ? "#ffccbc" : "#e0e0e0"}`,
+                                        background: "#ffffff",
+                                      }}>
+                                        {(r.jobName || r.projectCode || r.contractor) && (
+                                          <div style={{ fontSize: "12px", fontWeight: "600", color: "#333", marginBottom: "4px" }}>
+                                            {r.clientName && <span style={{ fontWeight: "400", color: "#666" }}>{r.clientName} - </span>}
+                                            {r.contractor && !r.jobName && <span style={{ fontWeight: "600", color: "#333" }}>{r.contractor}</span>}
+                                            {r.jobName || r.projectCode}
+                                            {r.projectCode && r.jobName && <TruncatedCode code={r.projectCode} />}
+                                            {r.periodLabel && <span style={{ fontWeight: "400", color: "#666", marginLeft: "6px" }}> - {r.periodLabel}</span>}
+                                            {isAdmin && r.parentSheetRow && <span style={{ fontWeight: "400", color: "#aaa", marginLeft: "6px", fontSize: "11px" }}>{r.tab || "Confirmed"} row {r.parentSheetRow}</span>}
+                                            {isAdmin && (r.pipelineRow || r.confirmedRow) && (
+                                              <span style={{ fontWeight: "400", color: "#aaa", marginLeft: "6px", fontSize: "11px" }}>
+                                                {r.pipelineRow ? `Pipeline row ${r.pipelineRow}` : ""}
+                                                {r.pipelineRow && r.confirmedRow ? " · " : ""}
+                                                {r.confirmedRow ? `Confirmed row ${r.confirmedRow}` : ""}
+                                              </span>
+                                            )}
+                                          </div>
+                                        )}
+                                        {r.message && (!r.checks || r.checks.length === 0) && (
+                                          <div style={{ fontSize: "12px", color: "#666" }}>{r.message}</div>
+                                        )}
+                                        {(r.checks || []).map((chk, ci) => (
+                                          <div key={ci} style={{ fontSize: "12px", color: chk.ok ? "#2e7d32" : "#c62828", marginTop: "2px" }}>
+                                            {(() => {
+                                              const parts = [];
+                                              const re = /\(([^)]{17,})\)/g;
+                                              let last = 0, m;
+                                              const msg = chk.message || "";
+                                              while ((m = re.exec(msg)) !== null) {
+                                                if (m.index > last) parts.push(msg.slice(last, m.index));
+                                                parts.push(<TruncatedCode key={m.index} code={m[1]} />);
+                                                last = m.index + m[0].length;
+                                              }
+                                              if (last < msg.length) parts.push(msg.slice(last));
+                                              return parts.length > 1 ? parts : msg;
+                                            })()}
+                                          </div>
+                                        ))}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                                {analysis && !analysis.success && (
+                                  <div style={{ fontSize: "12px", color: "#c62828", marginTop: "4px" }}>Error: {analysis.error}</div>
+                                )}
+
+                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", marginTop: "6px" }}>
+                                  <div style={{ fontSize: "11px", color: "#888" }}>
+                                    {na.firstSeen ? `First seen: ${formatSeenTimestamp(na.firstSeen)}` : ""}
+                                    {na.firstSeen && na.lastSeen ? " · " : ""}
+                                    {na.lastSeen ? `Last seen: ${formatSeenTimestamp(na.lastSeen)}` : ""}
+                                  </div>
+                                  <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+                                    {(() => {
+                                      const jobTarget = getAlertJobTarget(na, true, clientInfo);
+                                      if (!jobTarget) return null;
+                                      return (
+                                        <button
+                                          className="triage-btn"
+                                          onClick={() => handleViewJobOrExpense(jobTarget)}
+                                          style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#0284c7", borderColor: "#bae6fd" }}
+                                          title={jobTarget.isOutgoings ? "View Outgoings expense details" : "View and edit job details in pop-up"}
+                                        >
+                                          {jobTarget.isOutgoings ? "🔍 View expense" : "🔍 View job"}
+                                        </button>
+                                      );
+                                    })()}
+                                    {isAdmin && clientInfo && (clientInfo.clientSheetId || clientInfo.masterSheetId) && (
+                                      <button className="triage-btn" onClick={() => {
+                                        if (clientInfo.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.clientSheetId}/edit`, "_blank");
+                                        if (clientInfo.masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.masterSheetId}/edit`, "_blank");
+                                      }} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#1d4ed8", borderColor: "#93c5fd" }}>📊 Open Sheets</button>
+                                    )}
+                                    {isRichFlag && !analysis && !isLoading && (
+                                      <button className="triage-btn"
+                                        onClick={() => analyzeNoActionFlag(na)}
+                                        style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px" }}
+                                      >
+                                        🔍 Analyse
+                                      </button>
+                                    )}
+                                    {isRichFlag && isLoading && (
+                                      <span style={{ fontSize: "12px", color: "#888", padding: "4px 12px", display: "inline-flex", alignItems: "center", gap: "6px" }}><Spinner size={12} />Analysing…</span>
+                                    )}
+                                    {isRichFlag && analysis && !isLoading && (
+                                      <button className="triage-btn"
+                                        onClick={() => analyzeNoActionFlag(na)}
+                                        style={{ ...styles.buttonSecondary, fontSize: "11px", padding: "4px 8px" }}
+                                      >
+                                        ↻ Re-run
+                                      </button>
+                                    )}
+                                    <button className="triage-btn"
+                                      onClick={() => openCreateTaskModal(na, false, true)}
+                                      style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#7c3aed", borderColor: "#c4b5fd" }}
+                                    >
+                                      📋 Create Task
+                                    </button>
+                                    <button className="triage-btn"
+                                      onClick={() => handleMarkNoActionResolved(na)}
+                                      style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px" }}
+                                    >
+                                      ✓ Mark resolved
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
                         </div>
                       </div>
                     );
@@ -1801,18 +1829,44 @@ export default function AlertSelectionView({
                                         {m.possibleMatchInvoiceNo ? (
                                           <>
                                             <button className="triage-btn" onClick={() => {
-                                              const clientInfo = (clientsWithFlags || []).find(c => c.clientName === alert.clientName) || allClientsMap[alert.clientName];
-                                              setRetainerAlertResolution({ resolutionType: "changeAmount", alertMeta: m, alertKey: alert.alertKey, clientSheetId: clientInfo?.clientSheetId, masterSheetId: clientInfo?.masterSheetId });
+                                              const clientInfo = getClientInfoForAlert(alert);
+                                              const targetClientSheetId = clientInfo?.clientSheetId || selectedClient?.clientSheetId || m.clientSheetId;
+                                              const targetMasterSheetId = clientInfo?.masterSheetId || selectedClient?.masterSheetId || m.masterSheetId;
+                                              const targetClientName = alert.clientName || selectedClient?.clientName || "";
+                                              setRetainerAlertResolution({
+                                                resolutionType: "changeAmount",
+                                                alertMeta: { ...m, clientName: targetClientName },
+                                                alertKey: alert.alertKey,
+                                                clientSheetId: targetClientSheetId,
+                                                masterSheetId: targetMasterSheetId
+                                              });
                                             }} style={{ padding: "6px 12px", background: "#7c3aed", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>Change retainer amount</button>
                                             <button className="triage-btn" onClick={() => {
-                                              const clientInfo = (clientsWithFlags || []).find(c => c.clientName === alert.clientName) || allClientsMap[alert.clientName];
-                                              setRetainerSplitInvoice({ alertMeta: m, alertKey: alert.alertKey, clientSheetId: clientInfo?.clientSheetId, masterSheetId: clientInfo?.masterSheetId });
+                                              const clientInfo = getClientInfoForAlert(alert);
+                                              const targetClientSheetId = clientInfo?.clientSheetId || selectedClient?.clientSheetId || m.clientSheetId;
+                                              const targetMasterSheetId = clientInfo?.masterSheetId || selectedClient?.masterSheetId || m.masterSheetId;
+                                              const targetClientName = alert.clientName || selectedClient?.clientName || "";
+                                              setRetainerSplitInvoice({
+                                                alertMeta: { ...m, clientName: targetClientName },
+                                                alertKey: alert.alertKey,
+                                                clientSheetId: targetClientSheetId,
+                                                masterSheetId: targetMasterSheetId
+                                              });
                                             }} style={{ padding: "6px 12px", background: "#0891b2", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>Split invoice</button>
                                           </>
                                         ) : (
                                           <button className="triage-btn" onClick={() => {
-                                            const clientInfo = (clientsWithFlags || []).find(c => c.clientName === alert.clientName) || allClientsMap[alert.clientName];
-                                            setRetainerAlertResolution({ resolutionType: "end", alertMeta: m, alertKey: alert.alertKey, clientSheetId: clientInfo?.clientSheetId, masterSheetId: clientInfo?.masterSheetId });
+                                            const clientInfo = getClientInfoForAlert(alert);
+                                            const targetClientSheetId = clientInfo?.clientSheetId || selectedClient?.clientSheetId || m.clientSheetId;
+                                            const targetMasterSheetId = clientInfo?.masterSheetId || selectedClient?.masterSheetId || m.masterSheetId;
+                                            const targetClientName = alert.clientName || selectedClient?.clientName || "";
+                                            setRetainerAlertResolution({
+                                              resolutionType: "end",
+                                              alertMeta: { ...m, clientName: targetClientName },
+                                              alertKey: alert.alertKey,
+                                              clientSheetId: targetClientSheetId,
+                                              masterSheetId: targetMasterSheetId
+                                            });
                                           }} style={{ padding: "6px 12px", background: "#dc2626", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>End retainer</button>
                                         )}
                                       </div>
@@ -1867,7 +1921,7 @@ export default function AlertSelectionView({
                                         <div style={{ marginTop: "4px", color: "#d97706" }}>
                                           {pCount} expense{pCount > 1 ? "s" : ""} totalling £{pTotal.toFixed(2)} {pCount > 1 ? "are placeholders - not counted as received above." : "is a placeholder - not counted as received above."}
                                         </div>
-                                       )}
+                                      )}
                                     </div>
                                   );
                                 })()}
@@ -2453,8 +2507,9 @@ export default function AlertSelectionView({
           alertMeta={retainerAlertResolution.alertMeta}
           alertKey={retainerAlertResolution.alertKey}
           automationCommanderSheetId={automationCommanderSheetId}
-          clientSheetId={retainerAlertResolution.clientSheetId}
-          masterSheetId={retainerAlertResolution.masterSheetId}
+          clientSheetId={retainerAlertResolution.clientSheetId || selectedClient?.clientSheetId}
+          masterSheetId={retainerAlertResolution.masterSheetId || selectedClient?.masterSheetId}
+          clientName={retainerAlertResolution.alertMeta?.clientName || selectedClient?.clientName}
           onClose={() => setRetainerAlertResolution(null)}
           onResolved={() => loadProactiveAlerts()}
         />
@@ -2464,8 +2519,9 @@ export default function AlertSelectionView({
           alertMeta={retainerSplitInvoice.alertMeta}
           alertKey={retainerSplitInvoice.alertKey}
           automationCommanderSheetId={automationCommanderSheetId}
-          clientSheetId={retainerSplitInvoice.clientSheetId}
-          masterSheetId={retainerSplitInvoice.masterSheetId}
+          clientSheetId={retainerSplitInvoice.clientSheetId || selectedClient?.clientSheetId}
+          masterSheetId={retainerSplitInvoice.masterSheetId || selectedClient?.masterSheetId}
+          clientName={retainerSplitInvoice.alertMeta?.clientName || selectedClient?.clientName}
           onClose={() => setRetainerSplitInvoice(null)}
           onResolved={() => loadProactiveAlerts()}
         />

@@ -58,6 +58,34 @@ export default function NonAdminAlertListView({
   const [applyingClassification, setApplyingClassification] = React.useState({});
   const [classificationMsg, setClassificationMsg] = React.useState({});
 
+  const getClientInfoForAlert = (alertObj) => {
+    const cName = alertObj?.clientName || selectedClient?.clientName;
+    const fromFlags = (clientsWithFlags || []).find(c => c.clientName === cName);
+    if (fromFlags?.clientSheetId || fromFlags?.masterSheetId) return fromFlags;
+
+    if (allClientsMap && cName) {
+      if (allClientsMap[cName]?.clientSheetId || allClientsMap[cName]?.masterSheetId) {
+        return allClientsMap[cName];
+      }
+      const match = Object.values(allClientsMap).find(cl => cl.clientName && cl.clientName.toLowerCase() === cName.toLowerCase());
+      if (match?.clientSheetId || match?.masterSheetId) return match;
+    }
+
+    if (selectedClient && (!cName || selectedClient.clientName?.toLowerCase() === cName.toLowerCase())) {
+      if (selectedClient.clientSheetId || selectedClient.masterSheetId) return selectedClient;
+    }
+
+    if (alertObj?.metadata?.clientSheetId || alertObj?.metadata?.masterSheetId) {
+      return {
+        clientName: cName,
+        clientSheetId: alertObj.metadata.clientSheetId,
+        masterSheetId: alertObj.metadata.masterSheetId,
+      };
+    }
+
+    return selectedClient || null;
+  };
+
   const handleApplyPLClassification = async (alert) => {
     const alertKey = alert.alertKey;
     const classification = selectedClassifications[alertKey] || "delivery_expense";
@@ -162,7 +190,7 @@ export default function NonAdminAlertListView({
                             onClick={() => onNavInvoices ? onNavInvoices(selectedClient) : setActiveNav("invoices")}
                             style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 14px", color: "#ea580c", borderColor: "#fdba74" }}
                           >
-                            📥 Assign Invoices
+                            📥 Assign invoices
                           </button>
                         </div>
                       )}
@@ -205,7 +233,7 @@ export default function NonAdminAlertListView({
                           onClick={() => onNavOutgoings ? onNavOutgoings(selectedClient) : setActiveNav("outgoings")}
                           style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 14px", color: "#059669", borderColor: "#6ee7b7" }}
                         >
-                          📤 Assign Expense
+                          📤 Assign expenses
                         </button>
                       </div>
                     )}
@@ -216,7 +244,7 @@ export default function NonAdminAlertListView({
                           onClick={() => onNavInvoices ? onNavInvoices(selectedClient) : setActiveNav("invoices")}
                           style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 14px", color: "#ea580c", borderColor: "#fdba74" }}
                         >
-                          📥 Assign Invoices
+                          📥 Assign invoices
                         </button>
                       </div>
                     )}
@@ -380,54 +408,54 @@ export default function NonAdminAlertListView({
                         {na.lastSeen ? `Last seen: ${formatSeenTimestamp(na.lastSeen)}` : ""}
                       </div>
                       <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
-                          {isRichFlag && !analysis && !isLoading && (
-                            <button className="triage-btn"
-                              onClick={() => analyzeNoActionFlag(na)}
-                              style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px" }}
-                            >
-                              🔍 Analyse
-                            </button>
-                          )}
-                          {isRichFlag && isLoading && (
-                            <span style={{ fontSize: "12px", color: "#888", padding: "4px 12px", display: "inline-flex", alignItems: "center", gap: "6px" }}><Spinner size={12} />Analysing…</span>
-                          )}
-                          {isRichFlag && analysis && !isLoading && (
-                            <button className="triage-btn"
-                              onClick={() => analyzeNoActionFlag(na)}
-                              style={{ ...styles.buttonSecondary, fontSize: "11px", padding: "4px 8px" }}
-                            >
-                              ↻ Re-run
-                            </button>
-                          )}
-                          {(() => {
-                            const cName = na.clientName || selectedClient?.clientName;
-                            const clientInfo = (clientsWithFlags || []).find(c => c.clientName === cName) || (allClientsMap && (allClientsMap[cName] || Object.values(allClientsMap).find(cl => cl.clientName?.toLowerCase() === cName?.toLowerCase()))) || selectedClient || { clientName: cName };
-                            const jobTarget = getAlertJobTarget(na, true, clientInfo);
-                            if (!jobTarget || !onViewJob) return null;
-                            return (
-                              <button
-                                className="triage-btn"
-                                onClick={() => onViewJob(jobTarget)}
-                                style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#0284c7", borderColor: "#bae6fd" }}
-                                title={jobTarget.isOutgoings ? "View Outgoings expense details" : "View and edit job details in pop-up"}
-                              >
-                                {jobTarget.isOutgoings ? "🔍 View expense" : "🔍 View job"}
-                              </button>
-                            );
-                          })()}
+                        {isRichFlag && !analysis && !isLoading && (
                           <button className="triage-btn"
-                            onClick={() => openCreateTaskModal(na, false, true)}
-                            style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#7c3aed", borderColor: "#c4b5fd" }}
-                          >
-                            📋 Create Task
-                          </button>
-                          <button className="triage-btn"
-                            onClick={() => handleMarkNoActionResolved(na)}
+                            onClick={() => analyzeNoActionFlag(na)}
                             style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px" }}
                           >
-                            ✓ Mark resolved
+                            🔍 Analyse
                           </button>
-                        </div>
+                        )}
+                        {isRichFlag && isLoading && (
+                          <span style={{ fontSize: "12px", color: "#888", padding: "4px 12px", display: "inline-flex", alignItems: "center", gap: "6px" }}><Spinner size={12} />Analysing…</span>
+                        )}
+                        {isRichFlag && analysis && !isLoading && (
+                          <button className="triage-btn"
+                            onClick={() => analyzeNoActionFlag(na)}
+                            style={{ ...styles.buttonSecondary, fontSize: "11px", padding: "4px 8px" }}
+                          >
+                            ↻ Re-run
+                          </button>
+                        )}
+                        {(() => {
+                          const cName = na.clientName || selectedClient?.clientName;
+                          const clientInfo = (clientsWithFlags || []).find(c => c.clientName === cName) || (allClientsMap && (allClientsMap[cName] || Object.values(allClientsMap).find(cl => cl.clientName?.toLowerCase() === cName?.toLowerCase()))) || selectedClient || { clientName: cName };
+                          const jobTarget = getAlertJobTarget(na, true, clientInfo);
+                          if (!jobTarget || !onViewJob) return null;
+                          return (
+                            <button
+                              className="triage-btn"
+                              onClick={() => onViewJob(jobTarget)}
+                              style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#0284c7", borderColor: "#bae6fd" }}
+                              title={jobTarget.isOutgoings ? "View Outgoings expense details" : "View and edit job details in pop-up"}
+                            >
+                              {jobTarget.isOutgoings ? "🔍 View expense" : "🔍 View job"}
+                            </button>
+                          );
+                        })()}
+                        <button className="triage-btn"
+                          onClick={() => openCreateTaskModal(na, false, true)}
+                          style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#7c3aed", borderColor: "#c4b5fd" }}
+                        >
+                          📋 Create Task
+                        </button>
+                        <button className="triage-btn"
+                          onClick={() => handleMarkNoActionResolved(na)}
+                          style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px" }}
+                        >
+                          ✓ Mark resolved
+                        </button>
+                      </div>
                     </div>
                   </div>
                 );
@@ -487,18 +515,44 @@ export default function NonAdminAlertListView({
                             {m.possibleMatchInvoiceNo ? (
                               <>
                                 <button className="triage-btn" onClick={() => {
-                                  const clientInfo = (clientsWithFlags || []).find(c => c.clientName === alert.clientName) || allClientsMap[alert.clientName];
-                                  setRetainerAlertResolution({ resolutionType: "changeAmount", alertMeta: m, alertKey: alert.alertKey, clientSheetId: clientInfo?.clientSheetId, masterSheetId: clientInfo?.masterSheetId });
+                                  const clientInfo = getClientInfoForAlert(alert);
+                                  const targetClientSheetId = clientInfo?.clientSheetId || selectedClient?.clientSheetId || m.clientSheetId;
+                                  const targetMasterSheetId = clientInfo?.masterSheetId || selectedClient?.masterSheetId || m.masterSheetId;
+                                  const targetClientName = alert.clientName || selectedClient?.clientName || "";
+                                  setRetainerAlertResolution({
+                                    resolutionType: "changeAmount",
+                                    alertMeta: { ...m, clientName: targetClientName },
+                                    alertKey: alert.alertKey,
+                                    clientSheetId: targetClientSheetId,
+                                    masterSheetId: targetMasterSheetId
+                                  });
                                 }} style={{ padding: "6px 12px", background: "#1976d2", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>Change retainer amount</button>
                                 <button className="triage-btn" onClick={() => {
-                                  const clientInfo = (clientsWithFlags || []).find(c => c.clientName === alert.clientName) || allClientsMap[alert.clientName];
-                                  setRetainerSplitInvoice({ alertMeta: m, alertKey: alert.alertKey, clientSheetId: clientInfo?.clientSheetId, masterSheetId: clientInfo?.masterSheetId });
+                                  const clientInfo = getClientInfoForAlert(alert);
+                                  const targetClientSheetId = clientInfo?.clientSheetId || selectedClient?.clientSheetId || m.clientSheetId;
+                                  const targetMasterSheetId = clientInfo?.masterSheetId || selectedClient?.masterSheetId || m.masterSheetId;
+                                  const targetClientName = alert.clientName || selectedClient?.clientName || "";
+                                  setRetainerSplitInvoice({
+                                    alertMeta: { ...m, clientName: targetClientName },
+                                    alertKey: alert.alertKey,
+                                    clientSheetId: targetClientSheetId,
+                                    masterSheetId: targetMasterSheetId
+                                  });
                                 }} style={{ padding: "6px 12px", background: "#0284c7", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>Split invoice</button>
                               </>
                             ) : (
                               <button className="triage-btn" onClick={() => {
-                                const clientInfo = (clientsWithFlags || []).find(c => c.clientName === alert.clientName) || allClientsMap[alert.clientName];
-                                setRetainerAlertResolution({ resolutionType: "end", alertMeta: m, alertKey: alert.alertKey, clientSheetId: clientInfo?.clientSheetId, masterSheetId: clientInfo?.masterSheetId });
+                                const clientInfo = getClientInfoForAlert(alert);
+                                const targetClientSheetId = clientInfo?.clientSheetId || selectedClient?.clientSheetId || m.clientSheetId;
+                                const targetMasterSheetId = clientInfo?.masterSheetId || selectedClient?.masterSheetId || m.masterSheetId;
+                                const targetClientName = alert.clientName || selectedClient?.clientName || "";
+                                setRetainerAlertResolution({
+                                  resolutionType: "end",
+                                  alertMeta: { ...m, clientName: targetClientName },
+                                  alertKey: alert.alertKey,
+                                  clientSheetId: targetClientSheetId,
+                                  masterSheetId: targetMasterSheetId
+                                });
                               }} style={{ padding: "6px 12px", background: "#dc2626", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>End retainer</button>
                             )}
                           </div>

@@ -726,7 +726,7 @@ export default function TriageAnalysisView({
                 const activeFlags = flags.map((v, i) => String(v || "").trim() === "1" && invFlagNames[i] ? invFlagNames[i] : null).filter(Boolean);
                 const FIELD_DEFS = [
                   { name: "Client mismatch", line: `Client in accounting: ${acc[0] || "(blank)"}. Client in Confirmed tab: ${conf[1] || "(blank)"}.` },
-                  { name: "Amount mismatch", line: `Amount in accounting: ${acc[2] ? `£${acc[2]}` : "£0"}. Amount in Confirmed tab: ${conf[2] ? `£${conf[2]}` : "£0"}.` },
+                  { name: "Amount mismatch", line: `Gross amount in accounting: ${acc[2] ? `£${acc[2]}` : "£0"}. Gross amount in Confirmed tab: ${conf[2] ? `£${conf[2]}` : "£0"}.${acc[3] ? ` (Net excl VAT in accounting: £${acc[3]}, VAT: ${acc[4] ? `£${acc[4]}` : "£0"})` : ""}` },
                   { name: "Sent date mismatch", line: `Sent date in accounting: ${acc[6] || "(blank)"}. Sent date in Confirmed tab: ${conf[3] || "(blank)"}.` },
                   { name: "Duplicate invoice in sheet", line: `Duplicate invoice number: Invoice #${alert.summary?.invoiceNo || acc[5] || conf[0]} appears in multiple rows in the spreadsheet (${spreadsheetItems.length > 0 ? spreadsheetItems.length : 2} entries).` },
                   { name: "Pay date mismatch", line: `Pay date in accounting: ${acc[8] || "(blank)"}. Pay date in Confirmed tab: ${conf[4] || "(blank)"}.` },

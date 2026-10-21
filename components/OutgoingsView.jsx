@@ -118,16 +118,22 @@ export default function OutgoingsView({
   } = useOutgoings(assignedAppIds, assignedByClient, setAssignedByClient, setAssignedAppIds, outgoingsPullPendingRef, automationCommanderSheetId);
 
   const prevInitialClientRef = React.useRef(null);
+  const prevManagedClientRef = React.useRef(managedClient?.clientName || null);
   // Auto-select managedClient when in manage mode, or initialClient when passed, or clear when cancelled
   useEffect(() => {
     if (managedClient) {
-      const clientObj = (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === managedClient.clientName?.toLowerCase()) || managedClient;
-      loadOutgoings(clientObj);
+      const currentName = managedClient.clientName?.toLowerCase();
+      if (prevManagedClientRef.current !== currentName) {
+        prevManagedClientRef.current = currentName;
+        const clientObj = (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === currentName) || managedClient;
+        loadOutgoings(clientObj);
+      }
     } else if (initialClient && initialClient !== prevInitialClientRef.current) {
       prevInitialClientRef.current = initialClient;
       const clientObj = (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === initialClient.clientName?.toLowerCase()) || initialClient;
       loadOutgoings(clientObj);
-    } else if (!managedClient && !initialClient) {
+    } else if (prevManagedClientRef.current && !managedClient) {
+      prevManagedClientRef.current = null;
       setOutgoingsData(null);
       setOutgoingsClient(null);
       setOutgoingsInbox([]);

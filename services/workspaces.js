@@ -947,16 +947,22 @@ export async function handleGetAllClientJobs(req, res, sheets) {
       }),
     });
 
+    const deletedConfRows = new Set(memoryCache.get(`deleted_job_rows:${sheetIdClean}:confirmed`) || []);
+    const deletedPipeRows = new Set(memoryCache.get(`deleted_job_rows:${sheetIdClean}:pipeline`) || []);
+
     const parseTabJobs = (rows, currentTab) => {
+      const deletedRowsSet = currentTab === "Pipeline" ? deletedPipeRows : deletedConfRows;
       const tabJobs = [];
       let ri = currentTab === "Pipeline" ? 5 : 1; 
       while (ri < rows.length) {
         const row = rows[ri] || [];
+        const parentRowNum = ri + 1;
+        if (deletedRowsSet.has(parentRowNum)) { ri++; continue; }
+
         const client = String(row[0] || "").trim();
         const jobName = String(row[1] || "").trim();
         if (!client && !jobName) { ri++; continue; }
 
-        const parentRowNum = ri + 1;
         const jobRows = [buildRowData(parentRowNum, row, true, currentTab)];
         let cj = ri + 1;
         while (cj < rows.length) {
@@ -2870,8 +2876,14 @@ export async function handleDeleteDirectJob(req, res, sheets) {
       }
     }
 
-    // Invalidate caches
+    // Invalidate caches & record deleted row numbers to avoid stale Sheets API read replicas
+    const delCacheKey = `deleted_job_rows:${sheetIdClean}:${targetTab.toLowerCase()}`;
+    const prevDel = memoryCache.get(delCacheKey) || [];
+    const updatedDel = Array.from(new Set([...prevDel, ...rowNums.map(Number)]));
+    memoryCache.set(delCacheKey, updatedDel, 300); // 5 min TTL
+
     memoryCache.del(`pulse:portal:*:${sheetIdClean}*`);
+    memoryCache.del(`pulse:view_data:${sheetIdClean}:*`);
     try {
       const keys = await redisClient.keys(`pulse:portal:*:${sheetIdClean}*`);
       if (keys.length > 0) await redisClient.del(...keys);

@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect, useRef } from "react";
 import Spinner from "./Spinner";
 import UnevenSplitModal from "./UnevenSplitModal";
 import InvoicesEditModal from "./InvoicesEditModal";
@@ -214,6 +214,203 @@ export const getStatusPill = (status) => {
   if (s === "Draft") return { backgroundColor: "#ffedd5", color: "#9a3412", border: "1px solid #fed7aa" };
   if (s === "Sent" || s === "Received") return { backgroundColor: "#e0f2fe", color: "#0369a1", border: "1px solid #bae6fd" };
   return { backgroundColor: "#f1f5f9", color: "#475569", border: "1px solid #e2e8f0" };
+};
+
+/**
+ * Searches across ALL parts of a job, including:
+ * - Client name, job name, project code, product line, lead source, type, dates, likelihood
+ * - Revenues, direct costs, VAT, left to invoice, costs outstanding, row numbers, notes
+ * - All invoice slots (references / invoice numbers, amounts, dates, days to pay, status, notes)
+ * - All expense slots (descriptions, transaction IDs / expense IDs, amounts, dates, VAT, status, notes)
+ * - In-flight draft edits (unsaved values)
+ */
+export const isJobMatchSearch = (job, query, draftEdits = {}) => {
+  if (!query || !query.trim()) return true;
+  if (!job) return false;
+
+  const q = query.toLowerCase().trim();
+  const searchTokens = q.split(/\s+/).filter(Boolean);
+  const parts = [];
+
+  const add = (val) => {
+    if (val !== null && val !== undefined) {
+      const s = String(val).trim();
+      if (s) parts.push(s.toLowerCase());
+    }
+  };
+
+  // Top-level job properties
+  add(job.client);
+  add(job.jobName);
+  add(job.projectCode);
+  add(job.status);
+  add(job.tabName);
+  add(job.note);
+  add(job.id);
+
+  // In-memory draft edits for this job if any
+  const jobKey = job.id || (job.rows?.[0] ? `${(job.tabName || job.rows[0].tabName || "").toLowerCase()}_${job.rows[0].rowNum}` : null);
+  if (jobKey && draftEdits[jobKey]) {
+    const draft = draftEdits[jobKey];
+    Object.values(draft).forEach(add);
+  }
+
+  // Iterate over all rows and nested invoice/expense slots
+  if (Array.isArray(job.rows)) {
+    job.rows.forEach((r) => {
+      if (!r) return;
+      Object.entries(r).forEach(([key, val]) => {
+        if (key === "invoiceSlots" || key === "expenseSlots") return;
+        add(val);
+      });
+
+      // Invoice slots: refs / numbers, amounts, status, sentDate, daysToPay, note
+      if (Array.isArray(r.invoiceSlots)) {
+        r.invoiceSlots.forEach((inv) => {
+          if (!inv) return;
+          Object.values(inv).forEach(add);
+        });
+      }
+
+      // Expense slots: description, transactionId, amount, vat, date, status, daysToPay, note
+      if (Array.isArray(r.expenseSlots)) {
+        r.expenseSlots.forEach((exp) => {
+          if (!exp) return;
+          Object.values(exp).forEach(add);
+        });
+      }
+    });
+  }
+
+  const combinedText = parts.join(" ");
+
+  // Direct substring match or all search tokens present
+  if (combinedText.includes(q)) return true;
+  if (searchTokens.length > 1 && searchTokens.every((tok) => combinedText.includes(tok))) {
+    return true;
+  }
+
+  return false;
+};
+
+export const textMatchesQuery = (text, query) => {
+  if (!text || !query || !query.trim()) return false;
+  const q = query.toLowerCase().trim();
+  const s = String(text).toLowerCase();
+  const tokens = q.split(/\s+/).filter(Boolean);
+  return s.includes(q) || tokens.some((t) => s.includes(t));
+};
+
+export const HighlightText = ({ text, query }) => {
+  const str = text !== null && text !== undefined ? String(text) : "";
+  if (!str || !query || !query.trim()) return <>{str}</>;
+
+  const q = query.trim();
+  const tokens = q
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  if (tokens.length === 0) return <>{str}</>;
+
+  const regex = new RegExp(`(${tokens.join("|")})`, "gi");
+  const parts = str.split(regex);
+
+  return (
+    <>
+      {parts.map((part, i) => {
+        if (!part) return null;
+        const isMatch = tokens.some((t) => t.toLowerCase() === part.toLowerCase());
+        return isMatch ? (
+          <mark
+            key={i}
+            style={{
+              backgroundColor: "rgba(254, 240, 138, 0.65)",
+              color: "inherit",
+              padding: "0 2px",
+              borderRadius: "2px",
+              fontWeight: "inherit"
+            }}
+          >
+            {part}
+          </mark>
+        ) : (
+          part
+        );
+      })}
+    </>
+  );
+};
+
+export const getJobNestedMatches = (job, query, maxItems = 4) => {
+  if (!job || !query || !query.trim()) return [];
+  const matches = [];
+  const seen = new Set();
+
+  const addMatch = (label, matchText, title) => {
+    if (!matchText) return;
+    const key = `${label}:${String(matchText).toLowerCase()}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    matches.push({ label, matchText: String(matchText), title });
+  };
+
+  const pCode = job.projectCode || job.rows?.[0]?.projectCode;
+  if (textMatchesQuery(pCode, query)) {
+    addMatch("Code", pCode, `Matched project code: ${pCode}`);
+  }
+
+  if (Array.isArray(job.rows)) {
+    job.rows.forEach((r) => {
+      if (!r) return;
+      if (textMatchesQuery(r.projectCode, query)) {
+        addMatch("Code", r.projectCode, `Matched project code: ${r.projectCode}`);
+      }
+      if (textMatchesQuery(r.note, query)) {
+        addMatch("Note", r.note, `Matched note: ${r.note}`);
+      }
+      if (textMatchesQuery(r.prodLine, query)) {
+        addMatch("Prod. line", r.prodLine, `Matched product line: ${r.prodLine}`);
+      }
+      if (textMatchesQuery(r.leadSrc, query)) {
+        addMatch("Lead src", r.leadSrc, `Matched lead source: ${r.leadSrc}`);
+      }
+
+      if (Array.isArray(r.invoiceSlots)) {
+        r.invoiceSlots.forEach((inv) => {
+          if (!inv) return;
+          if (textMatchesQuery(inv.ref, query)) {
+            const extra = inv.amount ? ` (${formatCurrency(inv.amount)})` : "";
+            addMatch("Invoice", `${inv.ref}${extra}`, `Matched invoice ${inv.ref}`);
+          }
+          if (textMatchesQuery(inv.note, query)) {
+            addMatch("Invoice note", inv.note, `Matched invoice note`);
+          }
+        });
+      }
+
+      if (Array.isArray(r.expenseSlots)) {
+        r.expenseSlots.forEach((exp) => {
+          if (!exp) return;
+          if (textMatchesQuery(exp.transactionId, query)) {
+            addMatch("Expense ID", exp.transactionId, `Matched expense ID: ${exp.transactionId}`);
+          }
+          if (textMatchesQuery(exp.description, query)) {
+            const extra = exp.amount ? ` (${formatCurrency(exp.amount)})` : "";
+            addMatch("Expense", `${exp.description}${extra}`, `Matched expense description: ${exp.description}`);
+          }
+          if (textMatchesQuery(exp.note, query)) {
+            addMatch("Expense note", exp.note, `Matched expense note`);
+          }
+        });
+      }
+    });
+  }
+
+  if (textMatchesQuery(job.note, query)) {
+    addMatch("Note", job.note, `Matched note: ${job.note}`);
+  }
+
+  return matches.slice(0, maxItems);
 };
 
 export const getJobInvoiceItems = (job, isRetainer) => {
@@ -504,16 +701,24 @@ export default function JobsView({
     loadJobsData
   } = useJobs();
 
+  const prevManagedClientRef = useRef(managedClient?.clientName || null);
   // Auto-select managedClient when in manage mode, or clear when manage mode cancelled
   useEffect(() => {
     if (managedClient) {
-      const clientObj = (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === managedClient.clientName?.toLowerCase()) || managedClient;
-      setJobsClient(clientObj);
-      loadJobsData(clientObj, "All");
-    } else {
+      const currentName = managedClient.clientName?.toLowerCase();
+      if (prevManagedClientRef.current !== currentName) {
+        prevManagedClientRef.current = currentName;
+        const clientObj = (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === currentName) || managedClient;
+        setJobsClient(clientObj);
+        loadJobsData(clientObj, "All");
+      }
+    } else if (prevManagedClientRef.current) {
+      prevManagedClientRef.current = null;
       setJobsClient(null);
       setJobsData(null);
       setDraftEdits({});
+      recentlyDeletedJobKeysRef.current.clear();
+      recentlyDeletedJobRowsRef.current.clear();
     }
   }, [managedClient, allOutgoingsClients]);
 
@@ -539,6 +744,10 @@ export default function JobsView({
   const [deletingJob, setDeletingJob] = useState(null);
   const [recentlySavedKeys, setRecentlySavedKeys] = useState(() => new Set());
   const [actionError, setActionError] = useState(null);
+
+  // Set of recently deleted job identifiers (jobKeys and tab+rowNum) to prevent stale Google Sheets API reads from restoring deleted jobs
+  const recentlyDeletedJobKeysRef = useRef(new Set());
+  const recentlyDeletedJobRowsRef = useRef(new Map()); // tabName -> Set of row numbers
 
   // Modals state
   const [invoicesEditSlot, setInvoicesEditSlot] = useState(null);
@@ -1018,6 +1227,19 @@ export default function JobsView({
         return next;
       });
 
+      // Optimistically update local jobsData to mark as copied to confirmed
+      setJobsData((prev) => {
+        if (!prev) return prev;
+        return prev.map((j) => {
+          if (getJobKey(j) !== jobKey) return j;
+          return {
+            ...j,
+            copiedToConf: "Yes",
+            rows: (j.rows || []).map((r) => ({ ...r, copiedToConf: "Yes", likelihood: "100%" }))
+          };
+        });
+      });
+
       // Reload jobs data
       await loadJobsData(jobsClient, "All");
     } catch (err) {
@@ -1044,6 +1266,41 @@ export default function JobsView({
     if (rowNums.length === 0) return;
 
     const tabName = job.tabName || parentRow?.tabName || (filterType === "pipeline" ? "Pipeline" : "Confirmed");
+    const tabLower = tabName.toLowerCase();
+
+    // 1. Record in tombstone refs to defend against stale Google Sheets API reads
+    recentlyDeletedJobKeysRef.current.add(jobKey);
+    if (job.id) recentlyDeletedJobKeysRef.current.add(job.id);
+    if (!recentlyDeletedJobRowsRef.current.has(tabLower)) {
+      recentlyDeletedJobRowsRef.current.set(tabLower, new Set());
+    }
+    rowNums.forEach((rn) => recentlyDeletedJobRowsRef.current.get(tabLower).add(Number(rn)));
+
+    // 2. Immediately remove job optimistically from local jobsData state
+    setJobsData((prev) => {
+      if (!prev || !Array.isArray(prev)) return prev;
+      return prev.filter((j) => {
+        const k = getJobKey(j);
+        if (k === jobKey || j.id === jobKey || j.id === job.id) return false;
+        const jTab = (j.tabName || j.rows?.[0]?.tabName || "").toLowerCase();
+        const jRow = Number(j.rows?.[0]?.rowNum);
+        if (jTab === tabLower && rowNums.map(Number).includes(jRow)) return false;
+        return true;
+      });
+    });
+
+    // 3. Close delete modal immediately and clear selection / draft states
+    setDeletingJob(null);
+    setExpandedJobIds((prev) => {
+      const next = new Set(prev);
+      next.delete(jobKey);
+      return next;
+    });
+    setDraftEdits((prev) => {
+      const next = { ...prev };
+      delete next[jobKey];
+      return next;
+    });
 
     setDeletingJobKeys((prev) => new Set(prev).add(jobKey));
     setActionError(null);
@@ -1068,28 +1325,13 @@ export default function JobsView({
         throw new Error(resData.error || "Failed to delete job");
       }
 
-      // Close modal
-      setDeletingJob(null);
-
-      // Remove from expanded set
-      setExpandedJobIds((prev) => {
-        const next = new Set(prev);
-        next.delete(jobKey);
-        return next;
-      });
-
-      // Clear draft edits
-      setDraftEdits((prev) => {
-        const next = { ...prev };
-        delete next[jobKey];
-        return next;
-      });
-
-      // Reload jobs data
+      // Reload jobs data from server to keep counts and surrounding data synchronized
       await loadJobsData(jobsClient, "All");
     } catch (err) {
       console.error("Delete job error:", err);
       setActionError(`Failed to delete ${job.jobName || "job"}: ${err.message}`);
+      // Re-sync with server if error occurred
+      await loadJobsData(jobsClient, "All");
     } finally {
       setDeletingJobKeys((prev) => {
         const next = new Set(prev);
@@ -1255,6 +1497,16 @@ export default function JobsView({
     if (!jobsData || !Array.isArray(jobsData)) return [];
     let list = [...jobsData];
 
+    // Exclude any jobs that have been deleted in this session (defending against stale Google Sheets API reads)
+    list = list.filter((j) => {
+      const k = getJobKey(j);
+      if (recentlyDeletedJobKeysRef.current.has(k) || (j.id && recentlyDeletedJobKeysRef.current.has(j.id))) return false;
+      const jTab = (j.tabName || j.rows?.[0]?.tabName || "").toLowerCase();
+      const jRowNum = Number(j.rows?.[0]?.rowNum);
+      if (jTab && jRowNum && recentlyDeletedJobRowsRef.current.get(jTab)?.has(jRowNum)) return false;
+      return true;
+    });
+
     // Exclude pipeline jobs that have been copied to confirmed tab (Column DD == "Yes")
     list = list.filter((j) => !isJobCopiedToConfirmed(j));
 
@@ -1276,18 +1528,6 @@ export default function JobsView({
           return tab === "pipeline" || tab.includes("pipe");
         });
       }
-
-      // Filter by search query
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase().trim();
-        list = list.filter((j) => {
-          const cName = String(j.client || j.rows?.[0]?.client || "").toLowerCase();
-          const jName = String(j.jobName || j.rows?.[0]?.jobName || "").toLowerCase();
-          const pLine = String(j.rows?.[0]?.prodLine || "").toLowerCase();
-          const pCode = String(j.projectCode || j.rows?.[0]?.projectCode || "").toLowerCase();
-          return cName.includes(q) || jName.includes(q) || pLine.includes(q) || pCode.includes(q);
-        });
-      }
     } else {
       // In legacy view, filter by jobsTab ("Confirmed" or "Pipeline" or "All")
       if (jobsTab && jobsTab.toLowerCase() !== "all") {
@@ -1296,6 +1536,11 @@ export default function JobsView({
           return tab === jobsTab.toLowerCase();
         });
       }
+    }
+
+    // Filter by search query across ALL parts of the job (client, job name, project code, invoice numbers, expense IDs, expense descriptions, etc.)
+    if (searchQuery.trim()) {
+      list = list.filter((j) => isJobMatchSearch(j, searchQuery, draftEdits));
     }
 
     // 2. Sort jobs
@@ -1374,6 +1619,12 @@ export default function JobsView({
     let conf = 0;
     let pipe = 0;
     jobsData.forEach((j) => {
+      const k = getJobKey(j);
+      if (recentlyDeletedJobKeysRef.current.has(k) || (j.id && recentlyDeletedJobKeysRef.current.has(j.id))) return;
+      const jTab = (j.tabName || j.rows?.[0]?.tabName || "").toLowerCase();
+      const jRowNum = Number(j.rows?.[0]?.rowNum);
+      if (jTab && jRowNum && recentlyDeletedJobRowsRef.current.get(jTab)?.has(jRowNum)) return;
+
       // Exclude pipeline jobs copied to confirmed tab
       if (isJobCopiedToConfirmed(j)) return;
 
@@ -1384,11 +1635,16 @@ export default function JobsView({
         return;
       }
 
+      // If search query is active, only count matching jobs
+      if (searchQuery.trim() && !isJobMatchSearch(j, searchQuery, draftEdits)) {
+        return;
+      }
+
       if (isPipe) pipe++;
       else conf++;
     });
     return { all: conf + pipe, confirmed: conf, pipeline: pipe };
-  }, [jobsData, showZeroPercentJobs, draftEdits]);
+  }, [jobsData, showZeroPercentJobs, draftEdits, searchQuery]);
 
   // Number of unsaved dirty jobs
   const dirtyCount = Object.keys(draftEdits).length;
@@ -1554,9 +1810,8 @@ export default function JobsView({
           >
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "14px" }}>
               <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                <span style={{ fontSize: "20px" }}>🗑️</span>
                 <h3 style={{ margin: 0, fontSize: "17px", fontWeight: "700", color: "#991b1b" }}>
-                  Delete Job
+                  Delete job
                 </h3>
               </div>
               <button
@@ -1798,6 +2053,8 @@ export default function JobsView({
                     setJobsClient(null);
                     setJobsData(null);
                     setDraftEdits({});
+                    recentlyDeletedJobKeysRef.current.clear();
+                    recentlyDeletedJobRowsRef.current.clear();
                   }
                 }}
                 style={{
@@ -1936,186 +2193,252 @@ export default function JobsView({
                     background: "#ffffff",
                     borderRadius: "10px",
                     border: "1px solid #e2e8f0",
-                    padding: "12px 18px",
+                    padding: "14px 18px",
                     display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    flexWrap: "wrap",
-                    gap: "14px",
+                    flexDirection: "column",
+                    gap: "12px",
                     boxShadow: "0 1px 2px rgba(0,0,0,0.03)"
                   }}
                 >
-                  {/* Filter Pills (All / Confirmed / Pipeline) */}
-                  <div style={{ display: "inline-flex", background: "#f1f5f9", padding: "3px", borderRadius: "8px" }}>
-                    {[
-                      { key: "all", label: "All jobs", count: counts.all },
-                      { key: "confirmed", label: "Confirmed", count: counts.confirmed },
-                      { key: "pipeline", label: "Pipeline", count: counts.pipeline }
-                    ].map((tab) => {
-                      const isActive = filterType === tab.key;
-                      return (
-                        <button
-                          key={tab.key}
-                          type="button"
-                          onClick={() => setFilterType(tab.key)}
-                          style={{
-                            padding: "6px 14px",
-                            border: "none",
-                            borderRadius: "6px",
-                            background: isActive ? "#ffffff" : "transparent",
-                            color: isActive ? "#0f172a" : "#64748b",
-                            fontWeight: isActive ? "700" : "500",
-                            fontSize: "13px",
-                            cursor: "pointer",
-                            boxShadow: isActive ? "0 1px 3px rgba(0,0,0,0.08)" : "none",
-                            display: "inline-flex",
-                            alignItems: "center",
-                            gap: "6px",
-                            transition: "all 0.15s ease"
-                          }}
-                        >
-                          <span>{tab.label}</span>
-                          <span
+                  {/* Top row: Filter Pills on left, Sort and actions on right */}
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      flexWrap: "wrap",
+                      gap: "12px"
+                    }}
+                  >
+                    {/* Filter Pills (All / Confirmed / Pipeline) */}
+                    <div style={{ display: "inline-flex", background: "#f1f5f9", padding: "3px", borderRadius: "8px" }}>
+                      {[
+                        { key: "all", label: "All jobs", count: counts.all },
+                        { key: "confirmed", label: "Confirmed", count: counts.confirmed },
+                        { key: "pipeline", label: "Pipeline", count: counts.pipeline }
+                      ].map((tab) => {
+                        const isActive = filterType === tab.key;
+                        return (
+                          <button
+                            key={tab.key}
+                            type="button"
+                            onClick={() => setFilterType(tab.key)}
                             style={{
-                              fontSize: "11px",
-                              padding: "1px 6px",
-                              borderRadius: "10px",
-                              background: isActive ? "#eff6ff" : "#e2e8f0",
-                              color: isActive ? "#1d4ed8" : "#64748b",
-                              fontWeight: "600"
+                              padding: "6px 14px",
+                              border: "none",
+                              borderRadius: "6px",
+                              background: isActive ? "#ffffff" : "transparent",
+                              color: isActive ? "#0f172a" : "#64748b",
+                              fontWeight: isActive ? "700" : "500",
+                              fontSize: "13px",
+                              cursor: "pointer",
+                              boxShadow: isActive ? "0 1px 3px rgba(0,0,0,0.08)" : "none",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "6px",
+                              transition: "all 0.15s ease"
                             }}
                           >
-                            {tab.count}
-                          </span>
-                        </button>
-                      );
-                    })}
+                            <span>{tab.label}</span>
+                            <span
+                              style={{
+                                fontSize: "11px",
+                                padding: "1px 6px",
+                                borderRadius: "10px",
+                                background: isActive ? "#eff6ff" : "#e2e8f0",
+                                color: isActive ? "#1d4ed8" : "#64748b",
+                                fontWeight: "600"
+                              }}
+                            >
+                              {tab.count}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {/* Secondary controls: Show 0% jobs, Sort, Refresh */}
+                    <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+                      {/* Show 0% jobs toggle checkbox */}
+                      <label
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "6px",
+                          fontSize: "13px",
+                          fontWeight: "500",
+                          color: showZeroPercentJobs ? "#1d4ed8" : "#475569",
+                          cursor: "pointer",
+                          userSelect: "none",
+                          padding: "5px 10px",
+                          borderRadius: "6px",
+                          background: showZeroPercentJobs ? "#eff6ff" : "#ffffff",
+                          border: `1px solid ${showZeroPercentJobs ? "#93c5fd" : "#cbd5e1"}`,
+                          boxShadow: "0 1px 2px rgba(0,0,0,0.03)",
+                          transition: "all 0.15s ease"
+                        }}
+                        title="Toggle visibility of pipeline jobs with 0% likelihood"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={showZeroPercentJobs}
+                          onChange={(e) => setShowZeroPercentJobs(e.target.checked)}
+                          style={{
+                            cursor: "pointer",
+                            accentColor: "#2563eb",
+                            width: "14px",
+                            height: "14px",
+                            margin: 0
+                          }}
+                        />
+                        <span>Show 0% jobs</span>
+                      </label>
+
+                      {/* Sort Select */}
+                      <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#64748b" }}>Sort:</label>
+                        <select
+                          value={jobsSortBy}
+                          onChange={(e) => setJobsSortBy(e.target.value)}
+                          style={{
+                            padding: "5px 10px",
+                            borderRadius: "6px",
+                            border: "1px solid #cbd5e1",
+                            fontSize: "13px",
+                            fontWeight: "500",
+                            color: "#1e293b",
+                            background: "#ffffff",
+                            cursor: "pointer",
+                            outline: "none"
+                          }}
+                        >
+                          <option value="startDateDesc">Start Date (Newest first)</option>
+                          <option value="startDateAsc">Start Date (Oldest first)</option>
+                          <option value="endDateDesc">End Date (Newest first)</option>
+                          <option value="endDateAsc">End Date (Oldest first)</option>
+                          <option value="revDesc">Revenue (Highest first)</option>
+                          <option value="revAsc">Revenue (Lowest first)</option>
+                          <option value="clientName">Client Name (A - Z)</option>
+                          <option value="likelihoodDesc">% Likelihood (Highest first)</option>
+                        </select>
+                      </div>
+
+                      {/* Refresh Button */}
+                      <button
+                        type="button"
+                        onClick={() => loadJobsData(jobsClient, "All")}
+                        disabled={jobsLoading}
+                        style={{
+                          background: "none",
+                          border: "1px solid #e2e8f0",
+                          padding: "5px 10px",
+                          borderRadius: "6px",
+                          color: "#475569",
+                          cursor: "pointer",
+                          fontSize: "12px",
+                          fontWeight: "500",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "5px"
+                        }}
+                      >
+                        {jobsLoading ? <><Spinner size={12} /> Refreshing</> : "↻ Refresh"}
+                      </button>
+                    </div>
                   </div>
 
-                  {/* Search and Sort controls */}
-                  <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
-                    {/* Show 0% jobs toggle checkbox */}
-                    <label
+                  {/* Second row: Search bar on its own line below the selector */}
+                  <div style={{ position: "relative", width: "100%" }}>
+                    <span
                       style={{
-                        display: "inline-flex",
+                        position: "absolute",
+                        left: "12px",
+                        top: "50%",
+                        transform: "translateY(-50%)",
+                        color: "#94a3b8",
+                        display: "flex",
                         alignItems: "center",
-                        gap: "6px",
+                        pointerEvents: "none"
+                      }}
+                    >
+                      <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <circle cx="8.5" cy="8.5" r="5.5" />
+                        <line x1="13" y1="13" x2="18" y2="18" />
+                      </svg>
+                    </span>
+                    <input
+                      type="text"
+                      placeholder="Search jobs by client, job name, project code, invoice number, expense ID, or description..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape") setSearchQuery("");
+                      }}
+                      style={{
+                        width: "100%",
+                        boxSizing: "border-box",
+                        padding: "8px 36px 8px 36px",
+                        borderRadius: "7px",
+                        border: "1px solid #cbd5e1",
                         fontSize: "13px",
-                        fontWeight: "500",
-                        color: showZeroPercentJobs ? "#1d4ed8" : "#475569",
-                        cursor: "pointer",
-                        userSelect: "none",
-                        padding: "5px 10px",
-                        borderRadius: "6px",
-                        background: showZeroPercentJobs ? "#eff6ff" : "#ffffff",
-                        border: `1px solid ${showZeroPercentJobs ? "#93c5fd" : "#cbd5e1"}`,
-                        boxShadow: "0 1px 2px rgba(0,0,0,0.03)",
+                        outline: "none",
+                        color: "#1e293b",
+                        background: "#f8fafc",
                         transition: "all 0.15s ease"
                       }}
-                      title="Toggle visibility of pipeline jobs with 0% likelihood"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={showZeroPercentJobs}
-                        onChange={(e) => setShowZeroPercentJobs(e.target.checked)}
+                      onFocus={(e) => {
+                        e.target.style.background = "#ffffff";
+                        e.target.style.borderColor = "#3b82f6";
+                        e.target.style.boxShadow = "0 0 0 3px rgba(59, 130, 246, 0.12)";
+                      }}
+                      onBlur={(e) => {
+                        e.target.style.background = "#f8fafc";
+                        e.target.style.borderColor = "#cbd5e1";
+                        e.target.style.boxShadow = "none";
+                      }}
+                    />
+                    {searchQuery ? (
+                      <div
                         style={{
-                          cursor: "pointer",
-                          accentColor: "#2563eb",
-                          width: "14px",
-                          height: "14px",
-                          margin: 0
+                          position: "absolute",
+                          right: "10px",
+                          top: "50%",
+                          transform: "translateY(-50%)",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "8px"
                         }}
-                      />
-                      <span>Show 0% jobs</span>
-                    </label>
-
-                    {/* Search Input */}
-                    <div style={{ position: "relative" }}>
-                      <input
-                        type="text"
-                        placeholder="Search client or job..."
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                        style={{
-                          width: "210px",
-                          padding: "6px 28px 6px 10px",
-                          borderRadius: "6px",
-                          border: "1px solid #cbd5e1",
-                          fontSize: "13px",
-                          outline: "none",
-                          color: "#1e293b"
-                        }}
-                      />
-                      {searchQuery ? (
+                      >
+                        <span
+                          style={{
+                            fontSize: "11px",
+                            color: "#64748b",
+                            background: "#e2e8f0",
+                            padding: "1px 7px",
+                            borderRadius: "10px",
+                            fontWeight: "500"
+                          }}
+                        >
+                          {processedJobs.length} {processedJobs.length === 1 ? "match" : "matches"}
+                        </span>
                         <button
+                          type="button"
                           onClick={() => setSearchQuery("")}
                           style={{
-                            position: "absolute",
-                            right: "6px",
-                            top: "50%",
-                            transform: "translateY(-50%)",
                             background: "none",
                             border: "none",
                             color: "#94a3b8",
                             cursor: "pointer",
-                            fontSize: "12px"
+                            fontSize: "14px",
+                            lineHeight: 1,
+                            padding: 0
                           }}
+                          title="Clear search"
                         >
                           ✕
                         </button>
-                      ) : null}
-                    </div>
-
-                    {/* Sort Select */}
-                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                      <label style={{ fontSize: "12px", fontWeight: "600", color: "#64748b" }}>Sort:</label>
-                      <select
-                        value={jobsSortBy}
-                        onChange={(e) => setJobsSortBy(e.target.value)}
-                        style={{
-                          padding: "5px 10px",
-                          borderRadius: "6px",
-                          border: "1px solid #cbd5e1",
-                          fontSize: "13px",
-                          fontWeight: "500",
-                          color: "#1e293b",
-                          background: "#ffffff",
-                          cursor: "pointer",
-                          outline: "none"
-                        }}
-                      >
-                        <option value="startDateDesc">Start Date (Newest first)</option>
-                        <option value="startDateAsc">Start Date (Oldest first)</option>
-                        <option value="endDateDesc">End Date (Newest first)</option>
-                        <option value="endDateAsc">End Date (Oldest first)</option>
-                        <option value="revDesc">Revenue (Highest first)</option>
-                        <option value="revAsc">Revenue (Lowest first)</option>
-                        <option value="clientName">Client Name (A - Z)</option>
-                        <option value="likelihoodDesc">% Likelihood (Highest first)</option>
-                      </select>
-                    </div>
-
-                    {/* Refresh Button */}
-                    <button
-                      type="button"
-                      onClick={() => loadJobsData(jobsClient, "All")}
-                      disabled={jobsLoading}
-                      style={{
-                        background: "none",
-                        border: "1px solid #e2e8f0",
-                        padding: "5px 10px",
-                        borderRadius: "6px",
-                        color: "#475569",
-                        cursor: "pointer",
-                        fontSize: "12px",
-                        fontWeight: "500",
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: "5px"
-                      }}
-                    >
-                      {jobsLoading ? <><Spinner size={12} /> Refreshing</> : "↻ Refresh"}
-                    </button>
+                      </div>
+                    ) : null}
                   </div>
                 </div>
 
@@ -2248,6 +2571,7 @@ export default function JobsView({
                           // Distinct product line and lead source options including current value
                           const plOptions = Array.from(new Set([...(productLines || []), prodLineVal].filter(Boolean))).sort();
                           const lsOptions = Array.from(new Set([...(leadSources || []), leadSrcVal].filter(Boolean))).sort();
+                          const nestedMatches = searchQuery.trim() ? getJobNestedMatches(job, searchQuery) : [];
 
                           return (
                             <React.Fragment key={jobKey}>
@@ -2347,6 +2671,11 @@ export default function JobsView({
                                       e.target.style.borderColor = isDirty && draftEdits[jobKey]?.client !== undefined ? "#f59e0b" : "transparent";
                                     }}
                                   />
+                                  {searchQuery.trim() && textMatchesQuery(clientVal, searchQuery) && (
+                                    <div style={{ fontSize: "11px", marginTop: "2px", color: "#64748b", paddingLeft: "6px" }}>
+                                      <HighlightText text={clientVal} query={searchQuery} />
+                                    </div>
+                                  )}
                                 </td>
 
                                 {/* Job Name (Inline Editable) */}
@@ -2378,6 +2707,36 @@ export default function JobsView({
                                       e.target.style.borderColor = isDirty && draftEdits[jobKey]?.jobName !== undefined ? "#f59e0b" : "transparent";
                                     }}
                                   />
+                                  {searchQuery.trim() && textMatchesQuery(jobNameVal, searchQuery) && (
+                                    <div style={{ fontSize: "11px", marginTop: "2px", color: "#64748b", paddingLeft: "6px" }}>
+                                      <HighlightText text={jobNameVal} query={searchQuery} />
+                                    </div>
+                                  )}
+                                  {nestedMatches.length > 0 && (
+                                    <div style={{ display: "flex", flexWrap: "wrap", gap: "4px", marginTop: "3px", paddingLeft: "4px" }}>
+                                      {nestedMatches.map((m, i) => (
+                                        <span
+                                          key={i}
+                                          style={{
+                                            fontSize: "11px",
+                                            lineHeight: "1.3",
+                                            background: "#fefce8",
+                                            border: "1px solid #fef08a",
+                                            color: "#713f12",
+                                            padding: "1px 6px",
+                                            borderRadius: "4px",
+                                            display: "inline-flex",
+                                            alignItems: "center",
+                                            gap: "3px"
+                                          }}
+                                          title={m.title}
+                                        >
+                                          <span style={{ fontSize: "10px", color: "#a16207", fontWeight: "600" }}>{m.label}:</span>
+                                          <HighlightText text={m.matchText} query={searchQuery} />
+                                        </span>
+                                      ))}
+                                    </div>
+                                  )}
                                 </td>
 
                                 {/* Job Type (Project / Retainer) */}
@@ -2864,6 +3223,11 @@ export default function JobsView({
                                                   boxSizing: "border-box"
                                                 }}
                                               />
+                                              {searchQuery.trim() && textMatchesQuery(projectCodeVal, searchQuery) && (
+                                                <div style={{ fontSize: "11px", color: "#a16207", marginTop: "2px" }}>
+                                                  Match: <HighlightText text={projectCodeVal} query={searchQuery} />
+                                                </div>
+                                              )}
                                             </div>
 
                                             {/* Uneven Revenue Split */}
@@ -2994,6 +3358,7 @@ export default function JobsView({
                                                     const hasData = Boolean((slot.ref && String(slot.ref).trim() !== "") || (slot.amount && String(slot.amount).trim() !== ""));
                                                     const isPlaceholder = isPlaceholderInvoice(slot.ref, slot.status);
                                                     const pillStyle = getStatusPill(slot.status);
+                                                    const isInvoiceMatched = searchQuery.trim() && (textMatchesQuery(slot.ref, searchQuery) || textMatchesQuery(slot.note, searchQuery) || textMatchesQuery(slot.status, searchQuery));
                                                     return (
                                                       <div
                                                         key={item.id}
@@ -3011,13 +3376,13 @@ export default function JobsView({
                                                         style={{
                                                           padding: "8px 10px",
                                                           borderRadius: "6px",
-                                                          border: "1px solid #e2e8f0",
-                                                          background: hasData ? "#f8fafc" : "#ffffff",
+                                                          border: isInvoiceMatched ? "1px solid #fde047" : "1px solid #e2e8f0",
+                                                          background: isInvoiceMatched ? "#fefce8" : (hasData ? "#f8fafc" : "#ffffff"),
                                                           cursor: "pointer",
                                                           transition: "border-color 0.15s ease"
                                                         }}
                                                         onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#93c5fd"; e.currentTarget.style.background = "#eff6ff"; }}
-                                                        onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#e2e8f0"; e.currentTarget.style.background = hasData ? "#f8fafc" : "#ffffff"; }}
+                                                        onMouseLeave={(e) => { e.currentTarget.style.borderColor = isInvoiceMatched ? "#fde047" : "#e2e8f0"; e.currentTarget.style.background = isInvoiceMatched ? "#fefce8" : (hasData ? "#f8fafc" : "#ffffff"); }}
                                                       >
                                                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                                                           <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
@@ -3037,7 +3402,7 @@ export default function JobsView({
                                                             )}
                                                             {slot.status && (
                                                               <span style={{ fontSize: "10px", padding: "1px 5px", borderRadius: "8px", fontWeight: "600", ...pillStyle }}>
-                                                                {slot.status}
+                                                                <HighlightText text={slot.status} query={searchQuery} />
                                                               </span>
                                                             )}
                                                           </div>
@@ -3046,7 +3411,7 @@ export default function JobsView({
                                                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: "4px" }}>
                                                             <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                                                               <span style={{ fontSize: "13px", fontWeight: "600", color: isPlaceholder ? "#9333ea" : "#0f172a" }}>
-                                                                {slot.ref || "No Ref"}
+                                                                <HighlightText text={slot.ref || "No Ref"} query={searchQuery} />
                                                               </span>
                                                               {isPlaceholder && (
                                                                 <span style={{ fontSize: "10px", padding: "1px 5px", borderRadius: "6px", background: "#f3e8ff", color: "#7e22ce", fontWeight: "600" }}>
@@ -3065,7 +3430,12 @@ export default function JobsView({
                                                         )}
                                                         {slot.sentDate && (
                                                           <div style={{ fontSize: "10px", color: "#64748b", marginTop: "2px" }}>
-                                                            Sent: {slot.sentDate} ({slot.daysToPay || 30} days)
+                                                            Sent: <HighlightText text={slot.sentDate} query={searchQuery} /> ({slot.daysToPay || 30} days)
+                                                          </div>
+                                                        )}
+                                                        {slot.note && isInvoiceMatched && textMatchesQuery(slot.note, searchQuery) && (
+                                                          <div style={{ fontSize: "10px", color: "#a16207", marginTop: "2px" }}>
+                                                            Note: <HighlightText text={slot.note} query={searchQuery} />
                                                           </div>
                                                         )}
                                                       </div>
@@ -3154,6 +3524,7 @@ export default function JobsView({
                                                     const hasData = Boolean((slot.description && String(slot.description).trim() !== "") || (slot.amount && String(slot.amount).trim() !== ""));
                                                     const isPlaceholder = isPlaceholderExpense(slot);
                                                     const pillStyle = getStatusPill(slot.status);
+                                                    const isExpenseMatched = searchQuery.trim() && (textMatchesQuery(slot.description, searchQuery) || textMatchesQuery(slot.transactionId, searchQuery) || textMatchesQuery(slot.note, searchQuery) || textMatchesQuery(slot.status, searchQuery));
                                                     return (
                                                       <div
                                                         key={item.id}
@@ -3171,13 +3542,13 @@ export default function JobsView({
                                                         style={{
                                                           padding: "8px 10px",
                                                           borderRadius: "6px",
-                                                          border: "1px solid #e2e8f0",
-                                                          background: hasData ? "#f8fafc" : "#ffffff",
+                                                          border: isExpenseMatched ? "1px solid #fde047" : "1px solid #e2e8f0",
+                                                          background: isExpenseMatched ? "#fefce8" : (hasData ? "#f8fafc" : "#ffffff"),
                                                           cursor: "pointer",
                                                           transition: "border-color 0.15s ease"
                                                         }}
                                                         onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#93c5fd"; e.currentTarget.style.background = "#eff6ff"; }}
-                                                        onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#e2e8f0"; e.currentTarget.style.background = hasData ? "#f8fafc" : "#ffffff"; }}
+                                                        onMouseLeave={(e) => { e.currentTarget.style.borderColor = isExpenseMatched ? "#fde047" : "#e2e8f0"; e.currentTarget.style.background = isExpenseMatched ? "#fefce8" : (hasData ? "#f8fafc" : "#ffffff"); }}
                                                       >
                                                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                                                           <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
@@ -3197,7 +3568,7 @@ export default function JobsView({
                                                             )}
                                                             {slot.status && (
                                                               <span style={{ fontSize: "10px", padding: "1px 5px", borderRadius: "8px", fontWeight: "600", ...pillStyle }}>
-                                                                {slot.status}
+                                                                <HighlightText text={slot.status} query={searchQuery} />
                                                               </span>
                                                             )}
                                                           </div>
@@ -3206,7 +3577,7 @@ export default function JobsView({
                                                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: "4px" }}>
                                                             <div style={{ display: "flex", alignItems: "center", gap: "6px", overflow: "hidden" }}>
                                                               <span style={{ fontSize: "13px", fontWeight: "600", color: isPlaceholder ? "#9333ea" : "#0f172a", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "160px" }}>
-                                                                {slot.description || slot.transactionId || "Expense"}
+                                                                <HighlightText text={slot.description || slot.transactionId || "Expense"} query={searchQuery} />
                                                               </span>
                                                               {isPlaceholder && (
                                                                 <span style={{ fontSize: "10px", padding: "1px 5px", borderRadius: "6px", background: "#f3e8ff", color: "#7e22ce", fontWeight: "600", flexShrink: 0 }}>
@@ -3223,9 +3594,19 @@ export default function JobsView({
                                                             Empty · Click to assign direct cost
                                                           </div>
                                                         )}
+                                                        {slot.transactionId && slot.description && isExpenseMatched && textMatchesQuery(slot.transactionId, searchQuery) && (
+                                                          <div style={{ fontSize: "10px", color: "#a16207", marginTop: "1px" }}>
+                                                            ID: <HighlightText text={slot.transactionId} query={searchQuery} />
+                                                          </div>
+                                                        )}
                                                         {slot.date && (
                                                           <div style={{ fontSize: "10px", color: "#64748b", marginTop: "2px" }}>
-                                                            Date: {slot.date} {slot.vat ? `· VAT: ${slot.vat}` : ""}
+                                                            Date: <HighlightText text={slot.date} query={searchQuery} /> {slot.vat ? `· VAT: ${slot.vat}` : ""}
+                                                          </div>
+                                                        )}
+                                                        {slot.note && isExpenseMatched && textMatchesQuery(slot.note, searchQuery) && (
+                                                          <div style={{ fontSize: "10px", color: "#a16207", marginTop: "1px" }}>
+                                                            Note: <HighlightText text={slot.note} query={searchQuery} />
                                                           </div>
                                                         )}
                                                       </div>

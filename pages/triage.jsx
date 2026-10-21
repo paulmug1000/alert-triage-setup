@@ -360,8 +360,13 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
     }).catch(e => console.error("fireOutgoingsPull error:", e));
   };
 
+  const clientsLoadedRef = useRef(false);
+  const clientsLoadingRef = useRef(false);
+
   const loadClients = useCallback((force = false) => {
-    if (!force && allClientsLoaded && allOutgoingsClients.length > 0) return;
+    if (!force && clientsLoadedRef.current) return;
+    if (clientsLoadingRef.current) return;
+    clientsLoadingRef.current = true;
     const acId = automationCommanderSheetId || "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
     fetch("/api/triage", {
       method: "POST",
@@ -379,15 +384,22 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
             setAllClientsMap(data.clientsMap);
           }
           setAllClientsLoaded(true);
+          clientsLoadedRef.current = true;
         }
       })
-      .catch(e => console.error("get_all_clients error:", e));
-  }, [allClientsLoaded, allOutgoingsClients.length, automationCommanderSheetId, setAllClientsMap]);
+      .catch(e => console.error("get_all_clients error:", e))
+      .finally(() => {
+        clientsLoadingRef.current = false;
+      });
+  }, [automationCommanderSheetId, setAllClientsMap]);
 
   useEffect(() => {
     if (isAuthenticated && user?.email) {
-      loadClients(true);
-    } else {
+      if (!clientsLoadedRef.current) {
+        loadClients(true);
+      }
+    } else if (!isAuthenticated) {
+      clientsLoadedRef.current = false;
       setAllOutgoingsClients([]);
       setAllClientsLoaded(false);
     }

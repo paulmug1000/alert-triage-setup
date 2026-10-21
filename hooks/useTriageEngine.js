@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { ALERT_CATEGORY_FLAGS, EXPENSE_SUPPRESSIBLE, isUserAuthorizedForClient } from "../utils/helpers";
 
 export function useTriageEngine({
@@ -117,77 +117,145 @@ export function useTriageEngine({
     } catch (e) { /* silent */ }
   };
 
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  const applyPrecomputedData = useCallback((preData) => {
+    setSessionId(preData.sessionId);
+    setTotalAlerts(preData.totalAlerts || 0);
+    setNoActionCount(preData.noActionCount || 0);
+    const scopedProactiveAlerts = scopeProactive(preData.proactiveAlerts || []);
+    setProactiveAlerts(scopedProactiveAlerts);
+    const pCounts = {};
+    scopedProactiveAlerts.forEach(a => { pCounts[a.clientName] = (pCounts[a.clientName] || 0) + 1; });
+    setProactiveCountsByClient(pCounts);
+    setProactiveLoadedAt(Date.now());
+    const scopedFlags = scopeClients(preData.clientsWithFlags || []);
+    setClientsWithFlags(scopedFlags);
+    try {
+      localStorage.setItem("pulse_cached_clients_with_flags", JSON.stringify(scopedFlags));
+    } catch {}
+    setAcknowledgedNoAction(new Set());
+    setProcessedAlerts(new Set());
+
+    if (preData.noActionAnalysisResults && Object.keys(preData.noActionAnalysisResults).length > 0) {
+      const raw = preData.noActionAnalysisResults;
+      const flat = {};
+      Object.entries(raw).forEach(([keyOrClient, val]) => {
+        if (keyOrClient.includes("___")) {
+          flat[keyOrClient] = val;
+        } else {
+          Object.entries(val || {}).forEach(([flagType, results]) => {
+            flat[`${keyOrClient}___${flagType}`] = results;
+          });
+        }
+      });
+      setPrecomputedNoActionResults(flat);
+      console.log(`  ✅ Pre-populated ${Object.keys(flat).length} noAction analysis results`);
+    }
+
+    setScreen("clientSelection");
+    setTriageComplete(true);
+    onRefreshTasks?.();
+  }, [scopeProactive, scopeClients, onRefreshTasks, setScreen]);
+
+  const pollRefreshStatus = useCallback(async () => {
+    const pollStart = Date.now();
+    // Safety timeout: max 5 minutes (300s) of polling
+    while (isMountedRef.current && (Date.now() - pollStart < 300000)) {
+      await new Promise(r => setTimeout(r, 1500));
+      if (!isMountedRef.current) break;
+
+      let statusResp;
+      try {
+        statusResp = await fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "get_refresh_status", automationCommanderSheetId }),
+        });
+      } catch (netErr) {
+        console.warn("Refresh polling network blip:", netErr.message);
+        continue;
+      }
+
+      if (!isMountedRef.current) break;
+      const statusData = await statusResp.json();
+      if (!statusResp.ok || !statusData.success) {
+        throw new Error(statusData.error || "Failed to check refresh status");
+      }
+
+      const st = statusData.status || {};
+      if (st.status === "running") {
+        setRefreshStatus(st.progress || "Scanning clients...");
+      } else if (st.status === "completed") {
+        setRefreshStatus("Loading updated alerts...");
+        const preResp = await fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "get_precomputed", automationCommanderSheetId }),
+        });
+        const preData = await preResp.json();
+        if (isMountedRef.current) {
+          if (preResp.ok && preData.success && preData.available) {
+            applyPrecomputedData(preData);
+          } else {
+            throw new Error(preData.error || "Failed to load precomputed alerts");
+          }
+        }
+        break;
+      } else if (st.status === "error") {
+        throw new Error(st.error || "Background refresh encountered an error");
+      } else {
+        // idle or stalled
+        break;
+      }
+    }
+  }, [automationCommanderSheetId, applyPrecomputedData]);
+
   const refreshTriage = async (forceProactive = false) => {
     const isForced = forceProactive === true;
     try {
       setIsLoading(true);
-      setRefreshStatus("Initializing...");
+      setRefreshStatus("Initializing background refresh...");
       setError("");
       setAcceptError("");
       setProactiveLoadedAt(0);
       setProactiveAlerts([]);
 
-      let sweepHasMore = true;
-      let sweepIdx = 0;
-      while (sweepHasMore) {
-        setRefreshStatus(`Scanning clients (batch ${Math.floor(sweepIdx / 3) + 1})...`);
-        const sweepResp = await fetch("/api/triage", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "start_triage", step: "sweep", startIdx: sweepIdx, automationCommanderSheetId, forceProactive: isForced }),
-        });
-        const sweepData = await sweepResp.json();
-        if (!sweepResp.ok || !sweepData.success) throw new Error(sweepData.error || "Failed to sweep flags");
-        sweepHasMore = sweepData.hasMore;
-        sweepIdx = sweepData.nextIdx;
-      }
-
-      let hasMore = true;
-      let buildCount = 1;
-      while (hasMore) {
-        setRefreshStatus(`Generating options (batch ${buildCount})...`);
-        const buildResp = await fetch("/api/triage", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "start_triage", step: "build", automationCommanderSheetId, isContinuation: buildCount > 1 }),
-        });
-        const buildData = await buildResp.json();
-        if (!buildResp.ok || !buildData.success) throw new Error(buildData.error || "Failed to build options");
-        hasMore = buildData.hasMore;
-        buildCount++;
-      }
-
-      setRefreshStatus("Finalizing data...");
-      const storeResp = await fetch("/api/triage", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "start_triage", step: "store", automationCommanderSheetId }),
+      const triggerResp = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "trigger_refresh",
+          automationCommanderSheetId,
+          forceProactive: isForced,
+        }),
       });
-      const data = await storeResp.json();
-
-      if (!storeResp.ok || !data.success) {
-        throw new Error(data.error || "Failed to finalize refresh data");
+      const triggerData = await triggerResp.json();
+      if (!triggerResp.ok || !triggerData.success) {
+        throw new Error(triggerData.error || "Failed to start background refresh");
       }
 
-      setSessionId(data.sessionId);
-      setTotalAlerts(data.totalAlerts || 0);
-      setNoActionCount(data.noActionCount || 0);
-      const scopedProactiveAlerts = scopeProactive(data.proactiveAlerts || []);
-      setProactiveAlerts(scopedProactiveAlerts);
-      const pCounts = {};
-      scopedProactiveAlerts.forEach(a => { pCounts[a.clientName] = (pCounts[a.clientName] || 0) + 1; });
-      setProactiveCountsByClient(pCounts);
-      setProactiveLoadedAt(Date.now());
-      setClientsWithFlags(scopeClients(data.clientsWithFlags || []));
-      setProcessedAlerts(new Set());
-      setAcknowledgedNoAction(new Set());
-      setSelectedClient(null);
-      setClientAlerts([]);
-      setScreen("clientSelection");
-      setTriageComplete(true);
-      onRefreshTasks?.(true);
+      if (triggerData.alreadyRunning) {
+        console.log("Background refresh already in progress - connecting to progress stream...");
+        setRefreshStatus(triggerData.status?.progress || "Scanning clients...");
+      }
+
+      await pollRefreshStatus();
     } catch (err) {
-      setError(err.message);
+      if (isMountedRef.current) {
+        setError(err.message);
+      }
     } finally {
-      setIsLoading(false);
-      setRefreshStatus("");
+      if (isMountedRef.current) {
+        setIsLoading(false);
+        setRefreshStatus("");
+      }
     }
   };
 
@@ -196,6 +264,25 @@ export function useTriageEngine({
       setIsLoading(true);
       setError("");
 
+      // 1. Check if a background refresh is actively running (e.g. user refreshed, reloaded or woke machine)
+      try {
+        const statusResp = await fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "get_refresh_status", automationCommanderSheetId }),
+        });
+        const statusData = await statusResp.json();
+        if (statusData.success && statusData.status?.status === "running") {
+          console.log("Active background refresh detected - attaching to progress...");
+          setRefreshStatus(statusData.status.progress || "Scanning clients...");
+          await pollRefreshStatus();
+          return;
+        }
+      } catch (stErr) {
+        console.warn("Could not check refresh status, proceeding with precomputed check:", stErr.message);
+      }
+
+      // 2. Check for fresh precomputed data
       console.log("Checking for precomputed triage data...");
       let precomputedUsed = false;
       try {
@@ -208,57 +295,26 @@ export function useTriageEngine({
 
         if (preData.success && preData.available) {
           console.log(`✅ Using precomputed data (${preData.computedMinutesAgo} min old, ${preData.totalAlerts} alerts)`);
-          setSessionId(preData.sessionId);
-          setTotalAlerts(preData.totalAlerts || 0);
-          setNoActionCount(preData.noActionCount || 0);
-          const scopedProactiveAlerts = scopeProactive(preData.proactiveAlerts || []);
-          setProactiveAlerts(scopedProactiveAlerts);
-          const pCounts = {};
-          scopedProactiveAlerts.forEach(a => { pCounts[a.clientName] = (pCounts[a.clientName] || 0) + 1; });
-          setProactiveCountsByClient(pCounts);
-          setProactiveLoadedAt(Date.now());
-          const scopedFlags = scopeClients(preData.clientsWithFlags || []);
-          setClientsWithFlags(scopedFlags);
-          try {
-            localStorage.setItem("pulse_cached_clients_with_flags", JSON.stringify(scopedFlags));
-          } catch {}
-          setAcknowledgedNoAction(new Set());
-          setProcessedAlerts(new Set());
-
-          if (preData.noActionAnalysisResults && Object.keys(preData.noActionAnalysisResults).length > 0) {
-            const raw = preData.noActionAnalysisResults;
-            const flat = {};
-            Object.entries(raw).forEach(([keyOrClient, val]) => {
-              if (keyOrClient.includes("___")) {
-                flat[keyOrClient] = val;
-              } else {
-                Object.entries(val || {}).forEach(([flagType, results]) => {
-                  flat[`${keyOrClient}___${flagType}`] = results;
-                });
-              }
-            });
-            setPrecomputedNoActionResults(flat);
-            console.log(`  ✅ Pre-populated ${Object.keys(flat).length} noAction analysis results`);
-          }
-
-          setScreen("clientSelection");
-          setTriageComplete(true);
-          onRefreshTasks?.();
+          applyPrecomputedData(preData);
           precomputedUsed = true;
         } else {
-          console.log(`No fresh precomputed data available - running live triage`);
+          console.log(`No fresh precomputed data available - running live background triage`);
         }
       } catch (preErr) {
-        console.log(`Precomputed check failed, falling back to live run: ${preErr.message}`);
+        console.log(`Precomputed check failed, falling back to background refresh: ${preErr.message}`);
       }
 
       if (precomputedUsed) return;
-      console.log(`No fresh precomputed data available - triggering full refresh pipeline`);
+      console.log(`No fresh precomputed data available - triggering background refresh pipeline`);
       await refreshTriage();
     } catch (err) {
-      setError(err.message);
+      if (isMountedRef.current) {
+        setError(err.message);
+      }
     } finally {
-      setIsLoading(false);
+      if (isMountedRef.current) {
+        setIsLoading(false);
+      }
     }
   };
 

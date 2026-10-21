@@ -10,6 +10,7 @@
  * - Proper column ranges for each alert type
  */
 
+import { waitUntil } from "@vercel/functions";
 import { redisClient } from "../../services/redisClient";
 import { getSheetsClient, withRetry } from "../../services/sheetsClient";
 import { 
@@ -75,7 +76,8 @@ import {
   handleRunFlagSweep, handleBuildCachedAlertOptions, handleAnalyzeAlert,
   handleAcceptOption, handleDeleteJob, handleAnalyzeNoActionFlag,
   handleCheckOutgoingsCell,
-  handleRehashIgnoredAlerts, PRECOMPUTED_KEY
+  handleRehashIgnoredAlerts, PRECOMPUTED_KEY,
+  getTriageRefreshStatus, setTriageRefreshStatus, runBackgroundTriageRefresh
 } from "../../services/triageEngine";
 import { getClientViewData, handleUpdateViewCell, handleSpreadViewRow, handleUpdateCellNote } from "../../services/viewsService";
 import {
@@ -125,7 +127,9 @@ import { matchesClientName } from "../../utils/helpers";
 // ============================================================================
 
 // Increase body size limit - store_precomputed sends the full alert list
+// Set maxDuration to 300s (5 minutes) on Vercel Pro for background sweeps
 export const config = {
+  maxDuration: 300,
   api: {
     bodyParser: {
       sizeLimit: "10mb",
@@ -254,6 +258,8 @@ export default async function handler(req, res) {
     const isSystemAuthorized =
       (isCronAuthorized && (
         action === "start_triage" ||
+        action === "trigger_refresh" ||
+        action === "get_refresh_status" ||
         action === "run_flag_sweep" ||
         action === "build_cached_alert_options" ||
         action === "analyze_alert" ||
@@ -798,6 +804,53 @@ export default async function handler(req, res) {
         return res.status(200).json(result);
       } catch (err) {
         console.error("❌ classify_pl_category error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "trigger_refresh") {
+      try {
+        const current = await getTriageRefreshStatus();
+        if (current && current.status === "running") {
+          return res.status(200).json({ success: true, alreadyRunning: true, status: current });
+        }
+
+        const host = req.headers["x-forwarded-host"] || req.headers.host || `127.0.0.1:${process.env.PORT || 3000}`;
+        const protocol = req.headers["x-forwarded-proto"] || (host.includes("localhost") || host.includes("127.0.0.1") ? "http" : "https");
+        const cleanUrl = (url) => url ? (url.startsWith("http") ? url : `https://${url}`) : null;
+        const prodUrl = cleanUrl(process.env.VERCEL_PROJECT_PRODUCTION_URL) || cleanUrl(process.env.VERCEL_URL);
+        const baseUrl = prodUrl || `${protocol}://${host}`;
+        const cronSecret = process.env.CRON_SECRET;
+
+        await setTriageRefreshStatus({
+          status: "running",
+          step: "init",
+          progress: "Initializing background refresh...",
+          startedAt: Date.now(),
+          updatedAt: Date.now(),
+        });
+
+        const task = runBackgroundTriageRefresh({
+          baseUrl,
+          cronSecret,
+          automationCommanderSheetId,
+          forceProactive: req.body.forceProactive !== false,
+        }).catch(err => {
+          console.error("❌ Background triage refresh task error:", err);
+        });
+
+        waitUntil(task);
+
+        return res.status(200).json({ success: true, started: true });
+      } catch (err) {
+        console.error("❌ Error triggering background refresh:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "get_refresh_status") {
+      try {
+        const status = await getTriageRefreshStatus();
+        return res.status(200).json({ success: true, status });
+      } catch (err) {
         return res.status(500).json({ success: false, error: err.message });
       }
 

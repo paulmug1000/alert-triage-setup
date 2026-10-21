@@ -6,6 +6,13 @@
  * Re-written to use the unified 3-step alert pipeline.
  */
 
+import { waitUntil } from "@vercel/functions";
+import { runBackgroundTriageRefresh } from "../../services/triageEngine";
+
+export const config = {
+  maxDuration: 300,
+};
+
 export default async function handler(req, res) {
   if (req.method !== "POST" && req.method !== "GET") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -30,58 +37,34 @@ export default async function handler(req, res) {
   // Respond immediately so Vercel doesn't time out the cron trigger
   res.status(200).json({ success: true, message: "Cron job started" });
 
-  // Run the pipeline in the background
-  setImmediate(async () => {
-    console.log(`\n🕐 CRON: Starting background triage pipeline`);
-    
+  const host = req.headers["x-forwarded-host"] || req.headers.host || `127.0.0.1:${process.env.PORT || 3000}`;
+  const protocol = req.headers["x-forwarded-proto"] || (host.includes("localhost") || host.includes("127.0.0.1") ? "http" : "https");
+  const cleanUrl = (url) => url ? (url.startsWith("http") ? url : `https://${url}`) : null;
+  const prodUrl = cleanUrl(process.env.VERCEL_PROJECT_PRODUCTION_URL) || cleanUrl(process.env.VERCEL_URL);
+  const baseUrl = prodUrl || `${protocol}://${host}`;
+  const acId = "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
+
+  // Run the pipeline in the background using Vercel Pro waitUntil
+  const backgroundTask = (async () => {
+    console.log(`\n🕐 CRON: Starting background triage pipeline via runBackgroundTriageRefresh...`);
     try {
-      const baseUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL 
-        ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` 
-        : `https://${process.env.VERCEL_URL}`;
-        
-      const acId = "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
-
-      const cronSecret = process.env.CRON_SECRET || "";
-      const cronHeaders = {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${cronSecret}`,
-        "x-cron-secret": cronSecret
-      };
-
-      // Step 1: Sweep
-      console.log("CRON: Triggering Sweep...");
-      await fetch(`${baseUrl}/api/triage`, {
-        method: "POST", headers: cronHeaders,
-        body: JSON.stringify({ action: "start_triage", step: "sweep", secret: cronSecret, automationCommanderSheetId: acId }),
+      await runBackgroundTriageRefresh({
+        baseUrl,
+        cronSecret,
+        automationCommanderSheetId: acId,
+        forceProactive: true,
       });
 
-      // Step 2: Build Options
-      console.log("CRON: Triggering Build Options...");
-      let hasMore = true;
-      while (hasMore) {
-        const buildResp = await fetch(`${baseUrl}/api/triage`, {
-          method: "POST", headers: cronHeaders,
-          body: JSON.stringify({ action: "start_triage", step: "build", secret: cronSecret, automationCommanderSheetId: acId }),
-        });
-        const buildData = await buildResp.json();
-        if (!buildResp.ok || !buildData.success) throw new Error(buildData.error || "Build options failed");
-        hasMore = buildData.hasMore;
-      }
-
-      // Step 3: Store Precomputed
-      console.log("CRON: Triggering Store...");
-      const storeResp = await fetch(`${baseUrl}/api/triage`, {
-        method: "POST", headers: cronHeaders,
-        body: JSON.stringify({ action: "start_triage", step: "store", secret: cronSecret, automationCommanderSheetId: acId }),
-      });
-      const storeData = await storeResp.json();
-      if (!storeResp.ok || !storeData.success) throw new Error(storeData.error || "Store failed");
-
-      // Step 4: Auto-provision monthly Recon tabs if today is on or after 20th of the month
+      // Auto-provision monthly Recon tabs if today is on or after 20th of the month
       const currentDay = new Date().getDate();
       if (currentDay >= 20) {
         console.log(`CRON: Today is ${currentDay}th (>= 20th) - Checking monthly Recon tabs auto-provisioning...`);
         try {
+          const cronHeaders = {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${cronSecret}`,
+            "x-cron-secret": cronSecret,
+          };
           await fetch(`${baseUrl}/api/triage`, {
             method: "POST", headers: cronHeaders,
             body: JSON.stringify({ action: "auto_provision_recon_tabs", secret: cronSecret, automationCommanderSheetId: acId }),
@@ -95,5 +78,7 @@ export default async function handler(req, res) {
     } catch (err) {
       console.error(`❌ CRON failed: ${err.message}`, err);
     }
-  });
+  })();
+
+  waitUntil(backgroundTask);
 }

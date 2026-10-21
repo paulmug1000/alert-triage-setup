@@ -31,6 +31,174 @@ const ALERT_MEMORY_TAB = "AlertMemory";
 
 export const PRECOMPUTED_KEY = "triage_precomputed";
 export const PRECOMPUTED_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours 
+export const PMA_TRIAGE_REFRESH_STATUS_KEY = "pulse:triage_refresh_status";
+
+export async function getTriageRefreshStatus() {
+  try {
+    if (!redisClient?.isOpen) await redisClient.connect();
+    const raw = await redisClient.get(PMA_TRIAGE_REFRESH_STATUS_KEY);
+    if (!raw) return { status: "idle" };
+    const parsed = JSON.parse(raw);
+    // Auto-recover if marked as running but has not updated for > 3 minutes (180s)
+    if (parsed.status === "running" && Date.now() - (parsed.updatedAt || 0) > 180000) {
+      return { status: "stalled", error: "Previous refresh timed out", updatedAt: parsed.updatedAt };
+    }
+    return parsed;
+  } catch (err) {
+    console.error("Error reading triage refresh status:", err);
+    return { status: "idle" };
+  }
+}
+
+export async function setTriageRefreshStatus(statusObj, ttlSecs = 600) {
+  try {
+    if (!redisClient?.isOpen) await redisClient.connect();
+    await redisClient.set(PMA_TRIAGE_REFRESH_STATUS_KEY, JSON.stringify(statusObj), { EX: ttlSecs });
+  } catch (err) {
+    console.error("Error setting triage refresh status:", err);
+  }
+}
+
+export async function runBackgroundTriageRefresh({
+  baseUrl,
+  cronSecret,
+  automationCommanderSheetId,
+  forceProactive = true,
+}) {
+  const startTime = Date.now();
+  console.log(`\n🔄 [Background Refresh] Starting triage pipeline (baseUrl: ${baseUrl})...`);
+
+  try {
+    await setTriageRefreshStatus({
+      status: "running",
+      step: "sweep",
+      progress: "Scanning clients (batch 1)...",
+      startedAt: startTime,
+      updatedAt: Date.now(),
+    });
+
+    // Step 1: Sweep all clients in chunks
+    let sweepHasMore = true;
+    let sweepIdx = 0;
+    while (sweepHasMore) {
+      const batchNum = Math.floor(sweepIdx / 3) + 1;
+      await setTriageRefreshStatus({
+        status: "running",
+        step: "sweep",
+        progress: `Scanning clients (batch ${batchNum})...`,
+        startedAt: startTime,
+        updatedAt: Date.now(),
+      });
+
+      console.log(`  [Background Refresh] Sweep batch ${batchNum} from index ${sweepIdx}...`);
+      const sweepResp = await fetch(`${baseUrl}/api/triage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "run_flag_sweep",
+          secret: cronSecret,
+          automationCommanderSheetId,
+          startIdx: sweepIdx,
+          forceProactive,
+          forceAll: true,
+        }),
+      });
+      const sweepData = await sweepResp.json();
+      if (!sweepResp.ok || !sweepData.success) {
+        throw new Error(sweepData.error || `Sweep failed on batch ${batchNum}`);
+      }
+      sweepHasMore = sweepData.hasMore;
+      sweepIdx = sweepData.nextIdx;
+    }
+
+    // Step 2: Build Options in chunks
+    let hasMore = true;
+    let buildCount = 1;
+    while (hasMore) {
+      await setTriageRefreshStatus({
+        status: "running",
+        step: "build",
+        progress: `Generating options (batch ${buildCount})...`,
+        startedAt: startTime,
+        updatedAt: Date.now(),
+      });
+
+      console.log(`  [Background Refresh] Build batch ${buildCount}...`);
+      const buildResp = await fetch(`${baseUrl}/api/triage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "build_cached_alert_options",
+          secret: cronSecret,
+          automationCommanderSheetId,
+          isContinuation: buildCount > 1,
+        }),
+      });
+      const buildData = await buildResp.json();
+      if (!buildResp.ok || !buildData.success) {
+        throw new Error(buildData.error || `Build options failed on batch ${buildCount}`);
+      }
+      hasMore = buildData.hasMore;
+      buildCount++;
+    }
+
+    // Step 3: Store Precomputed Data
+    await setTriageRefreshStatus({
+      status: "running",
+      step: "store",
+      progress: "Finalizing data...",
+      startedAt: startTime,
+      updatedAt: Date.now(),
+    });
+
+    console.log(`  [Background Refresh] Finalizing precomputed data in Redis...`);
+    let existingNoActionAnalysis = {};
+    try {
+      if (!redisClient?.isOpen) await redisClient.connect();
+      const existingRaw = await redisClient.get(PRECOMPUTED_KEY);
+      if (existingRaw) existingNoActionAnalysis = JSON.parse(existingRaw).noActionAnalysisResults || {};
+    } catch (e) { /* fine */ }
+
+    const storeResp = await fetch(`${baseUrl}/api/triage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "store_precomputed",
+        secret: cronSecret,
+        automationCommanderSheetId,
+        noActionAnalysisResults: existingNoActionAnalysis,
+      }),
+    });
+    const storeData = await storeResp.json();
+    if (!storeResp.ok || !storeData.success) {
+      throw new Error(storeData.error || "Store precomputed failed");
+    }
+
+    const elapsedS = Math.round((Date.now() - startTime) / 1000);
+    console.log(`✅ [Background Refresh] Complete in ${elapsedS}s`);
+
+    await setTriageRefreshStatus({
+      status: "completed",
+      step: "complete",
+      progress: "Refresh complete",
+      startedAt: startTime,
+      completedAt: Date.now(),
+      updatedAt: Date.now(),
+    }, 300);
+
+    return { success: true, elapsedSeconds: elapsedS };
+  } catch (err) {
+    console.error("❌ [Background Refresh] Pipeline error:", err);
+    await setTriageRefreshStatus({
+      status: "error",
+      error: err.message || "Refresh failed",
+      startedAt: startTime,
+      completedAt: Date.now(),
+      updatedAt: Date.now(),
+    }, 300);
+    throw err;
+  }
+}
 
 let _precomputedMemoryCache = null;
 let _precomputedCachedAt = 0;

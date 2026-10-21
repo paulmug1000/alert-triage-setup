@@ -961,13 +961,16 @@ export default async function handler(req, res) {
              }
           }
             if (flagKey === "invoiceDashboardDiscr") {
-             const invNo = alert.summary?.invoiceNo || alert.summary?.reference || alert.summary?.id;
-             if (invNo !== undefined && invNo !== null && invNo !== "") {
-                if (!activeInvoiceIdsByClient[key]) activeInvoiceIdsByClient[key] = [];
-                const s = String(invNo).trim();
-                const clean = s.replace(/^#/, "");
-                activeInvoiceIdsByClient[key].push(s);
-                if (clean !== s) activeInvoiceIdsByClient[key].push(clean);
+             const isMissing = alert.data?.flags?.[0] === "1" || (alert.flagColumns?.[0] === "Missing invoice?" && alert.data?.flags?.[0] === "1");
+             if (isMissing) {
+               const invNo = alert.summary?.invoiceNo || alert.summary?.reference || alert.summary?.id || alert.data?.accounting?.[5];
+               if (invNo !== undefined && invNo !== null && invNo !== "") {
+                  if (!activeInvoiceIdsByClient[key]) activeInvoiceIdsByClient[key] = [];
+                  const s = String(invNo).trim();
+                  const clean = s.replace(/^#/, "");
+                  activeInvoiceIdsByClient[key].push(s);
+                  if (clean !== s) activeInvoiceIdsByClient[key].push(clean);
+               }
              }
           }
         }

@@ -115,8 +115,7 @@ export default function HomeView({
         const clean = s.replace(/^#/, "");
         if (assignedSet.has(id) || assignedSet.has(s) || assignedSet.has(clean)) return true;
         if (!isNaN(Number(clean)) && clean !== "" && assignedSet.has(Number(clean))) return true;
-        if (assignedAppIds.has(id) || assignedAppIds.has(s) || assignedAppIds.has(clean)) return true;
-        if (!isNaN(Number(clean)) && clean !== "" && assignedAppIds.has(Number(clean))) return true;
+        if (normClient && (assignedAppIds.has(`${normClient}::${clean}`) || assignedAppIds.has(`${normClient}::${s}`))) return true;
         return false;
       };
       const expenseIds = c.activeExpenseIds || [];

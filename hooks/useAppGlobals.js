@@ -64,10 +64,40 @@ export function AppGlobalsProvider({ children }) {
     }
   }, [allClientsMap, managedClient?.clientName]);
 
+  // Optimistic assignment cache TTL: 15 minutes max to avoid permanent alert suppression
+  const ASSIGNED_APP_ID_TTL_MS = 15 * 60 * 1000;
+
   const [assignedAppIds, setAssignedAppIds] = useState(() => {
+    if (typeof window === "undefined") return new Set();
     try {
       const stored = localStorage.getItem("pulse_assignedAppIds");
-      return stored ? new Set(JSON.parse(stored)) : new Set();
+      if (!stored) return new Set();
+      const parsed = JSON.parse(stored);
+      // Legacy unversioned flat array: wipe out immediately so stale IDs never suppress active alerts
+      if (Array.isArray(parsed)) {
+        try { localStorage.removeItem("pulse_assignedAppIds"); } catch {}
+        return new Set();
+      }
+      if (parsed && typeof parsed === "object") {
+        const now = Date.now();
+        const validSet = new Set();
+        const validMap = {};
+        for (const [key, ts] of Object.entries(parsed)) {
+          if (typeof ts === "number" && (now - ts < ASSIGNED_APP_ID_TTL_MS)) {
+            validMap[key] = ts;
+            const parts = key.split("::");
+            const id = parts.length > 1 ? parts[1] : parts[0];
+            const clean = id.replace(/^#/, "");
+            validSet.add(key); // e.g. "anrpr::6550-2"
+            validSet.add(id);
+            validSet.add(clean);
+            if (!isNaN(Number(clean)) && clean !== "") validSet.add(Number(clean));
+          }
+        }
+        try { localStorage.setItem("pulse_assignedAppIds", JSON.stringify(validMap)); } catch {}
+        return validSet;
+      }
+      return new Set();
     } catch { return new Set(); }
   });
 
@@ -91,15 +121,41 @@ export function AppGlobalsProvider({ children }) {
     if (id === null || id === undefined || id === "") return;
     const rawId = String(id).trim();
     const cleanId = rawId.replace(/^#/, "");
+    const now = Date.now();
+    const cNorm = clientName ? String(clientName).trim().toLowerCase() : "";
+    const scopedKey = cNorm ? `${cNorm}::${cleanId}` : cleanId;
+
     setAssignedAppIds(prev => {
       const next = new Set(prev);
       next.add(id);
       next.add(rawId);
       next.add(cleanId);
+      next.add(scopedKey);
+      if (cNorm) next.add(`${cNorm}::${rawId}`);
       if (!isNaN(Number(cleanId)) && cleanId !== "") next.add(Number(cleanId));
-      try { localStorage.setItem("pulse_assignedAppIds", JSON.stringify([...next])); } catch {}
+
+      try {
+        let existingMap = {};
+        const stored = localStorage.getItem("pulse_assignedAppIds");
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            existingMap = parsed;
+          }
+        }
+        const pruned = {};
+        for (const [k, ts] of Object.entries(existingMap)) {
+          if (typeof ts === "number" && (now - ts < ASSIGNED_APP_ID_TTL_MS)) {
+            pruned[k] = ts;
+          }
+        }
+        pruned[scopedKey] = now;
+        localStorage.setItem("pulse_assignedAppIds", JSON.stringify(pruned));
+      } catch {}
+
       return next;
     });
+
     if (clientName) {
       const cKey = String(clientName).trim();
       setAssignedByClient(prev => {
@@ -111,6 +167,14 @@ export function AppGlobalsProvider({ children }) {
       fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "mark_expense_assigned", automationCommanderSheetId, clientName: cKey, appId: cleanId }) })
         .catch(e => console.error("mark_expense_assigned error:", e));
+    }
+  };
+
+  const clearAssignedAppIds = () => {
+    setAssignedAppIds(new Set());
+    setAssignedByClient({});
+    if (typeof window !== "undefined") {
+      try { localStorage.removeItem("pulse_assignedAppIds"); } catch {}
     }
   };
 
@@ -146,6 +210,7 @@ export function AppGlobalsProvider({ children }) {
     assignedAppIds, setAssignedAppIds,
     assignedByClient, setAssignedByClient,
     addAssignedAppId,
+    clearAssignedAppIds,
     outgoingsPullPendingRef,
     allClientsMap, setAllClientsMap,
     showDebugPanel, setShowDebugPanel,

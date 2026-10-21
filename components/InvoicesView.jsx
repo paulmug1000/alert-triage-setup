@@ -300,7 +300,6 @@ export default function InvoicesView({
     } else {
       setAssignedAppIds(prevSet => {
         const next = new Set(prevSet); next.add(inv.invoiceNo);
-        try { localStorage.setItem("pulse_assignedAppIds", JSON.stringify([...next])); } catch { }
         return next;
       });
     }
@@ -541,7 +540,6 @@ export default function InvoicesView({
             } else {
               setAssignedAppIds(prevSet => {
                 const next = new Set(prevSet); next.add(inv.invoiceNo);
-                try { localStorage.setItem("pulse_assignedAppIds", JSON.stringify([...next])); } catch { }
                 return next;
               });
             }

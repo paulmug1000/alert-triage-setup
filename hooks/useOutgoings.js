@@ -66,10 +66,32 @@ export function useOutgoings(assignedAppIds, assignedByClient, setAssignedByClie
             
             setAssignedAppIds(prevGlobal => {
               const nextGlobal = new Set(prevGlobal);
+              const cNorm = client.clientName ? String(client.clientName).trim().toLowerCase() : "";
               for (const id of existingIds) {
-                if (!allInboxIds.has(id)) nextGlobal.delete(id);
+                if (!allInboxIds.has(id)) {
+                  nextGlobal.delete(id);
+                  const clean = String(id).replace(/^#/, "");
+                  nextGlobal.delete(clean);
+                  if (cNorm) nextGlobal.delete(`${cNorm}::${clean}`);
+                }
               }
-              try { localStorage.setItem("pulse_assignedAppIds", JSON.stringify([...nextGlobal])); } catch {}
+              try {
+                const stored = localStorage.getItem("pulse_assignedAppIds");
+                if (stored) {
+                  const parsed = JSON.parse(stored);
+                  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+                    for (const id of existingIds) {
+                      if (!allInboxIds.has(id)) {
+                        const clean = String(id).replace(/^#/, "");
+                        delete parsed[id];
+                        delete parsed[clean];
+                        if (cNorm) delete parsed[`${cNorm}::${clean}`];
+                      }
+                    }
+                    localStorage.setItem("pulse_assignedAppIds", JSON.stringify(parsed));
+                  }
+                }
+              } catch {}
               return nextGlobal;
             });
             

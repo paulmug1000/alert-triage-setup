@@ -90,8 +90,6 @@ export function useTriageEngine({
     if (id === null || id === undefined || id === "") return false;
     const s = String(id).trim();
     const clean = s.replace(/^#/, "");
-    if (assignedAppIds.has(id) || assignedAppIds.has(s) || assignedAppIds.has(clean)) return true;
-    if (!isNaN(Number(clean)) && clean !== "" && assignedAppIds.has(Number(clean))) return true;
     if (clientName) {
       const normClient = String(clientName).trim().toLowerCase();
       for (const [k, set] of Object.entries(assignedByClient || {})) {
@@ -100,7 +98,11 @@ export function useTriageEngine({
           if (!isNaN(Number(clean)) && clean !== "" && set.has(Number(clean))) return true;
         }
       }
+      if (assignedAppIds.has(`${normClient}::${clean}`) || assignedAppIds.has(`${normClient}::${s}`)) return true;
+      return false;
     }
+    if (assignedAppIds.has(id) || assignedAppIds.has(s) || assignedAppIds.has(clean)) return true;
+    if (!isNaN(Number(clean)) && clean !== "" && assignedAppIds.has(Number(clean))) return true;
     return false;
   }, [assignedAppIds, assignedByClient]);
 
@@ -426,7 +428,11 @@ export function useTriageEngine({
         const txId = alert.summary?.transactionId || alert.summary?.appId || alert.summary?.reference || alert.summary?.id;
         if (txId && isAssigned(txId, client.clientName)) return false;
         const invNo = alert.summary?.invoiceNo || alert.summary?.reference || alert.summary?.id || alert.data?.accounting?.[5];
-        if (invNo && isAssigned(invNo, client.clientName)) return false;
+        if (invNo && isAssigned(invNo, client.clientName)) {
+          // Only optimistically suppress missing invoices; active discrepancy alerts (VAT/amount/date mismatch) must never be hidden
+          const isMissing = alert.data?.flags?.[0] === "1" || (alert.flagColumns?.[0] === "Missing invoice?" && alert.data?.flags?.[0] === "1");
+          if (isMissing || alert.flagType !== "invoiceDashboardDiscr") return false;
+        }
         return true;
       });
       
@@ -790,7 +796,11 @@ export function useTriageEngine({
       const txId = alert.summary?.transactionId || alert.summary?.appId || alert.summary?.reference || alert.summary?.id;
       if (txId && isAssigned(txId, selectedClient?.clientName)) return false;
       const invNo = alert.summary?.invoiceNo || alert.summary?.reference || alert.summary?.id || alert.data?.accounting?.[5];
-      if (invNo && isAssigned(invNo, selectedClient?.clientName)) return false;
+      if (invNo && isAssigned(invNo, selectedClient?.clientName)) {
+        // Only optimistically suppress missing invoices; active discrepancy alerts (VAT/amount/date mismatch) must never be hidden
+        const isMissing = alert.data?.flags?.[0] === "1" || (alert.flagColumns?.[0] === "Missing invoice?" && alert.data?.flags?.[0] === "1");
+        if (isMissing || alert.flagType !== "invoiceDashboardDiscr") return false;
+      }
       return true;
     });
     filteredAlerts.forEach(alert => {

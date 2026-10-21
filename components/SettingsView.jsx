@@ -477,7 +477,7 @@ export default function SettingsView({
                     {/* Check frequency */}
                     <div style={{ marginBottom: "20px", paddingBottom: "18px", borderBottom: "1px solid #f0f0f0" }}>
                       <div style={{ fontSize: "13px", fontWeight: "700", color: "#1a1a1a", marginBottom: "4px" }}>Check frequency</div>
-                      <p style={{ margin: "0 0 12px", fontSize: "12px", color: "#888" }}>
+                      <p style={{ margin: "0 0 12px", fontSize: "12px", color: "#888888ff" }}>
                         How often each category is checked for. A single 30-minute Google Apps Script trigger drives all three - each just decides independently whether it&apos;s actually due yet.
                       </p>
                       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "8px" }}>

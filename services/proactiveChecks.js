@@ -1353,8 +1353,12 @@ export async function checkRetroactiveOutgoingsChanges_(clientName, masterSheetI
       const summary = String(row[2] || "").trim();
       const details = String(row[3] || "").trim();
 
-      // Detect P&L Outgoings updates from automated sequence
-      if (summary.toLowerCase().startsWith("p&l outgoings updated:")) {
+      // Detect P&L Outgoings updates from automated sequence or bank transaction fallbacks
+      const isOutgoingsUpdate = summary.toLowerCase().startsWith("p&l outgoings updated:");
+      const isBankTxnFallback = summary.toLowerCase().includes("bank transaction added from unreconciled") ||
+                                summary.toLowerCase().includes("bank transaction added from unrecon");
+
+      if (isOutgoingsUpdate || isBankTxnFallback) {
         const tsStr = timestamp instanceof Date ? timestamp.toISOString() : String(timestamp || "");
         const alertKey = `retroactive_outgoings_update|${clientName}|${summary}|${tsStr}`;
 

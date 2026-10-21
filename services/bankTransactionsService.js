@@ -1250,9 +1250,38 @@ export async function autoReconcileClientBankTransactions({
         matchedFromUnrecon: updateResult.matchedFromUnreconCount,
         matchedNonCash: updateResult.matchedNonCashCount,
         remainingUnrecon: updateResult.nextUnreconItems.length,
+        fallbackAddedCount: (updateResult.fallbackAddedTxns || []).length,
         clientName: resolvedClient
       }
     }).catch(e => console.error("PMA log failed:", e));
+
+    // If transactions were added via the high-bar safety fallback, log to Master Sheet AutoLog to raise PMA alert
+    if (updateResult.fallbackAddedTxns && updateResult.fallbackAddedTxns.length > 0 && cleanMasterId) {
+      try {
+        const nowStr = new Date().toISOString().replace("T", " ").substring(0, 19);
+        const txListStr = updateResult.fallbackAddedTxns.map(t =>
+          `• ${t.date || ""} ${t.payee || t.unreconPayee || "Transaction"} (£${t.outAmount || t.inAmount || t.unreconAmount || "0"}) -> Added to bank transactions as ${t.category}`
+        ).join("\n");
+
+        const summary = `P&L Outgoings updated: Bank transaction added from unreconciled item (${tabName})`;
+        const details = `Added ${updateResult.fallbackAddedTxns.length} transaction(s) to bank transactions list from unreconciled items as a fallback:\n${txListStr}\nCleared from unreconciled list to prevent double counting.`;
+
+        await withRetry(() =>
+          sheets.spreadsheets.values.append({
+            spreadsheetId: cleanMasterId,
+            range: "AutoLog!A:D",
+            valueInputOption: "USER_ENTERED",
+            insertDataOption: "INSERT_ROWS",
+            requestBody: {
+              values: [[nowStr, "EXPENSES", summary, details]]
+            }
+          })
+        );
+        console.log(`[Bank Recon] Logged fallback bank transaction alert to Master AutoLog for ${resolvedClient} (${tabName})`);
+      } catch (logErr) {
+        console.warn("⚠️ Could not write fallback bank transaction to AutoLog:", logErr.message);
+      }
+    }
   }
 
   return {

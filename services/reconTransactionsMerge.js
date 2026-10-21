@@ -15,7 +15,7 @@
 export function parseAmount(val) {
   if (val == null || val === "") return 0;
   if (typeof val === "number") return isNaN(val) ? 0 : val;
-  const clean = String(val).replace(/[£,\s()]/g, "");
+  const clean = String(val).replace(/[£$€,\s()]/g, "");
   const isParen = /^\(.*\)$/.test(String(val).trim());
   const num = parseFloat(clean);
   if (isNaN(num)) return 0;
@@ -24,6 +24,12 @@ export function parseAmount(val) {
 
 export function normalizeDateStr(d) {
   if (!d) return "";
+  if (d instanceof Date && !isNaN(d.getTime())) {
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
   const s = String(d).trim();
   const m1 = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
   if (m1) {
@@ -43,7 +49,8 @@ export function normalizeDateStr(d) {
   return s.slice(0, 10);
 }
 
-export function matchAndRemoveFromUnreconPool(tx, unreconPool) {
+export function matchAndRemoveFromUnreconPool(tx, unreconPool, options = {}) {
+  const minScoreThreshold = options.minScore || 25;
   const o = parseAmount(tx.outAmount || tx.outAmt);
   const i = parseAmount(tx.inAmount || tx.inAmt);
   const txTotal = o > 0 ? o : i;
@@ -86,7 +93,7 @@ export function matchAndRemoveFromUnreconPool(tx, unreconPool) {
       score += 30;
     }
 
-    if (score > bestScore && score >= 25) {
+    if (score > bestScore && score >= minScoreThreshold) {
       bestScore = score;
       bestIdx = unIdx;
     }
@@ -117,6 +124,7 @@ export function performTransactionsUpdate({
   const matchedIncomingIndices = new Set();
   const matchedExistingIndices = new Set();
   const nextBankTxns = [];
+  const fallbackAddedTxns = [];
 
   const getAmt = (t) => {
     const o = parseAmount(t.outAmount || t.outAmt);
@@ -187,9 +195,6 @@ export function performTransactionsUpdate({
 
     const exTx = matchedExIdx !== -1 ? currentBankTxns[matchedExIdx] : null;
 
-    // Use the EXACT EXISTING category already sitting against the transaction in Column Q
-    const assignedCategory = exTx?.category || exTx?.suggestedCategory || apiTx.category || (parseAmount(apiTx.inAmount || apiTx.inAmt) > 0 ? "Revenue" : "Outgoings");
-
     // Check if this matched transaction was an unreconciled item
     const matchedUn = matchAndRemoveFromUnreconPool(apiTx, unreconPool);
     const wasUnreconciled = Boolean(matchedUn || (exTx && exTx.isReconciled === false));
@@ -197,6 +202,13 @@ export function performTransactionsUpdate({
     if (wasUnreconciled) {
       matchedFromUnreconCount++;
     }
+
+    // Keep existing Column Q category already sitting against the transaction in Column Q
+    // Must strictly be an approved U3:U16 category (e.g. Contractors, Salaries, Outgoings, Revenue)
+    // NEVER a specific P&L overhead category like Advertising!
+    const isCredit = parseAmount(apiTx.inAmount || apiTx.inAmt) > 0;
+    const defaultCat = isCredit ? "Revenue" : "Outgoings";
+    const assignedCategory = exTx?.category || exTx?.suggestedCategory || defaultCat;
 
     if (exTx) {
       if (parseAmount(exTx.outAmount) !== parseAmount(apiTx.outAmount) ||
@@ -221,22 +233,42 @@ export function performTransactionsUpdate({
     });
   });
 
-  // Step 2: Unmatched incoming (New transactions from API not previously in bank transactions list)
+  // Step 2: Unmatched incoming (Safety Fallback with high bar)
+  // An incoming API transaction not in bank transactions list is ONLY added to nextBankTxns
+  // if it matches an unreconciled item in unreconPool with a high bar (minScore: 40).
   incomingApiTxns.forEach((apiTx, apiIdx) => {
     if (matchedIncomingIndices.has(apiIdx)) return;
+
+    // High bar check: MUST match an item in unreconPool (requires exact amount + direction AND either date within 3 days or matching payee text)
+    const matchedUn = matchAndRemoveFromUnreconPool(apiTx, unreconPool, { minScore: 40 });
+    if (!matchedUn) {
+      // High bar prevents extraneous/unmatched transactions from polluting the bank transactions list!
+      return;
+    }
+
     newAddedCount++;
+    matchedFromUnreconCount++;
 
     const isCredit = parseAmount(apiTx.inAmount || apiTx.inAmt) > 0;
-    const defaultCat = isCredit ? "Revenue" : "Outgoings";
+    const assignedCategory = isCredit ? "Revenue" : "Outgoings";
 
-    nextBankTxns.push({
+    const newTx = {
       ...apiTx,
-      category: apiTx.category || apiTx.suggestedCategory || defaultCat,
-      suggestedCategory: apiTx.suggestedCategory || apiTx.category || defaultCat,
+      category: assignedCategory,
+      suggestedCategory: assignedCategory,
       accountName: apiTx.accountName || defaultAccount,
       isReconciled: true,
-      isNew: false, // Standard incoming transaction is NOT green
+      isNew: true, // Shaded green because it was recovered from unreconciled list
       source: apiTx.source || "quickbooks"
+    };
+
+    nextBankTxns.push(newTx);
+    fallbackAddedTxns.push({
+      ...newTx,
+      unreconPayee: matchedUn.payee,
+      unreconDate: matchedUn.date,
+      unreconAmount: matchedUn.amount,
+      unreconCategory: matchedUn.category
     });
   });
 
@@ -291,6 +323,7 @@ export function performTransactionsUpdate({
     matchedFromUnreconCount,
     matchedNonCashCount,
     updatedCount,
-    deletedCount
+    deletedCount,
+    fallbackAddedTxns
   };
 }

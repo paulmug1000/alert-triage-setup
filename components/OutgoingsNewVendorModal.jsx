@@ -1,8 +1,8 @@
 import React, { useState } from "react";
 
-export default function OutgoingsNewVendorModal({ newVendorData, outgoingsClient, onClose, onCreated }) {
-  const { exp } = newVendorData;
-  const [vendorName, setVendorName] = useState(exp.description || exp.accountName || "");
+export default function OutgoingsNewVendorModal({ newVendorData = {}, outgoingsClient, onClose, onCreated }) {
+  const exp = newVendorData?.exp || null;
+  const [vendorName, setVendorName] = useState(exp ? (exp.description || exp.accountName || "") : "");
   const [vatFlag, setVatFlag] = useState("Yes");
   const [invTiming, setInvTiming] = useState("Next");
   const [payTiming, setPayTiming] = useState("Next");
@@ -40,42 +40,44 @@ export default function OutgoingsNewVendorModal({ newVendorData, outgoingsClient
           <h3 style={{ margin: 0, fontSize: "15px", fontWeight: "700" }}>Create new vendor</h3>
           <button onClick={onClose} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}>×</button>
         </div>
-        <div style={{ fontSize: "12px", color: "#888", background: "#f8f8f8", borderRadius: "6px", padding: "10px", marginBottom: "16px" }}>
-          <strong>Expense to place:</strong> {exp.description || exp.accountName} - £{exp.amount}<br/>
-          <span style={{ fontFamily: "monospace", fontSize: "10px" }}>{exp.appId}</span>
-        </div>
+        {exp && (
+          <div style={{ fontSize: "12px", color: "#888", background: "#f8f8f8", borderRadius: "6px", padding: "10px", marginBottom: "16px" }}>
+            <strong>Expense to place:</strong> {exp.description || exp.accountName} - £{exp.amount}<br/>
+            <span style={{ fontFamily: "monospace", fontSize: "10px" }}>{exp.appId}</span>
+          </div>
+        )}
         <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
           <div>
-            <label style={{ fontSize: "12px", color: "#666", display: "block", marginBottom: "4px" }}>Vendor name (col A) *</label>
+            <label style={{ fontSize: "12px", color: "#666", display: "block", marginBottom: "4px" }}>Vendor name *</label>
             <input type="text" value={vendorName} onChange={e => setVendorName(e.target.value)} autoFocus
-              style={{ width: "100%", padding: "9px 11px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "16px", boxSizing: "border-box" }} />
+              style={{ width: "100%", padding: "9px 11px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "14px", boxSizing: "border-box" }} />
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
             <div>
               <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "3px" }}>VAT?</label>
               <select value={vatFlag} onChange={e => setVatFlag(e.target.value)}
-                style={{ width: "100%", padding: "7px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "16px" }}>
+                style={{ width: "100%", padding: "7px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "14px" }}>
                 <option>Yes</option><option>No</option>
               </select>
             </div>
             <div>
               <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "3px" }}>Delivery %</label>
               <input type="number" value={deliveryPct} onChange={e => setDeliveryPct(e.target.value)}
-                style={{ width: "100%", padding: "7px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "16px", boxSizing: "border-box" }} />
+                style={{ width: "100%", padding: "7px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "14px", boxSizing: "border-box" }} />
             </div>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
             <div>
               <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "3px" }}>Inv timing</label>
               <select value={invTiming} onChange={e => setInvTiming(e.target.value)}
-                style={{ width: "100%", padding: "7px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "16px" }}>
+                style={{ width: "100%", padding: "7px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "14px" }}>
                 <option>Next</option><option>Curr</option>
               </select>
             </div>
             <div>
               <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "3px" }}>Pay timing</label>
               <select value={payTiming} onChange={e => setPayTiming(e.target.value)}
-                style={{ width: "100%", padding: "7px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "16px" }}>
+                style={{ width: "100%", padding: "7px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "14px" }}>
                 <option>Next</option><option>Curr</option>
               </select>
             </div>
@@ -83,7 +85,9 @@ export default function OutgoingsNewVendorModal({ newVendorData, outgoingsClient
           {error && <div style={{ fontSize: "12px", color: "#d32f2f", background: "#fff5f5", padding: "8px", borderRadius: "4px" }}>{error}</div>}
         </div>
         <p style={{ fontSize: "11px", color: "#999", margin: "12px 0 0" }}>
-          A new vendor will be added to the Contractors section of the Outgoings tab. You can then place the expense in the correct month cell.
+          {exp
+            ? "A new vendor will be added to the Contractors section of the Outgoings tab. You can then place the expense in the correct month cell."
+            : "A new vendor will be added to the Contractors section of the Outgoings tab."}
         </p>
         <div style={{ display: "flex", gap: "8px", marginTop: "16px", justifyContent: "flex-end" }}>
           <button onClick={onClose}

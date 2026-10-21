@@ -755,33 +755,56 @@ export default function OutgoingsView({
         {!noClient && outgoingsData && vendorsSubTab === "contractors" && (
           <>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "10px", marginBottom: "10px" }}>
-              <div style={{ position: "relative", width: "100%", maxWidth: "340px" }}>
-                <span style={{ position: "absolute", left: "10px", top: "50%", transform: "translateY(-50%)", color: "#94a3b8", fontSize: "14px", pointerEvents: "none" }}>🔍</span>
-                <input
-                  type="text"
-                  placeholder="Search vendors..."
-                  value={contractorSearch}
-                  onChange={e => setContractorSearch(e.target.value)}
+              <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", flex: 1, minWidth: "260px" }}>
+                <div style={{ position: "relative", width: "100%", maxWidth: "340px" }}>
+                  <span style={{ position: "absolute", left: "10px", top: "50%", transform: "translateY(-50%)", color: "#94a3b8", fontSize: "14px", pointerEvents: "none" }}>🔍</span>
+                  <input
+                    type="text"
+                    placeholder="Search vendors..."
+                    value={contractorSearch}
+                    onChange={e => setContractorSearch(e.target.value)}
+                    style={{
+                      width: "100%",
+                      padding: "7px 10px 7px 32px",
+                      borderRadius: "6px",
+                      border: "1px solid #cbd5e1",
+                      fontSize: "13px",
+                      outline: "none",
+                      boxSizing: "border-box",
+                      backgroundColor: "#ffffff",
+                    }}
+                  />
+                  {contractorSearch && (
+                    <button
+                      type="button"
+                      onClick={() => setContractorSearch("")}
+                      style={{ position: "absolute", right: "8px", top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "#94a3b8", cursor: "pointer", fontSize: "14px" }}
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setOutgoingsNewVendor({})}
                   style={{
-                    width: "100%",
-                    padding: "7px 10px 7px 32px",
+                    padding: "7px 14px",
+                    background: "#0066cc",
+                    color: "#ffffff",
+                    border: "none",
                     borderRadius: "6px",
-                    border: "1px solid #cbd5e1",
-                    fontSize: "13px",
-                    outline: "none",
-                    boxSizing: "border-box",
-                    backgroundColor: "#ffffff",
+                    fontSize: "12px",
+                    fontWeight: "600",
+                    cursor: "pointer",
+                    whiteSpace: "nowrap",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    boxShadow: "0 1px 2px rgba(0,0,0,0.05)"
                   }}
-                />
-                {contractorSearch && (
-                  <button
-                    type="button"
-                    onClick={() => setContractorSearch("")}
-                    style={{ position: "absolute", right: "8px", top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "#94a3b8", cursor: "pointer", fontSize: "14px" }}
-                  >
-                    ✕
-                  </button>
-                )}
+                >
+                  <span style={{ fontSize: "14px", lineHeight: "1" }}>+</span> Add new vendor
+                </button>
               </div>
 
               <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
@@ -802,7 +825,7 @@ export default function OutgoingsView({
               </div>
             </div>
 
-            <div style={{ overflowX: "auto", overflowY: "auto", maxHeight: "70vh", borderRadius: "8px", border: "1px solid #e0e0e0" }}>
+            <div style={{ overflowX: "auto", borderRadius: "8px", border: "1px solid #e0e0e0" }}>
               <table style={{ borderCollapse: "collapse", width: "100%", tableLayout: "fixed", minWidth: `${190 + OUTGOINGS_WINDOW * 160}px` }}>
                 <colgroup>
                   <col style={{ width: "190px" }} />
@@ -825,7 +848,26 @@ export default function OutgoingsView({
                   {filteredContractors.length === 0 ? (
                     <tr>
                       <td colSpan={visibleMonths.length + 1} style={{ padding: "32px", textAlign: "center", color: "#64748b" }}>
-                        No matching vendors found.
+                        <div style={{ marginBottom: "10px" }}>No matching vendors found.</div>
+                        <button
+                          type="button"
+                          onClick={() => setOutgoingsNewVendor({})}
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "6px",
+                            padding: "6px 14px",
+                            background: "#f0f4ff",
+                            border: "1px solid #c5cff0",
+                            borderRadius: "6px",
+                            color: "#1a56db",
+                            fontSize: "12px",
+                            fontWeight: "600",
+                            cursor: "pointer"
+                          }}
+                        >
+                          <span style={{ fontSize: "14px", lineHeight: "1" }}>+</span> Add new vendor
+                        </button>
                       </td>
                     </tr>
                   ) : filteredContractors.map((contractor, rowIdx) => (
@@ -956,6 +998,45 @@ export default function OutgoingsView({
                       })}
                     </tr>
                   ))}
+                  {filteredContractors.length > 0 && (
+                    <tr style={{ background: "#ffffff" }}>
+                      <td style={{
+                        padding: "10px 12px",
+                        borderTop: "1px solid #e0e0e0",
+                        borderRight: "1px solid #e0e0e0",
+                        background: "#ffffff",
+                        position: "sticky",
+                        left: 0,
+                        zIndex: 2,
+                      }}>
+                        <button
+                          type="button"
+                          onClick={() => setOutgoingsNewVendor({})}
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "6px",
+                            padding: "6px 12px",
+                            background: "#f0f4ff",
+                            border: "1px solid #c5cff0",
+                            borderRadius: "6px",
+                            color: "#1a56db",
+                            fontSize: "12px",
+                            fontWeight: "600",
+                            cursor: "pointer",
+                            transition: "all 0.15s ease",
+                          }}
+                          onMouseEnter={e => { e.currentTarget.style.background = "#e1ecff"; }}
+                          onMouseLeave={e => { e.currentTarget.style.background = "#f0f4ff"; }}
+                        >
+                          <span style={{ fontSize: "14px", lineHeight: "1" }}>+</span> Add new vendor
+                        </button>
+                      </td>
+                      {visibleMonths.map(m => (
+                        <td key={m.colLetter} style={{ borderTop: "1px solid #e0e0e0", borderRight: "1px solid #e0e0e0", background: "#ffffff" }} />
+                      ))}
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>

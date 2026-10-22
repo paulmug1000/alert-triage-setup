@@ -355,6 +355,88 @@ export function parseUnreceivedExpensesDetail(detail = "") {
   return result;
 }
 
+export function parseRevenueMismatchDetail(detail = "") {
+  const result = {};
+  if (!detail || typeof detail !== "string") return result;
+
+  const pipeIdx = detail.indexOf(" | ");
+  if (pipeIdx !== -1) {
+    result.endClientName = detail.slice(0, pipeIdx).trim();
+    const afterPipe = detail.slice(pipeIdx + 3);
+    const colonIdx = afterPipe.indexOf(":");
+    const jobPart = colonIdx !== -1 ? afterPipe.slice(0, colonIdx).trim() : afterPipe;
+    const codeMatch = jobPart.match(/\[([^\]]+)\]/);
+    if (codeMatch && !codeMatch[1].includes("tab") && !codeMatch[1].includes("retainer")) {
+      result.projectCode = codeMatch[1].trim();
+    }
+    const rowMatch = jobPart.match(/\(Row\s*(\d+)\)/i);
+    if (rowMatch) {
+      result.confirmedRow = rowMatch[1];
+      result.rowNum = rowMatch[1];
+    }
+    result.jobName = jobPart.replace(/\[([^\]]+)\]/g, "").replace(/\(Row\s*(\d+)\)/i, "").trim();
+  }
+
+  const dateMatch = detail.match(/job ended\s*([^,]+)/i);
+  if (dateMatch) result.endDate = dateMatch[1].trim();
+
+  const revMatch = detail.match(/revenue\s*=\s*£?([\d,.]+)/i);
+  if (revMatch) result.revenue = revMatch[1].replace(/,/g, "");
+
+  const invMatch = detail.match(/total invoiced[^\d]*£?([\d,.]+)/i);
+  if (invMatch) result.totalInvoiced = invMatch[1].replace(/,/g, "");
+
+  const diffMatch = detail.match(/difference of £?([\d,.]+)/i);
+  if (diffMatch) result.diff = diffMatch[1].replace(/,/g, "");
+
+  return result;
+}
+
+export function parseDirectCostsMismatchDetail(detail = "") {
+  const result = {};
+  if (!detail || typeof detail !== "string") return result;
+
+  const pipeIdx = detail.indexOf(" | ");
+  if (pipeIdx !== -1) {
+    result.endClientName = detail.slice(0, pipeIdx).trim();
+    const afterPipe = detail.slice(pipeIdx + 3);
+    const colonIdx = afterPipe.indexOf(":");
+    const jobPart = colonIdx !== -1 ? afterPipe.slice(0, colonIdx).trim() : afterPipe;
+    const codeMatch = jobPart.match(/\[([A-Za-z0-9_-]+)\]/);
+    if (codeMatch && !codeMatch[1].includes("tab") && !codeMatch[1].includes("retainer")) {
+      result.projectCode = codeMatch[1].trim();
+    }
+    const rowMatch = jobPart.match(/\(Row\s*(\d+)\)/i);
+    if (rowMatch) {
+      result.rowNum = rowMatch[1];
+    }
+    result.jobName = jobPart.replace(/\[([^\]]+)\]/g, "").replace(/\(Row\s*(\d+)\)/i, "").trim();
+  }
+
+  const tabMatch = detail.match(/\[(Pipeline|Confirmed)\s+tab\]/i);
+  if (tabMatch) result.tab = tabMatch[1];
+
+  if (result.rowNum) {
+    if (!result.tab || result.tab === "Confirmed") result.confirmedRow = result.rowNum;
+    else if (result.tab === "Pipeline") result.pipelineRow = result.rowNum;
+  }
+
+  const dateMatch = detail.match(/job ended\s*([^,]+)/i);
+  if (dateMatch) result.endDate = dateMatch[1].trim();
+
+  const budgetMatch = detail.match(/(?:direct cost budget|monthly budget of)\s*=\s*£?([\d,.]+)/i) || detail.match(/monthly budget of £?([\d,.]+)/i);
+  if (budgetMatch) result.directCosts = budgetMatch[1].replace(/,/g, "");
+
+  const expMatch = detail.match(/(?:total expenses(?: on parent)?|expenses)\s*(?:=\s*)?£?([\d,.]+)/i) || detail.match(/£([\d,.]+)\s*expenses/i);
+  if (expMatch) result.totalExpenses = expMatch[1].replace(/,/g, "");
+
+  const diffMatch = detail.match(/(?:difference of|diff)\s*£?([\d,.]+)/i);
+  if (diffMatch) result.diff = diffMatch[1].replace(/,/g, "");
+
+  return result;
+}
+
+
 export function filterAnalysisResultsForAlert(results, flagDetail) {
   if (!Array.isArray(results) || results.length <= 1 || !flagDetail) {
     return results || [];
@@ -957,7 +1039,8 @@ export function getAlertJobTarget(alertOrNa, isInfo = false, clientInfo = null) 
   }
 
   if (alertType === "revenue_mismatch") {
-    const rowNum = m.confirmedRow || alertOrNa.confirmedRow || (alertOrNa.detail && alertOrNa.detail.match(/Row\s*(\d+)/i)?.[1]);
+    const parsed = (!m.revenue && !alertOrNa.revenue && alertOrNa.detail) ? parseRevenueMismatchDetail(alertOrNa.detail) : {};
+    const rowNum = m.confirmedRow || alertOrNa.confirmedRow || parsed.confirmedRow || (alertOrNa.detail && alertOrNa.detail.match(/Row\s*(\d+)/i)?.[1]);
     return {
       isOutgoings: false,
       client: effectiveClient,
@@ -965,15 +1048,16 @@ export function getAlertJobTarget(alertOrNa, isInfo = false, clientInfo = null) 
       clientSheetId: cSheetId,
       rowNum,
       tabName: "Confirmed",
-      jobName: m.jobName || alertOrNa.jobName,
-      endClientName: m.endClientName || alertOrNa.endClientName,
-      projectCode: m.projectCode || alertOrNa.projectCode
+      jobName: m.jobName || alertOrNa.jobName || parsed.jobName,
+      endClientName: m.endClientName || alertOrNa.endClientName || parsed.endClientName,
+      projectCode: m.projectCode || alertOrNa.projectCode || parsed.projectCode
     };
   }
 
   if (alertType === "direct_costs_mismatch") {
-    const tabName = m.tab || (alertOrNa.detail && alertOrNa.detail.includes("Pipeline tab") ? "Pipeline" : "Confirmed");
-    const rowNum = m.confirmedRow || alertOrNa.confirmedRow || alertOrNa.sheetRow || (alertOrNa.detail && alertOrNa.detail.match(/Row\s*(\d+)/i)?.[1]);
+    const parsed = (!m.directCosts && !alertOrNa.directCosts && alertOrNa.detail) ? parseDirectCostsMismatchDetail(alertOrNa.detail) : {};
+    const tabName = m.tab || alertOrNa.tab || parsed.tab || (alertOrNa.detail && alertOrNa.detail.includes("Pipeline tab") ? "Pipeline" : "Confirmed");
+    const rowNum = m.confirmedRow || alertOrNa.confirmedRow || alertOrNa.sheetRow || parsed.rowNum || (alertOrNa.detail && alertOrNa.detail.match(/Row\s*(\d+)/i)?.[1]);
     return {
       isOutgoings: false,
       client: effectiveClient,
@@ -981,9 +1065,9 @@ export function getAlertJobTarget(alertOrNa, isInfo = false, clientInfo = null) 
       clientSheetId: cSheetId,
       rowNum,
       tabName,
-      jobName: m.jobName || alertOrNa.jobName,
-      endClientName: m.endClientName || alertOrNa.endClientName,
-      projectCode: m.projectCode || alertOrNa.projectCode
+      jobName: m.jobName || alertOrNa.jobName || parsed.jobName,
+      endClientName: m.endClientName || alertOrNa.endClientName || parsed.endClientName,
+      projectCode: m.projectCode || alertOrNa.projectCode || parsed.projectCode
     };
   }
 
@@ -1005,6 +1089,38 @@ export function getAlertJobTarget(alertOrNa, isInfo = false, clientInfo = null) 
       invoiceRef: invoiceRef ? String(invoiceRef).trim() : "",
       amount: m.amount || alertOrNa.amount,
       sentDate: m.sentDate || alertOrNa.sentDate,
+    };
+  }
+
+  // CRM Alerts
+  const ft = alertOrNa.flagType || alertOrNa.alertType || alertOrNa.type || "";
+  if (ft.startsWith("crm") || alertOrNa.type === "crm" || alertOrNa.sheetName === "CRMComp") {
+    const isPipeline = ft.includes("Pipe") || alertOrNa.mode === "Pipeline";
+    const tabName = isPipeline ? "Pipeline" : "Confirmed";
+    const isDash = ft.includes("Dash");
+    const cd = alertOrNa.data?.crmData || [];
+    const sd = alertOrNa.data?.sheetData || [];
+    const crmClient = isDash ? cd[0] : cd[1];
+    const crmJob = isDash ? cd[1] : cd[2];
+    const crmCode = isDash ? cd[2] : cd[0];
+    const shtClient = isDash ? sd[1] : sd[0];
+    const shtJob = isDash ? sd[2] : sd[1];
+    const shtCode = isDash ? sd[0] : sd[2];
+    const clientName = shtClient || crmClient || cName;
+    const jobName = shtJob || crmJob;
+    const projectCode = shtCode || crmCode;
+    const rowNum = (!isDash && alertOrNa.rowNumber) ? Number(alertOrNa.rowNumber) : (alertOrNa.jobRow ? Number(alertOrNa.jobRow) : undefined);
+
+    return {
+      isOutgoings: false,
+      client: effectiveClient,
+      clientName,
+      clientSheetId: cSheetId,
+      rowNum,
+      tabName,
+      jobName,
+      endClientName: clientName,
+      projectCode
     };
   }
 

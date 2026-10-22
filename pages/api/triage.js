@@ -38,7 +38,7 @@ import {
   handleGetInvoiceJobs, handleGetAllClientJobs, handleUpdateJobField, handleUpdateJobFields,
   handleAssignExpenseToJob, handleUpdateExpenseSlot, handleAssignInvoiceToJob,
   handleUpdateInvoiceSlot, handleVerifyInvoiceSlot, handleCreateJobFromInvoice, handleAddNewJob, handleUpdateOutgoingNote,
-  handleFireOutgoingsPull, handleMarkPipelineCopied, handleDeleteDirectJob, handleMarkPipelineAlreadyConfirmed, getClientWebAppUrl
+  handleFireOutgoingsPull, handleMarkPipelineCopied, handleDeleteDirectJob, handleMarkPipelineAlreadyConfirmed, handleGetDefaultDaysToPay, getClientWebAppUrl
 } from "../../services/workspaces";
 import {
   handleGetRetainerJobs, handleRenameRetainerJob, handleChangeRetainerStartDate, handleChangeRetainerEndDate,
@@ -394,6 +394,8 @@ export default async function handler(req, res) {
       return await handleVerifyInvoiceSlot(req, res, sheets);
     } else if (action === "create_job_from_invoice") {
       return await handleCreateJobFromInvoice(req, res, sheets);
+    } else if (action === "get_default_days_to_pay") {
+      return await handleGetDefaultDaysToPay(req, res, sheets);
     } else if (action === "add_new_job") {
       return await handleAddNewJob(req, res, sheets);
     } else if (action === "mark_pipeline_copied") {

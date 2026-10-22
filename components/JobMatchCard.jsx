@@ -8,6 +8,11 @@ import {
 } from "./JobsView";
 import { isPlaceholderInvoice, isPlaceholderExpense, cleanUserFacingText } from "../utils/helpers";
 
+const fmtGBP = (val) => {
+  const num = typeof val === "number" ? val : (parseFloat(String(val || "0").replace(/[£$€,\s]/g, "")) || 0);
+  return "£" + num.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+};
+
 /**
  * Normalizes either raw rows from fetchJobRowsForDisplay (which have isParent: true on row 0)
  * or unified job objects into an array of unified jobs with job.rows intact.
@@ -252,8 +257,6 @@ export default function JobMatchCard({
   candidateIndex,
   alertSummary
 }) {
-  const [selectedTargetId, setSelectedTargetId] = useState(null);
-  const [showAltPicker, setShowAltPicker] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
 
   // Normalize input to unified job
@@ -357,9 +360,8 @@ export default function JobMatchCard({
   const placedItems = mode === "invoice" ? placedInvoices : placedExpenses;
   const unplacedItems = mode === "invoice" ? unplacedInvoices : unplacedExpenses;
 
-  // Determine the active target
-  let defaultTarget = currentItems.find((it) => it.slot?.highlighted) || unplacedItems[0] || currentItems[0] || null;
-  let activeTarget = (selectedTargetId && currentItems.find((it) => it.id === selectedTargetId)) || defaultTarget;
+  // Determine the active target (first available unplaced slot)
+  const activeTarget = currentItems.find((it) => it.slot?.highlighted) || unplacedItems[0] || currentItems[0] || null;
 
   // Clean target label (e.g. "Nov-26" or "Invoice 2")
   const getCleanTargetLabel = (item) => {
@@ -391,35 +393,12 @@ export default function JobMatchCard({
         transition: "border-color 0.15s ease",
       }}
     >
-      {/* ── Top Header: Status, Client & Job in Sentence Case ── */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "10px" }}>
+      {/* ── Top Header: Client & Job with Pills to the right ── */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
         <div style={{ flex: 1, minWidth: "240px" }}>
-          {candidateIndex !== undefined && (
-            <div style={{ fontSize: "12px", fontWeight: "700", color: "#64748b", marginBottom: "6px" }}>
-              Candidate job {candidateIndex + 1}
-              {confidence && (
-                <span style={{ fontWeight: "600", color: "#059669", marginLeft: "6px" }}>
-                  · {formatConfidence(confidence)}
-                </span>
-              )}
-            </div>
-          )}
-
           <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-            {/* Status Pill */}
-            <span
-              style={{
-                display: "inline-block",
-                padding: "2px 8px",
-                borderRadius: "12px",
-                fontSize: "11px",
-                fontWeight: "600",
-                background: isConfirmed ? "#dcfce7" : "#e0f2fe",
-                color: isConfirmed ? "#15803d" : "#0369a1",
-                border: isConfirmed ? "1px solid #bbf7d0" : "1px solid #bae6fd"
-              }}
-            >
-              {isConfirmed ? "Confirmed" : "Pipeline"}
+            <span style={{ fontSize: "16px", fontWeight: "700", color: "#0f172a" }}>
+              {clientName} - {jobName}
             </span>
 
             {/* Retainer / Project Badge */}
@@ -453,10 +432,6 @@ export default function JobMatchCard({
               </span>
             )}
           </div>
-
-          <div style={{ fontSize: "16px", fontWeight: "700", color: "#0f172a", marginTop: "6px" }}>
-            {clientName} - {jobName}
-          </div>
         </div>
 
         {/* Action Buttons: View Job */}
@@ -486,23 +461,7 @@ export default function JobMatchCard({
         </div>
       </div>
 
-      {/* ── Match Rationale Banner (Sentence Case) ── */}
-      {recommendationReason && (
-        <div
-          style={{
-            marginTop: "10px",
-            fontSize: "12px",
-            color: "#334155",
-            background: "#eff6ff",
-            padding: "8px 12px",
-            borderRadius: "6px",
-            borderLeft: "3px solid #3b82f6",
-            lineHeight: "1.4"
-          }}
-        >
-          <strong>Match rationale:</strong> {cleanUserFacingText(recommendationReason)}
-        </div>
-      )}
+
 
       {/* ── Full Job Details Grid (Modeled on CRM Missing Job Screen) ── */}
       <div
@@ -564,25 +523,17 @@ export default function JobMatchCard({
         {/* Clean 1-Line Financial Progress Summary inside Grid */}
         <div style={{ gridColumn: "1 / -1", paddingTop: "8px", borderTop: "1px solid #e2e8f0", fontSize: "12px" }}>
           {mode === "invoice" ? (
-            isRetainer ? (
-              <span style={{ color: "#0369a1" }}>
-                <strong>Billing cycle:</strong> {normalizedJob.rows?.length || 1} months total · Next unbilled month: <strong>{activeTargetLabel}</strong>
-              </span>
-            ) : (
-              <span style={{ color: metrics.leftToInvoice > 0 ? "#92400e" : "#15803d" }}>
-                <strong>Invoicing progress:</strong> {formatCurrency(metrics.realInvoiced)} of {formatCurrency(metrics.revenue)} invoiced ({metrics.revenue > 0 ? Math.round((metrics.realInvoiced / metrics.revenue) * 100) : 0}%) · {metrics.leftToInvoice > 0 ? `${formatCurrency(metrics.leftToInvoice)} remaining` : "Fully invoiced"}
-              </span>
-            )
+            <span style={{ color: metrics.leftToInvoice > 0 ? "#92400e" : "#15803d", fontWeight: "600" }}>
+              {metrics.leftToInvoice > 0
+                ? `${fmtGBP(metrics.leftToInvoice)} left to invoice (${metrics.realInvoiced > 0 ? fmtGBP(metrics.realInvoiced) : "£0"} invoiced so far - ${metrics.revenue > 0 ? Math.round((metrics.realInvoiced / metrics.revenue) * 100) : 0}%)`
+                : `Fully invoiced (${metrics.revenue > 0 ? fmtGBP(metrics.revenue) : "£0"} invoiced so far - 100%)`}
+            </span>
           ) : (
-            isRetainer ? (
-              <span style={{ color: "#0f766e" }}>
-                <strong>Direct costs schedule:</strong> Monthly budget {formatCurrency(parentRow.directCosts || metrics.directCosts)} · Target month: <strong>{activeTargetLabel}</strong>
-              </span>
-            ) : (
-              <span style={{ color: metrics.costsLeftToReceive > 0 ? "#92400e" : "#15803d" }}>
-                <strong>Direct costs budget:</strong> {formatCurrency(metrics.realCostsReceived)} of {formatCurrency(metrics.directCosts)} budget used ({metrics.directCosts > 0 ? Math.round((metrics.realCostsReceived / metrics.directCosts) * 100) : 0}%) · {metrics.costsLeftToReceive > 0 ? `${formatCurrency(metrics.costsLeftToReceive)} remaining budget` : "All costs received"}
-              </span>
-            )
+            <span style={{ color: metrics.costsLeftToReceive > 0 ? "#92400e" : "#15803d", fontWeight: "600" }}>
+              {metrics.costsLeftToReceive > 0
+                ? `${fmtGBP(metrics.costsLeftToReceive)} left to receive (${metrics.realCostsReceived > 0 ? fmtGBP(metrics.realCostsReceived) : "£0"} received so far - ${metrics.directCosts > 0 ? Math.round((metrics.realCostsReceived / metrics.directCosts) * 100) : 0}%)`
+                : `Fully received (${metrics.directCosts > 0 ? fmtGBP(metrics.directCosts) : "£0"} received so far - 100%)`}
+            </span>
           )}
         </div>
       </div>
@@ -657,156 +608,50 @@ export default function JobMatchCard({
         </div>
       )}
 
-      {/* ── Primary Action Card (Modeled on CRM Missing Job Action Box) ── */}
+      {/* ── Primary Action Bar ── */}
       {activeTarget && (
         <div
           style={{
             marginTop: "12px",
-            padding: "12px 14px",
+            padding: "10px 14px",
             background: mode === "invoice" ? "#f0fdf4" : "#ecfdf5",
             border: mode === "invoice" ? "1.5px solid #22c55e" : "1.5px solid #10b981",
             borderRadius: "8px",
             display: "flex",
-            flexDirection: "column",
-            gap: "8px"
+            alignItems: "center",
+            justifyContent: "flex-start"
           }}
         >
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
-            <div>
-              <div style={{ fontSize: "14px", fontWeight: "700", color: "#166534", display: "flex", alignItems: "center", gap: "6px" }}>
-                <span>⚡</span>
-                <span>
-                  {mode === "invoice"
-                    ? (isRetainer ? `Place on ${activeTargetLabel}` : `Place as ${activeTargetLabel}`)
-                    : (isRetainer ? `Allocate to ${activeTargetLabel}` : `Allocate to project direct costs`)}
-                </span>
-              </div>
-              <div style={{ fontSize: "12px", color: "#374151", marginTop: "2px" }}>
-                {mode === "invoice"
-                  ? (isRetainer
-                    ? `Places this invoice into ${activeTargetLabel} for this retainer.`
-                    : `Places this invoice into the next open invoice position for this project.`)
-                  : (isRetainer
-                    ? `Logs this expense as the direct cost for ${activeTargetLabel} on this retainer.`
-                    : `Logs this expense as direct cost on this project.`)}
-              </div>
-            </div>
-
-            <button
-              type="button"
-              className="triage-btn"
-              onClick={() => onPlaceSlot && onPlaceSlot(
-                normalizedJob,
-                activeTarget.slotNum,
-                activeTarget.slot,
-                activeTarget.rowNum,
-                false,
-                activeTargetLabel
-              )}
-              style={{
-                padding: "8px 18px",
-                borderRadius: "6px",
-                border: "1px solid #15803d",
-                background: "#16a34a",
-                color: "#ffffff",
-                fontSize: "13px",
-                fontWeight: "700",
-                cursor: "pointer",
-                display: "inline-flex",
-                alignItems: "center",
-                gap: "6px",
-                boxShadow: "0 1px 3px rgba(22, 163, 74, 0.25)"
-              }}
-            >
-              {mode === "invoice"
-                ? (isRetainer ? `⚡ Place on ${activeTargetLabel}` : `⚡ Place invoice on job`)
-                : (isRetainer ? `⚡ Allocate to ${activeTargetLabel}` : `⚡ Allocate direct cost`)}
-            </button>
-          </div>
-
-          {/* Alternate Target Selector (Sentence Case) */}
-          {currentItems.length > 1 && (
-            <div style={{ paddingTop: "6px", borderTop: "1px solid rgba(34, 197, 94, 0.2)", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-              {!showAltPicker ? (
-                <button
-                  type="button"
-                  onClick={() => setShowAltPicker(true)}
-                  style={{
-                    background: "none",
-                    border: "none",
-                    color: "#0369a1",
-                    fontSize: "11px",
-                    fontWeight: "600",
-                    cursor: "pointer",
-                    padding: "2px 0",
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "4px"
-                  }}
-                >
-                  + Choose a different {isRetainer ? "month" : (mode === "invoice" ? "invoice entry" : "direct cost entry")} ▾
-                </button>
-              ) : (
-                <div style={{ display: "flex", alignItems: "center", gap: "8px", background: "#ffffff", padding: "4px 8px", borderRadius: "4px", border: "1px solid #cbd5e1" }}>
-                  <span style={{ fontSize: "11px", color: "#475569", fontWeight: "600" }}>
-                    Select target:
-                  </span>
-                  <select
-                    value={activeTarget?.id || ""}
-                    onChange={(e) => {
-                      setSelectedTargetId(e.target.value);
-                      setShowAltPicker(false);
-                    }}
-                    style={{
-                      fontSize: "12px",
-                      padding: "2px 6px",
-                      borderRadius: "4px",
-                      border: "1px solid #cbd5e1",
-                      background: "#ffffff",
-                      outline: "none"
-                    }}
-                  >
-                    {currentItems.map((item) => (
-                      <option key={item.id} value={item.id}>
-                        {getCleanTargetLabel(item)} {item.slot?.ref ? `(#${item.slot.ref})` : (item.slot?.description ? `(${item.slot.description})` : "(Unallocated)")}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    type="button"
-                    onClick={() => setShowAltPicker(false)}
-                    style={{ background: "none", border: "none", color: "#94a3b8", cursor: "pointer", fontSize: "12px" }}
-                  >
-                    ✕
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Project Overflow: Add New Row */}
-          {!isRetainer && unplacedItems.length === 0 && (
-            <div style={{ paddingTop: "6px" }}>
-              <button
-                type="button"
-                onClick={() => onPlaceSlot && onPlaceSlot(normalizedJob, 1, null, parentRow.rowNum, true, `New ${mode === "invoice" ? "Invoice" : "Direct Cost"}`)}
-                style={{
-                  background: "#ffffff",
-                  border: "1px dashed #16a34a",
-                  borderRadius: "6px",
-                  padding: "6px 12px",
-                  width: "100%",
-                  color: "#166534",
-                  fontSize: "12px",
-                  fontWeight: "600",
-                  cursor: "pointer",
-                  textAlign: "center"
-                }}
-              >
-                + Add new {mode === "invoice" ? "invoice" : "direct cost"} row to project
-              </button>
-            </div>
-          )}
+          <button
+            type="button"
+            className="triage-btn"
+            onClick={() => onPlaceSlot && onPlaceSlot(
+              normalizedJob,
+              activeTarget.slotNum,
+              activeTarget.slot,
+              activeTarget.rowNum,
+              false,
+              activeTargetLabel
+            )}
+            style={{
+              padding: "8px 18px",
+              borderRadius: "6px",
+              border: "1px solid #15803d",
+              background: "#16a34a",
+              color: "#ffffff",
+              fontSize: "13px",
+              fontWeight: "700",
+              cursor: "pointer",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "6px",
+              boxShadow: "0 1px 3px rgba(22, 163, 74, 0.25)"
+            }}
+          >
+            {mode === "invoice"
+              ? (isRetainer ? `Place on ${activeTargetLabel}` : "Place invoice on job")
+              : (isRetainer ? `Allocate to ${activeTargetLabel}` : "Place expense on job")}
+          </button>
         </div>
       )}
     </div>

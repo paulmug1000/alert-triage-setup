@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef } from "react";
+import React, { useState, useMemo, useRef, useEffect } from "react";
 import Spinner from "./Spinner";
 import SplitMonthCard from "./SplitMonthCard";
 import { formatSplitString } from "../services/splitHelper";
@@ -36,6 +36,8 @@ export default function JobsNewJobModal({
   const [productLine, setProductLine] = useState("");
   const [leadSource, setLeadSource] = useState("");
 
+  const [clientDefaultDays, setClientDefaultDays] = useState(30);
+
   // Invoices (up to 3 slots)
   const [showInvoicesSection, setShowInvoicesSection] = useState(false);
   const [activeInvoiceSlot, setActiveInvoiceSlot] = useState(1);
@@ -57,12 +59,43 @@ export default function JobsNewJobModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
+  // Fetch client's default days to pay from DataChgAlert!B52 (Master Sheet)
+  useEffect(() => {
+    let isMounted = true;
+    const fetchDefaultDays = async () => {
+      if (!jobsClient?.clientSheetId && !jobsClient?.masterSheetId) return;
+      try {
+        const res = await fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "get_default_days_to_pay",
+            clientSheetId: jobsClient?.clientSheetId,
+            masterSheetId: jobsClient?.masterSheetId,
+            clientName: jobsClient?.clientName || jobsClient?.name || "",
+          }),
+        });
+        const data = await res.json();
+        if (isMounted && data?.success && typeof data.defaultDaysToPay === "number") {
+          const defDays = data.defaultDaysToPay;
+          setClientDefaultDays(defDays);
+          setInvoices(prev => prev.map(inv => (inv.daysToPay === 30 || inv.daysToPay === "" || inv.daysToPay === undefined) ? { ...inv, daysToPay: defDays } : inv));
+          setExpenses(prev => prev.map(exp => (exp.daysToPay === 30 || exp.daysToPay === "" || exp.daysToPay === undefined) ? { ...exp, daysToPay: defDays } : exp));
+        }
+      } catch (e) {
+        console.warn("Could not fetch client default days to pay for JobsNewJobModal:", e.message);
+      }
+    };
+    fetchDefaultDays();
+    return () => { isMounted = false; };
+  }, [jobsClient]);
+
   const updateInvoice = (slotNum, field, val) => {
     setInvoices(prev => prev.map(inv => inv.slotNum === slotNum ? { ...inv, [field]: val } : inv));
   };
 
   const clearInvoice = (slotNum) => {
-    setInvoices(prev => prev.map(inv => inv.slotNum === slotNum ? { slotNum, invoiceNo: "", amount: "", sentDate: "", daysToPay: 30, status: "Sent" } : inv));
+    setInvoices(prev => prev.map(inv => inv.slotNum === slotNum ? { slotNum, invoiceNo: "", amount: "", sentDate: "", daysToPay: clientDefaultDays, status: "Sent" } : inv));
   };
 
   const updateExpense = (slotNum, field, val) => {
@@ -70,7 +103,7 @@ export default function JobsNewJobModal({
   };
 
   const clearExpense = (slotNum) => {
-    setExpenses(prev => prev.map(exp => exp.slotNum === slotNum ? { slotNum, description: "", amount: "", vat: "No", date: "", daysToPay: 30, status: "Pending", transactionId: "" } : exp));
+    setExpenses(prev => prev.map(exp => exp.slotNum === slotNum ? { slotNum, description: "", amount: "", vat: "No", date: "", daysToPay: clientDefaultDays, status: "Pending", transactionId: "" } : exp));
   };
 
   // Compute active counts for badges
@@ -237,7 +270,12 @@ export default function JobsNewJobModal({
       invoiceNo: (inv.invoiceNo || "").trim(),
       amount: parseFloat(inv.amount) || 0,
       sentDate: inv.sentDate || "",
-      daysToPay: parseInt(inv.daysToPay, 10) || 30,
+      daysToPay: (() => {
+        const s = String(inv.daysToPay || "").trim();
+        if (/^[0-9]{4}[-/]/.test(s) || /[A-Za-z]{3}/.test(s)) return 30;
+        const p = parseInt(s.replace(/[^\d-]/g, ""), 10);
+        return !isNaN(p) && p >= 0 && p <= 365 ? p : 30;
+      })(),
       status: (inv.status || "Sent").trim()
     }));
 
@@ -253,7 +291,12 @@ export default function JobsNewJobModal({
       amount: parseFloat(exp.amount) || 0,
       vat: exp.vat || "No",
       date: exp.date || "",
-      daysToPay: parseInt(exp.daysToPay, 10) || 30,
+      daysToPay: (() => {
+        const s = String(exp.daysToPay || "").trim();
+        if (/^[0-9]{4}[-/]/.test(s) || /[A-Za-z]{3}/.test(s)) return 30;
+        const p = parseInt(s.replace(/[^\d-]/g, ""), 10);
+        return !isNaN(p) && p >= 0 && p <= 365 ? p : 30;
+      })(),
       status: (exp.status || "Pending").trim(),
       transactionId: (exp.transactionId || "").trim()
     }));
@@ -266,6 +309,7 @@ export default function JobsNewJobModal({
         body: JSON.stringify({
           action: "add_new_job",
           clientSheetId: jobsClient?.clientSheetId,
+          masterSheetId: jobsClient?.masterSheetId,
           clientName: jobsClient?.clientName || jobsClient?.name || "",
           tabName: status,
           jobData: {

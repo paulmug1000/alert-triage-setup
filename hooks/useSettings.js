@@ -77,8 +77,9 @@ export function useSettings(automationCommanderSheetId) {
             setAgentRunStartedAt(active.startedAt || Date.now());
 
             if (active.status === "completed" || active.done) {
-              setAgentRunStatus("success");
-              setAgentRunMsg("✓ Run complete.");
+              const hasError = active.status === "error";
+              setAgentRunStatus(hasError ? "error" : "success");
+              setAgentRunMsg(hasError ? "Automation finished with error." : "Run complete.");
               if (typeof window !== "undefined") localStorage.removeItem("pulse_active_agent_run");
             } else if (active.status === "error") {
               setAgentRunStatus("error");
@@ -143,8 +144,14 @@ export function useSettings(automationCommanderSheetId) {
         if (d.success) {
           setAgentProgressEntries(d.entries || []);
           if (d.done) {
-            setAgentRunStatus("success");
-            setAgentRunMsg("✓ Run complete.");
+            const hasError = (d.entries || []).some(e => e.stage === "error");
+            if (hasError) {
+              setAgentRunStatus("error");
+              setAgentRunMsg("Automation finished with error.");
+            } else {
+              setAgentRunStatus("success");
+              setAgentRunMsg("Run complete.");
+            }
             if (typeof window !== "undefined") localStorage.removeItem("pulse_active_agent_run");
           }
         }

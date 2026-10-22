@@ -445,6 +445,7 @@ export default function SettingsView({
                         {agentProgressEntries.map((entry, i) => {
                           const stageColor = {
                             init: "#64748b",
+                            info: "#0284c7",
                             invoice: "#2563eb",
                             crm: "#7c3aed",
                             expense: "#d97706",
@@ -733,7 +734,7 @@ export default function SettingsView({
                         { name: "Retainer invoice monitoring", detail: "Flags retainer jobs where an invoice was scheduled to be sent but no invoice reference has been recorded." },
                         { name: "CRM data wipe detection", detail: "Watches for AutoLog entries warning that the CRM wiped a job's data blank." },
                         { name: "Revenue / total invoiced mismatch", detail: "Compares each job's revenue against the total invoiced amount, flagging zero-revenue jobs with invoices and material mismatches." },
-                        { name: "Direct costs / total expenses mismatch", detail: "Compares each job's direct cost budget against total recorded expenses, across both Pipeline and Confirmed." },
+                        { name: "Direct costs / total expenses mismatch", detail: "Compares each job's direct cost budget against total recorded expenses in the Confirmed tab." },
                         { name: "Pipeline / Confirmed overlap", detail: "Finds jobs present in both tabs where the Pipeline entry hasn't been properly closed out (likelihood not 0%, not marked copied to Confirmed)." },
                         { name: "Retainer shrink blocked", detail: "Flags retainer child rows that couldn't be automatically trimmed after a contract shrank, because the row already has actuals recorded." },
                         { name: "Uninvoiced new job", detail: "Flags jobs that started over a month ago but still have no real invoices recorded (only placeholders or empty slots)." },

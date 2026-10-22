@@ -253,7 +253,7 @@ export default function DeleteInvoiceFromPulseModal({
               lineHeight: "1.45"
             }}
           >
-            <strong>Live check result:</strong> This invoice reference was not found anywhere on the Confirmed tab. It appears to have already been removed or voided. You can safely resolve this alert now without modifying the sheet.
+            <strong>Live check result:</strong> This invoice reference was not found anywhere on in Pulse confirmed jobs. It appears to have already been removed or voided. You can safely resolve this alert now without modifying the sheet.
           </div>
         ) : liveCheck?.found ? (
           <div
@@ -293,7 +293,7 @@ export default function DeleteInvoiceFromPulseModal({
               lineHeight: "1.45"
             }}
           >
-            This invoice reference was not found in the accounting system (it may have been deleted or voided in Xero). Deleting it from Pulse will clear all fields for this invoice slot on the Confirmed tab and resolve this alert. This action cannot be undone.
+            This invoice reference was not found in the accounting system (it may have been deleted or voided in Xero). Deleting it from Pulse will clear all details and resolve this alert. This action cannot be undone.
           </div>
         )}
 

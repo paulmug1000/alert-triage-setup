@@ -99,9 +99,20 @@ export default function CreateTaskModal() {
           }).catch(() => {});
         }
 
-        const allResolved = clientNoActionAlerts.every(n => newResolved.has(n.fingerprintHash || `${n.flagType}-${n.flagDetail || ""}`));
-        const proactiveDone = proactiveAlerts.filter(a => a.clientName === selectedClient?.clientName).length === 0;
-        if (allResolved && proactiveDone && clientAlerts.length === 0) {
+        const checkInfoDone = (resolvedSet) => clientNoActionAlerts.every(na => {
+          const alertId = na.fingerprintHash || `${na.flagType}-${na.flagDetail || ""}`;
+          return (
+            resolvedSet.has(alertId) ||
+            (na.fingerprintHash && resolvedSet.has(na.fingerprintHash)) ||
+            (na.id && resolvedSet.has(na.id)) ||
+            (na.flagDetail && resolvedSet.has(`${na.flagType}-${na.flagDetail}`)) ||
+            resolvedSet.has(na.flagType)
+          );
+        });
+
+        const allResolved = checkInfoDone(newResolved);
+        const remainingProactiveCount = proactiveAlerts.filter(a => (a.clientName || a.metadata?.clientName || a.metadata?.endClientName) === selectedClient?.clientName).length;
+        if (allResolved && remainingProactiveCount === 0 && clientAlerts.length === 0) {
           handlePostClear([], newResolved);
         } else {
           setScreen("alertSelection");
@@ -126,22 +137,60 @@ export default function CreateTaskModal() {
           if ((updatedCounts[ft] || 0) === 0) updatedFlags[ft] = false;
           return { ...c, alertCounts: updatedCounts, flags: updatedFlags };
         }));
-        if (updatedAlerts.length === 0) {
-          if (allNoActionResolved()) handlePostClear([], resolvedNoActionFlags); else setScreen("alertSelection");
-        } else setScreen("alertSelection");
+
+        const checkInfoDone = (resolvedSet) => clientNoActionAlerts.every(na => {
+          const aId = na.fingerprintHash || `${na.flagType}-${na.flagDetail || ""}`;
+          return (
+            resolvedSet.has(aId) ||
+            (na.fingerprintHash && resolvedSet.has(na.fingerprintHash)) ||
+            (na.id && resolvedSet.has(na.id)) ||
+            (na.flagDetail && resolvedSet.has(`${na.flagType}-${na.flagDetail}`)) ||
+            resolvedSet.has(na.flagType)
+          );
+        });
+        const infoDone = checkInfoDone(resolvedNoActionFlags);
+        const remainingProactiveCount = proactiveAlerts.filter(a => (a.clientName || a.metadata?.clientName || a.metadata?.endClientName) === selectedClient?.clientName).length;
+
+        if (updatedAlerts.length === 0 && infoDone && remainingProactiveCount === 0) {
+          handlePostClear([], resolvedNoActionFlags);
+        } else {
+          setScreen("alertSelection");
+        }
       } else {
         if (sessionId) fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "remove_alert", sessionId, alertId: taskModalAlert.alertKey }) }).catch(() => {});
-        let remainingProactiveCount = 0;
+        
+        const remainingProactiveForClient = proactiveAlerts.filter(a => {
+          const isTarget = (taskModalAlert.rowIndex != null) ? a.rowIndex === taskModalAlert.rowIndex : a.alertKey === taskModalAlert.alertKey;
+          if (isTarget) return false;
+          return (a.clientName || a.metadata?.clientName || a.metadata?.endClientName) === selectedClient?.clientName;
+        }).length;
+
         setProactiveAlerts(prev => {
           const remaining = (taskModalAlert.rowIndex != null) ? prev.filter(a => a.rowIndex !== taskModalAlert.rowIndex) : prev.filter(a => a.alertKey !== taskModalAlert.alertKey);
           const counts = {};
           remaining.forEach(a => { const cName = a.clientName || a.metadata?.endClientName || a.metadata?.clientName; if (cName) counts[cName] = (counts[cName] || 0) + 1; });
           setProactiveCountsByClient(counts);
-          remainingProactiveCount = remaining.filter(a => a.clientName === selectedClient?.clientName).length;
           return remaining;
         });
-        const infoDone = clientNoActionAlerts.every(na => resolvedNoActionFlags.has(na.fingerprintHash || `${na.flagType}-${na.flagDetail || ""}`));
-        if (clientAlerts.length === 0 && infoDone && remainingProactiveCount === 0) handlePostClear([], resolvedNoActionFlags); else setScreen("alertSelection");
+
+        const checkInfoDone = (resolvedSet) => clientNoActionAlerts.every(na => {
+          const aId = na.fingerprintHash || `${na.flagType}-${na.flagDetail || ""}`;
+          return (
+            resolvedSet.has(aId) ||
+            (na.fingerprintHash && resolvedSet.has(na.fingerprintHash)) ||
+            (na.id && resolvedSet.has(na.id)) ||
+            (na.flagDetail && resolvedSet.has(`${na.flagType}-${na.flagDetail}`)) ||
+            resolvedSet.has(na.flagType)
+          );
+        });
+        const infoDone = checkInfoDone(resolvedNoActionFlags);
+        const actionableDone = clientAlerts.length === 0;
+
+        if (actionableDone && infoDone && remainingProactiveForClient === 0) {
+          handlePostClear([], resolvedNoActionFlags);
+        } else {
+          setScreen("alertSelection");
+        }
       }
     } catch (e) { setTaskActionError(e.message); } finally { setTaskModalSubmitting(false); }
   };

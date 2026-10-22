@@ -976,13 +976,69 @@ export default function TriageAnalysisView({
                   ? `Missing job - in CRM, not in Pulse ${tabLabel.toLowerCase()} jobs`
                   : `Missing job - in Pulse ${tabLabel.toLowerCase()} jobs, not in CRM`;
 
+              const isMissingInCrm = !isMismatch && !isDash;
+
               return (
                 <div style={{ marginBottom: "16px", padding: "14px 16px", backgroundColor: "#f5f3ff", borderLeft: "4px solid #7c3aed", borderRadius: "4px" }}>
-                  <div style={{ fontSize: "17px", fontWeight: "700", color: "#5b21b6", marginBottom: "8px" }}>
-                    ⚠ {subHeader}
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "8px", marginBottom: "8px" }}>
+                    <div>
+                      <div style={{ fontSize: "17px", fontWeight: "700", color: "#5b21b6", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                        <span>⚠ {subHeader}</span>
+                        {!isMissingInCrm && (
+                          <span style={{ fontSize: "11px", fontWeight: "600", padding: "2px 8px", borderRadius: "4px", backgroundColor: "#7c3aed", color: "#ffffff" }}>
+                            Details in CRM
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: "12px", color: "#6d28d9", marginTop: "2px", fontStyle: "italic" }}>
+                        {isMissingInCrm
+                          ? `The details below show what is currently recorded in your Pulse ${tabLabel.toLowerCase()} jobs:`
+                          : "The details below show what is currently recorded in your CRM deal:"}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="triage-btn"
+                      onClick={() => {
+                        setViewingJobTarget({
+                          clientSheetId: targetClientSheetId,
+                          clientName: displayClient || selectedClient?.clientName,
+                          jobName: displayJob,
+                          projectCode: displayCode || "",
+                          tabName: tabLabel,
+                          rowNum: alert.sheetRow || alert.rowNumber || null
+                        });
+                      }}
+                      style={{
+                        fontSize: "12px",
+                        fontWeight: "600",
+                        padding: "5px 12px",
+                        borderRadius: "6px",
+                        border: "1px solid #c4b5fd",
+                        background: "#ffffff",
+                        color: "#6d28d9",
+                        cursor: "pointer",
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "5px"
+                      }}
+                      title="View and edit job details in pop-up"
+                    >
+                      🔍 View job
+                    </button>
                   </div>
-                  <div style={{ fontSize: "15px", fontWeight: "600", color: "#1a1a1a", marginBottom: "12px" }}>
-                    {displayClient}{displayJob ? ` - ${displayJob}` : ""}{displayCode ? ` (${displayCode})` : ""}
+                  <div style={{ fontSize: "16px", fontWeight: "700", color: "#1a1a1a", marginBottom: "12px", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                    <span>{displayClient}{displayJob ? ` - ${displayJob}` : ""}</span>
+                    {displayType && (
+                      <span style={{ fontSize: "11px", fontWeight: "600", background: displayType.toLowerCase().includes("retainer") ? "#e0f2fe" : "#f3e8ff", color: displayType.toLowerCase().includes("retainer") ? "#0284c7" : "#7e22ce", padding: "2px 8px", borderRadius: "12px" }}>
+                        {displayType}
+                      </span>
+                    )}
+                    {displayCode && (
+                      <span style={{ fontFamily: "monospace", fontSize: "11px", fontWeight: "700", background: "#eff6ff", color: "#2563eb", padding: "1px 6px", borderRadius: "4px", border: "1px solid #bfdbfe" }}>
+                        {displayCode}
+                      </span>
+                    )}
                   </div>
 
                   {/* Full Job Details Grid */}
@@ -998,29 +1054,29 @@ export default function TriageAnalysisView({
                     color: "#374151"
                   }}>
                     <div>
-                      <span style={{ color: "#6b7280", fontWeight: "500" }}>Revenue: </span>
-                      <strong style={{ color: "#111827" }}>{formatCurrency(displayRev)}</strong>
+                      <span style={{ color: "#6b7280", fontWeight: "500" }}>{isMissingInCrm ? "Revenue (Pulse): " : "Revenue (CRM): "}</span>
+                      <strong style={{ color: "#111827" }}>{formatCurrency(crmRev || displayRev)}</strong>
                     </div>
                     <div>
-                      <span style={{ color: "#6b7280", fontWeight: "500" }}>Direct costs: </span>
-                      <strong style={{ color: "#111827" }}>{formatCurrency(displayCosts)}</strong>
+                      <span style={{ color: "#6b7280", fontWeight: "500" }}>{isMissingInCrm ? "Direct costs (Pulse): " : "Direct costs (CRM): "}</span>
+                      <strong style={{ color: "#111827" }}>{formatCurrency(crmCosts || displayCosts)}</strong>
                     </div>
                     <div>
-                      <span style={{ color: "#6b7280", fontWeight: "500" }}>Retainer / Project: </span>
-                      <strong style={{ color: "#111827" }}>{displayType || "Project"}</strong>
+                      <span style={{ color: "#6b7280", fontWeight: "500" }}>{isMissingInCrm ? "Retainer / project (Pulse): " : "Retainer / project (CRM): "}</span>
+                      <strong style={{ color: "#111827" }}>{crmType || displayType || "Project"}</strong>
                     </div>
                     <div>
-                      <span style={{ color: "#6b7280", fontWeight: "500" }}>Start date: </span>
-                      <strong style={{ color: "#111827" }}>{displayStart || "(blank)"}</strong>
+                      <span style={{ color: "#6b7280", fontWeight: "500" }}>{isMissingInCrm ? "Start date (Pulse): " : "Start date (CRM): "}</span>
+                      <strong style={{ color: "#111827" }}>{crmStart || displayStart || "(blank)"}</strong>
                     </div>
                     <div>
-                      <span style={{ color: "#6b7280", fontWeight: "500" }}>End date: </span>
-                      <strong style={{ color: "#111827" }}>{displayEnd || "(blank)"}</strong>
+                      <span style={{ color: "#6b7280", fontWeight: "500" }}>{isMissingInCrm ? "End date (Pulse): " : "End date (CRM): "}</span>
+                      <strong style={{ color: "#111827" }}>{crmEnd || displayEnd || "(blank)"}</strong>
                     </div>
                     {isPipeline && (
                       <div>
-                        <span style={{ color: "#6b7280", fontWeight: "500" }}>Likelihood: </span>
-                        <strong style={{ color: "#111827" }}>{formatLikelihood(displayLikely)}</strong>
+                        <span style={{ color: "#6b7280", fontWeight: "500" }}>{isMissingInCrm ? "Likelihood (Pulse): " : "Likelihood (CRM): "}</span>
+                        <strong style={{ color: "#111827" }}>{formatLikelihood(crmLikely || displayLikely)}</strong>
                       </div>
                     )}
                   </div>
@@ -1040,19 +1096,19 @@ export default function TriageAnalysisView({
                     </div>
                   )}
 
-                  {/* For CRM Missing Job in Pulse: Clear 2-Action Cards */}
+                  {/* For CRM Missing Job in Pulse: Clear 3-Action Cards */}
                   {!isMismatch && isDash && (
                     <div style={{ marginTop: "16px", paddingTop: "14px", borderTop: "1px solid #e9d5ff" }}>
-                      <div style={{ fontSize: "14px", fontWeight: "700", color: "#5b21b6", marginBottom: "10px" }}>
+                      <div style={{ fontSize: "16px", fontWeight: "700", color: "#5b21b6", marginBottom: "10px" }}>
                         Possible actions
                       </div>
-                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "12px" }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "12px" }}>
                         {/* Option 1: Create Job in Pulse */}
                         <div style={{ background: "#ffffff", border: "1.5px solid #7c3aed", borderRadius: "8px", padding: "14px", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
                           <div>
                             <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
                               <span style={{ fontSize: "16px" }}>➕</span>
-                              <strong style={{ color: "#6d28d9", fontSize: "14px" }}>Create Job in Pulse</strong>
+                              <strong style={{ color: "#6d28d9", fontSize: "14px" }}>Create job in Pulse</strong>
                             </div>
                             <p style={{ fontSize: "12px", color: "#4b5563", margin: "4px 0 12px 0", lineHeight: "1.4" }}>
                               Add this CRM deal to your <strong>{tabLabel}</strong> jobs in Pulse with the pre-filled revenue, dates, and client information.
@@ -1091,16 +1147,58 @@ export default function TriageAnalysisView({
                               gap: "6px"
                             }}
                           >
-                            ➕ Create Job in Pulse
+                            ➕ Create job in Pulse
                           </button>
                         </div>
 
-                        {/* Option 2: Ignore Deal */}
+                        {/* Option 2: View Job in Pulse */}
+                        <div style={{ background: "#ffffff", border: "1px solid #bae6fd", borderRadius: "8px", padding: "14px", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+                          <div>
+                            <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
+                              <span style={{ fontSize: "16px" }}>🔍</span>
+                              <strong style={{ color: "#0284c7", fontSize: "14px" }}>View job in Pulse</strong>
+                            </div>
+                            <p style={{ fontSize: "12px", color: "#4b5563", margin: "4px 0 12px 0", lineHeight: "1.4" }}>
+                              Inspect existing jobs in Pulse to check details or verify if this deal was recorded under a different name.
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            className="triage-btn"
+                            onClick={() => {
+                              setViewingJobTarget({
+                                clientSheetId: targetClientSheetId,
+                                clientName: displayClient || selectedClient?.clientName,
+                                jobName: displayJob,
+                                projectCode: displayCode || "",
+                                tabName: tabLabel,
+                                rowNum: alert.sheetRow || alert.rowNumber || null
+                              });
+                            }}
+                            style={{
+                              ...styles.buttonSecondary,
+                              width: "100%",
+                              padding: "9px 14px",
+                              fontSize: "13px",
+                              fontWeight: "600",
+                              color: "#0284c7",
+                              borderColor: "#bae6fd",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              gap: "6px"
+                            }}
+                          >
+                            🔍 View job
+                          </button>
+                        </div>
+
+                        {/* Option 3: Ignore Deal */}
                         <div style={{ background: "#ffffff", border: "1px solid #cbd5e1", borderRadius: "8px", padding: "14px", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
                           <div>
                             <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
                               <span style={{ fontSize: "16px" }}>🚫</span>
-                              <strong style={{ color: "#475569", fontSize: "14px" }}>Ignore Deal</strong>
+                              <strong style={{ color: "#475569", fontSize: "14px" }}>Ignore deal</strong>
                             </div>
                             <p style={{ fontSize: "12px", color: "#64748b", margin: "4px 0 12px 0", lineHeight: "1.4" }}>
                               Dismiss this alert if this deal should not be created or tracked in Pulse (e.g. test, duplicate, or cancelled).
@@ -1124,7 +1222,7 @@ export default function TriageAnalysisView({
                               gap: "6px"
                             }}
                           >
-                            🚫 Ignore Deal
+                            🚫 Ignore deal
                           </button>
                         </div>
                       </div>
@@ -1137,7 +1235,7 @@ export default function TriageAnalysisView({
             {/* For CRM Missing Jobs (non-mismatch), actions are already rendered inside the CRM card above */}
             {(!((alert?.flagType || alert?.alertType || alert?.type || "").startsWith("crm")) || alert.subType === "field_mismatch" || !((alert?.flagType || alert?.alertType || alert?.type || "").includes("Dash"))) && (
               <>
-                <h3 style={{ fontSize: "14px", fontWeight: "700", marginBottom: "12px", color: "#1e293b" }}>
+                <h3 style={{ fontSize: "16px", fontWeight: "700", marginBottom: "12px", color: "#1e293b" }}>
                   Possible actions
                 </h3>
                 {(() => {
@@ -1267,41 +1365,91 @@ export default function TriageAnalysisView({
                             const targetProjectCode = option.matchingDetails?.unmatchedJobSummary?.projectCode || "";
 
                             const canViewJob = Boolean(
-                              isDataMismatch &&
                               !isOutgoings &&
                               targetClientSheetId &&
                               (targetRowNum || targetJobName)
                             );
 
                             const canViewExpense = Boolean(
-                              isDataMismatch &&
                               isOutgoings &&
                               targetClientSheetId &&
                               (option.jobRow || targetJobName)
+                            );
+
+                            // Format clean user-facing title in sentence case
+                            let rawTitle = cleanUserFacingText(option.title || "");
+                            rawTitle = rawTitle.replace(/^IGNORE\s*[-—:]\s*/i, "Ignore discrepancy — ");
+                            rawTitle = rawTitle.replace(/^DELETE\s*[-—:]\s*/i, "Delete — ");
+
+                            // Consolidate into a single clear explanation section (no raw cell action bullets)
+                            let singleExplanation = option.explanation;
+                            if (!singleExplanation) {
+                              if (isDeleteAction) {
+                                singleExplanation = `Remove "${cleanUserFacingText(targetJobName || "this job")}" and all associated child entries from the ${optTab} tab. Please verify that no real invoices or expenses are linked before accepting.`;
+                              } else if (isIgnoreAction) {
+                                singleExplanation = `Mark this discrepancy as ignored to prevent it recurring. "${cleanUserFacingText(targetJobName || "this job")}" will remain in the ${optTab} tab with no changes made to Pulse or CRM.`;
+                              } else if (option.matchAnalysis?.reasonForChoice) {
+                                singleExplanation = option.matchAnalysis.reasonForChoice;
+                              } else if (option.recommendedActions && option.recommendedActions.length > 0) {
+                                singleExplanation = option.recommendedActions.filter(a => !String(a).toLowerCase().startsWith("write ") && !String(a).toLowerCase().startsWith("blank all cells")).join(". ") || option.recommendedActions[0];
+                              }
+                            }
+
+                            if (option.vatUpdate) {
+                              const vatText = option.vatUpdate.cells
+                                ? `Update VAT setting in cells ${option.vatUpdate.cells.join(", ")} from "${option.vatUpdate.currentValue}" to "${option.vatUpdate.newValue}".`
+                                : `Update VAT setting in cell ${option.vatUpdate.cell} from "${option.vatUpdate.currentValue}" to "${option.vatUpdate.newValue}".`;
+                              singleExplanation = singleExplanation ? `${singleExplanation} • ${vatText}` : vatText;
+                            }
+
+                            if (option.revenueImpact) {
+                              singleExplanation = singleExplanation
+                                ? `${singleExplanation} • Revenue impact: ${cleanUserFacingText(option.revenueImpact)}`
+                                : `Revenue impact: ${cleanUserFacingText(option.revenueImpact)}`;
+                            }
+
+                            const actionBtnText = option.actionButtonText || (
+                              isDeleteAction
+                                ? `Delete job from ${optTab}`
+                                : isIgnoreAction
+                                  ? `Ignore discrepancy`
+                                  : option.matchType === "info"
+                                    ? `Mark as resolved`
+                                    : `Accept ${isDataMismatch ? 'action' : 'option'} ${candidateJobOptions.length + idx + 1}`
                             );
 
                             return (
                               <div
                                 key={`other-opt-${idx}`}
                                 style={{
-                                  ...styles.optionCard,
+                                  background: "#ffffff",
+                                  border: isDeleteAction ? "1.5px solid #fecaca" : isIgnoreAction ? "1.5px solid #cbd5e1" : "1.5px solid #e2e8f0",
+                                  borderLeft: isDeleteAction ? "4px solid #ef4444" : isIgnoreAction ? "4px solid #64748b" : "4px solid #0284c7",
+                                  borderRadius: "10px",
+                                  padding: "16px",
                                   marginBottom: "16px",
-                                  ...(isDeleteAction ? { borderColor: "#fca5a5", borderLeft: "4px solid #ef4444" } : {}),
-                                  ...(isIgnoreAction ? { borderColor: "#cbd5e1", borderLeft: "4px solid #94a3b8", backgroundColor: "#f8fafc" } : {})
+                                  boxShadow: "0 1px 3px rgba(0,0,0,0.03)"
                                 }}
                               >
                                 <div style={{
-                                  ...styles.optionTitle,
-                                  color: isDeleteAction ? "#b91c1c" : isIgnoreAction ? "#475569" : styles.optionTitle.color,
                                   display: "flex",
                                   alignItems: "center",
                                   justifyContent: "space-between",
                                   gap: "8px",
-                                  flexWrap: "wrap"
+                                  flexWrap: "wrap",
+                                  marginBottom: singleExplanation ? "10px" : "0"
                                 }}>
-                                  <span style={{ flex: "1 1 260px" }}>
-                                    {isDataMismatch ? `Action ${idx + 1}: ` : `Option ${candidateJobOptions.length + idx + 1}: `}
-                                    {cleanUserFacingText(option.title)}
+                                  <span style={{
+                                    flex: "1 1 260px",
+                                    fontSize: "15px",
+                                    fontWeight: "700",
+                                    color: isDeleteAction ? "#b91c1c" : isIgnoreAction ? "#334155" : "#0f172a",
+                                    lineHeight: "1.4"
+                                  }}>
+                                    <span style={{ color: isDeleteAction ? "#b91c1c" : isIgnoreAction ? "#64748b" : "#475569", fontWeight: "600", marginRight: "4px" }}>
+                                      {isDataMismatch ? `Action ${idx + 1}:` : `Option ${candidateJobOptions.length + idx + 1}:`}
+                                    </span>
+                                    {rawTitle}
                                   </span>
                                   <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
                                     {canViewJob && (
@@ -1325,9 +1473,9 @@ export default function TriageAnalysisView({
                                           fontWeight: "600",
                                           padding: "4px 10px",
                                           borderRadius: "6px",
-                                          border: "1px solid #bae6fd",
-                                          background: "#ffffff",
-                                          color: "#0284c7",
+                                          border: "1px solid #cbd5e1",
+                                          background: "#f8fafc",
+                                          color: "#334155",
                                           cursor: "pointer",
                                           display: "inline-flex",
                                           alignItems: "center",
@@ -1357,9 +1505,9 @@ export default function TriageAnalysisView({
                                           fontWeight: "600",
                                           padding: "4px 10px",
                                           borderRadius: "6px",
-                                          border: "1px solid #bae6fd",
-                                          background: "#ffffff",
-                                          color: "#0284c7",
+                                          border: "1px solid #cbd5e1",
+                                          background: "#f8fafc",
+                                          color: "#334155",
                                           cursor: "pointer",
                                           display: "inline-flex",
                                           alignItems: "center",
@@ -1371,61 +1519,33 @@ export default function TriageAnalysisView({
                                       </button>
                                     )}
                                     {isDeleteAction && (
-                                      <span style={{ fontSize: "11px", fontWeight: "700", color: "#dc2626", background: "#fee2e2", padding: "2px 8px", borderRadius: "12px", border: "1px solid #fca5a5" }}>
-                                        DELETES JOB
+                                      <span style={{ fontSize: "11px", fontWeight: "600", color: "#dc2626", background: "#fee2e2", padding: "2px 8px", borderRadius: "12px", border: "1px solid #fca5a5" }}>
+                                        Deletes job
                                       </span>
                                     )}
                                   </div>
                                 </div>
 
-                                {option.explanation && (
+                                {/* Single, clean explanation section that outlines what this option entails */}
+                                {singleExplanation && (
                                   <div style={{
-                                    ...styles.optionDetail,
-                                    marginTop: "8px",
-                                    padding: "10px 12px",
-                                    backgroundColor: isDeleteAction ? "#fff5f5" : "#fff8e1",
-                                    borderLeft: isDeleteAction ? "3px solid #ef4444" : "3px solid #f59e0b",
+                                    marginTop: "10px",
+                                    padding: "10px 14px",
+                                    backgroundColor: isDeleteAction ? "#fef2f2" : isIgnoreAction ? "#f8fafc" : "#f0fdf4",
+                                    border: isDeleteAction ? "1px solid #fee2e2" : isIgnoreAction ? "1px solid #e2e8f0" : "1px solid #dcfce7",
+                                    borderLeft: isDeleteAction ? "3px solid #ef4444" : isIgnoreAction ? "3px solid #64748b" : "3px solid #16a34a",
+                                    borderRadius: "6px",
                                     fontSize: "13px",
-                                    lineHeight: "1.5",
-                                    borderRadius: "0 6px 6px 0"
+                                    lineHeight: "1.55",
+                                    color: isDeleteAction ? "#991b1b" : isIgnoreAction ? "#334155" : "#166534"
                                   }}>
-                                    {cleanUserFacingText(option.explanation)}
-                                  </div>
-                                )}
-
-                                {option.vatUpdate && (
-                                  <div style={{ marginTop: "12px", background: "#f0fdf4", border: "1px solid #86efac", borderRadius: "6px", padding: "10px 14px" }}>
-                                    <strong style={{ color: "#15803d" }}>If accepted, the following will be updated:</strong>
-                                    <div style={{ fontFamily: "monospace", fontSize: "12px", marginTop: "4px" }}>
-                                      {option.vatUpdate.cells
-                                        ? option.vatUpdate.cells.map(cell => (
-                                          <div key={cell}>Cell {cell}: &quot;{option.vatUpdate.currentValue}&quot; → &quot;{option.vatUpdate.newValue}&quot;</div>
-                                        ))
-                                        : <div>Cell {option.vatUpdate.cell}: &quot;{option.vatUpdate.currentValue}&quot; → &quot;{option.vatUpdate.newValue}&quot;</div>
-                                      }
-                                    </div>
-                                  </div>
-                                )}
-
-                                {option.revenueImpact && (
-                                  <div style={{ marginTop: "10px", padding: "10px 12px", backgroundColor: "#f0fdf4", borderLeft: "3px solid #16a34a", fontSize: "13px", lineHeight: "1.5", color: "#166534", borderRadius: "0 6px 6px 0" }}>
-                                    <strong>Revenue impact:</strong> {cleanUserFacingText(option.revenueImpact)}
-                                  </div>
-                                )}
-
-                                {option.recommendedActions && option.recommendedActions.length > 0 && !option.vatUpdate && (
-                                  <div style={{ ...styles.optionDetail, marginTop: "8px" }}>
-                                    <strong>Actions:</strong>
-                                    {option.recommendedActions.map((action, i) => (
-                                      <div key={i} style={{ marginTop: "4px", fontSize: "13px" }}>
-                                        {i === 0 ? <strong style={{ color: "#059669" }}>✓ {cleanUserFacingText(action)}</strong> : `• ${cleanUserFacingText(action)}`}
-                                      </div>
-                                    ))}
+                                    {cleanUserFacingText(singleExplanation)}
                                   </div>
                                 )}
 
                                 <button
-                                  className={`triage-btn ${isDeleteAction ? "triage-btn-danger" : isIgnoreAction ? "triage-btn-secondary" : "triage-btn-primary"}`}
+                                  type="button"
+                                  className="triage-btn"
                                   onClick={() => {
                                     if (option.matchType === "info") {
                                       const alert2 = clientAlerts[currentClientAlertIndex];
@@ -1455,21 +1575,30 @@ export default function TriageAnalysisView({
                                   }}
                                   disabled={isAccepting || isCheckingCell}
                                   style={{
-                                    ...styles.decisionButton,
-                                    ...(isDeleteAction
-                                      ? { backgroundColor: "#dc2626", borderColor: "#b91c1c", color: "white" }
-                                      : isIgnoreAction
-                                        ? { backgroundColor: "#f1f5f9", borderColor: "#cbd5e1", color: "#475569" }
-                                        : styles.approveButton),
-                                    marginTop: "12px",
+                                    marginTop: "14px",
                                     width: "100%",
-                                    opacity: (isAccepting || isCheckingCell) ? 0.5 : 1
+                                    padding: "10px 16px",
+                                    borderRadius: "6px",
+                                    fontSize: "14px",
+                                    fontWeight: "600",
+                                    cursor: (isAccepting || isCheckingCell) ? "not-allowed" : "pointer",
+                                    transition: "all 0.15s ease",
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: "center",
+                                    gap: "8px",
+                                    ...(isDeleteAction
+                                      ? { backgroundColor: "#dc2626", border: "1px solid #b91c1c", color: "#ffffff" }
+                                      : isIgnoreAction
+                                        ? { backgroundColor: "#334155", border: "1px solid #1e293b", color: "#ffffff" }
+                                        : { backgroundColor: "#16a34a", border: "1px solid #15803d", color: "#ffffff" }),
+                                    opacity: (isAccepting || isCheckingCell) ? 0.6 : 1
                                   }}
                                 >
                                   {(isAccepting || isCheckingCell) ? (
                                     <><Spinner color="white" />Saving ...</>
                                   ) : (
-                                    option.actionButtonText || (option.matchType === "info" ? "Mark as resolved" : `Accept ${isDataMismatch ? 'action' : 'option'} ${candidateJobOptions.length + idx + 1}`)
+                                    actionBtnText
                                   )}
                                 </button>
                               </div>
@@ -1479,7 +1608,7 @@ export default function TriageAnalysisView({
                           {/* 3. Other Action Cards (Modeled on CRM Missing Job Layout - Missing items only) */}
                           {(isInvoiceType || isExpenseType) && !isDataMismatch && (
                             <div style={{ marginTop: "16px", paddingTop: "14px", borderTop: "1px solid #e2e8f0" }}>
-                              <div style={{ fontSize: "14px", fontWeight: "700", color: "#334155", marginBottom: "10px" }}>
+                              <div style={{ fontSize: "16px", fontWeight: "700", color: "#334155", marginBottom: "10px" }}>
                                 Other actions
                               </div>
                               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "12px" }}>
@@ -1915,8 +2044,9 @@ export default function TriageAnalysisView({
             }}
             invoicesClient={{
               clientSheetId: targetClientSheetId,
-              clientName: selectedClient?.clientName || clientInfo?.clientName || "",
-              masterSheetId: clientInfo?.masterSheetId || selectedClient?.masterSheetId || "",
+              clientName: selectedClient?.clientName || clientInfo?.clientName || alert?.clientName || "",
+              masterSheetId: clientInfo?.masterSheetId || selectedClient?.masterSheetId || alert?.masterSheetId || "",
+              defaultDaysToPay: clientInfo?.defaultDaysToPay || selectedClient?.defaultDaysToPay || undefined,
               automationCommanderSheetId,
             }}
             onClose={() => setCreateNewJobOpen(false)}

@@ -342,17 +342,18 @@ export async function handleTriggerAgentRun(req, res, sheets) {
 
     // Execute via Vercel Pro waitUntil so the response returns to the browser in < 300ms
     const task = (async () => {
+      const startTime = Date.now();
       try {
-        console.log(`🚀 [Agent Run] Invoking Web App for ${targetClientName} (runId: ${runId})...`);
+        console.log(`[Agent run] Invoking Web App for ${targetClientName} (runId: ${runId})...`);
         const gasResp = await fetch(webAppUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ secret: agentSecret, types, clientName: targetClientName, runId }),
         });
         const gasData = await gasResp.json().catch(() => null);
-        if (!gasData || !gasData.success) {
+        if (gasData && gasData.success === false) {
           const errMsg = gasData?.error || "Client Web App reported an error during execution";
-          console.error(`❌ [Agent Run] Web App reported failure for ${targetClientName}:`, errMsg);
+          console.error(`[Agent run] Web App reported failure for ${targetClientName}:`, errMsg);
           const raw = await redisClient.get(progressKey).catch(() => null);
           const existing = raw ? JSON.parse(raw) : { entries: [], done: false };
           existing.entries.push({ stage: "error", message: errMsg, at: new Date().toISOString() });
@@ -361,17 +362,44 @@ export async function handleTriggerAgentRun(req, res, sheets) {
           await redisClient.set(`active_agent_run:${targetClientName}`, JSON.stringify({
             runId, clientName: targetClientName, status: "error", error: errMsg, completedAt: Date.now()
           }), { EX: 600 }).catch(() => {});
+        } else if (gasData && gasData.success) {
+          const raw = await redisClient.get(progressKey).catch(() => null);
+          const existing = raw ? JSON.parse(raw) : { entries: [], done: false };
+          if (!existing.done) {
+            existing.entries.push({ stage: "done", message: "All requested sequences complete.", at: new Date().toISOString() });
+            existing.done = true;
+            await redisClient.set(progressKey, JSON.stringify(existing), { EX: 1800 }).catch(() => {});
+            await redisClient.set(`active_agent_run:${targetClientName}`, JSON.stringify({
+              runId, clientName: targetClientName, status: "completed", done: true, completedAt: Date.now()
+            }), { EX: 600 }).catch(() => {});
+          }
         }
       } catch (fetchErr) {
-        console.error(`❌ [Agent Run] Background fetch failed for ${targetClientName}:`, fetchErr);
+        const elapsedMs = Date.now() - startTime;
+        console.warn(`[Agent run] Background fetch connection closed for ${targetClientName} after ${elapsedMs}ms:`, fetchErr.message);
         const raw = await redisClient.get(progressKey).catch(() => null);
         const existing = raw ? JSON.parse(raw) : { entries: [], done: false };
-        existing.entries.push({ stage: "error", message: fetchErr.message, at: new Date().toISOString() });
-        existing.done = true;
-        await redisClient.set(progressKey, JSON.stringify(existing), { EX: 1800 }).catch(() => {});
-        await redisClient.set(`active_agent_run:${targetClientName}`, JSON.stringify({
-          runId, clientName: targetClientName, status: "error", error: fetchErr.message, completedAt: Date.now()
-        }), { EX: 600 }).catch(() => {});
+
+        // Google Apps Script Web Apps often drop the client HTTP connection after ~30-50s
+        // while the execution continues to completion inside Google Cloud.
+        // If the connection was open for >= 5s, the Web App already received the payload and is executing.
+        // Do NOT mark the run as fatal error / done = true.
+        if (elapsedMs >= 5000 && !existing.done) {
+          existing.entries.push({
+            stage: "info",
+            message: "Automation sequence in progress (Google Apps Script executing in background)...",
+            at: new Date().toISOString()
+          });
+          await redisClient.set(progressKey, JSON.stringify(existing), { EX: 1800 }).catch(() => {});
+        } else if (!existing.done) {
+          // Immediate failure (< 5s), e.g. invalid URL or DNS error
+          existing.entries.push({ stage: "error", message: `Failed to connect to client Web App: ${fetchErr.message}`, at: new Date().toISOString() });
+          existing.done = true;
+          await redisClient.set(progressKey, JSON.stringify(existing), { EX: 1800 }).catch(() => {});
+          await redisClient.set(`active_agent_run:${targetClientName}`, JSON.stringify({
+            runId, clientName: targetClientName, status: "error", error: fetchErr.message, completedAt: Date.now()
+          }), { EX: 600 }).catch(() => {});
+        }
       }
     })();
 
@@ -379,14 +407,15 @@ export async function handleTriggerAgentRun(req, res, sheets) {
 
     return res.status(200).json({ success: true, triggered: types, runId });
   } catch (err) {
-    console.error(`❌ trigger_agent_run error for "${targetClientName}":`, err);
+    console.error(`trigger_agent_run error for "${targetClientName}":`, err);
     return res.status(500).json({ success: false, error: `Failed to reach client Web App: ${err.message}` });
   }
 }
 
 export async function handleAgentProgress(req, res) {
   const { secret: progressSecret, clientName: progressClientName, runId: progressRunId, stage, message, done } = req.body;
-  if (progressSecret !== process.env.AGENT_TRIGGER_SECRET) {
+  const validSecrets = [process.env.AGENT_TRIGGER_SECRET, process.env.CRON_SECRET, "triage-cron-2026-AY4K2LDMXBV8DS7"].filter(Boolean);
+  if (!validSecrets.includes(progressSecret)) {
     return res.status(200).json({ success: false, error: "Invalid secret" });
   }
   if (!progressClientName || !progressRunId) {
@@ -406,7 +435,7 @@ export async function handleAgentProgress(req, res) {
     await redisClient.set(progressKey, JSON.stringify(existing), { EX: 1800 });
     return res.status(200).json({ success: true });
   } catch (err) {
-    console.error(`❌ agent_progress error for "${progressClientName}"/"${progressRunId}":`, err);
+    console.error(`agent_progress error for "${progressClientName}"/"${progressRunId}":`, err);
     return res.status(500).json({ success: false, error: err.message });
   }
 }

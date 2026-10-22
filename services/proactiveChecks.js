@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import { isPlaceholderInvoice, isPlaceholderExpense } from "../utils/helpers.js";
+import { isPlaceholderInvoice, isPlaceholderExpense, toSheetDateFormat } from "../utils/helpers.js";
 import { withRetry, colIndexToLetter, applySheetFontFormat, getSheetGid } from "./sheetsClient.js";
 import { getClientWebAppUrl, getAllClients } from "./workspaces.js";
 import { redisClient } from "./redisClient.js";
@@ -477,6 +477,7 @@ export async function checkRevenueMismatch_(clientName, clientSheetId, sharedDat
             heading: "Revenue / total invoiced mismatch",
             detail: `${jobClient0} | ${jobName0} (Row ${r + 1})${projectCode0 ? ` [${projectCode0}]` : ""}: revenue = £0.00 but total invoiced (incl. placeholders) = £${totalInvoiced0.toFixed(2)} - job revenue appears to be missing or not yet set.`,
             jobName: jobName0, endClientName: jobClient0, projectCode: projectCode0, confirmedRow: r + 1, isRetainer: jobType.includes("retainer"),
+            endDate: endVal ? toSheetDateFormat(endVal) : "",
             revenue: "0.00", totalInvoiced: totalInvoiced0.toFixed(2), diff: totalInvoiced0.toFixed(2),
           });
         }
@@ -520,6 +521,7 @@ export async function checkRevenueMismatch_(clientName, clientSheetId, sharedDat
           alertKey: `revenue_mismatch|${clientName}|${jobClient}|${jobName}${projectCode ? `|${projectCode}` : ""}|rev:${revenueAmt.toFixed(2)}|inv:${mismatchTotalInvoiced.toFixed(2)}`,
           legacyAlertKey: `revenue_mismatch|${clientName}|${jobClient}|${jobName}${projectCode ? `|${projectCode}` : ""}`,
           heading: "Revenue / total invoiced mismatch", detail, jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1, isRetainer,
+          endDate: endVal ? toSheetDateFormat(endVal) : "",
           revenue: revenueAmt.toFixed(2), totalInvoiced: mismatchTotalInvoiced.toFixed(2), diff: Math.abs(mismatchTotalInvoiced - revenueAmt).toFixed(2),
         });
       }
@@ -531,21 +533,15 @@ export async function checkRevenueMismatch_(clientName, clientSheetId, sharedDat
 
 export async function checkDirectCostsMismatch_(clientName, clientSheetId, sharedData) {
   const alerts = [];
-  const TAB_CONFIGS = [{ tabName: "Confirmed", startRow: 2 }, { tabName: "Pipeline", startRow: 2 }];
-  for (let tc = 0; tc < TAB_CONFIGS.length; tc++) {
-    const tabName  = TAB_CONFIGS[tc].tabName;
-    const startRow = TAB_CONFIGS[tc].startRow;
-    try {
-      let data = [];
-      if (tabName === "Confirmed" && sharedData?.confirmedData) {
-        data = sharedData.confirmedData.slice(startRow - 1);
-      } else if (tabName === "Pipeline" && sharedData?.pipelineData) {
-        data = sharedData.pipelineData.slice(startRow - 1);
-      } else { continue; }
+  const tabName  = "Confirmed";
+  const startRow = 2;
+  try {
+    const data = sharedData?.confirmedData ? sharedData.confirmedData.slice(startRow - 1) : [];
+    if (data.length === 0) return alerts;
 
-      const today = new Date(); today.setHours(0, 0, 0, 0);
-      const TOLERANCE = 1.00;
-      let r = 0;
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const TOLERANCE = 1.00;
+    let r = 0;
       while (r < data.length) {
         const row = data[r];
         const revenue      = row[32];
@@ -621,6 +617,7 @@ export async function checkDirectCostsMismatch_(clientName, clientSheetId, share
                   heading: "Direct costs / total expenses mismatch", 
                   detail: `${jobClient} | ${jobName} (Row ${childSheetRow}) [retainer, multi-row] [${tabName} tab]: £${childExp.toFixed(2)} expenses, expected £${expectedForRow.toFixed(2)} (${mult}× monthly budget of £${directCostsAmt.toFixed(2)}) - diff £${diffC.toFixed(2)}`, 
                   jobName, endClientName: jobClient, projectCode, confirmedRow: childSheetRow, isRetainer, tab: tabName,
+                  endDate: endVal ? toSheetDateFormat(endVal) : "",
                   childExp: childExp.toFixed(2), expectedForRow: expectedForRow.toFixed(2), directCosts: directCostsAmt.toFixed(2),
                 });
               }
@@ -634,13 +631,13 @@ export async function checkDirectCostsMismatch_(clientName, clientSheetId, share
             alertKey: `direct_costs_mismatch|${clientName}|${jobClient}|${jobName}|${tabName}${projectCode ? `|${projectCode}` : ""}|budget:${directCostsAmt.toFixed(2)}|exp:${mismatchExpTotal.toFixed(2)}`,
             legacyAlertKey: `direct_costs_mismatch|${clientName}|${jobClient}|${jobName}|${tabName}${projectCode ? `|${projectCode}` : ""}`,
             heading: "Direct costs / total expenses mismatch", detail, jobName, endClientName: jobClient, projectCode, confirmedRow: sheetRow, isRetainer, tab: tabName,
-            directCosts: directCostsAmt.toFixed(2), totalExpenses: mismatchExpTotal.toFixed(2),
+            endDate: endVal ? toSheetDateFormat(endVal) : "",
+            directCosts: directCostsAmt.toFixed(2), totalExpenses: mismatchExpTotal.toFixed(2), diff: Math.abs(mismatchExpTotal - directCostsAmt).toFixed(2),
           });
         }
         r += jobRows.length;
       }
-    } catch(e) {}
-  }
+  } catch(e) {}
   return alerts;
 }
 

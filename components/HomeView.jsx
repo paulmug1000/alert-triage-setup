@@ -262,7 +262,7 @@ export default function HomeView({
                   : "All alerts across your assigned clients are currently clear.")
                 : (managedClient?.clientName
                   ? `Active discrepancies and proactive alerts for ${managedClient.clientName}.`
-                  : `Total active discrepancies and proactive alerts across all ${authorizedClients.length} clients you have access to.`)}
+                  : `Total active discrepancies and proactive alerts across all ${authorizedClients.length} clients.`)}
             </p>
           </div>
 
@@ -346,8 +346,8 @@ export default function HomeView({
 
             <p style={{ margin: "0 0 16px 0", fontSize: "13px", color: "#64748B", lineHeight: "1.4" }}>
               {navTaskCount === 0
-                ? "No active follow-up tasks currently assigned to your account."
-                : "Deferred items and follow-up tasks awaiting action for the active user."}
+                ? "No active follow-up tasks."
+                : "Deferred items and follow-up tasks awaiting action."}
             </p>
           </div>
 

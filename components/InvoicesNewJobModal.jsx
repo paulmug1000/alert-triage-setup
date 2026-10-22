@@ -1,25 +1,103 @@
-import React, { useState } from "react";
-import { stripCurrency } from "../utils/helpers";
+import React, { useState, useMemo, useEffect } from "react";
+import { stripCurrency, parseSheetDate, toSheetDateFormat } from "../utils/helpers";
 import DateInput from "./DateInput";
 
-export default function InvoicesNewJobModal({ 
-  newJobData, 
-  invoicesClient, 
-  onClose, 
-  onSuccess, 
-  onMarkPullPending 
+export default function InvoicesNewJobModal({
+  newJobData,
+  invoicesClient,
+  onClose,
+  onSuccess,
+  onMarkPullPending
 }) {
   const { inv } = newJobData;
+
+  const defaultDaysFallback = typeof invoicesClient?.defaultDaysToPay === "number" && !isNaN(invoicesClient.defaultDaysToPay)
+    ? invoicesClient.defaultDaysToPay
+    : 30;
+
+  const { calculatedDays, hasExplicitOrDiff } = useMemo(() => {
+    if (inv.daysToPay !== undefined && inv.daysToPay !== null && inv.daysToPay !== "") {
+      const s = String(inv.daysToPay).trim();
+      if (!/^[0-9]{4}[-/]/.test(s) && !/[A-Za-z]{3}/.test(s)) {
+        const p = parseInt(s.replace(/[^\d-]/g, ""), 10);
+        if (!isNaN(p) && p >= 0 && p <= 365) return { calculatedDays: p, hasExplicitOrDiff: true };
+      }
+    }
+    if (inv.sentDate && inv.dueDate) {
+      const s = parseSheetDate(inv.sentDate);
+      const d = parseSheetDate(inv.dueDate);
+      if (s && d) {
+        const diff = Math.round((d.getTime() - s.getTime()) / 86400000);
+        if (!isNaN(diff) && diff > 0) return { calculatedDays: diff, hasExplicitOrDiff: true };
+        if (!isNaN(diff) && inv.status?.toLowerCase() === "paid") return { calculatedDays: 0, hasExplicitOrDiff: true };
+      }
+    }
+    return { calculatedDays: defaultDaysFallback, hasExplicitOrDiff: false };
+  }, [inv, defaultDaysFallback]);
+
+  const { initialStartDate, initialEndDate } = useMemo(() => {
+    if (inv.sentDate) {
+      const s = parseSheetDate(inv.sentDate);
+      if (s) {
+        const y = s.getFullYear();
+        const m = s.getMonth();
+        const firstDay = new Date(y, m, 1);
+        const lastDay = new Date(y, m + 1, 0);
+        return {
+          initialStartDate: toSheetDateFormat(firstDay),
+          initialEndDate: toSheetDateFormat(lastDay),
+        };
+      }
+    }
+    return {
+      initialStartDate: inv.sentDate || "",
+      initialEndDate: inv.dueDate || "",
+    };
+  }, [inv.sentDate, inv.dueDate]);
+
   const [jobName, setJobName] = useState(inv.job || "");
   const [projectCode, setProjectCode] = useState("");
   const [revenue, setRevenue] = useState(stripCurrency(inv.amount));
   const [directCosts, setDirectCosts] = useState("0");
   const [vatYesNo, setVatYesNo] = useState(inv.vatAmount > 0 ? "Yes" : "No");
   const [projectType, setProjectType] = useState("Project");
-  const [startDate, setStartDate] = useState(inv.sentDate || "");
-  const [endDate, setEndDate] = useState(inv.dueDate || "");
+  const [startDate, setStartDate] = useState(initialStartDate);
+  const [endDate, setEndDate] = useState(initialEndDate);
+  const [daysToPay, setDaysToPay] = useState(calculatedDays);
+  const [clientDefaultDays, setClientDefaultDays] = useState(defaultDaysFallback);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+
+  // Fetch client's default days to pay from DataChgAlert!B52 (Master Sheet)
+  useEffect(() => {
+    let isMounted = true;
+    const fetchDefaultDays = async () => {
+      if (!invoicesClient?.clientSheetId && !invoicesClient?.masterSheetId) return;
+      try {
+        const res = await fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "get_default_days_to_pay",
+            clientSheetId: invoicesClient?.clientSheetId,
+            masterSheetId: invoicesClient?.masterSheetId,
+            clientName: invoicesClient?.clientName || invoicesClient?.name || "",
+          }),
+        });
+        const data = await res.json();
+        if (isMounted && data?.success && typeof data.defaultDaysToPay === "number") {
+          setClientDefaultDays(data.defaultDaysToPay);
+          if (!hasExplicitOrDiff) {
+            setDaysToPay(data.defaultDaysToPay);
+          }
+        }
+      } catch (e) {
+        console.warn("Could not fetch client default days to pay:", e.message);
+      }
+    };
+    fetchDefaultDays();
+    return () => { isMounted = false; };
+  }, [invoicesClient, hasExplicitOrDiff]);
 
   const close = () => { if (!saving) onClose(); };
 
@@ -27,30 +105,35 @@ export default function InvoicesNewJobModal({
     if (!jobName.trim()) { setError("Please enter a job name"); return; }
     setSaving(true);
     try {
+      const parsedDays = parseInt(String(daysToPay).replace(/[^\d-]/g, ""), 10);
+      const safeDaysToPay = !isNaN(parsedDays) && parsedDays >= 0 && parsedDays <= 365 ? parsedDays : clientDefaultDays;
+
       const res = await fetch("/api/triage", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "create_job_from_invoice",
           clientSheetId: invoicesClient?.clientSheetId,
+          masterSheetId: invoicesClient?.masterSheetId,
           clientName: invoicesClient?.clientName || invoicesClient?.name || "",
           jobName: jobName.trim(), projectCode: projectCode.trim(),
           revenue: parseFloat(revenue) || 0, directCosts: parseFloat(directCosts) || 0,
           vatYesNo, projectType, startDate, endDate,
-          invoice: inv,
+          daysToPay: safeDaysToPay,
+          invoice: { ...inv, daysToPay: safeDaysToPay },
           automationCommanderSheetId: invoicesClient?.automationCommanderSheetId,
         }),
       });
       const data = await res.json();
       if (!data.success) { setError(data.error || "Failed to create job"); setSaving(false); return; }
-      
+
       if (invoicesClient?.masterSheetId) {
         onMarkPullPending(invoicesClient.masterSheetId);
       }
-      
+
       // Trigger all the state updates back in the parent component
       onSuccess(inv);
       close();
-    } catch(e) { setError(e.message); setSaving(false); }
+    } catch (e) { setError(e.message); setSaving(false); }
   };
 
   const inputStyle = { width: "100%", padding: "7px 9px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "16px", boxSizing: "border-box" };
@@ -65,7 +148,7 @@ export default function InvoicesNewJobModal({
           <button onClick={close} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}>×</button>
         </div>
         <div style={{ fontSize: "12px", color: "#888", background: "#f8f8f8", borderRadius: "6px", padding: "10px", marginBottom: "16px" }}>
-          <strong>Invoice to place:</strong> #{inv.invoiceNo} - £{inv.amount.toFixed(2)}<br/>
+          <strong>Invoice to place:</strong> #{inv.invoiceNo} - £{inv.amount.toFixed(2)}<br />
           {inv.client}{inv.job ? ` - ${inv.job}` : ""} · {inv.sentDate}
         </div>
 
@@ -84,24 +167,24 @@ export default function InvoicesNewJobModal({
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
             <div>
-              <label style={labelStyle}>Revenue (£, AG)</label>
+              <label style={labelStyle}>Revenue (£, col AG)</label>
               <input style={inputStyle} type="number" step="0.01" value={revenue} onChange={e => setRevenue(e.target.value)} />
             </div>
             <div>
-              <label style={labelStyle}>Direct costs (£, AH)</label>
+              <label style={labelStyle}>Direct costs (£, col AH)</label>
               <input style={inputStyle} type="number" step="0.01" value={directCosts} onChange={e => setDirectCosts(e.target.value)} />
             </div>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
             <div>
-              <label style={labelStyle}>VAT? (AI)</label>
+              <label style={labelStyle}>VAT? (col AI)</label>
               <select style={inputStyle} value={vatYesNo} onChange={e => setVatYesNo(e.target.value)}>
                 <option value="No">No</option>
                 <option value="Yes">Yes</option>
               </select>
             </div>
             <div>
-              <label style={labelStyle}>Type (AJ)</label>
+              <label style={labelStyle}>Type (col AJ)</label>
               <select style={inputStyle} value={projectType} onChange={e => setProjectType(e.target.value)}>
                 <option value="Project">Project</option>
                 <option value="Retainer">Retainer</option>
@@ -110,19 +193,31 @@ export default function InvoicesNewJobModal({
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
             <div>
-              <label style={labelStyle}>Start date (AL)</label>
+              <label style={labelStyle}>Start date (col AL)</label>
               <DateInput style={inputStyle} value={startDate} onChange={e => setStartDate(e.target.value)} />
             </div>
             <div>
-              <label style={labelStyle}>End date (AM)</label>
+              <label style={labelStyle}>End date (col AM)</label>
               <DateInput style={inputStyle} value={endDate} onChange={e => setEndDate(e.target.value)} min={startDate || undefined} />
             </div>
+          </div>
+          <div>
+            <label style={labelStyle}>Days to pay (col AS)</label>
+            <input
+              style={inputStyle}
+              type="number"
+              min="0"
+              max="365"
+              step="1"
+              value={daysToPay}
+              onChange={e => setDaysToPay(e.target.value)}
+            />
           </div>
         </div>
 
         {error && <div style={{ fontSize: "12px", color: "#d32f2f", background: "#fff5f5", padding: "8px", borderRadius: "4px", marginTop: "12px" }}>{error}</div>}
         <p style={{ fontSize: "11px", color: "#999", margin: "12px 0 0" }}>
-          A new row will be added at the end of the Confirmed tab, and this invoice will be written into slot 1.
+          A new job will be added to Pulse confirmed jobs, and this invoice will be written into slot 1.
         </p>
         <div style={{ display: "flex", gap: "8px", marginTop: "16px", justifyContent: "flex-end" }}>
           <button onClick={close} disabled={saving}

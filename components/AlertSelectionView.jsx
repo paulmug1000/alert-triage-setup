@@ -12,7 +12,7 @@ import { useTasks } from "../contexts/TaskContext";
 import { useTriage } from "../contexts/TriageContext";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useAuth } from "../hooks/useAuth";
-import { ADMIN_ONLY_ALERT_TYPES, stripRowInfo, parseUnreceivedExpensesDetail, parseStaleExpenseDetail, parseInfoAlertDetail, filterAnalysisResultsForAlert, getCleanPLCategoryName, getAlertJobTarget, formatSeenTimestamp, formatLikelihood } from "../utils/helpers";
+import { ADMIN_ONLY_ALERT_TYPES, stripRowInfo, parseUnreceivedExpensesDetail, parseStaleExpenseDetail, parseInfoAlertDetail, filterAnalysisResultsForAlert, getCleanPLCategoryName, getAlertJobTarget, formatSeenTimestamp, formatLikelihood, parseRevenueMismatchDetail, parseDirectCostsMismatchDetail } from "../utils/helpers";
 
 const RICH_NOACTION_FLAG_GROUP = {
   crmCopiedConfChecked: "crm",
@@ -110,7 +110,7 @@ export default function AlertSelectionView({
     acceptError, setAcceptError, selectAlert, resolvedNoActionFlags, setResolvedNoActionFlags,
     setClientsWithFlags, sessionId, autoClearFlags, handlePostClear, noActionAnalysis,
     noActionAnalysisLoading, analyzeNoActionFlag, setProcessedAlerts, allNoActionResolved,
-    loadProactiveAlerts
+    loadProactiveAlerts, isLoading, selectingClient
   } = useTriage();
 
   const clientHasManager = useMemo(() => {
@@ -1150,6 +1150,12 @@ export default function AlertSelectionView({
 
   const totalVisibleAlertsCount = Object.values(groupedAlerts).reduce((sum, arr) => sum + arr.length, 0) + visibleNoActionAlerts.length + clientProactiveAlertsList.length;
 
+  React.useEffect(() => {
+    if (totalVisibleAlertsCount === 0 && !isLoading && !selectingClient) {
+      handlePostClear([], resolvedNoActionFlags);
+    }
+  }, [totalVisibleAlertsCount, isLoading, selectingClient, handlePostClear, resolvedNoActionFlags]);
+
   return (
     <div style={styles.container}>
       <div style={styles.header}>
@@ -1818,7 +1824,7 @@ export default function AlertSelectionView({
                                           </div>
                                         )}
                                         <div><strong>{m.possibleMatchCase === "draft" ? "DRAFT invoice found:" : "Invoice found:"}</strong> #{m.possibleMatchInvoiceNo} for £{parseFloat(m.possibleMatchAmount || 0).toFixed(2)}, sent {m.possibleMatchSentDate}</div>
-                                        <div>{m.possibleMatchConfirmedRow ? <>Already attached to Confirmed row {m.possibleMatchConfirmedRow}</> : <>Not yet attached to any job in the Confirmed tab</>}</div>
+                                        <div>{m.possibleMatchConfirmedRow ? <>Already attached to Confirmed row {m.possibleMatchConfirmedRow}</> : <>Not yet attached to any confirmed job in Pulse</>}</div>
                                         {m.possibleMatchCase === "changed" && <div style={{ marginTop: "4px" }}>This may mean the retainer value has changed.</div>}
                                         {m.possibleMatchCase === "matches" && <div style={{ marginTop: "4px" }}>Matches the expected retainer amount.</div>}
                                         {m.possibleMatchCase === "draft" && <div style={{ marginTop: "4px" }}>It likely just needs sending.</div>}
@@ -2046,56 +2052,59 @@ export default function AlertSelectionView({
                                   </div>
                                 )}
 
-                                {alert.alertType === "revenue_mismatch" && (
-                                  <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
-                                    {(() => {
-                                      const detail = alert.detail || "";
-                                      const mismatchIdx = detail.indexOf("Mismatched rows:");
-                                      if (mismatchIdx === -1) return <div style={{ fontWeight: "600" }}>{detail}</div>;
-                                      const header = detail.slice(0, mismatchIdx).trim();
-                                      const rowsPart = detail.slice(mismatchIdx + "Mismatched rows:".length).trim();
-                                      const rows = rowsPart.split(";").map(s => s.trim()).filter(Boolean);
-                                      return (
-                                        <>
-                                          <div style={{ fontWeight: "600", marginBottom: "4px" }}>{header}</div>
-                                          <div style={{ fontWeight: "600", marginBottom: "2px" }}>Mismatched rows:</div>
-                                          {rows.map((row, i) => {
-                                            const diffMatch = row.match(/[-\u2014]\s*diff/);
-                                            const diffIdx = diffMatch ? diffMatch.index : -1;
-                                            if (diffIdx === -1) return <div key={i} style={{ paddingLeft: "8px", marginBottom: "2px" }}>• {row}</div>;
-                                            return <div key={i} style={{ paddingLeft: "8px", marginBottom: "2px" }}>• {row.slice(0, diffIdx)}<strong>{row.slice(diffIdx)}</strong></div>;
-                                          })}
-                                        </>
-                                      );
-                                    })()}
-                                  </div>
-                                )}
+                                {alert.alertType === "revenue_mismatch" && (() => {
+                                  const parsed = (!m.revenue && !alert.revenue && alert.detail) ? parseRevenueMismatchDetail(alert.detail) : {};
+                                  const clientName = m.endClientName || alert.endClientName || parsed.endClientName;
+                                  const jName = m.jobName || alert.jobName || parsed.jobName;
+                                  const pCode = m.projectCode || alert.projectCode || parsed.projectCode;
+                                  const confRow = m.confirmedRow || alert.confirmedRow || parsed.confirmedRow;
+                                  const eDate = m.endDate || alert.endDate || parsed.endDate;
+                                  const rev = m.revenue || alert.revenue || parsed.revenue;
+                                  const inv = m.totalInvoiced || alert.totalInvoiced || parsed.totalInvoiced;
+                                  const diff = m.diff || alert.diff || parsed.diff;
 
-                                {alert.alertType === "direct_costs_mismatch" && (
-                                  <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
-                                    {alert.metadata?.tab && <span style={{ display: "inline-block", marginBottom: "4px", padding: "2px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "600", background: "#f0f9ff", color: "#0369a1", border: "1px solid #bae6fd", width: "fit-content" }}>{alert.metadata.tab} tab</span>}
-                                    {(() => {
-                                      const detail = alert.detail || "";
-                                      const mismatchIdx = detail.indexOf("Mismatched rows:");
-                                      if (mismatchIdx === -1) return <div style={{ fontWeight: "600" }}>{detail}</div>;
-                                      const header = detail.slice(0, mismatchIdx).trim();
-                                      const rowsPart = detail.slice(mismatchIdx + "Mismatched rows:".length).trim();
-                                      const rows = rowsPart.split(";").map(s => s.trim()).filter(Boolean);
-                                      return (
-                                        <>
-                                          <div style={{ fontWeight: "600", marginBottom: "4px" }}>{header}</div>
-                                          <div style={{ fontWeight: "600", marginBottom: "2px" }}>Mismatched rows:</div>
-                                          {rows.map((row, i) => {
-                                            const diffMatch = row.match(/[-\u2014]\s*diff/);
-                                            const diffIdx = diffMatch ? diffMatch.index : -1;
-                                            if (diffIdx === -1) return <div key={i} style={{ paddingLeft: "8px", marginBottom: "2px" }}>• {row}</div>;
-                                            return <div key={i} style={{ paddingLeft: "8px", marginBottom: "2px" }}>• {row.slice(0, diffIdx)}<strong>{row.slice(diffIdx)}</strong></div>;
-                                          })}
-                                        </>
-                                      );
-                                    })()}
-                                  </div>
-                                )}
+                                  return (
+                                    <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
+                                      {clientName && <div><strong>End client:</strong> {clientName}</div>}
+                                      {jName && <div><strong>Job:</strong> {jName}{pCode ? ` [${pCode}]` : ""}</div>}
+                                      {confRow && <div><strong>Confirmed tab row:</strong> {confRow}</div>}
+                                      {eDate && <div><strong>Job ended:</strong> {eDate}</div>}
+                                      {rev && <div><strong>Revenue budget:</strong> £{parseFloat(rev).toFixed(2)}</div>}
+                                      {inv && <div><strong>Total invoiced:</strong> £{parseFloat(inv).toFixed(2)}</div>}
+                                      {diff && <div style={{ marginTop: "4px", fontWeight: "600", color: "#c62828" }}>Difference: £{parseFloat(diff).toFixed(2)}</div>}
+                                    </div>
+                                  );
+                                })()}
+
+                                {alert.alertType === "direct_costs_mismatch" && (() => {
+                                  const parsed = (!m.directCosts && !alert.directCosts && alert.detail) ? parseDirectCostsMismatchDetail(alert.detail) : {};
+                                  const tabName = m.tab || alert.tab || parsed.tab || "Confirmed";
+                                  const clientName = m.endClientName || alert.endClientName || parsed.endClientName;
+                                  const jName = m.jobName || alert.jobName || parsed.jobName;
+                                  const pCode = m.projectCode || alert.projectCode || parsed.projectCode;
+                                  const rowNum = m.confirmedRow || alert.confirmedRow || alert.sheetRow || parsed.rowNum;
+                                  const eDate = m.endDate || alert.endDate || parsed.endDate;
+                                  const dCosts = m.directCosts || alert.directCosts || parsed.directCosts;
+                                  const expenses = m.totalExpenses || alert.totalExpenses || parsed.totalExpenses || m.childExp || alert.childExp;
+                                  const diff = m.diff || alert.diff || parsed.diff;
+
+                                  return (
+                                    <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
+                                      {tabName && tabName !== "Confirmed" && (
+                                        <span style={{ display: "inline-block", marginBottom: "4px", padding: "2px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "600", background: "#f0f9ff", color: "#0369a1", border: "1px solid #bae6fd", width: "fit-content" }}>
+                                          {tabName} tab
+                                        </span>
+                                      )}
+                                      {clientName && <div><strong>End client:</strong> {clientName}</div>}
+                                      {jName && <div><strong>Job:</strong> {jName}{pCode ? ` [${pCode}]` : ""}</div>}
+                                      {rowNum && <div><strong>{tabName === "Pipeline" ? "Pipeline" : "Confirmed"} tab row:</strong> {rowNum}</div>}
+                                      {eDate && <div><strong>Job ended:</strong> {eDate}</div>}
+                                      {dCosts && <div><strong>Direct cost budget:</strong> £{parseFloat(dCosts).toFixed(2)}</div>}
+                                      {expenses && <div><strong>Total expenses:</strong> £{parseFloat(expenses).toFixed(2)}</div>}
+                                      {diff && <div style={{ marginTop: "4px", fontWeight: "600", color: "#c62828" }}>Difference: £{parseFloat(diff).toFixed(2)}</div>}
+                                    </div>
+                                  );
+                                })()}
 
                                 {alert.alertType === "pipeline_confirmed_overlap" && (() => {
                                   const md = alert.metadata || {};
@@ -2208,7 +2217,7 @@ export default function AlertSelectionView({
                                     {(m.sentDate || alert.sentDate) && <div><strong>Sent date:</strong> {m.sentDate || alert.sentDate}</div>}
                                     {(m.slotNum || alert.slotNum) && <div><strong>Invoice slot:</strong> Slot {m.slotNum || alert.slotNum}</div>}
                                     <div style={{ marginTop: "4px", color: "#c62828" }}>
-                                      Invoice reference appears on Confirmed tab but was not found in the accounting system (it may have been deleted or voided in Xero).
+                                      Invoice reference appears in Pulse confirmed jobs but was not found in the accounting system (it may have been deleted or voided in Xero).
                                     </div>
                                   </div>
                                 )}
@@ -2220,7 +2229,7 @@ export default function AlertSelectionView({
                                     {(m.confirmedRow || alert.confirmedRow) && <div><strong>Confirmed tab row:</strong> {m.confirmedRow || alert.confirmedRow}</div>}
                                     {(m.stableJobKey || alert.stableJobKey) && <div><strong>Expense ID / Ref:</strong> {m.stableJobKey || alert.stableJobKey}</div>}
                                     <div style={{ marginTop: "4px", color: "#c62828" }}>
-                                      Expense reference appears on Confirmed tab but was not found in the accounting system (it may have been deleted or voided in Xero).
+                                      Expense reference appears Pulse confirmed jobs but was not found in the accounting system (it may have been deleted or voided in Xero).
                                     </div>
                                   </div>
                                 )}

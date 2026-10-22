@@ -1435,7 +1435,7 @@ export default function JobDetailModal({
                                 </div>
                               ) : (
                                 <div style={{ fontSize: "12px", color: "#94a3b8", fontStyle: "italic", marginTop: "4px" }}>
-                                  Empty · Click to assign invoice
+                                  Empty slot · Click to edit
                                 </div>
                               )}
                               {slot.sentDate && (
@@ -1545,7 +1545,7 @@ export default function JobDetailModal({
                                 </div>
                               ) : (
                                 <div style={{ fontSize: "12px", color: "#94a3b8", fontStyle: "italic", marginTop: "4px" }}>
-                                  Empty · Click to assign direct cost
+                                  Empty slot · Click to edit
                                 </div>
                               )}
                               {slot.date && (

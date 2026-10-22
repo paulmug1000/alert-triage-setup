@@ -1,7 +1,7 @@
 import React from "react";
 import Spinner from "./Spinner";
 import TruncatedCode from "./TruncatedCode";
-import { stripRowInfo, parseUnreceivedExpensesDetail, parseStaleExpenseDetail, parseInfoAlertDetail, filterAnalysisResultsForAlert, getCleanPLCategoryName, getAlertJobTarget, formatSeenTimestamp } from "../utils/helpers";
+import { stripRowInfo, parseUnreceivedExpensesDetail, parseStaleExpenseDetail, parseInfoAlertDetail, filterAnalysisResultsForAlert, getCleanPLCategoryName, getAlertJobTarget, formatSeenTimestamp, parseRevenueMismatchDetail, parseDirectCostsMismatchDetail } from "../utils/helpers";
 
 const KNOWN_PROACTIVE_TYPES = new Set([
   "retainer_invoice",
@@ -728,60 +728,55 @@ export default function NonAdminAlertListView({
                       </div>
                     )}
 
-                    {alert.alertType === "revenue_mismatch" && (
-                      <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
-                        {(() => {
-                          const detail = stripRowInfo(alert.detail || "");
-                          const mismatchIdx = detail.indexOf("Mismatched entries:");
-                          const effectiveIdx = mismatchIdx !== -1 ? mismatchIdx : detail.indexOf("Mismatched rows:");
-                          const label = mismatchIdx !== -1 ? "Mismatched entries:" : "Mismatched rows:";
-                          if (effectiveIdx === -1) return <div style={{ fontWeight: "600" }}>{detail}</div>;
-                          const header = detail.slice(0, effectiveIdx).trim();
-                          const rowsPart = detail.slice(effectiveIdx + label.length).trim();
-                          const rows = rowsPart.split(";").map(s => s.trim()).filter(Boolean);
-                          return (
-                            <>
-                              <div style={{ fontWeight: "600", marginBottom: "4px" }}>{header}</div>
-                              <div style={{ fontWeight: "600", marginBottom: "2px" }}>Mismatched entries:</div>
-                              {rows.map((row, i) => {
-                                const diffMatch = row.match(/[-\u2014]\s*diff/);
-                                const diffIdx = diffMatch ? diffMatch.index : -1;
-                                if (diffIdx === -1) return <div key={i} style={{ paddingLeft: "8px", marginBottom: "2px" }}>• {row}</div>;
-                                return <div key={i} style={{ paddingLeft: "8px", marginBottom: "2px" }}>• {row.slice(0, diffIdx)}<strong>{row.slice(diffIdx)}</strong></div>;
-                              })}
-                            </>
-                          );
-                        })()}
-                      </div>
-                    )}
+                    {alert.alertType === "revenue_mismatch" && (() => {
+                      const parsed = (!m.revenue && !alert.revenue && alert.detail) ? parseRevenueMismatchDetail(alert.detail) : {};
+                      const clientName = m.endClientName || alert.endClientName || parsed.endClientName;
+                      const jName = m.jobName || alert.jobName || parsed.jobName;
+                      const pCode = m.projectCode || alert.projectCode || parsed.projectCode;
+                      const eDate = m.endDate || alert.endDate || parsed.endDate;
+                      const rev = m.revenue || alert.revenue || parsed.revenue;
+                      const inv = m.totalInvoiced || alert.totalInvoiced || parsed.totalInvoiced;
+                      const diff = m.diff || alert.diff || parsed.diff;
 
-                    {alert.alertType === "direct_costs_mismatch" && (
-                      <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
-                        {alert.metadata?.tab && <span style={{ display: "inline-block", marginBottom: "4px", padding: "2px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "600", background: "#f0f9ff", color: "#0369a1", border: "1px solid #bae6fd", width: "fit-content" }}>{alert.metadata.tab} tab</span>}
-                        {(() => {
-                          const detail = stripRowInfo(alert.detail || "");
-                          const mismatchIdx = detail.indexOf("Mismatched entries:");
-                          const effectiveIdx = mismatchIdx !== -1 ? mismatchIdx : detail.indexOf("Mismatched rows:");
-                          const label = mismatchIdx !== -1 ? "Mismatched entries:" : "Mismatched rows:";
-                          if (effectiveIdx === -1) return <div style={{ fontWeight: "600" }}>{detail}</div>;
-                          const header = detail.slice(0, effectiveIdx).trim();
-                          const rowsPart = detail.slice(effectiveIdx + label.length).trim();
-                          const rows = rowsPart.split(";").map(s => s.trim()).filter(Boolean);
-                          return (
-                            <>
-                              <div style={{ fontWeight: "600", marginBottom: "4px" }}>{header}</div>
-                              <div style={{ fontWeight: "600", marginBottom: "2px" }}>Mismatched entries:</div>
-                              {rows.map((row, i) => {
-                                const diffMatch = row.match(/[-\u2014]\s*diff/);
-                                const diffIdx = diffMatch ? diffMatch.index : -1;
-                                if (diffIdx === -1) return <div key={i} style={{ paddingLeft: "8px", marginBottom: "2px" }}>• {row}</div>;
-                                return <div key={i} style={{ paddingLeft: "8px", marginBottom: "2px" }}>• {row.slice(0, diffIdx)}<strong>{row.slice(diffIdx)}</strong></div>;
-                              })}
-                            </>
-                          );
-                        })()}
-                      </div>
-                    )}
+                      return (
+                        <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
+                          {clientName && <div><strong>End client:</strong> {clientName}</div>}
+                          {jName && <div><strong>Job:</strong> {jName}{pCode ? ` [${pCode}]` : ""}</div>}
+                          {eDate && <div><strong>Job ended:</strong> {eDate}</div>}
+                          {rev && <div><strong>Revenue budget:</strong> £{parseFloat(rev).toFixed(2)}</div>}
+                          {inv && <div><strong>Total invoiced:</strong> £{parseFloat(inv).toFixed(2)}</div>}
+                          {diff && <div style={{ marginTop: "4px", fontWeight: "600", color: "#c62828" }}>Difference: £{parseFloat(diff).toFixed(2)}</div>}
+                        </div>
+                      );
+                    })()}
+
+                    {alert.alertType === "direct_costs_mismatch" && (() => {
+                      const parsed = (!m.directCosts && !alert.directCosts && alert.detail) ? parseDirectCostsMismatchDetail(alert.detail) : {};
+                      const tabName = m.tab || alert.tab || parsed.tab || "Confirmed";
+                      const clientName = m.endClientName || alert.endClientName || parsed.endClientName;
+                      const jName = m.jobName || alert.jobName || parsed.jobName;
+                      const pCode = m.projectCode || alert.projectCode || parsed.projectCode;
+                      const eDate = m.endDate || alert.endDate || parsed.endDate;
+                      const dCosts = m.directCosts || alert.directCosts || parsed.directCosts;
+                      const expenses = m.totalExpenses || alert.totalExpenses || parsed.totalExpenses || m.childExp || alert.childExp;
+                      const diff = m.diff || alert.diff || parsed.diff;
+
+                      return (
+                        <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
+                          {tabName && tabName !== "Confirmed" && (
+                            <span style={{ display: "inline-block", marginBottom: "4px", padding: "2px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "600", background: "#f0f9ff", color: "#0369a1", border: "1px solid #bae6fd", width: "fit-content" }}>
+                              {tabName} tab
+                            </span>
+                          )}
+                          {clientName && <div><strong>End client:</strong> {clientName}</div>}
+                          {jName && <div><strong>Job:</strong> {jName}{pCode ? ` [${pCode}]` : ""}</div>}
+                          {eDate && <div><strong>Job ended:</strong> {eDate}</div>}
+                          {dCosts && <div><strong>Direct cost budget:</strong> £{parseFloat(dCosts).toFixed(2)}</div>}
+                          {expenses && <div><strong>Total expenses:</strong> £{parseFloat(expenses).toFixed(2)}</div>}
+                          {diff && <div style={{ marginTop: "4px", fontWeight: "600", color: "#c62828" }}>Difference: £{parseFloat(diff).toFixed(2)}</div>}
+                        </div>
+                      );
+                    })()}
 
                     {alert.alertType === "pipeline_confirmed_overlap" && (() => {
                       const md = alert.metadata || {};
@@ -955,7 +950,7 @@ export default function NonAdminAlertListView({
                                     });
                                   }}
                                   style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#dc2626", borderColor: "#fecaca" }}
-                                  title="Delete this invoice entry from the Confirmed tab in Pulse"
+                                  title="Delete this invoice entry from Pulse confirmed jobs"
                                 >
                                   Delete invoice from Pulse
                                 </button>

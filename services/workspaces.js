@@ -1,7 +1,7 @@
 import { getSheetsClient, withRetry, extractSheetIdFromUrl, colLetterToNum, colIndexToLetter, getSheetGid, getSheetId, applySheetFontFormat } from "./sheetsClient.js";
-import { setMasterSwitch, checkAllGASLocks, fetchJobRowsForDisplay } from "./sharedHelpers.js";
+import { setMasterSwitch, checkAllGASLocks, fetchJobRowsForDisplay, getToleranceValues } from "./sharedHelpers.js";
 import { logPmaActivity, DEFAULT_AC_SHEET_ID } from "./pmaLogger.js";
-import { isPlaceholderInvoice, toSheetDateFormat } from "../utils/helpers.js";
+import { isPlaceholderInvoice, toSheetDateFormat, parseSheetDate } from "../utils/helpers.js";
 import { getSessionUser } from "./authService.js";
 import { isUserAuthorizedForClient, matchesClientName, sanitizeFormulaInput, getClientManagerClientMap } from "./userPermissions.js";
 import { redisClient } from "./redisClient.js";
@@ -2318,73 +2318,140 @@ export async function handleCreateJobFromInvoice(req, res, sheets) {
   if (!clientSheetId || !invoice) return res.status(400).json({ success: false, error: "Missing clientSheetId or invoice" });
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+    const startRow = 2;
 
-    const confirmedResp = await sheets.spreadsheets.values.get({
+    // Scan Confirmed tab across full width A1:CR5000 to find the true next available row
+    const resp = await withRetry(() => sheets.spreadsheets.values.get({
       spreadsheetId: sheetIdClean,
-      range: "Confirmed!A1:AM5000",
+      range: "Confirmed!A1:CR5000",
       valueRenderOption: "UNFORMATTED_VALUE",
-    });
-    const confirmedRows = confirmedResp.data.values || [];
-    let lastDataRow = 1;
-    for (let i = confirmedRows.length - 1; i >= 1; i--) {
-      const r = confirmedRows[i] || [];
-      if (r[0] || r[1] || r[32] || r[37]) { lastDataRow = i + 1; break; }
-    }
-    const newRow = lastDataRow + 1;
+    }));
+    const allRows = resp.data.values || [];
 
-    let daysToPay = 30;
-    if (invoice.sentDate && invoice.dueDate) {
-      const parseD = (d) => {
-        const m = String(d).match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
-        if (!m) return null;
-        const months = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
-        const mIdx = months[m[2].toLowerCase()];
-        if (mIdx === undefined) return null;
-        const yr = m[3].length === 2 ? 2000 + parseInt(m[3]) : parseInt(m[3]);
-        return new Date(yr, mIdx, parseInt(m[1]));
-      };
-      const sent = parseD(invoice.sentDate), due = parseD(invoice.dueDate);
-      if (sent && due) daysToPay = Math.round((due - sent) / 86400000);
-    }
+    // Step 1: Find the last row with active job data
+    let lastJobRow = startRow - 1;
+    for (let i = startRow - 1; i < allRows.length; i++) {
+      const row = allRows[i] || [];
+      const hasA = row[0] !== undefined && String(row[0]).trim() !== "";
+      const hasB = row[1] !== undefined && String(row[1]).trim() !== "";
+      const hasRev = row[32] !== undefined && String(row[32]).trim() !== "";
+      const hasDates = (row[37] !== undefined && String(row[37]).trim() !== "") || (row[38] !== undefined && String(row[38]).trim() !== "");
+      
+      let hasSlotData = false;
+      for (let c = 41; c <= 60; c++) {
+        if (row[c] !== undefined && String(row[c]).trim() !== "") { hasSlotData = true; break; }
+      }
+      if (!hasSlotData) {
+        for (let c = 75; c <= 95; c++) {
+          if (row[c] !== undefined && String(row[c]).trim() !== "") { hasSlotData = true; break; }
+        }
+      }
 
-    await sheets.spreadsheets.values.batchUpdate({
-      spreadsheetId: sheetIdClean,
-      requestBody: {
-        valueInputOption: "RAW",
-        data: [
-          { range: `Confirmed!A${newRow}`,  values: [[invoice.client || ""]] },
-          { range: `Confirmed!B${newRow}`,  values: [[jobName || invoice.job || ""]] },
-          { range: `Confirmed!C${newRow}`,  values: [[projectCode || ""]] },
-          { range: `Confirmed!AG${newRow}`, values: [[revenue || invoice.amount || 0]] },
-          { range: `Confirmed!AH${newRow}`, values: [[directCosts || 0]] },
-          { range: `Confirmed!AI${newRow}`, values: [[vatYesNo || (invoice.vatAmount > 0 ? "Yes" : "No")]] },
-          { range: `Confirmed!AJ${newRow}`, values: [[projectType || "Project"]] },
-          { range: `Confirmed!AP${newRow}`, values: [[invoice.amount || 0]] },
-          { range: `Confirmed!AQ${newRow}`, values: [[invoice.invoiceNo || ""]] },
-          { range: `Confirmed!AS${newRow}`, values: [[daysToPay]] },
-          { range: `Confirmed!AT${newRow}`, values: [[invoice.status || "Sent"]] },
-        ],
-      },
-    });
-
-    const dateFieldsToWrite = [
-      { col: "AL", raw: startDate || invoice.sentDate },
-      { col: "AM", raw: endDate || invoice.dueDate },
-      { col: "AR", raw: invoice.sentDate },
-    ];
-    const dateWriteData = [];
-    for (const f of dateFieldsToWrite) {
-      if (!f.raw) continue;
-      const formatted = toSheetDateFormat(f.raw);
-      if (formatted) {
-        dateWriteData.push({ range: `Confirmed!${f.col}${newRow}`, values: [[formatted]] });
+      if (hasA || hasB || hasRev || hasDates || hasSlotData) {
+        lastJobRow = i + 1; // 1-indexed
       }
     }
-    if (dateWriteData.length > 0) {
-      await sheets.spreadsheets.values.batchUpdate({
-        spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "USER_ENTERED", data: dateWriteData },
+
+    // Step 2: Find the FIRST blank row beneath all existing jobs
+    let newRow = Math.max(startRow, lastJobRow + 1);
+    for (let r = lastJobRow; r < allRows.length; r++) {
+      const row = allRows[r] || [];
+      const isBlank = [0, 1, 2, 3, 4, 32, 33, 34, 35, 36, 37, 38, 39, 41, 42, 48, 55, 75, 82, 89].every(idx => {
+        const v = row[idx];
+        return v === undefined || v === null || String(v).trim() === "";
       });
+      if (isBlank) {
+        newRow = r + 1; // 1-indexed
+        break;
+      }
     }
+
+    // Read client's default days to pay from DataChgAlert!B52 (Master Sheet)
+    let clientDefaultDays = 30;
+    let targetMasterId = (req.body.masterSheetId || invoice.masterSheetId) ? (extractSheetIdFromUrl(req.body.masterSheetId || invoice.masterSheetId) || req.body.masterSheetId || invoice.masterSheetId) : null;
+    if (!targetMasterId && sheetIdClean) {
+      try {
+        const { clientsArray } = await getAllClients(sheets, { isAdmin: true }, false);
+        const found = clientsArray?.find(c => 
+          extractSheetIdFromUrl(c.clientSheetId) === sheetIdClean || 
+          extractSheetIdFromUrl(c.masterSheetId) === sheetIdClean ||
+          (req.body.clientName && c.clientName?.toLowerCase() === req.body.clientName.toLowerCase())
+        );
+        if (found?.masterSheetId) {
+          targetMasterId = extractSheetIdFromUrl(found.masterSheetId) || found.masterSheetId;
+        }
+      } catch (e) {}
+    }
+    try {
+      const tols = await getToleranceValues(sheets, targetMasterId || sheetIdClean);
+      const b52Val = parseInt(tols?.defaultDaysToPay, 10);
+      if (!isNaN(b52Val) && b52Val >= 0 && b52Val <= 365) {
+        clientDefaultDays = b52Val;
+      }
+    } catch (e) {
+      console.warn("Could not read DataChgAlert!B52 defaultDaysToPay:", e.message);
+    }
+
+    // Days to pay calculation and sanitisation:
+    // MUST strictly be an integer number of days (defaulting to DataChgAlert!B52), NEVER a date string.
+    let finalDaysToPay = clientDefaultDays;
+    const explicitDays = req.body.daysToPay !== undefined ? req.body.daysToPay : invoice.daysToPay;
+
+    const looksLikeDate = (val) => {
+      if (!val) return false;
+      const s = String(val).trim();
+      return /^[0-9]{4}[-/][0-9]{1,2}[-/][0-9]{1,2}/.test(s) || // ISO YYYY-MM-DD
+             /^[0-9]{1,2}[-/][A-Za-z]{3}[-/][0-9]{2,4}/.test(s) || // 15-Oct-26
+             /^[0-9]{1,2}\/[0-9]{1,2}\/[0-9]{2,4}/.test(s) || // 15/10/2026
+             /[A-Za-z]{3,9}/.test(s); // contains month text
+    };
+
+    if (explicitDays !== undefined && explicitDays !== null && explicitDays !== "" && !looksLikeDate(explicitDays)) {
+      const parsedDays = parseInt(String(explicitDays).replace(/[^\d-]/g, ""), 10);
+      if (!isNaN(parsedDays) && parsedDays >= 0 && parsedDays <= 365) {
+        finalDaysToPay = parsedDays;
+      }
+    } else if (invoice.sentDate && invoice.dueDate) {
+      const sent = parseSheetDate(invoice.sentDate);
+      const due = parseSheetDate(invoice.dueDate);
+      if (sent && due) {
+        const diff = Math.round((due.getTime() - sent.getTime()) / 86400000);
+        if (!isNaN(diff)) {
+          finalDaysToPay = diff > 0 ? diff : (invoice.status?.toLowerCase() === "paid" ? 0 : clientDefaultDays);
+        }
+      }
+    }
+
+    finalDaysToPay = typeof finalDaysToPay === "number" && !isNaN(finalDaysToPay) ? Math.min(365, Math.max(0, finalDaysToPay)) : clientDefaultDays;
+
+    const formatSheetDate = (dStr) => toSheetDateFormat(dStr);
+    const todayFormatted = formatSheetDate(new Date());
+
+    const updateData = [
+      { range: `Confirmed!A${newRow}`,  values: [[sanitizeFormulaInput(invoice.client || "")]] },
+      { range: `Confirmed!B${newRow}`,  values: [[sanitizeFormulaInput(jobName || invoice.job || "")]] },
+      { range: `Confirmed!C${newRow}`,  values: [[sanitizeFormulaInput(projectCode || "")]] },
+      { range: `Confirmed!D${newRow}`,  values: [[todayFormatted]] },
+      { range: `Confirmed!AG${newRow}`, values: [[parseFloat(revenue) || parseFloat(invoice.amount) || 0]] },
+      { range: `Confirmed!AH${newRow}`, values: [[parseFloat(directCosts) || 0]] },
+      { range: `Confirmed!AI${newRow}`, values: [[sanitizeFormulaInput(vatYesNo || (invoice.vatAmount > 0 ? "Yes" : "No"))]] },
+      { range: `Confirmed!AJ${newRow}`, values: [[sanitizeFormulaInput(projectType || "Project")]] },
+      { range: `Confirmed!AL${newRow}`, values: [[formatSheetDate(startDate || invoice.sentDate)]] },
+      { range: `Confirmed!AM${newRow}`, values: [[formatSheetDate(endDate || invoice.dueDate)]] },
+      { range: `Confirmed!AP${newRow}`, values: [[parseFloat(invoice.amount) || 0]] },
+      { range: `Confirmed!AQ${newRow}`, values: [[sanitizeFormulaInput(invoice.invoiceNo || "")]] },
+      { range: `Confirmed!AR${newRow}`, values: [[formatSheetDate(invoice.sentDate)]] },
+      { range: `Confirmed!AS${newRow}`, values: [[finalDaysToPay]] },
+      { range: `Confirmed!AT${newRow}`, values: [[sanitizeFormulaInput(invoice.status || "Sent")]] },
+    ];
+
+    await withRetry(() => sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId: sheetIdClean,
+      requestBody: {
+        valueInputOption: "USER_ENTERED",
+        data: updateData,
+      },
+    }));
 
     let tenantClient = req.body.clientName || "";
     if (!tenantClient) {
@@ -2481,7 +2548,7 @@ export async function handleAddNewJob(req, res, sheets) {
       { range: `${targetTab}!A${targetRow}`,  values: [[sanitizeFormulaInput(jobData.client || "")]] },
       { range: `${targetTab}!B${targetRow}`,  values: [[sanitizeFormulaInput(jobData.jobName || "")]] },
       { range: `${targetTab}!C${targetRow}`,  values: [[sanitizeFormulaInput(jobData.projectCode || "")]] },
-      { range: `${targetTab}!D${targetRow}`,  values: [[formatSheetDate(jobData.dateConfirmed || jobData.dateAdded)]] },
+      { range: `${targetTab}!D${targetRow}`,  values: [[formatSheetDate(jobData.dateConfirmed || jobData.dateAdded || new Date())]] },
       { range: `${targetTab}!E${targetRow}`,  values: [[sanitizeFormulaInput(jobData.leadSource || "")]] },
       { range: `${targetTab}!AG${targetRow}`, values: [[parseFloat(jobData.revenue) || 0]] },
       { range: `${targetTab}!AH${targetRow}`, values: [[parseFloat(jobData.directCosts) || 0]] },
@@ -2507,6 +2574,30 @@ export async function handleAddNewJob(req, res, sheets) {
       }
     }
 
+    // Read client's default days to pay from DataChgAlert!B52 (Master Sheet)
+    let clientDefaultDays = 30;
+    let targetMasterId = (jobData.masterSheetId || req.body.masterSheetId) ? (extractSheetIdFromUrl(jobData.masterSheetId || req.body.masterSheetId) || jobData.masterSheetId || req.body.masterSheetId) : null;
+    if (!targetMasterId && sheetIdClean) {
+      try {
+        const { clientsArray } = await getAllClients(sheets, { isAdmin: true }, false);
+        const found = clientsArray?.find(c => 
+          extractSheetIdFromUrl(c.clientSheetId) === sheetIdClean || 
+          extractSheetIdFromUrl(c.masterSheetId) === sheetIdClean ||
+          ((req.body.clientName || jobData.client) && c.clientName?.toLowerCase() === (req.body.clientName || jobData.client).toLowerCase())
+        );
+        if (found?.masterSheetId) {
+          targetMasterId = extractSheetIdFromUrl(found.masterSheetId) || found.masterSheetId;
+        }
+      } catch (e) {}
+    }
+    try {
+      const tols = await getToleranceValues(sheets, targetMasterId || sheetIdClean);
+      const b52Val = parseInt(tols?.defaultDaysToPay, 10);
+      if (!isNaN(b52Val) && b52Val >= 0 && b52Val <= 365) {
+        clientDefaultDays = b52Val;
+      }
+    } catch (e) {}
+
     // Invoice Slots (up to 3)
     const invoiceSlotCols = {
       1: { a: "AP", ref: "AQ", sent: "AR", days: "AS", st: "AT" },
@@ -2521,7 +2612,14 @@ export async function handleAddNewJob(req, res, sheets) {
         const amt = parseFloat(inv.amount) || 0;
         const ref = sanitizeFormulaInput(inv.invoiceNo || "");
         const sent = formatSheetDate(inv.sentDate);
-        const days = parseInt(inv.daysToPay, 10) || 30;
+        let days = clientDefaultDays;
+        if (inv.daysToPay !== undefined && inv.daysToPay !== null && inv.daysToPay !== "") {
+          const sDays = String(inv.daysToPay).trim();
+          if (!/^[0-9]{4}[-/]/.test(sDays) && !/[A-Za-z]{3}/.test(sDays)) {
+            const p = parseInt(sDays.replace(/[^\d-]/g, ""), 10);
+            if (!isNaN(p) && p >= 0 && p <= 365) days = p;
+          }
+        }
         const st = sanitizeFormulaInput(inv.status || "");
         if (amt > 0 || ref || sent || st) {
           writtenInvoicesCount++;
@@ -2551,7 +2649,14 @@ export async function handleAddNewJob(req, res, sheets) {
         const amt = parseFloat(exp.amount) || 0;
         const vatVal = sanitizeFormulaInput(exp.vat || "No");
         const dt = formatSheetDate(exp.date);
-        const dp = parseInt(exp.daysToPay, 10) || 30;
+        let dp = clientDefaultDays;
+        if (exp.daysToPay !== undefined && exp.daysToPay !== null && exp.daysToPay !== "") {
+          const sDp = String(exp.daysToPay).trim();
+          if (!/^[0-9]{4}[-/]/.test(sDp) && !/[A-Za-z]{3}/.test(sDp)) {
+            const p = parseInt(sDp.replace(/[^\d-]/g, ""), 10);
+            if (!isNaN(p) && p >= 0 && p <= 365) dp = p;
+          }
+        }
         const st = sanitizeFormulaInput(exp.status || "");
         const txId = sanitizeFormulaInput(exp.transactionId || "");
         if (amt > 0 || desc || dt || txId) {
@@ -3009,5 +3114,35 @@ export async function handleMarkPipelineAlreadyConfirmed(req, res, sheets) {
   } catch (err) {
     console.error("❌ handleMarkPipelineAlreadyConfirmed error:", err);
     return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function handleGetDefaultDaysToPay(req, res, sheets) {
+  const { clientSheetId, masterSheetId, clientName } = req.body || {};
+  let sheetIdClean = clientSheetId ? (extractSheetIdFromUrl(clientSheetId) || clientSheetId) : null;
+  let masterIdClean = masterSheetId ? (extractSheetIdFromUrl(masterSheetId) || masterSheetId) : null;
+
+  if (!masterIdClean && (sheetIdClean || clientName)) {
+    try {
+      const { clientsArray } = await getAllClients(sheets, { isAdmin: true }, false);
+      const found = clientsArray?.find(c => 
+        (sheetIdClean && (extractSheetIdFromUrl(c.clientSheetId) === sheetIdClean || extractSheetIdFromUrl(c.masterSheetId) === sheetIdClean)) ||
+        (clientName && c.clientName?.toLowerCase() === clientName.toLowerCase())
+      );
+      if (found?.masterSheetId) {
+        masterIdClean = extractSheetIdFromUrl(found.masterSheetId) || found.masterSheetId;
+      }
+    } catch (lookupErr) {
+      console.warn("Could not resolve masterSheetId in handleGetDefaultDaysToPay:", lookupErr.message);
+    }
+  }
+
+  try {
+    const tols = await getToleranceValues(sheets, masterIdClean || sheetIdClean);
+    const b52Val = parseInt(tols?.defaultDaysToPay, 10);
+    const defaultDays = !isNaN(b52Val) && b52Val >= 0 && b52Val <= 365 ? b52Val : 30;
+    return res.status(200).json({ success: true, defaultDaysToPay: defaultDays });
+  } catch (err) {
+    return res.status(200).json({ success: true, defaultDaysToPay: 30 });
   }
 }

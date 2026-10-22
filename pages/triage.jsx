@@ -563,6 +563,9 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
       if (clientParam) {
         setSetupClientName(clientParam);
         setSettingsClientName(clientParam);
+        if (!managedClient || managedClient.clientName !== clientParam) {
+          setManagedClient(clientParam);
+        }
       }
       if (sectionParam) setSettingsSection(sectionParam);
       if (subsectionParam) setSettingsSubsection(subsectionParam);
@@ -576,11 +579,14 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
       } else if (navParam === "setup") {
         setActiveNav("setup");
       } else if (navParam === "tasks") {
+        const filterParam = p.get("filter");
+        if (filterParam) setTasksFilter(filterParam);
         setActiveNav("tasks");
       } else if (navParam) {
         setActiveNav(navParam);
       }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialNav]);
 
   // Page title and favicon are handled globally by Next.js <Head> in index.js

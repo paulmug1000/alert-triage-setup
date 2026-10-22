@@ -149,7 +149,14 @@ export default function InvoicesView({
   }, [managedClient, initialClient, allOutgoingsClients]);
 
   const [viewMode, setViewMode] = useState("modern");
-  const [invoicesSubTab, setInvoicesSubTab] = useState("byJob"); // "byJob" | "byInvoiceNo"
+  const [invoicesSubTab, setInvoicesSubTab] = useState(() => {
+    if (typeof window !== "undefined") {
+      const p = new URLSearchParams(window.location.search);
+      const sub = p.get("subtab");
+      if (sub === "byInvoiceNo" || sub === "byJob") return sub;
+    }
+    return "byJob";
+  }); // "byJob" | "byInvoiceNo"
   const [jobsSearchTerm, setJobsSearchTerm] = useState("");
   const [invoiceSearchTerm, setInvoiceSearchTerm] = useState("");
   const [invoiceSortOrder, setInvoiceSortOrder] = useState("inv_desc");
@@ -699,9 +706,14 @@ export default function InvoicesView({
           <>
             {/* Subtabs: By job / By invoice no. */}
             <div style={{ display: "flex", gap: "8px", marginBottom: "16px", borderBottom: "1px solid #e0e0e0" }}>
-              <button
-                type="button"
-                onClick={() => setInvoicesSubTab("byJob")}
+              <a
+                href={`/pma?nav=invoices&subtab=byJob${invoicesClient ? `&client=${encodeURIComponent(invoicesClient)}` : ""}`}
+                onClick={(e) => {
+                  if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) {
+                    e.preventDefault();
+                    setInvoicesSubTab("byJob");
+                  }
+                }}
                 style={{
                   padding: "8px 16px",
                   background: "none",
@@ -710,19 +722,25 @@ export default function InvoicesView({
                   color: invoicesSubTab === "byJob" ? "#0066cc" : "#666",
                   fontWeight: invoicesSubTab === "byJob" ? "700" : "500",
                   fontSize: "14px",
-                  cursor: "pointer"
+                  cursor: "pointer",
+                  textDecoration: "none",
+                  display: "inline-block",
+                  boxSizing: "border-box"
                 }}
               >
                 By job
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setInvoicesSubTab("byInvoiceNo");
-                  setInvoicesPlacing(null);
-                  if (!invoicesShowAll && invoicesClient) {
-                    setInvoicesShowAll(true);
-                    loadInvoicesJobs(invoicesClient, true);
+              </a>
+              <a
+                href={`/pma?nav=invoices&subtab=byInvoiceNo${invoicesClient ? `&client=${encodeURIComponent(invoicesClient)}` : ""}`}
+                onClick={(e) => {
+                  if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) {
+                    e.preventDefault();
+                    setInvoicesSubTab("byInvoiceNo");
+                    setInvoicesPlacing(null);
+                    if (!invoicesShowAll && invoicesClient) {
+                      setInvoicesShowAll(true);
+                      loadInvoicesJobs(invoicesClient, true);
+                    }
                   }
                 }}
                 style={{
@@ -733,11 +751,14 @@ export default function InvoicesView({
                   color: invoicesSubTab === "byInvoiceNo" ? "#0066cc" : "#666",
                   fontWeight: invoicesSubTab === "byInvoiceNo" ? "700" : "500",
                   fontSize: "14px",
-                  cursor: "pointer"
+                  cursor: "pointer",
+                  textDecoration: "none",
+                  display: "inline-block",
+                  boxSizing: "border-box"
                 }}
               >
                 By invoice no.
-              </button>
+              </a>
             </div>
 
             {invoicesSubTab === "byJob" && (

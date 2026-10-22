@@ -56,6 +56,21 @@ export default function PortalShell({
     setMobileMenuOpen(false);
   };
 
+  const getPortalViewHref = (viewKey) => {
+    const clientPart = clientName ? `client=${encodeURIComponent(clientName)}&` : "";
+    if (viewKey === "month") {
+      return clientName ? `/pulse?client=${encodeURIComponent(clientName)}` : "/pulse";
+    }
+    return `/pulse?${clientPart}view=${encodeURIComponent(viewKey)}`;
+  };
+
+  const handleLinkClick = (e, viewKey) => {
+    if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) {
+      e.preventDefault();
+      handleNavClick(viewKey);
+    }
+  };
+
   const isViewInGroup = (views) => views.includes(activeView);
 
   return (
@@ -155,16 +170,17 @@ export default function PortalShell({
         >
           {/* Left Brand & Client Name (Stacked: Logo on top, Client Name underneath) */}
           <div style={{ display: "flex", flexDirection: "column", gap: "2px", alignItems: "flex-start", minWidth: 0 }}>
-            <button
-              type="button"
-              onClick={() => handleNavClick("month")}
+            <a
+              href={getPortalViewHref("month")}
+              onClick={(e) => handleLinkClick(e, "month")}
               style={{
                 background: "none",
                 border: "none",
                 padding: 0,
                 cursor: "pointer",
                 display: "flex",
-                alignItems: "center"
+                alignItems: "center",
+                textDecoration: "none"
               }}
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -178,7 +194,7 @@ export default function PortalShell({
                   display: "block"
                 }}
               />
-            </button>
+            </a>
 
             {clientName && (
               clients.length > 1 ? (
@@ -257,17 +273,25 @@ export default function PortalShell({
                         Switch Client
                       </div>
                       {clients.map((c) => (
-                        <button
+                        <a
                           key={c.clientName}
-                          type="button"
-                          onClick={() => {
-                            onSelectClient(c);
-                            setOpenDropdown(null);
+                          href={`/pulse?client=${encodeURIComponent(c.clientName)}&view=${encodeURIComponent(activeView || "month")}`}
+                          onClick={(e) => {
+                            if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) {
+                              e.preventDefault();
+                              onSelectClient(c);
+                              setOpenDropdown(null);
+                            }
                           }}
-                          style={dropdownItemStyle(c.clientName === clientName)}
+                          style={{
+                            ...dropdownItemStyle(c.clientName === clientName),
+                            textDecoration: "none",
+                            display: "block",
+                            boxSizing: "border-box"
+                          }}
                         >
                           {c.clientName}
-                        </button>
+                        </a>
                       ))}
                     </div>
                   )}
@@ -300,9 +324,9 @@ export default function PortalShell({
             }}
           >
             {/* 1. Home / Month */}
-            <button
-              type="button"
-              onClick={() => handleNavClick("month")}
+            <a
+              href={getPortalViewHref("month")}
+              onClick={(e) => handleLinkClick(e, "month")}
               style={{
                 padding: "0.5rem 0.95rem",
                 borderRadius: "6px",
@@ -312,11 +336,14 @@ export default function PortalShell({
                 fontWeight: activeView === "month" ? 700 : 500,
                 background: activeView === "month" ? "#ffffff" : "transparent",
                 color: activeView === "month" ? "#0047AB" : "#ffffff",
-                transition: "all 0.15s ease"
+                transition: "all 0.15s ease",
+                textDecoration: "none",
+                display: "inline-flex",
+                alignItems: "center"
               }}
             >
               Home
-            </button>
+            </a>
 
             {/* 2. Performance Dropdown */}
             <div className="portal-nav-dropdown" style={{ position: "relative" }}>
@@ -344,27 +371,27 @@ export default function PortalShell({
 
               {openDropdown === "perf" && (
                 <div style={dropdownMenuStyle}>
-                  <button
-                    type="button"
-                    onClick={() => handleNavClick("dashboard")}
+                  <a
+                    href={getPortalViewHref("dashboard")}
+                    onClick={(e) => handleLinkClick(e, "dashboard")}
                     style={dropdownItemStyle(activeView === "dashboard")}
                   >
                     Financial year
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleNavClick("ytd")}
+                  </a>
+                  <a
+                    href={getPortalViewHref("ytd")}
+                    onClick={(e) => handleLinkClick(e, "ytd")}
                     style={dropdownItemStyle(activeView === "ytd")}
                   >
                     Year-to-date
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleNavClick("perfBreakdown")}
+                  </a>
+                  <a
+                    href={getPortalViewHref("perfBreakdown")}
+                    onClick={(e) => handleLinkClick(e, "perfBreakdown")}
                     style={dropdownItemStyle(activeView === "perfBreakdown")}
                   >
                     Breakdowns
-                  </button>
+                  </a>
                 </div>
               )}
             </div>
@@ -396,20 +423,20 @@ export default function PortalShell({
 
                 {openDropdown === "cash" && (
                   <div style={dropdownMenuStyle}>
-                    <button
-                      type="button"
-                      onClick={() => handleNavClick("cash")}
+                    <a
+                      href={getPortalViewHref("cash")}
+                      onClick={(e) => handleLinkClick(e, "cash")}
                       style={dropdownItemStyle(activeView === "cash")}
                     >
                       Cashflow forecast
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleNavClick("cashBreakdown")}
+                    </a>
+                    <a
+                      href={getPortalViewHref("cashBreakdown")}
+                      onClick={(e) => handleLinkClick(e, "cashBreakdown")}
                       style={dropdownItemStyle(activeView === "cashBreakdown")}
                     >
                       Breakdowns
-                    </button>
+                    </a>
                   </div>
                 )}
               </div>
@@ -441,52 +468,52 @@ export default function PortalShell({
 
               {openDropdown === "keyData" && (
                 <div style={dropdownMenuStyle}>
-                  <button
-                    type="button"
-                    onClick={() => handleNavClick("jobs")}
+                  <a
+                    href={getPortalViewHref("jobs")}
+                    onClick={(e) => handleLinkClick(e, "jobs")}
                     style={dropdownItemStyle(activeView === "jobs")}
                   >
                     Jobs
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleNavClick("contractors")}
+                  </a>
+                  <a
+                    href={getPortalViewHref("contractors")}
+                    onClick={(e) => handleLinkClick(e, "contractors")}
                     style={dropdownItemStyle(activeView === "contractors")}
                   >
                     Contractors
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleNavClick("expenses")}
+                  </a>
+                  <a
+                    href={getPortalViewHref("expenses")}
+                    onClick={(e) => handleLinkClick(e, "expenses")}
                     style={dropdownItemStyle(activeView === "expenses")}
                   >
                     Expenses
-                  </button>
+                  </a>
                   {!isSeniorRestricted && (
                     <>
-                      <button
-                        type="button"
-                        onClick={() => handleNavClick("salaries")}
+                      <a
+                        href={getPortalViewHref("salaries")}
+                        onClick={(e) => handleLinkClick(e, "salaries")}
                         style={dropdownItemStyle(activeView === "salaries")}
                       >
                         Salaries
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleNavClick("dividends")}
+                      </a>
+                      <a
+                        href={getPortalViewHref("dividends")}
+                        onClick={(e) => handleLinkClick(e, "dividends")}
                         style={dropdownItemStyle(activeView === "dividends")}
                       >
                         Dividends
-                      </button>
+                      </a>
                     </>
                   )}
-                  <button
-                    type="button"
-                    onClick={() => handleNavClick("nbtofind")}
+                  <a
+                    href={getPortalViewHref("nbtofind")}
+                    onClick={(e) => handleLinkClick(e, "nbtofind")}
                     style={dropdownItemStyle(activeView === "nbtofind")}
                   >
                     New business to find
-                  </button>
+                  </a>
                 </div>
               )}
             </div>
@@ -517,13 +544,13 @@ export default function PortalShell({
 
               {openDropdown === "analysis" && (
                 <div style={dropdownMenuStyle}>
-                  <button
-                    type="button"
-                    onClick={() => handleNavClick("scenarios")}
+                  <a
+                    href={getPortalViewHref("scenarios")}
+                    onClick={(e) => handleLinkClick(e, "scenarios")}
                     style={dropdownItemStyle(activeView === "scenarios")}
                   >
                     Scenarios
-                  </button>
+                  </a>
                   {hasBudget && (
                     <>
                       <div style={{ borderBottom: "1px solid #e2e8f0", margin: "4px 0" }} />
@@ -538,20 +565,20 @@ export default function PortalShell({
                       >
                         Budget
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => handleNavClick("viewBudget")}
+                      <a
+                        href={getPortalViewHref("viewBudget")}
+                        onClick={(e) => handleLinkClick(e, "viewBudget")}
                         style={dropdownItemStyle(activeView === "viewBudget")}
                       >
                         View budget
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleNavClick("budgetVariance")}
+                      </a>
+                      <a
+                        href={getPortalViewHref("budgetVariance")}
+                        onClick={(e) => handleLinkClick(e, "budgetVariance")}
                         style={dropdownItemStyle(activeView === "budgetVariance")}
                       >
                         Budget variance analysis
-                      </button>
+                      </a>
                     </>
                   )}
                 </div>
@@ -882,73 +909,73 @@ export default function PortalShell({
 
             <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
 
-              <button
-                type="button"
-                onClick={() => handleNavClick("month")}
+              <a
+                href={getPortalViewHref("month")}
+                onClick={(e) => handleLinkClick(e, "month")}
                 style={mobileNavItemStyle(activeView === "month")}
               >
                 Home
-              </button>
+              </a>
 
               <div style={mobileSectionHeaderStyle}>Performance</div>
-              <button type="button" onClick={() => handleNavClick("dashboard")} style={mobileSubItemStyle(activeView === "dashboard")}>
+              <a href={getPortalViewHref("dashboard")} onClick={(e) => handleLinkClick(e, "dashboard")} style={mobileSubItemStyle(activeView === "dashboard")}>
                 Financial year
-              </button>
-              <button type="button" onClick={() => handleNavClick("ytd")} style={mobileSubItemStyle(activeView === "ytd")}>
+              </a>
+              <a href={getPortalViewHref("ytd")} onClick={(e) => handleLinkClick(e, "ytd")} style={mobileSubItemStyle(activeView === "ytd")}>
                 Year-to-date
-              </button>
-              <button type="button" onClick={() => handleNavClick("perfBreakdown")} style={mobileSubItemStyle(activeView === "perfBreakdown")}>
+              </a>
+              <a href={getPortalViewHref("perfBreakdown")} onClick={(e) => handleLinkClick(e, "perfBreakdown")} style={mobileSubItemStyle(activeView === "perfBreakdown")}>
                 Breakdowns
-              </button>
+              </a>
 
               {hasCash && (
                 <>
                   <div style={mobileSectionHeaderStyle}>Cash</div>
-                  <button type="button" onClick={() => handleNavClick("cash")} style={mobileSubItemStyle(activeView === "cash")}>
+                  <a href={getPortalViewHref("cash")} onClick={(e) => handleLinkClick(e, "cash")} style={mobileSubItemStyle(activeView === "cash")}>
                     Cashflow forecast
-                  </button>
-                  <button type="button" onClick={() => handleNavClick("cashBreakdown")} style={mobileSubItemStyle(activeView === "cashBreakdown")}>
+                  </a>
+                  <a href={getPortalViewHref("cashBreakdown")} onClick={(e) => handleLinkClick(e, "cashBreakdown")} style={mobileSubItemStyle(activeView === "cashBreakdown")}>
                     Breakdowns
-                  </button>
+                  </a>
                 </>
               )}
 
               <div style={mobileSectionHeaderStyle}>Key data</div>
-              <button type="button" onClick={() => handleNavClick("jobs")} style={mobileSubItemStyle(activeView === "jobs")}>
+              <a href={getPortalViewHref("jobs")} onClick={(e) => handleLinkClick(e, "jobs")} style={mobileSubItemStyle(activeView === "jobs")}>
                 Jobs
-              </button>
-              <button type="button" onClick={() => handleNavClick("contractors")} style={mobileSubItemStyle(activeView === "contractors")}>
+              </a>
+              <a href={getPortalViewHref("contractors")} onClick={(e) => handleLinkClick(e, "contractors")} style={mobileSubItemStyle(activeView === "contractors")}>
                 Contractors
-              </button>
-              <button type="button" onClick={() => handleNavClick("expenses")} style={mobileSubItemStyle(activeView === "expenses")}>
+              </a>
+              <a href={getPortalViewHref("expenses")} onClick={(e) => handleLinkClick(e, "expenses")} style={mobileSubItemStyle(activeView === "expenses")}>
                 Expenses
-              </button>
+              </a>
               {!isSeniorRestricted && (
                 <>
-                  <button type="button" onClick={() => handleNavClick("salaries")} style={mobileSubItemStyle(activeView === "salaries")}>
+                  <a href={getPortalViewHref("salaries")} onClick={(e) => handleLinkClick(e, "salaries")} style={mobileSubItemStyle(activeView === "salaries")}>
                     Salaries
-                  </button>
-                  <button type="button" onClick={() => handleNavClick("dividends")} style={mobileSubItemStyle(activeView === "dividends")}>
+                  </a>
+                  <a href={getPortalViewHref("dividends")} onClick={(e) => handleLinkClick(e, "dividends")} style={mobileSubItemStyle(activeView === "dividends")}>
                     Dividends
-                  </button>
+                  </a>
                 </>
               )}
-              <button type="button" onClick={() => handleNavClick("nbtofind")} style={mobileSubItemStyle(activeView === "nbtofind")}>
+              <a href={getPortalViewHref("nbtofind")} onClick={(e) => handleLinkClick(e, "nbtofind")} style={mobileSubItemStyle(activeView === "nbtofind")}>
                 New business to find
-              </button>
+              </a>
 
               <div style={mobileSectionHeaderStyle}>Analysis</div>
-              <button type="button" onClick={() => handleNavClick("scenarios")} style={mobileSubItemStyle(activeView === "scenarios")}>
+              <a href={getPortalViewHref("scenarios")} onClick={(e) => handleLinkClick(e, "scenarios")} style={mobileSubItemStyle(activeView === "scenarios")}>
                 Scenarios
-              </button>
+              </a>
               {hasBudget && (
                 <>
-                  <button type="button" onClick={() => handleNavClick("viewBudget")} style={mobileSubItemStyle(activeView === "viewBudget")}>
+                  <a href={getPortalViewHref("viewBudget")} onClick={(e) => handleLinkClick(e, "viewBudget")} style={mobileSubItemStyle(activeView === "viewBudget")}>
                     View budget
-                  </button>
-                  <button type="button" onClick={() => handleNavClick("budgetVariance")} style={mobileSubItemStyle(activeView === "budgetVariance")}>
+                  </a>
+                  <a href={getPortalViewHref("budgetVariance")} onClick={(e) => handleLinkClick(e, "budgetVariance")} style={mobileSubItemStyle(activeView === "budgetVariance")}>
                     Budget variance
-                  </button>
+                  </a>
                 </>
               )}
             </div>
@@ -1040,7 +1067,10 @@ const dropdownItemStyle = (isActive) => ({
   cursor: "pointer",
   transition: "background 0.15s ease",
   fontFamily: "inherit",
-  whiteSpace: "nowrap"
+  whiteSpace: "nowrap",
+  textDecoration: "none",
+  display: "block",
+  boxSizing: "border-box"
 });
 
 const mobileNavItemStyle = (isActive) => ({
@@ -1052,7 +1082,10 @@ const mobileNavItemStyle = (isActive) => ({
   fontSize: "16px",
   fontWeight: 700,
   textAlign: "left",
-  cursor: "pointer"
+  cursor: "pointer",
+  textDecoration: "none",
+  display: "block",
+  boxSizing: "border-box"
 });
 
 const mobileSectionHeaderStyle = {
@@ -1073,5 +1106,8 @@ const mobileSubItemStyle = (isActive) => ({
   fontSize: "15px",
   fontWeight: isActive ? 700 : 500,
   textAlign: "left",
-  cursor: "pointer"
+  cursor: "pointer",
+  textDecoration: "none",
+  display: "block",
+  boxSizing: "border-box"
 });

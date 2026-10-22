@@ -18,7 +18,16 @@ export default function ToolsView({
   const { automationCommanderSheetId } = useAppGlobals();
   const { sessionId, computeAlertCheckCount, isLoading, startTriage } = useTriage();
 
-  const [eomSubView, setEomSubView] = useState("overview"); // "overview" | "payroll" | "time" | "cash" | "cashflow_recon" | "push_outgoings"
+  const [eomSubView, setEomSubView] = useState(() => {
+    if (typeof window !== "undefined") {
+      const p = new URLSearchParams(window.location.search);
+      const sub = p.get("subview");
+      if (sub && ["overview", "payroll", "time", "cash", "cashflow_recon", "push_outgoings"].includes(sub)) {
+        return sub;
+      }
+    }
+    return "overview";
+  }); // "overview" | "payroll" | "time" | "cash" | "cashflow_recon" | "push_outgoings"
   const [eomPushOutgoingsClient, setEomPushOutgoingsClient] = useState(managedClient?.clientName || "");
   const [eomCashflowReconClient, setEomCashflowReconClient] = useState(managedClient?.clientName || "");
 
@@ -942,17 +951,38 @@ export default function ToolsView({
 
       {!managedClient && (
         <div className="eom-subview-tabs">
-          {[["overview", "Overview"], ["payroll", "Payroll import"], ["time", "Time import"], ["cash", "Cash balances"], ["cashflow_recon", "Cashflow recon"], ["push_outgoings", "Push outgoings"]].map(([key, label]) => (
-            <button key={key} onClick={() => setEomSubView(key)}
-              style={{
-                padding: "8px 16px", background: "none", border: "none",
-                borderBottom: eomSubView === key ? "2px solid #0066cc" : "2px solid transparent",
-                color: eomSubView === key ? "#0066cc" : "#666", fontWeight: eomSubView === key ? "600" : "400",
-                fontSize: "13px", cursor: "pointer", flexShrink: 0
-              }}>
-              {label}
-            </button>
-          ))}
+          {[["overview", "Overview"], ["payroll", "Payroll import"], ["time", "Time import"], ["cash", "Cash balances"], ["cashflow_recon", "Cashflow recon"], ["push_outgoings", "Push outgoings"]].map(([key, label]) => {
+            const clientQuery = managedClient?.clientName ? `&client=${encodeURIComponent(managedClient.clientName)}` : "";
+            const href = key === "overview" ? `/pma?nav=tools${clientQuery}` : `/pma?nav=tools&subview=${key}${clientQuery}`;
+            return (
+              <a
+                key={key}
+                href={href}
+                onClick={(e) => {
+                  if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) {
+                    e.preventDefault();
+                    setEomSubView(key);
+                  }
+                }}
+                style={{
+                  padding: "8px 16px",
+                  background: "none",
+                  border: "none",
+                  borderBottom: eomSubView === key ? "2px solid #0066cc" : "2px solid transparent",
+                  color: eomSubView === key ? "#0066cc" : "#666",
+                  fontWeight: eomSubView === key ? "600" : "400",
+                  fontSize: "13px",
+                  cursor: "pointer",
+                  flexShrink: 0,
+                  textDecoration: "none",
+                  display: "inline-block",
+                  boxSizing: "border-box"
+                }}
+              >
+                {label}
+              </a>
+            );
+          })}
         </div>
       )}
 

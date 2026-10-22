@@ -3,7 +3,14 @@ import { useState } from "react";
 export function useTasks() {
   const [tasks, setTasks] = useState([]);
   const [tasksLoading, setTasksLoading] = useState(false);
-  const [tasksFilter, setTasksFilter] = useState("active");
+  const [tasksFilter, setTasksFilter] = useState(() => {
+    if (typeof window !== "undefined") {
+      const p = new URLSearchParams(window.location.search);
+      const f = p.get("filter");
+      if (f) return f;
+    }
+    return "active";
+  });
   const [selectedTask, setSelectedTask] = useState(null);
   const [taskDetailOptions, setTaskDetailOptions] = useState([]);
   const [taskDetailAnalyzing, setTaskDetailAnalyzing] = useState(false);

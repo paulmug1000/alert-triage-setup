@@ -1,5 +1,6 @@
 export const GLOBAL_STYLES = `
   html, body { margin: 0; padding: 0; scroll-behavior: auto; }
+  button, input, select, textarea { font-family: inherit; }
   @keyframes triage-spin { to { transform: rotate(360deg); } }
   .triage-btn { transition: filter 0.15s, transform 0.1s, background 0.15s, box-shadow 0.15s !important; }
   .triage-btn:hover:not(:disabled) { filter: brightness(0.92); box-shadow: 0 2px 6px rgba(0,0,0,0.12); }

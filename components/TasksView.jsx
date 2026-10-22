@@ -435,15 +435,26 @@ export default function TasksView({
 
         <div style={{ display: "flex", gap: "0", borderBottom: "1px solid #e0e0e0", marginBottom: "20px", flexWrap: "wrap", alignItems: "center" }}>
           {filterTabs.map(tab => (
-            <button key={tab.key} className="triage-btn pulse-nav-item"
-              onClick={() => { setTasksFilter(tab.key); loadTasks(tab.key); }}
+            <a
+              key={tab.key}
+              href={`/pma?nav=tasks&filter=${encodeURIComponent(tab.key)}${managedClient?.clientName ? `&client=${encodeURIComponent(managedClient.clientName)}` : ""}`}
+              className="triage-btn pulse-nav-item"
+              onClick={(e) => {
+                if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) {
+                  e.preventDefault();
+                  setTasksFilter(tab.key);
+                  loadTasks(tab.key);
+                }
+              }}
               style={{
                 background: "none", border: "none", cursor: "pointer", padding: "10px 18px",
                 fontSize: "14px", fontWeight: tasksFilter === tab.key ? "600" : "400",
                 color: tasksFilter === tab.key ? "#0066cc" : "#555",
                 borderBottom: tasksFilter === tab.key ? "2px solid #0066cc" : "2px solid transparent",
                 borderRadius: "0", display: "flex", alignItems: "center", gap: "6px",
-              }}>
+                textDecoration: "none", boxSizing: "border-box"
+              }}
+            >
               {tab.label}
               {tab.key !== "resolved" && tab.count > 0 && (
                 <span style={{
@@ -454,7 +465,7 @@ export default function TasksView({
                   padding: "0 5px", lineHeight: "1",
                 }}>{tab.count > 99 ? "99+" : tab.count}</span>
               )}
-            </button>
+            </a>
           ))}
           <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "8px", paddingBottom: "4px" }}>
             <button className="triage-btn"

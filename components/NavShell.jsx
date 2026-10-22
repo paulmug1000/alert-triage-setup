@@ -223,13 +223,33 @@ export default function NavShell({
 
   const isTabActive = (name) => activeNav === name || (name === "activity" && activeNav === "appLog");
 
+  const getNavHref = (key) => {
+    const clientQuery = managedClient?.clientName ? `&client=${encodeURIComponent(managedClient.clientName)}` : "";
+    if (key === "home") {
+      return managedClient?.clientName ? `/pma?client=${encodeURIComponent(managedClient.clientName)}` : "/pma";
+    }
+    if (key === "alerts") {
+      return managedClient?.clientName ? `/pma/alerts?client=${encodeURIComponent(managedClient.clientName)}` : "/pma/alerts";
+    }
+    return `/pma?nav=${encodeURIComponent(key)}${clientQuery}`;
+  };
+
+  const handleNavClick = (e, handler) => {
+    if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) {
+      e.preventDefault();
+      handler?.();
+    }
+  };
+
   const navBtnStyle = (name) => ({
     background: "none", border: "none", cursor: "pointer",
     padding: isMobile ? "12px 10px" : "12px 13px",
     fontSize: "14px", fontWeight: isTabActive(name) ? "600" : "400",
+    fontFamily: "inherit", lineHeight: "1.5",
     color: isTabActive(name) ? "#0066cc" : "#444",
     borderBottom: isTabActive(name) ? "2px solid #0066cc" : "2px solid transparent",
     borderRadius: "0", display: "flex", alignItems: "center", whiteSpace: "nowrap",
+    textDecoration: "none", boxSizing: "border-box", margin: 0,
   });
 
   // Strict requested menu order with Edit dropdown:
@@ -265,7 +285,12 @@ export default function NavShell({
     <div style={{ fontFamily: "system-ui, -apple-system, sans-serif", minHeight: "100vh", background: "#f5f5f5" }}>
       <style dangerouslySetInnerHTML={{ __html: GLOBAL_STYLES }} />
       <div className="pma-topbar">
-        <div className="pma-topbar-brand">
+        <a
+          href={getNavHref("home")}
+          onClick={(e) => handleNavClick(e, onHome)}
+          className="pma-topbar-brand"
+          style={{ textDecoration: "none", color: "inherit", cursor: "pointer" }}
+        >
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src="/pulselogo-transparent.png"
@@ -279,7 +304,7 @@ export default function NavShell({
             }}
           />
           <span className="pma-topbar-title">Management Area</span>
-        </div>
+        </a>
         {user && (
           <div className="pma-topbar-user-area" style={{ position: "relative" }}>
             {/* Manage Client Dropdown */}
@@ -420,13 +445,17 @@ export default function NavShell({
                     ) : (
                       filteredManageClients.map((c) => {
                         const isSelected = managedClient?.clientName === c.clientName;
+                        const clientHref = `/pma?client=${encodeURIComponent(c.clientName)}${activeNav && activeNav !== "home" ? `&nav=${encodeURIComponent(activeNav)}` : ""}`;
                         return (
-                          <button
+                          <a
                             key={c.clientName}
-                            type="button"
-                            onClick={() => {
-                              setManageDropdownOpen(false);
-                              onSelectManagedClient?.(c);
+                            href={clientHref}
+                            onClick={(e) => {
+                              if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) {
+                                e.preventDefault();
+                                setManageDropdownOpen(false);
+                                onSelectManagedClient?.(c);
+                              }
                             }}
                             style={{
                               width: "100%",
@@ -445,7 +474,9 @@ export default function NavShell({
                               whiteSpace: "nowrap",
                               overflow: "hidden",
                               textOverflow: "ellipsis",
-                              transition: "background 0.12s, color 0.12s"
+                              transition: "background 0.12s, color 0.12s",
+                              textDecoration: "none",
+                              boxSizing: "border-box"
                             }}
                             onMouseEnter={(e) => {
                               if (!isSelected) {
@@ -462,7 +493,7 @@ export default function NavShell({
                           >
                             <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{c.clientName}</span>
                             {isSelected && <span style={{ color: "#0047AB", fontSize: "12px" }}>✓</span>}
-                          </button>
+                          </a>
                         );
                       })
                     )}
@@ -571,10 +602,15 @@ export default function NavShell({
                       </div>
                     ) : (
                       filteredClients.map((c) => (
-                        <button
+                        <a
                           key={c.clientName}
-                          type="button"
-                          onClick={() => handleSelectPulseClient(c)}
+                          href={`/pulse?client=${encodeURIComponent(c.clientName)}`}
+                          onClick={(e) => {
+                            if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) {
+                              e.preventDefault();
+                              handleSelectPulseClient(c);
+                            }
+                          }}
                           style={{
                             width: "100%",
                             padding: "8px 14px",
@@ -590,7 +626,9 @@ export default function NavShell({
                             whiteSpace: "nowrap",
                             overflow: "hidden",
                             textOverflow: "ellipsis",
-                            transition: "background 0.12s, color 0.12s"
+                            transition: "background 0.12s, color 0.12s",
+                            textDecoration: "none",
+                            boxSizing: "border-box"
                           }}
                           onMouseEnter={(e) => {
                             e.currentTarget.style.background = "#f0f7ff";
@@ -602,7 +640,7 @@ export default function NavShell({
                           }}
                         >
                           {c.clientName}
-                        </button>
+                        </a>
                       ))
                     )}
                   </div>
@@ -729,29 +767,32 @@ export default function NavShell({
             const isSubActive = item.children.some(c => isTabActive(c.key));
             return (
               <div key={item.key} style={{ position: "relative", display: "flex", alignItems: "stretch" }}>
-                <button
-                  type="button"
+                <a
+                  href={getNavHref(item.children[0]?.key || "jobs")}
                   className="triage-btn pulse-nav-item pma-nav-dropdown-btn"
                   onClick={(e) => {
-                    e.stopPropagation();
-                    setEditDropdownOpen((v) => !v);
-                    setManageDropdownOpen(false);
-                    setPulseDropdownOpen(false);
-                    setProfileDropdownOpen(false);
+                    if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setEditDropdownOpen((v) => !v);
+                      setManageDropdownOpen(false);
+                      setPulseDropdownOpen(false);
+                      setProfileDropdownOpen(false);
+                    }
                   }}
                   style={{
                     ...navBtnStyle(item.key),
                     color: (isSubActive || editDropdownOpen) ? "#0066cc" : "#444",
                     fontWeight: (isSubActive || editDropdownOpen) ? "600" : "400",
                     borderBottom: isSubActive ? "2px solid #0066cc" : "2px solid transparent",
-                    display: "inline-flex",
+                    display: "flex",
                     alignItems: "center",
                     gap: "5px",
                   }}
                 >
                   <span>{item.label}</span>
                   <span style={{ fontSize: "10px", opacity: 0.8, lineHeight: 1 }}>{editDropdownOpen ? "▲" : "▼"}</span>
-                </button>
+                </a>
                 {editDropdownOpen && (
                   <div
                     className="pma-edit-dropdown"
@@ -772,12 +813,15 @@ export default function NavShell({
                     {item.children.map((sub) => {
                       const active = isTabActive(sub.key);
                       return (
-                        <button
+                        <a
                           key={sub.key}
-                          type="button"
-                          onClick={() => {
-                            setEditDropdownOpen(false);
-                            sub.handler?.();
+                          href={getNavHref(sub.key)}
+                          onClick={(e) => {
+                            if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) {
+                              e.preventDefault();
+                              setEditDropdownOpen(false);
+                              sub.handler?.();
+                            }
                           }}
                           style={{
                             width: "100%",
@@ -794,6 +838,8 @@ export default function NavShell({
                             alignItems: "center",
                             justifyContent: "space-between",
                             transition: "background 0.12s",
+                            textDecoration: "none",
+                            boxSizing: "border-box"
                           }}
                           onMouseEnter={(e) => {
                             if (!active) e.currentTarget.style.background = "#f8fafc";
@@ -804,7 +850,7 @@ export default function NavShell({
                         >
                           <span>{sub.label}</span>
                           {active && <span style={{ color: "#0066cc", fontSize: "12px" }}>✓</span>}
-                        </button>
+                        </a>
                       );
                     })}
                   </div>
@@ -813,26 +859,32 @@ export default function NavShell({
             );
           }
           return (
-            <button key={item.key} className="triage-btn pulse-nav-item" onClick={item.handler} style={navBtnStyle(item.key)}>
+            <a
+              key={item.key}
+              href={getNavHref(item.key)}
+              className="triage-btn pulse-nav-item"
+              onClick={(e) => handleNavClick(e, item.handler)}
+              style={navBtnStyle(item.key)}
+            >
               {item.label}
               {item.badge !== undefined && <Badge count={item.badge} />}
-            </button>
+            </a>
           );
         })}
 
         {isMobile && (
           <>
-            <button className="triage-btn pulse-nav-item" onClick={onHome} style={navBtnStyle("home")}>
+            <a href={getNavHref("home")} className="triage-btn pulse-nav-item" onClick={(e) => handleNavClick(e, onHome)} style={navBtnStyle("home")}>
               Home
-            </button>
-            <button className="triage-btn pulse-nav-item" onClick={onAlerts} style={navBtnStyle("alerts")}>
+            </a>
+            <a href={getNavHref("alerts")} className="triage-btn pulse-nav-item" onClick={(e) => handleNavClick(e, onAlerts)} style={navBtnStyle("alerts")}>
               Alerts
               {homeAlertCount !== undefined && <Badge count={homeAlertCount} />}
-            </button>
-            <button className="triage-btn pulse-nav-item" onClick={onTasks} style={navBtnStyle("tasks")}>
+            </a>
+            <a href={getNavHref("tasks")} className="triage-btn pulse-nav-item" onClick={(e) => handleNavClick(e, onTasks)} style={navBtnStyle("tasks")}>
               Tasks
               {taskCount !== undefined && <Badge count={taskCount} />}
-            </button>
+            </a>
             {activeNav !== "home" && activeNav !== "alerts" && activeNav !== "tasks" && (
               (() => {
                 let current = allNavItems.find((n) => !n.isDropdown && isTabActive(n.key));
@@ -842,10 +894,10 @@ export default function NavShell({
                 }
                 if (!current) return null;
                 return (
-                  <button className="triage-btn pulse-nav-item" onClick={current.handler} style={navBtnStyle(current.key)}>
+                  <a href={getNavHref(current.key)} className="triage-btn pulse-nav-item" onClick={(e) => handleNavClick(e, current.handler)} style={navBtnStyle(current.key)}>
                     {current.label}
                     {current.badge !== undefined && <Badge count={current.badge} />}
-                  </button>
+                  </a>
                 );
               })()
             )}
@@ -882,12 +934,15 @@ export default function NavShell({
                           {item.label}
                         </div>
                         {item.children.map((sub) => (
-                          <button
+                          <a
                             key={sub.key}
+                            href={getNavHref(sub.key)}
                             className="triage-btn"
-                            onClick={() => {
-                              sub.handler?.();
-                              setShowMore(false);
+                            onClick={(e) => {
+                              handleNavClick(e, () => {
+                                sub.handler?.();
+                                setShowMore(false);
+                              });
                             }}
                             style={{
                               background: "none",
@@ -902,22 +957,29 @@ export default function NavShell({
                               display: "flex",
                               alignItems: "center",
                               justifyContent: "space-between",
+                              textDecoration: "none",
+                              boxSizing: "border-box"
                             }}
                           >
                             <span>{sub.label}</span>
                             {isTabActive(sub.key) && <span style={{ color: "#0066cc" }}>✓</span>}
-                          </button>
+                          </a>
                         ))}
                       </div>
                     );
                   }
                   return (
-                    <button key={item.key} className="triage-btn"
-                      onClick={() => { item.handler(); setShowMore(false); }}
-                      style={{ background: "none", border: "none", cursor: "pointer", width: "100%", justifyContent: "flex-start", borderBottom: "1px solid #f0f0f0", padding: "12px 16px", fontSize: "14px", fontWeight: isTabActive(item.key) ? "600" : "400", color: isTabActive(item.key) ? "#0066cc" : "#444", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <a key={item.key} href={getNavHref(item.key)} className="triage-btn"
+                      onClick={(e) => {
+                        handleNavClick(e, () => {
+                          item.handler();
+                          setShowMore(false);
+                        });
+                      }}
+                      style={{ background: "none", border: "none", cursor: "pointer", width: "100%", justifyContent: "space-between", borderBottom: "1px solid #f0f0f0", padding: "12px 16px", fontSize: "14px", fontWeight: isTabActive(item.key) ? "600" : "400", color: isTabActive(item.key) ? "#0066cc" : "#444", display: "flex", alignItems: "center", textDecoration: "none", boxSizing: "border-box" }}>
                       <span>{item.label}</span>
                       {item.badge !== undefined && <Badge count={item.badge} />}
-                    </button>
+                    </a>
                   );
                 })}
               </div>

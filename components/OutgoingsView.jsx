@@ -733,27 +733,41 @@ export default function OutgoingsView({
         {!noClient && outgoingsData && (
           <>
             <div style={{ display: "flex", gap: "8px", marginBottom: "14px", borderBottom: "1px solid #e0e0e0" }}>
-              <button onClick={() => setVendorsSubTab("contractors")}
+              <a
+                href={`/pma?nav=outgoings&subtab=contractors${outgoingsClient?.clientName ? `&client=${encodeURIComponent(outgoingsClient.clientName)}` : ""}`}
+                onClick={(e) => {
+                  if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) {
+                    e.preventDefault();
+                    setVendorsSubTab("contractors");
+                  }
+                }}
                 style={{
                   padding: "8px 16px", background: "none", border: "none",
                   borderBottom: vendorsSubTab === "contractors" ? "2px solid #0066cc" : "2px solid transparent",
                   color: vendorsSubTab === "contractors" ? "#0066cc" : "#666",
-                  fontWeight: vendorsSubTab === "contractors" ? "700" : "500", fontSize: "14px", cursor: "pointer"
+                  fontWeight: vendorsSubTab === "contractors" ? "700" : "500", fontSize: "14px", cursor: "pointer",
+                  textDecoration: "none", display: "inline-block", boxSizing: "border-box"
                 }}>
                 By month
-              </button>
-              <button onClick={() => {
-                setVendorsSubTab("directCosts");
-                if (!directCostsJobs) loadDirectCostsJobs(outgoingsClient, false);
-              }}
+              </a>
+              <a
+                href={`/pma?nav=outgoings&subtab=directCosts${outgoingsClient?.clientName ? `&client=${encodeURIComponent(outgoingsClient.clientName)}` : ""}`}
+                onClick={(e) => {
+                  if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) {
+                    e.preventDefault();
+                    setVendorsSubTab("directCosts");
+                    if (!directCostsJobs && outgoingsClient) loadDirectCostsJobs(outgoingsClient, false);
+                  }
+                }}
                 style={{
                   padding: "8px 16px", background: "none", border: "none",
                   borderBottom: vendorsSubTab === "directCosts" ? "2px solid #0066cc" : "2px solid transparent",
                   color: vendorsSubTab === "directCosts" ? "#0066cc" : "#666",
-                  fontWeight: vendorsSubTab === "directCosts" ? "700" : "500", fontSize: "14px", cursor: "pointer"
+                  fontWeight: vendorsSubTab === "directCosts" ? "700" : "500", fontSize: "14px", cursor: "pointer",
+                  textDecoration: "none", display: "inline-block", boxSizing: "border-box"
                 }}>
                 By job
-              </button>
+              </a>
             </div>
           </>
         )}

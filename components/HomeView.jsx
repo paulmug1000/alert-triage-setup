@@ -266,10 +266,15 @@ export default function HomeView({
             </p>
           </div>
 
-          <button
-            type="button"
+          <a
+            href={managedClient?.clientName ? `/pma/alerts?client=${encodeURIComponent(managedClient.clientName)}` : "/pma/alerts"}
             className="triage-btn"
-            onClick={onGoToAlerts}
+            onClick={(e) => {
+              if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) {
+                e.preventDefault();
+                onGoToAlerts?.();
+              }
+            }}
             style={{
               background: "#0047AB",
               color: "#FFFFFF",
@@ -284,11 +289,13 @@ export default function HomeView({
               justifyContent: "center",
               gap: "8px",
               width: "100%",
+              textDecoration: "none",
+              boxSizing: "border-box"
             }}
           >
-            <span>Go to Alerts</span>
+            <span>Go to alerts</span>
             <span style={{ fontSize: "14px" }}>→</span>
-          </button>
+          </a>
         </div>
 
         {/* 2. Task Summary Card */}
@@ -344,10 +351,15 @@ export default function HomeView({
             </p>
           </div>
 
-          <button
-            type="button"
+          <a
+            href={managedClient?.clientName ? `/pma?nav=tasks&client=${encodeURIComponent(managedClient.clientName)}` : "/pma?nav=tasks"}
             className="triage-btn"
-            onClick={onGoToTasks}
+            onClick={(e) => {
+              if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) {
+                e.preventDefault();
+                onGoToTasks?.();
+              }
+            }}
             style={{
               background: "#F8FAFC",
               color: "#1E293B",
@@ -362,11 +374,13 @@ export default function HomeView({
               justifyContent: "center",
               gap: "8px",
               width: "100%",
+              textDecoration: "none",
+              boxSizing: "border-box"
             }}
           >
-            <span>Go to Tasks</span>
+            <span>Go to tasks</span>
             <span style={{ fontSize: "14px" }}>→</span>
-          </button>
+          </a>
         </div>
       </div>
 
@@ -390,10 +404,15 @@ export default function HomeView({
           </div>
 
 
-          <button
-            type="button"
+          <a
+            href={managedClient?.clientName ? `/pma?nav=setup&client=${encodeURIComponent(managedClient.clientName)}` : "/pma?nav=setup"}
             className="triage-btn"
-            onClick={() => onGoToSetup && onGoToSetup()}
+            onClick={(e) => {
+              if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) {
+                e.preventDefault();
+                onGoToSetup && onGoToSetup();
+              }
+            }}
             style={{
               background: "#F1F5F9",
               color: "#334155",
@@ -403,10 +422,12 @@ export default function HomeView({
               fontSize: "12.5px",
               fontWeight: "600",
               cursor: "pointer",
+              textDecoration: "none",
+              display: "inline-block"
             }}
           >
             Manage setup tab →
-          </button>
+          </a>
         </div>
 
         {integrationsLoading ? (
@@ -466,10 +487,15 @@ export default function HomeView({
                     </div>
                   </div>
 
-                  <button
-                    type="button"
+                  <a
+                    href={`/pma?nav=setup&client=${encodeURIComponent(c.clientName)}`}
                     className="triage-btn"
-                    onClick={() => onGoToSetup && onGoToSetup(c.clientName)}
+                    onClick={(e) => {
+                      if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) {
+                        e.preventDefault();
+                        onGoToSetup && onGoToSetup(c.clientName);
+                      }
+                    }}
                     style={{
                       background: "#FFFFFF",
                       color: "#92400E",
@@ -480,10 +506,12 @@ export default function HomeView({
                       fontWeight: "600",
                       cursor: "pointer",
                       textAlign: "center",
+                      textDecoration: "none",
+                      display: "inline-block"
                     }}
                   >
-                    Open in Setup →
-                  </button>
+                    Open in setup →
+                  </a>
                 </div>
               );
             })}
@@ -716,10 +744,15 @@ export default function HomeView({
                       <td style={{ padding: "10px 14px", textAlign: "right" }}>
                         <div style={{ display: "flex", gap: "6px", justifyContent: "flex-end" }}>
                           {alertCount > 0 && (
-                            <button
-                              type="button"
+                            <a
+                              href={`/pma/alerts?client=${encodeURIComponent(client.clientName)}`}
                               className="triage-btn"
-                              onClick={() => onSelectClientAlerts && onSelectClientAlerts(client.clientName)}
+                              onClick={(e) => {
+                                if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) {
+                                  e.preventDefault();
+                                  onSelectClientAlerts && onSelectClientAlerts(client.clientName);
+                                }
+                              }}
                               style={{
                                 background: "#F1F5F9",
                                 color: "#0047AB",
@@ -729,15 +762,22 @@ export default function HomeView({
                                 fontSize: "11px",
                                 fontWeight: "600",
                                 cursor: "pointer",
+                                textDecoration: "none",
+                                display: "inline-block"
                               }}
                             >
                               Alerts
-                            </button>
+                            </a>
                           )}
-                          <button
-                            type="button"
+                          <a
+                            href={`/pma?nav=setup&client=${encodeURIComponent(client.clientName)}`}
                             className="triage-btn"
-                            onClick={() => onGoToSetup && onGoToSetup(client.clientName)}
+                            onClick={(e) => {
+                              if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) {
+                                e.preventDefault();
+                                onGoToSetup && onGoToSetup(client.clientName);
+                              }
+                            }}
                             style={{
                               background: "#F8FAFC",
                               color: "#475569",
@@ -747,10 +787,12 @@ export default function HomeView({
                               fontSize: "11px",
                               fontWeight: "600",
                               cursor: "pointer",
+                              textDecoration: "none",
+                              display: "inline-block"
                             }}
                           >
                             Setup
-                          </button>
+                          </a>
                         </div>
                       </td>
                     </tr>

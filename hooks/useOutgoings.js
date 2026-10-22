@@ -18,7 +18,14 @@ export function useOutgoings(assignedAppIds, assignedByClient, setAssignedByClie
   
   const [outgoingsEstimate, setOutgoingsEstimate] = useState(null);
   const [outgoingsNewVendor, setOutgoingsNewVendor] = useState(null);
-  const [vendorsSubTab, setVendorsSubTab] = useState("contractors");
+  const [vendorsSubTab, setVendorsSubTab] = useState(() => {
+    if (typeof window !== "undefined") {
+      const p = new URLSearchParams(window.location.search);
+      const sub = p.get("subtab");
+      if (sub === "directCosts" || sub === "contractors") return sub;
+    }
+    return "contractors";
+  });
   const [directCostsJobs, setDirectCostsJobs] = useState(null);
   const [directCostsLoading, setDirectCostsLoading] = useState(false);
   const [directCostsShowAll, setDirectCostsShowAll] = useState(false);

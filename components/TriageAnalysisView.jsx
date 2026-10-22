@@ -9,6 +9,7 @@ import JobMatchCard, { buildJobsFromRows } from "./JobMatchCard";
 import ExploreJobsModal from "./ExploreJobsModal";
 import OutgoingsContractorPickerModal from "./OutgoingsContractorPickerModal";
 import JobDetailModal from "./JobDetailModal";
+import OutgoingsDetailModal from "./OutgoingsDetailModal";
 import InvoicesNewJobModal from "./InvoicesNewJobModal";
 
 export default function TriageAnalysisView({
@@ -39,6 +40,7 @@ export default function TriageAnalysisView({
   const [placementPrompt, setPlacementPrompt] = useState(null);
   const [confirmJobModal, setConfirmJobModal] = useState(null);
   const [viewingJobTarget, setViewingJobTarget] = useState(null);
+  const [viewingOutgoingsTarget, setViewingOutgoingsTarget] = useState(null);
   const [isSavingPlacement, setIsSavingPlacement] = useState(false);
   const [outgoingsOptionPrompt, setOutgoingsOptionPrompt] = useState(null);
   const [isCheckingCell, setIsCheckingCell] = useState(false);
@@ -158,9 +160,9 @@ export default function TriageAnalysisView({
     const slotLabel = customLabel || (createNewRow
       ? (isExpenseType ? "New Direct Cost" : "New Invoice Entry")
       : (isExpenseType
-          ? `Direct Cost ${slotNum || 1}`
-          : (isRetainer ? `Month ${slotNum || 1} Invoice` : `Invoice ${slotNum || 1}`)
-        ));
+        ? `Direct Cost ${slotNum || 1}`
+        : (isRetainer ? `Month ${slotNum || 1} Invoice` : `Invoice ${slotNum || 1}`)
+      ));
 
     if (isExpenseType) {
       const amt = parseFloat(String(alert.summary?.amount || alert.data?.accounting?.[2] || "0").replace(/[£$€,\s]/g, "")) || 0;
@@ -659,7 +661,7 @@ export default function TriageAnalysisView({
               ⚠ {alert.type === "expense" ? (() => {
                 const expFlags = alert.data?.flags || [];
                 const isMissing = String(expFlags[0] || "").trim() === "1";
-                if (isMissing) return "Missing expense in accounting system, not in Pulse";
+                if (isMissing) return "Expense in accounting system, missing from Pulse";
                 const expFlagNames = [null, "Duplicate app ID", "Description mismatch", "Amount mismatch", "VAT mismatch", "Received date mismatch", "Pay date mismatch", "Status mismatch"];
                 const active = expFlags.map((v, i) => String(v || "").trim() === "1" && expFlagNames[i] ? expFlagNames[i] : null).filter(Boolean);
                 return active.length > 0 ? `Field mismatch: ${active.join(", ").toLowerCase()}` : "Expense discrepancy";
@@ -667,7 +669,7 @@ export default function TriageAnalysisView({
                 : (() => {
                   const flags = alert.data?.flags || [];
                   const isMissing = String(flags[0] || "").trim() === "1";
-                  if (isMissing) return "Missing invoice in accounting system, not in Pulse";
+                  if (isMissing) return "Invoice in accounting system, missing from Pulse";
                   const invFlagNames2 = [null, "Client mismatch", "Amount mismatch", "Sent date mismatch", "Duplicate invoice in sheet", "Pay date mismatch", "Status mismatch"];
                   const active = flags.map((v, i) => String(v || "").trim() === "1" && invFlagNames2[i] ? invFlagNames2[i] : null).filter(Boolean);
                   return active.length > 0 ? `Field mismatch: ${active.join(", ").toLowerCase()}` : "Invoice discrepancy";
@@ -1173,11 +1175,11 @@ export default function TriageAnalysisView({
                       const candidateJobOptions = (isDataMismatch || isCrmType)
                         ? []
                         : options.filter(opt =>
-                            (Array.isArray(opt.jobRowsData) && opt.jobRowsData.length > 0) ||
-                            opt.jobDetails ||
-                            opt.matchType === "existing_job" ||
-                            opt.matchType === "job_match"
-                          );
+                          (Array.isArray(opt.jobRowsData) && opt.jobRowsData.length > 0) ||
+                          opt.jobDetails ||
+                          opt.matchType === "existing_job" ||
+                          opt.matchType === "job_match"
+                        );
 
                       // Suppress generic AI fallback option only when candidate job match cards actually exist
                       const otherOptions = options.filter(opt => {
@@ -1231,6 +1233,53 @@ export default function TriageAnalysisView({
                           {otherOptions.map((option, idx) => {
                             const isDeleteAction = option.matchType === "delete";
                             const isIgnoreAction = option.matchType === "ignore";
+
+                            // Resolve job target for "View job" / "View expense" on data mismatch cards
+                            const optTab = option.tabName || (alert.mode === "Pipeline" || alert.alertType === "crmPipeAppDiscr" || alert.alertType === "crmPipeDashDiscr" ? "Pipeline" : "Confirmed");
+                            const isOutgoings = optTab === "Outgoings";
+
+                            let targetRowNum = null;
+                            if (option.jobRow && Number(option.jobRow) > 1 && !isOutgoings && (!alert.rowNumber || Number(option.jobRow) !== Number(alert.rowNumber) || isCrmMismatch)) {
+                              targetRowNum = Number(option.jobRow);
+                            } else if (option.parentRowNum && Number(option.parentRowNum) > 1 && !isOutgoings) {
+                              targetRowNum = Number(option.parentRowNum);
+                            }
+
+                            if (!targetRowNum && !isOutgoings && option.recommendedActions) {
+                              for (const act of option.recommendedActions) {
+                                const m = String(act).match(/\b(?:to\s+[A-Z]{1,3}|on\s+row|Row\s*)(\d+)\b/i);
+                                if (m && Number(m[1]) > 1) {
+                                  targetRowNum = Number(m[1]);
+                                  break;
+                                }
+                              }
+                            }
+
+                            if (!targetRowNum && !isOutgoings && alert.spreadsheetItems?.[0]?.cellRef) {
+                              const m = String(alert.spreadsheetItems[0].cellRef).match(/^[A-Z]+(\d+)$/i);
+                              if (m && Number(m[1]) > 1) {
+                                targetRowNum = Number(m[1]);
+                              }
+                            }
+
+                            const targetJobName = option.jobName || alert.summary?.job || alert.data?.accounting?.[1] || "";
+                            const targetClientName = option.matchingDetails?.unmatchedJobSummary?.clientName || option.clientName || alert.summary?.client || alert.clientName || selectedClient?.clientName || "";
+                            const targetProjectCode = option.matchingDetails?.unmatchedJobSummary?.projectCode || "";
+
+                            const canViewJob = Boolean(
+                              isDataMismatch &&
+                              !isOutgoings &&
+                              targetClientSheetId &&
+                              (targetRowNum || targetJobName)
+                            );
+
+                            const canViewExpense = Boolean(
+                              isDataMismatch &&
+                              isOutgoings &&
+                              targetClientSheetId &&
+                              (option.jobRow || targetJobName)
+                            );
+
                             return (
                               <div
                                 key={`other-opt-${idx}`}
@@ -1250,15 +1299,83 @@ export default function TriageAnalysisView({
                                   gap: "8px",
                                   flexWrap: "wrap"
                                 }}>
-                                  <span>
+                                  <span style={{ flex: "1 1 260px" }}>
                                     {isDataMismatch ? `Action ${idx + 1}: ` : `Option ${candidateJobOptions.length + idx + 1}: `}
                                     {cleanUserFacingText(option.title)}
                                   </span>
-                                  {isDeleteAction && (
-                                    <span style={{ fontSize: "11px", fontWeight: "700", color: "#dc2626", background: "#fee2e2", padding: "2px 8px", borderRadius: "12px", border: "1px solid #fca5a5" }}>
-                                      DELETES JOB
-                                    </span>
-                                  )}
+                                  <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
+                                    {canViewJob && (
+                                      <button
+                                        type="button"
+                                        className="triage-btn"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setViewingJobTarget({
+                                            clientSheetId: targetClientSheetId,
+                                            clientName: targetClientName,
+                                            jobName: targetJobName,
+                                            rowNum: targetRowNum,
+                                            rowNumber: targetRowNum,
+                                            projectCode: targetProjectCode,
+                                            tabName: optTab
+                                          });
+                                        }}
+                                        style={{
+                                          fontSize: "12px",
+                                          fontWeight: "600",
+                                          padding: "4px 10px",
+                                          borderRadius: "6px",
+                                          border: "1px solid #bae6fd",
+                                          background: "#ffffff",
+                                          color: "#0284c7",
+                                          cursor: "pointer",
+                                          display: "inline-flex",
+                                          alignItems: "center",
+                                          gap: "4px"
+                                        }}
+                                        title="View and edit job details in pop-up"
+                                      >
+                                        🔍 View job
+                                      </button>
+                                    )}
+                                    {canViewExpense && (
+                                      <button
+                                        type="button"
+                                        className="triage-btn"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setViewingOutgoingsTarget({
+                                            clientSheetId: targetClientSheetId,
+                                            clientName: targetClientName,
+                                            contractor: targetJobName,
+                                            rowNum: option.jobRow,
+                                            isOutgoings: true
+                                          });
+                                        }}
+                                        style={{
+                                          fontSize: "12px",
+                                          fontWeight: "600",
+                                          padding: "4px 10px",
+                                          borderRadius: "6px",
+                                          border: "1px solid #bae6fd",
+                                          background: "#ffffff",
+                                          color: "#0284c7",
+                                          cursor: "pointer",
+                                          display: "inline-flex",
+                                          alignItems: "center",
+                                          gap: "4px"
+                                        }}
+                                        title="View Outgoings expense details"
+                                      >
+                                        🔍 View expense
+                                      </button>
+                                    )}
+                                    {isDeleteAction && (
+                                      <span style={{ fontSize: "11px", fontWeight: "700", color: "#dc2626", background: "#fee2e2", padding: "2px 8px", borderRadius: "12px", border: "1px solid #fca5a5" }}>
+                                        DELETES JOB
+                                      </span>
+                                    )}
+                                  </div>
                                 </div>
 
                                 {option.explanation && (
@@ -1350,9 +1467,9 @@ export default function TriageAnalysisView({
                                   }}
                                 >
                                   {(isAccepting || isCheckingCell) ? (
-                                    <><Spinner color="white" />Writing to sheet...</>
+                                    <><Spinner color="white" />Saving ...</>
                                   ) : (
-                                    option.actionButtonText || (option.matchType === "info" ? "✓ Mark as resolved" : `✓ Accept ${isDataMismatch ? 'action' : 'option'} ${candidateJobOptions.length + idx + 1}`)
+                                    option.actionButtonText || (option.matchType === "info" ? "Mark as resolved" : `Accept ${isDataMismatch ? 'action' : 'option'} ${candidateJobOptions.length + idx + 1}`)
                                   )}
                                 </button>
                               </div>
@@ -1803,7 +1920,7 @@ export default function TriageAnalysisView({
               automationCommanderSheetId,
             }}
             onClose={() => setCreateNewJobOpen(false)}
-            onMarkPullPending={() => {}}
+            onMarkPullPending={() => { }}
             onSuccess={async (inv) => {
               setCreateNewJobOpen(false);
               const invIdentifier = inv?.invoiceNo ? `invoice #${inv.invoiceNo}` : "invoice";
@@ -2232,6 +2349,16 @@ export default function TriageAnalysisView({
             isOpen={!!viewingJobTarget}
             target={viewingJobTarget}
             onClose={() => setViewingJobTarget(null)}
+          />
+        )}
+
+        {/* Outgoings Detail Modal for "View Expense" */}
+        {viewingOutgoingsTarget && (
+          <OutgoingsDetailModal
+            isOpen={Boolean(viewingOutgoingsTarget)}
+            target={viewingOutgoingsTarget}
+            onClose={() => setViewingOutgoingsTarget(null)}
+            isAdmin={isAdmin}
           />
         )}
       </div>

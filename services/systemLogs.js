@@ -1,4 +1,4 @@
-import { withRetry } from "./sheetsClient";
+import { withRetry } from "./sheetsClient.js";
 
 export const PROACTIVE_CHECK_LOG_TAB = "ProactiveCheckLog";
 export const FLAG_SWEEP_LOG_TAB = "FlagSweepLog";

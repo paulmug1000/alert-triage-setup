@@ -1,14 +1,14 @@
-import { redisClient } from "./redisClient";
-import { getSheetsClient, extractSheetIdFromUrl } from "./sheetsClient";
+import { redisClient } from "./redisClient.js";
+import { getSheetsClient, extractSheetIdFromUrl } from "./sheetsClient.js";
 import {
   readAlertMemory, updateAlertMemoryRow, appendAlertMemoryRow,
   ensureAlertMemoryTab, findMemoryRow, buildAlertFingerprint,
   extractCrmComparisonSnapshot, deleteAlertMemoryRows, updateHandledAlertHash
-} from "./alertMemory";
+} from "./alertMemory.js";
 import { createHash } from "crypto";
-import { logPmaActivity } from "./pmaLogger";
-import { getSessionUser } from "./authService";
-import { matchesClientName } from "../utils/helpers";
+import { logPmaActivity } from "./pmaLogger.js";
+import { getSessionUser } from "./authService.js";
+import { matchesClientName } from "../utils/helpers.js";
 
 const PRECOMPUTED_KEY = "triage_precomputed";
 

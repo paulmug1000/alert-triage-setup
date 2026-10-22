@@ -547,9 +547,11 @@ export function useTriageEngine({
         }
         const title = String(opt.title || "").toLowerCase();
         if (title.includes("manual investigation") || title.includes("no confident automatic match")) return true;
-        if (opt.title && (opt.title.includes("CREATE NEW") || title.includes("321 - subcontractors") || (title.includes("outgoings vendor") && (/"\s*\d+\s*-/.test(title) || /outgoings vendor "[^"]*[\(\[]/i.test(opt.title))))) return true;
-        if (isDataMismatch && (!opt.actionButtonText || String(opt.actionButtonText).includes("Mark as reviewed") || opt.matchType === "info")) return true;
-        if (isDupInvoice && !alert.options.some(o => o.matchType === "delete" || String(o.title || "").includes("Clear invoice"))) return true;
+        if (isInvoiceAlert && opt.title && opt.title.includes("CREATE NEW")) return true;
+        if (opt.title && (title.includes("321 - subcontractors") || (title.includes("outgoings vendor") && (/"\s*\d+\s*-/.test(title) || /outgoings vendor "[^"]*[\(\[]/i.test(opt.title))))) return true;
+        if (isDataMismatch && (!opt.actionButtonText || String(opt.actionButtonText).includes("Mark as reviewed") || String(opt.actionButtonText).includes("Mark as resolved") || opt.matchType === "info")) return true;
+        if (isDataMismatch && !isDupInvoice && (alert.options.length !== 2 || !alert.options.some(o => o.matchType === "ignore"))) return true;
+        if (isDupInvoice && (!alert.options.some(o => o.matchType === "delete" || String(o.title || "").includes("Clear invoice")) || !alert.options.some(o => o.matchType === "ignore"))) return true;
         if (isCrmMismatch && (!opt.actionButtonText || alert.options.length !== 2 || String(opt.actionButtonText).includes("Mark as reviewed") || opt.matchType === "info")) return true;
         if (isExpMismatch && (!opt.actionButtonText || alert.options.length > 2 || String(opt.actionButtonText).includes("Mark as reviewed") || opt.matchType === "info")) return true;
         return false;

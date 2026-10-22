@@ -1359,7 +1359,7 @@ export async function handleStorePrecomputed(req, res, sheets) {
       const clientNameToMeta = new Map(clientRows.map(c => [c.clientName, c]));
 
       for (const row of memoryRowsForMerge) {
-        if (row.status !== "cached") continue;
+        if (row.status !== "cached" && row.status !== "pending_automation") continue;
 
         if (Object.prototype.hasOwnProperty.call(AUTOLOG_TYPE_PATTERNS, row.alertType)) {
           row.category = "info";
@@ -2630,7 +2630,7 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
     const memoryRows = await readAlertMemory(sheets, acIdBuild);
 
     const pending = memoryRows.filter(r => {
-      if (r.status !== "cached" || r.category !== "discrepancy") return false;
+      if ((r.status !== "cached" && r.status !== "pending_automation") || r.category !== "discrepancy") return false;
       if (Object.prototype.hasOwnProperty.call(AUTOLOG_TYPE_PATTERNS, r.alertType)) return false;
       if (!r.cachedOptionsJSON) return true;
       try {
@@ -2639,7 +2639,9 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
         const isStale = parsed.some(opt => {
           const title = String(opt.title || "").toLowerCase();
           if (title.includes("no confident automatic match") || (title.includes("manual investigation") && (title.includes("no confident") || title.includes("automatic match")))) return true;
-          if (opt.title && (opt.title.includes("CREATE NEW") || title.includes("321 - subcontractors") || (title.includes("outgoings vendor") && (/"\s*\d+\s*-/.test(title) || /outgoings vendor "[^"]*[\(\[]/i.test(opt.title))))) return true;
+          const isInv = r.alertType?.startsWith("invoice") || r.alertType === "invoice";
+          if (isInv && opt.title && opt.title.includes("CREATE NEW")) return true;
+          if (opt.title && (title.includes("321 - subcontractors") || (title.includes("outgoings vendor") && (/"\s*\d+\s*-/.test(title) || /outgoings vendor "[^"]*[\(\[]/i.test(opt.title))))) return true;
           if (opt.matchType === "existing_job" || opt.matchType === "job") {
             if (opt.jobRowsData && opt.jobRowsData.length > 0) {
               const r0 = opt.jobRowsData[0] || {};
@@ -3240,9 +3242,10 @@ export async function handleAnalyzeAlert(req, res, sheets) {
           if (title.includes("no confident automatic match") || (title.includes("manual investigation") && (title.includes("no confident") || title.includes("automatic match")))) return true;
           const isInvAlert = alert.type === "invoice" || alert.sheetName === "InvComp" || alert.flagType === "invoiceDashboardDiscr" || alert.alertType === "invoiceDashboardDiscr";
           const isInvMismatch = isInvAlert && String(alert.data?.flags?.[0] || "").trim() !== "1";
-          if (isInvMismatch && !opt.actionButtonText) return true;
           const isDupInvoice = Boolean(alert.isDuplicateInvoice || String(alert.data?.flags?.[4] || "").trim() === "1" || (alert.spreadsheetItems && alert.spreadsheetItems.length > 1));
-          if (isDupInvoice && !validCachedOptions.some(o => o.matchType === "delete" || String(o.title || "").includes("Clear invoice"))) return true;
+          if (isInvMismatch && (!opt.actionButtonText || String(opt.actionButtonText).includes("Mark as reviewed") || String(opt.actionButtonText).includes("Mark as resolved") || opt.matchType === "info")) return true;
+          if (isInvMismatch && !isDupInvoice && (validCachedOptions.length !== 2 || !validCachedOptions.some(o => o.matchType === "ignore"))) return true;
+          if (isDupInvoice && (!validCachedOptions.some(o => o.matchType === "delete" || String(o.title || "").includes("Clear invoice")) || !validCachedOptions.some(o => o.matchType === "ignore"))) return true;
           const isCrmAlert = alert.type === "crm" || alert.sheetName === "CRMComp" || Boolean(alert.alertType?.startsWith("crm")) || Boolean(alert.flagType?.startsWith("crm"));
           const isCrmMismatch = isCrmAlert && alert.subType === "field_mismatch";
           if (isCrmMismatch && (!opt.actionButtonText || validCachedOptions.length !== 2 || String(opt.actionButtonText).includes("Mark as reviewed") || opt.matchType === "info")) return true;
@@ -3299,6 +3302,7 @@ export async function handleAnalyzeAlert(req, res, sheets) {
             const jrdCache = new Map();
             optionsToReturn = await Promise.all(optionsToReturn.map(async (opt) => {
               if (!opt.jobRow || (opt.matchType !== "existing_job" && opt.matchType !== "job")) return opt;
+              if (opt.jobRowsData && opt.jobRowsData.length > 0) return opt;
               // Prefer explicit target fields (set at generation time) over parsing
               // recommendedActions text - explicit fields can't be mismatched.
               let highlightSlot = null;
@@ -4874,6 +4878,17 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           } catch (e) { console.log("  copiedToConf read failed:", e.message); }
         }
 
+        if (jobRow && alert.clientId) {
+          try {
+            const jrd = await fetchJobRowsForDisplay(sheets, alert.clientId, tabName, jobRow, null, sharedData);
+            if (jrd && jrd.length > 0 && options[0]) {
+              options[0].jobRowsData = jrd;
+            }
+          } catch (jrdErr) {
+            console.log("  ⚠️ Failed to fetch jobRowsData for CRM field mismatch:", jrdErr.message);
+          }
+        }
+
         console.log(`  ✅ Field mismatch - ${mismatchFields.join(", ")} - returning ${options.length} options for ${jobLabel}`);
 
         // Inject Pipeline-specific fields onto options
@@ -4968,7 +4983,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
         },
         {
           optionId: 2,
-          title: `CREATE NEW job "${dashJobDesc || "unknown"}" in ${dashTabName} tab from CRM data`,
+          title: `Create new job "${dashJobDesc || "unknown"}" in ${dashTabName} tab from CRM data`,
           matchType: "create_new",
           jobRow: null,
           jobName: dashJob,
@@ -5173,7 +5188,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             title: `Accept as split invoice across ${matchedJobs.length} jobs (£${totalSheetGross.toFixed(2)} total)`,
             matchType: "info",
             explanation: `The sum of invoice #${invoiceNo} across all ${matchedJobs.length} spreadsheet jobs (£${totalSheetGross.toFixed(2)}) matches the accounting total (£${grossAmount.toFixed(2)}). Accepting this marks the split as valid and resolved.`,
-            actionButtonText: "✓ Accept split invoice",
+            actionButtonText: "Accept split invoice",
           });
         }
 
@@ -5186,7 +5201,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             jobRow: j.rowNum,
             jobName: j.jobName,
             explanation: `Removes invoice #${invoiceNo} and its amount from slot ${j.slotNum} on "${j.jobName}". Use this if this invoice was assigned to this job in error.`,
-            actionButtonText: `✓ Clear invoice from "${j.jobName || 'Row ' + j.rowNum}"`,
+            actionButtonText: `Clear invoice from "${j.jobName || 'Row ' + j.rowNum}"`,
             recommendedActions: [
               `write "" to ${j.slotCols.ref}`,
               `write "" to ${j.slotCols.amt}`,
@@ -5206,31 +5221,44 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               clientName: j.clientName,
               matchingDetails: { unmatchedJobSummary: { clientName: j.clientName, jobName: j.jobName } },
               explanation: `Invoice #${invoiceNo} is the ONLY invoice attached to "${j.jobName}". If this entire job was created by mistake or as an accidental duplicate, deleting it will completely remove the job from the Confirmed tab.`,
-              actionButtonText: `🗑️ Delete job "${j.jobName || 'Row ' + j.parentRowNum}"`,
+              actionButtonText: `Delete job "${j.jobName || 'Row ' + j.parentRowNum}"`,
             });
           }
         }
 
-        if (dupOptions.length > 0) {
-          const dupSummary = alert.summary?.summary || `Invoice ${invoiceNo} (Duplicate in sheet)`;
-          if (memoryRow) {
-            await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, {
-              ...memoryRow, cachedOptionsJSON: JSON.stringify(dupOptions),
-            });
-          } else {
-            await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
-              fingerprintHash, alertType: "invoice", clientName: alert.clientName || "",
-              alertSummary: dupSummary, cachedOptionsJSON: JSON.stringify(dupOptions), status: "cached",
-            });
-          }
-          return res.status(200).json({ success: true, options: dupOptions, alertId: alert.rowNumber, previousIgnoreReason });
+        // Always include Option: Ignore discrepancy
+        dupOptions.push({
+          optionId: optId++,
+          title: "Ignore discrepancy (keep Pulse invoices as is)",
+          matchType: "ignore",
+          actionButtonText: "Ignore discrepancy",
+          jobRow: matchedJobs[0]?.rowNum || alert.rowNumber,
+          jobName: matchedJobs[0]?.jobName || alert.summary?.job || "",
+          explanation: "Mark this duplicate invoice alert as ignored. Both entries will remain in Pulse and no changes will be made to either system.",
+          recommendedActions: [
+            "Mark this discrepancy as ignored - no changes will be made to either system",
+          ],
+        });
+
+        const dupSummary = alert.summary?.summary || `Invoice ${invoiceNo} (Duplicate in sheet)`;
+        if (memoryRow) {
+          await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, {
+            ...memoryRow, cachedOptionsJSON: JSON.stringify(dupOptions),
+          });
+        } else {
+          await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
+            fingerprintHash, alertType: "invoice", clientName: alert.clientName || "",
+            alertSummary: dupSummary, cachedOptionsJSON: JSON.stringify(dupOptions), status: "cached",
+          });
         }
+        return res.status(200).json({ success: true, options: dupOptions, alertId: alert.rowNumber, previousIgnoreReason });
       }
 
-      // ── Branch 2: Single job search for amount, date, or status mismatch ──
+      // ── Branch 2: Single job search for data mismatches (Amount, VAT, Dates, Status, Client) ──
       let matchedJob = null;
       let matchedSlot = null;
       let matchedRowNum = null; // 1-indexed sheet row
+
       for (let ri = 1; ri < invConfirmedRows.length; ri++) {
         const r = invConfirmedRows[ri] || [];
         const ref1 = String(r[42] || "").trim(); // AQ = Inv1 ref
@@ -5241,7 +5269,27 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
         if (ref3 === invoiceNo) { matchedJob = r; matchedSlot = 3; matchedRowNum = ri + 1; break; }
       }
 
+      // If not found by invoice number match in AQ/AX/BE, try finding via alert.spreadsheetItems
+      if (!matchedJob && alert.spreadsheetItems && alert.spreadsheetItems.length > 0) {
+        const firstItem = alert.spreadsheetItems[0];
+        const cellRef = String(firstItem.cellRef || "").trim().toUpperCase();
+        const m = cellRef.match(/^([A-Z]+)(\d+)$/);
+        if (m) {
+          const colLetter = m[1];
+          const rNum = parseInt(m[2], 10);
+          if (rNum > 0 && rNum <= invConfirmedRows.length) {
+            matchedRowNum = rNum;
+            matchedJob = invConfirmedRows[rNum - 1];
+            if (colLetter === "AP" || colLetter === "AQ") matchedSlot = 1;
+            else if (colLetter === "AW" || colLetter === "AX") matchedSlot = 2;
+            else if (colLetter === "BD" || colLetter === "BE") matchedSlot = 3;
+            else matchedSlot = 1;
+          }
+        }
+      }
+
       if (matchedJob) {
+        const parseAmt = (v) => parseFloat(String(v || "0").replace(/[£$€,\s]/g, "")) || 0;
         const jobClient = String(matchedJob[0] || "").trim();  // A
         const jobName = String(matchedJob[1] || "").trim();  // B
         const jobCode = String(matchedJob[2] || "").trim();  // C
@@ -5251,322 +5299,236 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
         const jobStart = String(matchedJob[37] || "").trim();  // AL
         const jobEnd = String(matchedJob[38] || "").trim();  // AM
         const jobVATYes = jobVAT.toLowerCase() === "yes";
-        const isRetainer = jobType.toLowerCase().includes("retainer");
 
-        // Existing invoice slots
-        const slot1 = { ref: String(matchedJob[42] || ""), amt: String(matchedJob[41] || ""), sent: String(matchedJob[43] || ""), status: String(matchedJob[45] || "") };
-        const slot2 = { ref: String(matchedJob[49] || ""), amt: String(matchedJob[48] || ""), sent: String(matchedJob[50] || ""), status: String(matchedJob[52] || "") };
-        const slot3 = { ref: String(matchedJob[56] || ""), amt: String(matchedJob[55] || ""), sent: String(matchedJob[57] || ""), status: String(matchedJob[59] || "") };
+        // Slot columns
+        const slotCols = matchedSlot === 1
+          ? { amt: "AP", ref: "AQ", sent: "AR", days: "AS", status: "AT" }
+          : matchedSlot === 2
+            ? { amt: "AW", ref: "AX", sent: "AY", days: "AZ", status: "BA" }
+            : { amt: "BD", ref: "BE", sent: "BF", days: "BG", status: "BH" };
 
-        console.log(`  Found invoice in Confirmed at slot ${matchedSlot}: ${jobClient} - ${jobName}, VAT=${jobVAT}, type=${jobType}`);
+        const curSlotAmt = parseAmt(matchedSlot === 1 ? matchedJob[41] : matchedSlot === 2 ? matchedJob[48] : matchedJob[55]);
+        const curSlotSent = String(matchedSlot === 1 ? matchedJob[43] : matchedSlot === 2 ? matchedJob[50] : matchedJob[57] || "").trim();
+        const curSlotDays = String(matchedSlot === 1 ? matchedJob[44] : matchedSlot === 2 ? matchedJob[51] : matchedJob[58] || "").trim();
+        const curSlotStatus = String(matchedSlot === 1 ? matchedJob[45] : matchedSlot === 2 ? matchedJob[52] : matchedJob[59] || "").trim();
 
-        // ── Amount mismatch ─────────────────────────────────────────────
-        if (isInvAmtMismatch) {
-          const epsilon = 0.01;
+        const correctAmount = totalExclVAT > 0 ? totalExclVAT : grossAmount;
 
-          // Step 2: VAT scenario detection
-          // Scenario A: Invoice sent WITH VAT, job marked as NO VAT
-          if (vatIncluded > 0 && !jobVATYes && Math.abs(totalExclVAT - dashboardTotal) < epsilon) {
-            console.log(`  VAT scenario A: invoice sent WITH VAT (£${vatIncluded}) but job marked NO VAT`);
-            const allJobRows = [{ row: matchedJob, rowNum: matchedRowNum }];
-            const jobClientLower = jobClient.toLowerCase();
-            const jobNameLower = jobName.toLowerCase();
-            for (let ri = matchedRowNum; ri < invConfirmedRows.length; ri++) {
-              const r = invConfirmedRows[ri] || [];
-              const rClient = String(r[0] || "").trim().toLowerCase();
-              const rJob = String(r[1] || "").trim().toLowerCase();
-              if (!rClient && !rJob) break;
-              if (rClient !== jobClientLower || rJob !== jobNameLower) break;
-              if (String(r[32] || "").trim()) break;
-              allJobRows.push({ row: r, rowNum: ri + 1 });
-            }
-            const vatWrites = allJobRows.map(({ rowNum }) => `AI${rowNum}`);
-            const vatOptions = [
-              {
-                optionId: 1,
-                title: `Update job VAT setting to "Yes" - invoice was sent WITH VAT (£${vatIncluded.toFixed(2)})`,
-                matchType: "existing_job",
-                discrepancyType: "inv_vat_mismatch",
-                jobRow: matchedRowNum,
-                jobName,
-                explanation: `Invoice #${invoiceNo} was sent including VAT (£${vatIncluded.toFixed(2)}), confirming the job should be marked "Yes VAT". The dashboard total (£${dashboardTotal.toFixed(2)}) matches the invoice amount excluding VAT (£${totalExclVAT.toFixed(2)}).`,
-                actionButtonText: `✓ Update VAT setting to "Yes"`,
-                jobDetails: {
-                  clientName: jobClient, jobName, projectCode: jobCode, revenue: jobRevenue,
-                  vatSetting: jobVAT, jobType: isRetainer ? "Retainer" : "Project",
-                  startDate: jobStart, endDate: jobEnd,
-                },
-                vatUpdate: { cells: vatWrites, newValue: "Yes", currentValue: jobVAT },
-                recommendedActions: [
-                  vatWrites.length > 1
-                    ? `Update VAT setting to "Yes" on all ${vatWrites.length} rows of this job (${vatWrites.join(", ")})`
-                    : `Update VAT setting to "Yes" on row ${matchedRowNum}`,
-                  ...vatWrites.map(cell => `write Yes to ${cell}`),
-                ],
-              }
-            ];
-            return res.status(200).json({ success: true, options: vatOptions, alertId: alert.rowNumber, previousIgnoreReason });
-          }
+        const writeActions = [];
+        const mismatchNames = [];
+        const explanationParts = [];
 
-          // Scenario B: Invoice sent WITHOUT VAT, job marked to INCLUDE VAT
-          if (vatIncluded === 0 && jobVATYes && Math.abs(grossAmount * 1.2 - dashboardTotal) < epsilon) {
-            console.log(`  VAT scenario B: invoice sent WITHOUT VAT (£${grossAmount}) but job marked YES VAT`);
-            const allJobRows = [{ row: matchedJob, rowNum: matchedRowNum }];
-            const jobClientLower = jobClient.toLowerCase();
-            const jobNameLower = jobName.toLowerCase();
-            for (let ri = matchedRowNum; ri < invConfirmedRows.length; ri++) {
-              const r = invConfirmedRows[ri] || [];
-              const rClient = String(r[0] || "").trim().toLowerCase();
-              const rJob = String(r[1] || "").trim().toLowerCase();
-              if (!rClient && !rJob) break;
-              if (rClient !== jobClientLower || rJob !== jobNameLower) break;
-              if (String(r[32] || "").trim()) break;
-              allJobRows.push({ row: r, rowNum: ri + 1 });
-            }
-            const vatWrites = allJobRows.map(({ rowNum }) => `AI${rowNum}`);
-            const vatOptions = [
-              {
-                optionId: 1,
-                title: `Update job VAT setting to "No" - invoice was sent WITHOUT VAT (£${grossAmount.toFixed(2)})`,
-                matchType: "existing_job",
-                discrepancyType: "inv_vat_mismatch",
-                jobRow: matchedRowNum,
-                jobName,
-                explanation: `Invoice #${invoiceNo} was sent without VAT (VAT = £0.00), but the job is marked "Yes VAT". Updating the job VAT setting to "No" will resolve the discrepancy.`,
-                actionButtonText: `✓ Update VAT setting to "No"`,
-                jobDetails: {
-                  clientName: jobClient, jobName, projectCode: jobCode, revenue: jobRevenue,
-                  vatSetting: jobVAT, jobType: isRetainer ? "Retainer" : "Project",
-                  startDate: jobStart, endDate: jobEnd,
-                },
-                vatUpdate: { cells: vatWrites, newValue: "No", currentValue: jobVAT },
-                recommendedActions: [
-                  vatWrites.length > 1
-                    ? `Update VAT setting to "No" on all ${vatWrites.length} rows of this job (${vatWrites.join(", ")})`
-                    : `Update VAT setting to "No" on row ${matchedRowNum}`,
-                  ...vatWrites.map(cell => `write No to ${cell}`),
-                ],
-              }
-            ];
-            return res.status(200).json({ success: true, options: vatOptions, alertId: alert.rowNumber, previousIgnoreReason });
-          }
+        // 1. VAT Mismatch scenario check
+        const epsilon = 0.01;
+        // Scenario A: Invoice sent WITH VAT, job marked NO VAT
+        const isVatScenarioA = vatIncluded > 0 && !jobVATYes && Math.abs(totalExclVAT - dashboardTotal) < epsilon;
+        // Scenario B: Invoice sent WITHOUT VAT, job marked YES VAT
+        const isVatScenarioB = vatIncluded === 0 && jobVATYes && Math.abs(grossAmount * 1.2 - dashboardTotal) < epsilon;
 
-          // Step 3: Rounding difference (< £1.00)
-          const parseSlotAmt = (v) => parseFloat(String(v || "0").replace(/[£$€,]/g, "")) || 0;
-          const amtDiff = Math.abs(grossAmount - dashboardTotal);
-          if (amtDiff < 1.00 && amtDiff > 0) {
-            const correctAmount = totalExclVAT > 0 ? totalExclVAT : grossAmount;
-            const slotAmtCol = matchedSlot === 1 ? "AP" : matchedSlot === 2 ? "AW" : "BD";
-            const cellRef = `${slotAmtCol}${matchedRowNum}`;
-            const currentSlotAmt = matchedSlot === 1 ? slot1.amt : matchedSlot === 2 ? slot2.amt : slot3.amt;
-            const cleanSlotAmt = parseSlotAmt(currentSlotAmt);
-            const currentSlotStr = `£${cleanSlotAmt.toFixed(2)}`;
-            const options = [{
-              optionId: 1,
-              title: `Correct invoice #${invoiceNo} rounding difference from ${currentSlotStr}${vatIncluded > 0 ? " +VAT" : ""} to £${correctAmount.toFixed(2)}${vatIncluded > 0 ? " +VAT" : ""}`,
-              matchType: "existing_job",
-              jobRow: matchedRowNum,
-              jobName,
-              actionButtonText: `✓ Correct amount to £${correctAmount.toFixed(2)}`,
-              recommendedActions: [
-                `write ${correctAmount.toFixed(2)} to ${cellRef}`,
-              ],
-            }];
-            return res.status(200).json({ success: true, options, alertId: alert.rowNumber, previousIgnoreReason });
-          }
-
-          // Step 4: Regular amount mismatch options
-          const slotAmtCol = matchedSlot === 1 ? "AP" : matchedSlot === 2 ? "AW" : "BD";
-          const currentSlotAmt = matchedSlot === 1 ? slot1.amt : matchedSlot === 2 ? slot2.amt : slot3.amt;
-          const cleanSlotAmt = parseSlotAmt(currentSlotAmt);
-          const currentSlotStr = `£${cleanSlotAmt.toFixed(2)}`;
-          const correctAmount = totalExclVAT > 0 ? totalExclVAT : grossAmount;
-          const isNetMatch = Math.abs(cleanSlotAmt - correctAmount) < 0.01;
-
-          const jobClientLower = jobClient.toLowerCase();
-          const jobNameLower = jobName.toLowerCase();
-          const isMultiRowRetainer = isRetainer && (() => {
-            for (let ri = matchedRowNum; ri < invConfirmedRows.length; ri++) {
-              const r = invConfirmedRows[ri] || [];
-              const rClient = String(r[0] || "").trim().toLowerCase();
-              const rJob = String(r[1] || "").trim().toLowerCase();
-              if (!rClient && !rJob) break;
-              if (rClient !== jobClientLower || rJob !== jobNameLower) break;
-              if (!String(r[32] || "").trim() && !String(r[37] || "").trim()) return true;
-            }
-            return false;
-          })();
-
-          let parentRowNum = matchedRowNum;
-          let parentRevenue = parseSlotAmt(jobRevenue);
-          if (!String(matchedJob[32] || "").trim()) {
-            for (let ri = matchedRowNum - 2; ri >= 0; ri--) {
-              const r = invConfirmedRows[ri] || [];
-              const rClient = String(r[0] || "").trim().toLowerCase();
-              const rJob = String(r[1] || "").trim().toLowerCase();
-              if (rClient !== jobClientLower || rJob !== jobNameLower) break;
-              if (String(r[32] || "").trim()) {
-                parentRowNum = ri + 1;
-                parentRevenue = parseSlotAmt(String(r[32] || "").replace(/[£$€,]/g, ""));
-                break;
-              }
-            }
-          }
-
-          let newTotalInvoiced = 0;
-          const allJobRows = [];
-          const parentIdx = parentRowNum - 1;
-          if (invConfirmedRows[parentIdx]) allJobRows.push({ row: invConfirmedRows[parentIdx], rowNum: parentRowNum });
-          for (let ri = parentIdx + 1; ri < invConfirmedRows.length; ri++) {
+        if (isVatScenarioA) {
+          mismatchNames.push("VAT setting");
+          explanationParts.push(`VAT setting: "Yes" (invoice sent with £${vatIncluded.toFixed(2)} VAT)`);
+          // Update AI on all job rows
+          const allJobRows = [{ row: matchedJob, rowNum: matchedRowNum }];
+          const jcLower = jobClient.toLowerCase();
+          const jnLower = jobName.toLowerCase();
+          for (let ri = matchedRowNum; ri < invConfirmedRows.length; ri++) {
             const r = invConfirmedRows[ri] || [];
             const rClient = String(r[0] || "").trim().toLowerCase();
             const rJob = String(r[1] || "").trim().toLowerCase();
             if (!rClient && !rJob) break;
-            if (rClient !== jobClientLower || rJob !== jobNameLower) break;
+            if (rClient !== jcLower || rJob !== jnLower) break;
             if (String(r[32] || "").trim()) break;
             allJobRows.push({ row: r, rowNum: ri + 1 });
           }
-
-          const INV_SLOTS = [
-            { refIdx: 42, amtIdx: 41, slotNum: 1, col: "AP" },
-            { refIdx: 49, amtIdx: 48, slotNum: 2, col: "AW" },
-            { refIdx: 56, amtIdx: 55, slotNum: 3, col: "BD" },
-          ];
-          for (const { row, rowNum } of allJobRows) {
-            for (const { refIdx, amtIdx, slotNum } of INV_SLOTS) {
-              const ref = String(row[refIdx] || "").trim();
-              if (!isRealSlotRef(ref)) continue;
-              const amt = (rowNum === matchedRowNum && slotNum === matchedSlot)
-                ? correctAmount
-                : parseSlotAmt(row[amtIdx]);
-              newTotalInvoiced += amt;
-            }
+          for (const { rowNum } of allJobRows) {
+            writeActions.push(`write Yes to AI${rowNum}`);
           }
+        } else if (isVatScenarioB) {
+          mismatchNames.push("VAT setting");
+          explanationParts.push(`VAT setting: "No" (invoice sent without VAT)`);
+          const allJobRows = [{ row: matchedJob, rowNum: matchedRowNum }];
+          const jcLower = jobClient.toLowerCase();
+          const jnLower = jobName.toLowerCase();
+          for (let ri = matchedRowNum; ri < invConfirmedRows.length; ri++) {
+            const r = invConfirmedRows[ri] || [];
+            const rClient = String(r[0] || "").trim().toLowerCase();
+            const rJob = String(r[1] || "").trim().toLowerCase();
+            if (!rClient && !rJob) break;
+            if (rClient !== jcLower || rJob !== jnLower) break;
+            if (String(r[32] || "").trim()) break;
+            allJobRows.push({ row: r, rowNum: ri + 1 });
+          }
+          for (const { rowNum } of allJobRows) {
+            writeActions.push(`write No to AI${rowNum}`);
+          }
+        }
 
-          const revenueRatio = parentRevenue > 0 ? (newTotalInvoiced / parentRevenue) * 100 : 0;
-          const revenueImpactStr = `New total invoiced = £${newTotalInvoiced.toFixed(2)}. Job revenue = £${parentRevenue.toFixed(2)}. ${revenueRatio > 110 ? "Job is over-invoiced - revenue likely needs updating." :
-              revenueRatio >= 90 ? "Total invoiced is close to revenue - revenue adjustment likely correct." :
-                revenueRatio >= 75 ? "Total invoiced is below revenue - further invoices may be expected." :
-                  "Total invoiced is well below revenue - revenue adjustment is uncertain."
-            }`;
+        // 2. Amount mismatch check
+        if (isInvAmtMismatch || Math.abs(curSlotAmt - correctAmount) >= 0.01) {
+          if (Math.abs(curSlotAmt - correctAmount) >= 0.01) {
+            mismatchNames.push("amount");
+            explanationParts.push(`Amount: £${correctAmount.toFixed(2)} (excl VAT)`);
+            writeActions.push(`write ${correctAmount.toFixed(2)} to ${slotCols.amt}${matchedRowNum}`);
+          } else if (!isVatScenarioA && !isVatScenarioB) {
+            explanationParts.push(`Amount: £${curSlotAmt.toFixed(2)} excl VAT matches accounting`);
+          }
+        }
 
-          let invAmtOptions = [];
+        // 3. Sent date mismatch
+        if ((isSentDateMismatch || (invSentDate && curSlotSent !== invSentDate)) && invSentDate) {
+          mismatchNames.push("sent date");
+          explanationParts.push(`Sent date: "${invSentDate}"`);
+          writeActions.push(`write ${invSentDate} to ${slotCols.sent}${matchedRowNum}`);
+        }
 
-          if (isNetMatch) {
-            const vatDifference = Math.abs(vatIncluded - (dashboardTotal - cleanSlotAmt));
-            invAmtOptions = [
-              {
-                optionId: 1,
-                title: `Acknowledge VAT difference - slot amount excl VAT matches (${currentSlotStr})`,
-                matchType: "existing_job",
-                jobRow: matchedRowNum,
-                confidence: "High",
-                explanation: `Dashboard shows ${currentSlotStr} for invoice #${invoiceNo}, which matches the accounting system amount excluding VAT (£${correctAmount.toFixed(2)}). The gross difference (accounting £${grossAmount.toFixed(2)} vs dashboard £${dashboardTotal.toFixed(2)}) is due to a £${vatDifference.toFixed(2)} line-level VAT difference in accounting (£${vatIncluded.toFixed(2)} in accounting vs £${(dashboardTotal - cleanSlotAmt).toFixed(2)} in dashboard). Slot amount in the dashboard is already correct.`,
-                revenueImpact: `No revenue adjustment needed. Total invoiced and job revenue match.`,
-                actionButtonText: `✓ Acknowledge VAT difference`,
-                recommendedActions: [
-                  `Dashboard amount ${currentSlotStr} is already correct (no spreadsheet changes required)`,
-                ],
-              }
-            ];
-          } else {
-            invAmtOptions = [
-              {
-                optionId: 1,
-                title: `Update slot amount only - accounting system reflects actual invoice sent`,
-                matchType: "existing_job",
-                jobRow: matchedRowNum,
-                confidence: "High",
-                explanation: `Dashboard shows ${currentSlotStr} for invoice #${invoiceNo}, but accounting system shows the actual sent amount of £${correctAmount.toFixed(2)} (excl VAT). Job revenue (£${parentRevenue.toFixed(2)}) will remain unchanged.`,
-                revenueImpact: revenueImpactStr,
-                actionButtonText: `✓ Update slot amount to £${correctAmount.toFixed(2)}`,
-                recommendedActions: [
-                  `Update invoice #${invoiceNo} amount from ${currentSlotStr} to £${correctAmount.toFixed(2)} in the dashboard`,
-                  `write ${correctAmount.toFixed(2)} to ${slotAmtCol}${matchedRowNum} (slot ${matchedSlot} amount)`,
-                ],
+        // 4. Status mismatch
+        if ((isStatusMismatch || (invStatus && curSlotStatus.toLowerCase() !== invStatus.toLowerCase())) && invStatus) {
+          mismatchNames.push("status");
+          explanationParts.push(`Status: "${invStatus}"`);
+          writeActions.push(`write ${invStatus} to ${slotCols.status}${matchedRowNum}`);
+        }
+
+        // 5. Pay date mismatch
+        const invPayDate = String(invAccounting[8] || "").trim();
+        if ((isPayDateMismatch || (invPayDate && curSlotDays !== invPayDate)) && invPayDate) {
+          mismatchNames.push("pay date");
+          explanationParts.push(`Pay date: "${invPayDate}"`);
+          writeActions.push(`write ${invPayDate} to ${slotCols.days}${matchedRowNum}`);
+        }
+
+        // 6. Client mismatch
+        if ((isClientMismatch || (invClient && jobClient.toLowerCase() !== invClient.toLowerCase())) && invClient) {
+          mismatchNames.push("client");
+          explanationParts.push(`Client: "${invClient}"`);
+          writeActions.push(`write "${invClient}" to A${matchedRowNum}`);
+        }
+
+        // Fallback if no specific fields identified but it's a data mismatch
+        if (mismatchNames.length === 0) {
+          mismatchNames.push("invoice details");
+          if (correctAmount > 0) {
+            explanationParts.push(`Amount: £${correctAmount.toFixed(2)}`);
+            writeActions.push(`write ${correctAmount.toFixed(2)} to ${slotCols.amt}${matchedRowNum}`);
+          }
+          if (invSentDate) {
+            explanationParts.push(`Sent date: "${invSentDate}"`);
+            writeActions.push(`write ${invSentDate} to ${slotCols.sent}${matchedRowNum}`);
+          }
+          if (invStatus) {
+            explanationParts.push(`Status: "${invStatus}"`);
+            writeActions.push(`write ${invStatus} to ${slotCols.status}${matchedRowNum}`);
+          }
+        }
+
+        const options = [
+          {
+            optionId: 1,
+            title: `Update ${mismatchNames.join(", ")} in Pulse for invoice #${invoiceNo} on "${jobName}" (Row ${matchedRowNum})`,
+            actionButtonText: "Update Pulse",
+            matchType: "existing_job",
+            jobRow: matchedRowNum,
+            jobName,
+            explanation: `Accounting system shows: ${explanationParts.join("; ")}. Updating Pulse to match.`,
+            matchingDetails: {
+              unmatchedJobSummary: {
+                clientName: jobClient || invClient,
+                jobName,
+                revenue: jobRevenue,
+                startDate: jobStart,
               },
-              ...(!isMultiRowRetainer ? [{
-                optionId: 2,
-                title: `Update slot amount and adjust revenue to £${newTotalInvoiced.toFixed(2)}`,
-                matchType: "existing_job",
-                jobRow: matchedRowNum,
-                confidence: revenueRatio >= 90 ? "High" : "Medium",
-                explanation: `Update the invoice slot amount to match the accounting system, and update job revenue to reflect the corrected total invoiced (${revenueRatio.toFixed(1)}% of current revenue).`,
-                revenueImpact: revenueImpactStr,
-                actionButtonText: `✓ Update slot amount and revenue`,
-                recommendedActions: [
-                  `Update invoice #${invoiceNo} amount and adjust job revenue to £${newTotalInvoiced.toFixed(2)}`,
-                  `write ${correctAmount.toFixed(2)} to ${slotAmtCol}${matchedRowNum} (slot ${matchedSlot} amount), write ${newTotalInvoiced.toFixed(2)} to AG${parentRowNum} (job revenue)`,
-                ],
-              }] : [])
-            ];
-          }
-
-          const invAmtSummary = alert.summary?.summary || `Invoice ${invoiceNo} £${grossAmount.toFixed(2)}`;
-          if (memoryRow) {
-            await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, {
-              ...memoryRow, cachedOptionsJSON: JSON.stringify(invAmtOptions),
-            });
-          } else {
-            await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
-              fingerprintHash, alertType: "invoice", clientName: alert.clientName || "",
-              alertSummary: invAmtSummary, cachedOptionsJSON: JSON.stringify(invAmtOptions), status: "cached",
-            });
-          }
-          return res.status(200).json({ success: true, options: invAmtOptions, alertId: alert.rowNumber, previousIgnoreReason });
-        }
-
-        // ── Sent date / Status / Pay date mismatch on single job ────────────
-        const curSlot = matchedSlot === 1 ? slot1 : matchedSlot === 2 ? slot2 : slot3;
-        const nonAmtOptions = [];
-
-        if (isSentDateMismatch && invSentDate) {
-          const sentCol = matchedSlot === 1 ? "AR" : matchedSlot === 2 ? "AY" : "BF";
-          nonAmtOptions.push({
-            optionId: nonAmtOptions.length + 1,
-            title: `Update sent date to "${invSentDate}" on "${jobName}" (Row ${matchedRowNum})`,
-            matchType: "existing_job",
+            },
+            matchAnalysis: {
+              matchConfidence: "High",
+              reasonForChoice: `Discrepancy: ${activeInvFlags.join(", ") || mismatchNames.join(", ")}. Accounting shows: ${explanationParts.join("; ")}. Updating Confirmed tab slot ${matchedSlot} (Row ${matchedRowNum}) to match.`,
+              discrepancies: activeInvFlags.join(", ") || mismatchNames.join(", "),
+            },
+            recommendedActions: [
+              `Update ${mismatchNames.join(", ")} for invoice #${invoiceNo} on "${jobName}" in Confirmed tab: ${explanationParts.join(", ")}`,
+              ...writeActions,
+            ],
+          },
+          {
+            optionId: 2,
+            title: "Ignore discrepancy (keep Pulse value)",
+            actionButtonText: "Ignore discrepancy",
+            matchType: "ignore",
             jobRow: matchedRowNum,
             jobName,
-            explanation: `Updates invoice #${invoiceNo} sent date from "${curSlot.sent || '(blank)'}" to "${invSentDate}" to match the accounting system.`,
-            actionButtonText: `✓ Update sent date to ${invSentDate}`,
-            recommendedActions: [`write ${invSentDate} to ${sentCol}${matchedRowNum}`],
+            explanation: "Mark this discrepancy as ignored. No changes will be made to either Pulse or the accounting system.",
+            recommendedActions: [
+              "Mark this discrepancy as ignored - no changes will be made to either system",
+            ],
+          },
+        ];
+
+        const mismatchSummary = alert.summary?.summary || `Invoice ${invoiceNo} (£${grossAmount.toFixed(2)})`;
+        if (memoryRow) {
+          await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, {
+            ...memoryRow, cachedOptionsJSON: JSON.stringify(options),
+          });
+        } else {
+          await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
+            fingerprintHash, alertType: "invoice", clientName: alert.clientName || "",
+            alertSummary: mismatchSummary, cachedOptionsJSON: JSON.stringify(options), status: "cached",
           });
         }
-
-        if (isStatusMismatch && invStatus) {
-          const statusCol = matchedSlot === 1 ? "AT" : matchedSlot === 2 ? "BA" : "BH";
-          nonAmtOptions.push({
-            optionId: nonAmtOptions.length + 1,
-            title: `Update status to "${invStatus}" on "${jobName}" (Row ${matchedRowNum})`,
-            matchType: "existing_job",
-            jobRow: matchedRowNum,
-            jobName,
-            explanation: `Updates invoice #${invoiceNo} status from "${curSlot.status || '(blank)'}" to "${invStatus}" to match the accounting system.`,
-            actionButtonText: `✓ Update status to ${invStatus}`,
-            recommendedActions: [`write ${invStatus} to ${statusCol}${matchedRowNum}`],
-          });
-        }
-
-        if (nonAmtOptions.length > 0) {
-          return res.status(200).json({ success: true, options: nonAmtOptions, alertId: alert.rowNumber, previousIgnoreReason });
-        }
+        return res.status(200).json({ success: true, options, alertId: alert.rowNumber, previousIgnoreReason });
       }
 
-      // Fallback info option if invoice not matched in sheet
+      // ── Branch 3: Fallback when invoice row not found in Confirmed tab ──
       console.log(`  📊 Invoice #${invoiceNo} data mismatch without direct single-job resolution: ${activeInvFlags.join(", ")}`);
-      const fallbackOptions = [{
-        optionId: 1,
-        title: `Manual review - ${activeInvFlags.join(", ") || "data mismatch"}`,
-        matchType: "info",
-        explanation: `Invoice #${invoiceNo} has discrepancies (${activeInvFlags.join(", ")}). Please review in InvComp or Confirmed tab.`,
-        actionButtonText: "✓ Mark as resolved",
-        recommendedActions: [
-          `Invoice #${invoiceNo} - ${invClient}${invJob ? " | " + invJob : ""}`,
-          `Amount: £${grossAmount.toFixed(2)}${vatIncluded > 0 ? ` (incl. £${vatIncluded.toFixed(2)} VAT)` : ""}, Sent: ${invSentDate}, Status: ${invStatus}`,
-          `Discrepancy type(s): ${activeInvFlags.join(", ")}`,
-        ],
-      }];
+      const fallbackOptions = [
+        {
+          optionId: 1,
+          title: `Update ${activeInvFlags.join(", ") || "invoice details"} in Pulse for invoice #${invoiceNo} (${invClient}${invJob ? " - " + invJob : ""})`,
+          actionButtonText: "Update Pulse",
+          matchType: "existing_job",
+          jobRow: alert.rowNumber,
+          jobName: invJob || invoiceNo,
+          explanation: `Accounting system shows: Amount £${grossAmount.toFixed(2)}${vatIncluded > 0 ? ` (incl. £${vatIncluded.toFixed(2)} VAT)` : ""}, Sent: ${invSentDate || "(blank)"}, Status: ${invStatus || "(blank)"}. Updating Pulse to match.`,
+          matchingDetails: {
+            unmatchedJobSummary: {
+              clientName: invClient,
+              jobName: invJob || invoiceNo,
+              revenue: String(grossAmount),
+              startDate: invSentDate,
+            },
+          },
+          matchAnalysis: {
+            matchConfidence: "Medium",
+            reasonForChoice: `Discrepancy: ${activeInvFlags.join(", ") || "Data mismatch"}. Accounting system shows Amount: £${grossAmount.toFixed(2)}, Sent: ${invSentDate}. Updating Pulse to match.`,
+            discrepancies: activeInvFlags.join(", ") || "Data mismatch",
+          },
+          recommendedActions: [
+            `Update invoice #${invoiceNo} in Pulse to match accounting: Amount £${grossAmount.toFixed(2)}, Sent ${invSentDate || "(blank)"}, Status ${invStatus || "(blank)"}`,
+          ],
+        },
+        {
+          optionId: 2,
+          title: "Ignore discrepancy (keep Pulse value)",
+          actionButtonText: "Ignore discrepancy",
+          matchType: "ignore",
+          jobRow: alert.rowNumber,
+          jobName: invJob || invoiceNo,
+          explanation: "Mark this discrepancy as ignored. No changes will be made to either Pulse or the accounting system.",
+          recommendedActions: [
+            "Mark this discrepancy as ignored - no changes will be made to either system",
+          ],
+        },
+      ];
+
+      const fallbackSummary = alert.summary?.summary || `Invoice ${invoiceNo} (£${grossAmount.toFixed(2)})`;
+      if (memoryRow) {
+        await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, {
+          ...memoryRow, cachedOptionsJSON: JSON.stringify(fallbackOptions),
+        });
+      } else {
+        await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
+          fingerprintHash, alertType: "invoice", clientName: alert.clientName || "",
+          alertSummary: fallbackSummary, cachedOptionsJSON: JSON.stringify(fallbackOptions), status: "cached",
+        });
+      }
       return res.status(200).json({ success: true, options: fallbackOptions, alertId: alert.rowNumber, previousIgnoreReason });
     }
 

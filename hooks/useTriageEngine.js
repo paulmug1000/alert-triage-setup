@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
-import { ALERT_CATEGORY_FLAGS, EXPENSE_SUPPRESSIBLE, isUserAuthorizedForClient } from "../utils/helpers";
+import { ALERT_CATEGORY_FLAGS, EXPENSE_SUPPRESSIBLE, isUserAuthorizedForClient, isPipelineJobSuppressed } from "../utils/helpers";
 
 export function useTriageEngine({
   automationCommanderSheetId,
@@ -802,6 +802,13 @@ export function useTriageEngine({
         // Only optimistically suppress missing invoices; active discrepancy alerts (VAT/amount/date mismatch) must never be hidden
         const isMissing = alert.data?.flags?.[0] === "1" || (alert.flagColumns?.[0] === "Missing invoice?" && alert.data?.flags?.[0] === "1");
         if (isMissing || alert.flagType !== "invoiceDashboardDiscr") return false;
+      }
+      const isPipeAlert = (alert.mode === "Pipeline" || alert.alertType === "crmPipeAppDiscr" || alert.alertType === "crmPipeDashDiscr" || alert.flagType === "crmPipeAppDiscr" || alert.flagType === "crmPipeDashDiscr");
+      if (isPipeAlert) {
+        const sd = alert.data?.sheetData || [];
+        const shtLikely = sd[7];
+        const shtCopied = sd[8] || sd[10];
+        if (isPipelineJobSuppressed(shtLikely, shtCopied)) return false;
       }
       return true;
     });

@@ -12,7 +12,7 @@ import { useTasks } from "../contexts/TaskContext";
 import { useTriage } from "../contexts/TriageContext";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useAuth } from "../hooks/useAuth";
-import { ADMIN_ONLY_ALERT_TYPES, stripRowInfo, parseUnreceivedExpensesDetail, parseStaleExpenseDetail, parseInfoAlertDetail, filterAnalysisResultsForAlert, getCleanPLCategoryName, getAlertJobTarget, formatSeenTimestamp } from "../utils/helpers";
+import { ADMIN_ONLY_ALERT_TYPES, stripRowInfo, parseUnreceivedExpensesDetail, parseStaleExpenseDetail, parseInfoAlertDetail, filterAnalysisResultsForAlert, getCleanPLCategoryName, getAlertJobTarget, formatSeenTimestamp, formatLikelihood } from "../utils/helpers";
 
 const RICH_NOACTION_FLAG_GROUP = {
   crmCopiedConfChecked: "crm",
@@ -920,7 +920,7 @@ export default function AlertSelectionView({
           {code && <div style={{ fontSize: "12px", color: "#555", marginTop: "2px" }}>Code: {code}</div>}
           {rev && <div style={{ fontSize: "12px", color: "#555" }}>Revenue: {rev}</div>}
           {(start || end) && <div style={{ fontSize: "12px", color: "#555" }}>Dates: {start}{end ? ` → ${end}` : ""}</div>}
-          {isPipeline && likely && <div style={{ fontSize: "12px", color: "#555" }}>Likelihood: {(parseFloat(likely) * 100).toFixed(0)}%</div>}
+          {isPipeline && likely && <div style={{ fontSize: "12px", color: "#555" }}>Likelihood: {formatLikelihood(likely)}</div>}
           {isMismatch ? (
             <div style={{ fontSize: "12px", color: "#d97706", marginTop: "4px" }}>
               ⚠ Field mismatch: {(alert.mismatchFields || []).join(", ")}
@@ -956,7 +956,7 @@ export default function AlertSelectionView({
           {code && <div style={{ fontSize: "12px", color: "#555", marginTop: "2px" }}>Code: {code}</div>}
           {rev && <div style={{ fontSize: "12px", color: "#555" }}>Revenue: {rev}</div>}
           {(start || end) && <div style={{ fontSize: "12px", color: "#555" }}>Dates: {start}{end ? ` → ${end}` : ""}</div>}
-          {isPipeline && likely && <div style={{ fontSize: "12px", color: "#555" }}>Likelihood: {(parseFloat(likely) * 100).toFixed(0)}%</div>}
+          {isPipeline && likely && <div style={{ fontSize: "12px", color: "#555" }}>Likelihood: {formatLikelihood(likely)}</div>}
           {isMismatch ? (
             <div style={{ fontSize: "12px", color: "#d97706", marginTop: "4px" }}>
               ⚠ Field mismatch: {mismatchFields.join(", ")}

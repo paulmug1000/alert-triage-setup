@@ -1087,5 +1087,42 @@ export function formatSeenTimestamp(ts) {
   return str;
 }
 
+export function formatLikelihood(val) {
+  if (val === null || val === undefined || String(val).trim() === "") return "";
+  const s = String(val).trim();
+  if (s.endsWith("%")) return s;
+  const num = parseFloat(s);
+  if (isNaN(num)) return s;
+  const pct = num <= 1 ? Math.round(num * 100) : Math.round(num);
+  return `${pct}%`;
+}
 
+export function isLikelihoodZero(val) {
+  if (val === null || val === undefined) return false;
+  const s = String(val).trim();
+  if (!s || s === "-" || s === "(blank)") return false;
+  const num = parseFloat(s.replace(/[%,\s]/g, ""));
+  return !isNaN(num) && num === 0;
+}
 
+export function isLikelihoodHundred(val) {
+  if (val === null || val === undefined) return false;
+  const s = String(val).trim();
+  if (!s) return false;
+  if (s.includes("%")) {
+    const num = parseFloat(s.replace(/[%,\s]/g, ""));
+    return !isNaN(num) && Math.round(num) === 100;
+  }
+  const num = parseFloat(s);
+  return !isNaN(num) && (num === 100 || num === 1);
+}
+
+export function isCopiedToConfYes(val) {
+  return String(val || "").trim().toLowerCase() === "yes";
+}
+
+export function isPipelineJobSuppressed(likelihood, copiedToConf) {
+  if (isLikelihoodZero(likelihood)) return true;
+  if (isLikelihoodHundred(likelihood) && isCopiedToConfYes(copiedToConf)) return true;
+  return false;
+}

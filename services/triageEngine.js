@@ -23,7 +23,7 @@ import {
 import { redisClient } from "./redisClient.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { logPrecomputeRun, logFlagSweepRun, logBuildOptionsRun } from "./systemLogs.js";
-import { isPlaceholderInvoice, isPlaceholderExpense, parseYearMonth, parseStaleExpenseDetail } from "../utils/helpers.js";
+import { isPlaceholderInvoice, isPlaceholderExpense, parseYearMonth, parseStaleExpenseDetail, isPipelineJobSuppressed } from "../utils/helpers.js";
 import { getSessionUser } from "./authService.js";
 import { matchesClientName, getClientManagerClientMap } from "./userPermissions.js";
 
@@ -590,13 +590,38 @@ export async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes,
     const alerts = [];
     let dashData = [];
     let appData = [];
+    let pipelineCalcsData = [];
     try {
+      const rangesToFetch = ["CRMComp!X6:BF1000", "CRMComp!EF6:FL1000"];
+      if (mode === "Pipeline") {
+        rangesToFetch.push("CRMComp!DM6:DU1000");
+      }
       const batchResp = await withRetry(() => sheets.spreadsheets.values.batchGet({
-        spreadsheetId, ranges: ["CRMComp!X6:BF1000", "CRMComp!EF6:FL1000"], valueRenderOption: "FORMATTED_VALUE"
+        spreadsheetId, ranges: rangesToFetch, valueRenderOption: "FORMATTED_VALUE"
       }));
-      dashData = batchResp.data.valueRanges[0].values || [];
-      appData = batchResp.data.valueRanges[1].values || [];
+      dashData = batchResp.data.valueRanges[0]?.values || [];
+      appData = batchResp.data.valueRanges[1]?.values || [];
+      if (mode === "Pipeline") {
+        pipelineCalcsData = batchResp.data.valueRanges[2]?.values || [];
+      }
     } catch (e) { }
+
+    const pipelineJobMap = new Map();
+    if (mode === "Pipeline") {
+      const addRowToMap = (row) => {
+        if (!row || row.length === 0) return;
+        const pClient = String(row[0] || "").trim().toLowerCase();
+        const pJob = String(row[1] || "").trim().toLowerCase();
+        const pCode = String(row[2] || "").trim().toLowerCase();
+        const pLikely = row[7];
+        const pCopied = row[8];
+        const info = { likely: pLikely, copiedToConf: pCopied };
+        if (pCode) pipelineJobMap.set(`code:${pCode}`, info);
+        if (pClient && pJob) pipelineJobMap.set(`name:${pClient}|${pJob}`, info);
+      };
+      pipelineCalcsData.forEach(addRowToMap);
+      appData.forEach(addRowToMap);
+    }
 
     for (const alertType of alertTypes) {
       let dataRange, crmDataCols, sheetDataCols, flagCols, flagStartIdx;
@@ -642,6 +667,43 @@ export async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes,
           return (sk && settingsBlock[sk] === false) ? "0" : v;
         }) : flagValues;
         if (!filteredFlags.some(v => v === "1")) continue;
+
+        // Pipeline CRM suppression rule:
+        // Do not raise any alert if the job in the Pipeline tab has:
+        // a) 0% likelihood, or
+        // b) 100% likelihood AND "copied to confirmed tab" says "Yes"
+        if (mode === "Pipeline") {
+          if (alertType === "crmPipeAppDiscr") {
+            const shtCode = String(row[2] || "").trim().toLowerCase();
+            const shtClient = String(row[0] || "").trim().toLowerCase();
+            const shtJob = String(row[1] || "").trim().toLowerCase();
+            const meta = (shtCode ? pipelineJobMap.get(`code:${shtCode}`) : null)
+              || (shtClient && shtJob ? pipelineJobMap.get(`name:${shtClient}|${shtJob}`) : null);
+            const shtLikely = (row[7] !== undefined && String(row[7]).trim() !== "") ? row[7] : meta?.likely;
+            const shtCopied = (row[8] !== undefined && String(row[8]).trim() !== "") ? row[8] : meta?.copiedToConf;
+            if (isPipelineJobSuppressed(shtLikely, shtCopied)) {
+              continue;
+            }
+          } else if (alertType === "crmPipeDashDiscr") {
+            const shtCode = String(row[17] || "").trim().toLowerCase();
+            const shtClient = String(row[18] || "").trim().toLowerCase();
+            const shtJob = String(row[19] || "").trim().toLowerCase();
+            const crmCode = String(row[2] || "").trim().toLowerCase();
+            const crmClient = String(row[0] || "").trim().toLowerCase();
+            const crmJob = String(row[1] || "").trim().toLowerCase();
+
+            const meta = (shtCode ? pipelineJobMap.get(`code:${shtCode}`) : null)
+              || (shtClient && shtJob ? pipelineJobMap.get(`name:${shtClient}|${shtJob}`) : null)
+              || (crmCode ? pipelineJobMap.get(`code:${crmCode}`) : null)
+              || (crmClient && crmJob ? pipelineJobMap.get(`name:${crmClient}|${crmJob}`) : null);
+
+            const shtLikely = (row[24] !== undefined && String(row[24]).trim() !== "") ? row[24] : meta?.likely;
+            const shtCopied = meta?.copiedToConf;
+            if (isPipelineJobSuppressed(shtLikely, shtCopied)) {
+              continue;
+            }
+          }
+        }
 
         const isNotFound = filteredFlags[0] === "1";
         const mismatchFlags = filteredFlags.slice(1);
@@ -1371,6 +1433,16 @@ export async function handleStorePrecomputed(req, res, sheets) {
 
           let alertObj = null;
           try { alertObj = JSON.parse(row.dataSnapshot); } catch (e) { continue; }
+
+          const isPipeAlert = (alertObj?.mode === "Pipeline" || alertObj?.alertType === "crmPipeAppDiscr" || alertObj?.alertType === "crmPipeDashDiscr" || alertObj?.flagType === "crmPipeAppDiscr" || alertObj?.flagType === "crmPipeDashDiscr" || row.alertType === "crmPipeAppDiscr" || row.alertType === "crmPipeDashDiscr");
+          if (isPipeAlert) {
+            const sd = alertObj?.data?.sheetData || [];
+            const shtLikely = sd[7];
+            const shtCopied = sd[8] || sd[10];
+            if (isPipelineJobSuppressed(shtLikely, shtCopied)) {
+              continue;
+            }
+          }
           let options = [];
           try { options = JSON.parse(row.cachedOptionsJSON); } catch (e) { continue; }
 

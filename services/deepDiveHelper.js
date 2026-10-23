@@ -788,7 +788,13 @@ export const CashDeepDiveEngine = {
           if (sendDate.getFullYear() === targetYear && sendDate.getMonth() === targetMonth) {
             const vatAmount = amountExVat * currentVatRate;
             const totalAmount = amountExVat + vatAmount;
-            const ref = cleanInvoiceRef(job[`inv${i}Ref`], isRetainer);
+            let ref = cleanInvoiceRef(job[`inv${i}Ref`], isRetainer);
+            const statusVal = String(job.type || "").toLowerCase() === "pipeline" ? "" : (job[`inv${i}Status`] || "");
+            if (statusVal.toLowerCase().includes("balance") && ref && !ref.toLowerCase().includes("bal")) {
+              ref = `${ref} (balance)`;
+            } else if (statusVal.toLowerCase().includes("part") && ref && !ref.toLowerCase().includes("part")) {
+              ref = `${ref} (part payment)`;
+            }
 
             const invData = {
               client: job.client,
@@ -799,7 +805,7 @@ export const CashDeepDiveEngine = {
               vatAmount,
               totalAmount,
               sendDate,
-              status: String(job.type || "").toLowerCase() === "pipeline" ? "" : (job[`inv${i}Status`] || ""),
+              status: statusVal,
             };
 
             if (String(job.type || "").toLowerCase() === "pipeline") results.pipeline.push(invData);
@@ -934,14 +940,20 @@ export const CashDeepDiveEngine = {
 
           if (payDate.getFullYear() === targetYear && payDate.getMonth() === targetMonth) {
             const defaultDesc = isDirCash ? `Direct cost ${i}` : `Invoice ${i}`;
-            const actualDesc = job[`${prefix}${i}Desc`] || job[`${prefix}${i}Ref`] || defaultDesc;
+            let actualDesc = job[`${prefix}${i}Desc`] || job[`${prefix}${i}Ref`] || defaultDesc;
+            const statusVal = isPipelineType ? "" : (job[`${prefix}${i}Status`] || "");
+            if (statusVal.toLowerCase().includes("balance") && !actualDesc.toLowerCase().includes("bal")) {
+              actualDesc = `${actualDesc} (balance)`;
+            } else if (statusVal.toLowerCase().includes("part") && !actualDesc.toLowerCase().includes("part")) {
+              actualDesc = `${actualDesc} (part payment)`;
+            }
             results.push({
               client: job.client,
               name: job.jobName,
               desc: isPipelineType ? "" : actualDesc,
               amount: Math.round(amount),
               payDate,
-              status: isPipelineType ? "" : (job[`${prefix}${i}Status`] || ""),
+              status: statusVal,
               isPipeline: isPipelineType,
               type: job.projectRetainer || "Project",
             });

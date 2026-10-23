@@ -396,19 +396,11 @@ export default async function handler(req, res) {
 
           // Parent invoices
           let parentHasInvoice = false;
-          if (isRetainer) {
-            const inv = extractInv(row, 1);
+          for (let s = 1; s <= 3; s++) {
+            const inv = extractInv(row, s);
             if (inv) {
               invoices.push({ ...inv, isChild: false, isParent: true });
               parentHasInvoice = true;
-            }
-          } else {
-            for (let s = 1; s <= 3; s++) {
-              const inv = extractInv(row, s);
-              if (inv) {
-                invoices.push({ ...inv, isChild: false, isParent: true });
-                parentHasInvoice = true;
-              }
             }
           }
 
@@ -416,11 +408,17 @@ export default async function handler(req, res) {
           const childRetainers = [];
           childRows.forEach((cr) => {
             if (isRetainer) {
-              const inv = extractInv(cr.row, 1);
-              if (inv) invoices.push({ ...inv, isChild: true, childRowNum: cr.rowNum });
+              let childInvSum = 0;
+              for (let s = 1; s <= 3; s++) {
+                const inv = extractInv(cr.row, s);
+                if (inv) {
+                  invoices.push({ ...inv, isChild: true, childRowNum: cr.rowNum });
+                  childInvSum += (Number(inv.amount) || 0);
+                }
+              }
 
               const invAmtRaw = getValueByHeader(cr.row, colMap, ["project invoice 1 / monthly retainer (excl vat)", "project invoice 1", "inv 1 amount"]) || cr.row[41];
-              const invAmt = parseMoney(invAmtRaw);
+              const invAmt = childInvSum > 0 ? childInvSum : parseMoney(invAmtRaw);
               const startRaw = cr.row[146] !== undefined && String(cr.row[146]).trim() !== "" ? cr.row[146] : getValueByHeader(cr.row, colMap, ["start month"]);
               const endRaw = cr.row[147] !== undefined && String(cr.row[147]).trim() !== "" ? cr.row[147] : getValueByHeader(cr.row, colMap, ["end month"]);
               const monthsRaw = cr.row[148] !== undefined && String(cr.row[148]).trim() !== "" ? cr.row[148] : getValueByHeader(cr.row, colMap, ["months"]);

@@ -2298,7 +2298,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
           const staleRows = memoryRows.filter(r =>
             r.clientName === item.clientName &&
             r.alertType === item.alertType &&
-            (r.status === "cached" || r.status === "pending_automation" || r.status === "ignored" || (item.category === "proactive" && (r.status === "task" || r.status === "accepted"))) &&
+            (r.status === "cached" || r.status === "pending_automation" || (item.category === "proactive" && (r.status === "task" || r.status === "accepted"))) &&
             !freshHashes.has(r.fingerprintHash)
           );
 
@@ -2316,10 +2316,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
                 } catch (e) { }
               }
 
-              let newStatus;
-              if (stale.status === "task") newStatus = "task_resolved";
-              else if (stale.status === "ignored") newStatus = "superseded";
-              else newStatus = "auto_resolved";
+              const newStatus = stale.status === "task" ? "task_resolved" : "auto_resolved";
 
               await updateAlertMemoryRow(sheets, acIdSweep, stale.rowIndex, {
                 ...stale,
@@ -2478,8 +2475,8 @@ export async function handleRunFlagSweep(req, res, sheets) {
                 }
               }
 
-              // Case 2: Auto-resolved regular alert that returned
-              if (exRow.status === "auto_resolved" || exRow.status === "superseded") {
+              // Case 2: Auto-resolved regular alert that returned (never revive alerts that have an ignore reason)
+              if ((exRow.status === "auto_resolved" || exRow.status === "superseded") && !exRow.ignoreReason) {
                 const clientMeta = clientMetaMap.get(item.clientName);
                 const newStatus = evaluateAutomationStatus_(item.alertType, item.category, clientMeta, new Date(detectedAtIso).getTime(), null);
 
@@ -2505,8 +2502,8 @@ export async function handleRunFlagSweep(req, res, sheets) {
                 continue;
               }
 
-              // Case 3: Previously ignored or accepted
-              if (exRow.status === "ignored" || exRow.status === "accepted") {
+              // Case 3: Previously ignored or accepted (including any alert that has an ignore reason)
+              if (exRow.status === "ignored" || exRow.status === "accepted" || exRow.ignoreReason) {
                 let oldSnap = {};
                 try { oldSnap = JSON.parse(exRow.dataSnapshot || "{}"); } catch (e) { }
 
@@ -2607,14 +2604,16 @@ export async function handleRunFlagSweep(req, res, sheets) {
               }
 
               // Case 4: Already active (cached, task, pending_automation)
+              let oldSnap = {};
+              try { oldSnap = JSON.parse(exRow.dataSnapshot || "{}"); } catch (e) { }
+              const preservedDetectedAt = oldSnap.detectedAt || detectedAtIso;
+              const snapshotToSave = { ...alertForSnapshot, detectedAt: preservedDetectedAt };
+
               let newSnapshotStr;
               if (exRow.status === "task") {
-                try {
-                  const oldSnap = JSON.parse(exRow.dataSnapshot || "{}");
-                  newSnapshotStr = JSON.stringify({ ...oldSnap, ...alertForSnapshot });
-                } catch (e) { newSnapshotStr = JSON.stringify(alertForSnapshot); }
+                newSnapshotStr = JSON.stringify({ ...oldSnap, ...snapshotToSave });
               } else {
-                newSnapshotStr = JSON.stringify(alertForSnapshot);
+                newSnapshotStr = JSON.stringify(snapshotToSave);
               }
 
               const hashNeedsMigration = exRow.fingerprintHash !== alert._fingerprint;
@@ -6683,21 +6682,37 @@ export async function handleAcceptOption(req, res, sheets) {
 
     // ── IGNORE - mark alert as ignored in AlertMemory ────────────────────
     if (option.matchType === "ignore") {
-      console.log(`  → Ignoring alert (CRM not_found - job is legitimate)`);
+      console.log(`  → Ignoring alert (${alert.clientName} - ${option.title || "discrepancy ignored"})`);
       await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
       const memRows = await readAlertMemory(sheets, automationCommanderSheetId);
       const fp = alert.fingerprintHash || buildAlertFingerprint(alert);
       const mr = findMemoryRow(memRows, fp);
-      const alertSummary = `CRM ${alert.alertType} ${alert.clientName} - ${option.jobName || ""}`.trim();
-      const dataSnapshot = JSON.stringify({ alertType: alert.type || alert.flagType || "", flagType: alert.flagType || "", masterSheetId: alert.masterSheetId || "" });
+      const alertSummary = alert.summary?.summary || alert.summary || mr?.alertSummary || `${alert.type || alert.flagType || "Alert"} - ${alert.clientName || ""}`.trim();
+      const ignoreReason = option.title || "Accepted IGNORE option";
+      
+      let dataSnapshot = mr?.dataSnapshot || "";
+      try {
+        const existingSnap = JSON.parse(dataSnapshot || "{}");
+        dataSnapshot = JSON.stringify({
+          ...existingSnap,
+          alertType: alert.type || alert.flagType || existingSnap.alertType || "",
+          flagType: alert.flagType || existingSnap.flagType || "",
+          masterSheetId: alert.masterSheetId || existingSnap.masterSheetId || "",
+          ignoredAt: new Date().toISOString(),
+          ignoreOptionTitle: option.title || ""
+        });
+      } catch (e) {
+        dataSnapshot = JSON.stringify({ alertType: alert.type || alert.flagType || "", flagType: alert.flagType || "", masterSheetId: alert.masterSheetId || "" });
+      }
+
       if (mr) {
-        await updateAlertMemoryRow(sheets, automationCommanderSheetId, mr.rowIndex, { ...mr, status: "ignored", ignoreReason: "Accepted IGNORE option - job is legitimate", dataSnapshot });
+        await updateAlertMemoryRow(sheets, automationCommanderSheetId, mr.rowIndex, { ...mr, status: "ignored", ignoreReason, dataSnapshot });
       } else {
         await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
-          fingerprintHash: fp, alertType: alert.type || alert.flagType || "crm",
+          fingerprintHash: fp, alertType: alert.type || alert.flagType || "discrepancy",
           clientName: alert.clientName || "", alertSummary,
           cachedOptionsJSON: "", status: "ignored",
-          ignoreReason: "Accepted IGNORE option - job is legitimate", dataSnapshot,
+          ignoreReason, dataSnapshot,
         });
       }
       await sheets.spreadsheets.values.append({
@@ -6705,6 +6720,18 @@ export async function handleAcceptOption(req, res, sheets) {
         valueInputOption: "USER_ENTERED",
         requestBody: { values: [[new Date().toISOString(), alert.type || alert.flagType, `${alert.sheetName}-${alert.rowNumber}`, alert.clientName || "", "", JSON.stringify({ jobName: option.jobName }), "IGNORED", option.title]] },
       });
+
+      // Synchronize removal from precomputed cache so it disappears immediately
+      try {
+        const targetIds = [fp, `${alert.flagType || alert.type}-${alert.sheetName}-${alert.rowNumber}`].filter(Boolean);
+        const preRaw = await redisClient?.get(PRECOMPUTED_KEY);
+        if (preRaw) {
+          const pre = JSON.parse(preRaw);
+          applyAlertRemovalToTriageData(pre, targetIds);
+          await redisClient?.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
+        }
+      } catch (rErr) { }
+
       return res.status(200).json({ success: true, message: "Alert marked as ignored", cellsWritten: 0 });
     }
 

@@ -441,13 +441,15 @@ export const getJobInvoiceItems = (job, isRetainer) => {
           (extraSlot.amount && String(extraSlot.amount).trim() !== "")
         );
         if (hasData) {
+          const isPartPaid = String(extraSlot.status || "").toLowerCase().includes("part");
+          const slotTag = isPartPaid ? `Part payment ${extraSlot.slotNum}` : `Extra inv ${extraSlot.slotNum}`;
           items.push({
             id: `ret_inv_${r.rowNum}_${extraSlot.slotNum}`,
             rowNum: r.rowNum,
             slotNum: extraSlot.slotNum,
             slot: extraSlot,
             row: r,
-            label: `${monthLabel} (Extra Inv ${extraSlot.slotNum})`,
+            label: `${monthLabel} (${slotTag})`,
             subLabel: `Row ${r.rowNum}`
           });
         }

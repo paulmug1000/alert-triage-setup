@@ -37,6 +37,73 @@ export default function CashflowBreakdownView({
     return typeof note === "string" ? note.trim() : "";
   };
 
+  const renderStatusBadge = (status) => {
+    if (!status || status === "—") return <span style={{ color: "#94a3b8" }}>—</span>;
+    const s = String(status).trim();
+    const lower = s.toLowerCase();
+
+    let bg = "#f1f5f9";
+    let text = "#475569";
+    let border = "#cbd5e1";
+    let label = s;
+
+    if (lower === "paid") {
+      bg = "#ecfdf5";
+      text = "#047857";
+      border = "#a7f3d0";
+      label = "Paid";
+    } else if (lower.includes("balance")) {
+      bg = "#f5f3ff";
+      text = "#6d28d9";
+      border = "#ddd6fe";
+      label = "Part-paid (balance)";
+    } else if (lower === "part-paid (received)" || (lower.includes("received") && lower.includes("part"))) {
+      bg = "#eff6ff";
+      text = "#1d4ed8";
+      border = "#bfdbfe";
+      label = "Part-paid (received)";
+    } else if (lower === "part-paid (paid)" || (lower.includes("paid") && lower.includes("part"))) {
+      bg = "#ecfdf5";
+      text = "#047857";
+      border = "#a7f3d0";
+      label = "Part-paid (paid)";
+    } else if (lower === "received") {
+      bg = "#f0fdf4";
+      text = "#15803d";
+      border = "#bbf7d0";
+      label = "Received";
+    } else if (lower === "sent") {
+      bg = "#f0f9ff";
+      text = "#0369a1";
+      border = "#bae6fd";
+      label = "Sent";
+    } else if (lower === "draft") {
+      bg = "#f8fafc";
+      text = "#64748b";
+      border = "#cbd5e1";
+      label = "Draft";
+    }
+
+    return (
+      <span
+        style={{
+          display: "inline-block",
+          padding: "2px 8px",
+          fontSize: "0.75rem",
+          fontWeight: 600,
+          borderRadius: "9999px",
+          backgroundColor: bg,
+          color: text,
+          border: `1px solid ${border}`,
+          whiteSpace: "nowrap",
+          lineHeight: "1.25",
+        }}
+      >
+        {label}
+      </span>
+    );
+  };
+
   const isIncomeMode = useMemo(() => {
     if (keyData?.outgoingsMeta?.mode) {
       return keyData.outgoingsMeta.mode.toLowerCase().includes("income");
@@ -780,7 +847,9 @@ export default function CashflowBreakdownView({
                             <td style={{ padding: "12px 10px", textAlign: "right", fontWeight: 700, color: "#0047AB" }}>
                               {formatMoney(inv.totalAmount)}
                             </td>
-                            <td style={{ padding: "12px 0 12px 10px", color: "#6b7280", textAlign: "right" }}>{inv.status || ""}</td>
+                            <td style={{ padding: "12px 0 12px 10px", textAlign: "right" }}>
+                              {renderStatusBadge(inv.status)}
+                            </td>
                           </tr>
                         ))}
                       </tbody>
@@ -918,8 +987,8 @@ export default function CashflowBreakdownView({
                       <td style={{ padding: "12px 10px", color: "#6b7280", whiteSpace: "nowrap" }}>
                         {item.recDate ? DeepDiveEngine.formatShortDate(item.recDate) : "—"}
                       </td>
-                      <td style={{ padding: "12px 0 12px 10px", color: "#6b7280", textAlign: "right", whiteSpace: "nowrap" }}>
-                        {item.status || "—"}
+                      <td style={{ padding: "12px 0 12px 10px", textAlign: "right", whiteSpace: "nowrap" }}>
+                        {renderStatusBadge(item.status)}
                       </td>
                     </tr>
                   ))
@@ -989,8 +1058,8 @@ export default function CashflowBreakdownView({
                       <td style={{ padding: "12px 10px", textAlign: "right", fontWeight: 700, color: "#0047AB" }}>
                         {formatMoney(item.amount)}
                       </td>
-                      <td style={{ padding: "12px 0 12px 10px", color: "#6b7280", textAlign: "right" }}>
-                        {item.status || ""}
+                      <td style={{ padding: "12px 0 12px 10px", textAlign: "right" }}>
+                        {renderStatusBadge(item.status)}
                       </td>
                     </tr>
                   ))

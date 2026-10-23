@@ -26,9 +26,16 @@ export function parseConfirmedDate_(val) {
 
 export function detectPeriodMultiplier_(childRow, monthlyRevenue) {
   if (!monthlyRevenue || monthlyRevenue <= 0) return 1;
-  const inv1Amt = parseFloat(String(childRow[41] || "0").replace(/[£$€,\s]/g, "")) || 0;
-  if (inv1Amt <= 0) return 1;
-  return Math.max(1, Math.round(inv1Amt / monthlyRevenue));
+  let totalInvAmt = 0;
+  const slotAmtIdxs = [41, 48, 55];
+  for (let s = 0; s < slotAmtIdxs.length; s++) {
+    const raw = childRow[slotAmtIdxs[s]];
+    if (raw !== "" && raw !== null && raw !== undefined) {
+      totalInvAmt += parseFloat(String(raw).replace(/[£$€,\s]/g, "")) || 0;
+    }
+  }
+  if (totalInvAmt <= 0) return 1;
+  return Math.max(1, Math.round(totalInvAmt / monthlyRevenue));
 }
 
 export function sumInvSlotAmounts_(row) {
@@ -111,7 +118,8 @@ export function collectSentInvoices_(row, sentInvoices) {
   const slots = [{ statusIdx: 45, sentIdx: 43 }, { statusIdx: 52, sentIdx: 50 }, { statusIdx: 59, sentIdx: 57 }];
   for (let s = 0; s < slots.length; s++) {
     const status = String(row[slots[s].statusIdx] || "").trim().toLowerCase();
-    if (status !== "sent" && status !== "paid") continue;
+    const isReal = status === "sent" || status === "paid" || status.includes("paid") || status.includes("sent");
+    if (!isReal) continue;
     const sentVal = row[slots[s].sentIdx];
     if (!sentVal) continue;
     const sentDate = parseConfirmedDate_(sentVal);
@@ -1007,7 +1015,20 @@ export async function checkJobStructureErrors_(clientName, clientSheetId, shared
         const rowLabel = `Row ${jSheetRow} (${jobRows[jr].isParent ? "parent" : "child"})`;
 
         if (isRetainer && (hasVal(jRow[invAmtIdx[1]]) || hasVal(jRow[invAmtIdx[2]]))) {
-          problems.push(`${rowLabel}: retainer has data in invoice slot 2 or 3 - retainers should only ever use slot 1 per row`);
+          const s1Ref = String(jRow[42] || "").trim();
+          const s2Ref = String(jRow[49] || "").trim();
+          const s3Ref = String(jRow[56] || "").trim();
+          const s1Stat = String(jRow[45] || "").toLowerCase();
+          const s2Stat = String(jRow[52] || "").toLowerCase();
+          const s3Stat = String(jRow[59] || "").toLowerCase();
+
+          const isPartPayment = s1Stat.includes("part") || s2Stat.includes("part") || s3Stat.includes("part") ||
+            (s2Ref && s1Ref && (s2Ref === s1Ref || s2Ref.startsWith(s1Ref) || s1Ref.startsWith(s2Ref))) ||
+            (s3Ref && s1Ref && (s3Ref === s1Ref || s3Ref.startsWith(s1Ref) || s1Ref.startsWith(s3Ref)));
+
+          if (!isPartPayment) {
+            problems.push(`${rowLabel}: retainer has data in invoice slot 2 or 3 - retainers should only ever use slot 1 per row (unless tracking part-payment installments)`);
+          }
         }
         if (isRetainer && hasChildren && jobRows[jr].isParent && hasVal(jRow[invAmtIdx[0]])) {
           problems.push(`${rowLabel}: retainer has child rows but the parent row also holds an invoice - once child rows exist, the parent should stay empty`);

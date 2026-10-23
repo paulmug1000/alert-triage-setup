@@ -728,7 +728,7 @@ export default function DeepDivePopover({
                                 </>
                               )}
                               Expected: {item.payDateStr}
-                              {item.status ? ` | ${item.status}` : ""}
+                              {item.status ? ` | ${item.isPartPayment && item.status.toLowerCase() === "paid" ? "Paid (part)" : item.status}` : ""}
                             </span>
                           )}
                         </div>

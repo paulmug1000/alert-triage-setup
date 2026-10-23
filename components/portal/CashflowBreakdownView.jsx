@@ -37,7 +37,7 @@ export default function CashflowBreakdownView({
     return typeof note === "string" ? note.trim() : "";
   };
 
-  const renderStatusBadge = (status) => {
+  const renderStatusBadge = (status, isPartPayment = false) => {
     if (!status || status === "—") return <span style={{ color: "#94a3b8" }}>—</span>;
     const s = String(status).trim();
     const lower = s.toLowerCase();
@@ -51,7 +51,7 @@ export default function CashflowBreakdownView({
       bg = "#ecfdf5";
       text = "#047857";
       border = "#a7f3d0";
-      label = "Paid";
+      label = isPartPayment ? "Paid (part)" : "Paid";
     } else if (lower.includes("balance")) {
       bg = "#f5f3ff";
       text = "#6d28d9";
@@ -985,7 +985,7 @@ export default function CashflowBreakdownView({
                         {item.recDate ? DeepDiveEngine.formatShortDate(item.recDate) : "—"}
                       </td>
                       <td style={{ padding: "12px 0 12px 10px", textAlign: "right", whiteSpace: "nowrap" }}>
-                        {renderStatusBadge(item.status)}
+                        {renderStatusBadge(item.status, item.isPartPayment)}
                       </td>
                     </tr>
                   ))
@@ -1056,7 +1056,7 @@ export default function CashflowBreakdownView({
                         {formatMoney(item.amount)}
                       </td>
                       <td style={{ padding: "12px 0 12px 10px", textAlign: "right" }}>
-                        {renderStatusBadge(item.status)}
+                        {renderStatusBadge(item.status, item.isPartPayment)}
                       </td>
                     </tr>
                   ))

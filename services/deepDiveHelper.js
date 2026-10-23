@@ -829,6 +829,25 @@ export const CashDeepDiveEngine = {
     const isPipelineType = type === "cashPipeInc" || type === "pipeCash";
     const isDirCash = type === "cashDirCosts" || type.includes("dirCash");
 
+    // Build multi-occurrence reference map to detect part-payments across slots/jobs
+    const refCounts = new Map();
+    allJobs.forEach((j) => {
+      const isJP = String(j.type || "").toLowerCase() === "pipeline";
+      if (!isPipelineType && isJP) return;
+      if (isPipelineType && !isJP) return;
+
+      const pfx = isDirCash ? "dirInv" : "inv";
+      for (let s = 1; s <= 50; s++) {
+        const rawRef = j[`${pfx}${s}Ref`] || (isDirCash ? (j[`${pfx}${s}Id`] || j[`${pfx}${s}Desc`]) : null);
+        if (rawRef) {
+          const cleanKey = String(rawRef).trim().toUpperCase();
+          if (cleanKey && !cleanKey.includes("MANUAL-") && !cleanKey.includes("PLACE-")) {
+            refCounts.set(cleanKey, (refCounts.get(cleanKey) || 0) + 1);
+          }
+        }
+      }
+    });
+
     allJobs.forEach((job) => {
       const isJobPipeline = String(job.type || "").toLowerCase() === "pipeline";
       if (!isPipelineType && isJobPipeline) return;
@@ -942,9 +961,15 @@ export const CashDeepDiveEngine = {
             const defaultDesc = isDirCash ? `Direct cost ${i}` : `Invoice ${i}`;
             let actualDesc = job[`${prefix}${i}Desc`] || job[`${prefix}${i}Ref`] || defaultDesc;
             const statusVal = isPipelineType ? "" : (job[`${prefix}${i}Status`] || "");
+
+            const rawRefKey = String(job[`${prefix}${i}Ref`] || (isDirCash ? (job[`${prefix}${i}Id`] || job[`${prefix}${i}Desc`]) : "") || "").trim().toUpperCase();
+            const isSplitTranche = (rawRefKey && (refCounts.get(rawRefKey) || 0) > 1) ||
+                                  statusVal.toLowerCase().includes("part") ||
+                                  statusVal.toLowerCase().includes("balance");
+
             if (statusVal.toLowerCase().includes("balance") && !actualDesc.toLowerCase().includes("bal")) {
               actualDesc = `${actualDesc} (balance)`;
-            } else if (statusVal.toLowerCase().includes("part") && !actualDesc.toLowerCase().includes("part")) {
+            } else if (isSplitTranche && !actualDesc.toLowerCase().includes("part") && !actualDesc.toLowerCase().includes("bal")) {
               actualDesc = `${actualDesc} (part payment)`;
             }
             results.push({
@@ -955,6 +980,7 @@ export const CashDeepDiveEngine = {
               payDate,
               status: statusVal,
               isPipeline: isPipelineType,
+              isPartPayment: isSplitTranche,
               type: job.projectRetainer || "Project",
             });
           }
@@ -1018,6 +1044,16 @@ export const CashDeepDiveEngine = {
     if (isContractor && isNotesMode) {
       const allTx = keyData?.outgoings?.contractorTransactions || keyData?.outgoingsMeta?.contractorTransactions || [];
 
+      const appIdCounts = new Map();
+      allTx.forEach((tx) => {
+        if (tx.appId) {
+          const cleanId = String(tx.appId).trim().replace(/-bal$|-P1$/i, "");
+          if (cleanId && !cleanId.startsWith("PLACE-") && !cleanId.startsWith("MANUAL-")) {
+            appIdCounts.set(cleanId, (appIdCounts.get(cleanId) || 0) + 1);
+          }
+        }
+      });
+
       allTx.forEach((tx) => {
         const pd = CashDeepDiveEngine.parsePayDate(tx.payDate);
         if (pd && pd.getFullYear() === targetYear && pd.getMonth() === targetMonth) {
@@ -1025,13 +1061,29 @@ export const CashDeepDiveEngine = {
           const netAmt = -Math.abs(tx.netAmount || tx.amountNet || 0);
           const vatAmt = tx.vatAmount > 0 || tx.vatSetting === "Yes" ? -Math.abs(tx.vatAmount || 0) : 0;
 
+          const cleanId = String(tx.appId || "").trim().replace(/-bal$|-P1$/i, "");
+          const rawStatus = String(tx.status || "").toLowerCase();
+          const rawDesc = String(tx.itemDesc || tx.rawDesc || "").trim();
+          const isSplit = (cleanId && (appIdCounts.get(cleanId) || 0) > 1) ||
+                          rawStatus.includes("part") ||
+                          rawStatus.includes("balance") ||
+                          rawDesc.toLowerCase().includes("part payment") ||
+                          rawDesc.toLowerCase().includes("(balance)");
+
+          let displayDesc = rawDesc;
+          if (rawStatus.includes("balance") && !displayDesc.toLowerCase().includes("bal")) {
+            displayDesc = `${displayDesc} (balance)`;
+          } else if (isSplit && !displayDesc.toLowerCase().includes("part") && !displayDesc.toLowerCase().includes("bal")) {
+            displayDesc = `${displayDesc} (part payment)`;
+          }
+
           results.push({
             appId: tx.appId || "",
             vendor: tx.vendor || tx.contractorName || "",
             client: tx.vendor || tx.contractorName || "",
             name: tx.vendor || tx.contractorName || "",
-            desc: tx.itemDesc || tx.rawDesc || "",
-            itemDesc: tx.itemDesc || tx.rawDesc || "",
+            desc: displayDesc,
+            itemDesc: displayDesc,
             rawDesc: tx.rawDesc || "",
             amountNet: netAmt,
             vatAmount: vatAmt,
@@ -1039,6 +1091,7 @@ export const CashDeepDiveEngine = {
             amount: rawAmt,
             vatSetting: tx.vatSetting || "No",
             status: tx.status || "",
+            isPartPayment: isSplit,
             recDate: tx.recDate || "",
             payDate: tx.payDate || "",
             payDateStr: DeepDiveEngine.formatShortDate(tx.payDate),
@@ -2237,6 +2290,7 @@ export function buildDeepDiveData({
       status: j.status || "",
       amount: j.amount,
       isPipeline: false,
+      isPartPayment: j.isPartPayment || false,
     }));
 
     if (Math.abs(drift) > 2) {
@@ -2369,6 +2423,7 @@ export function buildDeepDiveData({
       status: j.status || "",
       amount: j.amount,
       isPipeline: false,
+      isPartPayment: j.isPartPayment || false,
     }));
 
     if (Math.abs(drift) > 2) {

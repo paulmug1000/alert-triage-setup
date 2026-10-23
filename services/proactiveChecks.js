@@ -2577,7 +2577,7 @@ export async function checkPartPaidBalances_(clientName, clientSheetId, masterSh
             const colLetter = colIndexToLetter(cIdx + 1);
             const cellCoord = `${colLetter}${rIdx + 1}`;
 
-            const explanation = `Pulse has projected this remaining expense balance of £${amount.toFixed(2)} to be paid on ${payDateRaw || "the estimated date"}. You can adjust this expected payment date below if agreed otherwise.`;
+            const explanation = `Pulse has projected this remaining expense balance of £${amount.toFixed(2)} to be paid on ${payDateRaw || "the estimated date"} based on the contractor monthly pay run rule (28th of the month, cutoff 20th). You can adjust this expected payment date below if agreed otherwise.`;
 
             alerts.push({
               alertType: "part_paid_balance",
@@ -2745,12 +2745,15 @@ export async function handleUpdatePartPaidDate(sheets, {
     let updatedNote = currentNote;
     if (appId && updatedNote.includes(appId)) {
       const blocks = updatedNote.split(/(?=\{App ID:)/i);
+      const hasBalanceStatus = blocks.some(b => b.includes(appId) && (b.toLowerCase().includes("balance") || b.toLowerCase().includes("part-paid (balance)")));
       const newBlocks = blocks.map(b => {
         if (b.includes(appId)) {
-          if (/\{Pay date:\s*[^}]*\}/i.test(b)) {
-            return b.replace(/\{Pay date:\s*[^}]*\}/i, `{Pay date: ${formattedNewDate}}`);
-          } else {
-            return b + `{Pay date: ${formattedNewDate}}`;
+          if (!hasBalanceStatus || b.toLowerCase().includes("balance") || b.toLowerCase().includes("part-paid (balance)")) {
+            if (/\{Pay date:\s*[^}]*\}/i.test(b)) {
+              return b.replace(/\{Pay date:\s*[^}]*\}/i, `{Pay date: ${formattedNewDate}}`);
+            } else {
+              return b + `{Pay date: ${formattedNewDate}}`;
+            }
           }
         }
         return b;

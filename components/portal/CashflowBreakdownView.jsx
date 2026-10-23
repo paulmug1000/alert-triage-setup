@@ -223,10 +223,7 @@ export default function CashflowBreakdownView({
       const divVal = sumRows(["dividends as salary outgoing", "dividends as salary adjustment"], [10, 11, 52, 53]);
       return salVal + divVal;
     }
-    if (activeCategory === "cashContractors") {
-      if (isNotesMode) return null;
-      return sumRows(["contractors outgoing", "contractors adjustment"], [12, 13, 54, 55]);
-    }
+    if (activeCategory === "cashContractors") return sumRows(["contractors outgoing", "contractors adjustment"], [12, 13, 54, 55]);
     if (activeCategory === "cashOutgoings") return sumRows(["other expenses outgoing", "other expenses adjustment"], [16, 17, 58, 59]);
     if (activeCategory === "cashTaxes") return sumRows(["corporation tax", "corporation tax adjustment", "vat", "vat adjustment"], [19, 20, 21, 22, 61, 62, 63, 64]);
     if (activeCategory === "cashOther") return sumRows(["non-operating income", "non-operating expenses", "other cash movements", "other adjustments"], [24, 25, 26, 27, 29, 30, 66, 67, 68, 69, 71, 72]);

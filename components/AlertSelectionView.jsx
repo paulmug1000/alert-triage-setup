@@ -2353,7 +2353,7 @@ export default function AlertSelectionView({
                                       }}>
                                         {alert.explanation || (
                                           <>
-                                            Pulse is assuming this remaining balance will be {isExp ? "paid" : "collected"} on <strong>{targetDate}</strong> based on the overdue mid-month collection rule. You can select an alternative date below if agreed otherwise.
+                                            Pulse is assuming this remaining balance will be {isExp ? "paid" : "collected"} on <strong>{targetDate}</strong> based on the {isExp ? "contractor monthly pay run rule (28th of the month, cutoff 20th)" : "overdue mid-month collection rule"}. You can select an alternative date below if agreed otherwise.
                                           </>
                                         )}
                                       </div>

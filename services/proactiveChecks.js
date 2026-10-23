@@ -1,9 +1,10 @@
 import { createHash } from "crypto";
-import { isPlaceholderInvoice, isPlaceholderExpense, toSheetDateFormat } from "../utils/helpers.js";
+import { isPlaceholderInvoice, isPlaceholderExpense, toSheetDateFormat, toInputDateFormat } from "../utils/helpers.js";
 import { withRetry, colIndexToLetter, applySheetFontFormat, getSheetGid } from "./sheetsClient.js";
 import { getClientWebAppUrl, getAllClients } from "./workspaces.js";
 import { redisClient } from "./redisClient.js";
 import { ensureAlertMemoryTab, readAlertMemory, updateAlertMemoryRow, findMemoryRow } from "./alertMemory.js";
+import { logPmaActivity } from "./pmaLogger.js";
 
 export function parseConfirmedDate_(val) {
   if (!val) return null;
@@ -2411,4 +2412,404 @@ export async function handleClassifyPLCategory(sheets, {
     success: true,
     message: `Successfully classified "${cleanName}" as ${classificationLabel} and triggered Outgoings sync.`
   };
+}
+
+/**
+ * PART-PAID BALANCES CHECK
+ * Scans Confirmed and Outgoings for part-paid balance items ("Part-paid (balance)")
+ * and raises proactive alerts explaining the projected payment date, with an interactive
+ * date adjustment option directly on the alert card.
+ */
+export async function checkPartPaidBalances_(clientName, clientSheetId, masterSheetId, sharedData, sheets) {
+  const alerts = [];
+  if (!clientSheetId || !sheets) return alerts;
+
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const fmtDate = (d) => {
+    if (!d || isNaN(d.getTime())) return "";
+    return `${d.getDate()}-${months[d.getMonth()]}-${String(d.getFullYear()).slice(-2)}`;
+  };
+
+  try {
+    // 1. INVOICE PART-PAID BALANCES (in Confirmed tab)
+    let confirmedData = sharedData?.confirmedData || null;
+    if (!confirmedData) {
+      try {
+        const resp = await withRetry(() => sheets.spreadsheets.values.get({
+          spreadsheetId: clientSheetId,
+          range: "Confirmed!A1:CR5000",
+          valueRenderOption: "UNFORMATTED_VALUE"
+        }));
+        confirmedData = resp.data?.values || [];
+        if (sharedData) sharedData.confirmedData = confirmedData;
+      } catch (e) {
+        // Confirmed tab read failed
+      }
+    }
+
+    if (confirmedData && confirmedData.length >= 2) {
+      const headerRow = (confirmedData[0] || []).map(h => String(h || "").trim().toLowerCase());
+      const clientCol = headerRow.indexOf("client");
+      const jobCol = headerRow.indexOf("job name");
+
+      const slotCols = {
+        1: { amt: 41, ref: 42, sendDate: 43, days: 44, status: 45 },
+        2: { amt: 48, ref: 49, sendDate: 50, days: 51, status: 52 },
+        3: { amt: 55, ref: 56, sendDate: 57, days: 58, status: 59 },
+      };
+
+      for (let r = 1; r < confirmedData.length; r++) {
+        const row = confirmedData[r];
+        if (!row || row.length === 0) continue;
+
+        const rowClient = String((clientCol !== -1 ? row[clientCol] : row[0]) || "").trim();
+        const rowJob = String((jobCol !== -1 ? row[jobCol] : row[1]) || "").trim();
+        if (!rowClient && !rowJob) continue;
+
+        for (let s = 1; s <= 3; s++) {
+          const cfg = slotCols[s];
+          const rawStatus = String(row[cfg.status] || "").trim().toLowerCase();
+          if (!rawStatus.includes("balance") || !rawStatus.includes("part")) continue;
+
+          const rawAmt = row[cfg.amt];
+          const balanceAmt = parseFloat(String(rawAmt || "0").replace(/[£$€,\s]/g, "")) || 0;
+          if (balanceAmt <= 0.005) continue;
+
+          const refVal = String(row[cfg.ref] || "").trim();
+          const sendDateRaw = row[cfg.sendDate];
+          const sendDateObj = parseConfirmedDate_(sendDateRaw) || new Date();
+          const daysToPay = parseInt(row[cfg.days], 10) || 0;
+
+          const projectedDateObj = new Date(sendDateObj.getTime() + daysToPay * 86400000);
+          const sendDateStr = fmtDate(sendDateObj);
+          const projectedDateStr = fmtDate(projectedDateObj);
+          const isoTargetDate = toInputDateFormat(projectedDateObj);
+
+          const endClient = rowClient || clientName;
+          const displayRef = refVal ? (refVal.toUpperCase().startsWith("INV") ? refVal : `INV-${refVal}`) : "Unreferenced";
+
+          const explanation = `Pulse has projected the remaining balance of £${balanceAmt.toFixed(2)} to be collected on ${projectedDateStr} based on the overdue mid-month collection rule (${daysToPay} days from send date). You can adjust this expected collection date below if agreed otherwise.`;
+
+          alerts.push({
+            alertType: "part_paid_balance",
+            alertKey: `part_paid_balance|${clientName}|invoice|${r + 1}|${s}|${refVal || "noref"}`,
+            legacyAlertKey: `part_paid_balance|${clientName}|${refVal || (r + 1)}`,
+            heading: "Part-paid invoice balance",
+            detail: `${endClient} | ${rowJob}: invoice ${displayRef} has an unpaid balance of £${balanceAmt.toFixed(2)}. Projected payment date: ${projectedDateStr}.`,
+            itemType: "invoice",
+            clientName,
+            endClientName: endClient,
+            jobName: rowJob,
+            confirmedRow: r + 1,
+            slot: s,
+            ref: displayRef,
+            rawRef: refVal,
+            balanceAmount: balanceAmt.toFixed(2),
+            sendDate: sendDateStr,
+            daysToPay: String(daysToPay),
+            targetDate: projectedDateStr,
+            isoTargetDate,
+            explanation,
+            stableJobKey: `${endClient}|${rowJob}`,
+            metadata: {
+              itemType: "invoice",
+              clientName,
+              endClientName: endClient,
+              jobName: rowJob,
+              confirmedRow: r + 1,
+              slot: s,
+              ref: displayRef,
+              rawRef: refVal,
+              balanceAmount: balanceAmt.toFixed(2),
+              sendDate: sendDateStr,
+              daysToPay: String(daysToPay),
+              targetDate: projectedDateStr,
+              isoTargetDate,
+              explanation,
+              clientSheetId,
+              masterSheetId
+            }
+          });
+        }
+      }
+    }
+
+    // 2. EXPENSE PART-PAID BALANCES (in Outgoings tab)
+    let outgoingsData = sharedData?.outgoingsData || null;
+    if (!outgoingsData && clientSheetId) {
+      try {
+        const resp = await withRetry(() => sheets.spreadsheets.get({
+          spreadsheetId: clientSheetId,
+          ranges: ["Outgoings!A1:AZ350"],
+          fields: "sheets(data(rowData(values(formattedValue,note))))"
+        }));
+        outgoingsData = resp.data?.sheets?.[0]?.data?.[0]?.rowData || [];
+        if (sharedData) sharedData.outgoingsData = outgoingsData;
+      } catch (e) {
+        // Outgoings tab read error
+      }
+    }
+
+    if (outgoingsData && outgoingsData.length >= 2) {
+      for (let rIdx = 1; rIdx < outgoingsData.length; rIdx++) {
+        const rowCells = outgoingsData[rIdx]?.values || [];
+        const contractor = String(rowCells[0]?.formattedValue || "").trim();
+        if (!contractor || contractor.toLowerCase() === "contractors" || contractor.toLowerCase().startsWith("total")) continue;
+
+        for (let cIdx = 1; cIdx < rowCells.length; cIdx++) {
+          const cell = rowCells[cIdx];
+          const note = String(cell?.note || "");
+          if (!note.toLowerCase().includes("balance") || !note.toLowerCase().includes("part")) continue;
+
+          const blocks = note.split(/(?=\{App ID:)/i).map(b => b.trim()).filter(Boolean);
+          for (const block of blocks) {
+            const statusMatch = block.match(/\{Status:\s*([^}]*)\}/i);
+            const status = statusMatch ? statusMatch[1].trim().toLowerCase() : "";
+            if (!status.includes("balance") || !status.includes("part")) continue;
+
+            const appId = block.match(/\{App ID:\s*([^}]+)\}/i)?.[1]?.trim() || "";
+            const amtStr = block.match(/\{Amt:\s*([^}]+)\}/i)?.[1] || "";
+            const amount = parseFloat(amtStr.replace(/[£$€,\s]/g, "")) || 0;
+            if (amount <= 0.005) continue;
+
+            const recDateRaw = block.match(/\{Rec date:\s*([^}]*)\}/i)?.[1]?.trim() || "";
+            const payDateRaw = block.match(/\{Pay date:\s*([^}]*)\}/i)?.[1]?.trim() || "";
+            const colLetter = colIndexToLetter(cIdx + 1);
+            const cellCoord = `${colLetter}${rIdx + 1}`;
+
+            const explanation = `Pulse has projected this remaining expense balance of £${amount.toFixed(2)} to be paid on ${payDateRaw || "the estimated date"}. You can adjust this expected payment date below if agreed otherwise.`;
+
+            alerts.push({
+              alertType: "part_paid_balance",
+              alertKey: `part_paid_balance|${clientName}|expense|${cellCoord}|${appId || "part"}`,
+              legacyAlertKey: `part_paid_balance|${clientName}|expense|${cellCoord}`,
+              heading: "Part-paid expense balance",
+              detail: `${contractor} (Outgoings Cell ${cellCoord}): expense ${appId || ""} has an unpaid balance of £${amount.toFixed(2)}. Projected payment date: ${payDateRaw || "estimated"}.`,
+              itemType: "expense",
+              clientName,
+              endClientName: contractor,
+              jobName: contractor,
+              contractor,
+              cellCoord,
+              rowNum: rIdx + 1,
+              appId,
+              balanceAmount: amount.toFixed(2),
+              recDate: recDateRaw,
+              targetDate: payDateRaw,
+              isoTargetDate: toInputDateFormat(payDateRaw),
+              explanation,
+              stableJobKey: `${contractor}|${cellCoord}`,
+              metadata: {
+                itemType: "expense",
+                clientName,
+                endClientName: contractor,
+                jobName: contractor,
+                contractor,
+                cellCoord,
+                rowNum: rIdx + 1,
+                appId,
+                balanceAmount: amount.toFixed(2),
+                recDate: recDateRaw,
+                targetDate: payDateRaw,
+                isoTargetDate: toInputDateFormat(payDateRaw),
+                explanation,
+                clientSheetId,
+                masterSheetId
+              }
+            });
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error(`Error in checkPartPaidBalances_ for ${clientName}:`, err.message);
+  }
+
+  return alerts;
+}
+
+export async function handleUpdatePartPaidDate(sheets, {
+  clientName,
+  clientSheetId,
+  masterSheetId,
+  itemType,
+  rowNumber,
+  slot,
+  sendDate,
+  cellCoord,
+  appId,
+  newDate,
+  userEmail
+}) {
+  if (!clientSheetId || !newDate) {
+    throw new Error("Missing clientSheetId or newDate");
+  }
+
+  const parsedNewDate = parseConfirmedDate_(newDate);
+  if (!parsedNewDate) {
+    throw new Error("Invalid target date format selected");
+  }
+  const formattedNewDate = toSheetDateFormat(parsedNewDate);
+  const now = new Date();
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const timestamp = `${now.getDate()}-${months[now.getMonth()]} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+
+  if (itemType === "invoice") {
+    if (!rowNumber || !slot) {
+      throw new Error("Missing rowNumber or slot for invoice date update");
+    }
+    const slotDaysCols = { 1: "AS", 2: "AZ", 3: "BG" };
+    const colLetter = slotDaysCols[slot];
+    if (!colLetter) throw new Error(`Invalid slot index: ${slot}`);
+
+    const parsedSendDate = parseConfirmedDate_(sendDate) || now;
+    const newDaysToPay = Math.max(0, Math.round((parsedNewDate.getTime() - parsedSendDate.getTime()) / 86400000));
+
+    // 1. Update Days to Pay in Confirmed sheet
+    await withRetry(() => sheets.spreadsheets.values.update({
+      spreadsheetId: clientSheetId,
+      range: `Confirmed!${colLetter}${rowNumber}`,
+      valueInputOption: "RAW",
+      requestBody: { values: [[newDaysToPay]] }
+    }));
+
+    // 2. Append cell note for audit trail
+    try {
+      const metaResp = await sheets.spreadsheets.get({
+        spreadsheetId: clientSheetId,
+        fields: "sheets(properties.sheetId,properties.title)"
+      });
+      const confSheet = metaResp.data?.sheets?.find(s => s.properties.title === "Confirmed");
+      if (confSheet) {
+        const gridSheetId = confSheet.properties.sheetId;
+        const colIdx = (slot === 1 ? 44 : (slot === 2 ? 51 : 58)); // 0-indexed column
+        const auditNote = `${timestamp}: Expected payment date adjusted to ${formattedNewDate} (${newDaysToPay} days to pay) by ${userEmail || "user"}.`;
+        await sheets.spreadsheets.batchUpdate({
+          spreadsheetId: clientSheetId,
+          requestBody: {
+            requests: [{
+              updateCells: {
+                range: {
+                  sheetId: gridSheetId,
+                  startRowIndex: rowNumber - 1,
+                  endRowIndex: rowNumber,
+                  startColumnIndex: colIdx,
+                  endColumnIndex: colIdx + 1
+                },
+                rows: [{
+                  values: [{
+                    note: auditNote
+                  }]
+                }],
+                fields: "note"
+              }
+            }]
+          }
+        });
+      }
+    } catch (noteErr) {
+      console.warn("Could not append audit note on Confirmed cell:", noteErr.message);
+    }
+
+    await logPmaActivity({
+      userEmail: userEmail || "system",
+      action: "UPDATE_PART_PAID_INVOICE_DATE",
+      clientName: clientName || "Unknown",
+      details: `Updated part-paid invoice expected payment date to ${formattedNewDate} (${newDaysToPay} days to pay) on Confirmed row ${rowNumber} slot ${slot}.`
+    });
+
+    return {
+      success: true,
+      itemType: "invoice",
+      newDaysToPay,
+      formattedNewDate,
+      isoDate: toInputDateFormat(parsedNewDate),
+      message: `Expected payment date updated to ${formattedNewDate} (${newDaysToPay} days).`
+    };
+
+  } else if (itemType === "expense") {
+    if (!cellCoord) {
+      throw new Error("Missing cellCoord for expense date update");
+    }
+
+    const cellRange = `Outgoings!${cellCoord}`;
+    const metaResp = await sheets.spreadsheets.get({
+      spreadsheetId: clientSheetId,
+      ranges: [cellRange],
+      fields: "sheets(properties.sheetId,properties.title,data(rowData(values(note))))"
+    });
+    const sheetObj = metaResp.data?.sheets?.[0];
+    const gridSheetId = sheetObj?.properties?.sheetId;
+    const currentNote = sheetObj?.data?.[0]?.rowData?.[0]?.values?.[0]?.note || "";
+
+    let updatedNote = currentNote;
+    if (appId && updatedNote.includes(appId)) {
+      const blocks = updatedNote.split(/(?=\{App ID:)/i);
+      const newBlocks = blocks.map(b => {
+        if (b.includes(appId)) {
+          if (/\{Pay date:\s*[^}]*\}/i.test(b)) {
+            return b.replace(/\{Pay date:\s*[^}]*\}/i, `{Pay date: ${formattedNewDate}}`);
+          } else {
+            return b + `{Pay date: ${formattedNewDate}}`;
+          }
+        }
+        return b;
+      });
+      updatedNote = newBlocks.join("");
+    } else if (/\{Pay date:\s*[^}]*\}/i.test(updatedNote)) {
+      updatedNote = updatedNote.replace(/\{Pay date:\s*[^}]*\}/i, `{Pay date: ${formattedNewDate}}`);
+    } else {
+      updatedNote = `${updatedNote}\n\n[${timestamp}]: Expected pay date adjusted to ${formattedNewDate} by ${userEmail || "user"}.`;
+    }
+
+    const match = cellCoord.match(/^([A-Z]+)(\d+)$/i);
+    if (!match) throw new Error(`Invalid cell coordinate: ${cellCoord}`);
+    const colLetters = match[1].toUpperCase();
+    const rowNum = parseInt(match[2], 10);
+    let colIdx = 0;
+    for (let i = 0; i < colLetters.length; i++) {
+      colIdx = colIdx * 26 + (colLetters.charCodeAt(i) - 64);
+    }
+    colIdx -= 1; // 0-indexed
+
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: clientSheetId,
+      requestBody: {
+        requests: [{
+          updateCells: {
+            range: {
+              sheetId: gridSheetId,
+              startRowIndex: rowNum - 1,
+              endRowIndex: rowNum,
+              startColumnIndex: colIdx,
+              endColumnIndex: colIdx + 1
+            },
+            rows: [{
+              values: [{
+                note: updatedNote
+              }]
+            }],
+            fields: "note"
+          }
+        }]
+      }
+    });
+
+    await logPmaActivity({
+      userEmail: userEmail || "system",
+      action: "UPDATE_PART_PAID_EXPENSE_DATE",
+      clientName: clientName || "Unknown",
+      details: `Updated part-paid expense expected payment date to ${formattedNewDate} on Outgoings cell ${cellCoord}.`
+    });
+
+    return {
+      success: true,
+      itemType: "expense",
+      formattedNewDate,
+      isoDate: toInputDateFormat(parsedNewDate),
+      message: `Expected payment date updated to ${formattedNewDate}.`
+    };
+  }
+
+  throw new Error(`Unknown itemType: "${itemType}"`);
 }

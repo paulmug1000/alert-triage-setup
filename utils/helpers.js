@@ -146,6 +146,7 @@ export const PROACTIVE_TYPE_LABELS = {
   stale_unrecon_gap:          "Stale UNRECON-GAP expense",
   retroactive_outgoings_update: "Retroactive P&L outgoings update",
   unmapped_pl_category:       "Unmapped P&L category",
+  part_paid_balance:          "Part-paid balance",
 };
 
 export const ADMIN_ONLY_FLAG_KEYS = new Set([
@@ -1089,6 +1090,41 @@ export function getAlertJobTarget(alertOrNa, isInfo = false, clientInfo = null) 
       invoiceRef: invoiceRef ? String(invoiceRef).trim() : "",
       amount: m.amount || alertOrNa.amount,
       sentDate: m.sentDate || alertOrNa.sentDate,
+    };
+  }
+
+  if (alertType === "part_paid_balance") {
+    const isExp = (m.itemType || alertOrNa.itemType) === "expense";
+    if (isExp) {
+      return {
+        isOutgoings: true,
+        client: effectiveClient,
+        clientName: cName,
+        clientSheetId: cSheetId,
+        contractor: m.contractor || alertOrNa.contractor || m.endClientName || alertOrNa.endClientName,
+        rowNum: m.rowNum || alertOrNa.rowNum,
+        cellCoord: m.cellCoord || alertOrNa.cellCoord,
+        amount: m.balanceAmount || alertOrNa.balanceAmount,
+        recDate: m.recDate || alertOrNa.recDate,
+        payDate: m.targetDate || alertOrNa.targetDate,
+        appId: m.appId || alertOrNa.appId
+      };
+    }
+    const rowNum = m.confirmedRow || alertOrNa.confirmedRow;
+    const slotNum = m.slot || alertOrNa.slot;
+    return {
+      isOutgoings: false,
+      client: effectiveClient,
+      clientName: cName,
+      clientSheetId: cSheetId,
+      rowNum: rowNum ? Number(rowNum) : null,
+      tabName: "Confirmed",
+      jobName: m.jobName || alertOrNa.jobName,
+      endClientName: m.endClientName || alertOrNa.endClientName,
+      slotNum: slotNum ? Number(slotNum) : null,
+      invoiceRef: m.ref || alertOrNa.ref,
+      amount: m.balanceAmount || alertOrNa.balanceAmount,
+      sentDate: m.sendDate || alertOrNa.sendDate,
     };
   }
 

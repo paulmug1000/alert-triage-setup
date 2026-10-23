@@ -1,7 +1,7 @@
 import React from "react";
 import Spinner from "./Spinner";
 import TruncatedCode from "./TruncatedCode";
-import { stripRowInfo, parseUnreceivedExpensesDetail, parseStaleExpenseDetail, parseInfoAlertDetail, filterAnalysisResultsForAlert, getCleanPLCategoryName, getAlertJobTarget, formatSeenTimestamp, parseRevenueMismatchDetail, parseDirectCostsMismatchDetail } from "../utils/helpers";
+import { stripRowInfo, parseUnreceivedExpensesDetail, parseStaleExpenseDetail, parseInfoAlertDetail, filterAnalysisResultsForAlert, getCleanPLCategoryName, getAlertJobTarget, formatSeenTimestamp, parseRevenueMismatchDetail, parseDirectCostsMismatchDetail, toInputDateFormat } from "../utils/helpers";
 
 const KNOWN_PROACTIVE_TYPES = new Set([
   "retainer_invoice",
@@ -21,6 +21,7 @@ const KNOWN_PROACTIVE_TYPES = new Set([
   "deleted_invoice",
   "deleted_expense",
   "job_structure_error",
+  "part_paid_balance",
 ]);
 
 export default function NonAdminAlertListView({
@@ -57,6 +58,9 @@ export default function NonAdminAlertListView({
   const [selectedClassifications, setSelectedClassifications] = React.useState({});
   const [applyingClassification, setApplyingClassification] = React.useState({});
   const [classificationMsg, setClassificationMsg] = React.useState({});
+  const [partPaidDates, setPartPaidDates] = React.useState({});
+  const [updatingPartPaid, setUpdatingPartPaid] = React.useState({});
+  const [partPaidMsg, setPartPaidMsg] = React.useState({});
 
   const getClientInfoForAlert = (alertObj) => {
     const cName = alertObj?.clientName || selectedClient?.clientName;
@@ -122,6 +126,53 @@ export default function NonAdminAlertListView({
       setClassificationMsg(prev => ({ ...prev, [alertKey]: `Error: ${err.message}` }));
     } finally {
       setApplyingClassification(prev => ({ ...prev, [alertKey]: false }));
+    }
+  };
+
+  const handleSavePartPaidDate = async (alert) => {
+    const alertKey = alert.alertKey;
+    const m = alert.metadata || {};
+    const defaultIso = m.isoTargetDate || toInputDateFormat(m.targetDate || alert.targetDate);
+    const chosenDate = partPaidDates[alertKey] || defaultIso;
+    if (!chosenDate) return;
+
+    setUpdatingPartPaid(prev => ({ ...prev, [alertKey]: true }));
+    setPartPaidMsg(prev => ({ ...prev, [alertKey]: "" }));
+
+    try {
+      const clientName = alert.clientName || selectedClient?.clientName;
+      const clientInfo = (clientsWithFlags || []).find(c => c.clientName === clientName) || (allClientsMap && allClientsMap[clientName]);
+      const targetClientSheetId = m.clientSheetId || clientInfo?.clientSheetId || selectedClient?.clientSheetId;
+      const targetMasterSheetId = m.masterSheetId || clientInfo?.masterSheetId || selectedClient?.masterSheetId;
+
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "update_part_paid_date",
+          clientName,
+          clientSheetId: targetClientSheetId,
+          masterSheetId: targetMasterSheetId,
+          itemType: m.itemType || alert.itemType || "invoice",
+          rowNumber: m.confirmedRow || alert.confirmedRow,
+          slot: m.slot || alert.slot,
+          sendDate: m.sendDate || alert.sendDate,
+          cellCoord: m.cellCoord || alert.cellCoord,
+          appId: m.appId || alert.appId,
+          newDate: chosenDate,
+        })
+      });
+
+      const data = await res.json();
+      if (!data.success) {
+        throw new Error(data.error || "Failed to update date");
+      }
+
+      setPartPaidMsg(prev => ({ ...prev, [alertKey]: `✓ Updated to ${data.formattedNewDate}!` }));
+    } catch (err) {
+      setPartPaidMsg(prev => ({ ...prev, [alertKey]: `Error: ${err.message}` }));
+    } finally {
+      setUpdatingPartPaid(prev => ({ ...prev, [alertKey]: false }));
     }
   };
 
@@ -890,6 +941,98 @@ export default function NonAdminAlertListView({
                         )}
                       </div>
                     )}
+
+                    {alert.alertType === "part_paid_balance" && (() => {
+                      const isExp = (m.itemType || alert.itemType) === "expense";
+                      const clientName = m.endClientName || alert.endClientName || alert.clientName;
+                      const jName = m.jobName || alert.jobName || m.contractor || alert.contractor;
+                      const confRow = m.confirmedRow || alert.confirmedRow;
+                      const slot = m.slot || alert.slot;
+                      const ref = m.ref || alert.ref || (isExp ? (m.appId || alert.appId) : "");
+                      const balance = m.balanceAmount || alert.balanceAmount;
+                      const sendDate = m.sendDate || alert.sendDate || m.recDate || alert.recDate;
+                      const targetDate = m.targetDate || alert.targetDate;
+                      const defaultIso = m.isoTargetDate || toInputDateFormat(targetDate);
+                      const currentSelectedDate = partPaidDates[alert.alertKey] ?? defaultIso;
+                      const isUpdating = !!updatingPartPaid[alert.alertKey];
+                      const msg = partPaidMsg[alert.alertKey];
+
+                      return (
+                        <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "3px", marginTop: "2px", marginBottom: "4px" }}>
+                          {clientName && <div><strong>{isExp ? "Contractor:" : "End client:"}</strong> {clientName}</div>}
+                          {jName && !isExp && <div><strong>Job:</strong> {jName}</div>}
+                          {confRow && <div><strong>Confirmed tab row:</strong> {confRow}{slot ? `, Slot ${slot}` : ""}</div>}
+                          {m.cellCoord && <div><strong>Outgoings cell:</strong> {m.cellCoord}</div>}
+                          {ref && <div><strong>{isExp ? "Expense ID:" : "Invoice ref:"}</strong> {ref}</div>}
+                          {balance && <div><strong>Unpaid balance:</strong> <span style={{ fontWeight: "600", color: "#0f172a" }}>£{parseFloat(balance).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></div>}
+                          {sendDate && <div><strong>{isExp ? "Received date:" : "Sent date:"}</strong> {sendDate}</div>}
+
+                          <div style={{
+                            marginTop: "6px",
+                            padding: "8px 10px",
+                            backgroundColor: "#f5f3ff",
+                            border: "1px solid #ddd6fe",
+                            borderRadius: "6px",
+                            color: "#5b21b6",
+                            lineHeight: "1.4"
+                          }}>
+                            {alert.explanation || (
+                              <>
+                                Pulse is assuming this remaining balance will be {isExp ? "paid" : "collected"} on <strong>{targetDate}</strong> based on the overdue mid-month collection rule. You can select an alternative date below if agreed otherwise.
+                              </>
+                            )}
+                          </div>
+
+                          <div style={{ marginTop: "8px", paddingTop: "8px", borderTop: "1px solid #e2e8f0" }}>
+                            <label style={{ display: "block", fontSize: "11.5px", fontWeight: "600", color: "#374151", marginBottom: "4px" }}>
+                              Adjust expected payment date:
+                            </label>
+                            <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                              <input
+                                type="date"
+                                value={currentSelectedDate}
+                                onChange={(e) => setPartPaidDates(prev => ({ ...prev, [alert.alertKey]: e.target.value }))}
+                                disabled={isUpdating}
+                                style={{
+                                  padding: "5px 8px",
+                                  borderRadius: "5px",
+                                  border: "1px solid #cbd5e1",
+                                  fontSize: "12px",
+                                  color: "#1e293b",
+                                  backgroundColor: "#fff"
+                                }}
+                              />
+                              <button
+                                className="triage-btn"
+                                onClick={() => handleSavePartPaidDate(alert)}
+                                disabled={isUpdating}
+                                style={{
+                                  padding: "5px 12px",
+                                  background: "#7c3aed",
+                                  color: "#fff",
+                                  border: "none",
+                                  borderRadius: "5px",
+                                  cursor: isUpdating ? "default" : "pointer",
+                                  fontSize: "12px",
+                                  fontWeight: "600",
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: "5px",
+                                  opacity: isUpdating ? 0.7 : 1
+                                }}
+                              >
+                                {isUpdating ? <><Spinner size={12} /> Updating...</> : "Update date"}
+                              </button>
+                              {msg && (
+                                <span style={{ fontSize: "12px", fontWeight: "600", color: msg.startsWith("✓") ? "#16a34a" : "#dc2626" }}>
+                                  {msg}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })()}
 
                     {!KNOWN_PROACTIVE_TYPES.has(alert.alertType) && (
                       <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>

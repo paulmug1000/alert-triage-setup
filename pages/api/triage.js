@@ -103,7 +103,7 @@ import {
   recategoriseTransactions,
   autoReconcileClientBankTransactions
 } from "../../services/bankTransactionsService";
-import { handleClassifyPLCategory } from "../../services/proactiveChecks";
+import { handleClassifyPLCategory, handleUpdatePartPaidDate } from "../../services/proactiveChecks";
 import { getSessionUser, sendOtp, verifyOtp, clearSessionCookie } from "../../services/authService";
 import { getAllUsers, isUserAuthorizedForClient, updateUserDailyAlertsEmail, getUserByEmail } from "../../services/userPermissions";
 import { matchesClientName } from "../../utils/helpers";
@@ -1133,6 +1133,17 @@ export default async function handler(req, res) {
       return await handleBulkAcknowledgeProactiveAlerts(req, res, sheets);
     } else if (action === "resolve_proactive_alert") {
       return await handleResolveProactiveAlert(req, res, sheets);
+    } else if (action === "update_part_paid_date") {
+      const {
+        clientName, clientSheetId, masterSheetId, itemType,
+        rowNumber, slot, sendDate, cellCoord, appId, newDate
+      } = req.body;
+      const userEmail = sessionUser?.email || "user";
+      const result = await handleUpdatePartPaidDate(sheets, {
+        clientName, clientSheetId, masterSheetId, itemType,
+        rowNumber, slot, sendDate, cellCoord, appId, newDate, userEmail
+      });
+      return res.status(200).json(result);
     } else if (action === "bulk_create_tasks") {
       return await handleBulkCreateTasks(req, res, sheets);
     } else if (action === "create_task") {

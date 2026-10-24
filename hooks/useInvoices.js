@@ -1,8 +1,20 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useCallback } from "react";
+import { useAppGlobals } from "./useAppGlobals";
 
-export function useInvoices(assignedAppIds) {
-  const [invoicesClient, setInvoicesClient] = useState(null);
-  const [invoicesInbox, setInvoicesInbox] = useState([]);
+export function useInvoices(assignedAppIds, initialClient = null) {
+  const { getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId } = useAppGlobals();
+
+  const [invoicesClient, setInvoicesClient] = useState(initialClient);
+  const [invoicesInbox, setInvoicesInbox] = useState(() => {
+    if (initialClient?.clientSheetId) {
+      const cleanId = cleanSheetId ? cleanSheetId(initialClient.clientSheetId) : initialClient.clientSheetId;
+      const cached = getCachedClientData(cleanId, "invoices_inbox");
+      if (cached?.data?.inbox) {
+        return (cached.data.inbox || []).filter(inv => !assignedAppIds?.has(inv.invoiceNo));
+      }
+    }
+    return [];
+  });
   const [invoicesInboxLoading, setInvoicesInboxLoading] = useState(false);
   const [invoicesPlacing, setInvoicesPlacingState] = useState(null);
   const invoicesPlacingRef = useRef(null);
@@ -12,23 +24,65 @@ export function useInvoices(assignedAppIds) {
     setInvoicesPlacingState(val); 
   };
   
-  const [invoicesJobs, setInvoicesJobs] = useState(null);
-  const [invoicesJobsLoading, setInvoicesJobsLoading] = useState(false);
+  const [invoicesJobs, setInvoicesJobs] = useState(() => {
+    if (initialClient?.clientSheetId) {
+      const cleanId = cleanSheetId ? cleanSheetId(initialClient.clientSheetId) : initialClient.clientSheetId;
+      const cached = getCachedClientData(cleanId, "invoice_jobs_active");
+      if (cached?.data?.jobs) return cached.data.jobs;
+    }
+    return null;
+  });
+  const [invoicesJobsLoading, setInvoicesJobsLoading] = useState(() => {
+    if (initialClient?.clientSheetId) {
+      const cleanId = cleanSheetId ? cleanSheetId(initialClient.clientSheetId) : initialClient.clientSheetId;
+      const cached = getCachedClientData(cleanId, "invoice_jobs_active");
+      return !cached?.data?.jobs;
+    }
+    return false;
+  });
   const [invoicesShowAll, setInvoicesShowAll] = useState(false);
   const [invoicesSavingCell, setInvoicesSavingCell] = useState(null);
   const [invoicesEditSlot, setInvoicesEditSlot] = useState(null);
   const [invoicesNewJob, setInvoicesNewJob] = useState(null);
 
-  const loadInvoicesInbox = async (client) => {
+  const loadInvoicesInbox = useCallback(async (client, bypassCache = false) => {
     if (!client?.clientSheetId) return;
-    try {
+    const cacheKey = "invoices_inbox";
+    const cleanMasterId = client.masterSheetId ? (cleanSheetId ? cleanSheetId(client.masterSheetId) : String(client.masterSheetId).replace(/.*\/d\/([a-zA-Z0-9-_]+).*/, "$1")) : null;
+
+    const cached = !bypassCache ? getCachedClientData(client.clientSheetId, cacheKey) : null;
+    if (cached?.data?.inbox) {
+      const pruned = (cached.data.inbox || []).filter(inv => !assignedAppIds.has(inv.invoiceNo));
+      setInvoicesInbox(pruned);
+      setInvoicesInboxLoading(false);
+      if (!cached.isStale) return;
+    } else {
       setInvoicesInboxLoading(true);
+    }
+
+    if (!bypassCache && cleanMasterId && typeof getInFlightPrefetch === "function") {
+      const inFlight = getInFlightPrefetch(`inv_inbox_${cleanMasterId}`);
+      if (inFlight) {
+        try {
+          await inFlight;
+          const fresh = getCachedClientData(client.clientSheetId, cacheKey);
+          if (fresh?.data?.inbox) {
+            setInvoicesInbox((fresh.data.inbox || []).filter(inv => !assignedAppIds.has(inv.invoiceNo)));
+            setInvoicesInboxLoading(false);
+            return;
+          }
+        } catch {}
+      }
+    }
+
+    try {
       const res = await fetch("/api/triage", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "get_invoices_inbox", clientSheetId: client.clientSheetId, masterSheetId: client.masterSheetId }),
+        body: JSON.stringify({ action: "get_invoices_inbox", clientSheetId: client.clientSheetId, masterSheetId: client.masterSheetId, bypassCache }),
       });
       const data = await res.json();
       if (data.success) {
+        setCachedClientData(client.clientSheetId, cacheKey, data);
         const pruned = (data.inbox || []).filter(inv => !assignedAppIds.has(inv.invoiceNo));
         setInvoicesInbox(pruned);
       }
@@ -37,24 +91,53 @@ export function useInvoices(assignedAppIds) {
     } finally { 
       setInvoicesInboxLoading(false); 
     }
-  };
+  }, [assignedAppIds, cleanSheetId, getCachedClientData, setCachedClientData, getInFlightPrefetch]);
 
-  const loadInvoicesJobs = async (client, showAll) => {
+  const loadInvoicesJobs = useCallback(async (client, showAll, silent = false, bypassCache = false) => {
     if (!client?.clientSheetId) return;
-    try {
+    const cacheKey = showAll ? "invoice_jobs_all" : "invoice_jobs_active";
+    const cleanId = cleanSheetId ? cleanSheetId(client.clientSheetId) : String(client.clientSheetId).replace(/.*\/d\/([a-zA-Z0-9-_]+).*/, "$1");
+
+    const cached = (!bypassCache && !silent) ? getCachedClientData(client.clientSheetId, cacheKey) : null;
+    if (cached?.data?.jobs) {
+      setInvoicesJobs(cached.data.jobs);
+      if (!silent) setInvoicesJobsLoading(false);
+      if (!cached.isStale) return;
+    } else if (!silent) {
       setInvoicesJobsLoading(true);
+    }
+
+    if (!bypassCache && !showAll && !silent && typeof getInFlightPrefetch === "function") {
+      const inFlight = getInFlightPrefetch(`inv_jobs_${cleanId}`);
+      if (inFlight) {
+        try {
+          await inFlight;
+          const fresh = getCachedClientData(client.clientSheetId, cacheKey);
+          if (fresh?.data?.jobs) {
+            setInvoicesJobs(fresh.data.jobs);
+            setInvoicesJobsLoading(false);
+            return;
+          }
+        } catch {}
+      }
+    }
+
+    try {
       const res = await fetch("/api/triage", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "get_invoice_jobs", clientSheetId: client.clientSheetId, showAll: !!showAll }),
+        body: JSON.stringify({ action: "get_invoice_jobs", clientSheetId: client.clientSheetId, showAll: !!showAll, bypassCache }),
       });
       const data = await res.json();
-      if (data.success) setInvoicesJobs(data.jobs);
+      if (data.success) {
+        setCachedClientData(client.clientSheetId, cacheKey, data);
+        setInvoicesJobs(data.jobs);
+      }
     } catch(e) { 
       console.error("loadInvoicesJobs error:", e); 
     } finally { 
-      setInvoicesJobsLoading(false); 
+      if (!silent) setInvoicesJobsLoading(false); 
     }
-  };
+  }, [cleanSheetId, getCachedClientData, setCachedClientData, getInFlightPrefetch]);
 
   return {
     invoicesClient, setInvoicesClient,

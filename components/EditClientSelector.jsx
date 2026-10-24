@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from "react";
 import Spinner from "./Spinner";
+import { useAppGlobals } from "../hooks/useAppGlobals";
 
 /**
  * EditClientSelector
@@ -16,6 +17,7 @@ export default function EditClientSelector({
   searchPlaceholder = "Search clients...",
   emptyMessage = "No clients loaded yet - go to Home and refresh first.",
 }) {
+  const { preloadClientData } = useAppGlobals();
   const [search, setSearch] = useState("");
 
   const sortedClients = useMemo(() => {
@@ -139,6 +141,7 @@ export default function EditClientSelector({
                     e.currentTarget.style.backgroundColor = "#f8fafc";
                     e.currentTarget.style.borderColor = "#94a3b8";
                     e.currentTarget.style.transform = "translateX(2px)";
+                    preloadClientData?.(c);
                   }}
                   onMouseLeave={(e) => {
                     e.currentTarget.style.backgroundColor = "#ffffff";

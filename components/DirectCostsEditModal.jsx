@@ -38,7 +38,7 @@ export default function DirectCostsEditModal({
   const save = async () => {
     setSaving(true);
     try {
-      await fetch("/api/triage", {
+      const res = await fetch("/api/triage", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "update_expense_slot",
@@ -49,12 +49,13 @@ export default function DirectCostsEditModal({
           expense: { description, amount: parseFloat(amount) || 0, vat, date, daysToPay: parseInt(daysToPay) || 30, status, transactionId },
         }),
       });
+      const data = await res.json();
       if (client?.masterSheetId) {
         onMarkPullPending(client.masterSheetId);
       }
       onUpdateJobs(rowNum, slotNum, {
         description, amount: parseFloat(amount) || 0, vat, date, daysToPay: parseInt(daysToPay) || 30, status, transactionId
-      });
+      }, data);
       close();
     } catch(e) { console.error("update_expense_slot save error:", e); }
     finally { setSaving(false); }
@@ -63,7 +64,7 @@ export default function DirectCostsEditModal({
   const doDelete = async () => {
     setSaving(true);
     try {
-      await fetch("/api/triage", {
+      const res = await fetch("/api/triage", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "update_expense_slot",
@@ -73,12 +74,13 @@ export default function DirectCostsEditModal({
           rowNum, slotNum, deleteSlot: true,
         }),
       });
+      const data = await res.json();
       if (client?.masterSheetId) {
         onMarkPullPending(client.masterSheetId);
       }
       onUpdateJobs(rowNum, slotNum, {
         description: "", amount: "", vat: "", date: "", daysToPay: "", status: "", transactionId: ""
-      });
+      }, data);
       close();
     } catch(e) { console.error("update_expense_slot delete error:", e); }
     finally { setSaving(false); }

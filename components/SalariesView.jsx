@@ -3,6 +3,7 @@ import Spinner from "./Spinner";
 import CellNoteIndicator from "./CellNoteIndicator";
 import EditClientSelector from "./EditClientSelector";
 import { useAuth } from "../hooks/useAuth";
+import { useAppGlobals } from "../hooks/useAppGlobals";
 
 export const parseSheetDate = (dStr) => {
   if (!dStr) return null;
@@ -103,21 +104,41 @@ export default function SalariesView({
 }) {
   const { user } = useAuth();
   const isAdmin = Boolean(user?.isAdmin || user?.role === "Admin" || user?.role === "ClientManager");
+  const { getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId } = useAppGlobals();
 
-  // Client Selection State
-  const [selectedClient, setSelectedClient] = useState(null);
+  // Client Selection State (synchronous initial selection from managedClient or initialClient to eliminate flash)
+  const [selectedClient, setSelectedClient] = useState(() => {
+    if (managedClient) {
+      return (allOutgoingsClients || []).find(
+        (c) => c.clientName?.toLowerCase() === managedClient.clientName?.toLowerCase()
+      ) || managedClient;
+    }
+    if (initialClient) {
+      return (allOutgoingsClients || []).find(
+        (c) => c.clientName?.toLowerCase() === (typeof initialClient === "string" ? initialClient.toLowerCase() : initialClient?.clientName?.toLowerCase())
+      ) || (typeof initialClient === "object" ? initialClient : null);
+    }
+    return null;
+  });
   const [clientSearch, setClientSearch] = useState("");
 
-  // Salaries & Dividends Data
-  const [salariesData, setSalariesData] = useState(null);
+  // Salaries & Dividends Data (instant initialization from memory cache if preloaded)
+  const [salariesData, setSalariesData] = useState(() => {
+    const target = managedClient || (typeof initialClient === "object" ? initialClient : null);
+    if (target?.clientSheetId) {
+      const cached = getCachedClientData(target.clientSheetId, "salaries");
+      if (cached?.data) return cached.data;
+    }
+    return null;
+  });
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const [saveSuccessMsg, setSaveSuccessMsg] = useState("");
 
   // Month & FY View Controls
-  const [selectedMonthIdx, setSelectedMonthIdx] = useState(0);
-  const [selectedFyIdx, setSelectedFyIdx] = useState(0);
+  const [selectedMonthIdx, setSelectedMonthIdx] = useState(() => salariesData?.defaultMonthIndex ?? 0);
+  const [selectedFyIdx, setSelectedFyIdx] = useState(() => salariesData?.dividends?.defaultFyIndex ?? 0);
   const [employeeSearch, setEmployeeSearch] = useState("");
   const [employeeTab, setEmployeeTab] = useState("all"); // "all" | "current" | "former"
   const [hoveredRowIndex, setHoveredRowIndex] = useState(null);
@@ -126,7 +147,7 @@ export default function SalariesView({
   const [editingEmployee, setEditingEmployee] = useState(null); // { sheetRow, employeeData }
   const [editingDividendMonth, setEditingDividendMonth] = useState(null); // { sheetRow, colLetter, label, value }
   const [editingDividendPct, setEditingDividendPct] = useState(false);
-  const [dividendPctInput, setDividendPctInput] = useState("");
+  const [dividendPctInput, setDividendPctInput] = useState(() => salariesData?.dividends?.fyConfigs?.[salariesData?.dividends?.defaultFyIndex ?? 0]?.row118?.deliveryPct || "0%");
 
   // Resolve active client from managedClient or initialClient
   useEffect(() => {
@@ -138,8 +159,9 @@ export default function SalariesView({
       return;
     }
     if (initialClient) {
+      const clientNameStr = typeof initialClient === "string" ? initialClient : initialClient?.clientName;
       const match = (allOutgoingsClients || []).find(
-        (c) => c.clientName?.toLowerCase() === initialClient.toLowerCase()
+        (c) => c.clientName?.toLowerCase() === clientNameStr?.toLowerCase()
       );
       if (match) {
         setSelectedClient(match);
@@ -160,10 +182,41 @@ export default function SalariesView({
     }
   };
 
-  // Fetch Salaries Data
+  // Fetch Salaries Data with in-memory caching
   const fetchSalaries = useCallback(async (client, bypassCache = false) => {
     if (!client || !client.masterSheetId || !client.clientSheetId) return;
-    setLoading(true);
+    const cleanId = cleanSheetId ? cleanSheetId(client.clientSheetId) : client.clientSheetId;
+
+    const cached = !bypassCache ? getCachedClientData(client.clientSheetId, "salaries") : null;
+    if (cached?.data) {
+      setSalariesData(cached.data);
+      setSelectedMonthIdx(cached.data.defaultMonthIndex ?? 0);
+      setSelectedFyIdx(cached.data.dividends?.defaultFyIndex ?? 0);
+      setDividendPctInput(cached.data.dividends?.fyConfigs?.[cached.data.dividends?.defaultFyIndex ?? 0]?.row118?.deliveryPct || "0%");
+      setLoading(false);
+      if (!cached.isStale) return;
+    } else {
+      setLoading(true);
+    }
+
+    if (!bypassCache && typeof getInFlightPrefetch === "function") {
+      const inFlight = getInFlightPrefetch(`salaries_${cleanId}`);
+      if (inFlight) {
+        try {
+          await inFlight;
+          const fresh = getCachedClientData(client.clientSheetId, "salaries");
+          if (fresh?.data) {
+            setSalariesData(fresh.data);
+            setSelectedMonthIdx(fresh.data.defaultMonthIndex ?? 0);
+            setSelectedFyIdx(fresh.data.dividends?.defaultFyIndex ?? 0);
+            setDividendPctInput(fresh.data.dividends?.fyConfigs?.[fresh.data.dividends?.defaultFyIndex ?? 0]?.row118?.deliveryPct || "0%");
+            setLoading(false);
+            return;
+          }
+        } catch {}
+      }
+    }
+
     setError(null);
     try {
       const res = await fetch(
@@ -179,13 +232,14 @@ export default function SalariesView({
       setSelectedMonthIdx(data.defaultMonthIndex ?? 0);
       setSelectedFyIdx(data.dividends?.defaultFyIndex ?? 0);
       setDividendPctInput(data.dividends?.fyConfigs?.[data.dividends?.defaultFyIndex ?? 0]?.row118?.deliveryPct || "0%");
+      setCachedClientData(client.clientSheetId, "salaries", data);
     } catch (err) {
       console.error("Failed to fetch salaries:", err);
       setError(err.message || "Failed to load salaries data");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [cleanSheetId, getCachedClientData, setCachedClientData, getInFlightPrefetch]);
 
   useEffect(() => {
     if (selectedClient) {
@@ -637,7 +691,7 @@ export default function SalariesView({
       </div>
 
       {/* ── CLIENT SELECTOR SCREEN (WHEN NO CLIENT SELECTED) ── */}
-      {!selectedClient && (
+      {!selectedClient && !managedClient && !initialClient && (
         <EditClientSelector
           clients={allOutgoingsClients}
           onSelectClient={(c) => setSelectedClient(c)}

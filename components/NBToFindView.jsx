@@ -3,6 +3,7 @@ import Spinner from "./Spinner";
 import CellNoteIndicator from "./CellNoteIndicator";
 import EditClientSelector from "./EditClientSelector";
 import { useAuth } from "../hooks/useAuth";
+import { useAppGlobals } from "../hooks/useAppGlobals";
 
 const formatCurrency = (val) => {
   if (val === null || val === undefined || val === "") return "£0";
@@ -23,25 +24,46 @@ export default function NBToFindView({
 }) {
   const { user } = useAuth();
   const isAdmin = Boolean(user?.isAdmin || user?.role === "Admin" || user?.role === "ClientManager");
+  const { getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId } = useAppGlobals();
 
-  // Client Selection State
-  const [selectedClient, setSelectedClient] = useState(null);
+  // Client Selection State (synchronous initial selection from managedClient or initialClient to eliminate flash)
+  const [selectedClient, setSelectedClient] = useState(() => {
+    if (managedClient) {
+      return (allOutgoingsClients || []).find(
+        (c) => c.clientName?.toLowerCase() === managedClient.clientName?.toLowerCase()
+      ) || managedClient;
+    }
+    if (initialClient) {
+      const targetStr = typeof initialClient === "string" ? initialClient.toLowerCase() : initialClient?.clientName?.toLowerCase();
+      return (allOutgoingsClients || []).find(
+        (c) => c.clientName?.toLowerCase() === targetStr
+      ) || (typeof initialClient === "object" ? initialClient : null);
+    }
+    return null;
+  });
   const [clientSearch, setClientSearch] = useState("");
 
-  // Data State
-  const [nbData, setNbData] = useState(null);
+  // Data State (instant initialization from memory cache if preloaded)
+  const [nbData, setNbData] = useState(() => {
+    const target = managedClient || (typeof initialClient === "object" ? initialClient : null);
+    if (target?.clientSheetId) {
+      const cached = getCachedClientData(target.clientSheetId, "nbtofind");
+      if (cached?.data) return cached.data;
+    }
+    return null;
+  });
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const [saveSuccessMsg, setSaveSuccessMsg] = useState("");
 
   // FY Navigation
-  const [selectedFyIdx, setSelectedFyIdx] = useState(0);
+  const [selectedFyIdx, setSelectedFyIdx] = useState(() => nbData?.defaultFyIndex ?? 0);
 
   // Settings State (Cells A9, A12 & A21)
-  const [targetsSetting, setTargetsSetting] = useState("No"); // "Yes" | "No" (Cell A9)
-  const [budgetSetting, setBudgetSetting] = useState("No"); // "Yes" | "No" (Cell A12)
-  const [directCostsPct, setDirectCostsPct] = useState("0%"); // Cell A21
+  const [targetsSetting, setTargetsSetting] = useState(() => nbData?.settings?.useTargets || "No"); // "Yes" | "No" (Cell A9)
+  const [budgetSetting, setBudgetSetting] = useState(() => nbData?.settings?.useBudgetForIncomeTargets || "No"); // "Yes" | "No" (Cell A12)
+  const [directCostsPct, setDirectCostsPct] = useState(() => nbData?.settings?.directCostsPercentage || "0%"); // Cell A21
 
   // Edit Monthly Targets (Row 3 or Row 10)
   const [editingTargets, setEditingTargets] = useState(false);
@@ -63,8 +85,9 @@ export default function NBToFindView({
       return;
     }
     if (initialClient) {
+      const targetStr = typeof initialClient === "string" ? initialClient.toLowerCase() : initialClient?.clientName?.toLowerCase();
       const match = (allOutgoingsClients || []).find(
-        (c) => c.clientName?.toLowerCase() === initialClient.toLowerCase()
+        (c) => c.clientName?.toLowerCase() === targetStr
       );
       if (match) {
         setSelectedClient(match);
@@ -85,10 +108,43 @@ export default function NBToFindView({
     }
   };
 
-  // Fetch NBtoFind Data
+  // Fetch NBtoFind Data with caching
   const fetchNBData = useCallback(async (client, bypassCache = false) => {
     if (!client || !client.clientSheetId) return;
-    setLoading(true);
+    const cleanId = cleanSheetId ? cleanSheetId(client.clientSheetId) : client.clientSheetId;
+
+    const cached = !bypassCache ? getCachedClientData(client.clientSheetId, "nbtofind") : null;
+    if (cached?.data) {
+      setNbData(cached.data);
+      setSelectedFyIdx(cached.data.defaultFyIndex ?? 0);
+      setTargetsSetting(cached.data.settings?.useTargets || "No");
+      setBudgetSetting(cached.data.settings?.useBudgetForIncomeTargets || "No");
+      setDirectCostsPct(cached.data.settings?.directCostsPercentage || "0%");
+      setLoading(false);
+      if (!cached.isStale) return;
+    } else {
+      setLoading(true);
+    }
+
+    if (!bypassCache && typeof getInFlightPrefetch === "function") {
+      const inFlight = getInFlightPrefetch(`nbtofind_${cleanId}`);
+      if (inFlight) {
+        try {
+          await inFlight;
+          const fresh = getCachedClientData(client.clientSheetId, "nbtofind");
+          if (fresh?.data) {
+            setNbData(fresh.data);
+            setSelectedFyIdx(fresh.data.defaultFyIndex ?? 0);
+            setTargetsSetting(fresh.data.settings?.useTargets || "No");
+            setBudgetSetting(fresh.data.settings?.useBudgetForIncomeTargets || "No");
+            setDirectCostsPct(fresh.data.settings?.directCostsPercentage || "0%");
+            setLoading(false);
+            return;
+          }
+        } catch {}
+      }
+    }
+
     setError(null);
     try {
       const res = await fetch(
@@ -105,13 +161,14 @@ export default function NBToFindView({
       setTargetsSetting(data.settings?.useTargets || "No");
       setBudgetSetting(data.settings?.useBudgetForIncomeTargets || "No");
       setDirectCostsPct(data.settings?.directCostsPercentage || "0%");
+      setCachedClientData(client.clientSheetId, "nbtofind", data);
     } catch (err) {
       console.error("Failed to fetch NBtoFind:", err);
       setError(err.message || "Failed to load New Business to Find data");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [cleanSheetId, getCachedClientData, setCachedClientData, getInFlightPrefetch]);
 
   useEffect(() => {
     if (selectedClient) {
@@ -504,7 +561,7 @@ export default function NBToFindView({
       </div>
 
       {/* ── CLIENT SELECTOR SCREEN (WHEN NO CLIENT SELECTED) ── */}
-      {!selectedClient && (
+      {!selectedClient && !managedClient && !initialClient && (
         <EditClientSelector
           clients={allOutgoingsClients}
           onSelectClient={(c) => setSelectedClient(c)}

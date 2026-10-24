@@ -1,9 +1,26 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
+import { useAppGlobals } from "./useAppGlobals";
 
-export function useRetainers() {
-  const [retainersClient, setRetainersClient] = useState(null);
-  const [retainersJobs, setRetainersJobs] = useState(null);
-  const [retainersJobsLoading, setRetainersJobsLoading] = useState(false);
+export function useRetainers(initialClient = null) {
+  const { getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId } = useAppGlobals();
+
+  const [retainersClient, setRetainersClient] = useState(initialClient);
+  const [retainersJobs, setRetainersJobs] = useState(() => {
+    if (initialClient?.clientSheetId) {
+      const cleanId = cleanSheetId ? cleanSheetId(initialClient.clientSheetId) : initialClient.clientSheetId;
+      const cached = getCachedClientData(cleanId, "retainer_jobs");
+      if (cached?.data?.jobs) return cached.data.jobs;
+    }
+    return null;
+  });
+  const [retainersJobsLoading, setRetainersJobsLoading] = useState(() => {
+    if (initialClient?.clientSheetId) {
+      const cleanId = cleanSheetId ? cleanSheetId(initialClient.clientSheetId) : initialClient.clientSheetId;
+      const cached = getCachedClientData(cleanId, "retainer_jobs");
+      return !cached?.data?.jobs;
+    }
+    return false;
+  });
   const [isTidying, setIsTidying] = useState(false);
   const [showTidyConfirm, setShowTidyConfirm] = useState(false);
   const [tidyResult, setTidyResult] = useState(null);
@@ -13,22 +30,51 @@ export function useRetainers() {
   const [retainerAlertResolution, setRetainerAlertResolution] = useState(null);
   const [retainerSplitInvoice, setRetainerSplitInvoice] = useState(null);
 
-  const loadRetainersJobs = async (client) => {
+  const loadRetainersJobs = useCallback(async (client, bypassCache = false) => {
     if (!client?.clientSheetId) return;
-    try {
+    const cacheKey = "retainer_jobs";
+    const cleanId = cleanSheetId ? cleanSheetId(client.clientSheetId) : String(client.clientSheetId).replace(/.*\/d\/([a-zA-Z0-9-_]+).*/, "$1");
+
+    const cached = !bypassCache ? getCachedClientData(client.clientSheetId, cacheKey) : null;
+    if (cached?.data?.jobs) {
+      setRetainersJobs(cached.data.jobs);
+      setRetainersJobsLoading(false);
+      if (!cached.isStale) return;
+    } else {
       setRetainersJobsLoading(true);
+    }
+
+    if (!bypassCache && typeof getInFlightPrefetch === "function") {
+      const inFlight = getInFlightPrefetch(`retainer_jobs_${cleanId}`);
+      if (inFlight) {
+        try {
+          await inFlight;
+          const fresh = getCachedClientData(client.clientSheetId, cacheKey);
+          if (fresh?.data?.jobs) {
+            setRetainersJobs(fresh.data.jobs);
+            setRetainersJobsLoading(false);
+            return;
+          }
+        } catch {}
+      }
+    }
+
+    try {
       const res = await fetch("/api/triage", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "get_retainer_jobs", clientSheetId: client.clientSheetId }),
+        body: JSON.stringify({ action: "get_retainer_jobs", clientSheetId: client.clientSheetId, bypassCache }),
       });
       const data = await res.json();
-      if (data.success) setRetainersJobs(data.jobs);
+      if (data.success) {
+        setCachedClientData(client.clientSheetId, cacheKey, data);
+        setRetainersJobs(data.jobs);
+      }
     } catch(e) { 
       console.error("loadRetainersJobs error:", e); 
     } finally { 
       setRetainersJobsLoading(false); 
     }
-  };
+  }, [cleanSheetId, getCachedClientData, setCachedClientData, getInFlightPrefetch]);
 
   const handleTidyRetainers = async () => {
     setShowTidyConfirm(false);

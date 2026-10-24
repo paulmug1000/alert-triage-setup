@@ -1,7 +1,7 @@
 import { redisClient } from "./redisClient.js";
 import { getSheetsClient, extractSheetIdFromUrl } from "./sheetsClient.js";
 import {
-  readAlertMemory, updateAlertMemoryRow, appendAlertMemoryRow,
+  readAlertMemory, updateAlertMemoryRow, updateAlertMemoryRowsBatch, appendAlertMemoryRow,
   ensureAlertMemoryTab, findMemoryRow, buildAlertFingerprint,
   extractCrmComparisonSnapshot, deleteAlertMemoryRows, updateHandledAlertHash
 } from "./alertMemory.js";
@@ -590,6 +590,8 @@ export async function handleBulkAcknowledgeProactiveAlerts(req, res, sheets) {
     await ensureAlertMemoryTab(sheets, acId);
     const memoryRows = await readAlertMemory(sheets, acId);
     const hashesToRemove = [];
+    const updateBatchItems = [];
+    const appendItems = [];
     
     for (const alertKey of alertKeys) {
       const fingerprintHash = createHash("sha256").update(alertKey).digest("hex").substring(0, 16);
@@ -610,24 +612,37 @@ export async function handleBulkAcknowledgeProactiveAlerts(req, res, sheets) {
 
       if (candidateMatches.length > 0) {
         const primaryRow = candidateMatches[0];
-        await updateAlertMemoryRow(sheets, acId, primaryRow.rowIndex, { 
-          ...primaryRow, 
-          fingerprintHash,
-          status: "accepted", 
-          clientName: clientName || primaryRow.clientName || "" 
+        updateBatchItems.push({
+          rowIndex: primaryRow.rowIndex,
+          updates: { 
+            ...primaryRow, 
+            fingerprintHash,
+            status: "accepted", 
+            clientName: clientName || primaryRow.clientName || "" 
+          }
         });
         for (const dup of candidateMatches.slice(1)) {
-          await updateAlertMemoryRow(sheets, acId, dup.rowIndex, {
-            ...dup,
-            status: "superseded"
+          updateBatchItems.push({
+            rowIndex: dup.rowIndex,
+            updates: {
+              ...dup,
+              status: "superseded"
+            }
           });
         }
       } else {
-        await appendAlertMemoryRow(sheets, acId, {
+        appendItems.push({
           fingerprintHash, alertType: "proactive", clientName: clientName || "", alertSummary: "Acknowledged proactive alert",
           cachedOptionsJSON: "", status: "accepted", ignoreReason: ""
         });
       }
+    }
+
+    if (updateBatchItems.length > 0) {
+      await updateAlertMemoryRowsBatch(sheets, acId, updateBatchItems);
+    }
+    for (const r of appendItems) {
+      await appendAlertMemoryRow(sheets, acId, r);
     }
 
     if (sessionId) {

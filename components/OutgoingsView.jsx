@@ -4,6 +4,7 @@ import OutgoingsEditModal from "./OutgoingsEditModal";
 import DirectCostsEditModal from "./DirectCostsEditModal";
 import OutgoingsEstimateModal from "./OutgoingsEstimateModal";
 import OutgoingsNewVendorModal from "./OutgoingsNewVendorModal";
+import JobDetailModal from "./JobDetailModal";
 import CellNoteIndicator from "./CellNoteIndicator";
 import EditClientSelector from "./EditClientSelector";
 import { useOutgoings } from "../hooks/useOutgoings";
@@ -115,10 +116,10 @@ export default function OutgoingsView({
     directCostsShowAll, setDirectCostsShowAll,
     directCostsSavingCell, setDirectCostsSavingCell,
     loadOutgoings, loadDirectCostsJobs
-  } = useOutgoings(assignedAppIds, assignedByClient, setAssignedByClient, setAssignedAppIds, outgoingsPullPendingRef, automationCommanderSheetId);
+  } = useOutgoings(assignedAppIds, assignedByClient, setAssignedByClient, setAssignedAppIds, outgoingsPullPendingRef, automationCommanderSheetId, managedClient || initialClient);
 
   const prevInitialClientRef = React.useRef(null);
-  const prevManagedClientRef = React.useRef(managedClient?.clientName || null);
+  const prevManagedClientRef = React.useRef(null);
   // Auto-select managedClient when in manage mode, or initialClient when passed, or clear when cancelled
   useEffect(() => {
     if (managedClient) {
@@ -157,6 +158,7 @@ export default function OutgoingsView({
   const [outgoingsReplacePrompt, setOutgoingsReplacePrompt] = useState(null); // { exp, contractor, colLetter, realBlocks, manualTotal, blocksToKeep }
   const [contractorSearch, setContractorSearch] = useState("");
   const [directCostsJobSearch, setDirectCostsJobSearch] = useState("");
+  const [selectedJobForDetail, setSelectedJobForDetail] = useState(null);
 
   const filteredContractors = React.useMemo(() => {
     const list = outgoingsData?.contractors || [];
@@ -299,7 +301,7 @@ export default function OutgoingsView({
   const allClients = allOutgoingsClients.length > 0
     ? allOutgoingsClients
     : [...(clientsWithFlags || [])].sort((a, b) => a.clientName.localeCompare(b.clientName));
-  const noClient = !outgoingsClient || !outgoingsData;
+  const noClient = !outgoingsClient && !managedClient && !initialClient;
 
   return (
     <>
@@ -324,15 +326,44 @@ export default function OutgoingsView({
           isAdmin={isAdmin}
           onClose={() => setDirectCostsEditSlot(null)}
           onMarkPullPending={(masterId) => outgoingsPullPendingRef.current = masterId}
-          onUpdateJobs={(rNum, sNum, newData) => {
-            setDirectCostsJobs(prev => prev && prev.map(j => ({
-              ...j,
-              rows: j.rows.map(r => r.rowNum !== rNum ? r : {
-                ...r,
-                expenseSlots: r.expenseSlots.map(sl => sl.slotNum !== sNum ? sl : { ...sl, ...newData })
-              }),
-            })));
+          onUpdateJobs={(rNum, sNum, newData, resData) => {
+            setDirectCostsJobs(prev => prev && prev.map(j => {
+              const hasRow = j.rows?.some(r => r.rowNum === rNum);
+              let updatedJob = j;
+              if (hasRow && resData?.placeholderAdjustment) {
+                const { rowNum: pRow, slotNum: pSlot, newAmount: pAmt } = resData.placeholderAdjustment;
+                updatedJob = {
+                  ...updatedJob,
+                  rows: updatedJob.rows.map(r => {
+                    if (r.rowNum === pRow) {
+                      return {
+                        ...r,
+                        expenseSlots: (r.expenseSlots || []).map(sl =>
+                          sl.slotNum === pSlot ? { ...sl, amount: pAmt > 0 ? String(pAmt) : "" } : sl
+                        )
+                      };
+                    }
+                    return r;
+                  })
+                };
+              }
+              return {
+                ...updatedJob,
+                rows: updatedJob.rows.map(r => r.rowNum !== rNum ? r : {
+                  ...r,
+                  expenseSlots: r.expenseSlots.map(sl => sl.slotNum !== sNum ? sl : { ...sl, ...newData })
+                }),
+              };
+            }));
           }}
+        />
+      )}
+      {selectedJobForDetail && (
+        <JobDetailModal
+          isOpen={!!selectedJobForDetail}
+          target={selectedJobForDetail}
+          onClose={() => setSelectedJobForDetail(null)}
+          onMarkPullPending={(masterId) => (outgoingsPullPendingRef.current = masterId)}
         />
       )}
       {outgoingsEstimate && (
@@ -730,7 +761,16 @@ export default function OutgoingsView({
           </div>
         )}
 
-        {!noClient && outgoingsData && (
+        {!noClient && (outgoingsLoading || !outgoingsData) && (
+          <div style={{ textAlign: "center", padding: "40px", color: "#64748b" }}>
+            <Spinner size={32} color="#0047AB" />
+            <div style={{ marginTop: "12px", fontSize: "14px", fontWeight: 500 }}>
+              Loading contractor outgoings...
+            </div>
+          </div>
+        )}
+
+        {!noClient && !outgoingsLoading && outgoingsData && (
           <>
             <div style={{ display: "flex", gap: "8px", marginBottom: "14px", borderBottom: "1px solid #e0e0e0" }}>
               <a
@@ -1257,7 +1297,35 @@ export default function OutgoingsView({
                                   {/* Job Name */}
                                   <td style={{ padding: "8px 12px", verticalAlign: "top" }}>
                                     {rIdx === 0 ? (
-                                      <div style={{ fontWeight: "600", color: "#1e293b" }}>{jr.jobName}</div>
+                                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "6px" }}>
+                                        <div style={{ fontWeight: "600", color: "#1e293b" }}>{jr.jobName}</div>
+                                        <button
+                                          type="button"
+                                          onClick={() => setSelectedJobForDetail({
+                                            client: job.client,
+                                            jobName: job.jobName,
+                                            projectCode: job.projectCode || jr.projectCode,
+                                            rowNum: jr.rowNum,
+                                            tabName: "Confirmed",
+                                            clientSheetId: outgoingsClient?.clientSheetId,
+                                            clientName: outgoingsClient?.clientName
+                                          })}
+                                          style={{
+                                            background: "#ffffff",
+                                            border: "1px solid #cbd5e1",
+                                            borderRadius: "4px",
+                                            padding: "2px 7px",
+                                            fontSize: "11px",
+                                            color: "#475569",
+                                            cursor: "pointer",
+                                            fontWeight: "600",
+                                            whiteSpace: "nowrap"
+                                          }}
+                                          title="Edit job details"
+                                        >
+                                          Edit job
+                                        </button>
+                                      </div>
                                     ) : (
                                       <div style={{ fontSize: "11px", color: "#64748b", paddingLeft: "8px" }}>
                                         {isRetainer ? `↳ Month ${rIdx + 1}` : (isAdmin ? `↳ Row ${rIdx + 1}` : `↳ Part ${rIdx + 1}`)}
@@ -1670,7 +1738,39 @@ export default function OutgoingsView({
                               <tr key={jr.rowNum} style={{ background: jobIdx % 2 === 0 ? "#fff" : "#f1f5f9" }}>
                                 <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", color: "#888" }}>{jr.rowNum}</td>
                                 <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>{rIdx === 0 ? jr.client : ""}</td>
-                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>{rIdx === 0 ? jr.jobName : ""}</td>
+                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
+                                  {rIdx === 0 ? (
+                                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "6px" }}>
+                                      <span>{jr.jobName}</span>
+                                      <button
+                                        type="button"
+                                        onClick={() => setSelectedJobForDetail({
+                                          client: job.client,
+                                          jobName: job.jobName,
+                                          projectCode: job.projectCode || jr.projectCode,
+                                          rowNum: jr.rowNum,
+                                          tabName: "Confirmed",
+                                          clientSheetId: outgoingsClient?.clientSheetId,
+                                          clientName: outgoingsClient?.clientName
+                                        })}
+                                        style={{
+                                          background: "#ffffff",
+                                          border: "1px solid #cbd5e1",
+                                          borderRadius: "4px",
+                                          padding: "2px 6px",
+                                          fontSize: "10.5px",
+                                          color: "#475569",
+                                          cursor: "pointer",
+                                          fontWeight: "600",
+                                          whiteSpace: "nowrap"
+                                        }}
+                                        title="Edit job details"
+                                      >
+                                        Edit job
+                                      </button>
+                                    </div>
+                                  ) : ""}
+                                </td>
                                 <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>{rIdx === 0 ? jr.projectCode : ""}</td>
                                 <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>{rIdx === 0 ? jr.revenue : ""}</td>
                                 <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>

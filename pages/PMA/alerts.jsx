@@ -11,3 +11,9 @@ export default function PMAAlertsPage() {
     </>
   );
 }
+
+export async function getServerSideProps() {
+  return {
+    props: {},
+  };
+}

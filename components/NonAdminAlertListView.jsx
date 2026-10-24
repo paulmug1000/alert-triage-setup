@@ -50,6 +50,7 @@ export default function NonAdminAlertListView({
   setRetainerSplitInvoice,
   acknowledgeProactiveAlert,
   acknowledgingKey,
+  exitingAlertKeys = new Set(),
   freqLabel,
   totalVisibleAlertsCount,
   onViewJob,
@@ -202,11 +203,13 @@ export default function NonAdminAlertListView({
                         {label}
                       </div>
                       <div style={{ display: "flex", flexDirection: "column", gap: "10px", width: "100%" }}>
-                        {alerts.map((alert, idx) => (
-                          <button
-                            className="triage-btn"
-                            key={idx}
-                            onClick={() => selectAlert(alert)}
+                        {alerts.map((alert, idx) => {
+                          const selKey = alert.fingerprintHash || alert.alertKey || `${alert.flagType || alert.type}-${alert.sheetName}-${alert.rowNumber || idx}`;
+                          return (
+                            <button
+                              className="triage-btn"
+                              key={selKey}
+                              onClick={() => selectAlert(alert)}
                             style={{
                               ...styles.optionButton,
                               display: "block",
@@ -226,7 +229,7 @@ export default function NonAdminAlertListView({
                           >
                             {renderAlertContent(alert)}
                           </button>
-                        ))}
+                        ); })}
                       </div>
                     </div>
                   );
@@ -252,31 +255,34 @@ export default function NonAdminAlertListView({
                 const isInvoiceGroup = type === "invoiceDashboardDiscr";
                 return (
                   <>
-                    {groupAlerts.map((alert, idx) => (
-                      <button
-                        className="triage-btn"
-                        key={idx}
-                        onClick={() => selectAlert(alert)}
-                        style={{
-                          ...styles.optionButton,
-                          display: "block",
-                          width: "100%",
-                          boxSizing: "border-box",
-                          textAlign: "left",
-                          padding: "14px 16px",
-                          border: "1px solid #cbd5e1",
-                          borderRadius: "8px",
-                          cursor: "pointer",
-                          backgroundColor: "#fff",
-                          fontSize: "13px",
-                          transition: "all 0.2s"
-                        }}
-                        onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "#f8fafc"; e.currentTarget.style.borderColor = "#2563eb"; }}
-                        onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "#fff"; e.currentTarget.style.borderColor = "#cbd5e1"; }}
-                      >
-                        {renderAlertContent(alert)}
-                      </button>
-                    ))}
+                    {groupAlerts.map((alert, idx) => {
+                      const selKey = alert.fingerprintHash || alert.alertKey || `${alert.flagType || alert.type}-${alert.sheetName}-${alert.rowNumber || idx}`;
+                      return (
+                        <button
+                          className="triage-btn"
+                          key={selKey}
+                          onClick={() => selectAlert(alert)}
+                          style={{
+                            ...styles.optionButton,
+                            display: "block",
+                            width: "100%",
+                            boxSizing: "border-box",
+                            textAlign: "left",
+                            padding: "14px 16px",
+                            border: "1px solid #cbd5e1",
+                            borderRadius: "8px",
+                            cursor: "pointer",
+                            backgroundColor: "#fff",
+                            fontSize: "13px",
+                            transition: "all 0.2s"
+                          }}
+                          onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "#f8fafc"; e.currentTarget.style.borderColor = "#2563eb"; }}
+                          onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "#fff"; e.currentTarget.style.borderColor = "#cbd5e1"; }}
+                        >
+                          {renderAlertContent(alert)}
+                        </button>
+                      );
+                    })}
                     {isExpenseGroup && selectedClient && (
                       <div style={{ display: "flex", justifyContent: "flex-start", marginTop: "4px" }}>
                         <button
@@ -342,18 +348,34 @@ export default function NonAdminAlertListView({
                   ? (parsed.contractor ? `Stale placeholder expense date moved (${parsed.contractor})` : "Stale placeholder expense date moved")
                   : (parsed?.client ? `${getFlagName(na.flagType) || na.flagName || "Alert"} (${parsed.client})` : (getFlagName(na.flagType) || na.flagName || "Alert"));
 
+                const isExiting = exitingAlertKeys.has(alertId);
                 return (
-                  <div key={alertId} style={{
-                    padding: "14px 16px",
-                    borderRadius: "8px",
-                    border: "1px solid #cbd5e1",
-                    background: "#ffffff",
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: "4px",
-                    boxSizing: "border-box",
-                    width: "100%",
-                  }}>
+                  <div
+                    key={alertId}
+                    style={{
+                      display: "grid",
+                      gridTemplateRows: isExiting ? "0fr" : "1fr",
+                      opacity: isExiting ? 0 : 1,
+                      transform: isExiting ? "translateX(16px)" : "translateX(0)",
+                      marginTop: isExiting ? "-10px" : 0,
+                      transition: "grid-template-rows 300ms cubic-bezier(0.4, 0, 0.2, 1), margin-top 300ms cubic-bezier(0.4, 0, 0.2, 1), opacity 260ms ease, transform 260ms ease",
+                      pointerEvents: isExiting ? "none" : "auto",
+                      width: "100%",
+                    }}
+                  >
+                    <div style={{ minHeight: 0, overflow: "hidden" }}>
+                      <div className="non-admin-alert-card" style={{
+                        padding: "14px 16px",
+                        borderRadius: "8px",
+                        border: isExiting ? "1px solid #86efac" : "1px solid #cbd5e1",
+                        background: isExiting ? "#f0fdf4" : "#ffffff",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: "4px",
+                        boxSizing: "border-box",
+                        width: "100%",
+                        transition: "background-color 200ms ease, border-color 200ms ease",
+                      }}>
                     <div style={{
                       fontWeight: "600",
                       fontSize: "13.5px",
@@ -496,20 +518,29 @@ export default function NonAdminAlertListView({
                         })()}
                         <button className="triage-btn"
                           onClick={() => openCreateTaskModal(na, false, true)}
-                          style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#7c3aed", borderColor: "#c4b5fd" }}
+                          style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#7c3aed", borderColor: "#c4b5fd", whiteSpace: "nowrap" }}
                         >
-                          📋 Create Task
+                          📋 Create task
                         </button>
-                        <button className="triage-btn"
+                        <button className="triage-btn no-click-spinner"
                           onClick={() => handleMarkNoActionResolved(na)}
-                          style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px" }}
+                          disabled={isExiting}
+                          style={{
+                            ...styles.buttonSecondary,
+                            fontSize: "12px",
+                            padding: "4px 12px",
+                            whiteSpace: "nowrap",
+                            ...(isExiting ? { color: "#16a34a", borderColor: "#86efac", background: "#f0fdf4" } : {})
+                          }}
                         >
-                          ✓ Mark resolved
+                          {isExiting ? "✓ Acknowledged" : "✓ Acknowledge"}
                         </button>
                       </div>
                     </div>
                   </div>
-                );
+                </div>
+              </div>
+            );
               })}
             </div>
           </div>
@@ -527,9 +558,26 @@ export default function NonAdminAlertListView({
             <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
               {groupAlerts.map((alert, idx) => {
                 const m = alert.metadata || {};
+                const cardKey = alert.alertKey || (alert.rowIndex != null ? `proactive-row-${alert.rowIndex}` : `proactive-${idx}`);
+                const activeKey = alert.alertKey || (alert.rowIndex != null ? `row-${alert.rowIndex}` : null);
+                const isExiting = exitingAlertKeys.has(cardKey) || (activeKey && exitingAlertKeys.has(activeKey));
                 return (
-                  <div key={idx} style={{ border: "1px solid #cbd5e1", borderRadius: "8px", padding: "14px 16px", backgroundColor: "#ffffff", boxSizing: "border-box", width: "100%", display: "flex", flexDirection: "column", gap: "4px" }}>
-                    <div style={{ fontWeight: "600", fontSize: "13.5px", color: "#0f172a", marginBottom: "2px" }}>
+                  <div
+                    key={cardKey}
+                    style={{
+                      display: "grid",
+                      gridTemplateRows: isExiting ? "0fr" : "1fr",
+                      opacity: isExiting ? 0 : 1,
+                      transform: isExiting ? "translateX(16px)" : "translateX(0)",
+                      marginTop: isExiting ? "-12px" : 0,
+                      transition: "grid-template-rows 300ms cubic-bezier(0.4, 0, 0.2, 1), margin-top 300ms cubic-bezier(0.4, 0, 0.2, 1), opacity 260ms ease, transform 260ms ease",
+                      pointerEvents: isExiting ? "none" : "auto",
+                      width: "100%",
+                    }}
+                  >
+                    <div style={{ minHeight: 0, overflow: "hidden" }}>
+                      <div className="non-admin-alert-card" style={{ border: isExiting ? "1px solid #86efac" : "1px solid #cbd5e1", borderRadius: "8px", padding: "14px 16px", backgroundColor: isExiting ? "#f0fdf4" : "#ffffff", boxSizing: "border-box", width: "100%", display: "flex", flexDirection: "column", gap: "4px", transition: "background-color 200ms ease, border-color 200ms ease" }}>
+                    <div style={{ fontWeight: "600", fontSize: "13.5px", color: "#0f172a", marginBottom: "2px", wordBreak: "break-word" }}>
                       {alert.heading}
                     </div>
 
@@ -728,7 +776,9 @@ export default function NonAdminAlertListView({
                                 border: "1px solid #c4b5fd",
                                 backgroundColor: "#fff",
                                 color: "#1f2937",
-                                minWidth: "260px",
+                                minWidth: "200px",
+                                maxWidth: "100%",
+                                boxSizing: "border-box",
                                 cursor: "pointer"
                               }}
                             >
@@ -753,10 +803,11 @@ export default function NonAdminAlertListView({
                                 display: "flex",
                                 alignItems: "center",
                                 gap: "6px",
-                                opacity: isApplying ? 0.7 : 1
+                                opacity: isApplying ? 0.7 : 1,
+                                whiteSpace: "nowrap"
                               }}
                             >
-                              {isApplying ? <><Spinner size={12} /> Confirming &amp; Syncing...</> : "Confirm & Apply"}
+                              {isApplying ? <><Spinner size={12} /> Confirming &amp; Syncing...</> : "Confirm & apply"}
                             </button>
 
                             {msg && (
@@ -1099,36 +1150,35 @@ export default function NonAdminAlertListView({
                                 </button>
                               )}
                               {alert.alertType === "expenseDashboardDiscr" && clientInfo && (
-                                <button className="triage-btn" onClick={() => onNavOutgoings ? onNavOutgoings(selectedClient || clientInfo) : setActiveNav("outgoings")} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#059669", borderColor: "#6ee7b7" }}>📤 Assign Expense</button>
+                                <button className="triage-btn" onClick={() => onNavOutgoings ? onNavOutgoings(selectedClient || clientInfo) : setActiveNav("outgoings")} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#059669", borderColor: "#6ee7b7", whiteSpace: "nowrap" }}>📤 Assign expense</button>
                               )}
                               {alert.alertType === "invoiceDashboardDiscr" && clientInfo && (
-                                <button className="triage-btn" onClick={() => onNavInvoices ? onNavInvoices(selectedClient || clientInfo) : setActiveNav("invoices")} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#ea580c", borderColor: "#fdba74" }}>📥 Assign Invoices</button>
+                                <button className="triage-btn" onClick={() => onNavInvoices ? onNavInvoices(selectedClient || clientInfo) : setActiveNav("invoices")} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#ea580c", borderColor: "#fdba74", whiteSpace: "nowrap" }}>📥 Assign invoices</button>
                               )}
                             </>
                           );
                         })()}
-                        <button className="triage-btn" onClick={() => openCreateTaskModal(alert, true)} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#7c3aed", borderColor: "#c4b5fd" }}>📋 Create Task</button>
+                        <button className="triage-btn" onClick={() => openCreateTaskModal(alert, true)} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#7c3aed", borderColor: "#c4b5fd", whiteSpace: "nowrap" }}>📋 Create task</button>
                         <button
-                          className="triage-btn"
+                          className="triage-btn no-click-spinner"
                           onClick={() => acknowledgeProactiveAlert(alert.alertKey, alert.rowIndex)}
-                          disabled={acknowledgingKey === (alert.alertKey || (alert.rowIndex != null ? `row-${alert.rowIndex}` : null))}
+                          disabled={isExiting}
                           style={{
                             ...styles.buttonSecondary,
                             fontSize: "12px",
                             padding: "4px 12px",
-                            opacity: acknowledgingKey === (alert.alertKey || (alert.rowIndex != null ? `row-${alert.rowIndex}` : null)) ? 0.7 : 1
+                            whiteSpace: "nowrap",
+                            ...(isExiting ? { color: "#16a34a", borderColor: "#86efac", background: "#f0fdf4" } : {})
                           }}
                         >
-                          {acknowledgingKey === (alert.alertKey || (alert.rowIndex != null ? `row-${alert.rowIndex}` : null)) ? (
-                            <><Spinner size={11} /> Acknowledging...</>
-                          ) : (
-                            "✓ Acknowledge"
-                          )}
+                          {isExiting ? "✓ Acknowledged" : "✓ Acknowledge"}
                         </button>
                       </div>
                     </div>
                   </div>
-                );
+                </div>
+              </div>
+            );
               })}
             </div>
           </div>
@@ -1140,6 +1190,14 @@ export default function NonAdminAlertListView({
           No alerts for this client
         </div>
       )}
+
+      <style jsx>{`
+        @media (max-width: 640px) {
+          .non-admin-alert-card {
+            padding: 12px 10px !important;
+          }
+        }
+      `}</style>
     </div>
   );
 }

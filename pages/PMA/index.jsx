@@ -19,3 +19,9 @@ export default function PMAPage() {
     </>
   );
 }
+
+export async function getServerSideProps() {
+  return {
+    props: {},
+  };
+}

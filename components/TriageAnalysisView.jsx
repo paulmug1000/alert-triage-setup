@@ -1027,15 +1027,15 @@ export default function TriageAnalysisView({
                       🔍 View job
                     </button>
                   </div>
-                  <div style={{ fontSize: "16px", fontWeight: "700", color: "#1a1a1a", marginBottom: "12px", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-                    <span>{displayClient}{displayJob ? ` - ${displayJob}` : ""}</span>
+                  <div style={{ fontSize: "16px", fontWeight: "700", color: "#1a1a1a", marginBottom: "12px", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", wordBreak: "break-word" }}>
+                    <span style={{ wordBreak: "break-word" }}>{displayClient}{displayJob ? ` - ${displayJob}` : ""}</span>
                     {displayType && (
-                      <span style={{ fontSize: "11px", fontWeight: "600", background: displayType.toLowerCase().includes("retainer") ? "#e0f2fe" : "#f3e8ff", color: displayType.toLowerCase().includes("retainer") ? "#0284c7" : "#7e22ce", padding: "2px 8px", borderRadius: "12px" }}>
+                      <span style={{ fontSize: "11px", fontWeight: "600", background: displayType.toLowerCase().includes("retainer") ? "#e0f2fe" : "#f3e8ff", color: displayType.toLowerCase().includes("retainer") ? "#0284c7" : "#7e22ce", padding: "2px 8px", borderRadius: "12px", whiteSpace: "nowrap" }}>
                         {displayType}
                       </span>
                     )}
                     {displayCode && (
-                      <span style={{ fontFamily: "monospace", fontSize: "11px", fontWeight: "700", background: "#eff6ff", color: "#2563eb", padding: "1px 6px", borderRadius: "4px", border: "1px solid #bfdbfe" }}>
+                      <span style={{ fontFamily: "monospace", fontSize: "11px", fontWeight: "700", background: "#eff6ff", color: "#2563eb", padding: "1px 6px", borderRadius: "4px", border: "1px solid #bfdbfe", whiteSpace: "nowrap" }}>
                         {displayCode}
                       </span>
                     )}
@@ -1044,7 +1044,7 @@ export default function TriageAnalysisView({
                   {/* Full Job Details Grid */}
                   <div style={{
                     display: "grid",
-                    gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+                    gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))",
                     gap: "8px 16px",
                     backgroundColor: "rgba(255, 255, 255, 0.75)",
                     border: "1px solid #e9d5ff",
@@ -1440,11 +1440,13 @@ export default function TriageAnalysisView({
                                   marginBottom: singleExplanation ? "10px" : "0"
                                 }}>
                                   <span style={{
-                                    flex: "1 1 260px",
+                                    flex: "1 1 200px",
+                                    minWidth: 0,
                                     fontSize: "15px",
                                     fontWeight: "700",
                                     color: isDeleteAction ? "#b91c1c" : isIgnoreAction ? "#334155" : "#0f172a",
-                                    lineHeight: "1.4"
+                                    lineHeight: "1.4",
+                                    wordBreak: "break-word"
                                   }}>
                                     <span style={{ color: isDeleteAction ? "#b91c1c" : isIgnoreAction ? "#64748b" : "#475569", fontWeight: "600", marginRight: "4px" }}>
                                       {isDataMismatch ? `Action ${idx + 1}:` : `Option ${candidateJobOptions.length + idx + 1}:`}
@@ -1479,7 +1481,8 @@ export default function TriageAnalysisView({
                                           cursor: "pointer",
                                           display: "inline-flex",
                                           alignItems: "center",
-                                          gap: "4px"
+                                          gap: "4px",
+                                          whiteSpace: "nowrap"
                                         }}
                                         title="View and edit job details in pop-up"
                                       >
@@ -1511,7 +1514,8 @@ export default function TriageAnalysisView({
                                           cursor: "pointer",
                                           display: "inline-flex",
                                           alignItems: "center",
-                                          gap: "4px"
+                                          gap: "4px",
+                                          whiteSpace: "nowrap"
                                         }}
                                         title="View Outgoings expense details"
                                       >

@@ -3,6 +3,7 @@ import Spinner from "./Spinner";
 import CellNoteIndicator from "./CellNoteIndicator";
 import EditClientSelector from "./EditClientSelector";
 import { useAuth } from "../hooks/useAuth";
+import { useAppGlobals } from "../hooks/useAppGlobals";
 
 const formatCurrency = (val) => {
   if (val === null || val === undefined || val === "") return "£0";
@@ -23,20 +24,41 @@ export default function ExpensesView({
 }) {
   const { user } = useAuth();
   const isAdmin = Boolean(user?.isAdmin || user?.role === "Admin" || user?.role === "ClientManager");
+  const { getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId } = useAppGlobals();
 
-  // Client State
-  const [selectedClient, setSelectedClient] = useState(null);
+  // Client State (synchronous initial selection from managedClient or initialClient to eliminate flash)
+  const [selectedClient, setSelectedClient] = useState(() => {
+    if (managedClient) {
+      return (allOutgoingsClients || []).find(
+        (c) => c.clientName?.toLowerCase() === managedClient.clientName?.toLowerCase()
+      ) || managedClient;
+    }
+    if (initialClient) {
+      const targetStr = typeof initialClient === "string" ? initialClient.toLowerCase() : initialClient?.clientName?.toLowerCase();
+      return (allOutgoingsClients || []).find(
+        (c) => c.clientName?.toLowerCase() === targetStr
+      ) || (typeof initialClient === "object" ? initialClient : null);
+    }
+    return null;
+  });
   const [clientSearch, setClientSearch] = useState("");
 
-  // Data State
-  const [expensesData, setExpensesData] = useState(null);
+  // Data State (instant initialization from memory cache if preloaded)
+  const [expensesData, setExpensesData] = useState(() => {
+    const target = managedClient || (typeof initialClient === "object" ? initialClient : null);
+    if (target?.clientSheetId) {
+      const cached = getCachedClientData(target.clientSheetId, "expenses");
+      if (cached?.data) return cached.data;
+    }
+    return null;
+  });
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const [saveSuccessMsg, setSaveSuccessMsg] = useState("");
 
   // FY Navigation & Filters
-  const [selectedFyIdx, setSelectedFyIdx] = useState(0);
+  const [selectedFyIdx, setSelectedFyIdx] = useState(() => expensesData?.defaultFyIndex ?? 0);
   const [searchTerm, setSearchTerm] = useState("");
   const [activeTab, setActiveTab] = useState("all"); // "all" | "delivery" | "non-delivery"
   const [draggingRow, setDraggingRow] = useState(null); // { sheetRow, isDelivery }
@@ -66,8 +88,9 @@ export default function ExpensesView({
       return;
     }
     if (initialClient) {
+      const targetStr = typeof initialClient === "string" ? initialClient.toLowerCase() : initialClient?.clientName?.toLowerCase();
       const match = (allOutgoingsClients || []).find(
-        (c) => c.clientName?.toLowerCase() === initialClient.toLowerCase()
+        (c) => c.clientName?.toLowerCase() === targetStr
       );
       if (match) {
         setSelectedClient(match);
@@ -88,10 +111,37 @@ export default function ExpensesView({
     }
   };
 
-  // Fetch Expenses Data
+  // Fetch Expenses Data with caching
   const fetchExpenses = useCallback(async (client, bypassCache = false) => {
     if (!client || !client.clientSheetId) return;
-    setLoading(true);
+    const cleanId = cleanSheetId ? cleanSheetId(client.clientSheetId) : client.clientSheetId;
+
+    const cached = !bypassCache ? getCachedClientData(client.clientSheetId, "expenses") : null;
+    if (cached?.data) {
+      setExpensesData(cached.data);
+      setSelectedFyIdx(cached.data.defaultFyIndex ?? 0);
+      setLoading(false);
+      if (!cached.isStale) return;
+    } else {
+      setLoading(true);
+    }
+
+    if (!bypassCache && typeof getInFlightPrefetch === "function") {
+      const inFlight = getInFlightPrefetch(`expenses_${cleanId}`);
+      if (inFlight) {
+        try {
+          await inFlight;
+          const fresh = getCachedClientData(client.clientSheetId, "expenses");
+          if (fresh?.data) {
+            setExpensesData(fresh.data);
+            setSelectedFyIdx(fresh.data.defaultFyIndex ?? 0);
+            setLoading(false);
+            return;
+          }
+        } catch {}
+      }
+    }
+
     setError(null);
     try {
       const res = await fetch(
@@ -105,13 +155,14 @@ export default function ExpensesView({
       }
       setExpensesData(data);
       setSelectedFyIdx(data.defaultFyIndex ?? 0);
+      setCachedClientData(client.clientSheetId, "expenses", data);
     } catch (err) {
       console.error("Failed to fetch expenses:", err);
       setError(err.message || "Failed to load expenses data");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [cleanSheetId, getCachedClientData, setCachedClientData, getInFlightPrefetch]);
 
   useEffect(() => {
     if (selectedClient) {
@@ -680,7 +731,7 @@ export default function ExpensesView({
       </div>
 
       {/* ── CLIENT SELECTOR SCREEN (WHEN NO CLIENT SELECTED) ── */}
-      {!selectedClient && (
+      {!selectedClient && !managedClient && !initialClient && (
         <EditClientSelector
           clients={allOutgoingsClients}
           onSelectClient={(c) => setSelectedClient(c)}

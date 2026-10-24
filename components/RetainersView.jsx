@@ -24,13 +24,13 @@ export default function RetainersView({
     tidyResult, setTidyResult,
     handleTidyRetainers,
     loadRetainersJobs
-  } = useRetainers();
+  } = useRetainers(managedClient);
 
   const [showCreateRetainerModal, setShowCreateRetainerModal] = useState(false);
   const [retainersEditJob, setRetainersEditJob] = useState(null);
   const [expandedRetainerJobs, setExpandedRetainerJobs] = useState(new Set());
 
-  const prevManagedClientRef = useRef(managedClient?.clientName || null);
+  const prevManagedClientRef = useRef(null);
   // Auto-select managedClient when in manage mode, or clear when manage mode cancelled
   useEffect(() => {
     if (managedClient) {
@@ -48,7 +48,7 @@ export default function RetainersView({
     }
   }, [managedClient, allOutgoingsClients]);
 
-  const noRetClient = !retainersClient;
+  const noRetClient = !retainersClient && !managedClient;
 
   return (
     <div style={{ maxWidth: "1600px", margin: "0 auto", padding: "16px 24px 60px" }}>

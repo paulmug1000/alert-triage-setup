@@ -17,9 +17,10 @@ import SalariesView from "../components/SalariesView";
 import ExpensesView from "../components/ExpensesView";
 import NBToFindView from "../components/NBToFindView";
 import BudgetView from "../components/BudgetView";
+import CashEditView from "../components/CashEditView";
 import ToolsView from "../components/ToolsView";
 import SettingsView from "../components/SettingsView";
-import IntegrationsView from "../components/IntegrationsView";
+import IntegrationsView, { calculateIntegrationsAttentionCount } from "../components/IntegrationsView";
 import SetupView from "../components/SetupView";
 import ClientSelectionView from "../components/ClientSelectionView";
 import AlertSelectionView from "../components/AlertSelectionView";
@@ -45,11 +46,7 @@ import { useTriageEngine } from "../hooks/useTriageEngine";
 injectGlobalStyles();
 
 export default function TriageSystem({ onBack, initialNav }) {
-  return (
-    <AppGlobalsProvider>
-      <TriageSystemWithGlobals onBack={onBack} initialNav={initialNav} />
-    </AppGlobalsProvider>
-  );
+  return <TriageSystemWithGlobals onBack={onBack} initialNav={initialNav} />;
 }
 
 function TriageSystemWithGlobals({ onBack, initialNav }) {
@@ -215,6 +212,70 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
   });
 
   const currentLiveAlertCount = liveAlertCount + (proactiveAlerts || []).length;
+
+  const [integrationsRawData, setIntegrationsRawData] = useState(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const stored = localStorage.getItem("pulse_cached_integrations_data");
+        if (stored) return JSON.parse(stored);
+      } catch {}
+    }
+    return { allClients: [], sharedXero: null };
+  });
+
+  const [cachedIntegrationsAttentionCount, setCachedIntegrationsAttentionCount] = useState(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const stored = localStorage.getItem("pulse_cached_integrations_badge");
+        return stored != null ? parseInt(stored, 10) : 0;
+      } catch { return 0; }
+    }
+    return 0;
+  });
+
+  const fetchIntegrationsStatus = useCallback(async () => {
+    try {
+      const res = await fetch("/api/integrations/status?all=true");
+      const data = await res.json();
+      if (data.success && Array.isArray(data.allClients)) {
+        const payload = { allClients: data.allClients, sharedXero: data.sharedXero || null };
+        setIntegrationsRawData(payload);
+        try {
+          localStorage.setItem("pulse_cached_integrations_data", JSON.stringify(payload));
+        } catch {}
+      }
+    } catch (e) {
+      console.warn("triage: failed to fetch integration statuses for badge", e);
+    }
+  }, []);
+
+  const handleIntegrationsStatusRefresh = useCallback((payload) => {
+    setIntegrationsRawData(payload);
+    try {
+      localStorage.setItem("pulse_cached_integrations_data", JSON.stringify(payload));
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    if (isAuthenticated && user?.email) {
+      fetchIntegrationsStatus();
+    }
+  }, [isAuthenticated, user?.email, fetchIntegrationsStatus]);
+
+  const integrationsAttentionCount = useMemo(() => {
+    if (!integrationsRawData?.allClients?.length) {
+      return cachedIntegrationsAttentionCount;
+    }
+    const count = calculateIntegrationsAttentionCount(
+      integrationsRawData.allClients,
+      integrationsRawData.sharedXero,
+      managedClient?.clientName
+    );
+    if (typeof window !== "undefined" && !managedClient) {
+      try { localStorage.setItem("pulse_cached_integrations_badge", String(count)); } catch {}
+    }
+    return count;
+  }, [integrationsRawData, managedClient, cachedIntegrationsAttentionCount]);
 
   const managedClientAlertCount = useMemo(() => {
     if (!managedClient?.clientName) return null;
@@ -497,6 +558,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
   const handleNavExpenses = () => navigateWithGuard(() => { setActiveNav("expenses"); loadClients(); });
   const handleNavNBToFind = () => navigateWithGuard(() => { setActiveNav("nbtofind"); loadClients(); });
   const handleNavBudget = () => navigateWithGuard(() => { setActiveNav("budget"); loadClients(); });
+  const handleNavCash = () => navigateWithGuard(() => { setActiveNav("cash"); loadClients(); });
   const handleNavViews = () => navigateWithGuard(() => { setActiveNav("views"); loadClients(); });
 
   // Synchronize browser URL with activeNav so direct bookmarking works naturally
@@ -870,6 +932,18 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
       );
     }
 
+    // ── CASH SCREEN ─────────────────────────────────────────────────────────────
+    if (activeNav === "cash") {
+      return (
+        <CashEditView
+          allOutgoingsClients={allOutgoingsClients}
+          styles={styles}
+          managedClient={managedClient}
+          onClearManagedClient={handleClearManagedClient}
+        />
+      );
+    }
+
     // ── TOOLS SCREEN ─────────────────────────────────────────────────────────────
     if (activeNav === "tools") {
       return (
@@ -906,6 +980,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
           isAdmin={isAdmin}
           managedClient={managedClient}
           onClearManagedClient={handleClearManagedClient}
+          onStatusRefresh={handleIntegrationsStatusRefresh}
         />
       );
     }
@@ -1030,6 +1105,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
         onExpenses={handleNavExpenses}
         onNBToFind={handleNavNBToFind}
         onBudget={handleNavBudget}
+        onCash={handleNavCash}
         onViews={handleNavViews}
         onTools={handleNavTools}
         onIntegrations={handleNavIntegrations}
@@ -1037,6 +1113,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
         onSettings={handleNavSettings}
         homeAlertCount={managedClient ? (managedClientAlertCount ?? 0) : (triageEngine.triageComplete ? currentLiveAlertCount : (cachedAlertCount || currentLiveAlertCount))}
         taskCount={navTaskCount}
+        integrationsCount={integrationsAttentionCount}
         user={user}
         onLogout={logout}
         clients={allOutgoingsClients}

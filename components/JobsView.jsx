@@ -687,7 +687,7 @@ export default function JobsView({
   managedClient,
   onClearManagedClient
 }) {
-  const { outgoingsPullPendingRef } = useAppGlobals();
+  const { outgoingsPullPendingRef, assignedAppIds, setAssignedAppIds } = useAppGlobals();
 
   const {
     jobsClient, setJobsClient,
@@ -701,9 +701,9 @@ export default function JobsView({
     leadSources,
     existingClients,
     loadJobsData
-  } = useJobs();
+  } = useJobs(managedClient);
 
-  const prevManagedClientRef = useRef(managedClient?.clientName || null);
+  const prevManagedClientRef = useRef(null);
   // Auto-select managedClient when in manage mode, or clear when manage mode cancelled
   useEffect(() => {
     if (managedClient) {
@@ -744,8 +744,31 @@ export default function JobsView({
   const [markingAlreadyConfirmedKeys, setMarkingAlreadyConfirmedKeys] = useState(() => new Set());
   const [deletingJobKeys, setDeletingJobKeys] = useState(() => new Set());
   const [deletingJob, setDeletingJob] = useState(null);
+  const [movingInvoicesForDelete, setMovingInvoicesForDelete] = useState(false);
+  const [deleteJobMoveSearch, setDeleteJobMoveSearch] = useState("");
+  const [targetJobForMoveDelete, setTargetJobForMoveDelete] = useState(null);
+  const [movingInvoiceThenDeleteLoading, setMovingInvoiceThenDeleteLoading] = useState(false);
   const [recentlySavedKeys, setRecentlySavedKeys] = useState(() => new Set());
   const [actionError, setActionError] = useState(null);
+
+  const deletingJobRealInvoices = useMemo(() => {
+    if (!deletingJob?.rows) return [];
+    const list = [];
+    deletingJob.rows.forEach((r) => {
+      (r.invoiceSlots || []).forEach((sl) => {
+        if (sl.ref && !isPlaceholderInvoice(sl.ref, sl.status)) {
+          list.push({
+            ...sl,
+            rowNum: r.rowNum,
+            slotNum: sl.slotNum,
+            client: r.client || deletingJob.client,
+            jobName: r.jobName || deletingJob.jobName
+          });
+        }
+      });
+    });
+    return list;
+  }, [deletingJob]);
 
   // Set of recently deleted job identifiers (jobKeys and tab+rowNum) to prevent stale Google Sheets API reads from restoring deleted jobs
   const recentlyDeletedJobKeysRef = useRef(new Set());
@@ -856,7 +879,7 @@ export default function JobsView({
     if (onSaveSuccess) onSaveSuccess(newNote);
   };
 
-  const noJobsClient = !jobsClient;
+  const noJobsClient = !jobsClient && !managedClient;
 
   // Toggle expand for a job in modern view
   const toggleJobExpanded = (jobKey) => {
@@ -916,6 +939,29 @@ export default function JobsView({
     }
     return parentRow[fieldKey] !== undefined ? parentRow[fieldKey] : "";
   };
+
+  // Helper to extract parsed Date Confirmed for a job on Confirmed tab
+  const getJobDateConf = (job) => {
+    if (!job) return null;
+    const tab = String(job.tabName || job.status || job.rows?.[0]?.tabName || "Confirmed").toLowerCase();
+    const isConfirmed = tab === "confirmed" || (!tab.includes("pipeline") && !tab.includes("pipe"));
+    if (!isConfirmed) return null;
+    const rawVal = getJobFieldValue(job, "dateConf") || job.dateConf || job.rows?.[0]?.dateConf;
+    return rawVal ? parseSheetDate(rawVal) : null;
+  };
+
+  // Check if at least one confirmed job has a non-empty Date Confirmed
+  const hasDateConfirmed = useMemo(() => {
+    if (!jobsData || !Array.isArray(jobsData)) return false;
+    return jobsData.some((j) => {
+      const tab = String(j.tabName || j.status || j.rows?.[0]?.tabName || "Confirmed").toLowerCase();
+      const isConfirmed = tab === "confirmed" || (!tab.includes("pipeline") && !tab.includes("pipe"));
+      if (!isConfirmed) return false;
+      const rawVal = getJobFieldValue(j, "dateConf") || j.dateConf || j.rows?.[0]?.dateConf;
+      const s = String(rawVal || "").trim();
+      return s !== "" && s !== "-" && s !== "—";
+    });
+  }, [jobsData, draftEdits]);
 
   // Update a single draft field for a job
   const handleDraftFieldChange = (job, fieldKey, newValue) => {
@@ -1327,6 +1373,22 @@ export default function JobsView({
         throw new Error(resData.error || "Failed to delete job");
       }
 
+      if (resData.unassignedInvoices && resData.unassignedInvoices.length > 0) {
+        const unassignedRefs = new Set(resData.unassignedInvoices.map(inv => String(inv.invoiceNo || "").trim().toLowerCase()));
+        if (setAssignedAppIds) {
+          setAssignedAppIds((prev) => {
+            const next = new Set(prev);
+            unassignedRefs.forEach((ref) => {
+              next.delete(ref);
+            });
+            return next;
+          });
+        }
+        if (jobsClient?.masterSheetId) {
+          outgoingsPullPendingRef.current = jobsClient.masterSheetId;
+        }
+      }
+
       // Reload jobs data from server to keep counts and surrounding data synchronized
       await loadJobsData(jobsClient, "All");
     } catch (err) {
@@ -1340,6 +1402,50 @@ export default function JobsView({
         next.delete(jobKey);
         return next;
       });
+    }
+  };
+
+  // Move real invoices to another job, then delete the original job
+  const handleMoveInvoicesThenDelete = async (targetJob) => {
+    if (!deletingJob || !targetJob) return;
+    setMovingInvoiceThenDeleteLoading(true);
+    try {
+      const realInvoices = deletingJobRealInvoices;
+      for (const inv of realInvoices) {
+        await fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "move_invoice_to_job",
+            clientSheetId: jobsClient.clientSheetId,
+            masterSheetId: jobsClient.masterSheetId || "",
+            tabName: deletingJob.tabName || (filterType === "pipeline" ? "Pipeline" : "Confirmed"),
+            sourceRowNum: inv.rowNum,
+            sourceSlotNum: inv.slotNum,
+            sourceJobClient: inv.client || deletingJob.client,
+            sourceJobName: inv.jobName || deletingJob.jobName,
+            invoiceRef: inv.ref,
+            targetJobClient: targetJob.client,
+            targetJobName: targetJob.jobName,
+            createNewRow: true,
+            targetJobLastRow: targetJob.rows?.[targetJob.rows.length - 1]?.rowNum,
+            invoice: {
+              invoiceNo: inv.ref,
+              amount: parseFloat(stripCurrency(inv.amount)) || 0,
+              sentDate: inv.sentDate || "",
+              daysToPay: parseInt(inv.daysToPay, 10) || 30,
+              status: inv.status || "Sent"
+            }
+          })
+        });
+      }
+      setMovingInvoicesForDelete(false);
+      await handleDeleteJobDirect(deletingJob);
+    } catch (err) {
+      console.error("Error moving invoices then deleting:", err);
+      alert("Failed to move invoices before deleting: " + err.message);
+    } finally {
+      setMovingInvoiceThenDeleteLoading(false);
     }
   };
 
@@ -1575,6 +1681,24 @@ export default function JobsView({
           if (!db) return -1;
           return da.getTime() - db.getTime();
         }
+        case "dateConfDesc": {
+          const da = getJobDateConf(a);
+          const db = getJobDateConf(b);
+          if (!da && !db) return (rowA.rowNum || 0) - (rowB.rowNum || 0);
+          if (!da) return 1;
+          if (!db) return -1;
+          const diff = db.getTime() - da.getTime();
+          return diff !== 0 ? diff : (rowA.rowNum || 0) - (rowB.rowNum || 0);
+        }
+        case "dateConfAsc": {
+          const da = getJobDateConf(a);
+          const db = getJobDateConf(b);
+          if (!da && !db) return (rowA.rowNum || 0) - (rowB.rowNum || 0);
+          if (!da) return 1;
+          if (!db) return -1;
+          const diff = da.getTime() - db.getTime();
+          return diff !== 0 ? diff : (rowA.rowNum || 0) - (rowB.rowNum || 0);
+        }
         case "revDesc": {
           const revA = parseFloat(String(rowA.revenue || "0").replace(/[£$€,\s]/g, "")) || 0;
           const revB = parseFloat(String(rowB.revenue || "0").replace(/[£$€,\s]/g, "")) || 0;
@@ -1794,104 +1918,307 @@ export default function JobsView({
             padding: "16px"
           }}
           onClick={(e) => {
-            if (e.target === e.currentTarget && !deletingJobKeys.has(getJobKey(deletingJob))) {
+            if (e.target === e.currentTarget && !deletingJobKeys.has(getJobKey(deletingJob)) && !movingInvoiceThenDeleteLoading) {
               setDeletingJob(null);
+              setMovingInvoicesForDelete(false);
+              setTargetJobForMoveDelete(null);
             }
           }}
         >
-          <div
-            style={{
-              background: "#ffffff",
-              borderRadius: "12px",
-              padding: "24px",
-              width: "min(92vw, 480px)",
-              maxHeight: "85vh",
-              overflowY: "auto",
-              boxShadow: "0 20px 60px rgba(0,0,0,0.3)"
-            }}
-          >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "14px" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                <h3 style={{ margin: 0, fontSize: "17px", fontWeight: "700", color: "#991b1b" }}>
-                  Delete job
-                </h3>
+          {movingInvoicesForDelete ? (
+            <div
+              style={{
+                background: "#ffffff",
+                borderRadius: "12px",
+                padding: "24px",
+                width: "min(92vw, 560px)",
+                maxHeight: "85vh",
+                overflowY: "auto",
+                boxShadow: "0 20px 60px rgba(0,0,0,0.3)"
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "14px" }}>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: "17px", fontWeight: "700", color: "#1e293b" }}>
+                    Move invoice to a different job
+                  </h3>
+                  <div style={{ fontSize: "12.5px", color: "#64748b", marginTop: "4px" }}>
+                    Select the destination job for the invoice{deletingJobRealInvoices.length > 1 ? "s" : ""} from <strong>&ldquo;{deletingJob.jobName}&rdquo;</strong> before deleting.
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => { setMovingInvoicesForDelete(false); setTargetJobForMoveDelete(null); }}
+                  disabled={movingInvoiceThenDeleteLoading}
+                  style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}
+                >
+                  ×
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() => setDeletingJob(null)}
-                disabled={deletingJobKeys.has(getJobKey(deletingJob))}
-                style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}
-              >
-                ×
-              </button>
-            </div>
 
-            <p style={{ fontSize: "14px", color: "#334155", lineHeight: "1.5", marginTop: 0, marginBottom: "14px" }}>
-              Are you sure you want to delete <strong>&ldquo;{deletingJob.jobName || "this job"}&rdquo;</strong>?
-            </p>
-
-            <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "8px", padding: "12px 14px", marginBottom: "16px", fontSize: "12.5px" }}>
-              <div style={{ marginBottom: "6px" }}>
-                <span style={{ color: "#7f1d1d", fontWeight: "600", display: "inline-block", width: "70px" }}>Client:</span>
-                <strong style={{ color: "#1e293b" }}>{deletingJob.client || "—"}</strong>
+              <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "8px", padding: "10px 12px", marginBottom: "14px" }}>
+                <div style={{ fontSize: "11px", fontWeight: "700", color: "#64748b", textTransform: "uppercase", letterSpacing: "0.03em", marginBottom: "6px" }}>
+                  Invoices to be moved ({deletingJobRealInvoices.length})
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                  {deletingJobRealInvoices.map((inv, idx) => (
+                    <div key={idx} style={{ fontSize: "12.5px", color: "#334155", display: "flex", justifyContent: "space-between" }}>
+                      <span><strong>{inv.ref}</strong></span>
+                      <span>{inv.amount ? formatCurrency(inv.amount) : "£0.00"}</span>
+                    </div>
+                  ))}
+                </div>
               </div>
-              <div style={{ marginBottom: "6px" }}>
-                <span style={{ color: "#7f1d1d", fontWeight: "600", display: "inline-block", width: "70px" }}>Tab:</span>
-                <span style={{ fontWeight: "600", color: "#0f172a" }}>{deletingJob.tabName || (filterType === "pipeline" ? "Pipeline" : "Confirmed")}</span>
-              </div>
-              <div>
-                <span style={{ color: "#7f1d1d", fontWeight: "600", display: "inline-block", width: "70px" }}>Rows:</span>
-                <span style={{ color: "#475569" }}>
-                  {deletingJob.rows?.map(r => `Row ${r.rowNum}`).join(", ") || `Row ${deletingJob.rows?.[0]?.rowNum || "—"}`}
-                </span>
-              </div>
-            </div>
 
-            <div style={{ fontSize: "12px", color: "#64748b", lineHeight: "1.45", marginBottom: "20px" }}>
-              ⚠️ The job will be removed entirely from the sheet by clearing the relevant cells on the row (preserving all formula columns, formatting, and surrounding structure). This action cannot be undone.
-            </div>
+              <div style={{ marginBottom: "12px" }}>
+                <input
+                  type="text"
+                  placeholder="Search destination jobs by client or job name..."
+                  value={deleteJobMoveSearch}
+                  onChange={(e) => setDeleteJobMoveSearch(e.target.value)}
+                  style={{
+                    width: "100%",
+                    padding: "8px 12px",
+                    borderRadius: "6px",
+                    border: "1px solid #cbd5e1",
+                    fontSize: "13px",
+                    boxSizing: "border-box"
+                  }}
+                />
+              </div>
 
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
-              <button
-                type="button"
-                onClick={() => setDeletingJob(null)}
-                disabled={deletingJobKeys.has(getJobKey(deletingJob))}
-                style={{
-                  padding: "8px 16px",
-                  background: "#ffffff",
-                  border: "1px solid #cbd5e1",
-                  borderRadius: "6px",
-                  fontSize: "13px",
-                  fontWeight: "600",
-                  color: "#475569",
-                  cursor: "pointer"
-                }}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => handleDeleteJobDirect(deletingJob)}
-                disabled={deletingJobKeys.has(getJobKey(deletingJob))}
-                style={{
-                  padding: "8px 20px",
-                  background: "#dc2626",
-                  border: "none",
-                  borderRadius: "6px",
-                  fontSize: "13px",
-                  fontWeight: "600",
-                  color: "#ffffff",
-                  cursor: deletingJobKeys.has(getJobKey(deletingJob)) ? "wait" : "pointer",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: "6px",
-                  opacity: deletingJobKeys.has(getJobKey(deletingJob)) ? 0.75 : 1
-                }}
-              >
-                {deletingJobKeys.has(getJobKey(deletingJob)) ? <><Spinner size={12} color="#ffffff" /> Deleting...</> : "Yes, Delete Job"}
-              </button>
+              <div style={{ maxHeight: "240px", overflowY: "auto", border: "1px solid #e2e8f0", borderRadius: "8px", marginBottom: "20px" }}>
+                {(() => {
+                  const candidates = (jobsData || []).filter(j => getJobKey(j) !== getJobKey(deletingJob));
+                  const filtered = candidates.filter(j => {
+                    if (!deleteJobMoveSearch.trim()) return true;
+                    const q = deleteJobMoveSearch.toLowerCase();
+                    return (j.client || "").toLowerCase().includes(q) || (j.jobName || "").toLowerCase().includes(q);
+                  });
+                  if (filtered.length === 0) {
+                    return (
+                      <div style={{ padding: "16px", textAlign: "center", fontSize: "13px", color: "#94a3b8" }}>
+                        No matching jobs found
+                      </div>
+                    );
+                  }
+                  return filtered.map((cJob) => {
+                    const isSelected = targetJobForMoveDelete && getJobKey(targetJobForMoveDelete) === getJobKey(cJob);
+                    return (
+                      <div
+                        key={getJobKey(cJob)}
+                        onClick={() => setTargetJobForMoveDelete(cJob)}
+                        style={{
+                          padding: "10px 12px",
+                          borderBottom: "1px solid #f1f5f9",
+                          cursor: "pointer",
+                          background: isSelected ? "#eff6ff" : "#ffffff",
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          transition: "background 0.15s ease"
+                        }}
+                        onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = "#f8fafc"; }}
+                        onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = "#ffffff"; }}
+                      >
+                        <div>
+                          <div style={{ fontSize: "13px", fontWeight: "600", color: isSelected ? "#1d4ed8" : "#1e293b" }}>
+                            {cJob.client || "No client"} · {cJob.jobName || "Unnamed job"}
+                          </div>
+                          <div style={{ fontSize: "11px", color: "#64748b" }}>
+                            Revenue: {formatCurrency(cJob.revenue || 0)} · {cJob.tabName || "Confirmed"}
+                          </div>
+                        </div>
+                        <input
+                          type="radio"
+                          name="deleteMoveJobSelection"
+                          checked={isSelected}
+                          onChange={() => setTargetJobForMoveDelete(cJob)}
+                          style={{ cursor: "pointer" }}
+                        />
+                      </div>
+                    );
+                  });
+                })()}
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
+                <button
+                  type="button"
+                  onClick={() => { setMovingInvoicesForDelete(false); setTargetJobForMoveDelete(null); }}
+                  disabled={movingInvoiceThenDeleteLoading}
+                  style={{
+                    padding: "8px 16px",
+                    background: "#ffffff",
+                    border: "1px solid #cbd5e1",
+                    borderRadius: "6px",
+                    fontSize: "13px",
+                    fontWeight: "600",
+                    color: "#475569",
+                    cursor: "pointer"
+                  }}
+                >
+                  Back
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleMoveInvoicesThenDelete(targetJobForMoveDelete)}
+                  disabled={!targetJobForMoveDelete || movingInvoiceThenDeleteLoading}
+                  style={{
+                    padding: "8px 20px",
+                    background: "#2563eb",
+                    border: "none",
+                    borderRadius: "6px",
+                    fontSize: "13px",
+                    fontWeight: "600",
+                    color: "#ffffff",
+                    cursor: !targetJobForMoveDelete || movingInvoiceThenDeleteLoading ? "not-allowed" : "pointer",
+                    opacity: !targetJobForMoveDelete || movingInvoiceThenDeleteLoading ? 0.6 : 1,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px"
+                  }}
+                >
+                  {movingInvoiceThenDeleteLoading ? <><Spinner size={12} color="#ffffff" /> Moving and deleting...</> : "Move and delete job"}
+                </button>
+              </div>
             </div>
-          </div>
+          ) : (
+            <div
+              style={{
+                background: "#ffffff",
+                borderRadius: "12px",
+                padding: "24px",
+                width: "min(92vw, 500px)",
+                maxHeight: "85vh",
+                overflowY: "auto",
+                boxShadow: "0 20px 60px rgba(0,0,0,0.3)"
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "14px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <h3 style={{ margin: 0, fontSize: "17px", fontWeight: "700", color: "#991b1b" }}>
+                    Delete job
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => { setDeletingJob(null); setMovingInvoicesForDelete(false); setTargetJobForMoveDelete(null); }}
+                  disabled={deletingJobKeys.has(getJobKey(deletingJob))}
+                  style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}
+                >
+                  ×
+                </button>
+              </div>
+
+              <p style={{ fontSize: "14px", color: "#334155", lineHeight: "1.5", marginTop: 0, marginBottom: "14px" }}>
+                Are you sure you want to delete <strong>&ldquo;{deletingJob.jobName || "this job"}&rdquo;</strong>?
+              </p>
+
+              <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "8px", padding: "12px 14px", marginBottom: "16px", fontSize: "12.5px" }}>
+                <div style={{ marginBottom: "6px" }}>
+                  <span style={{ color: "#7f1d1d", fontWeight: "600", display: "inline-block", width: "70px" }}>Client:</span>
+                  <strong style={{ color: "#1e293b" }}>{deletingJob.client || "—"}</strong>
+                </div>
+                <div style={{ marginBottom: "6px" }}>
+                  <span style={{ color: "#7f1d1d", fontWeight: "600", display: "inline-block", width: "70px" }}>Tab:</span>
+                  <span style={{ fontWeight: "600", color: "#0f172a" }}>{deletingJob.tabName || (filterType === "pipeline" ? "Pipeline" : "Confirmed")}</span>
+                </div>
+                <div>
+                  <span style={{ color: "#7f1d1d", fontWeight: "600", display: "inline-block", width: "70px" }}>Rows:</span>
+                  <span style={{ color: "#475569" }}>
+                    {deletingJob.rows?.map(r => `Row ${r.rowNum}`).join(", ") || `Row ${deletingJob.rows?.[0]?.rowNum || "—"}`}
+                  </span>
+                </div>
+              </div>
+
+              {deletingJobRealInvoices.length > 0 && (
+                <div style={{ background: "#fffbeb", border: "1px solid #fef3c7", borderRadius: "8px", padding: "12px 14px", marginBottom: "16px", fontSize: "12.5px" }}>
+                  <div style={{ fontWeight: "700", color: "#92400e", marginBottom: "6px" }}>
+                    This job contains {deletingJobRealInvoices.length} active invoice{deletingJobRealInvoices.length > 1 ? "s" : ""}:
+                  </div>
+                  <ul style={{ margin: "0 0 10px 0", paddingLeft: "18px", fontSize: "12px", color: "#78350f" }}>
+                    {deletingJobRealInvoices.map((inv, idx) => (
+                      <li key={idx}>
+                        <strong>{inv.ref}</strong> — {inv.amount ? formatCurrency(inv.amount) : "£0.00"} ({inv.status || "Sent"})
+                      </li>
+                    ))}
+                  </ul>
+                  <div style={{ fontSize: "12px", color: "#92400e", lineHeight: "1.45" }}>
+                    Would you like to move {deletingJobRealInvoices.length > 1 ? "these invoices" : "this invoice"} to a different job before deleting? If you choose not to, {deletingJobRealInvoices.length > 1 ? "they" : "it"} will immediately return to your &ldquo;invoices to assign&rdquo; list and create a missing invoice alert.
+                  </div>
+                </div>
+              )}
+
+              <div style={{ fontSize: "12px", color: "#64748b", lineHeight: "1.45", marginBottom: "20px" }}>
+                ⚠️ The job will be removed entirely from the sheet by clearing the relevant cells on the row (preserving all formula columns, formatting, and surrounding structure). This action cannot be undone.
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  onClick={() => { setDeletingJob(null); setMovingInvoicesForDelete(false); setTargetJobForMoveDelete(null); }}
+                  disabled={deletingJobKeys.has(getJobKey(deletingJob))}
+                  style={{
+                    padding: "8px 16px",
+                    background: "#ffffff",
+                    border: "1px solid #cbd5e1",
+                    borderRadius: "6px",
+                    fontSize: "13px",
+                    fontWeight: "600",
+                    color: "#475569",
+                    cursor: "pointer"
+                  }}
+                >
+                  Cancel
+                </button>
+                {deletingJobRealInvoices.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setMovingInvoicesForDelete(true)}
+                    disabled={deletingJobKeys.has(getJobKey(deletingJob))}
+                    style={{
+                      padding: "8px 16px",
+                      background: "#2563eb",
+                      border: "none",
+                      borderRadius: "6px",
+                      fontSize: "13px",
+                      fontWeight: "600",
+                      color: "#ffffff",
+                      cursor: "pointer"
+                    }}
+                  >
+                    Move invoice to different job
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => handleDeleteJobDirect(deletingJob)}
+                  disabled={deletingJobKeys.has(getJobKey(deletingJob))}
+                  style={{
+                    padding: "8px 20px",
+                    background: deletingJobRealInvoices.length > 0 ? "#ffffff" : "#dc2626",
+                    border: deletingJobRealInvoices.length > 0 ? "1px solid #dc2626" : "none",
+                    borderRadius: "6px",
+                    fontSize: "13px",
+                    fontWeight: "600",
+                    color: deletingJobRealInvoices.length > 0 ? "#dc2626" : "#ffffff",
+                    cursor: deletingJobKeys.has(getJobKey(deletingJob)) ? "wait" : "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    opacity: deletingJobKeys.has(getJobKey(deletingJob)) ? 0.75 : 1
+                  }}
+                >
+                  {deletingJobKeys.has(getJobKey(deletingJob)) ? (
+                    <><Spinner size={12} color={deletingJobRealInvoices.length > 0 ? "#dc2626" : "#ffffff"} /> Deleting...</>
+                  ) : (
+                    deletingJobRealInvoices.length > 0 ? "Delete without moving" : "Yes, delete job"
+                  )}
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -1942,24 +2269,56 @@ export default function JobsView({
         <InvoicesEditModal
           editSlot={invoicesEditSlot}
           invoicesClient={jobsClient}
+          availableJobs={jobsData}
           onClose={() => setInvoicesEditSlot(null)}
           onMarkPullPending={(masterId) => (outgoingsPullPendingRef.current = masterId)}
-          onUpdateInvoiceJobs={(rNum, sNum, newData) => {
+          onInvoiceMoved={async () => {
+            await loadJobsData(jobsClient, "All");
+          }}
+          onUpdateInvoiceJobs={(rNum, sNum, newData, resData) => {
             setJobsData((prev) =>
               prev &&
-              prev.map((j) => ({
-                ...j,
-                rows: j.rows.map((r) =>
-                  r.rowNum !== rNum
-                    ? r
-                    : {
-                      ...r,
-                      invoiceSlots: r.invoiceSlots.map((sl) =>
-                        sl.slotNum !== sNum ? sl : { ...sl, ...newData }
-                      )
-                    }
-                )
-              }))
+              prev.map((j) => {
+                const hasRow = j.rows?.some(r => r.rowNum === rNum);
+                let updatedJob = j;
+                if (hasRow && resData?.placeholderAdjustment) {
+                  const { rowNum: pRow, slotNum: pSlot, newAmount: pAmt } = resData.placeholderAdjustment;
+                  updatedJob = {
+                    ...updatedJob,
+                    rows: updatedJob.rows.map(r => {
+                      if (r.rowNum === pRow) {
+                        return {
+                          ...r,
+                          invoiceSlots: (r.invoiceSlots || []).map(sl =>
+                            sl.slotNum === pSlot ? { ...sl, amount: pAmt > 0 ? String(pAmt) : "" } : sl
+                          )
+                        };
+                      }
+                      return r;
+                    })
+                  };
+                }
+                if (hasRow && resData?.updatedRevenue !== undefined) {
+                  updatedJob = {
+                    ...updatedJob,
+                    revenue: resData.updatedRevenue,
+                    rows: updatedJob.rows.map(r => ({ ...r, revenue: resData.updatedRevenue }))
+                  };
+                }
+                return {
+                  ...updatedJob,
+                  rows: updatedJob.rows.map((r) =>
+                    r.rowNum !== rNum
+                      ? r
+                      : {
+                        ...r,
+                        invoiceSlots: r.invoiceSlots.map((sl) =>
+                          sl.slotNum !== sNum ? sl : { ...sl, ...newData }
+                        )
+                      }
+                  )
+                };
+              })
             );
           }}
         />
@@ -2318,6 +2677,12 @@ export default function JobsView({
                           <option value="startDateAsc">Start Date (Oldest first)</option>
                           <option value="endDateDesc">End Date (Newest first)</option>
                           <option value="endDateAsc">End Date (Oldest first)</option>
+                          {hasDateConfirmed && (
+                            <>
+                              <option value="dateConfDesc">Date confirmed (descending)</option>
+                              <option value="dateConfAsc">Date confirmed (ascending)</option>
+                            </>
+                          )}
                           <option value="revDesc">Revenue (Highest first)</option>
                           <option value="revAsc">Revenue (Lowest first)</option>
                           <option value="clientName">Client Name (A - Z)</option>
@@ -2501,7 +2866,7 @@ export default function JobsView({
                 )}
 
                 {/* Loading State */}
-                {jobsLoading && !jobsData ? (
+                {(jobsLoading || !jobsData) ? (
                   <div style={{ textAlign: "center", padding: "48px 0", color: "#64748b" }}>
                     <Spinner size={24} />
                     <div style={{ marginTop: "12px", fontSize: "14px" }}>Loading client jobs...</div>
@@ -3373,6 +3738,7 @@ export default function JobsView({
                                                             jobName: item.row.jobName || parentRow.jobName || job.jobName,
                                                             slotLabel: item.label,
                                                             tabName: item.row.tabName || parentRow.tabName || job.tabName || (filterType === "pipeline" ? "Pipeline" : "Confirmed"),
+                                                            job,
                                                           });
                                                         }}
                                                         style={{
@@ -3871,6 +4237,12 @@ export default function JobsView({
                         <option value="endDateDesc">By job end date - descending</option>
                         <option value="startDateAsc">By job start date - ascending</option>
                         <option value="endDateAsc">By job end date - ascending</option>
+                        {hasDateConfirmed && (
+                          <>
+                            <option value="dateConfDesc">Date confirmed (descending)</option>
+                            <option value="dateConfAsc">Date confirmed (ascending)</option>
+                          </>
+                        )}
                         <option value="clientName">By client name</option>
                         <option value="rowNumber">By row number</option>
                       </select>
@@ -3885,7 +4257,7 @@ export default function JobsView({
                   </div>
                 </div>
 
-                {jobsLoading && !jobsData ? (
+                {(jobsLoading || !jobsData) ? (
                   <div style={{ textAlign: "center", color: "#999", padding: "24px" }}>Loading jobs...</div>
                 ) : (
                   <div style={{ overflowX: "auto", borderRadius: "8px", border: "1px solid #e0e0e0" }}>
@@ -3998,7 +4370,7 @@ export default function JobsView({
                                 {r.invoiceSlots.map((s) => (
                                   <td
                                     key={`legacy_inv${s.slotNum}`}
-                                    onClick={() => setInvoicesEditSlot({ rowNum: r.rowNum, slotNum: s.slotNum, slot: s, jobClient: r.client || job.client, jobName: r.jobName || job.jobName, tabName: r.tabName || job.tabName || (filterType === "pipeline" ? "Pipeline" : "Confirmed") })}
+                                    onClick={() => setInvoicesEditSlot({ rowNum: r.rowNum, slotNum: s.slotNum, slot: s, jobClient: r.client || job.client, jobName: r.jobName || job.jobName, tabName: r.tabName || job.tabName || (filterType === "pipeline" ? "Pipeline" : "Confirmed"), job })}
                                     style={{ padding: "7px 10px", borderBottom: "1px solid #eee", cursor: "pointer" }}
                                   >
                                     {!s.ref && !s.amount ? (

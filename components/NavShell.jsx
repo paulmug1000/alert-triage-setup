@@ -3,6 +3,7 @@ import Link from "next/link";
 import { useRouter } from "next/router";
 import { SYSTEM_VERSION, getSystemCopyright } from "../config/version";
 import Spinner from "./Spinner";
+import { useAppGlobals } from "../hooks/useAppGlobals";
 
 // Global styles injected once - handles :hover/:active which React inline styles can't do
 const GLOBAL_STYLES = `
@@ -29,13 +30,15 @@ const GLOBAL_STYLES = `
     justify-content: space-between;
     gap: 12px;
     box-sizing: border-box;
+    position: relative;
+    z-index: 101;
   }
   .pma-topbar-brand {
     display: flex;
     align-items: center;
     gap: 10px;
     min-width: 0;
-    flex-shrink: 1;
+    flex-shrink: 0;
   }
   .pma-topbar-brand-logo {
     height: 32px;
@@ -51,31 +54,81 @@ const GLOBAL_STYLES = `
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .pma-topbar-user-area {
+  .pma-topbar-actions {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 10px;
+    margin-left: auto;
+  }
+  .pma-manage-btn-wrapper {
+    position: relative;
+  }
+  .pma-pulse-btn-wrapper {
+    position: relative;
+  }
+  .pma-topbar-profile {
+    display: flex;
+    align-items: center;
     flex-shrink: 0;
+    position: relative;
   }
 
-  /* Mobile Portrait and Small Screens */
+  /* Mobile Portrait and Small Screens (Double-height layout) */
   @media (max-width: 600px) {
     .pma-topbar {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      grid-template-rows: auto auto;
+      row-gap: 8px;
+      column-gap: 8px;
       padding: 8px 12px;
-      gap: 8px;
     }
     .pma-topbar-brand {
+      grid-column: 1 / 2;
+      grid-row: 1 / 2;
       gap: 8px;
+      align-self: center;
     }
     .pma-topbar-brand-logo {
       height: 26px;
     }
     .pma-topbar-title {
-      font-size: 13.5px;
+      font-size: 14px;
       letter-spacing: -0.1px;
+      white-space: nowrap;
+      overflow: visible;
+      text-overflow: clip;
     }
-    .pma-topbar-user-area {
+    .pma-topbar-profile {
+      grid-column: 2 / 3;
+      grid-row: 1 / 2;
+      justify-self: end;
+      align-self: center;
+    }
+    .pma-topbar-actions {
+      grid-column: 1 / 3;
+      grid-row: 2 / 3;
+      display: flex;
+      align-items: center;
       gap: 8px;
+      width: 100%;
+      margin-left: 0;
+    }
+    .pma-manage-btn-wrapper {
+      flex: 1;
+      min-width: 0;
+    }
+    .pma-manage-btn {
+      width: 100% !important;
+      max-width: 100% !important;
+      justify-content: space-between !important;
+    }
+    .pma-pulse-btn-wrapper {
+      flex-shrink: 0;
+    }
+    .pma-manage-dropdown {
+      left: 0 !important;
+      right: auto !important;
     }
   }
 
@@ -83,12 +136,14 @@ const GLOBAL_STYLES = `
   @media (max-width: 360px) {
     .pma-topbar {
       padding: 6px 8px;
+      row-gap: 6px;
+      column-gap: 6px;
     }
     .pma-topbar-brand-logo {
       height: 22px;
     }
     .pma-topbar-title {
-      font-size: 12px;
+      font-size: 12.5px;
     }
   }
 `;
@@ -107,11 +162,12 @@ if (typeof document !== "undefined") {
 // Persistent top bar - rendered around every screen
 export default function NavShell({
   activeNav, onHome, onAlerts, onOverview, onTasks, onActivity, onAppLog,
-  onOutgoings, onInvoices, onRetainers, onJobs, onSalaries, onExpenses, onNBToFind, onBudget, onViews, onTools, onIntegrations, onSetup, onSettings,
-  homeAlertCount, taskCount, user, onLogout, clients = [],
+  onOutgoings, onInvoices, onRetainers, onJobs, onSalaries, onExpenses, onNBToFind, onBudget, onCash, onViews, onTools, onIntegrations, onSetup, onSettings,
+  homeAlertCount, taskCount, integrationsCount, user, onLogout, clients = [],
   managedClient, onSelectManagedClient, onClearManagedClient, children
 }) {
   const router = useRouter();
+  const { preloadClientData } = useAppGlobals();
   const [showMore, setShowMore] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const [manageDropdownOpen, setManageDropdownOpen] = useState(false);
@@ -271,11 +327,12 @@ export default function NavShell({
         { key: "expenses", label: "Expenses", handler: onExpenses },
         { key: "nbtofind", label: "New business to find", handler: onNBToFind },
         { key: "budget", label: "Budget", handler: onBudget },
+        { key: "cash", label: "Cash", handler: onCash },
       ],
     },
     { key: "views", label: "Views", handler: onViews },
     { key: "tools", label: "EoM", handler: onTools },
-    { key: "integrations", label: "Integrations", handler: onIntegrations },
+    { key: "integrations", label: "Integrations", handler: onIntegrations, badge: integrationsCount },
     { key: "setup", label: "Setup", handler: onSetup },
     { key: "activity", label: "Activity", handler: onActivity || onAppLog },
     { key: "settings", label: "⚙ Settings", handler: onSettings },
@@ -306,34 +363,35 @@ export default function NavShell({
           <span className="pma-topbar-title">Management Area</span>
         </a>
         {user && (
-          <div className="pma-topbar-user-area" style={{ position: "relative" }}>
-            {/* Manage Client Dropdown */}
-            <div style={{ position: "relative" }}>
-              <button
-                type="button"
-                className="pma-manage-btn triage-btn"
-                onClick={() => {
-                  setManageDropdownOpen((v) => !v);
-                  setPulseDropdownOpen(false);
-                  setProfileDropdownOpen(false);
-                  setEditDropdownOpen(false);
-                }}
-                style={{
-                  background: managedClient ? "#0047AB" : "rgba(255, 255, 255, 0.12)",
-                  border: managedClient ? "1px solid #3b82f6" : "1px solid rgba(255, 255, 255, 0.25)",
-                  borderRadius: "6px",
-                  color: "#ffffff",
-                  fontSize: "13px",
-                  fontWeight: 600,
-                  padding: "5px 12px",
-                  cursor: "pointer",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: "6px",
-                  transition: "all 0.15s ease",
-                  boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
-                  maxWidth: isMobile ? "130px" : "210px"
-                }}
+          <>
+            <div className="pma-topbar-actions">
+              {/* Manage Client Dropdown */}
+              <div className="pma-manage-btn-wrapper">
+                <button
+                  type="button"
+                  className="pma-manage-btn triage-btn"
+                  onClick={() => {
+                    setManageDropdownOpen((v) => !v);
+                    setPulseDropdownOpen(false);
+                    setProfileDropdownOpen(false);
+                    setEditDropdownOpen(false);
+                  }}
+                  style={{
+                    background: managedClient ? "#0047AB" : "rgba(255, 255, 255, 0.12)",
+                    border: managedClient ? "1px solid #3b82f6" : "1px solid rgba(255, 255, 255, 0.25)",
+                    borderRadius: "6px",
+                    color: "#ffffff",
+                    fontSize: "13px",
+                    fontWeight: 600,
+                    padding: "5px 12px",
+                    cursor: "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    transition: "all 0.15s ease",
+                    boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+                    maxWidth: isMobile ? "100%" : "210px"
+                  }}
                 onMouseEnter={(e) => { e.currentTarget.style.background = managedClient ? "#003b8e" : "rgba(255, 255, 255, 0.22)"; }}
                 onMouseLeave={(e) => { e.currentTarget.style.background = managedClient ? "#0047AB" : "rgba(255, 255, 255, 0.12)"; }}
                 title={managedClient ? `Managing: ${managedClient.clientName} across PMA (Click to switch or clear)` : "Select client to manage across PMA"}
@@ -479,6 +537,7 @@ export default function NavShell({
                               boxSizing: "border-box"
                             }}
                             onMouseEnter={(e) => {
+                              preloadClientData?.(c);
                               if (!isSelected) {
                                 e.currentTarget.style.background = "#f0f7ff";
                                 e.currentTarget.style.color = "#0047AB";
@@ -502,8 +561,8 @@ export default function NavShell({
               )}
             </div>
 
-            {/* Pulse Button with Client Chooser Dropdown */}
-            <div style={{ position: "relative" }}>
+              {/* Pulse Button with Client Chooser Dropdown */}
+              <div className="pma-pulse-btn-wrapper">
               <button
                 type="button"
                 className="pma-pulse-btn triage-btn"
@@ -648,8 +707,10 @@ export default function NavShell({
               )}
             </div>
 
+            </div>
+
             {/* Profile Menu Button */}
-            <div style={{ position: "relative" }}>
+            <div className="pma-topbar-profile">
               <button
                 type="button"
                 className="pma-profile-btn triage-btn"
@@ -749,7 +810,7 @@ export default function NavShell({
                 </div>
               )}
             </div>
-          </div>
+          </>
         )}
       </div>
       <div className="pma-navbar" style={{

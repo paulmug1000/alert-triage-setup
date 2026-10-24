@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import Spinner from "./Spinner";
 import { useAuth } from "../hooks/useAuth";
+import { useAppGlobals } from "../hooks/useAppGlobals";
 import PerformanceFYView from "./portal/PerformanceFYView";
 import CashflowView from "./portal/CashflowView";
 import PortalOutgoingsView from "./portal/PortalOutgoingsView";
@@ -28,8 +29,19 @@ export default function ViewsScreen({
 }) {
   const { user } = useAuth();
   const isAdmin = propIsAdmin !== undefined ? propIsAdmin : !!(user?.isAdmin || user?.role === "Admin");
+  const { getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId } = useAppGlobals();
 
-  const [selectedClient, setSelectedClient] = useState(null);
+  const [selectedClient, setSelectedClient] = useState(() => {
+    if (managedClient) {
+      return (allClients || []).find((c) => c.clientName?.toLowerCase() === managedClient.clientName?.toLowerCase()) || managedClient;
+    }
+    if (typeof window !== "undefined") {
+      const saved = sessionStorage.getItem("pma_views_client");
+      const found = saved ? (allClients || []).find((c) => c.clientName === saved) : null;
+      if (found) return found;
+    }
+    return (allClients && allClients.length > 0) ? allClients[0] : null;
+  });
   const [clientSearch, setClientSearch] = useState("");
   const [activeTab, setActiveTab] = useState("fyPerformance");
 
@@ -86,7 +98,29 @@ export default function ViewsScreen({
   const fetchPayload = useCallback(async (client, bypassCache = false) => {
     if (!client?.clientSheetId) return;
     const cid = client.clientSheetId;
-    if (!bypassCache && payloadCache[cid]) return payloadCache[cid];
+    const cleanId = cleanSheetId ? cleanSheetId(cid) : String(cid).replace(/.*\/d\/([a-zA-Z0-9-_]+).*/, "$1");
+
+    const cached = !bypassCache ? (payloadCache[cid] || getCachedClientData(cid, "portal_payload")?.data) : null;
+    if (cached) {
+      setPayloadCache((prev) => ({ ...prev, [cid]: cached }));
+      setLoadingPayload(false);
+      return cached;
+    }
+
+    if (!bypassCache && typeof getInFlightPrefetch === "function") {
+      const inFlight = getInFlightPrefetch(`portal_payload_${cleanId}`);
+      if (inFlight) {
+        try {
+          await inFlight;
+          const fresh = getCachedClientData(cid, "portal_payload")?.data;
+          if (fresh) {
+            setPayloadCache((prev) => ({ ...prev, [cid]: fresh }));
+            setLoadingPayload(false);
+            return fresh;
+          }
+        } catch {}
+      }
+    }
 
     setLoadingPayload(true);
     setPayloadError(null);
@@ -95,6 +129,7 @@ export default function ViewsScreen({
       const res = await fetch(url);
       const data = await res.json();
       if (data.success && data.payload) {
+        setCachedClientData(cid, "portal_payload", data.payload);
         setPayloadCache((prev) => ({ ...prev, [cid]: data.payload }));
         return data.payload;
       }
@@ -104,12 +139,34 @@ export default function ViewsScreen({
     } finally {
       setLoadingPayload(false);
     }
-  }, [payloadCache]);
+  }, [payloadCache, getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId]);
 
   const fetchPerformance = useCallback(async (client, bypassCache = false) => {
     if (!client?.clientSheetId) return;
     const cid = client.clientSheetId;
-    if (!bypassCache && perfCache[cid]) return perfCache[cid];
+    const cleanId = cleanSheetId ? cleanSheetId(cid) : String(cid).replace(/.*\/d\/([a-zA-Z0-9-_]+).*/, "$1");
+
+    const cached = !bypassCache ? (perfCache[cid] || getCachedClientData(cid, "portal_perf")?.data) : null;
+    if (cached) {
+      setPerfCache((prev) => ({ ...prev, [cid]: cached }));
+      setLoadingPerf(false);
+      return cached;
+    }
+
+    if (!bypassCache && typeof getInFlightPrefetch === "function") {
+      const inFlight = getInFlightPrefetch(`portal_perf_${cleanId}`);
+      if (inFlight) {
+        try {
+          await inFlight;
+          const fresh = getCachedClientData(cid, "portal_perf")?.data;
+          if (fresh) {
+            setPerfCache((prev) => ({ ...prev, [cid]: fresh }));
+            setLoadingPerf(false);
+            return fresh;
+          }
+        } catch {}
+      }
+    }
 
     setLoadingPerf(true);
     setPerfError(null);
@@ -118,6 +175,7 @@ export default function ViewsScreen({
       const res = await fetch(url);
       const data = await res.json();
       if (data.success && data.data) {
+        setCachedClientData(cid, "portal_perf", data.data);
         setPerfCache((prev) => ({ ...prev, [cid]: data.data }));
         return data.data;
       } else {
@@ -129,12 +187,34 @@ export default function ViewsScreen({
     } finally {
       setLoadingPerf(false);
     }
-  }, [perfCache]);
+  }, [perfCache, getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId]);
 
   const fetchCashflow = useCallback(async (client, bypassCache = false) => {
     if (!client?.clientSheetId) return;
     const cid = client.clientSheetId;
-    if (!bypassCache && cashCache[cid]) return cashCache[cid];
+    const cleanId = cleanSheetId ? cleanSheetId(cid) : String(cid).replace(/.*\/d\/([a-zA-Z0-9-_]+).*/, "$1");
+
+    const cached = !bypassCache ? (cashCache[cid] || getCachedClientData(cid, "portal_cash")?.data) : null;
+    if (cached) {
+      setCashCache((prev) => ({ ...prev, [cid]: cached }));
+      setLoadingCash(false);
+      return cached;
+    }
+
+    if (!bypassCache && typeof getInFlightPrefetch === "function") {
+      const inFlight = getInFlightPrefetch(`portal_cash_${cleanId}`);
+      if (inFlight) {
+        try {
+          await inFlight;
+          const fresh = getCachedClientData(cid, "portal_cash")?.data;
+          if (fresh) {
+            setCashCache((prev) => ({ ...prev, [cid]: fresh }));
+            setLoadingCash(false);
+            return fresh;
+          }
+        } catch {}
+      }
+    }
 
     setLoadingCash(true);
     setCashError(null);
@@ -143,6 +223,7 @@ export default function ViewsScreen({
       const res = await fetch(url);
       const data = await res.json();
       if (data.success && data.data) {
+        setCachedClientData(cid, "portal_cash", data.data);
         setCashCache((prev) => ({ ...prev, [cid]: data.data }));
         return data.data;
       } else {
@@ -154,12 +235,34 @@ export default function ViewsScreen({
     } finally {
       setLoadingCash(false);
     }
-  }, [cashCache]);
+  }, [cashCache, getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId]);
 
   const fetchKeyData = useCallback(async (client, bypassCache = false) => {
     if (!client?.clientSheetId) return;
     const cid = client.clientSheetId;
-    if (!bypassCache && keyDataCache[cid]) return keyDataCache[cid];
+    const cleanId = cleanSheetId ? cleanSheetId(cid) : String(cid).replace(/.*\/d\/([a-zA-Z0-9-_]+).*/, "$1");
+
+    const cached = !bypassCache ? (keyDataCache[cid] || getCachedClientData(cid, "portal_key_data")?.data) : null;
+    if (cached) {
+      setKeyDataCache((prev) => ({ ...prev, [cid]: cached }));
+      setLoadingKeyData(false);
+      return cached;
+    }
+
+    if (!bypassCache && typeof getInFlightPrefetch === "function") {
+      const inFlight = getInFlightPrefetch(`portal_key_${cleanId}`);
+      if (inFlight) {
+        try {
+          await inFlight;
+          const fresh = getCachedClientData(cid, "portal_key_data")?.data;
+          if (fresh) {
+            setKeyDataCache((prev) => ({ ...prev, [cid]: fresh }));
+            setLoadingKeyData(false);
+            return fresh;
+          }
+        } catch {}
+      }
+    }
 
     setLoadingKeyData(true);
     setKeyDataError(null);
@@ -168,6 +271,7 @@ export default function ViewsScreen({
       const res = await fetch(url);
       const data = await res.json();
       if (data.success && data.data) {
+        setCachedClientData(cid, "portal_key_data", data.data);
         setKeyDataCache((prev) => ({ ...prev, [cid]: data.data }));
         return data.data;
       } else {
@@ -179,12 +283,34 @@ export default function ViewsScreen({
     } finally {
       setLoadingKeyData(false);
     }
-  }, [keyDataCache]);
+  }, [keyDataCache, getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId]);
 
   const fetchBudget = useCallback(async (client, bypassCache = false) => {
     if (!client?.clientSheetId) return;
     const cid = client.clientSheetId;
-    if (!bypassCache && budgetCache[cid]) return budgetCache[cid];
+    const cleanId = cleanSheetId ? cleanSheetId(cid) : String(cid).replace(/.*\/d\/([a-zA-Z0-9-_]+).*/, "$1");
+
+    const cached = !bypassCache ? (budgetCache[cid] || getCachedClientData(cid, "portal_budget")?.data) : null;
+    if (cached) {
+      setBudgetCache((prev) => ({ ...prev, [cid]: cached }));
+      setLoadingBudget(false);
+      return cached;
+    }
+
+    if (!bypassCache && typeof getInFlightPrefetch === "function") {
+      const inFlight = getInFlightPrefetch(`portal_budget_${cleanId}`);
+      if (inFlight) {
+        try {
+          await inFlight;
+          const fresh = getCachedClientData(cid, "portal_budget")?.data;
+          if (fresh) {
+            setBudgetCache((prev) => ({ ...prev, [cid]: fresh }));
+            setLoadingBudget(false);
+            return fresh;
+          }
+        } catch {}
+      }
+    }
 
     setLoadingBudget(true);
     setBudgetError(null);
@@ -193,6 +319,7 @@ export default function ViewsScreen({
       const res = await fetch(url);
       const data = await res.json();
       if (data.success && data.data) {
+        setCachedClientData(cid, "portal_budget", data.data);
         setBudgetCache((prev) => ({ ...prev, [cid]: data.data }));
         return data.data;
       } else {
@@ -204,7 +331,7 @@ export default function ViewsScreen({
     } finally {
       setLoadingBudget(false);
     }
-  }, [budgetCache]);
+  }, [budgetCache, getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId]);
 
   // Load needed data based on active tab and selected client
   useEffect(() => {
@@ -252,11 +379,11 @@ export default function ViewsScreen({
   };
 
   const cid = selectedClient?.clientSheetId;
-  const payload = cid ? payloadCache[cid] : null;
-  const perfData = cid ? perfCache[cid] : null;
-  const cashData = cid ? cashCache[cid] : null;
-  const keyData = cid ? keyDataCache[cid] : null;
-  const budgetData = cid ? budgetCache[cid] : null;
+  const payload = cid ? (payloadCache[cid] || getCachedClientData(cid, "portal_payload")?.data) : null;
+  const perfData = cid ? (perfCache[cid] || getCachedClientData(cid, "portal_perf")?.data) : null;
+  const cashData = cid ? (cashCache[cid] || getCachedClientData(cid, "portal_cash")?.data) : null;
+  const keyData = cid ? (keyDataCache[cid] || getCachedClientData(cid, "portal_key_data")?.data) : null;
+  const budgetData = cid ? (budgetCache[cid] || getCachedClientData(cid, "portal_budget")?.data) : null;
 
   const rawSymbol =
     payload?.clientInfo?.currencySymbol ||
@@ -278,12 +405,12 @@ export default function ViewsScreen({
 
   const isCurrentViewLoading =
     activeTab === "fyPerformance"
-      ? loadingPerf || (loadingPayload && !payload)
+      ? (loadingPerf && !perfData) || (loadingPayload && !payload)
       : activeTab === "cashflow"
-        ? loadingCash || (loadingPayload && !payload)
+        ? (loadingCash && !cashData) || (loadingPayload && !payload)
         : activeTab === "budgetOverview"
-          ? loadingBudget || loadingPerf || (loadingPayload && !payload)
-          : loadingKeyData || (loadingPayload && !payload);
+          ? ((loadingBudget && !budgetData) || (loadingPerf && !perfData) || (loadingPayload && !payload))
+          : ((loadingKeyData && !keyData) || (loadingPayload && !payload));
 
   const filteredClients = (allClients || []).filter((c) =>
     (c.clientName || "").toLowerCase().includes(clientSearch.toLowerCase().trim())
@@ -419,6 +546,7 @@ export default function ViewsScreen({
               overflowX: "auto",
               scrollbarWidth: "none",
             }}
+            className="client-views-tabs"
           >
             {TABS.map((tab) => {
               const isActive = activeTab === tab.id;
@@ -426,6 +554,7 @@ export default function ViewsScreen({
                 <button
                   key={tab.id}
                   onClick={() => setActiveTab(tab.id)}
+                  className="no-click-spinner client-views-tab"
                   style={{
                     background: isActive ? "#ffffff" : "transparent",
                     border: "none",

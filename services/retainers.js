@@ -4,6 +4,7 @@ import { logPmaActivity } from "./pmaLogger";
 import { resolveClientNameBySheetId, getAllClients } from "./workspaces";
 import { isPlaceholderInvoice, isPlaceholderExpense } from "../utils/helpers";
 import { getSessionUser } from "./authService";
+import { get2TierCache, set2TierCache, invalidatePmaClientCache } from "./cacheService";
 
 const RET_MONTHS_MAP = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
 
@@ -180,10 +181,19 @@ export function retRowHasRealData(row) {
 }
 
 export async function handleGetRetainerJobs(req, res, sheets) {
-  const { clientSheetId } = req.body;
+  const { clientSheetId, bypassCache } = req.body;
   if (!clientSheetId) return res.status(400).json({ success: false, error: "Missing clientSheetId" });
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+    const cacheKey = `pulse:pma:retainer_jobs:${sheetIdClean}`;
+
+    if (!bypassCache) {
+      const cached = await get2TierCache(cacheKey);
+      if (cached && Array.isArray(cached.jobs)) {
+        return res.status(200).json(cached);
+      }
+    }
+
     const resp = await withRetry(() => sheets.spreadsheets.values.get({
       spreadsheetId: sheetIdClean,
       range: "Confirmed!A1:CR5000",
@@ -222,7 +232,9 @@ export async function handleGetRetainerJobs(req, res, sheets) {
       return db - da;
     });
 
-    return res.status(200).json({ success: true, jobs });
+    const payload = { success: true, jobs };
+    await set2TierCache(cacheKey, payload, 120);
+    return res.status(200).json(payload);
   } catch (err) {
     console.error("❌ get_retainer_jobs error:", err);
     return res.status(500).json({ success: false, error: err.message });

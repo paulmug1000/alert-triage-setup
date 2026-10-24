@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import Head from "next/head";
 import { useRouter } from "next/router";
 import Spinner from "../components/Spinner";
+import { AppGlobalsProvider } from "../hooks/useAppGlobals";
 
 export default function App({ Component, pageProps }) {
   const router = useRouter();
@@ -49,10 +50,12 @@ export default function App({ Component, pageProps }) {
         btn.closest(".pma-pulse-dropdown") ||
         btn.closest(".pma-profile-dropdown") ||
         btn.closest(".portal-mobile-menu") ||
+        btn.closest(".client-views-tabs") ||
         btn.classList.contains("pulse-nav-item") ||
         btn.classList.contains("nav-more-btn") ||
         btn.classList.contains("pma-pulse-btn") ||
         btn.classList.contains("pma-profile-btn") ||
+        btn.classList.contains("client-views-tab") ||
         btn.classList.contains("no-click-spinner")
       );
       if (isMenuBar) return;
@@ -200,7 +203,9 @@ export default function App({ Component, pageProps }) {
           </span>
         </div>
       )}
-      <Component {...pageProps} />
+      <AppGlobalsProvider>
+        <Component {...pageProps} />
+      </AppGlobalsProvider>
     </>
   );
 }

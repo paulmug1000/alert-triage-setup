@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import Spinner from "./Spinner";
 import { useAuth } from "../hooks/useAuth";
+import { useAppGlobals } from "../hooks/useAppGlobals";
 import { formatMoney as universalFormatMoney, parseMoney } from "../services/deepDiveHelper";
 import { downloadCsv } from "../utils/helpers";
 import CellNoteIndicator from "./CellNoteIndicator";
@@ -133,14 +134,42 @@ export default function BudgetView({
 }) {
   const { user } = useAuth();
   const isAdmin = Boolean(user?.isAdmin || user?.role === "Admin" || user?.role === "ClientManager");
+  const { getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId } = useAppGlobals();
 
-  // Client State
-  const [selectedClient, setSelectedClient] = useState(null);
+  // Client State (synchronous initial selection from managedClient or initialClient to eliminate flash)
+  const [selectedClient, setSelectedClient] = useState(() => {
+    if (managedClient) {
+      return (allOutgoingsClients || []).find(
+        (c) => c.clientName?.toLowerCase() === managedClient.clientName?.toLowerCase()
+      ) || managedClient;
+    }
+    if (initialClient) {
+      const targetStr = typeof initialClient === "string" ? initialClient.toLowerCase() : initialClient?.clientName?.toLowerCase();
+      return (allOutgoingsClients || []).find(
+        (c) => c.clientName?.toLowerCase() === targetStr
+      ) || (typeof initialClient === "object" ? initialClient : null);
+    }
+    return null;
+  });
   const [clientSearch, setClientSearch] = useState("");
 
-  // Data State
-  const [budgetData, setBudgetData] = useState(null);
-  const [keyData, setKeyData] = useState(null);
+  // Data State (instant initialization from memory cache if preloaded)
+  const [budgetData, setBudgetData] = useState(() => {
+    const target = managedClient || (typeof initialClient === "object" ? initialClient : null);
+    if (target?.clientSheetId) {
+      const cached = getCachedClientData(target.clientSheetId, "budget");
+      if (cached?.data) return cached.data;
+    }
+    return null;
+  });
+  const [keyData, setKeyData] = useState(() => {
+    const target = managedClient || (typeof initialClient === "object" ? initialClient : null);
+    if (target?.clientSheetId) {
+      const cached = getCachedClientData(target.clientSheetId, "portal_key_data");
+      if (cached?.data) return cached.data;
+    }
+    return null;
+  });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [saveSuccessMsg, setSaveSuccessMsg] = useState("");
@@ -149,7 +178,7 @@ export default function BudgetView({
   const [noteModalData, setNoteModalData] = useState(null); // { sheetRow, colIdx, title, subtitle, initialNote }
 
   // FY Navigation
-  const [selectedFyIdx, setSelectedFyIdx] = useState(0);
+  const [selectedFyIdx, setSelectedFyIdx] = useState(() => budgetData?.defaultFyIndex ?? 0);
 
   // Section Collapsible Toggles
   const [salariesOpen, setSalariesOpen] = useState(true);
@@ -248,8 +277,9 @@ export default function BudgetView({
       return;
     }
     if (initialClient) {
+      const targetStr = typeof initialClient === "string" ? initialClient.toLowerCase() : initialClient?.clientName?.toLowerCase();
       const match = (allOutgoingsClients || []).find(
-        (c) => c.clientName?.toLowerCase() === initialClient.toLowerCase()
+        (c) => c.clientName?.toLowerCase() === targetStr
       );
       if (match) {
         setSelectedClient(match);
@@ -270,10 +300,40 @@ export default function BudgetView({
     }
   };
 
-  // Fetch Budget Data & Key Data
+  // Fetch Budget Data & Key Data with caching
   const fetchBudgetData = useCallback(async (client, bypassCache = false) => {
     if (!client || (!client.clientSheetId && !client.masterSheetId)) return;
-    setLoading(true);
+    const cleanId = cleanSheetId ? cleanSheetId(client.clientSheetId) : client.clientSheetId;
+
+    const cached = !bypassCache ? getCachedClientData(client.clientSheetId, "budget") : null;
+    if (cached?.data) {
+      setBudgetData(cached.data);
+      if (cached.data.defaultFyIndex !== undefined) {
+        setSelectedFyIdx(cached.data.defaultFyIndex);
+      }
+      setLoading(false);
+      if (!cached.isStale) return;
+    } else {
+      setLoading(true);
+    }
+
+    if (!bypassCache && typeof getInFlightPrefetch === "function") {
+      const inFlight = getInFlightPrefetch(`budget_${cleanId}`);
+      if (inFlight) {
+        try {
+          await inFlight;
+          const fresh = getCachedClientData(client.clientSheetId, "budget");
+          if (fresh?.data) {
+            setBudgetData(fresh.data);
+            if (fresh.data.defaultFyIndex !== undefined) {
+              setSelectedFyIdx(fresh.data.defaultFyIndex);
+            }
+            setLoading(false);
+            return;
+          }
+        } catch {}
+      }
+    }
     setError(null);
     try {
       const [res, keyRes] = await Promise.all([
@@ -304,11 +364,13 @@ export default function BudgetView({
       if (data.defaultFyIndex !== undefined) {
         setSelectedFyIdx(data.defaultFyIndex);
       }
+      setCachedClientData(client.clientSheetId, "budget", data);
 
       if (keyRes && keyRes.ok) {
         const kData = await keyRes.json();
         if (kData.success && kData.data) {
           setKeyData(kData.data);
+          setCachedClientData(client.clientSheetId, "portal_key_data", kData.data);
         }
       }
     } catch (err) {
@@ -317,7 +379,7 @@ export default function BudgetView({
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [cleanSheetId, getCachedClientData, setCachedClientData, getInFlightPrefetch]);
 
   useEffect(() => {
     if (selectedClient) {
@@ -1331,7 +1393,7 @@ export default function BudgetView({
       </div>
 
       {/* ── CLIENT SELECTOR SCREEN (WHEN NO CLIENT SELECTED) ── */}
-      {!selectedClient && (
+      {!selectedClient && !managedClient && !initialClient && (
         <EditClientSelector
           clients={allOutgoingsClients}
           onSelectClient={(c) => setSelectedClient(c)}

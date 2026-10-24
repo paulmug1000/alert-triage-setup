@@ -395,9 +395,9 @@ export default function JobMatchCard({
     >
       {/* ── Top Header: Client & Job with Pills to the right ── */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
-        <div style={{ flex: 1, minWidth: "240px" }}>
+        <div style={{ flex: "1 1 200px", minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-            <span style={{ fontSize: "16px", fontWeight: "700", color: "#0f172a" }}>
+            <span style={{ fontSize: "16px", fontWeight: "700", color: "#0f172a", wordBreak: "break-word" }}>
               {clientName} - {jobName}
             </span>
 
@@ -409,7 +409,8 @@ export default function JobMatchCard({
                 background: isRetainer ? "#e0f2fe" : "#f3e8ff",
                 color: isRetainer ? "#0284c7" : "#7e22ce",
                 padding: "2px 8px",
-                borderRadius: "12px"
+                borderRadius: "12px",
+                whiteSpace: "nowrap"
               }}
             >
               {jobType}
@@ -425,7 +426,8 @@ export default function JobMatchCard({
                   color: "#2563eb",
                   padding: "1px 6px",
                   borderRadius: "4px",
-                  border: "1px solid #bfdbfe"
+                  border: "1px solid #bfdbfe",
+                  whiteSpace: "nowrap"
                 }}
               >
                 {projectCode}
@@ -435,7 +437,7 @@ export default function JobMatchCard({
         </div>
 
         {/* Action Buttons: View Job */}
-        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
           {onViewJob && (
             <button
               type="button"
@@ -452,7 +454,8 @@ export default function JobMatchCard({
                 cursor: "pointer",
                 display: "inline-flex",
                 alignItems: "center",
-                gap: "4px"
+                gap: "4px",
+                whiteSpace: "nowrap"
               }}
             >
               👁 View job
@@ -467,7 +470,7 @@ export default function JobMatchCard({
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+          gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))",
           gap: "8px 14px",
           background: "#f8fafc",
           border: "1px solid #e2e8f0",

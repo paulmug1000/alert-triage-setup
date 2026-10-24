@@ -1,11 +1,11 @@
 import { getSheetsClient, withRetry, extractSheetIdFromUrl, colLetterToNum, colIndexToLetter, getSheetGid, getSheetId, applySheetFontFormat } from "./sheetsClient.js";
 import { setMasterSwitch, checkAllGASLocks, fetchJobRowsForDisplay, getToleranceValues } from "./sharedHelpers.js";
 import { logPmaActivity, DEFAULT_AC_SHEET_ID } from "./pmaLogger.js";
-import { isPlaceholderInvoice, toSheetDateFormat, parseSheetDate } from "../utils/helpers.js";
+import { isPlaceholderInvoice, isPlaceholderExpense, toSheetDateFormat, parseSheetDate } from "../utils/helpers.js";
 import { getSessionUser } from "./authService.js";
 import { isUserAuthorizedForClient, matchesClientName, sanitizeFormulaInput, getClientManagerClientMap } from "./userPermissions.js";
 import { redisClient } from "./redisClient.js";
-import { memoryCache } from "./cacheService.js";
+import { memoryCache, get2TierCache, set2TierCache, invalidatePmaClientCache } from "./cacheService.js";
 
 let _allClientsMemoryCache = null;
 let _allClientsCachedAt = 0;
@@ -297,11 +297,20 @@ export async function handlePruneAssignedExpenses(req, res, sheets) {
 }
 
 export async function handleGetOutgoingsInbox(req, res, sheets) {
-  const { masterSheetId, clientSheetId } = req.body;
+  const { masterSheetId, clientSheetId, bypassCache } = req.body;
   const sheetId = masterSheetId || clientSheetId;
   if (!sheetId) return res.status(400).json({ success: false, error: "Missing masterSheetId or clientSheetId" });
   try {
     const sheetIdClean = extractSheetIdFromUrl(sheetId) || sheetId;
+    const cacheKey = `pulse:pma:outgoings_inbox:${sheetIdClean}`;
+
+    if (!bypassCache) {
+      const cached = await get2TierCache(cacheKey);
+      if (cached && Array.isArray(cached.inbox)) {
+        return res.status(200).json(cached);
+      }
+    }
+
     const allLocks = await checkAllGASLocks(sheets, sheetIdClean);
     const expLock = allLocks.expense;
     if (expLock.locked) {
@@ -339,7 +348,9 @@ export async function handleGetOutgoingsInbox(req, res, sheets) {
       inbox.push({ appId, amount, date, description, reference, accountName, status, datePaid, vatAmount, contactName });
     }
 
-    return res.status(200).json({ success: true, inbox });
+    const payload = { success: true, inbox };
+    await set2TierCache(cacheKey, payload, 60);
+    return res.status(200).json(payload);
   } catch (err) {
     try { await setMasterSwitch(sheets, extractSheetIdFromUrl(req.body.masterSheetId || req.body.clientSheetId) || req.body.masterSheetId || req.body.clientSheetId, "DirComp", false); } catch(e) {}
     console.error("❌ get_outgoings_inbox error:", err);
@@ -348,11 +359,19 @@ export async function handleGetOutgoingsInbox(req, res, sheets) {
 }
 
 export async function handleGetInvoicesInbox(req, res, sheets) {
-  const { masterSheetId, clientSheetId } = req.body;
+  const { masterSheetId, clientSheetId, bypassCache } = req.body;
   const sheetId = masterSheetId || clientSheetId;
   if (!sheetId) return res.status(400).json({ success: false, error: "Missing masterSheetId or clientSheetId" });
   try {
     const sheetIdClean = extractSheetIdFromUrl(sheetId) || sheetId;
+    const cacheKey = `pulse:pma:invoices_inbox:${sheetIdClean}`;
+
+    if (!bypassCache) {
+      const cached = await get2TierCache(cacheKey);
+      if (cached && Array.isArray(cached.inbox)) {
+        return res.status(200).json(cached);
+      }
+    }
 
     const allLocks = await checkAllGASLocks(sheets, sheetIdClean);
     const invLock = allLocks.invoice;
@@ -417,7 +436,9 @@ export async function handleGetInvoicesInbox(req, res, sheets) {
       });
     }
 
-    return res.status(200).json({ success: true, inbox });
+    const payload = { success: true, inbox };
+    await set2TierCache(cacheKey, payload, 60);
+    return res.status(200).json(payload);
   } catch (err) {
     try { await setMasterSwitch(sheets, extractSheetIdFromUrl(req.body.masterSheetId || req.body.clientSheetId) || req.body.masterSheetId || req.body.clientSheetId, "InvComp", false); } catch(e) {}
     console.error("❌ get_invoices_inbox error:", err);
@@ -484,10 +505,19 @@ export async function handleCreateOutgoingsVendor(req, res, sheets) {
 }
 
 export async function handleGetOutgoings(req, res, sheets) {
-  const { clientSheetId } = req.body;
+  const { clientSheetId, bypassCache } = req.body;
   if (!clientSheetId) return res.status(400).json({ success: false, error: "Missing clientSheetId" });
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+    const cacheKey = `pulse:pma:outgoings:${sheetIdClean}`;
+
+    if (!bypassCache) {
+      const cached = await get2TierCache(cacheKey);
+      if (cached && Array.isArray(cached.contractors)) {
+        return res.status(200).json(cached);
+      }
+    }
+
     const gridResp = await sheets.spreadsheets.get({
       spreadsheetId: sheetIdClean,
       ranges: ["Outgoings!A1:BG1", "Outgoings!A13:BG110"],
@@ -582,7 +612,9 @@ export async function handleGetOutgoings(req, res, sheets) {
       contractors.push({ sheetRow: 13 + r, name, vatFlag, invTiming, payTiming, cells });
     }
 
-    return res.status(200).json({ success: true, contractors, months });
+    const payload = { success: true, contractors, months };
+    await set2TierCache(cacheKey, payload, 120);
+    return res.status(200).json(payload);
   } catch (err) {
     console.error("❌ get_outgoings error:", err);
     return res.status(500).json({ success: false, error: err.message });
@@ -590,10 +622,19 @@ export async function handleGetOutgoings(req, res, sheets) {
 }
 
 export async function handleGetDirectCostsJobs(req, res, sheets) {
-  const { clientSheetId, showAll } = req.body;
+  const { clientSheetId, showAll, bypassCache } = req.body;
   if (!clientSheetId) return res.status(400).json({ success: false, error: "Missing clientSheetId" });
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+    const cacheKey = `pulse:pma:direct_costs_jobs:${sheetIdClean}:${showAll ? "all" : "active"}`;
+
+    if (!bypassCache) {
+      const cached = await get2TierCache(cacheKey);
+      if (cached && Array.isArray(cached.jobs)) {
+        return res.status(200).json(cached);
+      }
+    }
+
     const resp = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetIdClean,
       range: "Confirmed!A1:CR5000",
@@ -678,7 +719,9 @@ export async function handleGetDirectCostsJobs(req, res, sheets) {
       return db - da;
     });
 
-    return res.status(200).json({ success: true, jobs });
+    const payload = { success: true, jobs };
+    await set2TierCache(cacheKey, payload, 120);
+    return res.status(200).json(payload);
   } catch (err) {
     console.error("❌ get_direct_costs_jobs error:", err);
     return res.status(500).json({ success: false, error: err.message });
@@ -686,10 +729,19 @@ export async function handleGetDirectCostsJobs(req, res, sheets) {
 }
 
 export async function handleGetInvoiceJobs(req, res, sheets) {
-  const { clientSheetId, showAll } = req.body;
+  const { clientSheetId, showAll, bypassCache } = req.body;
   if (!clientSheetId) return res.status(400).json({ success: false, error: "Missing clientSheetId" });
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+    const cacheKey = `pulse:pma:invoice_jobs:${sheetIdClean}:${showAll ? "all" : "active"}`;
+
+    if (!bypassCache) {
+      const cached = await get2TierCache(cacheKey);
+      if (cached && Array.isArray(cached.jobs)) {
+        return res.status(200).json(cached);
+      }
+    }
+
     const resp = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetIdClean,
       range: "Confirmed!A1:CR5000",
@@ -780,7 +832,9 @@ export async function handleGetInvoiceJobs(req, res, sheets) {
       return db - da;
     });
 
-    return res.status(200).json({ success: true, jobs });
+    const payload = { success: true, jobs };
+    await set2TierCache(cacheKey, payload, 120);
+    return res.status(200).json(payload);
   } catch (err) {
     console.error("❌ get_invoice_jobs error:", err);
     return res.status(500).json({ success: false, error: err.message });
@@ -788,36 +842,24 @@ export async function handleGetInvoiceJobs(req, res, sheets) {
 }
 
 export async function handleGetAllClientJobs(req, res, sheets) {
-  const { clientSheetId, tabName = "All" } = req.body;
+  const { clientSheetId, tabName = "All", bypassCache } = req.body;
   if (!clientSheetId) return res.status(400).json({ success: false, error: "Missing clientSheetId" });
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+    const cacheKey = `pulse:pma:jobs:${sheetIdClean}:${tabName || "All"}`;
+
+    if (!bypassCache) {
+      const cached = await get2TierCache(cacheKey);
+      if (cached && Array.isArray(cached.jobs)) {
+        return res.status(200).json(cached);
+      }
+    }
 
     let confRows = [];
     let pipeRows = [];
     let productLines = [];
     let leadSources = [];
     const notesBySheet = { Confirmed: [], Pipeline: [] };
-
-    // Fetch cell notes in parallel with grid values
-    const notesRanges = (tabName === "All" || !tabName)
-      ? ["Confirmed!A1:CL1000", "Pipeline!A1:CL1000"]
-      : [`${tabName}!A1:CL1000`];
-
-    const fetchNotesPromise = sheets.spreadsheets.get({
-      spreadsheetId: sheetIdClean,
-      ranges: notesRanges,
-      fields: "sheets(properties.title,data.rowData.values.note)",
-    }).then((res) => {
-      (res.data?.sheets || []).forEach((s) => {
-        const title = s.properties?.title;
-        if (title) {
-          notesBySheet[title] = s.data?.[0]?.rowData || [];
-        }
-      });
-    }).catch((err) => {
-      console.warn("⚠️ get_all_client_jobs: could not fetch cell notes:", err?.message);
-    });
 
     if (tabName === "All" || !tabName) {
       try {
@@ -874,8 +916,32 @@ export async function handleGetAllClientJobs(req, res, sheets) {
       } catch (_) {}
     }
 
-    // Await cell notes fetch if still in flight
-    await fetchNotesPromise;
+    // Phase 2 Optimization: Scoped cell notes range based on actual rows in the sheet
+    // Cuts note scanning by over 90% (e.g. 50 rows instead of 1,000 rows across 90 columns)
+    const confNoteMaxRow = Math.min(Math.max(confRows.length + 5, 20), 1000);
+    const pipeNoteMaxRow = Math.min(Math.max(pipeRows.length + 5, 20), 1000);
+
+    const notesRanges = (tabName === "All" || !tabName)
+      ? [`Confirmed!A1:CL${confNoteMaxRow}`, `Pipeline!A1:CL${pipeNoteMaxRow}`]
+      : (tabName === "Confirmed" ? [`Confirmed!A1:CL${confNoteMaxRow}`] : [`Pipeline!A1:CL${pipeNoteMaxRow}`]);
+
+    if (notesRanges.length > 0) {
+      try {
+        const notesResp = await sheets.spreadsheets.get({
+          spreadsheetId: sheetIdClean,
+          ranges: notesRanges,
+          fields: "sheets(properties.title,data.rowData.values.note)",
+        });
+        (notesResp.data?.sheets || []).forEach((s) => {
+          const title = s.properties?.title;
+          if (title) {
+            notesBySheet[title] = s.data?.[0]?.rowData || [];
+          }
+        });
+      } catch (err) {
+        console.warn("⚠️ get_all_client_jobs: could not fetch cell notes:", err?.message);
+      }
+    }
 
     const colVal = (row, idx) => row[idx] !== undefined ? row[idx] : "";
 
@@ -1058,8 +1124,9 @@ export async function handleGetAllClientJobs(req, res, sheets) {
     productLines = Array.from(distinctPl).filter(Boolean).sort();
     leadSources = Array.from(distinctLs).filter(Boolean).sort();
     const existingClients = Array.from(distinctClients).filter(Boolean).sort();
-
-    return res.status(200).json({ success: true, jobs, productLines, leadSources, existingClients });
+    const payload = { success: true, jobs, productLines, leadSources, existingClients };
+    await set2TierCache(cacheKey, payload, 120);
+    return res.status(200).json(payload);
   } catch (err) {
     console.error("❌ get_all_client_jobs error:", err);
     return res.status(500).json({ success: false, error: err.message });
@@ -1337,6 +1404,165 @@ async function insertChildJobRow_(sheets, sheetIdClean, jobLastRow, jobClient, j
   return targetRowNum;
 }
 
+export async function adjustJobInvoicePlaceholders_(sheets, sheetIdClean, targetTab, rowNums, jobRevenue) {
+  try {
+    const validRowNums = (Array.isArray(rowNums) ? rowNums : [rowNums]).map(Number).filter(n => n && n >= 2);
+    if (validRowNums.length === 0) return null;
+    const minRow = Math.min(...validRowNums);
+    const maxRow = Math.max(...validRowNums);
+
+    const slotCols = {
+      1: { a: "AP", ref: "AQ", sent: "AR", days: "AS", st: "AT" },
+      2: { a: "AW", ref: "AX", sent: "AY", days: "AZ", st: "BA" },
+      3: { a: "BD", ref: "BE", sent: "BF", days: "BG", st: "BH" },
+    };
+
+    const resp = await withRetry(() =>
+      sheets.spreadsheets.values.get({
+        spreadsheetId: sheetIdClean,
+        range: `${targetTab}!AG${minRow}:BH${maxRow}`,
+        valueRenderOption: "UNFORMATTED_VALUE"
+      })
+    );
+    const rows = resp.data.values || [];
+    let effectiveRev = jobRevenue;
+    if (effectiveRev === undefined || effectiveRev === null || isNaN(effectiveRev)) {
+      effectiveRev = parseFloat(String(rows[0]?.[0] || "0").replace(/[£$€,\s]/g, "")) || 0;
+    }
+
+    let realInvoicedTotal = 0;
+    let placeholderInvoice = null;
+
+    for (const rNum of validRowNums) {
+      const rowArr = rows[rNum - minRow] || [];
+      for (let s = 1; s <= 3; s++) {
+        const base = s === 1 ? 9 : s === 2 ? 16 : 23;
+        const amt = parseFloat(String(rowArr[base] || "0").replace(/[£$€,\s]/g, "")) || 0;
+        const ref = String(rowArr[base + 1] || "").trim();
+        const st = String(rowArr[base + 4] || "").trim();
+
+        const isPlace = isPlaceholderInvoice(ref, st);
+        if (isPlace) {
+          if (!placeholderInvoice) {
+            placeholderInvoice = { rowNum: rNum, slotNum: s, currentAmount: amt };
+          }
+        } else if (ref && !isPlace) {
+          realInvoicedTotal += amt;
+        }
+      }
+    }
+
+    if (placeholderInvoice && effectiveRev > 0) {
+      const remainingToInvoice = Math.max(0, Math.round((effectiveRev - realInvoicedTotal) * 100) / 100);
+      const cols = slotCols[placeholderInvoice.slotNum];
+      if (remainingToInvoice > 0.01) {
+        await withRetry(() =>
+          sheets.spreadsheets.values.update({
+            spreadsheetId: sheetIdClean,
+            range: `${targetTab}!${cols.a}${placeholderInvoice.rowNum}`,
+            valueInputOption: "RAW",
+            requestBody: { values: [[remainingToInvoice]] }
+          })
+        );
+        return { rowNum: placeholderInvoice.rowNum, slotNum: placeholderInvoice.slotNum, amount: remainingToInvoice, cleared: false };
+      } else {
+        await withRetry(() =>
+          sheets.spreadsheets.values.update({
+            spreadsheetId: sheetIdClean,
+            range: `${targetTab}!${cols.a}${placeholderInvoice.rowNum}:${cols.st}${placeholderInvoice.rowNum}`,
+            valueInputOption: "RAW",
+            requestBody: { values: [["", "", "", "", ""]] }
+          })
+        );
+        return { rowNum: placeholderInvoice.rowNum, slotNum: placeholderInvoice.slotNum, amount: 0, cleared: true };
+      }
+    }
+  } catch (err) {
+    console.warn("adjustJobInvoicePlaceholders_ error (non-fatal):", err.message);
+  }
+  return null;
+}
+
+export async function adjustJobExpensePlaceholders_(sheets, sheetIdClean, targetTab, rowNums, jobBudget) {
+  try {
+    const validRowNums = (Array.isArray(rowNums) ? rowNums : [rowNums]).map(Number).filter(n => n && n >= 2);
+    if (validRowNums.length === 0) return null;
+    const minRow = Math.min(...validRowNums);
+    const maxRow = Math.max(...validRowNums);
+
+    const slotCols = {
+      1: { d: "BX", a: "BY", v: "BZ", dt: "CA", dp: "CB", st: "CC", id: "CD" },
+      2: { d: "CE", a: "CF", v: "CG", dt: "CH", dp: "CI", st: "CJ", id: "CK" },
+      3: { d: "CL", a: "CM", v: "CN", dt: "CO", dp: "CP", st: "CQ", id: "CR" },
+    };
+
+    const resp = await withRetry(() =>
+      sheets.spreadsheets.values.get({
+        spreadsheetId: sheetIdClean,
+        range: `${targetTab}!AH${minRow}:CR${maxRow}`,
+        valueRenderOption: "UNFORMATTED_VALUE"
+      })
+    );
+    const rows = resp.data.values || [];
+    let effectiveBudget = jobBudget;
+    if (effectiveBudget === undefined || effectiveBudget === null || isNaN(effectiveBudget)) {
+      effectiveBudget = parseFloat(String(rows[0]?.[0] || "0").replace(/[£$€,\s]/g, "")) || 0;
+    }
+
+    let realExpensesTotal = 0;
+    let placeholderExpense = null;
+
+    for (const rNum of validRowNums) {
+      const rowArr = rows[rNum - minRow] || [];
+      for (let s = 1; s <= 3; s++) {
+        const base = s === 1 ? 42 : s === 2 ? 49 : 56;
+        const desc = String(rowArr[base] || "").trim();
+        const amt = parseFloat(String(rowArr[base + 1] || "0").replace(/[£$€,\s]/g, "")) || 0;
+        const st = String(rowArr[base + 5] || "").trim();
+        const id = String(rowArr[base + 6] || "").trim();
+
+        const isPlace = isPlaceholderExpense(id, desc, st);
+        if (isPlace) {
+          if (!placeholderExpense) {
+            placeholderExpense = { rowNum: rNum, slotNum: s, currentAmount: amt };
+          }
+        } else if ((id || desc) && amt > 0) {
+          realExpensesTotal += amt;
+        }
+      }
+    }
+
+    if (placeholderExpense && effectiveBudget > 0) {
+      const remainingDC = Math.max(0, Math.round((effectiveBudget - realExpensesTotal) * 100) / 100);
+      const cols = slotCols[placeholderExpense.slotNum];
+      if (remainingDC > 0.01) {
+        await withRetry(() =>
+          sheets.spreadsheets.values.update({
+            spreadsheetId: sheetIdClean,
+            range: `${targetTab}!${cols.a}${placeholderExpense.rowNum}`,
+            valueInputOption: "RAW",
+            requestBody: { values: [[remainingDC]] }
+          })
+        );
+        return { rowNum: placeholderExpense.rowNum, slotNum: placeholderExpense.slotNum, amount: remainingDC, cleared: false };
+      } else {
+        await withRetry(() =>
+          sheets.spreadsheets.values.update({
+            spreadsheetId: sheetIdClean,
+            range: `${targetTab}!${cols.d}${placeholderExpense.rowNum}:${cols.id}${placeholderExpense.rowNum}`,
+            valueInputOption: "RAW",
+            requestBody: { values: [["", "", "", "", "", "", ""]] }
+          })
+        );
+        return { rowNum: placeholderExpense.rowNum, slotNum: placeholderExpense.slotNum, amount: 0, cleared: true };
+      }
+    }
+  } catch (err) {
+    console.warn("adjustJobExpensePlaceholders_ error (non-fatal):", err.message);
+  }
+  return null;
+}
+
 export async function handleAssignExpenseToJob(req, res, sheets) {
   const { clientSheetId, masterSheetId, rowNum, slotNum, expense, expenses, createNewRow, jobLastRow, jobClient, jobName, jobRows } = req.body;
   const expenseList = Array.isArray(expenses) && expenses.length > 0 ? expenses : (expense ? [expense] : []);
@@ -1535,11 +1761,21 @@ export async function handleAssignExpenseToJob(req, res, sheets) {
       }
     }).catch(e => console.error("PMA log failed:", e));
 
+    let placeholderAdjustment = null;
+    try {
+      placeholderAdjustment = await adjustJobExpensePlaceholders_(
+        sheets, sheetIdClean, "Confirmed", knownJobRows, req.body.jobBudget
+      );
+    } catch (pErr) {
+      console.warn("handleAssignExpenseToJob placeholder adjustment failed (non-fatal):", pErr.message);
+    }
+
     return res.status(200).json({
       success: true,
       placed,
       newRowNum: createNewRow ? currRowNum : undefined,
-      newRowsCreated: knownJobRows.length > (Array.isArray(jobRows) ? jobRows.length : 1)
+      newRowsCreated: knownJobRows.length > (Array.isArray(jobRows) ? jobRows.length : 1),
+      placeholderAdjustment
     });
   } catch (err) {
     console.error("❌ assign_expense_to_job error:", err);
@@ -1660,7 +1896,19 @@ export async function handleUpdateExpenseSlot(req, res, sheets) {
       }
     }).catch(e => console.error("PMA log failed:", e));
 
-    return res.status(200).json({ success: true });
+    let placeholderAdjustment = null;
+    try {
+      const rowsToCheck = Array.isArray(req.body.jobRowNums) && req.body.jobRowNums.length > 0
+        ? req.body.jobRowNums
+        : [actualRowNum];
+      placeholderAdjustment = await adjustJobExpensePlaceholders_(
+        sheets, sheetIdClean, targetTab, rowsToCheck, req.body.jobBudget
+      );
+    } catch (pErr) {
+      console.warn("handleUpdateExpenseSlot placeholder adjustment failed (non-fatal):", pErr.message);
+    }
+
+    return res.status(200).json({ success: true, placeholderAdjustment });
   } catch (err) {
     console.error("❌ update_expense_slot error:", err);
     return res.status(500).json({ success: false, error: err.message });
@@ -1906,6 +2154,21 @@ export async function handleAssignInvoiceToJob(req, res, sheets) {
     }
 
 
+    // Update revenue if user chose to increase job revenue to match total invoiced
+    const parentRowIndex = matchingRowIndices.length > 0 ? matchingRowIndices[0] : (createNewRow ? targetRowNum : rowNum);
+    let effectiveRevenue = undefined;
+    if (req.body.updateJobRevenue && req.body.newJobRevenue !== undefined) {
+      effectiveRevenue = parseFloat(req.body.newJobRevenue) || 0;
+      await withRetry(() =>
+        sheets.spreadsheets.values.update({
+          spreadsheetId: sheetIdClean,
+          range: `Confirmed!AG${parentRowIndex}`,
+          valueInputOption: "RAW",
+          requestBody: { values: [[effectiveRevenue]] },
+        })
+      );
+    }
+
     const slotColsForSlot = slotCols[targetSlotNum];
     if (!slotColsForSlot) return res.status(400).json({ success: false, error: "Invalid slotNum" });
 
@@ -1959,6 +2222,20 @@ export async function handleAssignInvoiceToJob(req, res, sheets) {
       }
     }
 
+    // Adjust any existing placeholder invoice slot on this job
+    const allJobRowsToCheck = matchingRowIndices.length > 0 ? [...matchingRowIndices] : [targetRowNum];
+    if (createNewRow && !allJobRowsToCheck.includes(targetRowNum)) {
+      allJobRowsToCheck.push(targetRowNum);
+    }
+    let placeholderAdjustment = null;
+    try {
+      placeholderAdjustment = await adjustJobInvoicePlaceholders_(
+        sheets, sheetIdClean, "Confirmed", allJobRowsToCheck, effectiveRevenue
+      );
+    } catch (pErr) {
+      console.warn("handleAssignInvoiceToJob placeholder adjustment failed (non-fatal):", pErr.message);
+    }
+
     let tenantClient = req.body.clientName || "";
     if (!tenantClient) {
       tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
@@ -1988,10 +2265,219 @@ export async function handleAssignInvoiceToJob(req, res, sheets) {
       success: true,
       newRowNum: createNewRow ? targetRowNum : undefined,
       targetRowNum,
-      rowShifted: targetRowNum !== rowNum
+      rowShifted: targetRowNum !== rowNum,
+      placeholderAdjustment,
+      updatedRevenue: req.body.updateJobRevenue ? effectiveRevenue : undefined
     });
   } catch (err) {
     console.error("❌ assign_invoice_to_job error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function handleMoveInvoiceToJob(req, res, sheets) {
+  const {
+    clientSheetId, masterSheetId, tabName,
+    sourceRowNum, sourceSlotNum, sourceJobClient, sourceJobName, invoiceRef,
+    targetJobClient, targetJobName, targetRowNum, targetSlotNum, createNewRow, targetJobLastRow,
+    updateTargetRevenue, newTargetRevenue,
+    invoice
+  } = req.body;
+
+  if (!clientSheetId || !invoice) {
+    return res.status(400).json({ success: false, error: "Missing clientSheetId or invoice" });
+  }
+  if (!sourceRowNum || !sourceSlotNum) {
+    return res.status(400).json({ success: false, error: "Missing sourceRowNum or sourceSlotNum" });
+  }
+
+  try {
+    const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+    const targetTab = tabName ? String(tabName).trim() : "Confirmed";
+
+    const slotCols = {
+      1: { a: "AP", ref: "AQ", sent: "AR", days: "AS", st: "AT" },
+      2: { a: "AW", ref: "AX", sent: "AY", days: "AZ", st: "BA" },
+      3: { a: "BD", ref: "BE", sent: "BF", days: "BG", st: "BH" },
+    };
+
+    // 1. Clear source invoice slot
+    const sSlotCols = slotCols[sourceSlotNum];
+    if (!sSlotCols) return res.status(400).json({ success: false, error: "Invalid sourceSlotNum" });
+
+    await withRetry(() =>
+      sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: sheetIdClean,
+        requestBody: {
+          valueInputOption: "RAW",
+          data: [
+            { range: `${targetTab}!${sSlotCols.a}${sourceRowNum}`, values: [[""]] },
+            { range: `${targetTab}!${sSlotCols.ref}${sourceRowNum}`, values: [[""]] },
+            { range: `${targetTab}!${sSlotCols.sent}${sourceRowNum}`, values: [[""]] },
+            { range: `${targetTab}!${sSlotCols.days}${sourceRowNum}`, values: [[""]] },
+            { range: `${targetTab}!${sSlotCols.st}${sourceRowNum}`, values: [[""]] },
+          ],
+        },
+      })
+    );
+
+    // Adjust any placeholder invoice on source job
+    let sourcePlaceholderAdjustment = null;
+    try {
+      const fullResp = await withRetry(() =>
+        sheets.spreadsheets.values.get({
+          spreadsheetId: sheetIdClean,
+          range: `${targetTab}!A1:B5000`,
+          valueRenderOption: "UNFORMATTED_VALUE",
+        })
+      );
+      const allRows = fullResp.data.values || [];
+      const norm = (s) => String(s || "").trim().toLowerCase();
+      const sClientNorm = norm(sourceJobClient);
+      const sJobNorm = norm(sourceJobName);
+
+      const sourceRowNums = [];
+      for (let i = 1; i < allRows.length; i++) {
+        const r = allRows[i] || [];
+        if (norm(r[0]) === sClientNorm && norm(r[1]) === sJobNorm) {
+          sourceRowNums.push(i + 1);
+        }
+      }
+      if (sourceRowNums.length > 0) {
+        sourcePlaceholderAdjustment = await adjustJobInvoicePlaceholders_(
+          sheets, sheetIdClean, targetTab, sourceRowNums
+        );
+      }
+    } catch (sErr) {
+      console.warn("Source job placeholder adjustment check failed:", sErr.message);
+    }
+
+    // 2. Assign invoice to target job
+    let actualTargetRowNum = targetRowNum;
+    let actualTargetSlotNum = targetSlotNum;
+
+    if (createNewRow) {
+      const newRowNum = await insertChildJobRow_(sheets, sheetIdClean, targetJobLastRow || targetRowNum, targetJobClient, targetJobName);
+      actualTargetRowNum = newRowNum;
+      actualTargetSlotNum = 1;
+    }
+
+    // Update target job revenue if requested
+    let effectiveTargetRevenue = undefined;
+    if (updateTargetRevenue && newTargetRevenue !== undefined) {
+      effectiveTargetRevenue = parseFloat(newTargetRevenue) || 0;
+      await withRetry(() =>
+        sheets.spreadsheets.values.update({
+          spreadsheetId: sheetIdClean,
+          range: `${targetTab}!AG${actualTargetRowNum}`,
+          valueInputOption: "RAW",
+          requestBody: { values: [[effectiveTargetRevenue]] },
+        })
+      );
+    }
+
+    const tSlotCols = slotCols[actualTargetSlotNum];
+    if (!tSlotCols) return res.status(400).json({ success: false, error: "Invalid targetSlotNum" });
+
+    let daysToPay = parseInt(invoice.daysToPay, 10) || 30;
+    const invAmt = parseFloat(invoice.amount) || 0;
+    const invRef = invoice.invoiceNo || invoice.ref || "";
+    const invStatus = invoice.status || "Sent";
+
+    await withRetry(() =>
+      sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: sheetIdClean,
+        requestBody: {
+          valueInputOption: "RAW",
+          data: [
+            { range: `${targetTab}!${tSlotCols.a}${actualTargetRowNum}`, values: [[invAmt]] },
+            { range: `${targetTab}!${tSlotCols.ref}${actualTargetRowNum}`, values: [[invRef]] },
+            { range: `${targetTab}!${tSlotCols.days}${actualTargetRowNum}`, values: [[daysToPay]] },
+            { range: `${targetTab}!${tSlotCols.st}${actualTargetRowNum}`, values: [[invStatus]] },
+          ],
+        },
+      })
+    );
+
+    if (invoice.sentDate) {
+      const formattedSentDate = toSheetDateFormat(invoice.sentDate);
+      if (formattedSentDate) {
+        await withRetry(() =>
+          sheets.spreadsheets.values.update({
+            spreadsheetId: sheetIdClean,
+            range: `${targetTab}!${tSlotCols.sent}${actualTargetRowNum}`,
+            valueInputOption: "USER_ENTERED",
+            requestBody: { values: [[formattedSentDate]] },
+          })
+        );
+      }
+    }
+
+    // Adjust any placeholder invoice on target job
+    let targetPlaceholderAdjustment = null;
+    try {
+      const targetScanResp = await withRetry(() =>
+        sheets.spreadsheets.values.get({
+          spreadsheetId: sheetIdClean,
+          range: `${targetTab}!A1:B5000`,
+          valueRenderOption: "UNFORMATTED_VALUE",
+        })
+      );
+      const allTargetRows = targetScanResp.data.values || [];
+      const norm = (s) => String(s || "").trim().toLowerCase();
+      const tClientNorm = norm(targetJobClient);
+      const tJobNorm = norm(targetJobName);
+
+      const targetRowNums = [];
+      for (let i = 1; i < allTargetRows.length; i++) {
+        const r = allTargetRows[i] || [];
+        if (norm(r[0]) === tClientNorm && norm(r[1]) === tJobNorm) {
+          targetRowNums.push(i + 1);
+        }
+      }
+      if (targetRowNums.length > 0) {
+        targetPlaceholderAdjustment = await adjustJobInvoicePlaceholders_(
+          sheets, sheetIdClean, targetTab, targetRowNums, effectiveTargetRevenue
+        );
+      }
+    } catch (tErr) {
+      console.warn("Target job placeholder adjustment check failed:", tErr.message);
+    }
+
+    let tenantClient = req.body.clientName || "";
+    if (!tenantClient) {
+      tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
+    }
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId: req.body.automationCommanderSheetId,
+      clientName: tenantClient,
+      category: "INVOICES",
+      action: "Invoice Moved",
+      summary: `Moved invoice #${invRef} (£${invAmt}) from "${sourceJobName}" to "${targetJobName}"`,
+      details: {
+        invoiceNumber: invRef,
+        amount: invAmt,
+        sourceJobName,
+        targetJobName,
+        sourceRowNum,
+        targetRowNum: actualTargetRowNum,
+        targetSlotNum: actualTargetSlotNum,
+        clientName: tenantClient
+      }
+    }).catch(e => console.error("PMA log failed:", e));
+
+    return res.status(200).json({
+      success: true,
+      targetRowNum: actualTargetRowNum,
+      targetSlotNum: actualTargetSlotNum,
+      isNewRow: !!createNewRow,
+      sourcePlaceholderAdjustment,
+      targetPlaceholderAdjustment,
+      updatedTargetRevenue: updateTargetRevenue ? effectiveTargetRevenue : undefined
+    });
+  } catch (err) {
+    console.error("❌ handleMoveInvoiceToJob error:", err);
     return res.status(500).json({ success: false, error: err.message });
   }
 }
@@ -2306,7 +2792,38 @@ export async function handleUpdateInvoiceSlot(req, res, sheets) {
       }
     }).catch(e => console.error("PMA log failed:", e));
 
-    return res.status(200).json({ success: true });
+    // Update revenue if requested
+    let effectiveRevenue = undefined;
+    if (req.body.updateJobRevenue && req.body.newJobRevenue !== undefined) {
+      effectiveRevenue = parseFloat(req.body.newJobRevenue) || 0;
+      await withRetry(() =>
+        sheets.spreadsheets.values.update({
+          spreadsheetId: sheetIdClean,
+          range: `${targetTab}!AG${actualRowNum}`,
+          valueInputOption: "RAW",
+          requestBody: { values: [[effectiveRevenue]] },
+        })
+      );
+    }
+
+    // Adjust any placeholder invoice slot on this job
+    let placeholderAdjustment = null;
+    try {
+      const rowsToCheck = Array.isArray(req.body.jobRowNums) && req.body.jobRowNums.length > 0
+        ? req.body.jobRowNums
+        : [actualRowNum];
+      placeholderAdjustment = await adjustJobInvoicePlaceholders_(
+        sheets, sheetIdClean, targetTab, rowsToCheck, effectiveRevenue
+      );
+    } catch (pErr) {
+      console.warn("handleUpdateInvoiceSlot placeholder adjustment failed (non-fatal):", pErr.message);
+    }
+
+    return res.status(200).json({
+      success: true,
+      placeholderAdjustment,
+      updatedRevenue: req.body.updateJobRevenue ? effectiveRevenue : undefined
+    });
   } catch (err) {
     console.error("❌ update_invoice_slot error:", err);
     return res.status(500).json({ success: false, error: err.message });
@@ -2898,6 +3415,43 @@ export async function handleDeleteDirectJob(req, res, sheets) {
   const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
 
   try {
+    const unassignedInvoices = [];
+    try {
+      const minR = Math.min(...rowNums.map(Number).filter(n => n >= 2));
+      const maxR = Math.max(...rowNums.map(Number).filter(n => n >= 2));
+      const scanResp = await withRetry(() =>
+        sheets.spreadsheets.values.get({
+          spreadsheetId: sheetIdClean,
+          range: `${targetTab}!AP${minR}:BH${maxR}`,
+          valueRenderOption: "UNFORMATTED_VALUE"
+        })
+      );
+      const scanData = scanResp.data.values || [];
+      for (const rNum of rowNums) {
+        const rIdx = Number(rNum) - minR;
+        const rowVals = scanData[rIdx] || [];
+        for (let s = 1; s <= 3; s++) {
+          const base = s === 1 ? 0 : s === 2 ? 7 : 14;
+          const a = rowVals[base];
+          const ref = String(rowVals[base + 1] || "").trim();
+          const sent = rowVals[base + 2];
+          const st = String(rowVals[base + 4] || "").trim();
+          if (ref && !isPlaceholderInvoice(ref, st)) {
+            unassignedInvoices.push({
+              invoiceNo: ref,
+              amount: parseFloat(a) || 0,
+              sentDate: sent || "",
+              status: st || "",
+              slotNum: s,
+              rowNum: rNum
+            });
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Pre-delete scan for real invoices failed (non-fatal):", e.message);
+    }
+
     // Exact column ranges to blank out while preserving all formula columns:
     // [1, 7]: A:G (Client, Job, Code, Date, Lead Source, etc.)
     // [31, 31]: AE (Uneven splits)
@@ -3010,7 +3564,7 @@ export async function handleDeleteDirectJob(req, res, sheets) {
       }
     }).catch(e => console.error("PMA log failed:", e));
 
-    return res.status(200).json({ success: true });
+    return res.status(200).json({ success: true, unassignedInvoices });
   } catch (err) {
     console.error("❌ handleDeleteDirectJob error:", err);
     return res.status(500).json({ success: false, error: err.message });

@@ -33,6 +33,8 @@ export default function JobDetailModal({
   const [draftEdits, setDraftEdits] = useState({});
   const [saving, setSaving] = useState(false);
   const [recentlySaved, setRecentlySaved] = useState(false);
+  const [allJobs, setAllJobs] = useState([]);
+  const [reloadTrigger, setReloadTrigger] = useState(0);
 
   // Sub-modals state
   const [invoicesEditSlot, setInvoicesEditSlot] = useState(null);
@@ -121,6 +123,7 @@ export default function JobDetailModal({
         if (!isMounted) return;
 
         if (data.success && Array.isArray(data.jobs)) {
+          setAllJobs(data.jobs);
           if (data.productLines) setProductLines(data.productLines);
           if (data.leadSources) setLeadSources(data.leadSources);
 
@@ -308,7 +311,7 @@ export default function JobDetailModal({
     return () => {
       isMounted = false;
     };
-  }, [isOpen, target, resolvedClientInfo, activeClientsMap]);
+  }, [isOpen, target, resolvedClientInfo, activeClientsMap, reloadTrigger]);
 
   // Close on Escape key if no sub-modal is open
   useEffect(() => {
@@ -662,6 +665,8 @@ export default function JobDetailModal({
       throw new Error(data.error || "Failed to update cell note");
     }
     if (onSaveSuccess) onSaveSuccess(newNote);
+    setRecentlySaved(true);
+    setTimeout(() => setRecentlySaved(false), 3000);
   };
 
   // Save changes handler
@@ -773,14 +778,37 @@ export default function JobDetailModal({
         <InvoicesEditModal
           editSlot={invoicesEditSlot}
           invoicesClient={resolvedClientInfo.client || target.client}
+          availableJobs={allJobs}
           onClose={() => setInvoicesEditSlot(null)}
           onMarkPullPending={(masterId) => onMarkPullPending && onMarkPullPending(masterId)}
-          onUpdateInvoiceJobs={(rNum, sNum, newData) => {
+          onInvoiceMoved={() => setReloadTrigger((prev) => prev + 1)}
+          onUpdateInvoiceJobs={(rNum, sNum, newData, resData) => {
+            setRecentlySaved(true);
+            setTimeout(() => setRecentlySaved(false), 3000);
             setJob((prev) => {
               if (!prev) return prev;
+              let updated = { ...prev };
+              if (resData?.placeholderAdjustment) {
+                const { rowNum: pRow, slotNum: pSlot, newAmount: pAmt } = resData.placeholderAdjustment;
+                updated.rows = updated.rows.map(r => {
+                  if (r.rowNum === pRow) {
+                    return {
+                      ...r,
+                      invoiceSlots: (r.invoiceSlots || []).map(sl =>
+                        sl.slotNum === pSlot ? { ...sl, amount: pAmt > 0 ? String(pAmt) : "" } : sl
+                      )
+                    };
+                  }
+                  return r;
+                });
+              }
+              if (resData?.updatedRevenue !== undefined) {
+                updated.revenue = resData.updatedRevenue;
+                updated.rows = updated.rows.map(r => ({ ...r, revenue: resData.updatedRevenue }));
+              }
               return {
-                ...prev,
-                rows: prev.rows.map((r) =>
+                ...updated,
+                rows: updated.rows.map((r) =>
                   r.rowNum !== rNum
                     ? r
                     : {
@@ -801,6 +829,8 @@ export default function JobDetailModal({
           onClose={() => setDirectCostsEditSlot(null)}
           onMarkPullPending={(masterId) => onMarkPullPending && onMarkPullPending(masterId)}
           onUpdateJobs={(rNum, sNum, newData) => {
+            setRecentlySaved(true);
+            setTimeout(() => setRecentlySaved(false), 3000);
             setJob((prev) => {
               if (!prev) return prev;
               return {
@@ -826,6 +856,8 @@ export default function JobDetailModal({
           tabName={jobsEditSplit.tabName || tabName}
           onClose={() => setJobsEditSplit(null)}
           onUpdateJobsData={(rNum, splitStr, updatedFields) => {
+            setRecentlySaved(true);
+            setTimeout(() => setRecentlySaved(false), 3000);
             setJob((prev) => {
               if (!prev) return prev;
               return {
@@ -859,6 +891,7 @@ export default function JobDetailModal({
 
       {/* Main Modal Overlay */}
       <div
+        className="job-detail-modal-overlay"
         style={{
           position: "fixed",
           inset: 0,
@@ -876,6 +909,7 @@ export default function JobDetailModal({
         }}
       >
         <div
+          className="job-detail-modal-card"
           style={{
             background: "#ffffff",
             borderRadius: "12px",
@@ -889,18 +923,18 @@ export default function JobDetailModal({
         >
           {/* Header */}
           <div
+            className="job-detail-modal-header"
             style={{
               padding: "16px 24px",
               borderBottom: "1px solid #e2e8f0",
               background: "#ffffff",
               display: "flex",
               justifyContent: "space-between",
-              alignItems: "center",
-              flexWrap: "wrap",
+              alignItems: "flex-start",
               gap: "12px"
             }}
           >
-            <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", flex: 1, minWidth: 0 }}>
               <span
                 style={{
                   padding: "3px 9px",
@@ -909,25 +943,26 @@ export default function JobDetailModal({
                   fontWeight: "700",
                   background: isConfirmed ? "#dcfce7" : "#e0f2fe",
                   color: isConfirmed ? "#15803d" : "#0369a1",
-                  border: isConfirmed ? "1px solid #bbf7d0" : "1px solid #bae6fd"
+                  border: isConfirmed ? "1px solid #bbf7d0" : "1px solid #bae6fd",
+                  whiteSpace: "nowrap"
                 }}
               >
-                {isConfirmed ? "Confirmed Job" : "Pipeline Job"}
+                {isConfirmed ? "Confirmed job" : "Pipeline job"}
               </span>
-              <h2 style={{ margin: 0, fontSize: "18px", fontWeight: "700", color: "#0f172a" }}>
+              <h2 style={{ margin: 0, fontSize: "17px", fontWeight: "700", color: "#0f172a", wordBreak: "break-word" }}>
                 {clientVal || target?.endClientName || target?.client?.clientName || "Client"}
                 {" · "}
                 <span style={{ color: "#334155", fontWeight: "600" }}>
-                  {jobNameVal || target?.jobName || "Job Details"}
+                  {jobNameVal || target?.jobName || "Job details"}
                 </span>
               </h2>
               {projectCodeVal && (
-                <span style={{ fontSize: "12px", background: "#f1f5f9", color: "#475569", padding: "2px 8px", borderRadius: "4px", border: "1px solid #e2e8f0", fontFamily: "monospace" }}>
+                <span style={{ fontSize: "12px", background: "#f1f5f9", color: "#475569", padding: "2px 8px", borderRadius: "4px", border: "1px solid #e2e8f0", fontFamily: "monospace", whiteSpace: "nowrap" }}>
                   {projectCodeVal}
                 </span>
               )}
               {parentRow.rowNum && (
-                <span style={{ fontSize: "12px", color: "#64748b" }}>
+                <span style={{ fontSize: "12px", color: "#64748b", whiteSpace: "nowrap" }}>
                   ({tabName} Row {parentRow.rowNum}{job?.rows?.length > 1 ? `-${job.rows[job.rows.length - 1].rowNum}` : ""})
                 </span>
               )}
@@ -941,29 +976,39 @@ export default function JobDetailModal({
             <button
               type="button"
               onClick={onClose}
+              aria-label="Close"
+              title="Close"
               style={{
-                background: "#f1f5f9",
-                border: "1px solid #e2e8f0",
+                background: "transparent",
+                border: "none",
                 borderRadius: "6px",
-                padding: "6px 14px",
-                fontSize: "13px",
-                fontWeight: "600",
-                color: "#475569",
-                cursor: "pointer",
+                width: "32px",
+                height: "32px",
                 display: "inline-flex",
                 alignItems: "center",
-                gap: "4px",
-                transition: "all 0.15s ease"
+                justifyContent: "center",
+                fontSize: "18px",
+                color: "#64748b",
+                cursor: "pointer",
+                padding: 0,
+                flexShrink: 0,
+                transition: "background 0.15s ease, color 0.15s ease"
               }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = "#e2e8f0"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = "#f1f5f9"; }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = "#f1f5f9";
+                e.currentTarget.style.color = "#0f172a";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "transparent";
+                e.currentTarget.style.color = "#64748b";
+              }}
             >
-              ✕ Close
+              ✕
             </button>
           </div>
 
           {/* Body Content */}
-          <div style={{ flex: 1, overflowY: "auto", padding: "20px 24px" }}>
+          <div className="job-detail-modal-body" style={{ flex: 1, overflowY: "auto", padding: "20px 24px" }}>
             {loading && (
               <div style={{ padding: "60px 0", textAlign: "center", color: "#64748b" }}>
                 <Spinner size={24} color="#0284c7" />
@@ -1187,7 +1232,7 @@ export default function JobDetailModal({
                 </div>
 
                 {/* Sub-grid of 3 Expanded Cards */}
-                <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1.4fr 1.4fr", gap: "16px" }}>
+                <div className="job-detail-cards-grid" style={{ gap: "16px" }}>
                   {/* Card 1: Additional Job Information */}
                   <div
                     style={{
@@ -1202,7 +1247,7 @@ export default function JobDetailModal({
                       Additional Information
                     </div>
 
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+                    <div className="job-detail-addl-info-grid" style={{ gap: "10px" }}>
                       {/* Date Confirmed */}
                       <div>
                         <label style={{ display: "block", fontSize: "11px", fontWeight: "600", color: "#64748b", marginBottom: "3px" }}>
@@ -1349,7 +1394,11 @@ export default function JobDetailModal({
                       padding: "16px",
                       boxShadow: "0 1px 2px rgba(0,0,0,0.02)",
                       display: "flex",
-                      flexDirection: "column"
+                      flexDirection: "column",
+                      boxSizing: "border-box",
+                      maxWidth: "100%",
+                      minWidth: 0,
+                      overflow: "hidden"
                     }}
                   >
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px", borderBottom: "1px solid #f1f5f9", paddingBottom: "6px" }}>
@@ -1392,17 +1441,19 @@ export default function JobDetailModal({
                                   jobClient: item.row.client || parentRow.client || job.client,
                                   jobName: item.row.jobName || parentRow.jobName || job.jobName,
                                   slotLabel: item.label,
-                                  tabName
+                                  tabName,
+                                  job
                                 });
                               }}
                               style={{
                                 padding: "8px 10px", borderRadius: "6px", border: "1px solid #e2e8f0",
-                                background: hasData ? "#f8fafc" : "#ffffff", cursor: "pointer", transition: "border-color 0.15s ease"
+                                background: hasData ? "#f8fafc" : "#ffffff", cursor: "pointer", transition: "border-color 0.15s ease",
+                                boxSizing: "border-box", maxWidth: "100%", overflow: "hidden"
                               }}
                               onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#93c5fd"; e.currentTarget.style.background = "#eff6ff"; }}
                               onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#e2e8f0"; e.currentTarget.style.background = hasData ? "#f8fafc" : "#ffffff"; }}
                             >
-                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "4px" }}>
                                 <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                                   <span style={{ fontSize: "11px", fontWeight: "700", color: "#475569" }}>{item.label}</span>
                                   <NoteIndicatorButton
@@ -1418,18 +1469,18 @@ export default function JobDetailModal({
                                 </div>
                               </div>
                               {hasData ? (
-                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: "4px" }}>
-                                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                                    <span style={{ fontSize: "13px", fontWeight: "600", color: isPlaceholder ? "#9333ea" : "#0f172a" }}>
+                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: "4px", gap: "6px" }}>
+                                  <div style={{ display: "flex", alignItems: "center", gap: "6px", minWidth: 0, flex: 1, overflow: "hidden" }}>
+                                    <span style={{ fontSize: "13px", fontWeight: "600", color: isPlaceholder ? "#9333ea" : "#0f172a", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                                       {slot.ref || "No Ref"}
                                     </span>
                                     {isPlaceholder && (
-                                      <span style={{ fontSize: "10px", padding: "1px 5px", borderRadius: "6px", background: "#f3e8ff", color: "#7e22ce", fontWeight: "600" }}>
+                                      <span style={{ fontSize: "10px", padding: "1px 5px", borderRadius: "6px", background: "#f3e8ff", color: "#7e22ce", fontWeight: "600", flexShrink: 0 }}>
                                         Placeholder
                                       </span>
                                     )}
                                   </div>
-                                  <span style={{ fontSize: "13px", fontWeight: "600", color: "#0f172a" }}>
+                                  <span style={{ fontSize: "13px", fontWeight: "600", color: "#0f172a", flexShrink: 0, whiteSpace: "nowrap" }}>
                                     {formatCurrency(slot.amount)}
                                   </span>
                                 </div>
@@ -1439,7 +1490,7 @@ export default function JobDetailModal({
                                 </div>
                               )}
                               {slot.sentDate && (
-                                <div style={{ fontSize: "10px", color: "#64748b", marginTop: "2px" }}>
+                                <div style={{ fontSize: "10px", color: "#64748b", marginTop: "2px", wordBreak: "break-word" }}>
                                   Sent: {slot.sentDate} ({slot.daysToPay || 30} days)
                                 </div>
                               )}
@@ -1459,7 +1510,11 @@ export default function JobDetailModal({
                       padding: "16px",
                       boxShadow: "0 1px 2px rgba(0,0,0,0.02)",
                       display: "flex",
-                      flexDirection: "column"
+                      flexDirection: "column",
+                      boxSizing: "border-box",
+                      maxWidth: "100%",
+                      minWidth: 0,
+                      overflow: "hidden"
                     }}
                   >
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px", borderBottom: "1px solid #f1f5f9", paddingBottom: "6px" }}>
@@ -1507,12 +1562,13 @@ export default function JobDetailModal({
                               }}
                               style={{
                                 padding: "8px 10px", borderRadius: "6px", border: "1px solid #e2e8f0",
-                                background: hasData ? "#f8fafc" : "#ffffff", cursor: "pointer", transition: "border-color 0.15s ease"
+                                background: hasData ? "#f8fafc" : "#ffffff", cursor: "pointer", transition: "border-color 0.15s ease",
+                                boxSizing: "border-box", maxWidth: "100%", overflow: "hidden"
                               }}
                               onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#93c5fd"; e.currentTarget.style.background = "#eff6ff"; }}
                               onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#e2e8f0"; e.currentTarget.style.background = hasData ? "#f8fafc" : "#ffffff"; }}
                             >
-                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "4px" }}>
                                 <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                                   <span style={{ fontSize: "11px", fontWeight: "700", color: "#475569" }}>{item.label}</span>
                                   <NoteIndicatorButton
@@ -1528,9 +1584,9 @@ export default function JobDetailModal({
                                 </div>
                               </div>
                               {hasData ? (
-                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: "4px" }}>
-                                  <div style={{ display: "flex", alignItems: "center", gap: "6px", overflow: "hidden" }}>
-                                    <span style={{ fontSize: "13px", fontWeight: "600", color: isPlaceholder ? "#9333ea" : "#0f172a", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "160px" }}>
+                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: "4px", gap: "6px" }}>
+                                  <div style={{ display: "flex", alignItems: "center", gap: "6px", minWidth: 0, flex: 1, overflow: "hidden" }}>
+                                    <span style={{ fontSize: "13px", fontWeight: "600", color: isPlaceholder ? "#9333ea" : "#0f172a", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                                       {slot.description || slot.transactionId || "Expense"}
                                     </span>
                                     {isPlaceholder && (
@@ -1539,7 +1595,7 @@ export default function JobDetailModal({
                                       </span>
                                     )}
                                   </div>
-                                  <span style={{ fontSize: "13px", fontWeight: "600", color: "#0f172a" }}>
+                                  <span style={{ fontSize: "13px", fontWeight: "600", color: "#0f172a", flexShrink: 0, whiteSpace: "nowrap" }}>
                                     {formatCurrency(slot.amount)}
                                   </span>
                                 </div>
@@ -1549,7 +1605,7 @@ export default function JobDetailModal({
                                 </div>
                               )}
                               {slot.date && (
-                                <div style={{ fontSize: "10px", color: "#64748b", marginTop: "2px" }}>
+                                <div style={{ fontSize: "10px", color: "#64748b", marginTop: "2px", wordBreak: "break-word" }}>
                                   Date: {slot.date} {slot.vat ? `· VAT: ${slot.vat}` : ""}
                                 </div>
                               )}
@@ -1566,6 +1622,7 @@ export default function JobDetailModal({
 
           {/* Footer Bar */}
           <div
+            className="job-detail-modal-footer"
             style={{
               padding: "14px 24px",
               borderTop: "1px solid #e2e8f0",
@@ -1580,20 +1637,16 @@ export default function JobDetailModal({
             <div>
               {recentlySaved ? (
                 <span style={{ fontSize: "12px", color: "#16a34a", fontWeight: "700" }}>
-                  ✓ Changes saved successfully to sheet
+                  ✓ Job details saved
                 </span>
               ) : isDirty ? (
                 <span style={{ fontSize: "12px", color: "#b45309", fontWeight: "600" }}>
-                  ⚠️ Unsaved changes to this job
+                  ⚠ Unsaved changes to this job
                 </span>
-              ) : (
-                <span style={{ fontSize: "12px", color: "#64748b" }}>
-                  ✓ All job details synchronized
-                </span>
-              )}
+              ) : null}
             </div>
 
-            <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+            <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
               {isDirty && (
                 <button
                   type="button"
@@ -1610,7 +1663,7 @@ export default function JobDetailModal({
                     cursor: saving ? "not-allowed" : "pointer"
                   }}
                 >
-                  Discard Changes
+                  Discard changes
                 </button>
               )}
 
@@ -1634,7 +1687,7 @@ export default function JobDetailModal({
                     boxShadow: "0 1px 2px rgba(22, 163, 74, 0.2)"
                   }}
                 >
-                  {saving ? <><Spinner size={12} color="#ffffff" /> Saving...</> : "💾 Save Job"}
+                  {saving ? <><Spinner size={12} color="#ffffff" /> Saving…</> : "Save job"}
                 </button>
               )}
 
@@ -1658,6 +1711,46 @@ export default function JobDetailModal({
           </div>
         </div>
       </div>
+
+      <style jsx>{`
+        .job-detail-cards-grid {
+          display: grid;
+          grid-template-columns: 1.2fr 1.4fr 1.4fr;
+        }
+        .job-detail-addl-info-grid {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+        }
+        @media (max-width: 900px) {
+          .job-detail-cards-grid {
+            grid-template-columns: 1fr !important;
+            gap: 14px !important;
+          }
+        }
+        @media (max-width: 640px) {
+          .job-detail-modal-overlay {
+            padding: 8px 6px !important;
+          }
+          .job-detail-modal-card {
+            width: 100% !important;
+            max-width: 100% !important;
+            max-height: 96vh !important;
+            border-radius: 10px !important;
+          }
+          .job-detail-modal-header {
+            padding: 12px 14px !important;
+          }
+          .job-detail-modal-body {
+            padding: 12px 14px !important;
+          }
+          .job-detail-modal-footer {
+            padding: 12px 14px !important;
+          }
+          .job-detail-addl-info-grid {
+            grid-template-columns: 1fr !important;
+          }
+        }
+      `}</style>
     </>
   );
 }

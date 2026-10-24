@@ -86,6 +86,7 @@ export default function AlertSelectionView({
   const [retainerAlertResolution, setRetainerAlertResolution] = useState(null);
   const [retainerSplitInvoice, setRetainerSplitInvoice] = useState(null);
   const [acknowledgingKey, setAcknowledgingKey] = useState(null);
+  const [exitingAlertKeys, setExitingAlertKeys] = useState(new Set());
   const [selectedClassifications, setSelectedClassifications] = useState({});
   const [applyingClassification, setApplyingClassification] = useState({});
   const [classificationMsg, setClassificationMsg] = useState({});
@@ -180,61 +181,74 @@ export default function AlertSelectionView({
     );
   };
 
-  const acknowledgeProactiveAlert = async (alertKey, rowIndex) => {
+  const acknowledgeProactiveAlert = (alertKey, rowIndex) => {
     const activeKey = alertKey || (rowIndex != null ? `row-${rowIndex}` : null);
-    try {
-      setAcknowledgingKey(activeKey);
-      const res = await fetch("/api/triage", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "acknowledge_proactive_alert",
-          alertKey,
-          clientName: selectedClient?.clientName,
-          sessionId,
-          automationCommanderSheetId,
-          alertData: proactiveAlerts.find(a => a.alertKey === alertKey || (rowIndex != null && a.rowIndex === rowIndex)) || null
-        }),
-      });
+    if (!activeKey || exitingAlertKeys.has(activeKey)) return;
+
+    if (typeof document !== "undefined" && document.activeElement) {
+      document.activeElement.blur();
+    }
+
+    setExitingAlertKeys(prev => new Set([...prev, activeKey]));
+
+    const alertData = proactiveAlerts.find(a => a.alertKey === alertKey || (rowIndex != null && a.rowIndex === rowIndex)) || null;
+    fetch("/api/triage", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "acknowledge_proactive_alert",
+        alertKey,
+        clientName: selectedClient?.clientName,
+        sessionId,
+        automationCommanderSheetId,
+        alertData,
+      }),
+    }).then(async res => {
       const data = await res.json();
       if (!data.success) {
         console.error(`❌ acknowledge_proactive_alert failed: ${data.error}`);
-        return;
       }
-      console.log(`✅ Acknowledged alert: ${alertKey} (rowIndex ${rowIndex})`);
+    }).catch(err => {
+      console.error("Failed to acknowledge proactive alert in background:", err);
+    });
 
-      if (sessionId) {
-        fetch("/api/triage", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "remove_alert", sessionId, alertId: alertKey }),
-        }).catch(() => { });
-      }
-
-      const remaining = proactiveAlerts.filter(a => {
-        if (rowIndex != null && a.rowIndex != null) {
-          return a.rowIndex !== rowIndex;
-        }
-        return a.alertKey !== alertKey;
-      });
-      const counts = {};
-      remaining.forEach(a => {
-        const cName = a.clientName || a.metadata?.endClientName || a.metadata?.clientName;
-        if (cName) counts[cName] = (counts[cName] || 0) + 1;
-      });
-      setProactiveCountsByClient(counts);
-      setProactiveAlerts(remaining);
-      const remainingProactiveCount = remaining.filter(a => a.clientName === selectedClient?.clientName).length;
-
-      const infoDone = clientNoActionAlerts.every(na => isNoActionResolved(na));
-      if (clientAlerts.length === 0 && infoDone && remainingProactiveCount === 0) {
-        handlePostClear([], resolvedNoActionFlags);
-      }
-    } catch (err) {
-      console.error("Failed to acknowledge proactive alert:", err);
-    } finally {
-      setAcknowledgingKey(null);
+    if (sessionId) {
+      fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "remove_alert", sessionId, alertId: alertKey }),
+      }).catch(() => { });
     }
+
+    setTimeout(() => {
+      setExitingAlertKeys(prev => {
+        const next = new Set(prev);
+        next.delete(activeKey);
+        return next;
+      });
+
+      setProactiveAlerts(prev => {
+        const remaining = prev.filter(a => {
+          if (rowIndex != null && a.rowIndex != null) {
+            return a.rowIndex !== rowIndex;
+          }
+          return a.alertKey !== alertKey;
+        });
+        const counts = {};
+        remaining.forEach(a => {
+          const cName = a.clientName || a.metadata?.endClientName || a.metadata?.clientName;
+          if (cName) counts[cName] = (counts[cName] || 0) + 1;
+        });
+        setProactiveCountsByClient(counts);
+
+        const remainingProactiveCount = remaining.filter(a => a.clientName === selectedClient?.clientName).length;
+        const infoDone = clientNoActionAlerts.every(na => isNoActionResolved(na));
+        if (clientAlerts.length === 0 && infoDone && remainingProactiveCount === 0) {
+          handlePostClear([], resolvedNoActionFlags);
+        }
+        return remaining;
+      });
+    }, 320);
   };
 
   const handleApplyPLClassification = async (alert) => {
@@ -423,49 +437,65 @@ export default function AlertSelectionView({
 
   const handleMarkNoActionResolved = (na) => {
     const alertId = na.fingerprintHash || `${na.flagType}-${na.flagDetail || ""}`;
-    const newResolved = new Set([...resolvedNoActionFlags, alertId]);
-    setResolvedNoActionFlags(newResolved);
-    setInfoBulkSelected(prev => {
-      if (!prev.has(alertId)) return prev;
-      const next = new Set(prev);
-      next.delete(alertId);
-      return next;
-    });
+    if (!alertId || exitingAlertKeys.has(alertId)) return;
 
-    const remainingOfType = clientNoActionAlerts.filter(n => n.flagType === na.flagType && !isNoActionResolved(n, newResolved));
-    const isLastOfType = remainingOfType.length === 0;
+    if (typeof document !== "undefined" && document.activeElement) {
+      document.activeElement.blur();
+    }
 
-    setClientsWithFlags(prev => prev.map(c => {
-      if (c.clientName !== selectedClient?.clientName) return c;
-      const updatedCounts = { ...c.alertCounts };
-      if (updatedCounts[na.flagType] > 0) updatedCounts[na.flagType]--;
-      const updatedFlags = { ...c.flags };
-      if (isLastOfType) updatedFlags[na.flagType] = false;
-      return { ...c, alertCounts: updatedCounts, flags: updatedFlags };
-    }));
+    setExitingAlertKeys(prev => new Set([...prev, alertId]));
 
-    if (sessionId && selectedClient) {
-      fetch("/api/triage", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "resolve_noaction_flag", sessionId, clientName: selectedClient.clientName, flagType: na.flagType, fingerprintHash: na.fingerprintHash || alertId, automationCommanderSheetId }),
-      }).catch(() => { });
+    setTimeout(() => {
+      setExitingAlertKeys(prev => {
+        const next = new Set(prev);
+        next.delete(alertId);
+        return next;
+      });
 
-      if (isLastOfType) {
+      const newResolved = new Set([...resolvedNoActionFlags, alertId]);
+      setResolvedNoActionFlags(newResolved);
+      setInfoBulkSelected(prev => {
+        if (!prev.has(alertId)) return prev;
+        const next = new Set(prev);
+        next.delete(alertId);
+        return next;
+      });
+
+      const remainingOfType = clientNoActionAlerts.filter(n => n.flagType === na.flagType && !isNoActionResolved(n, newResolved));
+      const isLastOfType = remainingOfType.length === 0;
+
+      setClientsWithFlags(prev => prev.map(c => {
+        if (c.clientName !== selectedClient?.clientName) return c;
+        const updatedCounts = { ...c.alertCounts };
+        if (updatedCounts[na.flagType] > 0) updatedCounts[na.flagType]--;
+        const updatedFlags = { ...c.flags };
+        if (isLastOfType) updatedFlags[na.flagType] = false;
+        return { ...c, alertCounts: updatedCounts, flags: updatedFlags };
+      }));
+
+      if (sessionId && selectedClient) {
         fetch("/api/triage", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "update_session_flags", sessionId, clientName: selectedClient.clientName, clearedFlagKeys: [na.flagType] }),
+          body: JSON.stringify({ action: "resolve_noaction_flag", sessionId, clientName: selectedClient.clientName, flagType: na.flagType, fingerprintHash: na.fingerprintHash || alertId, automationCommanderSheetId }),
         }).catch(() => { });
-      }
-    }
 
-    if (RICH_NOACTION_FLAG_GROUP[na.flagType] && isLastOfType) {
-      autoClearFlags(clientAlerts, newResolved).catch(() => { });
-    }
-    const allResolved = clientNoActionAlerts.every(n => isNoActionResolved(n, newResolved));
-    const proactiveDone = proactiveAlerts.filter(a => a.clientName === selectedClient?.clientName).length === 0;
-    if (allResolved && proactiveDone && clientAlerts.length === 0) {
-      handlePostClear([], newResolved);
-    }
+        if (isLastOfType) {
+          fetch("/api/triage", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "update_session_flags", sessionId, clientName: selectedClient.clientName, clearedFlagKeys: [na.flagType] }),
+          }).catch(() => { });
+        }
+      }
+
+      if (RICH_NOACTION_FLAG_GROUP[na.flagType] && isLastOfType) {
+        autoClearFlags(clientAlerts, newResolved).catch(() => { });
+      }
+      const allResolved = clientNoActionAlerts.every(n => isNoActionResolved(n, newResolved));
+      const proactiveDone = proactiveAlerts.filter(a => a.clientName === selectedClient?.clientName).length === 0;
+      if (allResolved && proactiveDone && clientAlerts.length === 0) {
+        handlePostClear([], newResolved);
+      }
+    }, 320);
   };
 
   const getGroupSectionHeader = (type, groupAlerts) => {
@@ -638,6 +668,20 @@ export default function AlertSelectionView({
     if (!alerts.length) return;
     try {
       setInfoBulkSubmitting(true);
+      if (typeof document !== "undefined" && document.activeElement) {
+        document.activeElement.blur();
+      }
+      const alertIds = alerts.map(a => a.fingerprintHash || `${a.flagType}-${a.flagDetail || ""}`);
+      setExitingAlertKeys(prev => new Set([...prev, ...alertIds]));
+
+      await new Promise(r => setTimeout(r, 320));
+
+      setExitingAlertKeys(prev => {
+        const next = new Set(prev);
+        alertIds.forEach(id => next.delete(id));
+        return next;
+      });
+
       const newResolved = new Set(resolvedNoActionFlags);
       alerts.forEach(a => newResolved.add(a.fingerprintHash || `${a.flagType}-${a.flagDetail || ""}`));
       setResolvedNoActionFlags(newResolved);
@@ -660,7 +704,7 @@ export default function AlertSelectionView({
       }));
 
       if (sessionId && selectedClient) {
-        await Promise.all(alerts.map(na => {
+        Promise.all(alerts.map(na => {
           const alertId = na.fingerprintHash || `${na.flagType}-${na.flagDetail || ""}`;
           return fetch("/api/triage", {
             method: "POST", headers: { "Content-Type": "application/json" },
@@ -802,17 +846,27 @@ export default function AlertSelectionView({
     const alerts = proactiveAlerts.filter(a => proactiveBulkSelected.has(a.rowIndex));
     if (!alerts.length) return;
     const alertKeys = alerts.map(a => a.alertKey);
+    const activeKeys = alerts.map(a => a.alertKey || (a.rowIndex != null ? `row-${a.rowIndex}` : null)).filter(Boolean);
     try {
       setProactiveBulkSubmitting(true);
-      const res = await fetch("/api/triage", {
+      if (typeof document !== "undefined" && document.activeElement) {
+        document.activeElement.blur();
+      }
+      setExitingAlertKeys(prev => new Set([...prev, ...activeKeys]));
+
+      fetch("/api/triage", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "bulk_acknowledge_proactive_alerts", alertKeys, clientName: selectedClient?.clientName, automationCommanderSheetId, sessionId }),
+      }).then(res => res.json()).catch(err => console.error("Failed to bulk acknowledge proactive alerts:", err));
+
+      await new Promise(r => setTimeout(r, 320));
+
+      setExitingAlertKeys(prev => {
+        const next = new Set(prev);
+        activeKeys.forEach(k => next.delete(k));
+        return next;
       });
-      const data = await res.json();
-      if (!data.success) {
-        console.error(`❌ bulk_acknowledge_proactive_alerts failed: ${data.error}`);
-        return;
-      }
+
       const selectedRowIndexes = new Set(alerts.map(a => a.rowIndex));
       const remaining = proactiveAlerts.filter(a => !selectedRowIndexes.has(a.rowIndex));
       const counts = {};
@@ -983,20 +1037,20 @@ export default function AlertSelectionView({
       const isMismatch = alert.subType === "field_mismatch";
       return (
         <div style={{ pointerEvents: "none", width: "100%" }}>
-          <div style={{ fontWeight: "600", fontSize: "13.5px", color: "#0f172a", display: "flex", alignItems: "center" }}>
-            <span>{client}{job ? ` - ${job}` : ""}</span>
+          <div style={{ fontWeight: "600", fontSize: "13.5px", color: "#0f172a", display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: "6px", wordBreak: "break-word" }}>
+            <span style={{ wordBreak: "break-word", flex: "1 1 auto" }}>{client}{job ? ` - ${job}` : ""}</span>
             {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(ft) && <AdminBadge show={clientHasManager} />}
           </div>
-          {code && <div style={{ fontSize: "12px", color: "#555", marginTop: "2px" }}>Code: {code}</div>}
-          {rev && <div style={{ fontSize: "12px", color: "#555" }}>Revenue: {rev}</div>}
-          {(start || end) && <div style={{ fontSize: "12px", color: "#555" }}>Dates: {start}{end ? ` → ${end}` : ""}</div>}
-          {isPipeline && likely && <div style={{ fontSize: "12px", color: "#555" }}>Likelihood: {formatLikelihood(likely)}</div>}
+          {code && <div style={{ fontSize: "12px", color: "#555", marginTop: "2px", wordBreak: "break-word" }}>Code: {code}</div>}
+          {rev && <div style={{ fontSize: "12px", color: "#555", wordBreak: "break-word" }}>Revenue: {rev}</div>}
+          {(start || end) && <div style={{ fontSize: "12px", color: "#555", wordBreak: "break-word" }}>Dates: {start}{end ? ` → ${end}` : ""}</div>}
+          {isPipeline && likely && <div style={{ fontSize: "12px", color: "#555", wordBreak: "break-word" }}>Likelihood: {formatLikelihood(likely)}</div>}
           {isMismatch ? (
-            <div style={{ fontSize: "12px", color: "#d97706", marginTop: "4px" }}>
+            <div style={{ fontSize: "12px", color: "#d97706", marginTop: "4px", wordBreak: "break-word" }}>
               ⚠ Field mismatch: {(alert.mismatchFields || []).join(", ")}
             </div>
           ) : (
-            <div style={{ fontSize: "12px", color: "#c62828", marginTop: "4px" }}>
+            <div style={{ fontSize: "12px", color: "#c62828", marginTop: "4px", wordBreak: "break-word" }}>
               {isPipeline ? "In Pulse pipeline jobs - not in CRM" : "In Pulse confirmed jobs - not in CRM"}
             </div>
           )}
@@ -1019,20 +1073,20 @@ export default function AlertSelectionView({
       const mismatchFields = alert.mismatchFields || [];
       return (
         <div style={{ pointerEvents: "none", width: "100%" }}>
-          <div style={{ fontWeight: "600", fontSize: "13.5px", color: "#0f172a", display: "flex", alignItems: "center" }}>
-            <span>{client}{job ? ` - ${job}` : ""}</span>
+          <div style={{ fontWeight: "600", fontSize: "13.5px", color: "#0f172a", display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: "6px", wordBreak: "break-word" }}>
+            <span style={{ wordBreak: "break-word", flex: "1 1 auto" }}>{client}{job ? ` - ${job}` : ""}</span>
             {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(ft) && <AdminBadge show={clientHasManager} />}
           </div>
-          {code && <div style={{ fontSize: "12px", color: "#555", marginTop: "2px" }}>Code: {code}</div>}
-          {rev && <div style={{ fontSize: "12px", color: "#555" }}>Revenue: {rev}</div>}
-          {(start || end) && <div style={{ fontSize: "12px", color: "#555" }}>Dates: {start}{end ? ` → ${end}` : ""}</div>}
-          {isPipeline && likely && <div style={{ fontSize: "12px", color: "#555" }}>Likelihood: {formatLikelihood(likely)}</div>}
+          {code && <div style={{ fontSize: "12px", color: "#555", marginTop: "2px", wordBreak: "break-word" }}>Code: {code}</div>}
+          {rev && <div style={{ fontSize: "12px", color: "#555", wordBreak: "break-word" }}>Revenue: {rev}</div>}
+          {(start || end) && <div style={{ fontSize: "12px", color: "#555", wordBreak: "break-word" }}>Dates: {start}{end ? ` → ${end}` : ""}</div>}
+          {isPipeline && likely && <div style={{ fontSize: "12px", color: "#555", wordBreak: "break-word" }}>Likelihood: {formatLikelihood(likely)}</div>}
           {isMismatch ? (
-            <div style={{ fontSize: "12px", color: "#d97706", marginTop: "4px" }}>
+            <div style={{ fontSize: "12px", color: "#d97706", marginTop: "4px", wordBreak: "break-word" }}>
               ⚠ Field mismatch: {mismatchFields.join(", ")}
             </div>
           ) : (
-            <div style={{ fontSize: "12px", color: "#c62828", marginTop: "4px" }}>
+            <div style={{ fontSize: "12px", color: "#c62828", marginTop: "4px", wordBreak: "break-word" }}>
               {isPipeline ? "In CRM - not in Pulse pipeline jobs" : "In CRM - not in Pulse confirmed jobs"}
             </div>
           )}
@@ -1073,40 +1127,40 @@ export default function AlertSelectionView({
 
       return (
         <div style={{ pointerEvents: "none", width: "100%" }}>
-          <div style={{ fontWeight: "600", fontSize: "13.5px", color: "#0f172a", display: "flex", alignItems: "center" }}>
-            <span>{title}</span>
+          <div style={{ fontWeight: "600", fontSize: "13.5px", color: "#0f172a", display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: "6px", wordBreak: "break-word" }}>
+            <span style={{ wordBreak: "break-word", flex: "1 1 auto" }}>{title}</span>
             {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(ft) && <AdminBadge show={clientHasManager} />}
           </div>
           {invNo && (
-            <div style={{ fontSize: "12px", color: "#555", marginTop: "2px" }}>
+            <div style={{ fontSize: "12px", color: "#555", marginTop: "2px", wordBreak: "break-word" }}>
               Invoice: {String(invNo).startsWith("#") ? invNo : `#${invNo}`}
             </div>
           )}
           {formattedAmt && (
-            <div style={{ fontSize: "12px", color: "#555" }}>
+            <div style={{ fontSize: "12px", color: "#555", wordBreak: "break-word" }}>
               Amount: {formattedAmt}{vatLabel}
             </div>
           )}
           {(sentDate || datePaid) && (
-            <div style={{ fontSize: "12px", color: "#555" }}>
+            <div style={{ fontSize: "12px", color: "#555", wordBreak: "break-word" }}>
               {sentDate && datePaid ? `Dates: Sent ${sentDate} → Paid ${datePaid}` : (sentDate ? `Sent date: ${sentDate}` : `Paid date: ${datePaid}`)}
             </div>
           )}
           {status && (
-            <div style={{ fontSize: "12px", color: "#555" }}>
+            <div style={{ fontSize: "12px", color: "#555", wordBreak: "break-word" }}>
               Status: {status}
             </div>
           )}
           {isMissing ? (
-            <div style={{ fontSize: "12px", color: "#c62828", marginTop: "4px" }}>
+            <div style={{ fontSize: "12px", color: "#c62828", marginTop: "4px", wordBreak: "break-word" }}>
               In accounting - not in Pulse confirmed jobs
             </div>
           ) : activeMismatches.length > 0 ? (
-            <div style={{ fontSize: "12px", color: "#d97706", marginTop: "4px" }}>
+            <div style={{ fontSize: "12px", color: "#d97706", marginTop: "4px", wordBreak: "break-word" }}>
               ⚠ Field mismatch: {activeMismatches.join(", ")}
             </div>
           ) : detailSub ? (
-            <div style={{ fontSize: "12px", color: "#d97706", marginTop: "4px" }}>
+            <div style={{ fontSize: "12px", color: "#d97706", marginTop: "4px", wordBreak: "break-word" }}>
               ⚠ {detailSub}
             </div>
           ) : null}
@@ -1157,45 +1211,45 @@ export default function AlertSelectionView({
 
       return (
         <div style={{ pointerEvents: "none", width: "100%" }}>
-          <div style={{ fontWeight: "600", fontSize: "13.5px", color: "#0f172a", display: "flex", alignItems: "center" }}>
-            <span>{title}</span>
+          <div style={{ fontWeight: "600", fontSize: "13.5px", color: "#0f172a", display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: "6px", wordBreak: "break-word" }}>
+            <span style={{ wordBreak: "break-word", flex: "1 1 auto" }}>{title}</span>
             {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(ft) && <AdminBadge show={clientHasManager} />}
           </div>
           {reference && reference !== "-" && (
-            <div style={{ fontSize: "12px", color: "#555", marginTop: "2px" }}>
+            <div style={{ fontSize: "12px", color: "#555", marginTop: "2px", wordBreak: "break-word" }}>
               Reference: {reference}
             </div>
           )}
           {formattedAmt && (
-            <div style={{ fontSize: "12px", color: "#555", marginTop: !reference || reference === "-" ? "2px" : 0 }}>
+            <div style={{ fontSize: "12px", color: "#555", marginTop: !reference || reference === "-" ? "2px" : 0, wordBreak: "break-word" }}>
               Amount: {formattedAmt}{vatLabel}
             </div>
           )}
           {(date || datePaid) && (
-            <div style={{ fontSize: "12px", color: "#555" }}>
+            <div style={{ fontSize: "12px", color: "#555", wordBreak: "break-word" }}>
               {date && datePaid && date !== datePaid ? `Dates: ${date} → Paid ${datePaid}` : (date ? `Date: ${date}` : `Paid date: ${datePaid}`)}
             </div>
           )}
           {accountName && (
-            <div style={{ fontSize: "12px", color: "#555" }}>
+            <div style={{ fontSize: "12px", color: "#555", wordBreak: "break-word" }}>
               Category: {accountName}
             </div>
           )}
           {status && (
-            <div style={{ fontSize: "12px", color: "#555" }}>
+            <div style={{ fontSize: "12px", color: "#555", wordBreak: "break-word" }}>
               Status: {status}
             </div>
           )}
           {isMissing ? (
-            <div style={{ fontSize: "12px", color: "#c62828", marginTop: "4px" }}>
+            <div style={{ fontSize: "12px", color: "#c62828", marginTop: "4px", wordBreak: "break-word" }}>
               In accounting - not in Pulse confirmed jobs
             </div>
           ) : activeExpMismatches.length > 0 ? (
-            <div style={{ fontSize: "12px", color: "#d97706", marginTop: "4px" }}>
+            <div style={{ fontSize: "12px", color: "#d97706", marginTop: "4px", wordBreak: "break-word" }}>
               ⚠ Field mismatch: {activeExpMismatches.join(", ")}
             </div>
           ) : detailSub ? (
-            <div style={{ fontSize: "12px", color: "#d97706", marginTop: "4px" }}>
+            <div style={{ fontSize: "12px", color: "#d97706", marginTop: "4px", wordBreak: "break-word" }}>
               ⚠ {detailSub}
             </div>
           ) : null}
@@ -1207,11 +1261,11 @@ export default function AlertSelectionView({
 
     return (
       <div style={{ pointerEvents: "none", width: "100%" }}>
-        <div style={{ fontWeight: "600", fontSize: "13.5px", color: "#0f172a", display: "flex", alignItems: "center" }}>
-          <span>{getAlertSummary(alert)}</span>
+        <div style={{ fontWeight: "600", fontSize: "13.5px", color: "#0f172a", display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: "6px", wordBreak: "break-word" }}>
+          <span style={{ wordBreak: "break-word", flex: "1 1 auto" }}>{getAlertSummary(alert)}</span>
           {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(ft) && <AdminBadge show={clientHasManager} />}
         </div>
-        {detailSub && <div style={{ fontSize: "12px", fontWeight: "600", color: "#d97706", marginTop: "4px" }}>⚠ {detailSub}</div>}
+        {detailSub && <div style={{ fontSize: "12px", fontWeight: "600", color: "#d97706", marginTop: "4px", wordBreak: "break-word" }}>⚠ {detailSub}</div>}
         {ignoreBanner}
         {alertDates}
       </div>
@@ -1233,18 +1287,18 @@ export default function AlertSelectionView({
         <p style={styles.subtitle}>{totalVisibleAlertsCount} alert(s)</p>
       </div>
 
-      <div style={styles.card}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+      <div className="alert-selection-card" style={styles.card}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", marginBottom: "16px" }}>
           <button className="triage-btn" onClick={() => {
             if (managedClient && onClearManagedClient) {
               onClearManagedClient();
             }
             setAcceptError("");
             setScreen("clientSelection");
-          }} style={{ ...styles.buttonSecondary, fontSize: "13px" }}>
-            ← Back to Clients
+          }} style={{ ...styles.buttonSecondary, fontSize: "13px", whiteSpace: "nowrap" }}>
+            ← Back to clients
           </button>
-          <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+          <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
             {isAdmin && totalVisibleAlertsCount > 1 && (
               <button className="triage-btn" onClick={() => {
                 const next = !(bulkMode || infoBulkMode || proactiveBulkMode);
@@ -1256,7 +1310,7 @@ export default function AlertSelectionView({
                 setProactiveBulkSelected(new Set());
               }}
                 style={{
-                  ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px",
+                  ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px", whiteSpace: "nowrap",
                   ...((bulkMode || infoBulkMode || proactiveBulkMode) ? { background: "#ede9fe", borderColor: "#7c3aed", color: "#5b21b6" } : {})
                 }}>
                 {(bulkMode || infoBulkMode || proactiveBulkMode) ? "✕ Cancel bulk" : "☑ Bulk actions"}
@@ -1272,8 +1326,8 @@ export default function AlertSelectionView({
                 <button className="triage-btn" onClick={() => {
                   if (info.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${info.clientSheetId}/edit`, "_blank");
                   if (info.masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${info.masterSheetId}/edit`, "_blank");
-                }} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px", color: "#1d4ed8", borderColor: "#93c5fd" }}>
-                  📊 Open Sheets
+                }} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px", color: "#1d4ed8", borderColor: "#93c5fd", whiteSpace: "nowrap" }}>
+                  📊 Open sheets
                 </button>
               );
             })()}
@@ -1306,6 +1360,7 @@ export default function AlertSelectionView({
             setRetainerSplitInvoice={setRetainerSplitInvoice}
             acknowledgeProactiveAlert={acknowledgeProactiveAlert}
             acknowledgingKey={acknowledgingKey}
+            exitingAlertKeys={exitingAlertKeys}
             onNavInvoices={onNavInvoices}
             onNavOutgoings={onNavOutgoings}
             freqLabel={freqLabel}
@@ -1405,7 +1460,7 @@ export default function AlertSelectionView({
                               const isChecked = bulkSelected.has(selKey);
 
                               return bulkMode ? (
-                                <div key={idx} onClick={() => {
+                                <div key={selKey} onClick={() => {
                                   const newSel = new Set(bulkSelected);
                                   if (isChecked) newSel.delete(selKey); else newSel.add(selKey);
                                   setBulkSelected(newSel);
@@ -1414,7 +1469,7 @@ export default function AlertSelectionView({
                                   <div style={{ flex: 1, width: "100%" }}>{renderAlertContent(alert)}</div>
                                 </div>
                               ) : (
-                                <button className="triage-btn" key={idx} onClick={() => selectAlert(alert)}
+                                <button className="triage-btn" key={selKey} onClick={() => selectAlert(alert)}
                                   style={{ ...styles.optionButton, display: "block", width: "100%", boxSizing: "border-box", textAlign: "left", padding: "14px 16px", border: "1px solid #cbd5e1", borderRadius: "8px", cursor: "pointer", backgroundColor: "#fff", fontSize: "13px", transition: "all 0.2s" }}
                                   onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "#f8fafc"; e.currentTarget.style.borderColor = "#2563eb"; }}
                                   onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "#fff"; e.currentTarget.style.borderColor = "#cbd5e1"; }}>
@@ -1531,18 +1586,34 @@ export default function AlertSelectionView({
                               cardTitle = parsed?.client ? `Stale unsent invoice send date changed (${parsed.client})` : "Stale unsent invoice send date changed";
                             }
 
+                            const isExiting = exitingAlertKeys.has(alertId);
                             return (
-                              <div key={alertId} style={{
-                                padding: "14px 16px",
-                                borderRadius: "8px",
-                                border: infoBulkMode && isBulkSelected ? "1px solid #7c3aed" : "1px solid #cbd5e1",
-                                background: infoBulkMode && isBulkSelected ? "#ede9fe" : "#ffffff",
-                                display: "flex",
-                                flexDirection: "column",
-                                gap: "4px",
-                                boxSizing: "border-box",
-                                width: "100%",
-                              }}>
+                              <div
+                                key={alertId}
+                                style={{
+                                  display: "grid",
+                                  gridTemplateRows: isExiting ? "0fr" : "1fr",
+                                  opacity: isExiting ? 0 : 1,
+                                  transform: isExiting ? "translateX(16px)" : "translateX(0)",
+                                  marginTop: isExiting ? "-10px" : 0,
+                                  transition: "grid-template-rows 300ms cubic-bezier(0.4, 0, 0.2, 1), margin-top 300ms cubic-bezier(0.4, 0, 0.2, 1), opacity 260ms ease, transform 260ms ease",
+                                  pointerEvents: isExiting ? "none" : "auto",
+                                  width: "100%",
+                                }}
+                              >
+                                <div style={{ minHeight: 0, overflow: "hidden" }}>
+                                  <div style={{
+                                    padding: "14px 16px",
+                                    borderRadius: "8px",
+                                    border: isExiting ? "1px solid #86efac" : (infoBulkMode && isBulkSelected ? "1px solid #7c3aed" : "1px solid #cbd5e1"),
+                                    background: isExiting ? "#f0fdf4" : (infoBulkMode && isBulkSelected ? "#ede9fe" : "#ffffff"),
+                                    display: "flex",
+                                    flexDirection: "column",
+                                    gap: "4px",
+                                    boxSizing: "border-box",
+                                    width: "100%",
+                                    transition: "background-color 200ms ease, border-color 200ms ease",
+                                  }}>
                                 <div style={{
                                   fontWeight: "600",
                                   fontSize: "13.5px",
@@ -1701,7 +1772,7 @@ export default function AlertSelectionView({
                                       <button className="triage-btn" onClick={() => {
                                         if (clientInfo.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.clientSheetId}/edit`, "_blank");
                                         if (clientInfo.masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.masterSheetId}/edit`, "_blank");
-                                      }} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#1d4ed8", borderColor: "#93c5fd" }}>📊 Open Sheets</button>
+                                      }} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#1d4ed8", borderColor: "#93c5fd", whiteSpace: "nowrap" }}>📊 Open sheets</button>
                                     )}
                                     {isRichFlag && !analysis && !isLoading && (
                                       <button className="triage-btn"
@@ -1728,16 +1799,24 @@ export default function AlertSelectionView({
                                     >
                                       📋 Create Task
                                     </button>
-                                    <button className="triage-btn"
+                                    <button className="triage-btn no-click-spinner"
                                       onClick={() => handleMarkNoActionResolved(na)}
-                                      style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px" }}
+                                      disabled={isExiting}
+                                      style={{
+                                        ...styles.buttonSecondary,
+                                        fontSize: "12px",
+                                        padding: "4px 12px",
+                                        ...(isExiting ? { color: "#16a34a", borderColor: "#86efac", background: "#f0fdf4" } : {})
+                                      }}
                                     >
-                                      ✓ Mark resolved
+                                      {isExiting ? "✓ Acknowledged" : "✓ Acknowledge"}
                                     </button>
                                   </div>
                                 </div>
                               </div>
-                            );
+                            </div>
+                          </div>
+                        );
                           })}
                         </div>
                       </div>
@@ -1761,7 +1840,7 @@ export default function AlertSelectionView({
                         padding: "6px 12px", fontWeight: "600", fontSize: "12px", cursor: "pointer",
                         opacity: infoBulkSubmitting ? 0.5 : 1
                       }}>
-                      {infoBulkSubmitting ? <><Spinner />Resolving...</> : `✓ Mark resolved (${infoBulkSelected.size})`}
+                      {infoBulkSubmitting ? <><Spinner />Acknowledging...</> : `✓ Acknowledge (${infoBulkSelected.size})`}
                     </button>
                     <button className="triage-btn" onClick={() => setShowInfoBulkTaskModal(true)} disabled={infoBulkSubmitting}
                       style={{
@@ -1852,9 +1931,26 @@ export default function AlertSelectionView({
                         <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
                           {groupAlerts.map((alert, idx) => {
                             const m = alert.metadata || {};
+                            const cardKey = alert.alertKey || (alert.rowIndex != null ? `proactive-row-${alert.rowIndex}` : `proactive-${idx}`);
+                            const activeKey = alert.alertKey || (alert.rowIndex != null ? `row-${alert.rowIndex}` : null);
+                            const isExiting = exitingAlertKeys.has(cardKey) || (activeKey && exitingAlertKeys.has(activeKey));
                             const isBulkSelected = proactiveBulkSelected.has(alert.rowIndex);
                             return (
-                              <div key={idx} style={{ border: `1px solid ${proactiveBulkMode && isBulkSelected ? "#7c3aed" : "#cbd5e1"}`, borderRadius: "8px", padding: "14px 16px", backgroundColor: proactiveBulkMode && isBulkSelected ? "#ede9fe" : "#ffffff", boxSizing: "border-box", width: "100%", display: "flex", flexDirection: "column", gap: "4px" }}>
+                              <div
+                                key={cardKey}
+                                style={{
+                                  display: "grid",
+                                  gridTemplateRows: isExiting ? "0fr" : "1fr",
+                                  opacity: isExiting ? 0 : 1,
+                                  transform: isExiting ? "translateX(16px)" : "translateX(0)",
+                                  marginTop: isExiting ? "-12px" : 0,
+                                  transition: "grid-template-rows 300ms cubic-bezier(0.4, 0, 0.2, 1), margin-top 300ms cubic-bezier(0.4, 0, 0.2, 1), opacity 260ms ease, transform 260ms ease",
+                                  pointerEvents: isExiting ? "none" : "auto",
+                                  width: "100%",
+                                }}
+                              >
+                                <div style={{ minHeight: 0, overflow: "hidden" }}>
+                                  <div style={{ border: isExiting ? "1px solid #86efac" : `1px solid ${proactiveBulkMode && isBulkSelected ? "#7c3aed" : "#cbd5e1"}`, borderRadius: "8px", padding: "14px 16px", backgroundColor: isExiting ? "#f0fdf4" : (proactiveBulkMode && isBulkSelected ? "#ede9fe" : "#ffffff"), boxSizing: "border-box", width: "100%", display: "flex", flexDirection: "column", gap: "4px", transition: "background-color 200ms ease, border-color 200ms ease" }}>
                                 {proactiveBulkMode && (
                                   <label style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600", color: "#5b21b6" }}>
                                     <input type="checkbox" checked={isBulkSelected} onChange={() => {
@@ -2478,39 +2574,37 @@ export default function AlertSelectionView({
                                             <button className="triage-btn" onClick={() => {
                                               if (clientInfo.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.clientSheetId}/edit`, "_blank");
                                               if (clientInfo.masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.masterSheetId}/edit`, "_blank");
-                                            }} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#1d4ed8", borderColor: "#93c5fd" }}>📊 Open Sheets</button>
+                                            }} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#1d4ed8", borderColor: "#93c5fd", whiteSpace: "nowrap" }}>📊 Open sheets</button>
                                           )}
                                           {alert.alertType === "expenseDashboardDiscr" && clientInfo && (
-                                            <button className="triage-btn" onClick={() => onNavOutgoings ? onNavOutgoings(selectedClient || clientInfo) : setActiveNav("outgoings")} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#059669", borderColor: "#6ee7b7" }}>📤 Assign Expense</button>
+                                            <button className="triage-btn" onClick={() => onNavOutgoings ? onNavOutgoings(selectedClient || clientInfo) : setActiveNav("outgoings")} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#059669", borderColor: "#6ee7b7", whiteSpace: "nowrap" }}>📤 Assign expense</button>
                                           )}
                                           {alert.alertType === "invoiceDashboardDiscr" && clientInfo && (
-                                            <button className="triage-btn" onClick={() => onNavInvoices ? onNavInvoices(selectedClient || clientInfo) : setActiveNav("invoices")} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#ea580c", borderColor: "#fdba74" }}>📥 Assign Invoices</button>
+                                            <button className="triage-btn" onClick={() => onNavInvoices ? onNavInvoices(selectedClient || clientInfo) : setActiveNav("invoices")} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#ea580c", borderColor: "#fdba74", whiteSpace: "nowrap" }}>📥 Assign invoices</button>
                                           )}
                                         </>
                                       );
                                     })()}
-                                    <button className="triage-btn" onClick={() => openCreateTaskModal(alert, true)} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#7c3aed", borderColor: "#c4b5fd" }}>📋 Create Task</button>
+                                    <button className="triage-btn" onClick={() => openCreateTaskModal(alert, true)} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#7c3aed", borderColor: "#c4b5fd", whiteSpace: "nowrap" }}>📋 Create task</button>
                                     <button
-                                      className="triage-btn"
+                                      className="triage-btn no-click-spinner"
                                       onClick={() => acknowledgeProactiveAlert(alert.alertKey, alert.rowIndex)}
-                                      disabled={acknowledgingKey === (alert.alertKey || (alert.rowIndex != null ? `row-${alert.rowIndex}` : null))}
+                                      disabled={isExiting}
                                       style={{
                                         ...styles.buttonSecondary,
                                         fontSize: "12px",
                                         padding: "4px 12px",
-                                        opacity: acknowledgingKey === (alert.alertKey || (alert.rowIndex != null ? `row-${alert.rowIndex}` : null)) ? 0.7 : 1
+                                        ...(isExiting ? { color: "#16a34a", borderColor: "#86efac", background: "#f0fdf4" } : {})
                                       }}
                                     >
-                                      {acknowledgingKey === (alert.alertKey || (alert.rowIndex != null ? `row-${alert.rowIndex}` : null)) ? (
-                                        <><Spinner size={11} /> Acknowledging...</>
-                                      ) : (
-                                        "✓ Acknowledge"
-                                      )}
+                                      {isExiting ? "✓ Acknowledged" : "✓ Acknowledge"}
                                     </button>
                                   </div>
                                 </div>
                               </div>
-                            );
+                            </div>
+                          </div>
+                        );
                           })}
                         </div>
                       </div>
@@ -2743,6 +2837,14 @@ export default function AlertSelectionView({
           }}
         />
       )}
+
+      <style jsx>{`
+        @media (max-width: 640px) {
+          .alert-selection-card {
+            padding: 14px 12px !important;
+          }
+        }
+      `}</style>
     </div>
   );
 }

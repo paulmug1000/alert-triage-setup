@@ -69,10 +69,20 @@ export default async function handler(req, res) {
           const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
           scopedClients = scopedClients.filter(c => assignedList.some(assigned => matchesClientName(assigned, c.clientName)));
         }
+        let attentionCount = 0;
+        for (const c of scopedClients) {
+          const accTool = String(c.accountingTool || "").toLowerCase();
+          const crmTool = String(c.crmTool || "").toLowerCase();
+          if (c.integrations?.[accTool]?.reconnectRequired) attentionCount++;
+          if (c.integrations?.[crmTool]?.reconnectRequired) attentionCount++;
+        }
+        if (cachedData.sharedXero?.reconnectRequired) attentionCount++;
+
         return res.status(200).json({
           success: true,
           allClients: scopedClients,
-          sharedXero: cachedData.sharedXero
+          sharedXero: cachedData.sharedXero,
+          attentionCount
         });
       }
     }
@@ -265,10 +275,20 @@ function evaluateAutomationHealth({ frequency, isRunning, lastCommandTime, signa
       _allIntegrationsStatusCache = { allClients: clientConfigs, sharedXero };
       _allIntegrationsStatusCachedAt = now;
 
+      let attentionCount = 0;
+      for (const c of clientConfigs) {
+        const accTool = String(c.accountingTool || "").toLowerCase();
+        const crmTool = String(c.crmTool || "").toLowerCase();
+        if (c.integrations?.[accTool]?.reconnectRequired) attentionCount++;
+        if (c.integrations?.[crmTool]?.reconnectRequired) attentionCount++;
+      }
+      if (sharedXero?.reconnectRequired) attentionCount++;
+
       return res.status(200).json({
         success: true,
         allClients: clientConfigs,
-        sharedXero
+        sharedXero,
+        attentionCount
       });
     } catch (err) {
       console.error("Multi-client integrations status error:", err);

@@ -151,6 +151,13 @@
             "description": "Retainers, contract renewals, and recurring revenue tracker."
           },
           {
+            "id": "pma_cash",
+            "name": "Cash",
+            "url": "/pma?nav=cash",
+            "query_param": "nav=cash",
+            "description": "36-month rolling cashflow forecast and adjustments editor."
+          },
+          {
             "id": "pma_tools",
             "name": "EOM Tools",
             "url": "/pma?nav=tools",

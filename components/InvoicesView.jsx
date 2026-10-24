@@ -3,6 +3,7 @@ import Spinner from "./Spinner";
 import InvoicesEditModal from "./InvoicesEditModal";
 import InvoicesNewJobModal from "./InvoicesNewJobModal";
 import EditClientSelector from "./EditClientSelector";
+import JobDetailModal from "./JobDetailModal";
 import { useInvoices } from "../hooks/useInvoices";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useTriage } from "../contexts/TriageContext";
@@ -117,10 +118,10 @@ export default function InvoicesView({
     invoicesShowAll, setInvoicesShowAll,
     invoicesSavingCell, setInvoicesSavingCell,
     loadInvoicesInbox, loadInvoicesJobs
-  } = useInvoices(assignedAppIds);
+  } = useInvoices(assignedAppIds, managedClient || initialClient);
 
   const prevInitialClientRef = React.useRef(null);
-  const prevManagedClientRef = React.useRef(managedClient?.clientName || null);
+  const prevManagedClientRef = React.useRef(null);
   // Auto-select managedClient when in manage mode, or initialClient when passed, or clear when cancelled
   useEffect(() => {
     if (managedClient) {
@@ -164,6 +165,8 @@ export default function InvoicesView({
   const [invoicesEditSlot, setInvoicesEditSlot] = useState(null);
   const [invoicesNewJob, setInvoicesNewJob] = useState(null);
   const [clientMismatchPrompt, setClientMismatchPrompt] = useState(null);
+  const [revenueExceedPrompt, setRevenueExceedPrompt] = useState(null);
+  const [selectedJobForDetail, setSelectedJobForDetail] = useState(null);
   const [updateJobNameChecked, setUpdateJobNameChecked] = useState(false);
   const [newJobNameInput, setNewJobNameInput] = useState("");
 
@@ -293,9 +296,50 @@ export default function InvoicesView({
     });
   }, [allInvoices, invoiceSearchTerm, invoiceSortOrder]);
 
+  const initiatePlacement = (promptPayload) => {
+    const { job, inv } = promptPayload;
+    const sheetClient = String(job.client || "").trim();
+    const invClient = String(inv.client || "").trim();
+    const hasMismatch = !!(sheetClient && invClient && sheetClient.toLowerCase() !== invClient.toLowerCase());
+
+    const currentRealInvoiced = (job.rows || []).reduce((sum, r) => {
+      return sum + (r.invoiceSlots || []).reduce((sSum, sl) => {
+        if (sl.ref && !isPlaceholderInvoice(sl.ref, sl.status)) {
+          const val = parseFloat(String(sl.amount).replace(/[£$€,\s]/g, "")) || 0;
+          return sSum + val;
+        }
+        return sSum;
+      }, 0);
+    }, 0);
+    const invAmount = parseFloat(String(inv.amount).replace(/[£$€,\s]/g, "")) || 0;
+    const projectedTotalInvoiced = currentRealInvoiced + invAmount;
+    const jobRevenue = parseFloat(String(job.rows?.[0]?.revenue || job.revenue || "").replace(/[£$€,\s]/g, "")) || 0;
+    const exceedsRevenue = projectedTotalInvoiced > jobRevenue && jobRevenue > 0;
+
+    if (exceedsRevenue) {
+      setRevenueExceedPrompt({
+        promptPayload,
+        hasMismatch,
+        currentRevenue: jobRevenue,
+        projectedRevenue: projectedTotalInvoiced,
+      });
+      return;
+    }
+
+    if (hasMismatch) {
+      setUpdateJobNameChecked(!!(inv.job && inv.job.trim().toLowerCase() !== (job.jobName || "").trim().toLowerCase()));
+      setNewJobNameInput(inv.job || job.jobName || "");
+      setClientMismatchPrompt(promptPayload);
+      return;
+    }
+
+    executePlacement(promptPayload, false);
+  };
+
   const executePlacement = async (promptData, shouldUpdateClientName, shouldUpdateJobName = false, customJobName = "") => {
-    const { job, inv, isNewRow, rowNum, slotNum, jobLastRow, savingKey } = promptData;
+    const { job, inv, isNewRow, rowNum, slotNum, jobLastRow, savingKey, revenueUpdate } = promptData;
     setClientMismatchPrompt(null);
+    setRevenueExceedPrompt(null);
     setInvoicesPlacing(null);
     setInvoicesSavingCell(savingKey);
 
@@ -324,96 +368,129 @@ export default function InvoicesView({
     const effectiveJobName = shouldUpdateJobName && customJobName ? String(customJobName).trim() : job.jobName;
 
     try {
-      if (isNewRow) {
-        const res = await fetch("/api/triage", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: "assign_invoice_to_job",
-            clientSheetId: invoicesClient?.clientSheetId,
-            clientName: invoicesClient?.clientName || invoicesClient?.name || "",
-            masterSheetId: invoicesClient?.masterSheetId || "",
-            createNewRow: true,
-            jobLastRow,
-            jobClient: effectiveClientName,
-            jobName: job.jobName,
-            invoice: inv,
-            updateClientName: shouldUpdateClientName,
-            newClientName: shouldUpdateClientName ? effectiveClientName : undefined,
-            updateJobName: shouldUpdateJobName && !!customJobName,
-            newJobName: effectiveJobName,
-            jobRowNums,
-          }),
-        });
-        const data = await res.json();
-        if (!data.success) {
-          alert(data.error || "Failed to add new row for invoice");
-          await loadInvoicesJobs(invoicesClient, invoicesShowAll);
-          return;
-        }
-        if (invoicesClient?.masterSheetId) {
-          outgoingsPullPendingRef.current = invoicesClient.masterSheetId;
-        }
+      const payload = {
+        action: "assign_invoice_to_job",
+        clientSheetId: invoicesClient?.clientSheetId,
+        clientName: invoicesClient?.clientName || invoicesClient?.name || "",
+        masterSheetId: invoicesClient?.masterSheetId || "",
+        createNewRow: !!isNewRow,
+        jobLastRow: isNewRow ? jobLastRow : undefined,
+        rowNum: !isNewRow ? rowNum : undefined,
+        slotNum: !isNewRow ? slotNum : undefined,
+        jobClient: effectiveClientName,
+        jobName: job.jobName,
+        invoice: inv,
+        updateClientName: shouldUpdateClientName,
+        newClientName: shouldUpdateClientName ? effectiveClientName : undefined,
+        updateJobName: shouldUpdateJobName && !!customJobName,
+        newJobName: effectiveJobName,
+        jobRowNums,
+        updateJobRevenue: !!revenueUpdate?.updateJobRevenue,
+        newJobRevenue: revenueUpdate?.newJobRevenue,
+      };
+
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!data.success) {
+        alert(data.error || "Failed to place invoice");
         await loadInvoicesJobs(invoicesClient, invoicesShowAll);
-      } else {
-        const res = await fetch("/api/triage", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: "assign_invoice_to_job",
-            clientSheetId: invoicesClient?.clientSheetId,
-            clientName: invoicesClient?.clientName || invoicesClient?.name || "",
-            rowNum, slotNum, invoice: inv,
-            jobClient: effectiveClientName,
-            jobName: job.jobName,
-            updateClientName: shouldUpdateClientName,
-            newClientName: shouldUpdateClientName ? effectiveClientName : undefined,
-            updateJobName: shouldUpdateJobName && !!customJobName,
-            newJobName: effectiveJobName,
-            jobRowNums,
-          }),
-        });
-        const data = await res.json();
-        if (!data.success) {
-          alert(data.error || "Failed to place invoice");
-          await loadInvoicesJobs(invoicesClient, invoicesShowAll);
-          return;
-        }
-        if (invoicesClient?.masterSheetId) {
-          outgoingsPullPendingRef.current = invoicesClient.masterSheetId;
-        }
-        if (data.rowShifted || (shouldUpdateJobName && effectiveJobName !== job.jobName)) {
-          // If rows shifted on the sheet or job name changed, reload the live jobs list
-          await loadInvoicesJobs(invoicesClient, invoicesShowAll);
-        } else {
-          setInvoicesJobs(prev => prev && prev.map(j => {
-            if (j.jobName !== job.jobName || j.client !== job.client) return j;
-            const updatedClient = shouldUpdateClientName ? effectiveClientName : j.client;
-            const updatedJob = shouldUpdateJobName && effectiveJobName ? effectiveJobName : j.jobName;
-            return {
-              ...j,
+        return;
+      }
+      if (invoicesClient?.masterSheetId) {
+        outgoingsPullPendingRef.current = invoicesClient.masterSheetId;
+      }
+
+      // Optimistically update invoicesJobs without full-screen reload!
+      setInvoicesJobs((prev) => {
+        if (!prev) return prev;
+        return prev.map((j) => {
+          if (j.jobName !== job.jobName || j.client !== job.client) return j;
+          const updatedClient = shouldUpdateClientName ? effectiveClientName : j.client;
+          const updatedJob = shouldUpdateJobName && effectiveJobName ? effectiveJobName : j.jobName;
+          let updatedRows = [...j.rows];
+
+          if (isNewRow && data.targetRowNum) {
+            const newRow = {
+              rowNum: data.targetRowNum,
               client: updatedClient,
               jobName: updatedJob,
-              rows: j.rows.map(r => {
-                const baseR = {
-                  ...r,
-                  client: shouldUpdateClientName ? updatedClient : r.client,
-                  jobName: shouldUpdateJobName && effectiveJobName ? updatedJob : r.jobName,
-                };
-                if (r.rowNum !== rowNum) return baseR;
-                return {
-                  ...baseR,
-                  invoiceSlots: r.invoiceSlots.map(sl => sl.slotNum !== slotNum ? sl : {
-                    ...sl,
-                    amount: inv.amount || 0,
-                    ref: inv.invoiceNo || "",
-                    sentDate: inv.sentDate || "",
-                    status: inv.status || "Sent",
-                  }),
-                };
-              }),
+              projectCode: j.projectCode || "",
+              revenue: 0,
+              directCosts: 0,
+              invoiceSlots: [
+                { slotNum: 1, amount: inv.amount || 0, ref: inv.invoiceNo || "", sentDate: inv.sentDate || "", status: inv.status || "Sent" },
+                { slotNum: 2, amount: "", ref: "", sentDate: "", status: "" },
+                { slotNum: 3, amount: "", ref: "", sentDate: "", status: "" }
+              ],
+              expenseSlots: [
+                { slotNum: 1, amount: "", ref: "", date: "", status: "" },
+                { slotNum: 2, amount: "", ref: "", date: "", status: "" },
+                { slotNum: 3, amount: "", ref: "", date: "", status: "" }
+              ]
             };
-          }));
-        }
-      }
+            updatedRows.push(newRow);
+          } else {
+            updatedRows = updatedRows.map((r) => {
+              const baseR = {
+                ...r,
+                client: shouldUpdateClientName ? updatedClient : r.client,
+                jobName: shouldUpdateJobName && effectiveJobName ? updatedJob : r.jobName,
+              };
+              if (r.rowNum !== rowNum) return baseR;
+              return {
+                ...baseR,
+                invoiceSlots: r.invoiceSlots.map((sl) =>
+                  sl.slotNum !== slotNum
+                    ? sl
+                    : {
+                        ...sl,
+                        amount: inv.amount || 0,
+                        ref: inv.invoiceNo || "",
+                        sentDate: inv.sentDate || "",
+                        status: inv.status || "Sent",
+                      }
+                ),
+              };
+            });
+          }
+
+          if (data.placeholderAdjustment) {
+            const { rowNum: pRow, slotNum: pSlot, newAmount: pAmt } = data.placeholderAdjustment;
+            updatedRows = updatedRows.map((r) => {
+              if (r.rowNum === pRow) {
+                return {
+                  ...r,
+                  invoiceSlots: (r.invoiceSlots || []).map((sl) =>
+                    sl.slotNum === pSlot ? { ...sl, amount: pAmt > 0 ? String(pAmt) : "" } : sl
+                  ),
+                };
+              }
+              return r;
+            });
+          }
+
+          let nextRevenue = j.revenue;
+          if (data.updatedRevenue !== undefined) {
+            nextRevenue = data.updatedRevenue;
+            updatedRows = updatedRows.map((r) => ({ ...r, revenue: data.updatedRevenue }));
+          }
+
+          return {
+            ...j,
+            client: updatedClient,
+            jobName: updatedJob,
+            revenue: nextRevenue,
+            rows: updatedRows,
+          };
+        });
+      });
+
+      // Background silent sync
+      loadInvoicesJobs(invoicesClient, invoicesShowAll, true);
     } catch (e) {
       console.error("assign_invoice_to_job error:", e);
     } finally {
@@ -421,7 +498,7 @@ export default function InvoicesView({
     }
   };
 
-  const noInvClient = !invoicesClient;
+  const noInvClient = !invoicesClient && !managedClient && !initialClient;
 
   return (
     <>
@@ -514,22 +591,184 @@ export default function InvoicesView({
           </div>
         </div>
       )}
+      {revenueExceedPrompt && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.5)",
+            zIndex: 2000,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center"
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setRevenueExceedPrompt(null);
+          }}
+        >
+          <div
+            style={{
+              background: "#fff",
+              borderRadius: "12px",
+              padding: "24px",
+              width: "min(92vw, 480px)",
+              maxHeight: "85vh",
+              overflowY: "auto",
+              boxShadow: "0 20px 60px rgba(0,0,0,0.3)"
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "14px" }}>
+              <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700", color: "#1e3a8a" }}>
+                Increase job revenue?
+              </h3>
+              <button
+                type="button"
+                onClick={() => setRevenueExceedPrompt(null)}
+                style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}
+              >
+                ×
+              </button>
+            </div>
+
+            <p style={{ fontSize: "13px", color: "#334155", lineHeight: "1.5", marginTop: 0, marginBottom: "14px" }}>
+              Placing invoice <strong>{revenueExceedPrompt.promptPayload.inv.invoiceNo}</strong> ({formatCurrency(revenueExceedPrompt.promptPayload.inv.amount)}) would bring total invoiced to <strong>{formatCurrency(revenueExceedPrompt.projectedRevenue)}</strong>, which exceeds the current job revenue of <strong>{formatCurrency(revenueExceedPrompt.currentRevenue)}</strong>.
+            </p>
+
+            <div style={{ background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: "8px", padding: "12px", marginBottom: "16px", fontSize: "13px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                <span style={{ color: "#64748b" }}>Current revenue:</span>
+                <span style={{ fontWeight: "600", color: "#0f172a" }}>{formatCurrency(revenueExceedPrompt.currentRevenue)}</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <span style={{ color: "#1d4ed8", fontWeight: "600" }}>Projected total invoiced:</span>
+                <strong style={{ color: "#1d4ed8" }}>{formatCurrency(revenueExceedPrompt.projectedRevenue)}</strong>
+              </div>
+            </div>
+
+            <p style={{ fontSize: "13px", color: "#475569", lineHeight: "1.45", marginTop: 0, marginBottom: "20px" }}>
+              Would you like to increase the job revenue to {formatCurrency(revenueExceedPrompt.projectedRevenue)} to match?
+            </p>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+              <button
+                type="button"
+                className="triage-btn"
+                onClick={() => {
+                  const updatedPayload = {
+                    ...revenueExceedPrompt.promptPayload,
+                    revenueUpdate: { updateJobRevenue: true, newJobRevenue: revenueExceedPrompt.projectedRevenue }
+                  };
+                  setRevenueExceedPrompt(null);
+                  if (revenueExceedPrompt.hasMismatch) {
+                    setUpdateJobNameChecked(!!(updatedPayload.inv.job && updatedPayload.inv.job.trim().toLowerCase() !== (updatedPayload.job.jobName || "").trim().toLowerCase()));
+                    setNewJobNameInput(updatedPayload.inv.job || updatedPayload.job.jobName || "");
+                    setClientMismatchPrompt(updatedPayload);
+                  } else {
+                    executePlacement(updatedPayload, false);
+                  }
+                }}
+                style={{
+                  background: "#2563eb",
+                  color: "white",
+                  border: "none",
+                  padding: "10px 14px",
+                  borderRadius: "6px",
+                  fontWeight: "600",
+                  fontSize: "13px",
+                  cursor: "pointer"
+                }}
+              >
+                Increase revenue to {formatCurrency(revenueExceedPrompt.projectedRevenue)}
+              </button>
+              <button
+                type="button"
+                className="triage-btn"
+                onClick={() => {
+                  const updatedPayload = {
+                    ...revenueExceedPrompt.promptPayload,
+                    revenueUpdate: { updateJobRevenue: false }
+                  };
+                  setRevenueExceedPrompt(null);
+                  if (revenueExceedPrompt.hasMismatch) {
+                    setUpdateJobNameChecked(!!(updatedPayload.inv.job && updatedPayload.inv.job.trim().toLowerCase() !== (updatedPayload.job.jobName || "").trim().toLowerCase()));
+                    setNewJobNameInput(updatedPayload.inv.job || updatedPayload.job.jobName || "");
+                    setClientMismatchPrompt(updatedPayload);
+                  } else {
+                    executePlacement(updatedPayload, false);
+                  }
+                }}
+                style={{ ...styles.buttonSecondary, padding: "10px 14px", fontSize: "13px", textAlign: "center" }}
+              >
+                Keep revenue as {formatCurrency(revenueExceedPrompt.currentRevenue)}
+              </button>
+              <button
+                type="button"
+                className="triage-btn"
+                onClick={() => setRevenueExceedPrompt(null)}
+                style={{ padding: "8px 14px", fontSize: "12px", color: "#64748b", background: "none", border: "none", cursor: "pointer", textAlign: "center" }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {invoicesEditSlot && (
         <InvoicesEditModal
           editSlot={invoicesEditSlot}
           invoicesClient={invoicesClient}
+          availableJobs={invoicesJobs}
           isAdmin={isAdmin}
           onClose={() => setInvoicesEditSlot(null)}
           onMarkPullPending={(masterId) => outgoingsPullPendingRef.current = masterId}
-          onUpdateInvoiceJobs={(rNum, sNum, newData) => {
-            setInvoicesJobs(prev => prev && prev.map(j => ({
-              ...j,
-              rows: j.rows.map(r => r.rowNum !== rNum ? r : {
-                ...r,
-                invoiceSlots: r.invoiceSlots.map(sl => sl.slotNum !== sNum ? sl : { ...sl, ...newData })
-              }),
-            })));
+          onInvoiceMoved={async () => {
+            await loadInvoicesJobs(invoicesClient, invoicesShowAll, true);
           }}
+          onUpdateInvoiceJobs={(rNum, sNum, newData, resData) => {
+            setInvoicesJobs(prev => prev && prev.map(j => {
+              const hasRow = j.rows?.some(r => r.rowNum === rNum);
+              let updatedJob = j;
+              if (hasRow && resData?.placeholderAdjustment) {
+                const { rowNum: pRow, slotNum: pSlot, newAmount: pAmt } = resData.placeholderAdjustment;
+                updatedJob = {
+                  ...updatedJob,
+                  rows: updatedJob.rows.map(r => {
+                    if (r.rowNum === pRow) {
+                      return {
+                        ...r,
+                        invoiceSlots: (r.invoiceSlots || []).map(sl =>
+                          sl.slotNum === pSlot ? { ...sl, amount: pAmt > 0 ? String(pAmt) : "" } : sl
+                        )
+                      };
+                    }
+                    return r;
+                  })
+                };
+              }
+              if (hasRow && resData?.updatedRevenue !== undefined) {
+                updatedJob = {
+                  ...updatedJob,
+                  revenue: resData.updatedRevenue,
+                  rows: updatedJob.rows.map(r => ({ ...r, revenue: resData.updatedRevenue }))
+                };
+              }
+              return {
+                ...updatedJob,
+                rows: updatedJob.rows.map(r => r.rowNum !== rNum ? r : {
+                  ...r,
+                  invoiceSlots: r.invoiceSlots.map(sl => sl.slotNum !== sNum ? sl : { ...sl, ...newData })
+                }),
+              };
+            }));
+          }}
+        />
+      )}
+      {selectedJobForDetail && (
+        <JobDetailModal
+          isOpen={!!selectedJobForDetail}
+          target={selectedJobForDetail}
+          onClose={() => setSelectedJobForDetail(null)}
+          onMarkPullPending={(masterId) => (outgoingsPullPendingRef.current = masterId)}
         />
       )}
       {invoicesNewJob && (
@@ -999,7 +1238,35 @@ export default function InvoicesView({
                                       {/* Job Name */}
                                       <td style={{ padding: "8px 12px", verticalAlign: "top" }}>
                                         {rIdx === 0 ? (
-                                          <div style={{ fontWeight: "600", color: "#1e293b" }}>{jr.jobName}</div>
+                                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "6px" }}>
+                                            <div style={{ fontWeight: "600", color: "#1e293b" }}>{jr.jobName}</div>
+                                            <button
+                                              type="button"
+                                              onClick={() => setSelectedJobForDetail({
+                                                client: job.client,
+                                                jobName: job.jobName,
+                                                projectCode: job.projectCode || jr.projectCode,
+                                                rowNum: jr.rowNum,
+                                                tabName: "Confirmed",
+                                                clientSheetId: invoicesClient?.clientSheetId,
+                                                clientName: invoicesClient?.clientName
+                                              })}
+                                              style={{
+                                                background: "#ffffff",
+                                                border: "1px solid #cbd5e1",
+                                                borderRadius: "4px",
+                                                padding: "2px 7px",
+                                                fontSize: "11px",
+                                                color: "#475569",
+                                                cursor: "pointer",
+                                                fontWeight: "600",
+                                                whiteSpace: "nowrap"
+                                              }}
+                                              title="Edit job details"
+                                            >
+                                              Edit job
+                                            </button>
+                                          </div>
                                         ) : (
                                           <div style={{ fontSize: "11px", color: "#64748b", paddingLeft: "8px" }}>
                                             {isRetainer ? `↳ Month ${rIdx + 1}` : (isAdmin ? `↳ Row ${rIdx + 1}` : `↳ Part ${rIdx + 1}`)}
@@ -1122,15 +1389,9 @@ export default function InvoicesView({
                                                   sheetClientName: sheetClient, invoiceClientName: invClient,
                                                   savingKey: cellSavingKey,
                                                 };
-                                                if (hasMismatch) {
-                                                  setUpdateJobNameChecked(!!(inv.job && inv.job.trim().toLowerCase() !== (job.jobName || "").trim().toLowerCase()));
-                                                  setNewJobNameInput(inv.job || job.jobName || "");
-                                                  setClientMismatchPrompt(promptPayload);
-                                                } else {
-                                                  executePlacement(promptPayload, false);
-                                                }
+                                                initiatePlacement(promptPayload);
                                               } else if (!isPlacing && !isGenuinelyBlank) {
-                                                setInvoicesEditSlot({ rowNum: jr.rowNum, slotNum: s.slotNum, slot: s, jobClient: job.client, jobName: job.jobName });
+                                                setInvoicesEditSlot({ rowNum: jr.rowNum, slotNum: s.slotNum, slot: s, jobClient: job.client, jobName: job.jobName, job });
                                               }
                                             }}
                                             style={{
@@ -1245,13 +1506,7 @@ export default function InvoicesView({
                                                 sheetClientName: sheetClient, invoiceClientName: invClient,
                                                 savingKey,
                                               };
-                                              if (hasMismatch) {
-                                                setUpdateJobNameChecked(!!(inv.job && inv.job.trim().toLowerCase() !== (job.jobName || "").trim().toLowerCase()));
-                                                setNewJobNameInput(inv.job || job.jobName || "");
-                                                setClientMismatchPrompt(promptPayload);
-                                              } else {
-                                                executePlacement(promptPayload, false);
-                                              }
+                                              initiatePlacement(promptPayload);
                                             }}
                                             style={{
                                               cursor: "pointer",
@@ -1335,7 +1590,39 @@ export default function InvoicesView({
                                     <tr key={jr.rowNum} style={{ background: jobIdx % 2 === 0 ? "#fff" : "#f1f5f9" }}>
                                       <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", color: "#888" }}>{jr.rowNum}</td>
                                       <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>{rIdx === 0 ? jr.client : ""}</td>
-                                      <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>{rIdx === 0 ? jr.jobName : ""}</td>
+                                      <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
+                                        {rIdx === 0 ? (
+                                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "6px" }}>
+                                            <span>{jr.jobName}</span>
+                                            <button
+                                              type="button"
+                                              onClick={() => setSelectedJobForDetail({
+                                                client: job.client,
+                                                jobName: job.jobName,
+                                                projectCode: job.projectCode || jr.projectCode,
+                                                rowNum: jr.rowNum,
+                                                tabName: "Confirmed",
+                                                clientSheetId: invoicesClient?.clientSheetId,
+                                                clientName: invoicesClient?.clientName
+                                              })}
+                                              style={{
+                                                background: "#ffffff",
+                                                border: "1px solid #cbd5e1",
+                                                borderRadius: "4px",
+                                                padding: "2px 6px",
+                                                fontSize: "10.5px",
+                                                color: "#475569",
+                                                cursor: "pointer",
+                                                fontWeight: "600",
+                                                whiteSpace: "nowrap"
+                                              }}
+                                              title="Edit job details"
+                                            >
+                                              Edit job
+                                            </button>
+                                          </div>
+                                        ) : ""}
+                                      </td>
                                       <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>{rIdx === 0 ? jr.projectCode : ""}</td>
                                       <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
                                         {rIdx === 0 ? (
@@ -1373,15 +1660,9 @@ export default function InvoicesView({
                                                   sheetClientName: sheetClient, invoiceClientName: invClient,
                                                   savingKey: cellSavingKey,
                                                 };
-                                                if (hasMismatch) {
-                                                  setUpdateJobNameChecked(!!(inv.job && inv.job.trim().toLowerCase() !== (job.jobName || "").trim().toLowerCase()));
-                                                  setNewJobNameInput(inv.job || job.jobName || "");
-                                                  setClientMismatchPrompt(promptPayload);
-                                                } else {
-                                                  executePlacement(promptPayload, false);
-                                                }
+                                                initiatePlacement(promptPayload);
                                               } else if (!isPlacing && !isGenuinelyBlank) {
-                                                setInvoicesEditSlot({ rowNum: jr.rowNum, slotNum: s.slotNum, slot: s, jobClient: job.client, jobName: job.jobName });
+                                                setInvoicesEditSlot({ rowNum: jr.rowNum, slotNum: s.slotNum, slot: s, jobClient: job.client, jobName: job.jobName, job });
                                               }
                                             }}
                                             style={{
@@ -1433,13 +1714,7 @@ export default function InvoicesView({
                                                 sheetClientName: sheetClient, invoiceClientName: invClient,
                                                 savingKey,
                                               };
-                                              if (hasMismatch) {
-                                                setUpdateJobNameChecked(!!(inv.job && inv.job.trim().toLowerCase() !== (job.jobName || "").trim().toLowerCase()));
-                                                setNewJobNameInput(inv.job || job.jobName || "");
-                                                setClientMismatchPrompt(promptPayload);
-                                              } else {
-                                                executePlacement(promptPayload, false);
-                                              }
+                                              initiatePlacement(promptPayload);
                                             }}
                                             style={{
                                               cursor: "pointer", background: "#e8f0fe", border: "1.5px solid #1a56db",
@@ -1617,12 +1892,14 @@ export default function InvoicesView({
                                     <button
                                       type="button"
                                       onClick={() => {
+                                        const matchedJob = (invoicesJobs || []).find(j => j.client === inv.client && j.jobName === inv.jobName);
                                         setInvoicesEditSlot({
                                           rowNum: inv.rowNum,
                                           slotNum: inv.slotNum,
                                           slot: inv.slot,
                                           jobClient: inv.client,
                                           jobName: inv.jobName,
+                                          job: matchedJob
                                         });
                                       }}
                                       style={{

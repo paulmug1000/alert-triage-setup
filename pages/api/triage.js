@@ -12,6 +12,7 @@
 
 import { waitUntil } from "@vercel/functions";
 import { redisClient } from "../../services/redisClient";
+import { invalidatePmaClientCache } from "../../services/cacheService";
 import { getSheetsClient, withRetry } from "../../services/sheetsClient";
 import { 
   readFlagSweepLog, 
@@ -37,7 +38,7 @@ import {
   handleCreateOutgoingsVendor, handleGetOutgoings, handleGetDirectCostsJobs,
   handleGetInvoiceJobs, handleGetAllClientJobs, handleUpdateJobField, handleUpdateJobFields,
   handleAssignExpenseToJob, handleUpdateExpenseSlot, handleAssignInvoiceToJob,
-  handleUpdateInvoiceSlot, handleVerifyInvoiceSlot, handleCreateJobFromInvoice, handleAddNewJob, handleUpdateOutgoingNote,
+  handleUpdateInvoiceSlot, handleMoveInvoiceToJob, handleVerifyInvoiceSlot, handleCreateJobFromInvoice, handleAddNewJob, handleUpdateOutgoingNote,
   handleFireOutgoingsPull, handleMarkPipelineCopied, handleDeleteDirectJob, handleMarkPipelineAlreadyConfirmed, handleGetDefaultDaysToPay, getClientWebAppUrl
 } from "../../services/workspaces";
 import {
@@ -170,6 +171,48 @@ export default async function handler(req, res) {
     // Handle both POST (req.body) and GET (req.query) requests
     const action = req.method === "GET" ? req.query.action : req.body.action;
     const automationCommanderSheetId = req.body?.automationCommanderSheetId || req.query?.automationCommanderSheetId;
+
+    // Intercept successful mutation responses to automatically bust corresponding PMA L1/L2 caches
+    const PMA_MUTATION_SCOPES = {
+      update_job_field: ["jobs", "invoices"],
+      update_job_fields: ["jobs", "invoices"],
+      assign_expense_to_job: ["outgoings", "jobs"],
+      update_expense_slot: ["outgoings", "jobs"],
+      assign_invoice_to_job: ["invoices", "jobs"],
+      update_invoice_slot: ["invoices", "jobs"],
+      move_invoice_to_job: ["invoices", "jobs"],
+      verify_invoice_slot: ["invoices", "jobs"],
+      create_job_from_invoice: ["invoices", "jobs"],
+      add_new_job: ["jobs", "invoices", "outgoings"],
+      mark_pipeline_copied: ["jobs"],
+      mark_pipeline_already_confirmed: ["jobs"],
+      delete_direct_job: ["jobs", "invoices", "outgoings"],
+      rename_retainer_job: ["retainers", "jobs", "invoices"],
+      change_retainer_start_date: ["retainers", "jobs", "invoices"],
+      change_retainer_end_date: ["retainers", "jobs", "invoices"],
+      change_retainer_monthly_amount: ["retainers", "jobs", "invoices"],
+      create_retainer_job: ["retainers", "jobs", "invoices"],
+      tidy_up_retainers: ["retainers", "jobs", "invoices"],
+      apply_retainer_split_invoice: ["retainers", "jobs", "invoices"],
+      delete_retainer: ["retainers", "jobs", "invoices"],
+      create_outgoings_vendor: ["outgoings"],
+      update_outgoing_note: ["outgoings"],
+      mark_expense_assigned: ["outgoings"],
+      prune_assigned_expenses: ["outgoings"],
+      delete_invoice_from_pulse: ["invoices", "jobs"]
+    };
+
+    const originalJson = res.json.bind(res);
+    res.json = function(data) {
+      if (data && data.success && PMA_MUTATION_SCOPES[action]) {
+        const cId = req.body?.clientSheetId;
+        const mId = req.body?.masterSheetId;
+        invalidatePmaClientCache(cId, mId, PMA_MUTATION_SCOPES[action]).catch(err => {
+          console.warn(`[PMA Invalidation] Error for ${action}:`, err?.message);
+        });
+      }
+      return originalJson(data);
+    };
 
     // Enforce POST for all state-mutating actions
     const READ_ONLY_ACTIONS = new Set([
@@ -396,6 +439,8 @@ export default async function handler(req, res) {
       return await handleAssignInvoiceToJob(req, res, sheets);
     } else if (action === "update_invoice_slot") {
       return await handleUpdateInvoiceSlot(req, res, sheets);
+    } else if (action === "move_invoice_to_job") {
+      return await handleMoveInvoiceToJob(req, res, sheets);
     } else if (action === "verify_invoice_slot") {
       return await handleVerifyInvoiceSlot(req, res, sheets);
     } else if (action === "create_job_from_invoice") {

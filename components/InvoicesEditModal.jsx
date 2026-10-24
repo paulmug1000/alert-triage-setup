@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useMemo } from "react";
 import Spinner from "./Spinner";
-import { stripCurrency, isPlaceholderInvoice } from "../utils/helpers";
+import { stripCurrency, isPlaceholderInvoice, hasActiveAccountingIntegration } from "../utils/helpers";
 import { useAuth } from "../hooks/useAuth";
+import { useAppGlobals } from "../hooks/useAppGlobals";
 import DateInput from "./DateInput";
+import InvoicesNewJobModal from "./InvoicesNewJobModal";
 
 export default function InvoicesEditModal({ 
   editSlot, 
@@ -12,9 +14,11 @@ export default function InvoicesEditModal({
   onMarkPullPending,
   isAdmin: propIsAdmin,
   availableJobs = [],
-  onInvoiceMoved
+  onInvoiceMoved,
+  hasAccountingIntegration: propHasAccountingIntegration,
 }) {
   const auth = useAuth();
+  const { allClientsMap } = useAppGlobals();
   const isAdmin = propIsAdmin !== undefined ? propIsAdmin : (!auth.user?.isReadOnly && !!(auth.user?.isAdmin || auth.user?.role === "Admin"));
   const { rowNum, slotNum, slot, jobClient, jobName, tabName, job } = editSlot;
   
@@ -25,6 +29,39 @@ export default function InvoicesEditModal({
   const status = slot.status || "";
   const [saving, setSaving] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [showNewJobModal, setShowNewJobModal] = useState(false);
+  
+  // Accounting integration status and locking
+  const hasAccounting = useMemo(() => {
+    if (propHasAccountingIntegration) return true;
+    if (invoicesClient?.hasAccountingIntegration) return true;
+    if (hasActiveAccountingIntegration(invoicesClient?.accountingTool)) return true;
+    if (job?.hasAccountingIntegration) return true;
+    if (editSlot?.hasAccountingIntegration) return true;
+
+    const clientName = invoicesClient?.clientName || invoicesClient?.name || jobClient || editSlot?.jobClient;
+    if (clientName && allClientsMap) {
+      const match = allClientsMap[clientName] || Object.values(allClientsMap).find(c => String(c.clientName || "").toLowerCase() === String(clientName).toLowerCase());
+      if (match?.hasAccountingIntegration) return true;
+      if (hasActiveAccountingIntegration(match?.accountingTool)) return true;
+    }
+
+    if (propHasAccountingIntegration !== undefined) return Boolean(propHasAccountingIntegration);
+    if (invoicesClient?.hasAccountingIntegration !== undefined) return Boolean(invoicesClient.hasAccountingIntegration);
+    return false;
+  }, [propHasAccountingIntegration, invoicesClient, job, editSlot, jobClient, allClientsMap]);
+
+  const isPlaceholder = useMemo(() => {
+    return isPlaceholderInvoice(slot?.ref || invoiceNo, slot?.status || status);
+  }, [slot, invoiceNo, status]);
+
+  const isLocked = Boolean(
+    hasAccounting &&
+    !isPlaceholder &&
+    (slot?.ref || invoiceNo) &&
+    String(slot?.ref || invoiceNo).trim() !== ""
+  );
+  const isPaid = String(slot?.status || status || "").trim().toLowerCase() === "paid";
   
   // Move invoice state
   const [movingInvoice, setMovingInvoice] = useState(false);
@@ -461,24 +498,84 @@ export default function InvoicesEditModal({
         ) : (
           /* STANDARD EDIT FORM */
           <>
+            {isLocked && (
+              <div style={{
+                fontSize: "12px",
+                color: "#334155",
+                background: "#f8fafc",
+                border: "1px solid #e2e8f0",
+                borderRadius: "6px",
+                padding: "8px 12px",
+                marginBottom: "14px",
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+                lineHeight: "1.4"
+              }}>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                </svg>
+                <span>This invoice is synced from accounting software. The invoice number, amount, and sent date are locked here to prevent sync conflicts{isPaid ? ", and days to pay is locked because the invoice is paid." : ", but days to pay remains editable."}</span>
+              </div>
+            )}
             <div style={{ display: "grid", gap: "12px" }}>
               <div>
                 <label style={labelStyle}>Invoice number</label>
-                <input style={inputStyle} value={invoiceNo} onChange={e => setInvoiceNo(e.target.value)} />
+                <input
+                  style={{
+                    ...inputStyle,
+                    ...(isLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
+                  }}
+                  value={invoiceNo}
+                  onChange={e => setInvoiceNo(e.target.value)}
+                  disabled={isLocked}
+                  title={isLocked ? "Synced from accounting software. To modify invoice number, amount, or sent date, update directly in your accounting software." : undefined}
+                />
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
                 <div>
                   <label style={labelStyle}>Amount (£)</label>
-                  <input style={inputStyle} type="number" step="0.01" value={amount} onChange={e => setAmount(e.target.value)} />
+                  <input
+                    style={{
+                      ...inputStyle,
+                      ...(isLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
+                    }}
+                    type="number"
+                    step="0.01"
+                    value={amount}
+                    onChange={e => setAmount(e.target.value)}
+                    disabled={isLocked}
+                    title={isLocked ? "Synced from accounting software. To modify invoice number, amount, or sent date, update directly in your accounting software." : undefined}
+                  />
                 </div>
                 <div>
                   <label style={labelStyle}>Days to pay</label>
-                  <input style={inputStyle} type="number" value={daysToPay} onChange={e => setDaysToPay(e.target.value)} />
+                  <input
+                    style={{
+                      ...inputStyle,
+                      ...(isPaid ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
+                    }}
+                    type="number"
+                    value={daysToPay}
+                    onChange={e => setDaysToPay(e.target.value)}
+                    disabled={isPaid}
+                    title={isPaid ? "Days to pay is determined once an invoice is marked as paid." : undefined}
+                  />
                 </div>
               </div>
               <div>
                 <label style={labelStyle}>Sent date</label>
-                <DateInput style={inputStyle} value={sentDate} onChange={e => setSentDate(e.target.value)} />
+                <DateInput
+                  style={{
+                    ...inputStyle,
+                    ...(isLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
+                  }}
+                  value={sentDate}
+                  onChange={e => setSentDate(e.target.value)}
+                  disabled={isLocked}
+                  title={isLocked ? "Synced from accounting software. To modify invoice number, amount, or sent date, update directly in your accounting software." : undefined}
+                />
               </div>
               <div>
                 <label style={labelStyle}>Status (automation managed)</label>
@@ -498,14 +595,45 @@ export default function InvoicesEditModal({
             </div>
 
             {confirmingDelete ? (
-              <div style={{ marginTop: "18px", padding: "12px", background: "#fff5f5", border: "1px solid #fecaca", borderRadius: "8px" }}>
-                <div style={{ fontSize: "13px", color: "#991b1b", marginBottom: "10px" }}>Delete this invoice entry? This clears all fields for this slot and can&apos;t be undone from here.</div>
-                <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end" }}>
-                  <button onClick={() => setConfirmingDelete(false)} disabled={saving}
-                    style={{ padding: "7px 14px", background: "#f5f5f5", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>Cancel</button>
-                  <button onClick={doDelete} disabled={saving}
-                    style={{ padding: "7px 14px", background: "#dc2626", color: "#fff", border: "none", borderRadius: "6px", cursor: saving ? "default" : "pointer", fontSize: "13px", fontWeight: "600", opacity: saving ? 0.7 : 1 }}>
-                    {saving ? "Deleting..." : "Yes, delete"}
+              <div style={{ marginTop: "18px", padding: "14px", background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "8px" }}>
+                <div style={{ fontSize: "13px", fontWeight: "600", color: "#0f172a", marginBottom: "4px" }}>
+                  Delete invoice from this job?
+                </div>
+                <div style={{ fontSize: "12px", color: "#64748b", marginBottom: "12px", lineHeight: "1.4" }}>
+                  Would you prefer to move this invoice to another job or create a new job for it instead?
+                </div>
+                <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmingDelete(false)}
+                    disabled={saving}
+                    style={{ padding: "7px 12px", background: "#f1f5f9", border: "1px solid #cbd5e1", borderRadius: "6px", cursor: "pointer", fontSize: "12.5px", color: "#334155" }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setConfirmingDelete(false); setMovingInvoice(true); }}
+                    disabled={saving}
+                    style={{ padding: "7px 12px", background: "#ffffff", border: "1px solid #bfdbfe", borderRadius: "6px", cursor: "pointer", fontSize: "12.5px", color: "#1d4ed8", fontWeight: "500" }}
+                  >
+                    Move to a different job
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setConfirmingDelete(false); setShowNewJobModal(true); }}
+                    disabled={saving}
+                    style={{ padding: "7px 12px", background: "#ffffff", border: "1px solid #cbd5e1", borderRadius: "6px", cursor: "pointer", fontSize: "12.5px", color: "#0f172a", fontWeight: "500" }}
+                  >
+                    Create new job
+                  </button>
+                  <button
+                    type="button"
+                    onClick={doDelete}
+                    disabled={saving}
+                    style={{ padding: "7px 12px", background: "#fee2e2", border: "1px solid #fecaca", borderRadius: "6px", cursor: saving ? "default" : "pointer", fontSize: "12.5px", color: "#b91c1c", fontWeight: "600", opacity: saving ? 0.7 : 1 }}
+                  >
+                    {saving ? "Deleting..." : "Delete from job anyway"}
                   </button>
                 </div>
               </div>
@@ -542,6 +670,30 @@ export default function InvoicesEditModal({
           </>
         )}
       </div>
+
+      {showNewJobModal && (
+        <InvoicesNewJobModal
+          newJobData={{
+            inv: {
+              invoiceNo: slot.ref || invoiceNo,
+              client: jobClient || invoicesClient?.clientName,
+              job: jobName || "",
+              amount: parseFloat(amount) || 0,
+              sentDate: sentDate,
+              daysToPay: daysToPay,
+              status: status,
+              dueDate: slot.dueDate || "",
+            }
+          }}
+          invoicesClient={invoicesClient}
+          onClose={() => setShowNewJobModal(false)}
+          onMarkPullPending={onMarkPullPending}
+          onSuccess={async () => {
+            await doDelete();
+            setShowNewJobModal(false);
+          }}
+        />
+      )}
     </div>
   );
 }

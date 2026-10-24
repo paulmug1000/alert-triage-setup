@@ -205,10 +205,16 @@ export function AppGlobalsProvider({ children }) {
     }
   };
 
-  // ── PMA GLOBAL CLIENT DATA CACHE ──────────────────────────────────────────
+  // ── PMA GLOBAL CLIENT DATA CACHE & PRIORITIZED BACKGROUND QUEUE ─────────
   const clientCacheRef = useRef({});
   const inFlightPrefetchesRef = useRef(new Map());
   const managedClientRef = useRef(managedClient);
+  const queueRef = useRef([]);
+  const queuedTaskMapRef = useRef(new Map());
+  const isProcessingQueueRef = useRef(false);
+  const activeClientIdRef = useRef(null);
+  const foregroundActiveCountRef = useRef(0);
+  const queueTimerRef = useRef(null);
 
   useEffect(() => {
     managedClientRef.current = managedClient;
@@ -219,28 +225,6 @@ export function AppGlobalsProvider({ children }) {
     const str = String(idOrUrl).trim();
     const match = str.match(/\/d\/([a-zA-Z0-9-_]+)/);
     return match ? match[1] : str;
-  }, []);
-
-  const getInFlightPrefetch = useCallback((key) => {
-    return inFlightPrefetchesRef.current.get(key) || null;
-  }, []);
-
-  const safeFetchOnce = useCallback((key, fetcher) => {
-    if (inFlightPrefetchesRef.current.has(key)) {
-      return inFlightPrefetchesRef.current.get(key);
-    }
-    const p = (async () => {
-      try {
-        return await fetcher();
-      } catch (err) {
-        console.warn(`[PMA Fetch Warning] ${key}:`, err?.message);
-        throw err;
-      } finally {
-        inFlightPrefetchesRef.current.delete(key);
-      }
-    })();
-    inFlightPrefetchesRef.current.set(key, p);
-    return p;
   }, []);
 
   const getCachedClientData = useCallback((clientSheetId, dataType, maxAgeMs = 600000) => {
@@ -295,18 +279,212 @@ export function AppGlobalsProvider({ children }) {
     }
   }, [cleanSheetId]);
 
-  // ── BACKGROUND PRELOADER ON MANAGE CLIENT (STAGGERED CONCURRENCY) ───────────
+  // ── SEQUENTIAL BACKGROUND QUEUE RUNNER ─────────────────────────────────────
+  const runNextQueueTask = useCallback(async () => {
+    if (isProcessingQueueRef.current) return;
+
+    const currentClientId = activeClientIdRef.current;
+    if (!currentClientId) {
+      queueRef.current = [];
+      queuedTaskMapRef.current.clear();
+      return;
+    }
+
+    // If user is actively performing a foreground fetch, pause background tasks
+    if (foregroundActiveCountRef.current > 0) {
+      if (queueTimerRef.current) clearTimeout(queueTimerRef.current);
+      queueTimerRef.current = setTimeout(() => {
+        runNextQueueTask();
+      }, 500);
+      return;
+    }
+
+    if (queueRef.current.length === 0) {
+      return;
+    }
+
+    isProcessingQueueRef.current = true;
+
+    try {
+      // Sort: highest priority first (2 = Core, 3 = Views, 4 = Deep Edit)
+      queueRef.current.sort((a, b) => a.priority - b.priority);
+      const task = queueRef.current.shift();
+      if (!task) return;
+      queuedTaskMapRef.current.delete(task.key);
+
+      // Verify task still belongs to current active client
+      if (task.clientSheetId !== activeClientIdRef.current) {
+        return;
+      }
+
+      // If data is already cached and fresh, skip it
+      if (task.dataType) {
+        const cached = getCachedClientData(task.clientSheetId, task.dataType);
+        if (cached && !cached.isStale) {
+          return;
+        }
+      }
+
+      // Execute this single task in isolation (zero concurrency = zero 429 quota exhaustion)
+      const promise = (async () => {
+        try {
+          return await task.fetcher();
+        } catch (err) {
+          console.warn(`[Background Preload] Task failed for ${task.key}:`, err?.message);
+        } finally {
+          inFlightPrefetchesRef.current.delete(task.key);
+        }
+      })();
+
+      inFlightPrefetchesRef.current.set(task.key, promise);
+      await promise;
+    } finally {
+      isProcessingQueueRef.current = false;
+
+      // If more tasks remain for this client, schedule next one with polite 1.2s pacing gap
+      if (queueRef.current.length > 0 && activeClientIdRef.current === currentClientId) {
+        if (queueTimerRef.current) clearTimeout(queueTimerRef.current);
+        queueTimerRef.current = setTimeout(() => {
+          runNextQueueTask();
+        }, 1200);
+      }
+    }
+  }, [getCachedClientData]);
+
+  const scheduleNextQueueTask = useCallback(() => {
+    if (queueTimerRef.current) clearTimeout(queueTimerRef.current);
+    queueTimerRef.current = setTimeout(() => {
+      runNextQueueTask();
+    }, 100);
+  }, [runNextQueueTask]);
+
+  // ── INSTANT USER PRIORITY PROMOTION ────────────────────────────────────────
+  // When a user navigates to ANY screen, this immediately promotes any queued task
+  // to run INSTANTLY with maximum priority while pausing the background runner.
+  const getInFlightPrefetch = useCallback((key) => {
+    // 1. Is it currently in flight right now?
+    if (inFlightPrefetchesRef.current.has(key)) {
+      return inFlightPrefetchesRef.current.get(key);
+    }
+
+    // 2. Is it waiting in the background queue? Promote and execute NOW!
+    const queuedTask = queuedTaskMapRef.current.get(key);
+    if (queuedTask) {
+      queuedTaskMapRef.current.delete(key);
+      queueRef.current = queueRef.current.filter((t) => t.key !== key);
+
+      foregroundActiveCountRef.current++;
+      const promise = (async () => {
+        try {
+          return await queuedTask.fetcher();
+        } catch (err) {
+          console.warn(`[Promoted Fetch Error] ${key}:`, err?.message);
+          throw err;
+        } finally {
+          inFlightPrefetchesRef.current.delete(key);
+          foregroundActiveCountRef.current = Math.max(0, foregroundActiveCountRef.current - 1);
+          // Resume remaining background tasks after foreground fetch completes
+          scheduleNextQueueTask();
+        }
+      })();
+
+      inFlightPrefetchesRef.current.set(key, promise);
+      return promise;
+    }
+
+    return null;
+  }, [scheduleNextQueueTask]);
+
+  const safeFetchOnce = useCallback((key, fetcher, isPriority = false) => {
+    if (inFlightPrefetchesRef.current.has(key)) {
+      return inFlightPrefetchesRef.current.get(key);
+    }
+
+    if (queuedTaskMapRef.current.has(key)) {
+      queuedTaskMapRef.current.delete(key);
+      queueRef.current = queueRef.current.filter((t) => t.key !== key);
+    }
+
+    if (isPriority) {
+      foregroundActiveCountRef.current++;
+    }
+
+    const p = (async () => {
+      try {
+        return await fetcher();
+      } catch (err) {
+        console.warn(`[PMA Fetch Warning] ${key}:`, err?.message);
+        throw err;
+      } finally {
+        inFlightPrefetchesRef.current.delete(key);
+        if (isPriority) {
+          foregroundActiveCountRef.current = Math.max(0, foregroundActiveCountRef.current - 1);
+          scheduleNextQueueTask();
+        }
+      }
+    })();
+
+    inFlightPrefetchesRef.current.set(key, p);
+    return p;
+  }, [scheduleNextQueueTask]);
+
+  const prioritizeFetch = useCallback(async (key, fetcher, clientSheetId = null, dataType = null) => {
+    if (clientSheetId && dataType) {
+      const cached = getCachedClientData(clientSheetId, dataType);
+      if (cached && !cached.isStale) return cached.data;
+    }
+    const inFlight = getInFlightPrefetch(key);
+    if (inFlight) return await inFlight;
+
+    foregroundActiveCountRef.current++;
+    const p = (async () => {
+      try {
+        return await fetcher();
+      } catch (err) {
+        console.warn(`[Prioritize Fetch Error] ${key}:`, err?.message);
+        throw err;
+      } finally {
+        inFlightPrefetchesRef.current.delete(key);
+        foregroundActiveCountRef.current = Math.max(0, foregroundActiveCountRef.current - 1);
+        scheduleNextQueueTask();
+      }
+    })();
+
+    inFlightPrefetchesRef.current.set(key, p);
+    return await p;
+  }, [getCachedClientData, getInFlightPrefetch, scheduleNextQueueTask]);
+
+  // ── BACKGROUND PRELOADER (SEQUENTIAL & PACED) ──────────────────────────────
   const preloadClientData = useCallback((client) => {
     if (!client?.clientSheetId) return;
     const cleanClientId = cleanSheetId(client.clientSheetId);
     const cleanMasterId = client.masterSheetId ? cleanSheetId(client.masterSheetId) : null;
     const clientName = client.clientName || "";
 
-    // Helper to safely execute a fetch once without duplicating
-    const fetchOnce = (key, fetcher) => safeFetchOnce(key, fetcher);
+    // Set active client and reset any previous client's queue
+    activeClientIdRef.current = cleanClientId;
+    if (queueTimerRef.current) clearTimeout(queueTimerRef.current);
+    queueRef.current = [];
+    queuedTaskMapRef.current.clear();
 
-    // ── TIER 1: Core screens (Jobs, Contractors, Invoices, Retainers) - 0ms immediate
-    fetchOnce(`jobs_${cleanClientId}`, async () => {
+    const enqueue = (key, priority, dataType, fetcher) => {
+      const cached = getCachedClientData(cleanClientId, dataType);
+      if (cached && !cached.isStale) return;
+      if (inFlightPrefetchesRef.current.has(key)) return;
+
+      const task = {
+        key,
+        priority,
+        clientSheetId: cleanClientId,
+        dataType,
+        fetcher
+      };
+      queueRef.current.push(task);
+      queuedTaskMapRef.current.set(key, task);
+    };
+
+    // ── PRIORITY 2: Core screens (Jobs, Contractors, Invoices, Retainers)
+    enqueue(`jobs_${cleanClientId}`, 2, "jobs_All", async () => {
       const res = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -317,7 +495,7 @@ export function AppGlobalsProvider({ children }) {
       return d;
     });
 
-    fetchOnce(`outgoings_${cleanClientId}`, async () => {
+    enqueue(`outgoings_${cleanClientId}`, 2, "outgoings", async () => {
       const res = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -329,7 +507,7 @@ export function AppGlobalsProvider({ children }) {
     });
 
     if (cleanMasterId) {
-      fetchOnce(`outgoings_inbox_${cleanMasterId}`, async () => {
+      enqueue(`outgoings_inbox_${cleanMasterId}`, 2, "outgoings_inbox", async () => {
         const res = await fetch("/api/triage", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -341,7 +519,7 @@ export function AppGlobalsProvider({ children }) {
       });
     }
 
-    fetchOnce(`inv_jobs_${cleanClientId}`, async () => {
+    enqueue(`inv_jobs_${cleanClientId}`, 2, "invoice_jobs_active", async () => {
       const res = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -353,7 +531,7 @@ export function AppGlobalsProvider({ children }) {
     });
 
     if (cleanMasterId) {
-      fetchOnce(`inv_inbox_${cleanMasterId}`, async () => {
+      enqueue(`inv_inbox_${cleanMasterId}`, 2, "invoices_inbox", async () => {
         const res = await fetch("/api/triage", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -365,7 +543,7 @@ export function AppGlobalsProvider({ children }) {
       });
     }
 
-    fetchOnce(`retainer_jobs_${cleanClientId}`, async () => {
+    enqueue(`retainer_jobs_${cleanClientId}`, 2, "retainer_jobs", async () => {
       const res = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -376,123 +554,123 @@ export function AppGlobalsProvider({ children }) {
       return d;
     });
 
-    // ── TIER 2: Pulse Views (Payload, Performance, Key Data, Cashflow, Budget Overview) - 500ms delay
-    setTimeout(() => {
-      if (cleanSheetId(managedClientRef.current?.clientSheetId) !== cleanClientId) return;
+    // ── PRIORITY 3: Pulse Views (Payload, Performance, Key Data, Cashflow, Budget Overview)
+    enqueue(`portal_payload_${cleanClientId}`, 3, "portal_payload", async () => {
+      const res = await fetch(
+        `/api/portal/payload?clientSheetId=${encodeURIComponent(cleanClientId)}&clientName=${encodeURIComponent(clientName)}`
+      );
+      const d = await res.json();
+      if (d.success && d.payload) setCachedClientData(cleanClientId, "portal_payload", d.payload);
+      return d;
+    });
 
-      fetchOnce(`portal_payload_${cleanClientId}`, async () => {
+    enqueue(`portal_perf_${cleanClientId}`, 3, "portal_perf", async () => {
+      const res = await fetch(
+        `/api/portal/performance?clientSheetId=${encodeURIComponent(cleanClientId)}&clientName=${encodeURIComponent(clientName)}`
+      );
+      const d = await res.json();
+      if (d.success && d.data) setCachedClientData(cleanClientId, "portal_perf", d.data);
+      return d;
+    });
+
+    enqueue(`portal_key_${cleanClientId}`, 3, "portal_key_data", async () => {
+      const res = await fetch(
+        `/api/portal/key-data?clientSheetId=${encodeURIComponent(cleanClientId)}&clientName=${encodeURIComponent(clientName)}`
+      );
+      const d = await res.json();
+      if (d.success && d.data) setCachedClientData(cleanClientId, "portal_key_data", d.data);
+      return d;
+    });
+
+    enqueue(`portal_cash_${cleanClientId}`, 3, "portal_cash", async () => {
+      const res = await fetch(
+        `/api/portal/cash?clientSheetId=${encodeURIComponent(cleanClientId)}&clientName=${encodeURIComponent(clientName)}`
+      );
+      const d = await res.json();
+      if (d.success && d.data) setCachedClientData(cleanClientId, "portal_cash", d.data);
+      return d;
+    });
+
+    enqueue(`portal_budget_${cleanClientId}`, 3, "portal_budget", async () => {
+      const res = await fetch(
+        `/api/portal/budget?clientSheetId=${encodeURIComponent(cleanClientId)}&clientName=${encodeURIComponent(clientName)}`
+      );
+      const d = await res.json();
+      if (d.success && d.data) setCachedClientData(cleanClientId, "portal_budget", d.data);
+      return d;
+    });
+
+    // ── PRIORITY 4: Deep Edit Screens (Salaries, Expenses, New Business to Find, Budget, Cash)
+    if (cleanMasterId) {
+      enqueue(`salaries_${cleanClientId}`, 4, "salaries", async () => {
         const res = await fetch(
-          `/api/portal/payload?clientSheetId=${encodeURIComponent(cleanClientId)}&clientName=${encodeURIComponent(clientName)}`
+          `/api/pma/salaries?clientName=${encodeURIComponent(clientName)}&masterSheetId=${encodeURIComponent(cleanMasterId)}&clientSheetId=${encodeURIComponent(cleanClientId)}`
         );
         const d = await res.json();
-        if (d.success && d.payload) setCachedClientData(cleanClientId, "portal_payload", d.payload);
+        if (d.success) setCachedClientData(cleanClientId, "salaries", d);
         return d;
       });
+    }
 
-      fetchOnce(`portal_perf_${cleanClientId}`, async () => {
-        const res = await fetch(
-          `/api/portal/performance?clientSheetId=${encodeURIComponent(cleanClientId)}&clientName=${encodeURIComponent(clientName)}`
-        );
-        const d = await res.json();
-        if (d.success && d.data) setCachedClientData(cleanClientId, "portal_perf", d.data);
-        return d;
+    enqueue(`expenses_${cleanClientId}`, 4, "expenses", async () => {
+      const res = await fetch(
+        `/api/pma/expenses?clientName=${encodeURIComponent(clientName)}&clientSheetId=${encodeURIComponent(cleanClientId)}`
+      );
+      const d = await res.json();
+      if (d.success) setCachedClientData(cleanClientId, "expenses", d);
+      return d;
+    });
+
+    enqueue(`nbtofind_${cleanClientId}`, 4, "nbtofind", async () => {
+      const res = await fetch(
+        `/api/pma/nbtofind?clientName=${encodeURIComponent(clientName)}&clientSheetId=${encodeURIComponent(cleanClientId)}`
+      );
+      const d = await res.json();
+      if (d.success) setCachedClientData(cleanClientId, "nbtofind", d);
+      return d;
+    });
+
+    enqueue(`budget_${cleanClientId}`, 4, "budget", async () => {
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "get_client_view_data",
+          clientSheetId: cleanClientId,
+          masterSheetId: cleanMasterId || undefined,
+          clientName: clientName || undefined,
+          tab: "budget",
+        }),
       });
+      const d = await res.json();
+      if (d.success) setCachedClientData(cleanClientId, "budget", d);
+      return d;
+    });
 
-      fetchOnce(`portal_key_${cleanClientId}`, async () => {
-        const res = await fetch(
-          `/api/portal/key-data?clientSheetId=${encodeURIComponent(cleanClientId)}&clientName=${encodeURIComponent(clientName)}`
-        );
-        const d = await res.json();
-        if (d.success && d.data) setCachedClientData(cleanClientId, "portal_key_data", d.data);
-        return d;
-      });
+    enqueue(`cash_${cleanClientId}`, 4, "cash", async () => {
+      const res = await fetch(
+        `/api/pma/cash?clientName=${encodeURIComponent(clientName)}&clientSheetId=${encodeURIComponent(cleanClientId)}`
+      );
+      const d = await res.json();
+      if (d.success) setCachedClientData(cleanClientId, "cash", d);
+      return d;
+    });
 
-      fetchOnce(`portal_cash_${cleanClientId}`, async () => {
-        const res = await fetch(
-          `/api/portal/cash?clientSheetId=${encodeURIComponent(cleanClientId)}&clientName=${encodeURIComponent(clientName)}`
-        );
-        const d = await res.json();
-        if (d.success && d.data) setCachedClientData(cleanClientId, "portal_cash", d.data);
-        return d;
-      });
-
-      fetchOnce(`portal_budget_${cleanClientId}`, async () => {
-        const res = await fetch(
-          `/api/portal/budget?clientSheetId=${encodeURIComponent(cleanClientId)}&clientName=${encodeURIComponent(clientName)}`
-        );
-        const d = await res.json();
-        if (d.success && d.data) setCachedClientData(cleanClientId, "portal_budget", d.data);
-        return d;
-      });
-    }, 500);
-
-    // ── TIER 3: Deep Edit Screens (Salaries, Expenses, New Business to Find, Budget) - 1200ms delay
-    setTimeout(() => {
-      if (cleanSheetId(managedClientRef.current?.clientSheetId) !== cleanClientId) return;
-
-      if (cleanMasterId) {
-        fetchOnce(`salaries_${cleanClientId}`, async () => {
-          const res = await fetch(
-            `/api/pma/salaries?clientName=${encodeURIComponent(clientName)}&masterSheetId=${encodeURIComponent(cleanMasterId)}&clientSheetId=${encodeURIComponent(cleanClientId)}`
-          );
-          const d = await res.json();
-          if (d.success) setCachedClientData(cleanClientId, "salaries", d);
-          return d;
-        });
-      }
-
-      fetchOnce(`expenses_${cleanClientId}`, async () => {
-        const res = await fetch(
-          `/api/pma/expenses?clientName=${encodeURIComponent(clientName)}&clientSheetId=${encodeURIComponent(cleanClientId)}`
-        );
-        const d = await res.json();
-        if (d.success) setCachedClientData(cleanClientId, "expenses", d);
-        return d;
-      });
-
-      fetchOnce(`nbtofind_${cleanClientId}`, async () => {
-        const res = await fetch(
-          `/api/pma/nbtofind?clientName=${encodeURIComponent(clientName)}&clientSheetId=${encodeURIComponent(cleanClientId)}`
-        );
-        const d = await res.json();
-        if (d.success) setCachedClientData(cleanClientId, "nbtofind", d);
-        return d;
-      });
-
-      fetchOnce(`budget_${cleanClientId}`, async () => {
-        const res = await fetch("/api/triage", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: "get_client_view_data",
-            clientSheetId: cleanClientId,
-            masterSheetId: cleanMasterId || undefined,
-            clientName: clientName || undefined,
-            tab: "budget",
-          }),
-        });
-        const d = await res.json();
-        if (d.success) setCachedClientData(cleanClientId, "budget", d);
-        return d;
-      });
-
-      fetchOnce(`cash_${cleanClientId}`, async () => {
-        const res = await fetch(
-          `/api/pma/cash?clientName=${encodeURIComponent(clientName)}&clientSheetId=${encodeURIComponent(cleanClientId)}`
-        );
-        const d = await res.json();
-        if (d.success) setCachedClientData(cleanClientId, "cash", d);
-        return d;
-      });
-    }, 1200);
-  }, [cleanSheetId, safeFetchOnce, setCachedClientData]);
+    // Start sequential processing loop
+    scheduleNextQueueTask();
+  }, [cleanSheetId, getCachedClientData, setCachedClientData, scheduleNextQueueTask]);
 
   // Automatically trigger background preloading whenever managedClient changes
   useEffect(() => {
     if (managedClient?.clientSheetId) {
       preloadClientData(managedClient);
+    } else {
+      activeClientIdRef.current = null;
+      if (queueTimerRef.current) clearTimeout(queueTimerRef.current);
+      queueRef.current = [];
+      queuedTaskMapRef.current.clear();
     }
-  }, [managedClient?.clientSheetId, managedClient?.masterSheetId, preloadClientData]);
+  }, [managedClient, preloadClientData]);
 
   const value = {
     automationCommanderSheetId,
@@ -514,6 +692,7 @@ export function AppGlobalsProvider({ children }) {
     preloadClientData,
     getInFlightPrefetch,
     safeFetchOnce,
+    prioritizeFetch,
     cleanSheetId
   };
 

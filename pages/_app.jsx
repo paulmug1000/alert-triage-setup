@@ -178,6 +178,25 @@ export default function App({ Component, pageProps }) {
             transform: rotate(360deg);
           }
         }
+        @keyframes pulse-calm-breathe {
+          0%, 100% {
+            opacity: 1;
+          }
+          50% {
+            opacity: 0.35;
+          }
+        }
+        .pulse-skeleton {
+          position: relative;
+          background-color: #e2e8f0 !important;
+          animation: pulse-calm-breathe 1.8s ease-in-out infinite !important;
+        }
+        .pulse-skeleton.pulse-skeleton-blue {
+          background-color: #dbeafe !important;
+        }
+        .pulse-skeleton.pulse-skeleton-dark {
+          background-color: rgba(255, 255, 255, 0.35) !important;
+        }
       `}</style>
       {isRouteChanging && (
         <div

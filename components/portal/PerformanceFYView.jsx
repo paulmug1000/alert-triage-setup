@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
 import Spinner from "../Spinner";
+import { PerformanceSkeleton } from "../Skeleton";
 import DeepDivePopover from "./DeepDivePopover";
 import { getDeepDiveType, buildDeepDiveData, DeepDiveEngine, parseMoney, formatMoney as universalFormatMoney, formatCurrencyString } from "../../services/deepDiveHelper";
 import PerformanceTrajectoryChartRow from "./PerformanceTrajectoryChartRow";
@@ -73,26 +74,6 @@ export default function PerformanceFYView({
     isSyncingScrollRef.current = false;
   };
 
-  if (isLoading && !data) {
-    return (
-      <div
-        style={{
-          background: "#ffffff",
-          borderRadius: "8px",
-          padding: "5rem 2rem",
-          boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
-          border: "1px solid #e2e8f0",
-          textAlign: "center",
-        }}
-      >
-        <Spinner size={32} color="#0047AB" />
-        <p style={{ marginTop: "1rem", color: "#0047AB", fontWeight: 500, fontSize: "15px" }}>
-          Please wait - loading
-        </p>
-      </div>
-    );
-  }
-
   if (error && !data) {
     return (
       <div
@@ -131,6 +112,9 @@ export default function PerformanceFYView({
   }
 
   if (!activeYear) {
+    if (isLoading || !data) {
+      return <PerformanceSkeleton />;
+    }
     return (
       <div style={{ background: "#ffffff", borderRadius: "8px", padding: "4rem", textAlign: "center" }}>
         <p style={{ color: "#64748b" }}>No financial year data found for this client.</p>

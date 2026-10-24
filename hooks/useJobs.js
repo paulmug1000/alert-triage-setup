@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useAppGlobals } from "./useAppGlobals";
 
 export function useJobs(initialClient = null) {
@@ -25,6 +25,22 @@ export function useJobs(initialClient = null) {
   });
   const [jobsExpanded, setJobsExpanded] = useState(() => new Set());
   const [jobsEditSplit, setJobsEditSplit] = useState(null);
+  const [hasAccountingIntegration, setHasAccountingIntegration] = useState(() => {
+    if (initialClient?.hasAccountingIntegration !== undefined) return Boolean(initialClient.hasAccountingIntegration);
+    if (initialClient?.clientSheetId) {
+      const cleanId = cleanSheetId ? cleanSheetId(initialClient.clientSheetId) : initialClient.clientSheetId;
+      const cached = getCachedClientData(cleanId, "jobs_All");
+      if (cached?.data?.hasAccountingIntegration !== undefined) return Boolean(cached.data.hasAccountingIntegration);
+    }
+    return false;
+  });
+
+  useEffect(() => {
+    if (jobsClient?.hasAccountingIntegration !== undefined) {
+      setHasAccountingIntegration(Boolean(jobsClient.hasAccountingIntegration));
+    }
+  }, [jobsClient]);
+
   const [productLines, setProductLines] = useState(() => {
     if (initialClient?.clientSheetId) {
       const cleanId = cleanSheetId ? cleanSheetId(initialClient.clientSheetId) : initialClient.clientSheetId;
@@ -53,6 +69,10 @@ export function useJobs(initialClient = null) {
   const loadJobsData = useCallback(async (client, tabName = "All", bypassCache = false) => {
     if (!client?.clientSheetId) return;
 
+    if (client.hasAccountingIntegration !== undefined) {
+      setHasAccountingIntegration(Boolean(client.hasAccountingIntegration));
+    }
+
     const cacheKey = `jobs_${tabName}`;
     const cleanId = cleanSheetId ? cleanSheetId(client.clientSheetId) : String(client.clientSheetId).replace(/.*\/d\/([a-zA-Z0-9-_]+).*/, "$1");
 
@@ -63,6 +83,8 @@ export function useJobs(initialClient = null) {
       if (cached.data.productLines) setProductLines(cached.data.productLines);
       if (cached.data.leadSources) setLeadSources(cached.data.leadSources);
       if (cached.data.existingClients) setExistingClients(cached.data.existingClients);
+      if (cached.data.hasAccountingIntegration !== undefined) setHasAccountingIntegration(Boolean(cached.data.hasAccountingIntegration));
+      else if (client.hasAccountingIntegration !== undefined) setHasAccountingIntegration(Boolean(client.hasAccountingIntegration));
       setJobsLoading(false);
       // If cached data is fresh (< 120s), return immediately
       if (!cached.isStale) return;
@@ -82,6 +104,8 @@ export function useJobs(initialClient = null) {
             if (fresh.data.productLines) setProductLines(fresh.data.productLines);
             if (fresh.data.leadSources) setLeadSources(fresh.data.leadSources);
             if (fresh.data.existingClients) setExistingClients(fresh.data.existingClients);
+            if (fresh.data.hasAccountingIntegration !== undefined) setHasAccountingIntegration(Boolean(fresh.data.hasAccountingIntegration));
+            else if (client.hasAccountingIntegration !== undefined) setHasAccountingIntegration(Boolean(client.hasAccountingIntegration));
             setJobsLoading(false);
             return;
           }
@@ -102,6 +126,8 @@ export function useJobs(initialClient = null) {
         if (data.productLines) setProductLines(data.productLines);
         if (data.leadSources) setLeadSources(data.leadSources);
         if (data.existingClients) setExistingClients(data.existingClients);
+        if (data.hasAccountingIntegration !== undefined) setHasAccountingIntegration(Boolean(data.hasAccountingIntegration));
+        else if (client.hasAccountingIntegration !== undefined) setHasAccountingIntegration(Boolean(client.hasAccountingIntegration));
         setCachedClientData(client.clientSheetId, cacheKey, data);
       }
     } catch (e) {
@@ -122,6 +148,7 @@ export function useJobs(initialClient = null) {
     productLines, setProductLines,
     leadSources, setLeadSources,
     existingClients, setExistingClients,
+    hasAccountingIntegration,
     loadJobsData
   };
 }

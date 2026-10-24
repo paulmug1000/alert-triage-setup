@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import Spinner from "../Spinner";
+import { CashflowSkeleton } from "../Skeleton";
 import DeepDivePopover from "./DeepDivePopover";
 import { getDeepDiveType, buildDeepDiveData, DeepDiveEngine, formatMoney as universalFormatMoney, parseMoney as universalParseMoney } from "../../services/deepDiveHelper";
 import { downloadCsv } from "../../utils/helpers";
@@ -46,25 +47,7 @@ export default function CashflowView({
     }
   }, [keyData]);
 
-  if (isLoading && !data) {
-    return (
-      <div
-        style={{
-          background: "#ffffff",
-          borderRadius: "8px",
-          padding: "5rem 2rem",
-          boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
-          border: "1px solid #e2e8f0",
-          textAlign: "center",
-        }}
-      >
-        <Spinner size={32} color="#0047AB" />
-        <p style={{ marginTop: "1rem", color: "#64748b", fontWeight: 500, fontSize: "14px" }}>
-          Please wait - loading
-        </p>
-      </div>
-    );
-  }
+
 
   if (error && !data) {
     return (
@@ -104,11 +87,7 @@ export default function CashflowView({
   }
 
   if (!data) {
-    return (
-      <div style={{ background: "#ffffff", borderRadius: "8px", padding: "4rem", textAlign: "center" }}>
-        <p style={{ color: "#64748b" }}>No cashflow data available.</p>
-      </div>
-    );
+    return <CashflowSkeleton />;
   }
 
   const rollingMonths = data.rollingMonths || [];

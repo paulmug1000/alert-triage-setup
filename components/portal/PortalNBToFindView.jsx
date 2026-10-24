@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from "react";
 import Spinner from "../Spinner";
+import { PortalTableSkeleton } from "../Skeleton";
 import { formatMoney, parseMoney } from "../../services/deepDiveHelper";
 import { downloadCsv } from "../../utils/helpers";
 
@@ -111,17 +112,6 @@ export default function PortalNBToFindView({
     downloadCsv(`Pulse_NB_To_Find_Year_${selectedYear}_${dateStr}.csv`, [header, ...rows]);
   };
 
-  if (isLoading && !nbData) {
-    return (
-      <div style={{ textAlign: "center", padding: "4rem 0" }}>
-        <Spinner size={36} color="#0047AB" />
-        <p style={{ marginTop: "1rem", color: "#64748b", fontWeight: 500 }}>
-          Please wait - loading
-        </p>
-      </div>
-    );
-  }
-
   if (error && !nbData) {
     return (
       <div
@@ -152,6 +142,10 @@ export default function PortalNBToFindView({
         </button>
       </div>
     );
+  }
+
+  if (!nbData) {
+    return <PortalTableSkeleton title="New business to find" columns={6} />;
   }
 
   return (

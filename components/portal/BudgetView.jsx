@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from "react";
 import Spinner from "../Spinner";
+import { BudgetSkeleton } from "../Skeleton";
 import { formatMoney as universalFormatMoney, parseMoney } from "../../services/deepDiveHelper";
 import { downloadCsv } from "../../utils/helpers";
 
@@ -124,17 +125,6 @@ export default function BudgetView({
     return null;
   };
 
-  if (isLoading && (!data || rawVals.length === 0)) {
-    return (
-      <div style={{ textAlign: "center", padding: "4rem 0" }}>
-        <Spinner size={36} color="#0047AB" />
-        <p style={{ marginTop: "1rem", color: "#64748b", fontWeight: 500 }}>
-          Please wait - loading
-        </p>
-      </div>
-    );
-  }
-
   if (error && (!data || rawVals.length === 0)) {
     return (
       <div
@@ -165,6 +155,10 @@ export default function BudgetView({
         </button>
       </div>
     );
+  }
+
+  if (!data || rawVals.length === 0) {
+    return <BudgetSkeleton />;
   }
 
   if (data && !data.hasBudget) {

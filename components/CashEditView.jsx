@@ -138,6 +138,22 @@ export default function CashEditView({
     }
   }, [managedClient, allOutgoingsClients]);
 
+  // Back to client selector navigation handler (matches other Edit screens)
+  const handleBackToClients = () => {
+    if (managedClient && onClearManagedClient) {
+      onClearManagedClient();
+    } else {
+      setSelectedClient(null);
+      setCashData(null);
+      if (typeof window !== "undefined") {
+        sessionStorage.removeItem("pma_cash_client");
+        const url = new URL(window.location.href);
+        url.searchParams.delete("client");
+        window.history.replaceState(null, "", url.toString());
+      }
+    }
+  };
+
   // Fetch Cash Data (with Global Preload Cache Integration)
   const loadCashData = useCallback(async (client, bypassCache = false) => {
     if (!client?.clientSheetId) return;
@@ -207,6 +223,8 @@ export default function CashEditView({
             formula: c.formula || "",
             note: c.note || "",
             isEditable: c.isEditable,
+            bgColor: c.bgColor || null,
+            isBold: Boolean(c.isBold),
           };
         });
       });
@@ -583,7 +601,7 @@ export default function CashEditView({
             note: cellData.note || "",
           };
           if (navigator.clipboard) {
-            navigator.clipboard.writeText(cellData.formattedValue || "").catch(() => {});
+            navigator.clipboard.writeText(cellData.formattedValue || "").catch(() => { });
           }
         }
         return;
@@ -613,7 +631,7 @@ export default function CashEditView({
                 value: text.trim(),
               }]);
             }
-          }).catch(() => {});
+          }).catch(() => { });
         }
         return;
       }
@@ -748,23 +766,7 @@ export default function CashEditView({
     }]);
   };
 
-  // Jump scroll to Previous Month (M-1)
-  const jumpToPreviousMonth = () => {
-    if (!cashData || !scrollContainerRef.current) return;
-    const prevColIdx = cashData.previousMonthColIdx || 1;
-    const colHeaderElem = document.getElementById(`cash-header-col-${prevColIdx}`);
-    if (colHeaderElem) {
-      const containerLeft = scrollContainerRef.current.getBoundingClientRect().left;
-      const elemLeft = colHeaderElem.getBoundingClientRect().left;
-      const stickyColWidth = 230;
-      const targetScroll = scrollContainerRef.current.scrollLeft + (elemLeft - containerLeft) - stickyColWidth;
 
-      scrollContainerRef.current.scrollTo({
-        left: Math.max(0, targetScroll),
-        behavior: "smooth",
-      });
-    }
-  };
 
   // ─────────────────────────────────────────────────────────────────────────────
   // CELL EDIT COMMIT / CANCEL
@@ -799,66 +801,85 @@ export default function CashEditView({
         fontFamily: "'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
       }}
     >
-      {/* ── TOOLBAR ────────────────────────────────────────────────────────────── */}
+      {/* ── HEADER / TOOLBAR (MATCHES OTHER EDIT SCREENS) ──────────────────────── */}
       <div
         style={{
-          background: "#ffffff",
-          borderRadius: "10px",
-          border: "1px solid #e2e8f0",
-          padding: "12px 18px",
-          marginBottom: "16px",
           display: "flex",
-          alignItems: "center",
           justifyContent: "space-between",
+          alignItems: "center",
           flexWrap: "wrap",
-          gap: "12px",
-          boxShadow: "0 1px 3px rgba(0,0,0,0.03)",
+          gap: "16px",
+          marginBottom: "20px",
+          background: "#ffffff",
+          padding: "16px 20px",
+          borderRadius: "8px",
+          boxShadow: "0 1px 3px rgba(0,0,0,0.06)",
+          border: "1px solid #e2e8f0",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: "14px", flexWrap: "wrap" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-            <span style={{ fontSize: "18px" }}>💵</span>
-            <h1 style={{ margin: 0, fontSize: "18px", fontWeight: 700, color: "#0f172a" }}>
-              Cash
-            </h1>
-            <span
+        <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+          {selectedClient && (
+            <button
+              type="button"
+              onClick={handleBackToClients}
               style={{
-                fontSize: "12px",
-                fontWeight: 600,
-                color: "#0047AB",
-                background: "#eff6ff",
-                border: "1px solid #bfdbfe",
-                padding: "2px 8px",
-                borderRadius: "4px",
+                background: "#ffffff",
+                border: "1px solid #cbd5e1",
+                borderRadius: "6px",
+                cursor: "pointer",
+                padding: "6px 12px",
+                fontSize: "16px",
+                color: "#475569",
+                lineHeight: 1,
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                transition: "all 0.15s ease",
+                boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.backgroundColor = "#f1f5f9";
+                e.currentTarget.style.borderColor = "#94a3b8";
+                e.currentTarget.style.color = "#0f172a";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.backgroundColor = "#ffffff";
+                e.currentTarget.style.borderColor = "#cbd5e1";
+                e.currentTarget.style.color = "#475569";
+              }}
+              title="Back to client list"
+            >
+              ←
+            </button>
+          )}
+          <div>
+            <h1
+              style={{
+                margin: 0,
+                fontSize: "20px",
+                fontWeight: 700,
+                color: "#1e293b",
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
               }}
             >
-              {selectedClient.clientName}
-            </span>
+              <span>Cash</span>
+            </h1>
+            {selectedClient ? (
+              <div style={{ margin: "3px 0 0", fontSize: "14px", fontWeight: 600, color: "#0047AB" }}>
+                {selectedClient.clientName}
+              </div>
+            ) : (
+              <p style={{ margin: "4px 0 0", fontSize: "13px", color: "#64748b" }}>
+                Select a client to view and edit cash
+              </p>
+            )}
           </div>
+        </div>
 
-          {/* Jump to Previous Month Button */}
-          <button
-            type="button"
-            onClick={jumpToPreviousMonth}
-            style={{
-              padding: "5px 11px",
-              fontSize: "12px",
-              fontWeight: 600,
-              color: "#0047AB",
-              background: "#eff6ff",
-              border: "1px solid #bfdbfe",
-              borderRadius: "6px",
-              cursor: "pointer",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "5px",
-            }}
-            title="Scroll horizontally to previous month (M-1)"
-          >
-            <span>⏮</span>
-            <span>Jump to previous month</span>
-          </button>
-
+        {/* Right Tools: Undo/Redo, Auto-Save Status, Refresh, Google Sheets link */}
+        <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
           {/* Undo / Redo Buttons */}
           <div style={{ display: "inline-flex", border: "1px solid #cbd5e1", borderRadius: "6px", overflow: "hidden" }}>
             <button
@@ -868,7 +889,7 @@ export default function CashEditView({
               style={{
                 background: undoStack.length > 0 ? "#ffffff" : "#f1f5f9",
                 border: "none",
-                padding: "5px 10px",
+                padding: "6px 11px",
                 fontSize: "12px",
                 fontWeight: 600,
                 color: undoStack.length > 0 ? "#1e293b" : "#94a3b8",
@@ -886,7 +907,7 @@ export default function CashEditView({
               style={{
                 background: redoStack.length > 0 ? "#ffffff" : "#f1f5f9",
                 border: "none",
-                padding: "5px 10px",
+                padding: "6px 11px",
                 fontSize: "12px",
                 fontWeight: 600,
                 color: redoStack.length > 0 ? "#1e293b" : "#94a3b8",
@@ -897,10 +918,7 @@ export default function CashEditView({
               ↷ Redo
             </button>
           </div>
-        </div>
 
-        {/* Right Tools: Auto-Save Status, Refresh, Google Sheets link */}
-        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
           {/* Save Status Badge */}
           {saveStatus === "saving" && (
             <div style={{ display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#64748b" }}>
@@ -928,7 +946,7 @@ export default function CashEditView({
                 cursor: "pointer",
               }}
             >
-              ⚠️ Retry save
+              Retry save
             </button>
           )}
 
@@ -1017,8 +1035,6 @@ export default function CashEditView({
             border: "1px solid #cbd5e1",
             boxShadow: "0 4px 6px -1px rgba(0,0,0,0.05)",
             overflowX: "auto",
-            overflowY: "visible",
-            maxHeight: "calc(100vh - 160px)",
             position: "relative",
           }}
         >
@@ -1034,7 +1050,7 @@ export default function CashEditView({
             {/* ── HEADER ROW (MONTHS) ────────────────────────────────────────────── */}
             <thead>
               <tr style={{ position: "sticky", top: 0, zIndex: 30, background: "#0047AB", color: "#ffffff" }}>
-                {/* Top-Left Pinned Cell */}
+                {/* Top-Left Pinned Cell (No text) */}
                 <th
                   style={{
                     position: "sticky",
@@ -1053,14 +1069,10 @@ export default function CashEditView({
                     borderRight: "2px solid rgba(255,255,255,0.25)",
                     borderBottom: "1px solid rgba(255,255,255,0.2)",
                   }}
-                >
-                  Line item / Category
-                </th>
+                />
 
                 {/* 36 Month Columns */}
                 {monthCols.map((m) => {
-                  const isPrev = m.isPreviousMonth;
-                  const isCurr = m.isCurrentMonth;
                   return (
                     <th
                       key={m.colIdx}
@@ -1069,23 +1081,18 @@ export default function CashEditView({
                       style={{
                         padding: "9px 12px",
                         textAlign: "right",
-                        fontWeight: isPrev || isCurr ? 800 : 600,
+                        fontWeight: 600,
                         fontSize: "12px",
                         minWidth: "110px",
                         width: "110px",
-                        background: isPrev ? "#1e40af" : (isCurr ? "#1d4ed8" : "#0047AB"),
+                        background: "#0047AB",
                         borderRight: "1px solid rgba(255,255,255,0.15)",
                         borderBottom: "1px solid rgba(255,255,255,0.2)",
                         letterSpacing: "0.2px",
                         whiteSpace: "nowrap",
                       }}
-                      title={isPrev ? "Previous month (M-1)" : (isCurr ? "Current month" : undefined)}
                     >
-                      <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "4px" }}>
-                        <span>{m.label}</span>
-                        {isPrev && <span style={{ fontSize: "9px", background: "#f59e0b", color: "#000", padding: "1px 3px", borderRadius: "3px", fontWeight: 700 }}>M-1</span>}
-                        {isCurr && <span style={{ fontSize: "9px", background: "#10b981", color: "#fff", padding: "1px 3px", borderRadius: "3px", fontWeight: 700 }}>Now</span>}
-                      </div>
+                      <span>{m.label}</span>
                     </th>
                   );
                 })}
@@ -1266,7 +1273,7 @@ function CashRow({
   onDragStart,
   onOpenNoteModal,
 }) {
-  const { sheetRow, label } = rowDef;
+  const { sheetRow, label, labelBg, isBold: isRowBold } = rowDef;
 
   // Row Styling Variants based on accounting function
   const isNetCashRow = sheetRow === 32 || sheetRow === 74;
@@ -1285,15 +1292,15 @@ function CashRow({
 
   return (
     <tr style={{ background: rowBg }}>
-      {/* Pinned Category Column A */}
+      {/* Pinned Category Column A (with source sheet background shading if present) */}
       <td
         style={{
           position: "sticky",
           left: 0,
           zIndex: 10,
-          background: rowBg,
+          background: labelBg || rowBg,
           padding: "6px 14px",
-          fontWeight: isClosingBalRow || isNetCashRow || isOpeningBalRow || isActualClosingRow ? 700 : 500,
+          fontWeight: isRowBold || isClosingBalRow || isNetCashRow || isOpeningBalRow || isActualClosingRow ? 700 : 500,
           fontSize: "12px",
           color: isActualClosingRow ? "#0047AB" : (isClosingBalRow ? "#0f172a" : "#334155"),
           borderRight: "2px solid #cbd5e1",
@@ -1317,7 +1324,7 @@ function CashRow({
         </div>
       </td>
 
-      {/* 36 Monthly Value Cells */}
+      {/* 36 Monthly Value Cells (with source sheet background shading if present) */}
       {monthCols.map((m) => {
         const key = `${sheetRow}_${m.colIdx}`;
         const cellData = matrix[key] || {};
@@ -1334,6 +1341,21 @@ function CashRow({
 
         const val = cellData.formattedValue || "£0";
         const hasNote = Boolean(cellData.note && String(cellData.note).trim());
+        const cellBg = cellData.bgColor;
+
+        let background = rowBg;
+        if (cellBg) {
+          background = cellBg;
+        } else if (isEditable) {
+          background = "#ffffff";
+        }
+        if (isActive) {
+          background = "#eff6ff";
+        } else if (isDragTarget) {
+          background = "#dbeafe";
+        }
+
+        const isBoldCell = Boolean(cellData.isBold || isRowBold || isClosingBalRow || isNetCashRow || isOpeningBalRow || isActualClosingRow);
 
         return (
           <td
@@ -1355,13 +1377,9 @@ function CashRow({
               position: "relative",
               userSelect: "none",
               cursor: isEditable ? "cell" : "default",
-              fontWeight: isClosingBalRow || isNetCashRow || isOpeningBalRow || isActualClosingRow ? 700 : 400,
+              fontWeight: isBoldCell ? 700 : 400,
               color: isActualClosingRow ? "#0047AB" : (val.startsWith("-") || val.startsWith("(") ? "#dc2626" : "#0f172a"),
-              background: isDragTarget
-                ? "#dbeafe"
-                : (isActive
-                  ? "#eff6ff"
-                  : (isEditable ? "#ffffff" : rowBg)),
+              background,
               boxShadow: isActive
                 ? "inset 0 0 0 2px #0066cc"
                 : (isDragTarget ? "inset 0 0 0 1px #3b82f6" : "none"),

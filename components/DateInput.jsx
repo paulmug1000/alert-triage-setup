@@ -23,6 +23,7 @@ export default function DateInput({
   id,
   name,
   required = false,
+  title,
 }) {
   const isoValue = React.useMemo(() => toInputDateFormat(value), [value]);
   const isoMin = React.useMemo(() => (min ? toInputDateFormat(min) : undefined), [min]);
@@ -56,6 +57,7 @@ export default function DateInput({
       name={name}
       disabled={disabled}
       required={required}
+      title={title}
       placeholder={placeholder}
       min={isoMin}
       max={isoMax}

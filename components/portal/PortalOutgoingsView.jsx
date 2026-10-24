@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from "react";
 import Spinner from "../Spinner";
+import { PortalTableSkeleton } from "../Skeleton";
 import { formatMoney, parseMoney } from "../../services/deepDiveHelper";
 import { downloadCsv } from "../../utils/helpers";
 import AddContractorModal from "./AddContractorModal";
@@ -393,17 +394,6 @@ export default function PortalOutgoingsView({
     downloadCsv(`Pulse_${pageTitle}_${fyName}_${dateStr}.csv`, [header, ...rowsData]);
   };
 
-  if (isLoading && !outgoingsData) {
-    return (
-      <div style={{ textAlign: "center", padding: "4rem 0" }}>
-        <Spinner size={36} color="#0047AB" />
-        <p style={{ marginTop: "1rem", color: "#64748b", fontWeight: 500 }}>
-          Please wait - loading
-        </p>
-      </div>
-    );
-  }
-
   if (error && !outgoingsData) {
     return (
       <div
@@ -434,6 +424,10 @@ export default function PortalOutgoingsView({
         </button>
       </div>
     );
+  }
+
+  if (!outgoingsData) {
+    return <PortalTableSkeleton title={pageTitle} columns={7} />;
   }
 
   // Helper component to render an outgoings table (supports top-left label, total row, and delivery % column)

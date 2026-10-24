@@ -27,6 +27,16 @@ export function colIdxToLetter(colIdx) {
   return letter;
 }
 
+export function colorToCss(rgbColor) {
+  if (!rgbColor) return null;
+  const r = Math.round((rgbColor.red ?? 0) * 255);
+  const g = Math.round((rgbColor.green ?? 0) * 255);
+  const b = Math.round((rgbColor.blue ?? 0) * 255);
+  if (r === 255 && g === 255 && b === 255) return null;
+  const a = rgbColor.alpha !== undefined ? rgbColor.alpha : 1;
+  return a < 1 ? `rgba(${r},${g},${b},${a})` : `rgb(${r},${g},${b})`;
+}
+
 const MONTH_NAMES = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
 
 export function parseMonthHeader(label) {
@@ -110,12 +120,12 @@ export async function fetchCashData(clientName, clientSheetId, bypassCache = fal
 
   const sheets = await getSheetsClient();
 
-  // Fetch Cash!A1:AK76 with values, formulas, and notes
+  // Fetch Cash!A1:AK76 with values, formulas, notes, and effective formats (shading)
   const res = await withRetry(async () => {
     return await sheets.spreadsheets.get({
       spreadsheetId: cleanId,
       ranges: ["Cash!A1:AK76"],
-      fields: "sheets(properties(title,sheetId),data.rowData.values(formattedValue,userEnteredValue,note))",
+      fields: "sheets(properties(title,sheetId),data.rowData.values(formattedValue,userEnteredValue,note,effectiveFormat(backgroundColor,textFormat)))",
     });
   });
 
@@ -179,6 +189,8 @@ export async function fetchCashData(clientName, clientSheetId, bypassCache = fal
     for (let r = startRow; r <= endRow && r <= rowData.length; r++) {
       const rowCells = rowData[r - 1]?.values || [];
       const label = String(rowCells[0]?.formattedValue || "").trim();
+      const labelBg = colorToCss(rowCells[0]?.effectiveFormat?.backgroundColor);
+      const isBold = Boolean(rowCells[0]?.effectiveFormat?.textFormat?.bold);
 
       const cells = monthCols.map((m) => {
         const cellData = rowCells[m.colIdx];
@@ -188,6 +200,8 @@ export async function fetchCashData(clientName, clientSheetId, bypassCache = fal
         const formula = cellData?.userEnteredValue?.formulaValue || "";
         const note = cellData?.note || "";
         const isEditable = isCashCellEditable(r, m.colIdx);
+        const bgColor = colorToCss(cellData?.effectiveFormat?.backgroundColor);
+        const cellBold = Boolean(cellData?.effectiveFormat?.textFormat?.bold);
 
         return {
           sheetRow: r,
@@ -198,6 +212,8 @@ export async function fetchCashData(clientName, clientSheetId, bypassCache = fal
           formula,
           note,
           isEditable,
+          bgColor,
+          isBold: cellBold,
         };
       });
 
@@ -207,6 +223,8 @@ export async function fetchCashData(clientName, clientSheetId, bypassCache = fal
       list.push({
         sheetRow: r,
         label,
+        labelBg,
+        isBold,
         isSpacer,
         cells,
       });

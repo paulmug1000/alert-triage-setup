@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect } from "react";
 import Spinner from "../Spinner";
+import { PerformanceSkeleton } from "../Skeleton";
 import DeepDivePopover from "./DeepDivePopover";
 import { PulseMath, mutateFYDataForScenarios, getDeepDiveType, buildDeepDiveData, formatMoney as universalFormatMoney, parseMoney, formatCurrencyString } from "../../services/deepDiveHelper";
 
@@ -435,17 +436,6 @@ export default function ScenariosView({
     return null;
   };
 
-  if (isLoading && !activeYear) {
-    return (
-      <div style={{ textAlign: "center", padding: "4rem 0" }}>
-        <Spinner size={36} color="#0047AB" />
-        <p style={{ marginTop: "1rem", color: "#64748b", fontWeight: 500 }}>
-          Please wait - loading
-        </p>
-      </div>
-    );
-  }
-
   if (error && !activeYear) {
     return (
       <div
@@ -476,6 +466,10 @@ export default function ScenariosView({
         </button>
       </div>
     );
+  }
+
+  if (!activeYear) {
+    return <PerformanceSkeleton />;
   }
 
   return (

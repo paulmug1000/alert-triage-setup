@@ -152,6 +152,41 @@ export async function getAllClients(sheets, sessionUser = { isAdmin: true }, byp
     _allClientsCachedAt = now;
   }
 
+  // Enrich clientsArray and clientsObj with accountingTool and hasAccountingIntegration from Redis setup config
+  if (redisClient?.isOpen && clientsArray && clientsArray.length > 0) {
+    try {
+      const needsLookup = clientsArray.some(c => c.hasAccountingIntegration === undefined);
+      if (needsLookup) {
+        const normalizeClientKey = (str) => String(str || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
+        const setupKeys = clientsArray.map(c => `pulse:setup:${normalizeClientKey(c.clientName)}`);
+        const configs = await redisClient.mGet(setupKeys);
+        clientsArray.forEach((c, idx) => {
+          const raw = configs[idx];
+          if (raw) {
+            try {
+              const cfg = JSON.parse(raw);
+              c.accountingTool = cfg.accountingTool || "None";
+              c.crmTool = cfg.crmTool || "None";
+              c.crmDrives = cfg.crmDrives || "NA";
+              c.hasAccountingIntegration = ["xero", "quickbooks", "qb"].some(t => String(c.accountingTool).toLowerCase().includes(t));
+              if (clientsObj[c.clientName]) {
+                clientsObj[c.clientName].accountingTool = c.accountingTool;
+                clientsObj[c.clientName].crmTool = c.crmTool;
+                clientsObj[c.clientName].crmDrives = c.crmDrives;
+                clientsObj[c.clientName].hasAccountingIntegration = c.hasAccountingIntegration;
+              }
+            } catch (_) {}
+          } else {
+            c.accountingTool = c.accountingTool || "None";
+            c.hasAccountingIntegration = c.hasAccountingIntegration || false;
+          }
+        });
+      }
+    } catch (cfgErr) {
+      console.warn("⚠️ Redis get tenant configs warning:", cfgErr.message);
+    }
+  }
+
   let finalClientsArray = clientsArray;
   let finalClientsObj = clientsObj;
 
@@ -737,17 +772,38 @@ export async function handleGetInvoiceJobs(req, res, sheets) {
 
     if (!bypassCache) {
       const cached = await get2TierCache(cacheKey);
-      if (cached && Array.isArray(cached.jobs)) {
+      if (cached && Array.isArray(cached.jobs) && cached.hasAccountingIntegration !== undefined) {
         return res.status(200).json(cached);
       }
     }
 
-    const resp = await sheets.spreadsheets.values.get({
+    const batchResp = await sheets.spreadsheets.values.batchGet({
       spreadsheetId: sheetIdClean,
-      range: "Confirmed!A1:CR5000",
+      ranges: ["Confirmed!A1:CR5000", "KeyInfo!Q4", "KeyInfo!Q8:Q9"],
       valueRenderOption: "FORMATTED_VALUE",
     });
-    const rows = resp.data.values || [];
+    const rows = batchResp.data.valueRanges?.[0]?.values || [];
+    const accRows = batchResp.data.valueRanges?.[1]?.values || [];
+    const crmRows = batchResp.data.valueRanges?.[2]?.values || [];
+    let accountingTool = String(accRows?.[0]?.[0] || "None").trim();
+    const crmTool = String(crmRows?.[0]?.[0] || "None").trim();
+    const crmDrives = String(crmRows?.[1]?.[0] || "NA").trim();
+
+    if ((accountingTool === "None" || !accountingTool) && redisClient?.isOpen) {
+      try {
+        const clientNameMatch = rows[1]?.[0] || "";
+        if (clientNameMatch) {
+          const normKey = String(clientNameMatch).trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
+          const rawCfg = await redisClient.get(`pulse:setup:${normKey}`);
+          if (rawCfg) {
+            const parsedCfg = JSON.parse(rawCfg);
+            if (parsedCfg?.accountingTool) accountingTool = parsedCfg.accountingTool;
+          }
+        }
+      } catch (_) {}
+    }
+
+    const hasAccountingIntegration = ["xero", "quickbooks", "qb"].some(t => accountingTool.toLowerCase().includes(t));
 
     const parseSheetDate = (d) => {
       if (!d) return null;
@@ -832,7 +888,7 @@ export async function handleGetInvoiceJobs(req, res, sheets) {
       return db - da;
     });
 
-    const payload = { success: true, jobs };
+    const payload = { success: true, jobs, accountingTool, crmTool, crmDrives, hasAccountingIntegration };
     await set2TierCache(cacheKey, payload, 120);
     return res.status(200).json(payload);
   } catch (err) {
@@ -850,7 +906,7 @@ export async function handleGetAllClientJobs(req, res, sheets) {
 
     if (!bypassCache) {
       const cached = await get2TierCache(cacheKey);
-      if (cached && Array.isArray(cached.jobs)) {
+      if (cached && Array.isArray(cached.jobs) && cached.hasAccountingIntegration !== undefined) {
         return res.status(200).json(cached);
       }
     }
@@ -861,19 +917,42 @@ export async function handleGetAllClientJobs(req, res, sheets) {
     let leadSources = [];
     const notesBySheet = { Confirmed: [], Pipeline: [] };
 
+    let accountingTool = "None";
+    let crmTool = "None";
+    let crmDrives = "NA";
+
     if (tabName === "All" || !tabName) {
       try {
         const batchResp = await sheets.spreadsheets.values.batchGet({
           spreadsheetId: sheetIdClean,
-          ranges: ["Confirmed!A1:DD5000", "Pipeline!A1:DD5000", "KeyInfo!C23:C26", "KeyInfo!G32:G75"],
+          ranges: ["Confirmed!A1:DD5000", "Pipeline!A1:DD5000", "KeyInfo!C23:C26", "KeyInfo!G32:G75", "KeyInfo!Q4", "KeyInfo!Q8:Q9"],
           valueRenderOption: "FORMATTED_VALUE",
         });
         confRows = batchResp.data.valueRanges?.[0]?.values || [];
         pipeRows = batchResp.data.valueRanges?.[1]?.values || [];
         const plData = batchResp.data.valueRanges?.[2]?.values || [];
         const lsData = batchResp.data.valueRanges?.[3]?.values || [];
+        const accData = batchResp.data.valueRanges?.[4]?.values || [];
+        const crmData = batchResp.data.valueRanges?.[5]?.values || [];
         productLines = plData.flat().map(v => String(v || "").trim()).filter(Boolean);
         leadSources = lsData.flat().map(v => String(v || "").trim()).filter(Boolean);
+        if (accData?.[0]?.[0]) accountingTool = String(accData[0][0]).trim();
+        if (crmData?.[0]?.[0]) crmTool = String(crmData[0][0]).trim();
+        if (crmData?.[1]?.[0]) crmDrives = String(crmData[1][0]).trim();
+
+        if ((accountingTool === "None" || !accountingTool) && redisClient?.isOpen) {
+          try {
+            const clientNameMatch = confRows[1]?.[0] || pipeRows[1]?.[0] || "";
+            if (clientNameMatch) {
+              const normKey = String(clientNameMatch).trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
+              const rawCfg = await redisClient.get(`pulse:setup:${normKey}`);
+              if (rawCfg) {
+                const parsedCfg = JSON.parse(rawCfg);
+                if (parsedCfg?.accountingTool) accountingTool = parsedCfg.accountingTool;
+              }
+            }
+          } catch (_) {}
+        }
       } catch (batchErr) {
         try {
           const cResp = await sheets.spreadsheets.values.get({
@@ -906,13 +985,32 @@ export async function handleGetAllClientJobs(req, res, sheets) {
       try {
         const keyInfoResp = await sheets.spreadsheets.values.batchGet({
           spreadsheetId: sheetIdClean,
-          ranges: ["KeyInfo!C23:C26", "KeyInfo!G32:G75"],
+          ranges: ["KeyInfo!C23:C26", "KeyInfo!G32:G75", "KeyInfo!Q4", "KeyInfo!Q8:Q9"],
           valueRenderOption: "FORMATTED_VALUE"
         });
         const plData = keyInfoResp.data.valueRanges?.[0]?.values || [];
         const lsData = keyInfoResp.data.valueRanges?.[1]?.values || [];
+        const accData = keyInfoResp.data.valueRanges?.[2]?.values || [];
+        const crmData = keyInfoResp.data.valueRanges?.[3]?.values || [];
         productLines = plData.flat().map(v => String(v || "").trim()).filter(Boolean);
         leadSources = lsData.flat().map(v => String(v || "").trim()).filter(Boolean);
+        if (accData?.[0]?.[0]) accountingTool = String(accData[0][0]).trim();
+        if (crmData?.[0]?.[0]) crmTool = String(crmData[0][0]).trim();
+        if (crmData?.[1]?.[0]) crmDrives = String(crmData[1][0]).trim();
+
+        if ((accountingTool === "None" || !accountingTool) && redisClient?.isOpen) {
+          try {
+            const clientNameMatch = confRows[1]?.[0] || pipeRows[1]?.[0] || "";
+            if (clientNameMatch) {
+              const normKey = String(clientNameMatch).trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
+              const rawCfg = await redisClient.get(`pulse:setup:${normKey}`);
+              if (rawCfg) {
+                const parsedCfg = JSON.parse(rawCfg);
+                if (parsedCfg?.accountingTool) accountingTool = parsedCfg.accountingTool;
+              }
+            }
+          } catch (_) {}
+        }
       } catch (_) {}
     }
 
@@ -1124,7 +1222,8 @@ export async function handleGetAllClientJobs(req, res, sheets) {
     productLines = Array.from(distinctPl).filter(Boolean).sort();
     leadSources = Array.from(distinctLs).filter(Boolean).sort();
     const existingClients = Array.from(distinctClients).filter(Boolean).sort();
-    const payload = { success: true, jobs, productLines, leadSources, existingClients };
+    const hasAccountingIntegration = ["xero", "quickbooks", "qb"].some(t => accountingTool.toLowerCase().includes(t));
+    const payload = { success: true, jobs, productLines, leadSources, existingClients, accountingTool, crmTool, crmDrives, hasAccountingIntegration };
     await set2TierCache(cacheKey, payload, 120);
     return res.status(200).json(payload);
   } catch (err) {

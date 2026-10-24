@@ -700,6 +700,7 @@ export default function JobsView({
     productLines,
     leadSources,
     existingClients,
+    hasAccountingIntegration,
     loadJobsData
   } = useJobs(managedClient);
 
@@ -2270,6 +2271,7 @@ export default function JobsView({
           editSlot={invoicesEditSlot}
           invoicesClient={jobsClient}
           availableJobs={jobsData}
+          hasAccountingIntegration={hasAccountingIntegration}
           onClose={() => setInvoicesEditSlot(null)}
           onMarkPullPending={(masterId) => (outgoingsPullPendingRef.current = masterId)}
           onInvoiceMoved={async () => {
@@ -3749,6 +3751,11 @@ export default function JobsView({
                                                           cursor: "pointer",
                                                           transition: "border-color 0.15s ease"
                                                         }}
+                                                        title={
+                                                          hasAccountingIntegration && !isPlaceholder && slot.ref && String(slot.ref).trim() !== ""
+                                                            ? "Synced from accounting software. Click to view or edit days to pay."
+                                                            : "Click to edit invoice slot"
+                                                        }
                                                         onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#93c5fd"; e.currentTarget.style.background = "#eff6ff"; }}
                                                         onMouseLeave={(e) => { e.currentTarget.style.borderColor = isInvoiceMatched ? "#fde047" : "#e2e8f0"; e.currentTarget.style.background = isInvoiceMatched ? "#fefce8" : (hasData ? "#f8fafc" : "#ffffff"); }}
                                                       >
@@ -3757,6 +3764,12 @@ export default function JobsView({
                                                             <span style={{ fontSize: "11px", fontWeight: "700", color: "#475569" }}>
                                                               {item.label}
                                                             </span>
+                                                            {hasAccountingIntegration && !isPlaceholder && slot.ref && String(slot.ref).trim() !== "" && (
+                                                              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                                                                <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                                                                <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                                                             </svg>
+                                                            )}
                                                             <NoteIndicatorButton
                                                               size="sm"
                                                               note={slot.note || ""}
@@ -3779,9 +3792,9 @@ export default function JobsView({
                                                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: "4px" }}>
                                                             <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                                                               <span style={{ fontSize: "13px", fontWeight: "600", color: isPlaceholder ? "#9333ea" : "#0f172a" }}>
-                                                                <HighlightText text={slot.ref || "No Ref"} query={searchQuery} />
+                                                                <HighlightText text={slot.ref ? slot.ref : "Placeholder"} query={searchQuery} />
                                                               </span>
-                                                              {isPlaceholder && (
+                                                              {isPlaceholder && slot.ref && (
                                                                 <span style={{ fontSize: "10px", padding: "1px 5px", borderRadius: "6px", background: "#f3e8ff", color: "#7e22ce", fontWeight: "600" }}>
                                                                   Placeholder
                                                                 </span>
@@ -4367,26 +4380,38 @@ export default function JobsView({
                                     </td>
                                   </>
                                 )}
-                                {r.invoiceSlots.map((s) => (
-                                  <td
-                                    key={`legacy_inv${s.slotNum}`}
-                                    onClick={() => setInvoicesEditSlot({ rowNum: r.rowNum, slotNum: s.slotNum, slot: s, jobClient: r.client || job.client, jobName: r.jobName || job.jobName, tabName: r.tabName || job.tabName || (filterType === "pipeline" ? "Pipeline" : "Confirmed"), job })}
-                                    style={{ padding: "7px 10px", borderBottom: "1px solid #eee", cursor: "pointer" }}
-                                  >
-                                    {!s.ref && !s.amount ? (
-                                      <span style={{ color: "#ccc" }}>-</span>
-                                    ) : (
-                                      <div>
-                                        <div style={{ fontWeight: "600", color: isPlaceholderInvoice(s.ref) ? "#9333ea" : "inherit" }}>{s.ref}</div>
-                                        <div style={{ color: "#888", fontSize: "10px", marginTop: "3px" }}>
-                                          <span>{formatCurrency(s.amount)}</span>
-                                          {s.sentDate ? <span> · {s.sentDate}</span> : null}
-                                          {s.status ? <span style={{ marginLeft: "4px", ...getStatusPill(s.status) }}>{s.status}</span> : null}
+                                {r.invoiceSlots.map((s) => {
+                                  const isLocked = Boolean(hasAccountingIntegration && !isPlaceholderInvoice(s.ref, s.status) && s.ref && String(s.ref).trim() !== "");
+                                  return (
+                                    <td
+                                      key={`legacy_inv${s.slotNum}`}
+                                      onClick={() => setInvoicesEditSlot({ rowNum: r.rowNum, slotNum: s.slotNum, slot: s, jobClient: r.client || job.client, jobName: r.jobName || job.jobName, tabName: r.tabName || job.tabName || (filterType === "pipeline" ? "Pipeline" : "Confirmed"), job })}
+                                      title={isLocked ? "Synced from accounting software. Click to view or edit days to pay." : "Click to edit invoice slot"}
+                                      style={{ padding: "7px 10px", borderBottom: "1px solid #eee", cursor: "pointer" }}
+                                    >
+                                      {!s.ref && !s.amount ? (
+                                        <span style={{ color: "#ccc" }}>-</span>
+                                      ) : (
+                                        <div>
+                                          <div style={{ fontWeight: "600", color: isPlaceholderInvoice(s.ref) ? "#9333ea" : "inherit", display: "flex", alignItems: "center", gap: "4px" }}>
+                                            <span>{s.ref ? s.ref : "Placeholder"}</span>
+                                            {isLocked && (
+                                              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                                                <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                                                <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                                              </svg>
+                                            )}
+                                          </div>
+                                          <div style={{ color: "#888", fontSize: "10px", marginTop: "3px" }}>
+                                            <span>{formatCurrency(s.amount)}</span>
+                                            {s.sentDate ? <span> · {s.sentDate}</span> : null}
+                                            {s.status ? <span style={{ marginLeft: "4px", ...getStatusPill(s.status) }}>{s.status}</span> : null}
+                                          </div>
                                         </div>
-                                      </div>
-                                    )}
-                                  </td>
-                                ))}
+                                      )}
+                                    </td>
+                                  );
+                                })}
                                 <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
                                   {showFields && formatCurrency(r.leftToInvoice)}
                                 </td>

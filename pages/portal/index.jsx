@@ -295,6 +295,8 @@ export default function PortalPage() {
 
   const handleRefreshPayload = () => {
     if (selectedClient) {
+      setPayload(null);
+      setPerformanceData(null);
       fetchPayload(selectedClient, true);
       fetchPerformance(selectedClient, true);
       fetchCashflow(selectedClient, true);
@@ -304,6 +306,7 @@ export default function PortalPage() {
 
   const handleRefreshPerformance = () => {
     if (selectedClient) {
+      setPerformanceData(null);
       fetchPerformance(selectedClient, true);
       fetchKeyData(selectedClient, true);
     }
@@ -311,6 +314,7 @@ export default function PortalPage() {
 
   const handleRefreshCashflow = () => {
     if (selectedClient) {
+      setCashflowData(null);
       fetchCashflow(selectedClient, true);
       fetchKeyData(selectedClient, true);
     }
@@ -318,6 +322,7 @@ export default function PortalPage() {
 
   const handleRefreshKeyData = () => {
     if (selectedClient) {
+      setKeyData(null);
       fetchKeyData(selectedClient, true);
     }
   };
@@ -413,6 +418,7 @@ export default function PortalPage() {
 
   const handleRefreshBudget = () => {
     if (selectedClient) {
+      setBudgetData(null);
       fetchBudget(selectedClient, true);
       fetchPerformance(selectedClient, true);
     }
@@ -820,11 +826,10 @@ export default function PortalPage() {
     );
   }
 
-  // Steady initial loading state: show 'Please wait - loading' until clients are determined,
-  // and if a client is selected, until their initial payload arrives (or errors) UNLESS client user is in setup mode
-  // or staff is previewing setup mode
-  const isBypassingPayloadForSetup = (isClientUser && setupStatus?.setupMode) || (isAdminOrManager && isPreviewSetup);
-  if (!clientsLoaded || (selectedClient && !payload && !payloadError && !isBypassingPayloadForSetup)) {
+  // Steady initial loading state: show 'Please wait - loading' only until clients are determined.
+  // Once clients are loaded, PortalShell mounts immediately so header and client name switch instantly,
+  // while the active view displays its skeleton loader.
+  if (!clientsLoaded) {
     return (
       <div
         style={{

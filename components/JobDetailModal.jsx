@@ -13,7 +13,12 @@ import {
   formatCurrency,
   parseLikelihoodValue
 } from "./JobsView";
-import { isPlaceholderInvoice, isPlaceholderExpense, getRetainerRowMonthLabel } from "../utils/helpers";
+import {
+  isPlaceholderInvoice,
+  isPlaceholderExpense,
+  getRetainerRowMonthLabel,
+  hasActiveAccountingIntegration
+} from "../utils/helpers";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 
 export default function JobDetailModal({
@@ -34,6 +39,13 @@ export default function JobDetailModal({
   const [saving, setSaving] = useState(false);
   const [recentlySaved, setRecentlySaved] = useState(false);
   const [allJobs, setAllJobs] = useState([]);
+  const [hasAccountingIntegration, setHasAccountingIntegration] = useState(() => {
+    return Boolean(
+      target?.hasAccountingIntegration ||
+      target?.client?.hasAccountingIntegration ||
+      hasActiveAccountingIntegration(target?.client?.accountingTool)
+    );
+  });
   const [reloadTrigger, setReloadTrigger] = useState(0);
 
   // Sub-modals state
@@ -90,6 +102,16 @@ export default function JobDetailModal({
     return { client, clientSheetId };
   }, [target, activeClientsMap]);
 
+  useEffect(() => {
+    if (target?.hasAccountingIntegration !== undefined) {
+      setHasAccountingIntegration(Boolean(target.hasAccountingIntegration));
+    } else if (resolvedClientInfo?.client?.hasAccountingIntegration !== undefined) {
+      setHasAccountingIntegration(Boolean(resolvedClientInfo.client.hasAccountingIntegration));
+    } else if (resolvedClientInfo?.client?.accountingTool) {
+      setHasAccountingIntegration(hasActiveAccountingIntegration(resolvedClientInfo.client.accountingTool));
+    }
+  }, [target, resolvedClientInfo]);
+
   // Fetch job details on-demand when opened
   useEffect(() => {
     if (!isOpen) {
@@ -126,6 +148,7 @@ export default function JobDetailModal({
           setAllJobs(data.jobs);
           if (data.productLines) setProductLines(data.productLines);
           if (data.leadSources) setLeadSources(data.leadSources);
+          if (data.hasAccountingIntegration !== undefined) setHasAccountingIntegration(Boolean(data.hasAccountingIntegration));
 
           const targetProjectCode = String(target?.projectCode || "").trim().toLowerCase();
           const targetJobName = String(target?.jobName || "").trim().toLowerCase();
@@ -779,6 +802,13 @@ export default function JobDetailModal({
           editSlot={invoicesEditSlot}
           invoicesClient={resolvedClientInfo.client || target.client}
           availableJobs={allJobs}
+          hasAccountingIntegration={
+            hasAccountingIntegration ||
+            Boolean(resolvedClientInfo?.client?.hasAccountingIntegration) ||
+            Boolean(target?.hasAccountingIntegration) ||
+            Boolean(target?.client?.hasAccountingIntegration) ||
+            hasActiveAccountingIntegration(resolvedClientInfo?.client?.accountingTool || target?.client?.accountingTool)
+          }
           onClose={() => setInvoicesEditSlot(null)}
           onMarkPullPending={(masterId) => onMarkPullPending && onMarkPullPending(masterId)}
           onInvoiceMoved={() => setReloadTrigger((prev) => prev + 1)}
@@ -1450,12 +1480,23 @@ export default function JobDetailModal({
                                 background: hasData ? "#f8fafc" : "#ffffff", cursor: "pointer", transition: "border-color 0.15s ease",
                                 boxSizing: "border-box", maxWidth: "100%", overflow: "hidden"
                               }}
+                              title={
+                                hasAccountingIntegration && !isPlaceholder && slot.ref && String(slot.ref).trim() !== ""
+                                  ? "Synced from accounting software. Click to view or edit days to pay."
+                                  : "Click to edit invoice slot"
+                              }
                               onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#93c5fd"; e.currentTarget.style.background = "#eff6ff"; }}
                               onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#e2e8f0"; e.currentTarget.style.background = hasData ? "#f8fafc" : "#ffffff"; }}
                             >
                               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "4px" }}>
                                 <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                                   <span style={{ fontSize: "11px", fontWeight: "700", color: "#475569" }}>{item.label}</span>
+                                  {hasAccountingIntegration && !isPlaceholder && slot.ref && String(slot.ref).trim() !== "" && (
+                                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                                      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                                      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                                    </svg>
+                                  )}
                                   <NoteIndicatorButton
                                     size="sm"
                                     note={slot.note || ""}
@@ -1472,9 +1513,9 @@ export default function JobDetailModal({
                                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: "4px", gap: "6px" }}>
                                   <div style={{ display: "flex", alignItems: "center", gap: "6px", minWidth: 0, flex: 1, overflow: "hidden" }}>
                                     <span style={{ fontSize: "13px", fontWeight: "600", color: isPlaceholder ? "#9333ea" : "#0f172a", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                      {slot.ref || "No Ref"}
+                                      {slot.ref ? slot.ref : "Placeholder"}
                                     </span>
-                                    {isPlaceholder && (
+                                    {isPlaceholder && slot.ref && (
                                       <span style={{ fontSize: "10px", padding: "1px 5px", borderRadius: "6px", background: "#f3e8ff", color: "#7e22ce", fontWeight: "600", flexShrink: 0 }}>
                                         Placeholder
                                       </span>

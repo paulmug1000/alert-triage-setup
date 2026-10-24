@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { formatMoney } from "../../services/deepDiveHelper";
 import Spinner from "../Spinner";
+import { DeepDiveSkeleton } from "../Skeleton";
 
 export default function DeepDivePopover({
   isOpen,
@@ -367,10 +368,7 @@ export default function DeepDivePopover({
                       <div style={{ borderTop: "1px solid #e5e7eb" }}>
                         {(!sec.items || sec.items.length === 0) ? (
                           isLoading ? (
-                            <div style={{ padding: "16px", textAlign: "center", color: "#64748b" }}>
-                              <Spinner size={16} color="#0047AB" />
-                              <span style={{ marginLeft: "8px", fontSize: "12px" }}>Loading...</span>
-                            </div>
+                            <DeepDiveSkeleton rows={2} />
                           ) : (
                             <div style={{ padding: "10px 14px", color: "#94a3b8", fontSize: "12px" }}>
                               None in this period
@@ -460,12 +458,7 @@ export default function DeepDivePopover({
           <div>
             {filteredItems.length === 0 ? (
               isLoading ? (
-                <div style={{ padding: "3rem 1rem", textAlign: "center", color: "#64748b" }}>
-                  <Spinner size={24} color="#0047AB" />
-                  <div style={{ marginTop: "12px", fontSize: "13px", fontWeight: 500, color: "#0047AB" }}>
-                    Loading breakdown...
-                  </div>
-                </div>
+                <DeepDiveSkeleton rows={4} />
               ) : (
                 <div style={{ padding: "2rem 1rem", textAlign: "center", color: "#64748b", fontSize: "13px" }}>
                   No individual items recorded for this period

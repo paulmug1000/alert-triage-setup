@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect } from "react";
 import Spinner from "../Spinner";
+import { PortalTableSkeleton } from "../Skeleton";
 import { formatMoney, parseMoney } from "../../services/deepDiveHelper";
 import { downloadCsv } from "../../utils/helpers";
 
@@ -448,17 +449,6 @@ export default function PortalSalariesView({
     downloadCsv(`Pulse_Salaries_${dateStr}.csv`, [header, ...rowsData]);
   };
 
-  if (isLoading && !salariesData) {
-    return (
-      <div style={{ textAlign: "center", padding: "4rem 0" }}>
-        <Spinner size={36} color="#0047AB" />
-        <p style={{ marginTop: "1rem", color: "#64748b", fontWeight: 500 }}>
-          Please wait - loading
-        </p>
-      </div>
-    );
-  }
-
   if (error && !salariesData) {
     return (
       <div
@@ -489,6 +479,10 @@ export default function PortalSalariesView({
         </button>
       </div>
     );
+  }
+
+  if (!salariesData) {
+    return <PortalTableSkeleton title="Salaries" columns={7} />;
   }
 
   // Column width configuration for the 9 columns

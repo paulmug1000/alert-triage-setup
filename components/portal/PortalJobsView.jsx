@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import Spinner from "../Spinner";
+import { PortalTableSkeleton } from "../Skeleton";
 import SplitMonthCard from "../SplitMonthCard";
 import { formatMoney, parseMoney } from "../../services/deepDiveHelper";
-import { downloadCsv } from "../../utils/helpers";
+import { downloadCsv, isPlaceholderInvoice, hasActiveAccountingIntegration } from "../../utils/helpers";
 import { parseSplitString, formatSplitString } from "../../services/splitHelper";
+import InvoicesNewJobModal from "../InvoicesNewJobModal";
 
 export default function PortalJobsView({
   clientName,
@@ -30,6 +32,94 @@ export default function PortalJobsView({
   const lockedMonthsRef = useRef(lockedMonths);
   lockedMonthsRef.current = lockedMonths;
   const pageSize = 25;
+
+  const [deletePromptInvoice, setDeletePromptInvoice] = useState(null); // { idx, inv }
+  const [movingPromptInvoice, setMovingPromptInvoice] = useState(null); // { idx, inv }
+  const [newJobFromInvoice, setNewJobFromInvoice] = useState(null); // { idx, inv }
+  const [moveJobSearch, setMoveJobSearch] = useState("");
+  const [isMovingInvoice, setIsMovingInvoice] = useState(false);
+
+  const hasAccounting = useMemo(() => {
+    if (data?.hasAccountingIntegration !== undefined) return Boolean(data.hasAccountingIntegration);
+    return hasActiveAccountingIntegration(data?.accountingTool);
+  }, [data?.hasAccountingIntegration, data?.accountingTool]);
+
+  const candidateTargetJobs = useMemo(() => {
+    const currentKey = editingJob?.id !== undefined ? editingJob.id : editingJob?.rowNumber;
+    const currentName = String(editingJob?.jobName || "").trim().toLowerCase();
+    const search = moveJobSearch.trim().toLowerCase();
+    const allJobsList = Array.isArray(data?.jobs?.all)
+      ? data.jobs.all
+      : (Array.isArray(data?.jobs) ? data.jobs : []);
+    return allJobsList.filter((j) => {
+      const jKey = j.id !== undefined ? j.id : j.rowNumber;
+      if (jKey && currentKey && jKey === currentKey) return false;
+      if (String(j.jobName || "").trim().toLowerCase() === currentName) return false;
+      if (!search) return true;
+      return (
+        String(j.jobName || "").toLowerCase().includes(search) ||
+        String(j.client || "").toLowerCase().includes(search) ||
+        String(j.projectCode || "").toLowerCase().includes(search)
+      );
+    });
+  }, [data?.jobs, editingJob, moveJobSearch]);
+
+  const handleMoveInvoiceToTarget = async (targetJob, promptInfo) => {
+    setIsMovingInvoice(true);
+    try {
+      const inv = promptInfo.inv;
+      const targetInvoices = Array.isArray(targetJob.invoices) ? [...targetJob.invoices] : [];
+      targetInvoices.push({
+        amount: inv.amount || "",
+        ref: inv.ref || "",
+        sendDate: inv.sendDate || "",
+        days: inv.days || "30",
+        status: inv.status || "",
+      });
+
+      const res = await fetch("/api/portal/save-job", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clientSheetId,
+          clientName,
+          job: {
+            ...targetJob,
+            invoices: targetInvoices,
+          },
+        }),
+      });
+      const resData = await res.json();
+      if (!resData.success) {
+        throw new Error(resData.error || "Failed to move invoice to target job");
+      }
+
+      const updatedInvoices = (editingJob?.invoices || []).filter((_, i) => i !== promptInfo.idx);
+      setEditingJob((prev) => ({ ...prev, invoices: updatedInvoices }));
+
+      if (editingJob?.rowNumber) {
+        await fetch("/api/portal/save-job", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            clientSheetId,
+            clientName,
+            job: {
+              ...editingJob,
+              invoices: updatedInvoices,
+            },
+          }),
+        });
+      }
+
+      setMovingPromptInvoice(null);
+      if (onRefresh) onRefresh();
+    } catch (err) {
+      alert("Error moving invoice: " + err.message);
+    } finally {
+      setIsMovingInvoice(false);
+    }
+  };
 
   // Clear optimistic jobs when fresh server data arrives
   useEffect(() => {
@@ -643,17 +733,6 @@ export default function PortalJobsView({
     downloadCsv(`Pulse_Jobs_${dateStr}.csv`, [header, ...rowsData]);
   };
 
-  if (isLoading && !jobsData) {
-    return (
-      <div style={{ textAlign: "center", padding: "4rem 0" }}>
-        <Spinner size={36} color="#0047AB" />
-        <p style={{ marginTop: "1rem", color: "#64748b", fontWeight: 500 }}>
-          Please wait - loading
-        </p>
-      </div>
-    );
-  }
-
   if (error && !jobsData) {
     return (
       <div
@@ -684,6 +763,10 @@ export default function PortalJobsView({
         </button>
       </div>
     );
+  }
+
+  if (!jobsData) {
+    return <PortalTableSkeleton title="Jobs" columns={7} />;
   }
 
   return (
@@ -1595,8 +1678,32 @@ export default function PortalJobsView({
                         marginBottom: "0.6rem",
                       }}
                     >
-                      <h4 style={{ margin: 0, fontSize: "13px", fontWeight: 700, color: "#0047AB" }}>
-                        Invoices
+                      <h4 style={{ margin: 0, fontSize: "13px", fontWeight: 700, color: "#0047AB", display: "flex", alignItems: "center", gap: "8px" }}>
+                        <span>Invoices</span>
+                        {hasAccounting && (
+                          <span
+                            title="Invoices synced from accounting software are locked to prevent sync conflicts."
+                            style={{
+                              fontSize: "11px",
+                              fontWeight: "normal",
+                              color: "#64748b",
+                              background: "#f1f5f9",
+                              padding: "2px 7px",
+                              borderRadius: "4px",
+                              border: "1px solid #e2e8f0",
+                              cursor: "help",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "4px"
+                            }}
+                          >
+                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                              <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                            </svg>
+                            <span>Synced with accounting</span>
+                          </span>
+                        )}
                       </h4>
                       {!isReadOnly && (
                         <button
@@ -1619,98 +1726,331 @@ export default function PortalJobsView({
                     </div>
 
                     <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                      {(editingJob.invoices || []).map((inv, idx) => (
-                        <div
-                          key={idx}
-                          className="modal-sub-grid-row"
-                          style={{
-                            display: "grid",
-                            gridTemplateColumns: isReadOnly ? "1.2fr 1fr 1.2fr 0.7fr 1fr" : "1.2fr 1fr 1.2fr 0.7fr 1fr 28px",
-                            gap: "6px",
-                            alignItems: "center",
-                            background: "#f8fafc",
-                            padding: "6px 8px",
-                            borderRadius: "6px",
-                            border: "1px solid #e2e8f0",
-                          }}
-                        >
-                          <div>
-                            <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>
-                              Amount ({idx + 1})
-                            </label>
-                            <input
-                              type="text"
-                              placeholder="Amount"
-                              value={inv.amount || ""}
-                              onChange={(e) => updateInvoice(idx, "amount", e.target.value)}
-                              style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
-                            />
-                          </div>
-                          <div>
-                            <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Ref</label>
-                            <input
-                              type="text"
-                              placeholder="Ref"
-                              value={inv.ref || ""}
-                              onChange={(e) => updateInvoice(idx, "ref", e.target.value)}
-                              style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
-                            />
-                          </div>
-                          <div>
-                            <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Send Date</label>
-                            <input
-                              type="date"
-                              value={inv.sendDate || ""}
-                              onChange={(e) => updateInvoice(idx, "sendDate", e.target.value)}
-                              style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
-                            />
-                          </div>
-                          <div>
-                            <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Days</label>
-                            <input
-                              type="number"
-                              placeholder="30"
-                              value={inv.days || ""}
-                              onChange={(e) => updateInvoice(idx, "days", e.target.value)}
-                              style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
-                            />
-                          </div>
-                          <div>
-                            <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Status</label>
-                            <select
-                              value={inv.status || ""}
-                              onChange={(e) => updateInvoice(idx, "status", e.target.value)}
-                              style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
-                            >
-                              <option value="">Select...</option>
-                              <option value="Draft">Draft</option>
-                              <option value="Invoiced">Invoiced</option>
-                              <option value="Paid">Paid</option>
-                              <option value="Overdue">Overdue</option>
-                            </select>
-                          </div>
-                          {!isReadOnly && (
-                            <div style={{ paddingTop: "14px", textAlign: "center" }}>
-                              <button
-                                type="button"
-                                onClick={() => removeInvoice(idx)}
-                                title="Delete invoice"
+                      {(editingJob.invoices || []).map((inv, idx) => {
+                        const isPlaceholder = isPlaceholderInvoice(inv.ref, inv.status);
+                        const isLocked = Boolean(hasAccounting && !isPlaceholder && inv.ref && String(inv.ref).trim() !== "");
+                        const isPaid = String(inv.status || "").trim().toLowerCase() === "paid";
+
+                        return (
+                          <div
+                            key={idx}
+                            className="modal-sub-grid-row"
+                            title={isLocked ? "Synced from accounting software. Days to pay remains editable." : undefined}
+                            style={{
+                              display: "grid",
+                              gridTemplateColumns: isReadOnly ? "1.2fr 1fr 1.2fr 0.7fr 1fr" : "1.2fr 1fr 1.2fr 0.7fr 1fr 28px",
+                              gap: "6px",
+                              alignItems: "center",
+                              background: isLocked ? "#f8fafc" : "#ffffff",
+                              padding: "6px 8px",
+                              borderRadius: "6px",
+                              border: "1px solid #e2e8f0",
+                            }}
+                          >
+                            <div>
+                              <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>
+                                Amount ({idx + 1})
+                              </label>
+                              <input
+                                type="text"
+                                placeholder="Amount"
+                                value={inv.amount || ""}
+                                onChange={(e) => updateInvoice(idx, "amount", e.target.value)}
+                                disabled={isLocked}
+                                title={isLocked ? "Synced from accounting software. To modify invoice number, amount, or sent date, update directly in your accounting software." : undefined}
                                 style={{
-                                  background: "transparent",
-                                  border: "none",
-                                  color: "#ef4444",
-                                  cursor: "pointer",
-                                  fontSize: "14px",
-                                  padding: "2px",
+                                  ...formInputStyle,
+                                  padding: "4px 6px",
+                                  fontSize: "12px",
+                                  ...(isLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
+                                }}
+                              />
+                            </div>
+                            <div>
+                              <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Ref</label>
+                              <input
+                                type="text"
+                                value={inv.ref || ""}
+                                onChange={(e) => updateInvoice(idx, "ref", e.target.value)}
+                                disabled={isLocked}
+                                title={isLocked ? "Synced from accounting software. To modify invoice number, amount, or sent date, update directly in your accounting software." : undefined}
+                                style={{
+                                  ...formInputStyle,
+                                  padding: "4px 6px",
+                                  fontSize: "12px",
+                                  ...(isLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
+                                }}
+                              />
+                            </div>
+                            <div>
+                              <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Send Date</label>
+                              <input
+                                type="date"
+                                value={inv.sendDate || ""}
+                                onChange={(e) => updateInvoice(idx, "sendDate", e.target.value)}
+                                disabled={isLocked}
+                                title={isLocked ? "Synced from accounting software. To modify invoice number, amount, or sent date, update directly in your accounting software." : undefined}
+                                style={{
+                                  ...formInputStyle,
+                                  padding: "4px 6px",
+                                  fontSize: "12px",
+                                  ...(isLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
+                                }}
+                              />
+                            </div>
+                            <div>
+                              <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Days</label>
+                              <input
+                                type="number"
+                                placeholder="30"
+                                value={inv.days || ""}
+                                onChange={(e) => updateInvoice(idx, "days", e.target.value)}
+                                disabled={isPaid}
+                                title={isPaid ? "Days to pay is determined once an invoice is marked as paid." : undefined}
+                                style={{
+                                  ...formInputStyle,
+                                  padding: "4px 6px",
+                                  fontSize: "12px",
+                                  ...(isPaid ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
+                                }}
+                              />
+                            </div>
+                            <div>
+                              <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Status</label>
+                              <select
+                                value={inv.status || ""}
+                                onChange={(e) => updateInvoice(idx, "status", e.target.value)}
+                                disabled={isLocked}
+                                title={isLocked ? "Synced from accounting software. To modify invoice number, amount, or sent date, update directly in your accounting software." : undefined}
+                                style={{
+                                  ...formInputStyle,
+                                  padding: "4px 6px",
+                                  fontSize: "12px",
+                                  ...(isLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
                                 }}
                               >
-                                ✕
-                              </button>
+                                <option value="">Select...</option>
+                                <option value="Draft">Draft</option>
+                                <option value="Invoiced">Invoiced</option>
+                                <option value="Paid">Paid</option>
+                                <option value="Overdue">Overdue</option>
+                              </select>
                             </div>
+                            {!isReadOnly && (
+                              <div style={{ paddingTop: "14px", textAlign: "center" }}>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (inv.ref || inv.amount) {
+                                      setDeletePromptInvoice({ idx, inv });
+                                      setMovingPromptInvoice(null);
+                                    } else {
+                                      removeInvoice(idx);
+                                    }
+                                  }}
+                                  title="Delete invoice"
+                                  style={{
+                                    background: "transparent",
+                                    border: "none",
+                                    color: "#ef4444",
+                                    cursor: "pointer",
+                                    fontSize: "14px",
+                                    padding: "2px",
+                                  }}
+                                >
+                                  ✕
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {deletePromptInvoice && (
+                      <div
+                        style={{
+                          marginTop: "8px",
+                          padding: "12px",
+                          background: "#f8fafc",
+                          border: "1px solid #e2e8f0",
+                          borderRadius: "6px",
+                        }}
+                      >
+                        <div style={{ fontSize: "12.5px", fontWeight: "600", color: "#0f172a", marginBottom: "4px" }}>
+                          Delete invoice from this job?
+                        </div>
+                        <div style={{ fontSize: "11.5px", color: "#64748b", marginBottom: "10px", lineHeight: "1.4" }}>
+                          Would you prefer to move this invoice to another job or create a new job for it instead?
+                        </div>
+                        <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                          <button
+                            type="button"
+                            onClick={() => setDeletePromptInvoice(null)}
+                            style={{
+                              padding: "5px 10px",
+                              background: "#f1f5f9",
+                              border: "1px solid #cbd5e1",
+                              borderRadius: "5px",
+                              cursor: "pointer",
+                              fontSize: "12px",
+                              color: "#334155",
+                            }}
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMovingPromptInvoice(deletePromptInvoice);
+                              setDeletePromptInvoice(null);
+                            }}
+                            style={{
+                              padding: "5px 10px",
+                              background: "#ffffff",
+                              border: "1px solid #bfdbfe",
+                              borderRadius: "5px",
+                              cursor: "pointer",
+                              fontSize: "12px",
+                              color: "#1d4ed8",
+                              fontWeight: "500",
+                            }}
+                          >
+                            Move to a different job
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setNewJobFromInvoice(deletePromptInvoice);
+                              setDeletePromptInvoice(null);
+                            }}
+                            style={{
+                              padding: "5px 10px",
+                              background: "#ffffff",
+                              border: "1px solid #cbd5e1",
+                              borderRadius: "5px",
+                              cursor: "pointer",
+                              fontSize: "12px",
+                              color: "#0f172a",
+                              fontWeight: "500",
+                            }}
+                          >
+                            Create new job
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              removeInvoice(deletePromptInvoice.idx);
+                              setDeletePromptInvoice(null);
+                            }}
+                            style={{
+                              padding: "5px 10px",
+                              background: "#fee2e2",
+                              border: "1px solid #fecaca",
+                              borderRadius: "5px",
+                              cursor: "pointer",
+                              fontSize: "12px",
+                              color: "#b91c1c",
+                              fontWeight: "600",
+                            }}
+                          >
+                            Delete from job anyway
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {movingPromptInvoice && (
+                      <div
+                        style={{
+                          marginTop: "8px",
+                          padding: "12px",
+                          background: "#f8fafc",
+                          border: "1px solid #cbd5e1",
+                          borderRadius: "6px",
+                        }}
+                      >
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+                          <div style={{ fontSize: "12.5px", fontWeight: "600", color: "#0f172a" }}>
+                            Move invoice {movingPromptInvoice.inv.ref ? `#${movingPromptInvoice.inv.ref}` : `(slot ${movingPromptInvoice.idx + 1})`} to another job
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setMovingPromptInvoice(null)}
+                            style={{ background: "transparent", border: "none", cursor: "pointer", fontSize: "16px", color: "#94a3b8" }}
+                          >
+                            ×
+                          </button>
+                        </div>
+                        <input
+                          type="text"
+                          placeholder="Search target job..."
+                          value={moveJobSearch}
+                          onChange={(e) => setMoveJobSearch(e.target.value)}
+                          style={{
+                            ...formInputStyle,
+                            padding: "5px 8px",
+                            fontSize: "12px",
+                            marginBottom: "8px",
+                            width: "100%",
+                            boxSizing: "border-box",
+                          }}
+                        />
+                        <div style={{ maxHeight: "150px", overflowY: "auto", border: "1px solid #e2e8f0", borderRadius: "5px", background: "#ffffff" }}>
+                          {candidateTargetJobs.length === 0 ? (
+                            <div style={{ padding: "10px", fontSize: "12px", color: "#64748b", textAlign: "center" }}>
+                              No matching jobs found
+                            </div>
+                          ) : (
+                            candidateTargetJobs.map((j, i) => (
+                              <div
+                                key={j.id || i}
+                                onClick={() => handleMoveInvoiceToTarget(j, movingPromptInvoice)}
+                                style={{
+                                  padding: "7px 10px",
+                                  borderBottom: i < candidateTargetJobs.length - 1 ? "1px solid #f1f5f9" : "none",
+                                  cursor: isMovingInvoice ? "wait" : "pointer",
+                                  display: "flex",
+                                  justifyContent: "space-between",
+                                  alignItems: "center",
+                                  fontSize: "12px",
+                                }}
+                                onMouseEnter={(e) => (e.currentTarget.style.background = "#f8fafc")}
+                                onMouseLeave={(e) => (e.currentTarget.style.background = "#ffffff")}
+                              >
+                                <div>
+                                  <div style={{ fontWeight: "600", color: "#1e293b" }}>{j.jobName}</div>
+                                  <div style={{ fontSize: "10.5px", color: "#64748b" }}>
+                                    {j.client}{j.projectCode ? ` · ${j.projectCode}` : ""}
+                                  </div>
+                                </div>
+                                <div style={{ fontSize: "11px", fontWeight: "600", color: "#0284c7" }}>
+                                  Select
+                                </div>
+                              </div>
+                            ))
                           )}
                         </div>
-                      ))}
-                    </div>
+                        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "8px" }}>
+                          <button
+                            type="button"
+                            onClick={() => setMovingPromptInvoice(null)}
+                            disabled={isMovingInvoice}
+                            style={{
+                              padding: "5px 10px",
+                              background: "#f1f5f9",
+                              border: "1px solid #cbd5e1",
+                              borderRadius: "5px",
+                              cursor: "pointer",
+                              fontSize: "12px",
+                              color: "#334155",
+                            }}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   {/* Direct Expenses Section */}
@@ -1977,6 +2317,50 @@ export default function PortalJobsView({
             </div>
           </div>
         </div>
+      )}
+
+      {newJobFromInvoice && (
+        <InvoicesNewJobModal
+          newJobData={{
+            inv: {
+              invoiceNo: newJobFromInvoice.inv.ref || "",
+              client: editingJob?.client || clientName,
+              job: editingJob?.jobName || "",
+              amount: parseFloat(String(newJobFromInvoice.inv.amount || "0").replace(/[£$€,\s]/g, "")) || 0,
+              sentDate: newJobFromInvoice.inv.sendDate || "",
+              daysToPay: parseInt(newJobFromInvoice.inv.days) || 30,
+              status: newJobFromInvoice.inv.status || "",
+            }
+          }}
+          invoicesClient={{
+            clientSheetId,
+            clientName,
+            masterSheetId: data?.masterSheetId,
+            defaultDaysToPay: 30,
+          }}
+          onClose={() => setNewJobFromInvoice(null)}
+          onMarkPullPending={() => {}}
+          onSuccess={async () => {
+            const updatedInvoices = (editingJob?.invoices || []).filter((_, i) => i !== newJobFromInvoice.idx);
+            setEditingJob((prev) => ({ ...prev, invoices: updatedInvoices }));
+            if (editingJob?.rowNumber) {
+              await fetch("/api/portal/save-job", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  clientSheetId,
+                  clientName,
+                  job: {
+                    ...editingJob,
+                    invoices: updatedInvoices,
+                  },
+                }),
+              });
+            }
+            setNewJobFromInvoice(null);
+            if (onRefresh) onRefresh();
+          }}
+        />
       )}
 
       <style jsx>{`

@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { useAppGlobals } from "./useAppGlobals";
 
 export function useInvoices(assignedAppIds, initialClient = null) {
@@ -44,6 +44,21 @@ export function useInvoices(assignedAppIds, initialClient = null) {
   const [invoicesSavingCell, setInvoicesSavingCell] = useState(null);
   const [invoicesEditSlot, setInvoicesEditSlot] = useState(null);
   const [invoicesNewJob, setInvoicesNewJob] = useState(null);
+  const [hasAccountingIntegration, setHasAccountingIntegration] = useState(() => {
+    if (initialClient?.clientSheetId) {
+      const cleanId = cleanSheetId ? cleanSheetId(initialClient.clientSheetId) : initialClient.clientSheetId;
+      const cached = getCachedClientData(cleanId, "invoice_jobs_active");
+      if (cached?.data?.hasAccountingIntegration !== undefined) return Boolean(cached.data.hasAccountingIntegration);
+      if (initialClient.hasAccountingIntegration !== undefined) return Boolean(initialClient.hasAccountingIntegration);
+    }
+    return false;
+  });
+
+  useEffect(() => {
+    if (invoicesClient?.hasAccountingIntegration !== undefined) {
+      setHasAccountingIntegration(Boolean(invoicesClient.hasAccountingIntegration));
+    }
+  }, [invoicesClient]);
 
   const loadInvoicesInbox = useCallback(async (client, bypassCache = false) => {
     if (!client?.clientSheetId) return;
@@ -95,12 +110,19 @@ export function useInvoices(assignedAppIds, initialClient = null) {
 
   const loadInvoicesJobs = useCallback(async (client, showAll, silent = false, bypassCache = false) => {
     if (!client?.clientSheetId) return;
+
+    if (client.hasAccountingIntegration !== undefined) {
+      setHasAccountingIntegration(Boolean(client.hasAccountingIntegration));
+    }
+
     const cacheKey = showAll ? "invoice_jobs_all" : "invoice_jobs_active";
     const cleanId = cleanSheetId ? cleanSheetId(client.clientSheetId) : String(client.clientSheetId).replace(/.*\/d\/([a-zA-Z0-9-_]+).*/, "$1");
 
     const cached = (!bypassCache && !silent) ? getCachedClientData(client.clientSheetId, cacheKey) : null;
     if (cached?.data?.jobs) {
       setInvoicesJobs(cached.data.jobs);
+      if (cached.data.hasAccountingIntegration !== undefined) setHasAccountingIntegration(Boolean(cached.data.hasAccountingIntegration));
+      else if (client.hasAccountingIntegration !== undefined) setHasAccountingIntegration(Boolean(client.hasAccountingIntegration));
       if (!silent) setInvoicesJobsLoading(false);
       if (!cached.isStale) return;
     } else if (!silent) {
@@ -115,6 +137,8 @@ export function useInvoices(assignedAppIds, initialClient = null) {
           const fresh = getCachedClientData(client.clientSheetId, cacheKey);
           if (fresh?.data?.jobs) {
             setInvoicesJobs(fresh.data.jobs);
+            if (fresh.data.hasAccountingIntegration !== undefined) setHasAccountingIntegration(Boolean(fresh.data.hasAccountingIntegration));
+            else if (client.hasAccountingIntegration !== undefined) setHasAccountingIntegration(Boolean(client.hasAccountingIntegration));
             setInvoicesJobsLoading(false);
             return;
           }
@@ -131,6 +155,11 @@ export function useInvoices(assignedAppIds, initialClient = null) {
       if (data.success) {
         setCachedClientData(client.clientSheetId, cacheKey, data);
         setInvoicesJobs(data.jobs);
+        if (data.hasAccountingIntegration !== undefined) {
+          setHasAccountingIntegration(Boolean(data.hasAccountingIntegration));
+        } else if (client.hasAccountingIntegration !== undefined) {
+          setHasAccountingIntegration(Boolean(client.hasAccountingIntegration));
+        }
       }
     } catch(e) { 
       console.error("loadInvoicesJobs error:", e); 
@@ -150,6 +179,7 @@ export function useInvoices(assignedAppIds, initialClient = null) {
     invoicesSavingCell, setInvoicesSavingCell,
     invoicesEditSlot, setInvoicesEditSlot,
     invoicesNewJob, setInvoicesNewJob,
+    hasAccountingIntegration,
     loadInvoicesInbox, loadInvoicesJobs
   };
 }

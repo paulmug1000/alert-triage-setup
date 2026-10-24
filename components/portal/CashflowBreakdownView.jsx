@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect } from "react";
 import Spinner from "../Spinner";
+import { BreakdownViewSkeleton } from "../Skeleton";
 import { CashDeepDiveEngine, DeepDiveEngine, formatMoney as universalFormatMoney, parseMoney } from "../../services/deepDiveHelper";
 import { downloadCsv } from "../../utils/helpers";
 
@@ -627,26 +628,6 @@ export default function CashflowBreakdownView({
     downloadCsv(`cash_breakdown_${activeCategory}_${periodLabel.replace(/\s+/g, "_")}.csv`, rows);
   };
 
-  if (isLoading && (!data || !keyData)) {
-    return (
-      <div
-        style={{
-          background: "#ffffff",
-          borderRadius: "8px",
-          padding: "5rem 2rem",
-          boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
-          border: "1px solid #e2e8f0",
-          textAlign: "center",
-        }}
-      >
-        <Spinner size={32} color="#0047AB" />
-        <p style={{ marginTop: "1rem", color: "#64748b", fontWeight: 500, fontSize: "14px" }}>
-          Please wait - loading
-        </p>
-      </div>
-    );
-  }
-
   if (error && !data) {
     return (
       <div
@@ -682,6 +663,10 @@ export default function CashflowBreakdownView({
         </button>
       </div>
     );
+  }
+
+  if (!data || !keyData) {
+    return <BreakdownViewSkeleton isCashflow={true} />;
   }
 
   const dropdownStyle = {

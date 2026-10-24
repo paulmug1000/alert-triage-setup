@@ -117,6 +117,7 @@ export default function InvoicesView({
     invoicesJobsLoading,
     invoicesShowAll, setInvoicesShowAll,
     invoicesSavingCell, setInvoicesSavingCell,
+    hasAccountingIntegration,
     loadInvoicesInbox, loadInvoicesJobs
   } = useInvoices(assignedAppIds, managedClient || initialClient);
 
@@ -719,6 +720,7 @@ export default function InvoicesView({
           invoicesClient={invoicesClient}
           availableJobs={invoicesJobs}
           isAdmin={isAdmin}
+          hasAccountingIntegration={hasAccountingIntegration}
           onClose={() => setInvoicesEditSlot(null)}
           onMarkPullPending={(masterId) => outgoingsPullPendingRef.current = masterId}
           onInvoiceMoved={async () => {

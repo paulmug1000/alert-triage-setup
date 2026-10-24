@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect } from "react";
 import Spinner from "../Spinner";
+import { BreakdownViewSkeleton } from "../Skeleton";
 import { DeepDiveEngine, buildDeepDiveData, getDeepDiveType, parseMoney, formatMoney as universalFormatMoney } from "../../services/deepDiveHelper";
 import { downloadCsv } from "../../utils/helpers";
 
@@ -194,26 +195,6 @@ export default function PerformanceBreakdownView({
     return (ddData?.items || []).reduce((sum, item) => sum + (item.amount || 0), 0);
   }, [ddData]);
 
-  if (isLoading && !data && !keyData) {
-    return (
-      <div
-        style={{
-          background: "#ffffff",
-          borderRadius: "8px",
-          padding: "5rem 2rem",
-          boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
-          border: "1px solid #e2e8f0",
-          textAlign: "center",
-        }}
-      >
-        <Spinner size={32} color="#0047AB" />
-        <p style={{ marginTop: "1rem", color: "#64748b", fontWeight: 500, fontSize: "14px" }}>
-          Please wait - loading
-        </p>
-      </div>
-    );
-  }
-
   if (error && !data) {
     return (
       <div
@@ -249,6 +230,10 @@ export default function PerformanceBreakdownView({
         </button>
       </div>
     );
+  }
+
+  if (!data && !keyData) {
+    return <BreakdownViewSkeleton />;
   }
 
   const handleDownloadCSV = () => {

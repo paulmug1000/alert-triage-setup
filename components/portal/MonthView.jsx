@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import Spinner from "../Spinner";
+import { MonthViewSkeleton } from "../Skeleton";
 import DeepDivePopover from "./DeepDivePopover";
 import { getDeepDiveType, buildDeepDiveData, DeepDiveEngine, formatMoney, formatCurrencyString } from "../../services/deepDiveHelper";
 import { downloadCsv } from "../../utils/helpers";
@@ -106,23 +107,7 @@ export default function MonthView({
         </div>
       );
     }
-    return (
-      <div
-        style={{
-          background: "#ffffff",
-          borderRadius: "8px",
-          padding: "5rem 2rem",
-          maxWidth: "600px",
-          margin: "2rem auto",
-          textAlign: "center"
-        }}
-      >
-        <Spinner size={32} color="#0047AB" />
-        <p style={{ marginTop: "1rem", color: "#0047AB", fontWeight: 500, fontSize: "15px" }}>
-          Please wait - loading
-        </p>
-      </div>
-    );
+    return <MonthViewSkeleton />;
   }
 
   const activeMonthData = payload?.months?.[activePeriod] || (activePeriod === "curr" ? payload?.currMonth : null) || payload?.currMonth;
@@ -993,7 +978,7 @@ export default function MonthView({
     </div>
   </div>
 
-  <style jsx>{`
+  <style jsx global>{`
     .home-workspace-grid {
       display: grid;
       grid-template-columns: 410px 1fr;

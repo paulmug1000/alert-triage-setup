@@ -152,6 +152,8 @@ export default async function handler(req, res) {
     batchRanges.push("KeyInfo!D15:D16"); // Split method (D15) & split enabled (D16)
     batchRanges.push("KeyInfo!D1");      // Master Sheet URL
     batchRanges.push("KeyInfo!C4:D5");   // Currency and thousands separator
+    batchRanges.push("KeyInfo!Q4");      // Accounting tool
+    batchRanges.push("KeyInfo!Q8:Q9");   // CRM tool (Q8) & CRM mode (Q9)
 
     const batchResp = await withRetry(() =>
       sheets.spreadsheets.values.batchGet({
@@ -179,6 +181,13 @@ export default async function handler(req, res) {
     const splitInfoRows = valueRanges[rangeIdx++]?.values || [];
     const masterUrlRows = valueRanges[rangeIdx++]?.values || [];
     const currencyRows = valueRanges[rangeIdx++]?.values || [];
+    const accountingToolRows = valueRanges[rangeIdx++]?.values || [];
+    const crmToolRows = valueRanges[rangeIdx++]?.values || [];
+
+    const accountingTool = String(accountingToolRows?.[0]?.[0] || "None").trim();
+    const crmTool = String(crmToolRows?.[0]?.[0] || "None").trim();
+    const crmDrives = String(crmToolRows?.[1]?.[0] || "NA").trim();
+    const hasAccountingIntegration = ["xero", "quickbooks", "qb"].some((t) => accountingTool.toLowerCase().includes(t));
 
     const rawCurrencySymbol = String(currencyRows?.[0]?.[1] || (currencyRows?.[0]?.[0] && currencyRows?.[0]?.[0] !== "Tracker currency" ? currencyRows?.[0]?.[0] : "") || "£").trim() || "£";
     let currencySymbol = rawCurrencySymbol;
@@ -1282,9 +1291,15 @@ export default async function handler(req, res) {
       splitMethod,
       currencySymbol,
       thousandsSeparator,
+      accountingTool,
+      crmTool,
+      crmDrives,
+      hasAccountingIntegration,
       clientInfo: {
         currencySymbol,
         thousandsSeparator,
+        accountingTool,
+        hasAccountingIntegration,
       },
     };
 

@@ -8,9 +8,10 @@ export function stripCurrency(v) {
 }
 
 export function isPlaceholderInvoice(ref, status) {
-  if (!ref && !status) return false;
   const s = String(typeof ref === "object" ? (ref?.ref || "") : ref || "").trim().toUpperCase();
   const st = String(typeof ref === "object" ? (ref?.status || "") : status || "").trim().toUpperCase();
+  // A blank, missing, or fallback reference makes the invoice a placeholder
+  if (!s || s === "NO REF" || s === "REF" || s === "-") return true;
   return (
     s.startsWith("PLACE") ||
     s.includes("PLACE-INV") ||
@@ -34,6 +35,13 @@ export function isPlaceholderExpense(appId, description, status) {
     id.startsWith("MANUAL") ||
     desc.startsWith("MANUAL")
   );
+}
+
+export function hasActiveAccountingIntegration(accountingTool, integrations) {
+  const s = String(accountingTool || "").toLowerCase().trim();
+  if (s.includes("xero") || s.includes("quickbooks") || s.includes("qb")) return true;
+  if (integrations?.xero?.connected || integrations?.quickbooks?.connected) return true;
+  return false;
 }
 
 export function parseYearMonth(val) {

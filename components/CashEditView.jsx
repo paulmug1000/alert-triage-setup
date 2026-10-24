@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import Spinner from "./Spinner";
+import { CashflowSkeleton } from "./Skeleton";
 import { useAuth } from "../hooks/useAuth";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import CellNoteIndicator from "./CellNoteIndicator";
@@ -993,12 +994,7 @@ export default function CashEditView({
 
       {/* ── LOADING / ERROR STATES ─────────────────────────────────────────────── */}
       {loading && !cashData && (
-        <div style={{ textAlign: "center", padding: "60px 20px", background: "#ffffff", borderRadius: "10px", border: "1px solid #e2e8f0" }}>
-          <Spinner size={32} color="#0047AB" />
-          <div style={{ marginTop: "12px", fontSize: "14px", color: "#64748b", fontWeight: 500 }}>
-            Loading cashflow forecast...
-          </div>
-        </div>
+        <CashflowSkeleton />
       )}
 
       {error && !cashData && (

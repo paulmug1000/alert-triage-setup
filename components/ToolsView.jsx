@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import Spinner from "./Spinner";
+import Skeleton from "./Skeleton";
 import { useEoM } from "../hooks/useEoM";
 import { useTools } from "../hooks/useTools";
 import { eomWorkMonthToTargetMonth } from "../utils/helpers";
@@ -1103,9 +1104,16 @@ export default function ToolsView({
               {clientRows.length === 0 && (
                 <div style={{ padding: "40px 20px", fontSize: "14px", color: "#666", textAlign: "center" }}>
                   {!allClientsLoaded || eomStatusLoading ? (
-                    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "12px" }}>
-                      <Spinner size={28} color="#0066cc" />
-                      <span>Loading EoM data...</span>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      {Array.from({ length: 5 }).map((_, r) => (
+                        <div key={r} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", border: "1px solid #f1f5f9", borderRadius: "6px", background: "#ffffff" }}>
+                          <Skeleton width={`${120 + ((r * 29) % 60)}px`} height="14px" />
+                          <div style={{ display: "flex", gap: "10px" }}>
+                            <Skeleton width="60px" height="18px" borderRadius="10px" />
+                            <Skeleton width="70px" height="18px" borderRadius="10px" />
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   ) : (
                     "No clients found."

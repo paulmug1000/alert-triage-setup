@@ -724,3 +724,1190 @@ export function DeepDiveSkeleton({ rows = 4 }) {
     </div>
   );
 }
+
+/**
+ * Composite Skeleton for the PMA Home Dashboard (HomeView.jsx).
+ * Matches HomeView layout:
+ * - Title "Home"
+ * - 2 Top KPI cards (Alerts needing processing, Active tasks)
+ * - Setup status card with 3 pending card silhouettes
+ * - Client summary card with search bar, table header, and 6 client rows
+ */
+export function PmaHomeSkeleton() {
+  return (
+    <div style={{ maxWidth: "1080px", margin: "0 auto", padding: "24px 16px", fontFamily: "'Kumbh Sans', system-ui, -apple-system, sans-serif" }}>
+      {/* Page header */}
+      <div style={{ marginBottom: "24px" }}>
+        <h1 style={{ margin: 0, fontSize: "24px", fontWeight: "700", color: "#0F172A" }}>
+          Home
+        </h1>
+      </div>
+
+      {/* Top summary cards grid */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: "18px", marginBottom: "28px" }}>
+        {/* Card 1: Alerts */}
+        <div
+          style={{
+            background: "#FFFFFF",
+            borderRadius: "12px",
+            border: "1px solid #E2E8F0",
+            padding: "20px 22px",
+            boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
+            display: "flex",
+            flexDirection: "column",
+            justifyContent: "space-between",
+            minHeight: "220px",
+          }}
+        >
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
+              <Skeleton width="160px" height="13px" />
+              <Skeleton width="28px" height="28px" circle={true} />
+            </div>
+            <div style={{ display: "flex", alignItems: "baseline", gap: "10px", marginBottom: "10px" }}>
+              <Skeleton width="55px" height="36px" borderRadius="6px" />
+              <Skeleton width="90px" height="14px" />
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginBottom: "18px" }}>
+              <Skeleton width="90%" height="13px" />
+              <Skeleton width="65%" height="13px" />
+            </div>
+          </div>
+          <Skeleton width="100%" height="40px" borderRadius="8px" />
+        </div>
+
+        {/* Card 2: Tasks */}
+        <div
+          style={{
+            background: "#FFFFFF",
+            borderRadius: "12px",
+            border: "1px solid #E2E8F0",
+            padding: "20px 22px",
+            boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
+            display: "flex",
+            flexDirection: "column",
+            justifyContent: "space-between",
+            minHeight: "220px",
+          }}
+        >
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
+              <Skeleton width="110px" height="13px" />
+              <Skeleton width="28px" height="28px" circle={true} />
+            </div>
+            <div style={{ display: "flex", alignItems: "baseline", gap: "10px", marginBottom: "10px" }}>
+              <Skeleton width="45px" height="36px" borderRadius="6px" />
+              <Skeleton width="85px" height="14px" />
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginBottom: "18px" }}>
+              <Skeleton width="75%" height="13px" />
+              <Skeleton width="50%" height="13px" />
+            </div>
+          </div>
+          <Skeleton width="100%" height="40px" borderRadius="8px" />
+        </div>
+      </div>
+
+      {/* Setup section */}
+      <div style={{ background: "#FFFFFF", borderRadius: "12px", border: "1px solid #E2E8F0", padding: "22px", marginBottom: "28px", boxShadow: "0 1px 3px rgba(0,0,0,0.04)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", flexWrap: "wrap", gap: "10px" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <Skeleton width="110px" height="16px" />
+              <Skeleton width="70px" height="18px" borderRadius="12px" />
+            </div>
+            <Skeleton width="240px" height="12px" />
+          </div>
+          <Skeleton width="130px" height="32px" borderRadius="6px" />
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "12px" }}>
+          {[1, 2, 3].map((card) => (
+            <div
+              key={card}
+              style={{
+                background: "#f8fafc",
+                border: "1px solid #f1f5f9",
+                borderRadius: "8px",
+                padding: "16px",
+                display: "flex",
+                flexDirection: "column",
+                gap: "12px",
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <Skeleton width="110px" height="14px" />
+                <Skeleton width="75px" height="16px" borderRadius="4px" />
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                <Skeleton width="85%" height="12px" />
+                <Skeleton width="65%" height="12px" />
+              </div>
+              <Skeleton width="100%" height="32px" borderRadius="6px" style={{ marginTop: "4px" }} />
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Client summary section */}
+      <div style={{ background: "#FFFFFF", borderRadius: "12px", border: "1px solid #E2E8F0", padding: "22px", boxShadow: "0 1px 3px rgba(0,0,0,0.04)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", flexWrap: "wrap", gap: "12px" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <Skeleton width="120px" height="16px" />
+              <Skeleton width="65px" height="18px" borderRadius="12px" />
+            </div>
+            <Skeleton width="260px" height="12px" />
+          </div>
+          <Skeleton width="220px" height="34px" borderRadius="6px" />
+        </div>
+
+        {/* Table skeleton */}
+        <div style={{ border: "1px solid #e2e8f0", borderRadius: "8px", overflow: "hidden" }}>
+          <div style={{ display: "flex", padding: "10px 14px", background: "#f8fafc", borderBottom: "1px solid #e2e8f0" }}>
+            <div style={{ flex: 2 }}><Skeleton width="60px" height="12px" /></div>
+            <div style={{ flex: 1.5 }}><Skeleton width="80px" height="12px" /></div>
+            <div style={{ flex: 1.5 }}><Skeleton width="75px" height="12px" /></div>
+            <div style={{ flex: 2 }}><Skeleton width="85px" height="12px" /></div>
+            <div style={{ flex: 1, textAlign: "right" }}><Skeleton width="50px" height="12px" style={{ marginLeft: "auto" }} /></div>
+          </div>
+          {Array.from({ length: 6 }).map((_, r) => (
+            <div
+              key={r}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                padding: "12px 14px",
+                borderBottom: r === 5 ? "none" : "1px solid #f1f5f9",
+                background: "#ffffff",
+              }}
+            >
+              <div style={{ flex: 2 }}><Skeleton width="130px" height="14px" /></div>
+              <div style={{ flex: 1.5 }}><Skeleton width="65px" height="18px" borderRadius="12px" /></div>
+              <div style={{ flex: 1.5 }}><Skeleton width="70px" height="20px" borderRadius="12px" /></div>
+              <div style={{ flex: 2 }}><Skeleton width="120px" height="13px" /></div>
+              <div style={{ flex: 1, textAlign: "right" }}><Skeleton width="60px" height="28px" borderRadius="6px" style={{ marginLeft: "auto" }} /></div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Composite Skeleton for the PMA Alerts Client List (ClientSelectionView.jsx & /pma/alerts).
+ * Matches the Alerts client list view:
+ * - Header: Title "Alerts" + subtitle
+ * - Card: Subhead "Alerts" + 4 client alert card silhouettes
+ */
+export function PmaAlertsSkeleton() {
+  return (
+    <div style={{ maxWidth: "1080px", margin: "0 auto", padding: "24px 16px", fontFamily: "'Kumbh Sans', system-ui, -apple-system, sans-serif" }}>
+      {/* Header */}
+      <div style={{ marginBottom: "24px" }}>
+        <h1 style={{ fontSize: "24px", fontWeight: "700", color: "#0F172A", margin: "0 0 6px 0" }}>
+          Alerts
+        </h1>
+        <Skeleton width="280px" height="14px" />
+      </div>
+
+      {/* Main alerts card */}
+      <div style={{ background: "#FFFFFF", border: "1px solid #E2E8F0", borderRadius: "8px", padding: "24px", boxShadow: "0 1px 3px rgba(0,0,0,0.04)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+          <Skeleton width="80px" height="15px" />
+          <Skeleton width="140px" height="13px" />
+        </div>
+
+        {/* Client alert cards silhouette */}
+        <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+          {[
+            { nameW: "150px", lines: ["240px", "190px"] },
+            { nameW: "180px", lines: ["280px", "210px", "160px"] },
+            { nameW: "130px", lines: ["220px"] },
+            { nameW: "165px", lines: ["260px", "175px"] },
+          ].map((c, idx) => (
+            <div
+              key={idx}
+              style={{
+                padding: "16px 18px",
+                border: "1px solid #e2e8f0",
+                borderRadius: "6px",
+                background: "#f8fafc",
+                display: "flex",
+                flexDirection: "column",
+                gap: "8px",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <Skeleton width={c.nameW} height="16px" />
+                <Skeleton width="50px" height="15px" borderRadius="10px" />
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginTop: "2px" }}>
+                {c.lines.map((w, l) => (
+                  <div key={l} style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                    <span style={{ color: "#94a3b8", fontSize: "14px", lineHeight: "1" }}>•</span>
+                    <Skeleton className="pulse-skeleton-blue" width={w} height="13px" borderRadius="3px" />
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Card footer bar */}
+        <div style={{ marginTop: "20px", paddingTop: "16px", borderTop: "1px solid #f1f5f9", display: "flex", justifyContent: "flex-end" }}>
+          <Skeleton width="130px" height="32px" borderRadius="6px" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Composite Skeleton for EditClientSelector.jsx.
+ * Matches the client selector card across all PMA Edit views:
+ * - Header title + optional header extra
+ * - Search bar silhouette
+ * - 6 client item buttons with name and chevron/badge
+ */
+export function EditClientSelectorSkeleton({ count = 6 }) {
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+        <Skeleton width="180px" height="16px" />
+        <Skeleton width="80px" height="14px" />
+      </div>
+
+      {/* Search bar */}
+      <div style={{ marginBottom: "14px" }}>
+        <Skeleton width="100%" height="38px" borderRadius="6px" />
+      </div>
+
+      {/* Client List */}
+      <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+        {Array.from({ length: count }).map((_, i) => (
+          <div
+            key={i}
+            style={{
+              padding: "12px 18px",
+              border: "1px solid #e2e8f0",
+              borderRadius: "6px",
+              background: "#ffffff",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              boxSizing: "border-box",
+              minHeight: "44px",
+            }}
+          >
+            <Skeleton width={`${120 + ((i * 37) % 110)}px`} height="15px" />
+            <Skeleton width="20px" height="14px" borderRadius="4px" />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Composite Skeleton for the PMA Jobs View table (JobsView.jsx).
+ * Matches the loaded Jobs table:
+ * - Outer card container with 1px border and 10px radius
+ * - Header row matching column structure (Toggle, Status, Notes, Client, Job Name, Type, Revenue, Costs, GP, GP%, Actions)
+ * - 8 realistic rows with 0 layout shift
+ */
+export function PmaJobsTableSkeleton({ rows = 8 }) {
+  return (
+    <div
+      style={{
+        background: "#ffffff",
+        borderRadius: "10px",
+        border: "1px solid #e2e8f0",
+        overflowX: "auto",
+        boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
+      }}
+    >
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px", textAlign: "left", minWidth: "1220px" }}>
+        <thead>
+          <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0" }}>
+            <th style={{ padding: "10px 10px", width: "36px", textAlign: "center" }}>
+              <Skeleton width="14px" height="14px" borderRadius="3px" style={{ margin: "0 auto" }} />
+            </th>
+            <th style={{ padding: "10px 10px", width: "95px" }}>
+              <Skeleton width="50px" height="12px" />
+            </th>
+            <th style={{ padding: "10px 4px", width: "36px", textAlign: "center" }}>
+              <Skeleton width="14px" height="14px" borderRadius="3px" style={{ margin: "0 auto" }} />
+            </th>
+            <th style={{ padding: "10px 10px", width: "160px" }}>
+              <Skeleton width="55px" height="12px" />
+            </th>
+            <th style={{ padding: "10px 10px", width: "210px" }}>
+              <Skeleton width="75px" height="12px" />
+            </th>
+            <th style={{ padding: "10px 10px", width: "115px" }}>
+              <Skeleton width="45px" height="12px" />
+            </th>
+            <th style={{ padding: "10px 10px", width: "125px" }}>
+              <Skeleton width="60px" height="12px" />
+            </th>
+            <th style={{ padding: "10px 10px", width: "125px" }}>
+              <Skeleton width="75px" height="12px" />
+            </th>
+            <th style={{ padding: "10px 10px", width: "130px" }}>
+              <Skeleton width="65px" height="12px" />
+            </th>
+            <th style={{ padding: "10px 10px", width: "130px" }}>
+              <Skeleton width="65px" height="12px" />
+            </th>
+            <th style={{ padding: "10px 10px", width: "100px" }}>
+              <Skeleton width="60px" height="12px" />
+            </th>
+            <th style={{ padding: "10px 12px", width: "110px", textAlign: "right" }}>
+              <Skeleton width="50px" height="12px" style={{ marginLeft: "auto" }} />
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {Array.from({ length: rows }).map((_, r) => (
+            <tr
+              key={r}
+              style={{
+                borderBottom: r === rows - 1 ? "none" : "1px solid #f1f5f9",
+                background: r % 2 === 1 ? "#fafcff" : "#ffffff",
+              }}
+            >
+              <td style={{ padding: "14px 10px", textAlign: "center" }}>
+                <Skeleton width="14px" height="14px" borderRadius="3px" style={{ margin: "0 auto" }} />
+              </td>
+              <td style={{ padding: "14px 10px" }}>
+                <Skeleton width="70px" height="20px" borderRadius="10px" />
+              </td>
+              <td style={{ padding: "14px 4px", textAlign: "center" }}>
+                <Skeleton width="14px" height="14px" circle={true} style={{ margin: "0 auto" }} />
+              </td>
+              <td style={{ padding: "14px 10px" }}>
+                <Skeleton width={`${90 + ((r * 29) % 50)}px`} height="14px" />
+              </td>
+              <td style={{ padding: "14px 10px" }}>
+                <Skeleton width={`${120 + ((r * 43) % 70)}px`} height="14px" />
+              </td>
+              <td style={{ padding: "14px 10px" }}>
+                <Skeleton width="65px" height="20px" borderRadius="6px" />
+              </td>
+              <td style={{ padding: "14px 10px" }}>
+                <Skeleton width="75px" height="14px" />
+              </td>
+              <td style={{ padding: "14px 10px" }}>
+                <Skeleton width="60px" height="14px" />
+              </td>
+              <td style={{ padding: "14px 10px" }}>
+                <Skeleton width="75px" height="14px" />
+              </td>
+              <td style={{ padding: "14px 10px" }}>
+                <Skeleton width="75px" height="14px" />
+              </td>
+              <td style={{ padding: "14px 10px" }}>
+                <Skeleton width="55px" height="14px" />
+              </td>
+              <td style={{ padding: "14px 12px", textAlign: "right" }}>
+                <Skeleton width="45px" height="14px" style={{ marginLeft: "auto" }} />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/**
+ * Composite Skeleton for InvoicesView.jsx (byJob subtab).
+ */
+export function PmaInvoicesTableSkeleton({ cards = 5 }) {
+  return (
+    <div>
+      {/* Description banner silhouette */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: "12px 16px",
+          background: "#f8fafc",
+          border: "1px solid #e2e8f0",
+          borderRadius: "8px",
+          marginBottom: "12px",
+        }}
+      >
+        <Skeleton width="340px" height="14px" />
+        <Skeleton width="130px" height="28px" borderRadius="6px" />
+      </div>
+
+      {/* Search bar silhouette */}
+      <div style={{ marginBottom: "14px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <Skeleton width="280px" height="34px" borderRadius="6px" />
+        <Skeleton width="90px" height="14px" />
+      </div>
+
+      {/* Job cards list */}
+      <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+        {Array.from({ length: cards }).map((_, i) => (
+          <div
+            key={i}
+            style={{
+              background: "#ffffff",
+              border: "1px solid #e2e8f0",
+              borderRadius: "8px",
+              padding: "16px 18px",
+              boxShadow: "0 1px 2px rgba(0,0,0,0.03)",
+            }}
+          >
+            {/* Job Header */}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px", flexWrap: "wrap", gap: "8px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                <Skeleton width={`${140 + ((i * 31) % 60)}px`} height="16px" />
+                <Skeleton width="60px" height="18px" borderRadius="10px" />
+              </div>
+              <div style={{ display: "flex", gap: "16px", alignItems: "center" }}>
+                <Skeleton width="90px" height="14px" />
+                <Skeleton width="80px" height="14px" />
+                <Skeleton width="75px" height="26px" borderRadius="5px" />
+              </div>
+            </div>
+
+            {/* Invoice slots row */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "10px" }}>
+              {[1, 2, 3].map((slot) => (
+                <div
+                  key={slot}
+                  style={{
+                    background: "#f8fafc",
+                    border: "1px dashed #cbd5e1",
+                    borderRadius: "6px",
+                    padding: "10px 12px",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "6px",
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <Skeleton width="65px" height="12px" />
+                    <Skeleton width="45px" height="12px" />
+                  </div>
+                  <Skeleton width="110px" height="14px" />
+                  <Skeleton width="80px" height="11px" />
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Composite Skeleton for OutgoingsView.jsx.
+ */
+export function PmaOutgoingsTableSkeleton({ rows = 8 }) {
+  return (
+    <div>
+      {/* Controls Bar */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", flexWrap: "wrap", gap: "10px" }}>
+        <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+          <Skeleton width="220px" height="34px" borderRadius="6px" />
+          <Skeleton width="130px" height="34px" borderRadius="6px" />
+        </div>
+        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+          <Skeleton width="140px" height="32px" borderRadius="6px" />
+          <Skeleton width="75px" height="32px" borderRadius="6px" />
+        </div>
+      </div>
+
+      {/* Outgoings Contractor Matrix Table */}
+      <div
+        style={{
+          background: "#ffffff",
+          borderRadius: "8px",
+          border: "1px solid #e2e8f0",
+          overflowX: "auto",
+          boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
+        }}
+      >
+        <div style={{ display: "flex", padding: "12px 14px", background: "#f8fafc", borderBottom: "1px solid #e2e8f0", gap: "8px", minWidth: "900px" }}>
+          <div style={{ width: "240px", flexShrink: 0 }}><Skeleton width="90px" height="12px" /></div>
+          {["Jul", "Aug", "Sept", "Oct", "Nov", "Dec", "Jan"].map((m, i) => (
+            <div key={m} style={{ flex: 1, minWidth: "80px", textAlign: "center" }}>
+              <Skeleton width="50px" height="12px" style={{ margin: "0 auto" }} />
+            </div>
+          ))}
+        </div>
+
+        {Array.from({ length: rows }).map((_, r) => (
+          <div
+            key={r}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              padding: "14px 14px",
+              borderBottom: r === rows - 1 ? "none" : "1px solid #f1f5f9",
+              background: r % 2 === 1 ? "#fafcff" : "#ffffff",
+              gap: "8px",
+              minWidth: "900px",
+            }}
+          >
+            <div style={{ width: "240px", flexShrink: 0, display: "flex", flexDirection: "column", gap: "4px" }}>
+              <Skeleton width={`${120 + ((r * 29) % 80)}px`} height="14px" />
+              <Skeleton width="85px" height="10px" />
+            </div>
+            {Array.from({ length: 7 }).map((_, c) => (
+              <div key={c} style={{ flex: 1, minWidth: "80px", display: "flex", justifyContent: "center" }}>
+                <Skeleton width="45px" height="13px" borderRadius="3px" />
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Composite Skeleton for SalariesView.jsx.
+ */
+export function PmaSalariesSkeleton() {
+  return (
+    <div style={{ display: "flex", gap: "20px", flexWrap: "wrap", alignItems: "flex-start" }}>
+      {/* Left Column: Employee list */}
+      <div
+        style={{
+          flex: "1 1 420px",
+          maxWidth: "520px",
+          background: "#ffffff",
+          border: "1px solid #e2e8f0",
+          borderRadius: "10px",
+          padding: "20px",
+          boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+          <Skeleton width="120px" height="16px" />
+          <Skeleton width="90px" height="28px" borderRadius="6px" />
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div
+              key={i}
+              style={{
+                padding: "12px 14px",
+                border: "1px solid #f1f5f9",
+                borderRadius: "8px",
+                background: "#f8fafc",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}
+            >
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                <Skeleton width={`${100 + ((i * 21) % 50)}px`} height="14px" />
+                <Skeleton width="75px" height="11px" />
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-end" }}>
+                <Skeleton width="65px" height="14px" />
+                <Skeleton width="45px" height="10px" />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Right Column: Monthly Summary & Allocations */}
+      <div
+        style={{
+          flex: "1 1 500px",
+          display: "flex",
+          flexDirection: "column",
+          gap: "16px",
+        }}
+      >
+        {/* KPI Summary Row */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "12px" }}>
+          {[1, 2, 3].map((card) => (
+            <div
+              key={card}
+              style={{
+                background: "#ffffff",
+                border: "1px solid #e2e8f0",
+                borderRadius: "8px",
+                padding: "14px 16px",
+                boxShadow: "0 1px 2px rgba(0,0,0,0.03)",
+              }}
+            >
+              <Skeleton width="80px" height="11px" style={{ marginBottom: "8px" }} />
+              <Skeleton width="95px" height="22px" />
+            </div>
+          ))}
+        </div>
+
+        {/* Monthly breakdown table */}
+        <div
+          style={{
+            background: "#ffffff",
+            border: "1px solid #e2e8f0",
+            borderRadius: "10px",
+            padding: "18px",
+            boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "14px" }}>
+            <Skeleton width="140px" height="15px" />
+            <Skeleton width="70px" height="14px" />
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+            {Array.from({ length: 6 }).map((_, r) => (
+              <div key={r} style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: r === 5 ? "none" : "1px solid #f1f5f9" }}>
+                <Skeleton width="90px" height="13px" />
+                <Skeleton width="75px" height="13px" />
+                <Skeleton width="65px" height="13px" />
+                <Skeleton width="65px" height="13px" />
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Composite Skeleton for RetainersView.jsx.
+ */
+export function PmaRetainersTableSkeleton({ rows = 6 }) {
+  return (
+    <div style={{ overflowX: "auto", borderRadius: "8px", border: "1px solid #e2e8f0", background: "#ffffff", boxShadow: "0 1px 3px rgba(0,0,0,0.04)" }}>
+      <div style={{ display: "flex", padding: "10px 14px", background: "#f8fafc", borderBottom: "1px solid #e2e8f0", gap: "10px" }}>
+        <div style={{ width: "30px" }}><Skeleton width="14px" height="12px" /></div>
+        <div style={{ width: "120px" }}><Skeleton width="60px" height="12px" /></div>
+        <div style={{ width: "160px" }}><Skeleton width="75px" height="12px" /></div>
+        <div style={{ width: "90px" }}><Skeleton width="55px" height="12px" /></div>
+        <div style={{ width: "90px" }}><Skeleton width="45px" height="12px" /></div>
+        <div style={{ width: "90px" }}><Skeleton width="45px" height="12px" /></div>
+        <div style={{ flex: 1 }}><Skeleton width="120px" height="12px" /></div>
+      </div>
+      {Array.from({ length: rows }).map((_, r) => (
+        <div key={r} style={{ display: "flex", alignItems: "center", padding: "12px 14px", borderBottom: r === rows - 1 ? "none" : "1px solid #f1f5f9", gap: "10px", background: r % 2 === 1 ? "#fafcff" : "#ffffff" }}>
+          <div style={{ width: "30px" }}><Skeleton width="14px" height="14px" borderRadius="3px" /></div>
+          <div style={{ width: "120px" }}><Skeleton width="95px" height="13px" /></div>
+          <div style={{ width: "160px" }}><Skeleton width="130px" height="13px" /></div>
+          <div style={{ width: "90px" }}><Skeleton width="65px" height="13px" /></div>
+          <div style={{ width: "90px" }}><Skeleton width="60px" height="13px" /></div>
+          <div style={{ width: "90px" }}><Skeleton width="60px" height="13px" /></div>
+          <div style={{ flex: 1, display: "flex", gap: "6px" }}>
+            <Skeleton width="70px" height="22px" borderRadius="4px" />
+            <Skeleton width="70px" height="22px" borderRadius="4px" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Composite Skeleton for ExpensesView.jsx.
+ */
+export function PmaExpensesTableSkeleton({ rows = 8 }) {
+  return (
+    <div>
+      {/* Filter Bar */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", flexWrap: "wrap", gap: "10px" }}>
+        <div style={{ display: "flex", gap: "10px" }}>
+          <Skeleton width="110px" height="34px" borderRadius="6px" />
+          <Skeleton width="130px" height="34px" borderRadius="6px" />
+        </div>
+        <Skeleton width="220px" height="34px" borderRadius="6px" />
+      </div>
+
+      {/* Expenses Table */}
+      <div style={{ background: "#ffffff", borderRadius: "10px", border: "1px solid #e2e8f0", overflowX: "auto", boxShadow: "0 1px 3px rgba(0,0,0,0.04)" }}>
+        <div style={{ display: "flex", padding: "12px 16px", background: "#f8fafc", borderBottom: "1px solid #e2e8f0", gap: "12px" }}>
+          <div style={{ flex: 1.5 }}><Skeleton width="90px" height="12px" /></div>
+          <div style={{ flex: 1.5 }}><Skeleton width="80px" height="12px" /></div>
+          <div style={{ flex: 2 }}><Skeleton width="110px" height="12px" /></div>
+          <div style={{ flex: 1.2 }}><Skeleton width="70px" height="12px" /></div>
+          <div style={{ flex: 1 }}><Skeleton width="60px" height="12px" /></div>
+          <div style={{ flex: 1, textAlign: "right" }}><Skeleton width="55px" height="12px" style={{ marginLeft: "auto" }} /></div>
+        </div>
+        {Array.from({ length: rows }).map((_, r) => (
+          <div key={r} style={{ display: "flex", alignItems: "center", padding: "12px 16px", borderBottom: r === rows - 1 ? "none" : "1px solid #f1f5f9", background: r % 2 === 1 ? "#fafcff" : "#ffffff", gap: "12px" }}>
+            <div style={{ flex: 1.5 }}><Skeleton width="110px" height="14px" /></div>
+            <div style={{ flex: 1.5 }}><Skeleton width="95px" height="14px" /></div>
+            <div style={{ flex: 2 }}><Skeleton width={`${140 + ((r * 19) % 70)}px`} height="14px" /></div>
+            <div style={{ flex: 1.2 }}><Skeleton width="75px" height="14px" /></div>
+            <div style={{ flex: 1 }}><Skeleton width="55px" height="14px" /></div>
+            <div style={{ flex: 1, textAlign: "right" }}><Skeleton width="65px" height="14px" style={{ marginLeft: "auto" }} /></div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Composite Skeleton for TasksView.jsx.
+ * Matches:
+ * - 5 task card silhouettes each with client pill, task title, urgency badge, description, and action buttons
+ */
+export function PmaTasksSkeleton({ cards = 5 }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+      {Array.from({ length: cards }).map((_, i) => (
+        <div
+          key={i}
+          style={{
+            padding: "16px 18px",
+            border: "1px solid #e2e8f0",
+            borderRadius: "8px",
+            background: "#f8fafc",
+            display: "flex",
+            flexDirection: "column",
+            gap: "10px",
+            boxShadow: "0 1px 2px rgba(0,0,0,0.02)",
+          }}
+        >
+          {/* Header row */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+              <Skeleton width="90px" height="20px" borderRadius="10px" />
+              <Skeleton width={`${160 + ((i * 37) % 90)}px`} height="16px" />
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+              <Skeleton width="75px" height="13px" />
+              <Skeleton width="60px" height="18px" borderRadius="10px" />
+            </div>
+          </div>
+
+          {/* Description */}
+          <div style={{ display: "flex", flexDirection: "column", gap: "5px" }}>
+            <Skeleton width="85%" height="13px" />
+            <Skeleton width="55%" height="13px" />
+          </div>
+
+          {/* Action buttons */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "4px", paddingTop: "8px", borderTop: "1px solid #f1f5f9" }}>
+            <Skeleton width="110px" height="26px" borderRadius="5px" />
+            <div style={{ display: "flex", gap: "8px" }}>
+              <Skeleton width="70px" height="26px" borderRadius="5px" />
+              <Skeleton width="85px" height="26px" borderRadius="5px" />
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Composite Skeleton for SetupView.jsx (Overview Table).
+ */
+export function PmaSetupOverviewSkeleton({ rows = 6 }) {
+  return (
+    <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "13px" }}>
+      <thead>
+        <tr style={{ background: "#F8FAFC", borderBottom: "1px solid #E2E8F0" }}>
+          <th style={{ padding: "12px 20px" }}><Skeleton width="60px" height="12px" /></th>
+          <th style={{ padding: "12px 16px" }}><Skeleton width="55px" height="12px" /></th>
+          <th style={{ padding: "12px 16px" }}><Skeleton width="80px" height="12px" /></th>
+          <th style={{ padding: "12px 16px" }}><Skeleton width="45px" height="12px" /></th>
+          <th style={{ padding: "12px 16px" }}><Skeleton width="120px" height="12px" /></th>
+          <th style={{ padding: "12px 20px", textAlign: "right" }}><Skeleton width="55px" height="12px" style={{ marginLeft: "auto" }} /></th>
+        </tr>
+      </thead>
+      <tbody>
+        {Array.from({ length: rows }).map((_, r) => (
+          <tr key={r} style={{ borderBottom: r === rows - 1 ? "none" : "1px solid #F1F5F9", background: r % 2 === 1 ? "#fafcff" : "#ffffff" }}>
+            <td style={{ padding: "14px 20px" }}><Skeleton width={`${120 + ((r * 23) % 60)}px`} height="15px" /></td>
+            <td style={{ padding: "14px 16px" }}><Skeleton width="75px" height="20px" borderRadius="10px" /></td>
+            <td style={{ padding: "14px 16px" }}><Skeleton width="85px" height="20px" borderRadius="4px" /></td>
+            <td style={{ padding: "14px 16px" }}><Skeleton width="70px" height="20px" borderRadius="4px" /></td>
+            <td style={{ padding: "14px 16px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <Skeleton width="110px" height="8px" borderRadius="4px" />
+                <Skeleton width="35px" height="12px" />
+              </div>
+            </td>
+            <td style={{ padding: "14px 20px", textAlign: "right" }}>
+              <Skeleton width="60px" height="28px" borderRadius="6px" style={{ marginLeft: "auto" }} />
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+/**
+ * Composite Skeleton for SetupView.jsx (Client Detail / Onboarding Checklist).
+ */
+export function PmaSetupDetailSkeleton() {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+      {/* Header bar */}
+      <div style={{ background: "#ffffff", border: "1px solid #e2e8f0", borderRadius: "10px", padding: "18px 22px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+          <Skeleton width="160px" height="18px" />
+          <Skeleton width="240px" height="12px" />
+        </div>
+        <Skeleton width="140px" height="34px" borderRadius="6px" />
+      </div>
+
+      {/* 4 Checklist Phases */}
+      {[1, 2, 3, 4].map((phase) => (
+        <div
+          key={phase}
+          style={{
+            background: "#ffffff",
+            border: "1px solid #e2e8f0",
+            borderRadius: "10px",
+            padding: "20px 22px",
+            display: "flex",
+            flexDirection: "column",
+            gap: "14px",
+            boxShadow: "0 1px 3px rgba(0,0,0,0.03)",
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+              <Skeleton width="28px" height="28px" circle={true} />
+              <Skeleton width={`${140 + ((phase * 29) % 70)}px`} height="16px" />
+            </div>
+            <Skeleton width="80px" height="20px" borderRadius="10px" />
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px", paddingLeft: "38px" }}>
+            {[1, 2].map((item) => (
+              <div key={item} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: "#f8fafc", borderRadius: "6px" }}>
+                <Skeleton width={`${180 + ((item * 41) % 100)}px`} height="13px" />
+                <Skeleton width="65px" height="22px" borderRadius="4px" />
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Composite Skeleton for IntegrationsView.jsx.
+ */
+export function PmaIntegrationsSkeleton() {
+  return (
+    <div style={{ padding: "20px 24px", maxWidth: "1380px", margin: "0 auto" }}>
+      {/* Top Header */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px", flexWrap: "wrap", gap: "12px" }}>
+        <Skeleton width="240px" height="24px" />
+        <Skeleton width="130px" height="36px" borderRadius="6px" />
+      </div>
+
+      {/* 4 Top Metric KPI Cards */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "14px", marginBottom: "22px" }}>
+        {[1, 2, 3, 4].map((kpi) => (
+          <div
+            key={kpi}
+            style={{
+              background: "#ffffff",
+              border: "1px solid #e2e8f0",
+              borderRadius: "10px",
+              padding: "16px 20px",
+              boxShadow: "0 1px 3px rgba(0,0,0,0.03)",
+            }}
+          >
+            <Skeleton width="110px" height="12px" style={{ marginBottom: "10px" }} />
+            <Skeleton width="60px" height="28px" borderRadius="4px" style={{ marginBottom: "6px" }} />
+            <Skeleton width="140px" height="11px" />
+          </div>
+        ))}
+      </div>
+
+      {/* Client Integrations Matrix Card */}
+      <div
+        style={{
+          background: "#ffffff",
+          border: "1px solid #e2e8f0",
+          borderRadius: "10px",
+          padding: "20px 22px",
+          boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "18px", flexWrap: "wrap", gap: "12px" }}>
+          <Skeleton width="260px" height="36px" borderRadius="6px" />
+          <div style={{ display: "flex", gap: "8px" }}>
+            <Skeleton width="80px" height="32px" borderRadius="6px" />
+            <Skeleton width="80px" height="32px" borderRadius="6px" />
+            <Skeleton width="80px" height="32px" borderRadius="6px" />
+          </div>
+        </div>
+
+        {/* Matrix Rows */}
+        <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+          {Array.from({ length: 6 }).map((_, r) => (
+            <div
+              key={r}
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                padding: "14px 18px",
+                border: "1px solid #f1f5f9",
+                borderRadius: "8px",
+                background: r % 2 === 1 ? "#fafcff" : "#ffffff",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                <Skeleton width={`${120 + ((r * 31) % 60)}px`} height="15px" />
+                <Skeleton width="75px" height="18px" borderRadius="10px" />
+              </div>
+              <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
+                <Skeleton width="90px" height="24px" borderRadius="6px" />
+                <Skeleton width="90px" height="24px" borderRadius="6px" />
+                <Skeleton width="70px" height="28px" borderRadius="6px" />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Composite Skeleton for ActivityView.jsx.
+ */
+export function PmaActivitySkeleton() {
+  return (
+    <div style={{ maxWidth: "1080px", margin: "0 auto", padding: "24px 16px" }}>
+      {/* Header */}
+      <div style={{ marginBottom: "20px" }}>
+        <Skeleton width="180px" height="24px" style={{ marginBottom: "6px" }} />
+        <Skeleton width="300px" height="14px" />
+      </div>
+
+      {/* Filter Controls Row */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "18px", flexWrap: "wrap", gap: "12px" }}>
+        <div style={{ display: "flex", gap: "10px" }}>
+          <Skeleton width="180px" height="34px" borderRadius="6px" />
+          <Skeleton width="220px" height="34px" borderRadius="6px" />
+        </div>
+        <Skeleton width="110px" height="34px" borderRadius="6px" />
+      </div>
+
+      {/* Timeline Card */}
+      <div
+        style={{
+          background: "#ffffff",
+          border: "1px solid #e2e8f0",
+          borderRadius: "10px",
+          overflow: "hidden",
+          boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
+        }}
+      >
+        <div style={{ padding: "14px 18px", background: "#f8fafc", borderBottom: "1px solid #e2e8f0", display: "flex", justifyContent: "space-between" }}>
+          <Skeleton width="130px" height="14px" />
+          <Skeleton width="80px" height="12px" />
+        </div>
+
+        {/* 8 Activity Items */}
+        {Array.from({ length: 8 }).map((_, i) => (
+          <div
+            key={i}
+            style={{
+              padding: "14px 18px",
+              borderBottom: i === 7 ? "none" : "1px solid #f1f5f9",
+              display: "flex",
+              alignItems: "flex-start",
+              gap: "14px",
+              background: i % 2 === 1 ? "#fafcff" : "#ffffff",
+            }}
+          >
+            <Skeleton width="32px" height="32px" circle={true} style={{ flexShrink: 0, marginTop: "2px" }} />
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "6px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                <Skeleton width={`${80 + ((i * 17) % 40)}px`} height="18px" borderRadius="10px" />
+                <Skeleton width={`${70 + ((i * 19) % 35)}px`} height="18px" borderRadius="4px" />
+                <Skeleton width="90px" height="12px" />
+              </div>
+              <Skeleton width={`${75 + ((i * 7) % 20)}%`} height="14px" />
+            </div>
+            <Skeleton width="65px" height="12px" style={{ flexShrink: 0 }} />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Composite Skeleton for the PMA New Business to Find View (NBToFindView.jsx).
+ * Matches NBToFindView loaded layout:
+ * - 3 Top configuration cards (Target settings, Direct costs % settings, Forecast summary card)
+ * - Main 15-column table (Metric / Calculation Step, 12 month columns, Total FY, Average)
+ */
+export function PmaNBToFindSkeleton() {
+  const monthLabels = ["Oct 26", "Nov 26", "Dec 26", "Jan 27", "Feb 27", "Mar 27", "Apr 27", "May 27", "Jun 27", "Jul 27", "Aug 27", "Sep 27"];
+  return (
+    <div style={{ marginTop: "8px" }}>
+      {/* 3 Top Configuration Cards */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
+          gap: "16px",
+          marginBottom: "20px",
+        }}
+      >
+        {/* Card 1: Target Settings */}
+        <div
+          style={{
+            background: "#ffffff",
+            border: "1px solid #cbd5e1",
+            borderRadius: "8px",
+            padding: "14px 18px",
+            boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
+            display: "flex",
+            flexDirection: "column",
+            gap: "10px",
+            minHeight: "135px",
+          }}
+        >
+          <Skeleton width="90px" height="11px" />
+          <Skeleton width="75%" height="15px" />
+          <Skeleton width="90%" height="12px" />
+          <div style={{ marginTop: "4px", display: "flex", gap: "8px" }}>
+            <Skeleton width="55px" height="26px" borderRadius="4px" />
+            <Skeleton width="55px" height="26px" borderRadius="4px" />
+          </div>
+        </div>
+
+        {/* Card 2: Direct Costs Settings */}
+        <div
+          style={{
+            background: "#ffffff",
+            border: "1px solid #cbd5e1",
+            borderRadius: "8px",
+            padding: "14px 18px",
+            boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
+            display: "flex",
+            flexDirection: "column",
+            gap: "10px",
+            minHeight: "135px",
+          }}
+        >
+          <Skeleton width="90px" height="11px" />
+          <Skeleton width="75%" height="15px" />
+          <Skeleton width="90%" height="12px" />
+          <div style={{ marginTop: "4px", display: "flex", gap: "8px", alignItems: "center" }}>
+            <Skeleton width="60px" height="26px" borderRadius="4px" />
+            <Skeleton width="50px" height="26px" borderRadius="4px" />
+            <div style={{ display: "flex", gap: "4px" }}>
+              <Skeleton width="34px" height="22px" borderRadius="4px" />
+              <Skeleton width="34px" height="22px" borderRadius="4px" />
+              <Skeleton width="34px" height="22px" borderRadius="4px" />
+            </div>
+          </div>
+        </div>
+
+        {/* Card 3: Summary Highlights */}
+        <div
+          style={{
+            background: "#f0fdf4",
+            border: "1px solid #bbf7d0",
+            borderRadius: "8px",
+            padding: "14px 18px",
+            boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
+            display: "flex",
+            flexDirection: "column",
+            justifyContent: "space-between",
+            minHeight: "135px",
+          }}
+        >
+          <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+            <Skeleton width="180px" height="11px" />
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <Skeleton width="140px" height="13px" />
+              <Skeleton width="90px" height="20px" borderRadius="4px" />
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <Skeleton width="120px" height="12px" />
+              <Skeleton width="70px" height="14px" borderRadius="4px" />
+            </div>
+          </div>
+          <Skeleton width="150px" height="11px" />
+        </div>
+      </div>
+
+      {/* Main Table Skeleton */}
+      <div
+        style={{
+          background: "#ffffff",
+          borderRadius: "8px",
+          border: "1px solid #cbd5e1",
+          boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
+          overflow: "hidden",
+        }}
+      >
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
+            <thead>
+              <tr style={{ background: "#f1f5f9", borderBottom: "1px solid #cbd5e1" }}>
+                <th style={{ padding: "10px 14px", textAlign: "left", width: "250px" }}>
+                  <Skeleton width="160px" height="14px" />
+                </th>
+                {monthLabels.map((lbl, i) => (
+                  <th key={i} style={{ padding: "10px 10px", width: "75px", textAlign: "right" }}>
+                    <Skeleton width="48px" height="13px" style={{ marginLeft: "auto" }} />
+                  </th>
+                ))}
+                <th style={{ padding: "10px 10px", width: "85px", textAlign: "right" }}>
+                  <Skeleton width="55px" height="13px" style={{ marginLeft: "auto" }} />
+                </th>
+                <th style={{ padding: "10px 10px", width: "80px", textAlign: "right" }}>
+                  <Skeleton width="50px" height="13px" style={{ marginLeft: "auto" }} />
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {Array.from({ length: 9 }).map((_, rIdx) => (
+                <tr
+                  key={rIdx}
+                  style={{
+                    borderBottom: rIdx === 8 ? "none" : "1px solid #f1f5f9",
+                    background: rIdx % 2 === 1 ? "#fafcff" : "#ffffff",
+                  }}
+                >
+                  <td style={{ padding: "12px 14px" }}>
+                    <Skeleton width={`${140 + ((rIdx * 19) % 70)}px`} height="13px" />
+                  </td>
+                  {monthLabels.map((_, cIdx) => (
+                    <td key={cIdx} style={{ padding: "12px 10px", textAlign: "right" }}>
+                      <Skeleton width={`${38 + (((rIdx + cIdx) * 11) % 24)}px`} height="13px" style={{ marginLeft: "auto" }} />
+                    </td>
+                  ))}
+                  <td style={{ padding: "12px 10px", textAlign: "right" }}>
+                    <Skeleton width="52px" height="13px" style={{ marginLeft: "auto" }} />
+                  </td>
+                  <td style={{ padding: "12px 10px", textAlign: "right" }}>
+                    <Skeleton width="46px" height="13px" style={{ marginLeft: "auto" }} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+

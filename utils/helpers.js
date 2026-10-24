@@ -37,6 +37,50 @@ export function isPlaceholderExpense(appId, description, status) {
   );
 }
 
+export const INVOICE_STATUS_OPTIONS = [
+  "Draft",
+  "Sent",
+  "Paid",
+  "Part-paid (received)",
+  "Part-paid (balance)",
+];
+
+export const EXPENSE_STATUS_OPTIONS = [
+  "Received",
+  "Paid",
+  "Part-paid (paid)",
+  "Part-paid (balance)",
+];
+
+export function canonicalizeInvoiceStatus(st) {
+  if (!st) return "";
+  const s = String(st).trim();
+  const lower = s.toLowerCase();
+  if (lower === "draft") return "Draft";
+  if (lower === "sent") return "Sent";
+  if (lower === "paid") return "Paid";
+  if (lower.includes("balance")) return "Part-paid (balance)";
+  if (lower.includes("part-paid") || lower.includes("part paid") || lower.includes("partpaid")) {
+    if (lower.includes("balance")) return "Part-paid (balance)";
+    return "Part-paid (received)";
+  }
+  return s;
+}
+
+export function canonicalizeExpenseStatus(st) {
+  if (!st) return "";
+  const s = String(st).trim();
+  const lower = s.toLowerCase();
+  if (lower === "received") return "Received";
+  if (lower === "paid") return "Paid";
+  if (lower.includes("balance")) return "Part-paid (balance)";
+  if (lower.includes("part-paid") || lower.includes("part paid") || lower.includes("partpaid")) {
+    if (lower.includes("balance")) return "Part-paid (balance)";
+    return "Part-paid (paid)";
+  }
+  return s;
+}
+
 export function hasActiveAccountingIntegration(accountingTool, integrations) {
   const s = String(accountingTool || "").toLowerCase().trim();
   if (s.includes("xero") || s.includes("quickbooks") || s.includes("qb")) return true;

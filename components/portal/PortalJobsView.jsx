@@ -3,7 +3,16 @@ import Spinner from "../Spinner";
 import { PortalTableSkeleton } from "../Skeleton";
 import SplitMonthCard from "../SplitMonthCard";
 import { formatMoney, parseMoney } from "../../services/deepDiveHelper";
-import { downloadCsv, isPlaceholderInvoice, hasActiveAccountingIntegration } from "../../utils/helpers";
+import {
+  downloadCsv,
+  isPlaceholderInvoice,
+  isPlaceholderExpense,
+  hasActiveAccountingIntegration,
+  INVOICE_STATUS_OPTIONS,
+  EXPENSE_STATUS_OPTIONS,
+  canonicalizeInvoiceStatus,
+  canonicalizeExpenseStatus
+} from "../../utils/helpers";
 import { parseSplitString, formatSplitString } from "../../services/splitHelper";
 import InvoicesNewJobModal from "../InvoicesNewJobModal";
 
@@ -588,6 +597,21 @@ export default function PortalJobsView({
 
   const handleUnconfirmJob = async () => {
     if (isReadOnly || !editingJob?.rowNumber) return;
+    const hasActualInvoices = (editingJob.invoices || []).some(
+      (inv) => Boolean(inv.ref && String(inv.ref).trim() !== "" && !isPlaceholderInvoice(inv.ref, inv.status))
+    );
+    const hasActualExpenses = (editingJob.directExpenses || []).some((exp) => {
+      const hasData = Boolean(
+        (exp.amount && Math.abs(parseFloat(String(exp.amount).replace(/[£$€,\s]/g, ""))) > 0) ||
+        (exp.desc && String(exp.desc).trim() !== "") ||
+        (exp.appId && String(exp.appId).trim() !== "")
+      );
+      return hasData && !isPlaceholderExpense(exp.appId, exp.desc, exp.status);
+    });
+    if (hasActualInvoices || hasActualExpenses) {
+      setSaveError("Cannot unconfirm this job because it has actual invoices or expenses assigned to it.");
+      return;
+    }
     setIsConfirming(true);
     setSaveError(null);
     try {
@@ -1817,24 +1841,31 @@ export default function PortalJobsView({
                             </div>
                             <div>
                               <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Status</label>
-                              <select
-                                value={inv.status || ""}
-                                onChange={(e) => updateInvoice(idx, "status", e.target.value)}
-                                disabled={isLocked}
-                                title={isLocked ? "Synced from accounting software. To modify invoice number, amount, or sent date, update directly in your accounting software." : undefined}
-                                style={{
-                                  ...formInputStyle,
-                                  padding: "4px 6px",
-                                  fontSize: "12px",
-                                  ...(isLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
-                                }}
-                              >
-                                <option value="">Select...</option>
-                                <option value="Draft">Draft</option>
-                                <option value="Invoiced">Invoiced</option>
-                                <option value="Paid">Paid</option>
-                                <option value="Overdue">Overdue</option>
-                              </select>
+                              {(() => {
+                                const currentStatus = canonicalizeInvoiceStatus(inv.status);
+                                return (
+                                  <select
+                                    value={currentStatus}
+                                    onChange={(e) => updateInvoice(idx, "status", e.target.value)}
+                                    disabled={isLocked}
+                                    title={isLocked ? "Synced from accounting software. To modify invoice number, amount, or sent date, update directly in your accounting software." : undefined}
+                                    style={{
+                                      ...formInputStyle,
+                                      padding: "4px 6px",
+                                      fontSize: "12px",
+                                      ...(isLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
+                                    }}
+                                  >
+                                    <option value="">Select...</option>
+                                    {INVOICE_STATUS_OPTIONS.map((st) => (
+                                      <option key={st} value={st}>{st}</option>
+                                    ))}
+                                    {currentStatus && !INVOICE_STATUS_OPTIONS.includes(currentStatus) && (
+                                      <option value={currentStatus}>{currentStatus}</option>
+                                    )}
+                                  </select>
+                                );
+                              })()}
                             </div>
                             {!isReadOnly && (
                               <div style={{ paddingTop: "14px", textAlign: "center" }}>
@@ -2162,16 +2193,24 @@ export default function PortalJobsView({
                           </div>
                           <div>
                             <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Status</label>
-                            <select
-                              value={exp.status || ""}
-                              onChange={(e) => updateExpense(idx, "status", e.target.value)}
-                              style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
-                            >
-                              <option value="">Select...</option>
-                              <option value="Received">Received</option>
-                              <option value="Paid">Paid</option>
-                              <option value="Overdue">Overdue</option>
-                            </select>
+                            {(() => {
+                              const currentStatus = canonicalizeExpenseStatus(exp.status);
+                              return (
+                                <select
+                                  value={currentStatus}
+                                  onChange={(e) => updateExpense(idx, "status", e.target.value)}
+                                  style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
+                                >
+                                  <option value="">Select...</option>
+                                  {EXPENSE_STATUS_OPTIONS.map((st) => (
+                                    <option key={st} value={st}>{st}</option>
+                                  ))}
+                                  {currentStatus && !EXPENSE_STATUS_OPTIONS.includes(currentStatus) && (
+                                    <option value={currentStatus}>{currentStatus}</option>
+                                  )}
+                                </select>
+                              );
+                            })()}
                           </div>
                           {!isReadOnly && (
                             <div style={{ paddingTop: "14px", textAlign: "center" }}>
@@ -2239,34 +2278,61 @@ export default function PortalJobsView({
                     }}
                   >
                     {isConfirming ? <Spinner size={14} color="#ffffff" /> : null}
-                    <span>{isConfirming ? "Confirming..." : "Confirm Job"}</span>
+                    <span>{isConfirming ? "Confirming..." : "Confirm job"}</span>
                   </button>
                 )}
 
-                {!isReadOnly && editingJob.rowNumber && String(editingJob.type || "").toLowerCase() === "confirmed" && (
-                  <button
-                    type="button"
-                    onClick={handleUnconfirmJob}
-                    disabled={isSaving || isConfirming}
-                    style={{
-                      background: "#fffbeb",
-                      border: "1px solid #f59e0b",
-                      color: "#b45309",
-                      padding: "7px 16px",
-                      borderRadius: "6px",
-                      fontSize: "13px",
-                      fontWeight: 700,
-                      cursor: isConfirming ? "wait" : "pointer",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "6px",
-                      opacity: isConfirming ? 0.7 : 1,
-                    }}
-                  >
-                    {isConfirming ? <Spinner size={14} color="#b45309" /> : null}
-                    <span>{isConfirming ? "Unconfirming..." : "Unconfirm Job"}</span>
-                  </button>
-                )}
+                {!isReadOnly && editingJob.rowNumber && String(editingJob.type || "").toLowerCase() === "confirmed" && (() => {
+                  const hasActualInvoices = (editingJob.invoices || []).some(
+                    (inv) => Boolean(inv.ref && String(inv.ref).trim() !== "" && !isPlaceholderInvoice(inv.ref, inv.status))
+                  );
+                  const hasActualExpenses = (editingJob.directExpenses || []).some((exp) => {
+                    const hasData = Boolean(
+                      (exp.amount && Math.abs(parseFloat(String(exp.amount).replace(/[£$€,\s]/g, ""))) > 0) ||
+                      (exp.desc && String(exp.desc).trim() !== "") ||
+                      (exp.appId && String(exp.appId).trim() !== "")
+                    );
+                    return hasData && !isPlaceholderExpense(exp.appId, exp.desc, exp.status);
+                  });
+                  const hasActualInvoicesOrExpenses = hasActualInvoices || hasActualExpenses;
+
+                  return (
+                    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: "4px" }}>
+                      <button
+                        type="button"
+                        onClick={hasActualInvoicesOrExpenses ? undefined : handleUnconfirmJob}
+                        disabled={isSaving || isConfirming || hasActualInvoicesOrExpenses}
+                        style={{
+                          background: hasActualInvoicesOrExpenses ? "#f1f5f9" : "#fffbeb",
+                          border: `1px solid ${hasActualInvoicesOrExpenses ? "#cbd5e1" : "#f59e0b"}`,
+                          color: hasActualInvoicesOrExpenses ? "#94a3b8" : "#b45309",
+                          padding: "7px 16px",
+                          borderRadius: "6px",
+                          fontSize: "13px",
+                          fontWeight: 700,
+                          cursor: hasActualInvoicesOrExpenses ? "not-allowed" : (isConfirming ? "wait" : "pointer"),
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "6px",
+                          opacity: isConfirming ? 0.7 : 1,
+                        }}
+                        title={
+                          hasActualInvoicesOrExpenses
+                            ? "Cannot unconfirm a job that has actual invoices or expenses assigned to it. Reassign or remove them before moving this job back to the pipeline."
+                            : "Move job from confirmed back to pipeline"
+                        }
+                      >
+                        {isConfirming ? <Spinner size={14} color="#b45309" /> : null}
+                        <span>{isConfirming ? "Unconfirming..." : "Unconfirm job"}</span>
+                      </button>
+                      {hasActualInvoicesOrExpenses && (
+                        <span style={{ fontSize: "11px", color: "#64748b", maxWidth: "340px", lineHeight: "1.3" }}>
+                          Cannot be unconfirmed while actual invoices or expenses are assigned to this job.
+                        </span>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Right side: Cancel & Save buttons */}

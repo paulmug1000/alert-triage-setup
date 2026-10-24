@@ -1,7 +1,7 @@
 import { getSheetsClient, withRetry, extractSheetIdFromUrl, colLetterToNum, colIndexToLetter, getSheetGid, getSheetId, applySheetFontFormat } from "./sheetsClient.js";
 import { setMasterSwitch, checkAllGASLocks, fetchJobRowsForDisplay, getToleranceValues } from "./sharedHelpers.js";
 import { logPmaActivity, DEFAULT_AC_SHEET_ID } from "./pmaLogger.js";
-import { isPlaceholderInvoice, isPlaceholderExpense, toSheetDateFormat, parseSheetDate } from "../utils/helpers.js";
+import { isPlaceholderInvoice, isPlaceholderExpense, toSheetDateFormat, parseSheetDate, canonicalizeInvoiceStatus, canonicalizeExpenseStatus } from "../utils/helpers.js";
 import { getSessionUser } from "./authService.js";
 import { isUserAuthorizedForClient, matchesClientName, sanitizeFormulaInput, getClientManagerClientMap } from "./userPermissions.js";
 import { redisClient } from "./redisClient.js";
@@ -700,12 +700,12 @@ export async function handleGetDirectCostsJobs(req, res, sheets) {
       invoiceSlots: [1,2,3].map(n => {
         const base = n === 1 ? 41 : n === 2 ? 48 : 55;
         return { slotNum: n, amount: colVal(row,base), ref: colVal(row,base+1), sentDate: colVal(row,base+2),
-          daysToPay: colVal(row,base+3), status: colVal(row,base+4), highlighted: false };
+          daysToPay: colVal(row,base+3), status: canonicalizeInvoiceStatus(colVal(row,base+4)), highlighted: false };
       }),
       expenseSlots: [1,2,3].map(n => {
         const base = n === 1 ? 75 : n === 2 ? 82 : 89;
         return { slotNum: n, description: colVal(row,base), amount: colVal(row,base+1), vat: colVal(row,base+2),
-          date: colVal(row,base+3), daysToPay: colVal(row,base+4), status: colVal(row,base+5),
+          date: colVal(row,base+3), daysToPay: colVal(row,base+4), status: canonicalizeExpenseStatus(colVal(row,base+5)),
           transactionId: colVal(row,base+6), highlighted: false };
       }),
     });
@@ -826,12 +826,12 @@ export async function handleGetInvoiceJobs(req, res, sheets) {
       invoiceSlots: [1,2,3].map(n => {
         const base = n === 1 ? 41 : n === 2 ? 48 : 55;
         return { slotNum: n, amount: colVal(row,base), ref: colVal(row,base+1), sentDate: colVal(row,base+2),
-          daysToPay: colVal(row,base+3), status: colVal(row,base+4), highlighted: false };
+          daysToPay: colVal(row,base+3), status: canonicalizeInvoiceStatus(colVal(row,base+4)), highlighted: false };
       }),
       expenseSlots: [1,2,3].map(n => {
         const base = n === 1 ? 75 : n === 2 ? 82 : 89;
         return { slotNum: n, description: colVal(row,base), amount: colVal(row,base+1), vat: colVal(row,base+2),
-          date: colVal(row,base+3), daysToPay: colVal(row,base+4), status: colVal(row,base+5),
+          date: colVal(row,base+3), daysToPay: colVal(row,base+4), status: canonicalizeExpenseStatus(colVal(row,base+5)),
           transactionId: colVal(row,base+6), highlighted: false };
       }),
     });
@@ -1089,7 +1089,7 @@ export async function handleGetAllClientJobs(req, res, sheets) {
           ref: colVal(row, base + 1),
           sentDate: colVal(row, base + 2),
           daysToPay: colVal(row, base + 3),
-          status: colVal(row, base + 4),
+          status: canonicalizeInvoiceStatus(colVal(row, base + 4)),
           highlighted: false,
           note: getNote(currentTab, rowNum, base)
         };
@@ -1103,7 +1103,7 @@ export async function handleGetAllClientJobs(req, res, sheets) {
           vat: colVal(row, base + 2),
           date: colVal(row, base + 3),
           daysToPay: colVal(row, base + 4),
-          status: colVal(row, base + 5),
+          status: canonicalizeExpenseStatus(colVal(row, base + 5)),
           transactionId: colVal(row, base + 6),
           highlighted: false,
           note: getNote(currentTab, rowNum, base)
@@ -2481,7 +2481,7 @@ export async function handleMoveInvoiceToJob(req, res, sheets) {
     let daysToPay = parseInt(invoice.daysToPay, 10) || 30;
     const invAmt = parseFloat(invoice.amount) || 0;
     const invRef = invoice.invoiceNo || invoice.ref || "";
-    const invStatus = invoice.status || "Sent";
+    const invStatus = invoice.status ? canonicalizeInvoiceStatus(invoice.status) : "Sent";
 
     await withRetry(() =>
       sheets.spreadsheets.values.batchUpdate({
@@ -2624,7 +2624,7 @@ export async function handleVerifyInvoiceSlot(req, res, sheets) {
             liveProjectCode: pCode,
             liveAmount: match.amt || "",
             liveSentDate: match.sent || "",
-            liveStatus: match.status || "",
+            liveStatus: canonicalizeInvoiceStatus(match.status) || "",
             rowShifted: false
           });
         }
@@ -2672,7 +2672,7 @@ export async function handleVerifyInvoiceSlot(req, res, sheets) {
           liveProjectCode: String(rowArr[2] || "").trim(),
           liveAmount: slotData?.amt || "",
           liveSentDate: slotData?.sent || "",
-          liveStatus: slotData?.status || "",
+          liveStatus: canonicalizeInvoiceStatus(slotData?.status) || "",
           rowShifted: parsedRowNum ? liveRowNum !== parsedRowNum : false
         });
       }
@@ -2813,7 +2813,7 @@ export async function handleUpdateInvoiceSlot(req, res, sheets) {
           invoice.invoiceNo || "",
           invoice.sentDate || "",
           invoice.daysToPay || 30,
-          invoice.status || "",
+          invoice.status ? canonicalizeInvoiceStatus(invoice.status) : "",
         ];
 
     await sheets.spreadsheets.values.batchUpdate({
@@ -3058,7 +3058,7 @@ export async function handleCreateJobFromInvoice(req, res, sheets) {
       { range: `Confirmed!AQ${newRow}`, values: [[sanitizeFormulaInput(invoice.invoiceNo || "")]] },
       { range: `Confirmed!AR${newRow}`, values: [[formatSheetDate(invoice.sentDate)]] },
       { range: `Confirmed!AS${newRow}`, values: [[finalDaysToPay]] },
-      { range: `Confirmed!AT${newRow}`, values: [[sanitizeFormulaInput(invoice.status || "Sent")]] },
+      { range: `Confirmed!AT${newRow}`, values: [[sanitizeFormulaInput(canonicalizeInvoiceStatus(invoice.status) || "Sent")]] },
     ];
 
     await withRetry(() => sheets.spreadsheets.values.batchUpdate({
@@ -3236,7 +3236,7 @@ export async function handleAddNewJob(req, res, sheets) {
             if (!isNaN(p) && p >= 0 && p <= 365) days = p;
           }
         }
-        const st = sanitizeFormulaInput(inv.status || "");
+        const st = sanitizeFormulaInput(canonicalizeInvoiceStatus(inv.status) || "");
         if (amt > 0 || ref || sent || st) {
           writtenInvoicesCount++;
           updateData.push(
@@ -3273,7 +3273,7 @@ export async function handleAddNewJob(req, res, sheets) {
             if (!isNaN(p) && p >= 0 && p <= 365) dp = p;
           }
         }
-        const st = sanitizeFormulaInput(exp.status || "");
+        const st = sanitizeFormulaInput(canonicalizeExpenseStatus(exp.status) || "");
         const txId = sanitizeFormulaInput(exp.transactionId || "");
         if (amt > 0 || desc || dt || txId) {
           writtenExpensesCount++;

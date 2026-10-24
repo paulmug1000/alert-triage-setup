@@ -1,4 +1,5 @@
 import { withRetry } from "./sheetsClient.js";
+import { canonicalizeInvoiceStatus, canonicalizeExpenseStatus } from "../utils/helpers.js";
 
 export async function getToleranceValues(sheets, masterSheetId) {
   try {
@@ -244,19 +245,19 @@ export async function fetchJobRowsForDisplay(sheets, spreadsheetId, tabName, par
       likelihood:    tabName === "Pipeline" ? colVal(row, 39) : null,
       copiedToConf:  tabName === "Pipeline" ? colVal(row, 107) : null,
       invoiceSlots: [
-        { slotNum: 1, amount: colVal(row,41), ref: colVal(row,42), sentDate: colVal(row,43), daysToPay: colVal(row,44), status: colVal(row,45),
+        { slotNum: 1, amount: colVal(row,41), ref: colVal(row,42), sentDate: colVal(row,43), daysToPay: colVal(row,44), status: canonicalizeInvoiceStatus(colVal(row,45)),
           highlighted: highlightSlot?.type === "invoice" && highlightSlot.slotNum === 1 && highlightSlot.rowNum === rowNum },
-        { slotNum: 2, amount: colVal(row,48), ref: colVal(row,49), sentDate: colVal(row,50), daysToPay: colVal(row,51), status: colVal(row,52),
+        { slotNum: 2, amount: colVal(row,48), ref: colVal(row,49), sentDate: colVal(row,50), daysToPay: colVal(row,51), status: canonicalizeInvoiceStatus(colVal(row,52)),
           highlighted: highlightSlot?.type === "invoice" && highlightSlot.slotNum === 2 && highlightSlot.rowNum === rowNum },
-        { slotNum: 3, amount: colVal(row,55), ref: colVal(row,56), sentDate: colVal(row,57), daysToPay: colVal(row,58), status: colVal(row,59),
+        { slotNum: 3, amount: colVal(row,55), ref: colVal(row,56), sentDate: colVal(row,57), daysToPay: colVal(row,58), status: canonicalizeInvoiceStatus(colVal(row,59)),
           highlighted: highlightSlot?.type === "invoice" && highlightSlot.slotNum === 3 && highlightSlot.rowNum === rowNum },
       ],
       expenseSlots: [
-        { slotNum: 1, description: colVal(row,75), amount: colVal(row,76), vat: colVal(row,77), date: colVal(row,78), daysToPay: colVal(row,79), status: colVal(row,80), transactionId: colVal(row,81),
+        { slotNum: 1, description: colVal(row,75), amount: colVal(row,76), vat: colVal(row,77), date: colVal(row,78), daysToPay: colVal(row,79), status: canonicalizeExpenseStatus(colVal(row,80)), transactionId: colVal(row,81),
           highlighted: highlightSlot?.type === "expense" && highlightSlot.slotNum === 1 && highlightSlot.rowNum === rowNum },
-        { slotNum: 2, description: colVal(row,82), amount: colVal(row,83), vat: colVal(row,84), date: colVal(row,85), daysToPay: colVal(row,86), status: colVal(row,87), transactionId: colVal(row,88),
+        { slotNum: 2, description: colVal(row,82), amount: colVal(row,83), vat: colVal(row,84), date: colVal(row,85), daysToPay: colVal(row,86), status: canonicalizeExpenseStatus(colVal(row,87)), transactionId: colVal(row,88),
           highlighted: highlightSlot?.type === "expense" && highlightSlot.slotNum === 2 && highlightSlot.rowNum === rowNum },
-        { slotNum: 3, description: colVal(row,89), amount: colVal(row,90), vat: colVal(row,91), date: colVal(row,92), daysToPay: colVal(row,93), status: colVal(row,94), transactionId: colVal(row,95),
+        { slotNum: 3, description: colVal(row,89), amount: colVal(row,90), vat: colVal(row,91), date: colVal(row,92), daysToPay: colVal(row,93), status: canonicalizeExpenseStatus(colVal(row,94)), transactionId: colVal(row,95),
           highlighted: highlightSlot?.type === "expense" && highlightSlot.slotNum === 3 && highlightSlot.rowNum === rowNum },
       ],
     });

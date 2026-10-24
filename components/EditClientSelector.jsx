@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from "react";
 import Spinner from "./Spinner";
+import { EditClientSelectorSkeleton } from "./Skeleton";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 
 /**
@@ -45,10 +46,7 @@ export default function EditClientSelector({
       }}
     >
       {loading ? (
-        <div style={{ textAlign: "center", color: "#64748b", padding: "36px 20px" }}>
-          <Spinner size={24} color="#0047AB" />
-          <div style={{ marginTop: "10px", fontSize: "13px" }}>Loading...</div>
-        </div>
+        <EditClientSelectorSkeleton />
       ) : (
         <>
           <div

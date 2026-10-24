@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import Spinner from "./Spinner";
+import Skeleton, { PmaInvoicesTableSkeleton } from "./Skeleton";
 import InvoicesEditModal from "./InvoicesEditModal";
 import InvoicesNewJobModal from "./InvoicesNewJobModal";
 import EditClientSelector from "./EditClientSelector";
@@ -25,6 +26,9 @@ const getStatusPill = (status) => {
   if (s === "paid") return { backgroundColor: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0" };
   if (s === "draft") return { backgroundColor: "#ffedd5", color: "#9a3412", border: "1px solid #fed7aa" };
   if (s === "sent" || s === "received") return { backgroundColor: "#e0f2fe", color: "#0369a1", border: "1px solid #bae6fd" };
+  if (s.includes("part-paid") || s.includes("part paid") || s.includes("partpaid")) {
+    return { backgroundColor: "#fef3c7", color: "#92400e", border: "1px solid #fde68a" };
+  }
   return { backgroundColor: "#f1f5f9", color: "#475569", border: "1px solid #e2e8f0" };
 };
 
@@ -1047,7 +1051,7 @@ export default function InvoicesView({
             )}
 
             {invoicesJobsLoading && (
-              <div style={{ textAlign: "center", color: "#999", padding: "24px" }}>Loading jobs...</div>
+              <PmaInvoicesTableSkeleton />
             )}
             {!invoicesJobsLoading && invoicesJobs && (
               <>

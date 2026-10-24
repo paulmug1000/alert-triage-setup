@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import Spinner from "./Spinner";
+import Skeleton from "./Skeleton";
 import ClientSettingsView from "./ClientSettingsView";
 import { useSettings } from "../hooks/useSettings";
 import { useTriage } from "../contexts/TriageContext";
@@ -966,11 +967,29 @@ export default function SettingsView({
                             </div>
                           </div>
 
-                          {/* Table or Empty State */}
                           {securityLogsLoading && securityLogs.length === 0 ? (
-                            <div style={{ textAlign: "center", padding: "30px", color: "#666", fontSize: "13px" }}>
-                              <Spinner size={18} color="#0066cc" />
-                              <div style={{ marginTop: "8px" }}>Loading security events...</div>
+                            <div style={{ overflowX: "auto", border: "1px solid #e5e7eb", borderRadius: "8px" }}>
+                              <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "12px", textAlign: "left" }}>
+                                <thead>
+                                  <tr style={{ background: "#f9fafb", borderBottom: "1px solid #e5e7eb" }}>
+                                    {["Time", "Status", "User", "Client / Scope", "IP / Method", "Details"].map(h => (
+                                      <th key={h} style={{ padding: "8px 12px", fontWeight: "600", color: "#4b5563" }}>{h}</th>
+                                    ))}
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {Array.from({ length: 4 }).map((_, r) => (
+                                    <tr key={r} style={{ borderBottom: r === 3 ? "none" : "1px solid #f3f4f6", background: r % 2 === 0 ? "#fff" : "#fafafa" }}>
+                                      <td style={{ padding: "10px 12px" }}><Skeleton width="110px" height="11px" /></td>
+                                      <td style={{ padding: "10px 12px" }}><Skeleton width="60px" height="18px" borderRadius="10px" /></td>
+                                      <td style={{ padding: "10px 12px" }}><Skeleton width="90px" height="12px" /></td>
+                                      <td style={{ padding: "10px 12px" }}><Skeleton width="80px" height="12px" /></td>
+                                      <td style={{ padding: "10px 12px" }}><Skeleton width="100px" height="12px" /></td>
+                                      <td style={{ padding: "10px 12px" }}><Skeleton width="140px" height="12px" /></td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
                             </div>
                           ) : filtered.length === 0 ? (
                             <div style={{ padding: "24px", textAlign: "center", background: "#f9fafb", borderRadius: "8px", border: "1px dashed #d1d5db", color: "#6b7280", fontSize: "13px" }}>

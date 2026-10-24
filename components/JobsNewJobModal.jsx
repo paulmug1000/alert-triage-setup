@@ -3,6 +3,12 @@ import Spinner from "./Spinner";
 import SplitMonthCard from "./SplitMonthCard";
 import { formatSplitString } from "../services/splitHelper";
 import DateInput from "./DateInput";
+import {
+  INVOICE_STATUS_OPTIONS,
+  EXPENSE_STATUS_OPTIONS,
+  canonicalizeInvoiceStatus,
+  canonicalizeExpenseStatus
+} from "../utils/helpers";
 
 export default function JobsNewJobModal({
   jobsClient,
@@ -51,9 +57,9 @@ export default function JobsNewJobModal({
   const [showExpensesSection, setShowExpensesSection] = useState(false);
   const [activeExpenseSlot, setActiveExpenseSlot] = useState(1);
   const [expenses, setExpenses] = useState([
-    { slotNum: 1, description: "", amount: "", vat: "No", date: "", daysToPay: 30, status: "Pending", transactionId: "" },
-    { slotNum: 2, description: "", amount: "", vat: "No", date: "", daysToPay: 30, status: "Pending", transactionId: "" },
-    { slotNum: 3, description: "", amount: "", vat: "No", date: "", daysToPay: 30, status: "Pending", transactionId: "" },
+    { slotNum: 1, description: "", amount: "", vat: "No", date: "", daysToPay: 30, status: "Received", transactionId: "" },
+    { slotNum: 2, description: "", amount: "", vat: "No", date: "", daysToPay: 30, status: "Received", transactionId: "" },
+    { slotNum: 3, description: "", amount: "", vat: "No", date: "", daysToPay: 30, status: "Received", transactionId: "" },
   ]);
 
   const [saving, setSaving] = useState(false);
@@ -103,7 +109,7 @@ export default function JobsNewJobModal({
   };
 
   const clearExpense = (slotNum) => {
-    setExpenses(prev => prev.map(exp => exp.slotNum === slotNum ? { slotNum, description: "", amount: "", vat: "No", date: "", daysToPay: clientDefaultDays, status: "Pending", transactionId: "" } : exp));
+    setExpenses(prev => prev.map(exp => exp.slotNum === slotNum ? { slotNum, description: "", amount: "", vat: "No", date: "", daysToPay: clientDefaultDays, status: "Received", transactionId: "" } : exp));
   };
 
   // Compute active counts for badges
@@ -1010,13 +1016,12 @@ export default function JobsNewJobModal({
                         <label style={labelStyle}>Status</label>
                         <select
                           style={inputStyle}
-                          value={currentInvoice.status}
+                          value={canonicalizeInvoiceStatus(currentInvoice.status) || "Draft"}
                           onChange={e => updateInvoice(activeInvoiceSlot, "status", e.target.value)}
                         >
-                          <option value="Sent">Sent</option>
-                          <option value="Draft">Draft</option>
-                          <option value="Paid">Paid</option>
-                          <option value="Overdue">Overdue</option>
+                          {INVOICE_STATUS_OPTIONS.map((st) => (
+                            <option key={st} value={st}>{st}</option>
+                          ))}
                         </select>
                       </div>
                       <div>
@@ -1189,12 +1194,12 @@ export default function JobsNewJobModal({
                         <label style={labelStyle}>Status</label>
                         <select
                           style={inputStyle}
-                          value={currentExpense.status}
+                          value={canonicalizeExpenseStatus(currentExpense.status) || "Received"}
                           onChange={e => updateExpense(activeExpenseSlot, "status", e.target.value)}
                         >
-                          <option value="Pending">Pending</option>
-                          <option value="Approved">Approved</option>
-                          <option value="Paid">Paid</option>
+                          {EXPENSE_STATUS_OPTIONS.map((st) => (
+                            <option key={st} value={st}>{st}</option>
+                          ))}
                         </select>
                       </div>
                       <div>

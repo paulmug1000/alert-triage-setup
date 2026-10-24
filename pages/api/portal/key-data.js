@@ -4,6 +4,7 @@ import { verifyUserAuthorizedForSheet } from "../../../services/userPermissions.
 import { redisClient } from "../../../services/redisClient.js";
 import { memoryCache } from "../../../services/cacheService.js";
 import { parseMoney, formatMoney } from "../../../services/deepDiveHelper.js";
+import { canonicalizeInvoiceStatus, canonicalizeExpenseStatus } from "../../../utils/helpers.js";
 
 const KEYDATA_CACHE_TTL_SECS = 60; // 60s cache
 
@@ -379,23 +380,24 @@ export default async function handler(req, res) {
             const amtH = slot === 1
               ? ["project invoice 1 / monthly retainer (excl vat)", "project invoice 1", "inv 1 amount"]
               : [`project invoice ${slot} (excl vat)`, `project invoice ${slot}`, `inv ${slot} amount`];
-            const refH = [`inv ${slot} ref`];
-            const dateH = [`inv ${slot} send date`, `inv ${slot} date`];
-            const daysH = [`inv ${slot} days to pay`, `inv ${slot} days`];
-            const statusH = [`inv ${slot} status`];
+            const refH = [`inv ${slot} ref`, `inv. ${slot} ref`, `invoice ${slot} ref`, `inv ${slot} reference`, `inv ${slot} no`, `inv ${slot} no.`];
+            const dateH = [`inv ${slot} send date`, `inv. ${slot} send date`, `inv ${slot} date`, `inv ${slot} sent date`];
+            const daysH = [`inv ${slot} days to pay`, `inv. ${slot} days to pay`, `inv ${slot} days`];
+            const statusH = [`inv ${slot} status`, `inv. ${slot} status`, `invoice ${slot} status`, `inv ${slot} status?`, `inv ${slot} state`];
 
-            const amt = getValueByHeader(r, colMap, amtH);
-            const ref = getValueByHeader(r, colMap, refH);
-            const sendDateRaw = getValueByHeader(r, colMap, dateH);
-            const days = getValueByHeader(r, colMap, daysH) || "30";
-            const status = getValueByHeader(r, colMap, statusH) || "";
+            const defaultBase = slot === 1 ? 41 : slot === 2 ? 48 : 55;
+            const amt = getValueByHeader(r, colMap, amtH) || (r[defaultBase] !== undefined ? String(r[defaultBase]).trim() : "");
+            const ref = getValueByHeader(r, colMap, refH) || (r[defaultBase + 1] !== undefined ? String(r[defaultBase + 1]).trim() : "");
+            const sendDateRaw = getValueByHeader(r, colMap, dateH) || (r[defaultBase + 2] !== undefined ? String(r[defaultBase + 2]).trim() : "");
+            const days = getValueByHeader(r, colMap, daysH) || (r[defaultBase + 3] !== undefined ? String(r[defaultBase + 3]).trim() : "") || "30";
+            const status = getValueByHeader(r, colMap, statusH) || (r[defaultBase + 4] !== undefined ? String(r[defaultBase + 4]).trim() : "");
 
             if (amt || ref || sendDateRaw) {
               return {
                 num: currentInvNum++,
                 ref,
                 amount: amt,
-                status,
+                status: canonicalizeInvoiceStatus(status),
                 sendDate: formatDateVal(sendDateRaw),
                 days,
               };
@@ -488,7 +490,7 @@ export default async function handler(req, res) {
                 vat,
                 recDate: formatDateVal(recDateRaw),
                 days,
-                status,
+                status: canonicalizeExpenseStatus(status),
               };
             }
             return null;

@@ -1,5 +1,6 @@
 import React from "react";
 import Spinner from "./Spinner";
+import Skeleton, { PmaAlertsSkeleton } from "./Skeleton";
 import { useTriage } from "../contexts/TriageContext";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useAuth } from "../hooks/useAuth";
@@ -147,16 +148,7 @@ export default function ClientSelectionView({
 
   // State 2: Checking for alerts
   if (totalAlertsCount === 0 && proactiveLoadedAt === 0) {
-    return (
-      <div style={styles.container}>
-        <div style={{ textAlign: "center", padding: "60px 20px", color: "#888" }}>
-          <Spinner size={28} color="#0066cc" />
-          <div style={{ marginTop: "12px", fontSize: "14px" }}>
-            {managedClient ? `Checking alerts for ${managedClient.clientName}...` : "Checking for alerts..."}
-          </div>
-        </div>
-      </div>
-    );
+    return <PmaAlertsSkeleton />;
   }
 
   // State 3: Main Alerts List
@@ -177,13 +169,54 @@ export default function ClientSelectionView({
         {error && <div style={styles.errorBanner}>{error}</div>}
 
         {isLoading ? (
-          <div style={{ textAlign: "center", padding: "32px 16px", color: "#666" }}>
-            <Spinner size={32} color="#0066cc" />
-            <div style={{ fontSize: "15px", fontWeight: "600", color: "#333", marginTop: "12px", marginBottom: "6px" }}>
-              Refreshing data...
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "14px", color: "#64748b", fontSize: "13px", fontFamily: "'Kumbh Sans', sans-serif" }}>
+              <span
+                style={{
+                  display: "inline-block",
+                  width: "14px",
+                  height: "14px",
+                  border: "2px solid #cbd5e1",
+                  borderTopColor: "#0047AB",
+                  borderRadius: "50%",
+                  animation: "pulse-spin 0.8s linear infinite",
+                }}
+              />
+              <span>{refreshStatus || "Updating alerts..."}</span>
             </div>
-            <div style={{ fontSize: "13px", color: "#888" }}>
-              {refreshStatus || "Reading latest flags and alerts from your sheets"}
+            <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+              {[
+                { nameW: "150px", lines: ["240px", "190px"] },
+                { nameW: "180px", lines: ["280px", "210px", "160px"] },
+                { nameW: "130px", lines: ["220px"] },
+                { nameW: "165px", lines: ["260px", "175px"] },
+              ].map((c, idx) => (
+                <div
+                  key={idx}
+                  style={{
+                    padding: "16px 18px",
+                    border: "1px solid #e2e8f0",
+                    borderRadius: "6px",
+                    background: "#f8fafc",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "8px",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <Skeleton width={c.nameW} height="16px" />
+                    <Skeleton width="50px" height="15px" borderRadius="10px" />
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginTop: "2px" }}>
+                    {c.lines.map((w, l) => (
+                      <div key={l} style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                        <span style={{ color: "#94a3b8", fontSize: "14px", lineHeight: "1" }}>•</span>
+                        <Skeleton className="pulse-skeleton-blue" width={w} height="13px" borderRadius="3px" />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         ) : (

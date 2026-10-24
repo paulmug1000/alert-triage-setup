@@ -4,6 +4,7 @@ import { verifyUserAuthorizedForSheet, sanitizeFormulaInput } from "../../../ser
 import { redisClient } from "../../../services/redisClient.js";
 import { memoryCache } from "../../../services/cacheService.js";
 import { logPulseActivity } from "../../../services/pulseLogger.js";
+import { canonicalizeInvoiceStatus, canonicalizeExpenseStatus } from "../../../utils/helpers.js";
 
 // Helper to convert 0-indexed column number to letters (e.g. 0 -> A, 27 -> AB)
 function colToLetter(colIndex) {
@@ -41,9 +42,16 @@ const parseText = (val) => {
   return sanitizeFormulaInput(String(val).trim());
 };
 
-const parseStatus = (val) => {
+const parseInvoiceStatus = (val) => {
   if (val === undefined || val === null) return "";
-  const s = String(val).trim();
+  const s = canonicalizeInvoiceStatus(val);
+  if (s.toLowerCase() === "pending") return "";
+  return sanitizeFormulaInput(s);
+};
+
+const parseExpenseStatus = (val) => {
+  if (val === undefined || val === null) return "";
+  const s = canonicalizeExpenseStatus(val);
   if (s.toLowerCase() === "pending") return "";
   return sanitizeFormulaInput(s);
 };
@@ -176,7 +184,7 @@ function applyParentRowValues(rowArray, job, cols, invoiceSlots, expenseSlots) {
       if (invMap.ref !== -1) rowArray[invMap.ref] = parseText(inv.ref);
       if (invMap.sendDate !== -1) rowArray[invMap.sendDate] = formatDate(inv.sendDate);
       if (invMap.days !== -1) rowArray[invMap.days] = parseNumber(inv.days, 30);
-      if (invMap.status !== -1) rowArray[invMap.status] = parseStatus(inv.status);
+      if (invMap.status !== -1) rowArray[invMap.status] = parseInvoiceStatus(inv.status);
       if (invMap.desc !== -1 && inv.desc !== undefined) rowArray[invMap.desc] = parseText(inv.desc);
     } else {
       if (invMap.amount !== -1) rowArray[invMap.amount] = "";
@@ -198,7 +206,7 @@ function applyParentRowValues(rowArray, job, cols, invoiceSlots, expenseSlots) {
       if (dirMap.vat !== -1) rowArray[dirMap.vat] = parseText(exp.vat || "Yes");
       if (dirMap.recDate !== -1) rowArray[dirMap.recDate] = formatDate(exp.recDate);
       if (dirMap.days !== -1) rowArray[dirMap.days] = parseNumber(exp.days, 30);
-      if (dirMap.status !== -1) rowArray[dirMap.status] = parseStatus(exp.status);
+      if (dirMap.status !== -1) rowArray[dirMap.status] = parseExpenseStatus(exp.status);
       if (dirMap.appId !== -1 && exp.appId !== undefined) rowArray[dirMap.appId] = parseText(exp.appId);
     } else {
       if (dirMap.desc !== -1) rowArray[dirMap.desc] = "";
@@ -245,7 +253,7 @@ function applyChildRowValues(rowArray, job, cols, invoiceSlots, expenseSlots) {
       if (invMap.ref !== -1) rowArray[invMap.ref] = parseText(inv.ref);
       if (invMap.sendDate !== -1) rowArray[invMap.sendDate] = formatDate(inv.sendDate);
       if (invMap.days !== -1) rowArray[invMap.days] = parseNumber(inv.days, 30);
-      if (invMap.status !== -1) rowArray[invMap.status] = parseStatus(inv.status);
+      if (invMap.status !== -1) rowArray[invMap.status] = parseInvoiceStatus(inv.status);
       if (invMap.desc !== -1 && inv.desc !== undefined) rowArray[invMap.desc] = parseText(inv.desc);
     } else {
       if (invMap.amount !== -1) rowArray[invMap.amount] = "";
@@ -267,7 +275,7 @@ function applyChildRowValues(rowArray, job, cols, invoiceSlots, expenseSlots) {
       if (dirMap.vat !== -1) rowArray[dirMap.vat] = parseText(exp.vat || "Yes");
       if (dirMap.recDate !== -1) rowArray[dirMap.recDate] = formatDate(exp.recDate);
       if (dirMap.days !== -1) rowArray[dirMap.days] = parseNumber(exp.days, 30);
-      if (dirMap.status !== -1) rowArray[dirMap.status] = parseStatus(exp.status);
+      if (dirMap.status !== -1) rowArray[dirMap.status] = parseExpenseStatus(exp.status);
       if (dirMap.appId !== -1 && exp.appId !== undefined) rowArray[dirMap.appId] = parseText(exp.appId);
     } else {
       if (dirMap.desc !== -1) rowArray[dirMap.desc] = "";

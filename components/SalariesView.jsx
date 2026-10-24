@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import Spinner from "./Spinner";
+import Skeleton, { PmaSalariesSkeleton } from "./Skeleton";
 import CellNoteIndicator from "./CellNoteIndicator";
 import EditClientSelector from "./EditClientSelector";
 import { useAuth } from "../hooks/useAuth";
@@ -743,12 +744,7 @@ export default function SalariesView({
       )}
 
       {selectedClient && loading && !salariesData && (
-        <div style={{ textAlign: "center", padding: "80px 20px" }}>
-          <Spinner size={32} color="#0047AB" />
-          <div style={{ marginTop: "14px", color: "#64748b", fontSize: "14px" }}>
-            Loading salaries and employee data from Master Sheet...
-          </div>
-        </div>
+        <PmaSalariesSkeleton />
       )}
 
       {selectedClient && salariesData && (

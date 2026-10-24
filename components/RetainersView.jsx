@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import Spinner from "./Spinner";
+import Skeleton, { PmaRetainersTableSkeleton } from "./Skeleton";
 import RetainersEditModal from "./RetainersEditModal";
 import CreateRetainerModal from "./CreateRetainerModal";
 import EditClientSelector from "./EditClientSelector";
@@ -227,7 +228,7 @@ export default function RetainersView({
       {!noRetClient && (
         <>
           {retainersJobsLoading && (
-            <div style={{ textAlign: "center", color: "#999", padding: "24px" }}>Loading retainer jobs...</div>
+            <PmaRetainersTableSkeleton />
           )}
           {!retainersJobsLoading && retainersJobs && retainersJobs.length === 0 && (
             <div style={{ textAlign: "center", color: "#999", padding: "24px" }}>No active (or recently-ended) retainer jobs found for this client.</div>

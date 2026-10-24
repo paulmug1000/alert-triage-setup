@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import Link from "next/link";
 import Spinner from "./Spinner";
+import Skeleton, { PmaIntegrationsSkeleton } from "./Skeleton";
 
 // ============================================================================
 // CONFIGURATION & METADATA FOR CRM INTEGRATIONS
@@ -650,14 +651,7 @@ export default function IntegrationsView({
   }, [clientsData, sharedXero, managedClient]);
 
   if (loading) {
-    return (
-      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "50vh", padding: "60px 20px" }}>
-        <Spinner size={32} color="#0066cc" style={{ marginRight: 0 }} />
-        <span style={{ marginTop: "14px", fontSize: "14px", color: "#64748b", fontWeight: "600" }}>
-          Loading...
-        </span>
-      </div>
-    );
+    return <PmaIntegrationsSkeleton />;
   }
 
   return (

@@ -4,6 +4,7 @@ import { verifyUserAuthorizedForSheet } from "../../../services/userPermissions.
 import { redisClient } from "../../../services/redisClient.js";
 import { memoryCache } from "../../../services/cacheService.js";
 import { logPulseActivity } from "../../../services/pulseLogger.js";
+import { isPlaceholderInvoice, isPlaceholderExpense } from "../../../utils/helpers.js";
 
 function colToLetter(colIndex) {
   let temp, letter = "";
@@ -116,6 +117,47 @@ export default async function handler(req, res) {
         confirmedChildRowsData.push(r);
       } else {
         break;
+      }
+    }
+
+    // 3.5. Safety check: Cannot unconfirm if actual invoices or expenses exist on this job
+    const checkRowHasActuals = (r) => {
+      // Check invoice slots 1, 2, 3
+      for (const base of [41, 48, 55]) {
+        const ref = String(r[base + 1] || "").trim();
+        const st = String(r[base + 4] || "").trim();
+        if (ref && !isPlaceholderInvoice(ref, st)) {
+          return { hasActuals: true, reason: `invoice ref "${ref}"` };
+        }
+      }
+      // Check expense slots 1, 2, 3
+      for (const base of [75, 82, 89]) {
+        const desc = String(r[base] || "").trim();
+        const amt = parseFloat(String(r[base + 1] || "0").replace(/[£$€,\s]/g, "")) || 0;
+        const st = String(r[base + 5] || "").trim();
+        const appId = String(r[base + 6] || "").trim();
+        if ((Math.abs(amt) > 0 || desc || appId) && !isPlaceholderExpense(appId, desc, st)) {
+          return { hasActuals: true, reason: `expense "${desc || appId || amt}"` };
+        }
+      }
+      return { hasActuals: false };
+    };
+
+    const parentActuals = checkRowHasActuals(parentData);
+    if (parentActuals.hasActuals) {
+      return res.status(400).json({
+        success: false,
+        error: "Cannot unconfirm this job because it has actual invoices or expenses assigned to it. Please reassign or remove them before moving the job back to the pipeline.",
+      });
+    }
+
+    for (const childRowData of confirmedChildRowsData) {
+      const childActuals = checkRowHasActuals(childRowData);
+      if (childActuals.hasActuals) {
+        return res.status(400).json({
+          success: false,
+          error: "Cannot unconfirm this job because it has actual invoices or expenses assigned to it. Please reassign or remove them before moving the job back to the pipeline.",
+        });
       }
     }
 

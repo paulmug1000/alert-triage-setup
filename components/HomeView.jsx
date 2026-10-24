@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from "react";
 import Spinner from "./Spinner";
+import Skeleton, { PmaHomeSkeleton } from "./Skeleton";
 import { isUserAuthorizedForClient, ADMIN_ONLY_FLAG_KEYS, ADMIN_ONLY_PROACTIVE_TYPES, getFlagName } from "../utils/helpers";
 
 const ACTIONABLE_FLAG_KEYS = [
@@ -186,6 +187,10 @@ export default function HomeView({
     );
   }, [authorizedClients, searchTerm]);
 
+  if (clients.length === 0 && !managedClient) {
+    return <PmaHomeSkeleton />;
+  }
+
   return (
     <div style={{ maxWidth: "1080px", margin: "0 auto", padding: "24px 16px", fontFamily: "'Kumbh Sans', system-ui, -apple-system, sans-serif" }}>
       {/* Page Header */}
@@ -214,7 +219,7 @@ export default function HomeView({
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
               <span style={{ fontSize: "12px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.6px", color: "#64748B" }}>
-                Alerts Needing Processing
+                Alerts needing processing
               </span>
               <span
                 style={{
@@ -236,9 +241,9 @@ export default function HomeView({
 
             <div style={{ display: "flex", alignItems: "baseline", gap: "10px", marginBottom: "8px" }}>
               {isLoadingAlerts && cachedTotalAlerts === null && !managedClient ? (
-                <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "4px 0" }}>
-                  <Spinner size={22} color="#0047AB" />
-                  <span style={{ color: "#64748B", fontSize: "14px" }}>Checking alerts...</span>
+                <div style={{ display: "flex", alignItems: "baseline", gap: "10px", padding: "2px 0" }}>
+                  <Skeleton width="55px" height="36px" borderRadius="6px" />
+                  <Skeleton width="85px" height="14px" />
                 </div>
               ) : (
                 <>
@@ -315,7 +320,7 @@ export default function HomeView({
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
               <span style={{ fontSize: "12px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.6px", color: "#64748B" }}>
-                Active Tasks
+                Active tasks
               </span>
               <span
                 style={{
@@ -331,7 +336,12 @@ export default function HomeView({
                   fontWeight: "700",
                 }}
               >
-                {navTaskCount > 0 ? "📋" : "✓"}
+                {navTaskCount > 0 ? (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path>
+                    <rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect>
+                  </svg>
+                ) : "✓"}
               </span>
             </div>
 
@@ -431,8 +441,31 @@ export default function HomeView({
         </div>
 
         {integrationsLoading ? (
-          <div style={{ padding: "20px", textAlign: "center", color: "#64748B", fontSize: "13px", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px" }}>
-            <Spinner size={16} color="#0047AB" /> Checking setup statuses...
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "12px" }}>
+            {[1, 2, 3].map((card) => (
+              <div
+                key={card}
+                style={{
+                  background: "#f8fafc",
+                  border: "1px solid #f1f5f9",
+                  borderRadius: "8px",
+                  padding: "16px",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "12px",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <Skeleton width="110px" height="14px" />
+                  <Skeleton width="75px" height="16px" borderRadius="4px" />
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                  <Skeleton width="85%" height="12px" />
+                  <Skeleton width="65%" height="12px" />
+                </div>
+                <Skeleton width="100%" height="32px" borderRadius="6px" style={{ marginTop: "4px" }} />
+              </div>
+            ))}
           </div>
         ) : clientsPendingSetup.length === 0 ? (
           <div style={{ background: "#F0FDF4", border: "1px solid #BBF7D0", borderRadius: "8px", padding: "14px 16px", color: "#166534", fontSize: "13.5px", display: "flex", alignItems: "center", gap: "10px" }}>

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback } from "react";
 import Spinner from "./Spinner";
 import CellNoteIndicator from "./CellNoteIndicator";
 import EditClientSelector from "./EditClientSelector";
+import { PmaNBToFindSkeleton } from "./Skeleton";
 import { useAuth } from "../hooks/useAuth";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 
@@ -523,7 +524,15 @@ export default function NBToFindView({
                 gap: "6px",
               }}
             >
-              {loading ? <Spinner size={14} color="#0066cc" /> : "↻"} Refresh
+              {loading ? (
+                <Spinner size={13} color="#0066cc" />
+              ) : (
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="23 4 23 10 17 10" />
+                  <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+                </svg>
+              )}
+              <span>Refresh</span>
             </button>
 
             {isAdmin && (
@@ -553,7 +562,11 @@ export default function NBToFindView({
                   boxShadow: "0 1px 2px rgba(0,0,0,0.1)",
                 }}
               >
-                ✎ Edit Monthly {targetsSetting === "Yes" ? `Total ${modeTerm} Targets` : `${modeTerm} Targets`}
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                </svg>
+                <span>Edit monthly {targetsSetting === "Yes" ? `total ${modeTermLower} targets` : `${modeTermLower} targets`}</span>
               </button>
             )}
           </div>
@@ -613,12 +626,7 @@ export default function NBToFindView({
       )}
 
       {selectedClient && loading && !nbData && (
-        <div style={{ textAlign: "center", padding: "80px 20px" }}>
-          <Spinner size={32} color="#0047AB" />
-          <div style={{ marginTop: "14px", color: "#64748b", fontSize: "14px" }}>
-            Loading New Business to Find model from Client Sheet...
-          </div>
-        </div>
+        <PmaNBToFindSkeleton />
       )}
 
       {selectedClient && nbData && currentFy && (

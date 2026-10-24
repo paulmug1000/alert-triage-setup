@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import Spinner from "./Spinner";
+import Skeleton, { PmaJobsTableSkeleton } from "./Skeleton";
 import UnevenSplitModal from "./UnevenSplitModal";
 import InvoicesEditModal from "./InvoicesEditModal";
 import DirectCostsEditModal from "./DirectCostsEditModal";
@@ -210,9 +211,13 @@ export const JobDateInput = ({
 
 export const getStatusPill = (status) => {
   const s = String(status || "").trim();
-  if (s === "Paid") return { backgroundColor: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0" };
-  if (s === "Draft") return { backgroundColor: "#ffedd5", color: "#9a3412", border: "1px solid #fed7aa" };
-  if (s === "Sent" || s === "Received") return { backgroundColor: "#e0f2fe", color: "#0369a1", border: "1px solid #bae6fd" };
+  const lower = s.toLowerCase();
+  if (lower === "paid") return { backgroundColor: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0" };
+  if (lower === "draft") return { backgroundColor: "#ffedd5", color: "#9a3412", border: "1px solid #fed7aa" };
+  if (lower === "sent" || lower === "received") return { backgroundColor: "#e0f2fe", color: "#0369a1", border: "1px solid #bae6fd" };
+  if (lower.includes("part-paid") || lower.includes("part paid") || lower.includes("partpaid")) {
+    return { backgroundColor: "#fef3c7", color: "#92400e", border: "1px solid #fde68a" };
+  }
   return { backgroundColor: "#f1f5f9", color: "#475569", border: "1px solid #e2e8f0" };
 };
 
@@ -291,6 +296,26 @@ export const isJobMatchSearch = (job, query, draftEdits = {}) => {
   }
 
   return false;
+};
+
+export const jobHasActualInvoicesOrExpenses = (job) => {
+  if (!job) return false;
+  const hasActualInvoices = (job.rows || []).some((r) =>
+    (r.invoiceSlots || []).some(
+      (s) => Boolean(s.ref && String(s.ref).trim() !== "" && !isPlaceholderInvoice(s.ref, s.status))
+    )
+  );
+  const hasActualExpenses = (job.rows || []).some((r) =>
+    (r.expenseSlots || []).some((s) => {
+      const hasData = Boolean(
+        (s.amount && Math.abs(parseFloat(String(s.amount).replace(/[£$€,\s]/g, ""))) > 0) ||
+        (s.description && String(s.description).trim() !== "") ||
+        (s.transactionId && String(s.transactionId).trim() !== "")
+      );
+      return hasData && !isPlaceholderExpense(s.transactionId, s.description, s.status);
+    })
+  );
+  return hasActualInvoices || hasActualExpenses;
 };
 
 export const textMatchesQuery = (text, query) => {
@@ -1154,6 +1179,11 @@ export default function JobsView({
     const confirmedRowNum = parentRow.rowNum;
     if (!confirmedRowNum || confirmedRowNum < 2) return;
 
+    if (jobHasActualInvoicesOrExpenses(job)) {
+      setActionError(`Cannot unconfirm ${job.jobName || "job"}: Actual invoices or expenses are assigned to this job.`);
+      return;
+    }
+
     setConfirmingJobKeys((prev) => new Set(prev).add(jobKey));
     setActionError(null);
 
@@ -1468,6 +1498,10 @@ export default function JobsView({
         return await handleConfirmJob(job);
       }
       if (isConfirmed && parsedL !== null && parsedL < 100) {
+        if (jobHasActualInvoicesOrExpenses(job)) {
+          setActionError(`Cannot unconfirm ${job.jobName || "job"} because it has actual invoices or expenses assigned to it.`);
+          return;
+        }
         // Confirmed job changed to < 100% -> Unconfirm Job!
         return await handleUnconfirmJob(job, currentDraft.likelihood);
       }
@@ -2869,10 +2903,7 @@ export default function JobsView({
 
                 {/* Loading State */}
                 {(jobsLoading || !jobsData) ? (
-                  <div style={{ textAlign: "center", padding: "48px 0", color: "#64748b" }}>
-                    <Spinner size={24} />
-                    <div style={{ marginTop: "12px", fontSize: "14px" }}>Loading client jobs...</div>
-                  </div>
+                  <PmaJobsTableSkeleton />
                 ) : processedJobs.length === 0 ? (
                   <div style={{ textAlign: "center", padding: "48px 0", background: "#ffffff", borderRadius: "10px", border: "1px solid #e2e8f0", color: "#64748b" }}>
                     <div style={{ fontSize: "18px", fontWeight: "600", color: "#334155", marginBottom: "4px" }}>No jobs found</div>
@@ -4065,31 +4096,45 @@ export default function JobsView({
                                           </div>
 
                                           {/* Confirm / Unconfirm Button */}
-                                          {isConfirmed ? (
-                                            <button
-                                              type="button"
-                                              onClick={() => handleUnconfirmJob(job, draftEdits[jobKey]?.likelihood)}
-                                              disabled={isSaving || isConfirming}
-                                              style={{
-                                                background: "#fffbeb",
-                                                border: "1px solid #f59e0b",
-                                                color: "#b45309",
-                                                padding: "6px 14px",
-                                                borderRadius: "6px",
-                                                fontSize: "12px",
-                                                fontWeight: "600",
-                                                cursor: isConfirming ? "wait" : "pointer",
-                                                display: "inline-flex",
-                                                alignItems: "center",
-                                                gap: "6px",
-                                                opacity: isConfirming ? 0.7 : 1
-                                              }}
-                                              title="Move job from Confirmed back to Pipeline"
-                                            >
-                                              {isConfirming ? <Spinner size={12} color="#b45309" /> : null}
-                                              <span>{isConfirming ? "Unconfirming..." : "Unconfirm Job"}</span>
-                                            </button>
-                                          ) : (
+                                          {isConfirmed ? (() => {
+                                            const hasActuals = jobHasActualInvoicesOrExpenses(job);
+                                            return (
+                                              <div style={{ display: "inline-flex", flexDirection: "column", alignItems: "flex-start", gap: "3px" }}>
+                                                <button
+                                                  type="button"
+                                                  onClick={() => !hasActuals && handleUnconfirmJob(job, draftEdits[jobKey]?.likelihood)}
+                                                  disabled={isSaving || isConfirming || hasActuals}
+                                                  style={{
+                                                    background: hasActuals ? "#f1f5f9" : "#fffbeb",
+                                                    border: `1px solid ${hasActuals ? "#cbd5e1" : "#f59e0b"}`,
+                                                    color: hasActuals ? "#94a3b8" : "#b45309",
+                                                    padding: "6px 14px",
+                                                    borderRadius: "6px",
+                                                    fontSize: "12px",
+                                                    fontWeight: "600",
+                                                    cursor: hasActuals ? "not-allowed" : (isConfirming ? "wait" : "pointer"),
+                                                    display: "inline-flex",
+                                                    alignItems: "center",
+                                                    gap: "6px",
+                                                    opacity: isConfirming ? 0.7 : 1
+                                                  }}
+                                                  title={
+                                                    hasActuals
+                                                      ? "Cannot unconfirm a job that has actual invoices or expenses assigned to it. Reassign or remove them before moving this job back to the pipeline."
+                                                      : "Move job from confirmed back to pipeline"
+                                                  }
+                                                >
+                                                  {isConfirming ? <Spinner size={12} color="#b45309" /> : null}
+                                                  <span>{isConfirming ? "Unconfirming..." : "Unconfirm job"}</span>
+                                                </button>
+                                                {hasActuals && (
+                                                  <span style={{ fontSize: "10.5px", color: "#64748b", maxWidth: "260px", lineHeight: "1.25" }}>
+                                                    Cannot be unconfirmed while actual invoices or expenses are assigned.
+                                                  </span>
+                                                )}
+                                              </div>
+                                            );
+                                          })() : (
                                             <button
                                               type="button"
                                               onClick={() => handleConfirmJob(job)}

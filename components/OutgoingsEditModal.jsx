@@ -2,12 +2,24 @@ import React, { useState, useRef, useEffect } from "react";
 import { isPlaceholderExpense, toSheetDateFormat, toInputDateFormat } from "../utils/helpers";
 
 const STATUS_COLOURS = {
-  "Paid":     { bg: "#e8f5e9", border: "#4caf50", text: "#2e7d32" },
-  "Received": { bg: "#e3f2fd", border: "#2196f3", text: "#1565c0" },
-  "Draft":    { bg: "#fff8e1", border: "#ffc107", text: "#e65100" },
-  "":         { bg: "#f5f5f5", border: "#bdbdbd", text: "#616161" },
+  "Paid":                 { bg: "#e8f5e9", border: "#4caf50", text: "#2e7d32" },
+  "Received":             { bg: "#e3f2fd", border: "#2196f3", text: "#1565c0" },
+  "Part-paid (paid)":    { bg: "#fef3c7", border: "#f59e0b", text: "#92400e" },
+  "Part-paid (balance)": { bg: "#fef3c7", border: "#f59e0b", text: "#92400e" },
+  "Draft":                { bg: "#fff8e1", border: "#ffc107", text: "#e65100" },
+  "":                     { bg: "#f5f5f5", border: "#bdbdbd", text: "#616161" },
 };
-const getStatusColour = (s) => STATUS_COLOURS[s] || STATUS_COLOURS[""];
+const getStatusColour = (s) => {
+  if (!s) return STATUS_COLOURS[""];
+  if (STATUS_COLOURS[s]) return STATUS_COLOURS[s];
+  const lower = String(s).toLowerCase();
+  if (lower.includes("balance")) return STATUS_COLOURS["Part-paid (balance)"];
+  if (lower.includes("part-paid") || lower.includes("part paid")) return STATUS_COLOURS["Part-paid (paid)"];
+  if (lower === "paid") return STATUS_COLOURS["Paid"];
+  if (lower === "received") return STATUS_COLOURS["Received"];
+  if (lower === "draft") return STATUS_COLOURS["Draft"];
+  return STATUS_COLOURS[""];
+};
 
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 

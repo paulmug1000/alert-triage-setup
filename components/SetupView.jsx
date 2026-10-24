@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import Spinner from "./Spinner";
+import Skeleton, { PmaSetupOverviewSkeleton, PmaSetupDetailSkeleton } from "./Skeleton";
 import EditableSheetEditor from "./EditableSheetEditor";
 import OnboardClientModal from "./OnboardClientModal";
 import OnboardingChecklistView from "./OnboardingChecklistView";
@@ -445,10 +446,7 @@ export default function SetupView({
         {/* Clients Table */}
         <div style={{ background: "#FFFFFF", borderRadius: "0 0 12px 12px", border: "1px solid #E2E8F0", overflowX: "auto" }}>
           {overviewLoading && overviewClients.length === 0 ? (
-            <div style={{ textAlign: "center", padding: "50px 20px" }}>
-              <Spinner size={28} color="#023f98" />
-              <p style={{ marginTop: "12px", fontSize: "13px", color: "#64748B" }}>Loading client setup records...</p>
-            </div>
+            <PmaSetupOverviewSkeleton />
           ) : filteredClients.length === 0 ? (
             <div style={{ textAlign: "center", padding: "50px 20px", color: "#64748B", fontSize: "14px" }}>
               No clients found matching the search criteria.
@@ -710,10 +708,7 @@ export default function SetupView({
       )}
 
       {loading ? (
-        <div style={{ background: "#FFFFFF", borderRadius: "12px", border: "1px solid #E2E8F0", padding: "60px 20px", textAlign: "center" }}>
-          <Spinner size={28} color="#023f98" />
-          <p style={{ marginTop: "12px", color: "#64748B", fontSize: "14px", fontWeight: "500" }}>Loading client setup details...</p>
-        </div>
+        <PmaSetupDetailSkeleton />
       ) : setupMode ? (
         /* ====================================================================
            CLIENT IS IN SETUP MODE: DISPLAY 5-PHASE ONBOARDING CHECKLIST

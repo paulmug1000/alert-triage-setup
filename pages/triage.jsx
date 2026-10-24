@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from "react"
 import Head from "next/head";
 import { useRouter } from "next/router";
 import Spinner from "../components/Spinner";
+import { PmaAlertsSkeleton } from "../components/Skeleton";
 import TruncatedCode from "../components/TruncatedCode";
 import NavShell from "../components/NavShell";
 import AppLogView from "../components/AppLogView";
@@ -824,19 +825,17 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
         );
       }
 
+      if (isLoading) {
+        return <PmaAlertsSkeleton />;
+      }
+
       return (
         <div style={styles.container}>
           <div style={styles.header}>
             <h1 style={styles.title}>Alerts</h1>
-            <p style={styles.subtitle}>{isLoading ? "Loading..." : error ? error : "Initialising..."}</p>
+            <p style={styles.subtitle}>{error ? error : "Initialising..."}</p>
           </div>
           {error && <div style={styles.errorBanner}>{error}</div>}
-          {isLoading && (
-            <div style={{ textAlign: "center", padding: "40px" }}>
-              <Spinner size={28} color="#0066cc" />
-              <div style={{ marginTop: "12px", color: "#666" }}>Loading data...</div>
-            </div>
-          )}
         </div>
       );
     }

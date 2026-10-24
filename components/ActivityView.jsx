@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import Spinner from "./Spinner";
+import Skeleton, { PmaActivitySkeleton } from "./Skeleton";
 import { useActivity } from "../hooks/useActivity";
 
 /**
@@ -1305,12 +1306,7 @@ export default function ActivityView({
 
       {/* ── LOADING STATE ──────────────────────────────────────────────────── */}
       {isLoading && (!activityData.allEvents || activityData.allEvents.length === 0) ? (
-        <div style={{ textAlign: "center", padding: "60px 20px" }}>
-          <Spinner size={32} color="#0284c7" />
-          <div style={{ marginTop: "14px", color: "#64748b", fontSize: "14px", fontWeight: "500" }}>
-            Aggregating 30-day activity across clients...
-          </div>
-        </div>
+        <PmaActivitySkeleton />
       ) : selectedClient !== "ALL" ? (
         /* ── SINGLE CLIENT DEEP FEED ───────────────────────────────────────── */
         <div style={{

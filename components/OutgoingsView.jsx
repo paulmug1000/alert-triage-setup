@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import Spinner from "./Spinner";
+import Skeleton, { PmaOutgoingsTableSkeleton } from "./Skeleton";
 import OutgoingsEditModal from "./OutgoingsEditModal";
 import DirectCostsEditModal from "./DirectCostsEditModal";
 import OutgoingsEstimateModal from "./OutgoingsEstimateModal";
@@ -28,6 +29,9 @@ const getStatusPill = (status) => {
   if (s === "paid") return { backgroundColor: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0" };
   if (s === "draft") return { backgroundColor: "#ffedd5", color: "#9a3412", border: "1px solid #fed7aa" };
   if (s === "sent" || s === "received") return { backgroundColor: "#e0f2fe", color: "#0369a1", border: "1px solid #bae6fd" };
+  if (s.includes("part-paid") || s.includes("part paid") || s.includes("partpaid")) {
+    return { backgroundColor: "#fef3c7", color: "#92400e", border: "1px solid #fde68a" };
+  }
   return { backgroundColor: "#f1f5f9", color: "#475569", border: "1px solid #e2e8f0" };
 };
 
@@ -762,12 +766,7 @@ export default function OutgoingsView({
         )}
 
         {!noClient && (outgoingsLoading || !outgoingsData) && (
-          <div style={{ textAlign: "center", padding: "40px", color: "#64748b" }}>
-            <Spinner size={32} color="#0047AB" />
-            <div style={{ marginTop: "12px", fontSize: "14px", fontWeight: 500 }}>
-              Loading contractor outgoings...
-            </div>
-          </div>
+          <PmaOutgoingsTableSkeleton />
         )}
 
         {!noClient && !outgoingsLoading && outgoingsData && (

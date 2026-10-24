@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import Spinner from "./Spinner";
+import { BudgetSkeleton } from "./Skeleton";
 import { useAuth } from "../hooks/useAuth";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { formatMoney as universalFormatMoney, parseMoney } from "../services/deepDiveHelper";
@@ -1444,22 +1445,9 @@ export default function BudgetView({
         </div>
       )}
 
-      {/* Main Loading Spinner */}
+      {/* Main Loading Skeleton */}
       {selectedClient && loading && !budgetData && (
-        <div
-          style={{
-            textAlign: "center",
-            padding: "80px 20px",
-            background: "#ffffff",
-            borderRadius: "8px",
-            border: "1px solid #e2e8f0",
-          }}
-        >
-          <Spinner size={36} color="#0047AB" />
-          <div style={{ marginTop: "14px", color: "#64748b", fontSize: "14px", fontWeight: 600 }}>
-            Loading budget from Master Sheet...
-          </div>
-        </div>
+        <BudgetSkeleton />
       )}
 
       {/* ───────────────────────────────────────────────────────────────────── */}

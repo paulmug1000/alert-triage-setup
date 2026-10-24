@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from "react";
 import Spinner from "./Spinner";
-import { stripCurrency, isPlaceholderInvoice, hasActiveAccountingIntegration } from "../utils/helpers";
+import { stripCurrency, isPlaceholderInvoice, hasActiveAccountingIntegration, INVOICE_STATUS_OPTIONS, canonicalizeInvoiceStatus } from "../utils/helpers";
 import { useAuth } from "../hooks/useAuth";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import DateInput from "./DateInput";
@@ -26,7 +26,7 @@ export default function InvoicesEditModal({
   const [amount, setAmount] = useState(stripCurrency(slot.amount));
   const [sentDate, setSentDate] = useState(slot.sentDate || "");
   const [daysToPay, setDaysToPay] = useState(slot.daysToPay || 30);
-  const status = slot.status || "";
+  const [status, setStatus] = useState(slot.status || "");
   const [saving, setSaving] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [showNewJobModal, setShowNewJobModal] = useState(false);
@@ -578,19 +578,35 @@ export default function InvoicesEditModal({
                 />
               </div>
               <div>
-                <label style={labelStyle}>Status (automation managed)</label>
-                <div style={{
-                  padding: "7px 10px",
-                  background: "#f8fafc",
-                  border: "1px solid #e2e8f0",
-                  borderRadius: "6px",
-                  fontSize: "13px",
-                  fontWeight: "600",
-                  color: "#334155",
-                  display: "inline-block"
-                }}>
-                  {status || "None"}
-                </div>
+                <label style={labelStyle}>Status {isLocked ? "(automation managed)" : ""}</label>
+                {isLocked ? (
+                  <div style={{
+                    padding: "7px 10px",
+                    background: "#f8fafc",
+                    border: "1px solid #e2e8f0",
+                    borderRadius: "6px",
+                    fontSize: "13px",
+                    fontWeight: "600",
+                    color: "#334155",
+                    display: "inline-block"
+                  }}>
+                    {status || "None"}
+                  </div>
+                ) : (
+                  <select
+                    style={inputStyle}
+                    value={canonicalizeInvoiceStatus(status)}
+                    onChange={(e) => setStatus(e.target.value)}
+                  >
+                    <option value="">Select...</option>
+                    {INVOICE_STATUS_OPTIONS.map((st) => (
+                      <option key={st} value={st}>{st}</option>
+                    ))}
+                    {status && !INVOICE_STATUS_OPTIONS.includes(canonicalizeInvoiceStatus(status)) && (
+                      <option value={status}>{status}</option>
+                    )}
+                  </select>
+                )}
               </div>
             </div>
 

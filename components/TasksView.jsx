@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import Spinner from "./Spinner";
+import Skeleton, { PmaTasksSkeleton } from "./Skeleton";
 import TruncatedCode from "./TruncatedCode";
 import { useTasks } from "../contexts/TaskContext";
 import { useAuth } from "../hooks/useAuth";
@@ -595,7 +596,7 @@ export default function TasksView({
         )}
 
         {tasksLoading ? (
-          <div style={{ textAlign: "center", padding: "40px", color: "#888" }}><Spinner size={20} color="#0066cc" /> Loading tasks...</div>
+          <PmaTasksSkeleton />
         ) : (() => {
           const visibleTasks = managedClient?.clientName
             ? tasks.filter(t => (t.clientName || "").toLowerCase() === managedClient.clientName.toLowerCase())

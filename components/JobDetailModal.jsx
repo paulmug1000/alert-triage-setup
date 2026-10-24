@@ -594,9 +594,13 @@ export default function JobDetailModal({
 
   const getStatusPill = (status) => {
     const s = String(status || "").trim();
-    if (s === "Paid") return { backgroundColor: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0" };
-    if (s === "Draft") return { backgroundColor: "#ffedd5", color: "#9a3412", border: "1px solid #fed7aa" };
-    if (s === "Sent" || s === "Received") return { backgroundColor: "#e0f2fe", color: "#0369a1", border: "1px solid #bae6fd" };
+    const lower = s.toLowerCase();
+    if (lower === "paid") return { backgroundColor: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0" };
+    if (lower === "draft") return { backgroundColor: "#ffedd5", color: "#9a3412", border: "1px solid #fed7aa" };
+    if (lower === "sent" || lower === "received") return { backgroundColor: "#e0f2fe", color: "#0369a1", border: "1px solid #bae6fd" };
+    if (lower.includes("part-paid") || lower.includes("part paid") || lower.includes("partpaid")) {
+      return { backgroundColor: "#fef3c7", color: "#92400e", border: "1px solid #fde68a" };
+    }
     return { backgroundColor: "#f1f5f9", color: "#475569", border: "1px solid #e2e8f0" };
   };
 

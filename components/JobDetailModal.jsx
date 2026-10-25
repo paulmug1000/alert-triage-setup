@@ -17,9 +17,15 @@ import {
   isPlaceholderInvoice,
   isPlaceholderExpense,
   getRetainerRowMonthLabel,
-  hasActiveAccountingIntegration
+  hasActiveAccountingIntegration,
+  hasActiveCrmIntegration,
+  isCrmDrivenTab,
+  isCrmDeal,
+  getCrmDisplayName
 } from "../utils/helpers";
+import CrmSyncBadge, { CrmSyncIcon } from "./CrmSyncBadge";
 import { useAppGlobals } from "../hooks/useAppGlobals";
+import { useAuth } from "../hooks/useAuth";
 
 export default function JobDetailModal({
   isOpen,
@@ -39,6 +45,10 @@ export default function JobDetailModal({
   const [saving, setSaving] = useState(false);
   const [recentlySaved, setRecentlySaved] = useState(false);
   const [allJobs, setAllJobs] = useState([]);
+  const auth = useAuth();
+  const user = auth?.user;
+  const [crmTool, setCrmTool] = useState(() => target?.crmTool || target?.client?.crmTool || null);
+  const [crmDrives, setCrmDrives] = useState(() => target?.crmDrives || target?.client?.crmDrives || null);
   const [hasAccountingIntegration, setHasAccountingIntegration] = useState(() => {
     return Boolean(
       target?.hasAccountingIntegration ||
@@ -110,6 +120,17 @@ export default function JobDetailModal({
     } else if (resolvedClientInfo?.client?.accountingTool) {
       setHasAccountingIntegration(hasActiveAccountingIntegration(resolvedClientInfo.client.accountingTool));
     }
+
+    if (target?.crmTool !== undefined) {
+      setCrmTool(target.crmTool);
+    } else if (resolvedClientInfo?.client?.crmTool !== undefined) {
+      setCrmTool(resolvedClientInfo.client.crmTool);
+    }
+    if (target?.crmDrives !== undefined) {
+      setCrmDrives(target.crmDrives);
+    } else if (resolvedClientInfo?.client?.crmDrives !== undefined) {
+      setCrmDrives(resolvedClientInfo.client.crmDrives);
+    }
   }, [target, resolvedClientInfo]);
 
   // Fetch job details on-demand when opened
@@ -149,8 +170,11 @@ export default function JobDetailModal({
           if (data.productLines) setProductLines(data.productLines);
           if (data.leadSources) setLeadSources(data.leadSources);
           if (data.hasAccountingIntegration !== undefined) setHasAccountingIntegration(Boolean(data.hasAccountingIntegration));
+          if (data.crmTool) setCrmTool(data.crmTool);
+          if (data.crmDrives) setCrmDrives(data.crmDrives);
 
-          const targetProjectCode = String(target?.projectCode || "").trim().toLowerCase();
+          const rawCode = String(target?.projectCode || "").trim().toLowerCase();
+          const targetProjectCode = ["-", "n/a", "none"].includes(rawCode) ? "" : rawCode;
           const targetJobName = String(target?.jobName || "").trim().toLowerCase();
           const targetEndClient = String(target?.endClientName || (target?.client && typeof target.client === "string" ? target.client : "")).trim().toLowerCase();
           const targetRow = target?.rowNum ? Number(target.rowNum) : null;
@@ -347,12 +371,37 @@ export default function JobDetailModal({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [isOpen, invoicesEditSlot, directCostsEditSlot, jobsEditSplit, onClose]);
 
-  if (!isOpen) return null;
-
   // Job helpers
   const parentRow = job?.rows?.[0] || {};
   const tabName = job?.tabName || parentRow.tabName || target?.tabName || "Confirmed";
   const isConfirmed = tabName.toLowerCase() === "confirmed";
+
+  const effectiveCrmTool = crmTool || resolvedClientInfo?.client?.crmTool || user?.crmTool || null;
+  const effectiveCrmDrives = crmDrives || resolvedClientInfo?.client?.crmDrives || user?.crmDrives || null;
+  const crmDisplayName = useMemo(() => getCrmDisplayName(effectiveCrmTool), [effectiveCrmTool]);
+
+  const isJobFromCrm = useMemo(() => {
+    if (!job) return false;
+    if (isCrmDeal(job, effectiveCrmTool, effectiveCrmDrives)) return true;
+    if (hasActiveCrmIntegration(effectiveCrmTool) && isCrmDrivenTab(tabName, effectiveCrmDrives)) {
+      const code = String(job?.projectCode || job?.rows?.[0]?.projectCode || "").trim();
+      if (code && !["-", "n/a", "none"].includes(code.toLowerCase())) return true;
+      if (String(effectiveCrmDrives || "").trim().toLowerCase() === "pipeandconf") return true;
+    }
+    return false;
+  }, [job, effectiveCrmTool, effectiveCrmDrives, tabName]);
+
+  const isReadOnly = Boolean(target?.isReadOnly);
+  const isJobLocked = Boolean(isReadOnly || isJobFromCrm);
+  const lockTooltip = isJobLocked
+    ? (isReadOnly ? "Read only view" : `Locked - syncing with ${crmDisplayName}`)
+    : undefined;
+
+  const lockedInputStyle = isJobLocked
+    ? { backgroundColor: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" }
+    : {};
+
+  if (!isOpen) return null;
 
   const getJobFieldValue = (fieldKey) => {
     if (draftEdits[fieldKey] !== undefined) return draftEdits[fieldKey];
@@ -360,10 +409,12 @@ export default function JobDetailModal({
   };
 
   const handleDraftFieldChange = (fieldKey, val) => {
+    if (isJobLocked) return;
     setDraftEdits((prev) => ({ ...prev, [fieldKey]: val }));
   };
 
   const handleDiscardChanges = () => {
+    if (isJobLocked) return;
     setDraftEdits({});
   };
 
@@ -698,6 +749,7 @@ export default function JobDetailModal({
 
   // Save changes handler
   const handleSaveJob = async () => {
+    if (isJobLocked) return;
     const { clientSheetId, client } = resolvedClientInfo;
     if (!job || !isDirty || !clientSheetId) return;
 
@@ -968,43 +1020,67 @@ export default function JobDetailModal({
               gap: "12px"
             }}
           >
-            <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", flex: 1, minWidth: 0 }}>
-              <span
-                style={{
-                  padding: "3px 9px",
-                  borderRadius: "12px",
-                  fontSize: "12px",
-                  fontWeight: "700",
-                  background: isConfirmed ? "#dcfce7" : "#e0f2fe",
-                  color: isConfirmed ? "#15803d" : "#0369a1",
-                  border: isConfirmed ? "1px solid #bbf7d0" : "1px solid #bae6fd",
-                  whiteSpace: "nowrap"
-                }}
-              >
-                {isConfirmed ? "Confirmed job" : "Pipeline job"}
-              </span>
-              <h2 style={{ margin: 0, fontSize: "17px", fontWeight: "700", color: "#0f172a", wordBreak: "break-word" }}>
-                {clientVal || target?.endClientName || target?.client?.clientName || "Client"}
-                {" · "}
-                <span style={{ color: "#334155", fontWeight: "600" }}>
-                  {jobNameVal || target?.jobName || "Job details"}
+            <div style={{ display: "flex", flexDirection: "column", gap: "6px", flex: 1, minWidth: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                <span
+                  style={{
+                    padding: "3px 9px",
+                    borderRadius: "12px",
+                    fontSize: "12px",
+                    fontWeight: "700",
+                    background: isConfirmed ? "#dcfce7" : "#e0f2fe",
+                    color: isConfirmed ? "#15803d" : "#0369a1",
+                    border: isConfirmed ? "1px solid #bbf7d0" : "1px solid #bae6fd",
+                    whiteSpace: "nowrap"
+                  }}
+                >
+                  {isConfirmed ? "Confirmed job" : "Pipeline job"}
                 </span>
-              </h2>
-              {projectCodeVal && (
-                <span style={{ fontSize: "12px", background: "#f1f5f9", color: "#475569", padding: "2px 8px", borderRadius: "4px", border: "1px solid #e2e8f0", fontFamily: "monospace", whiteSpace: "nowrap" }}>
-                  {projectCodeVal}
-                </span>
+                {isJobFromCrm && <CrmSyncBadge crmDisplayName={crmDisplayName} />}
+                <h2 style={{ margin: 0, fontSize: "17px", fontWeight: "700", color: "#0f172a", wordBreak: "break-word" }}>
+                  {clientVal || target?.endClientName || target?.client?.clientName || "Client"}
+                  {" · "}
+                  <span style={{ color: "#334155", fontWeight: "600" }}>
+                    {jobNameVal || target?.jobName || "Job details"}
+                  </span>
+                </h2>
+                {projectCodeVal && (
+                  <span style={{ fontSize: "12px", background: "#f1f5f9", color: "#475569", padding: "2px 8px", borderRadius: "4px", border: "1px solid #e2e8f0", fontFamily: "monospace", whiteSpace: "nowrap" }}>
+                    {projectCodeVal}
+                  </span>
+                )}
+                {parentRow.rowNum && (
+                  <span style={{ fontSize: "12px", color: "#64748b", whiteSpace: "nowrap" }}>
+                    ({tabName} Row {parentRow.rowNum}{job?.rows?.length > 1 ? `-${job.rows[job.rows.length - 1].rowNum}` : ""})
+                  </span>
+                )}
+                <NoteIndicatorButton
+                  note={job?.note || parentRow?.note || ""}
+                  onClick={openJobNoteModal}
+                  title={job?.note || parentRow?.note ? `Job note: ${job?.note || parentRow?.note}` : "Add note to job"}
+                />
+              </div>
+
+              {isJobFromCrm && (
+                <div
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    fontSize: "12px",
+                    color: "#475569",
+                    background: "#f1f5f9",
+                    padding: "3px 9px",
+                    borderRadius: "6px",
+                    border: "1px solid #e2e8f0",
+                    width: "fit-content",
+                    marginTop: "2px"
+                  }}
+                >
+                  <CrmSyncIcon size={13} color="#475569" strokeWidth={2.2} />
+                  <span>This job is synced with {crmDisplayName || "CRM"} and core details are locked.</span>
+                </div>
               )}
-              {parentRow.rowNum && (
-                <span style={{ fontSize: "12px", color: "#64748b", whiteSpace: "nowrap" }}>
-                  ({tabName} Row {parentRow.rowNum}{job?.rows?.length > 1 ? `-${job.rows[job.rows.length - 1].rowNum}` : ""})
-                </span>
-              )}
-              <NoteIndicatorButton
-                note={job?.note || parentRow?.note || ""}
-                onClick={openJobNoteModal}
-                title={job?.note || parentRow?.note ? `Job note: ${job?.note || parentRow?.note}` : "Add note to job"}
-              />
             </div>
 
             <button
@@ -1063,7 +1139,7 @@ export default function JobDetailModal({
                   fontSize: "14px"
                 }}
               >
-                <div style={{ fontWeight: "700", marginBottom: "6px" }}>⚠️ Could not load job details</div>
+                <div style={{ fontWeight: "700", marginBottom: "6px" }}>Could not load job details</div>
                 <div>{error}</div>
                 <div style={{ marginTop: "16px", display: "flex", gap: "10px" }}>
                   <button
@@ -1120,10 +1196,14 @@ export default function JobDetailModal({
                         type="text"
                         value={clientVal}
                         onChange={(e) => handleDraftFieldChange("client", e.target.value)}
+                        disabled={isJobLocked}
+                        readOnly={isJobLocked}
+                        title={lockTooltip}
                         style={{
                           width: "100%", padding: "6px 8px", borderRadius: "5px",
                           border: draftEdits.client !== undefined ? "1px solid #f59e0b" : "1px solid #cbd5e1",
-                          fontSize: "13px", fontWeight: "600", outline: "none", boxSizing: "border-box"
+                          fontSize: "13px", fontWeight: "600", outline: "none", boxSizing: "border-box",
+                          ...lockedInputStyle
                         }}
                       />
                     </div>
@@ -1135,10 +1215,14 @@ export default function JobDetailModal({
                         type="text"
                         value={jobNameVal}
                         onChange={(e) => handleDraftFieldChange("jobName", e.target.value)}
+                        disabled={isJobLocked}
+                        readOnly={isJobLocked}
+                        title={lockTooltip}
                         style={{
                           width: "100%", padding: "6px 8px", borderRadius: "5px",
                           border: draftEdits.jobName !== undefined ? "1px solid #f59e0b" : "1px solid #cbd5e1",
-                          fontSize: "13px", fontWeight: "500", outline: "none", boxSizing: "border-box"
+                          fontSize: "13px", fontWeight: "500", outline: "none", boxSizing: "border-box",
+                          ...lockedInputStyle
                         }}
                       />
                     </div>
@@ -1149,11 +1233,16 @@ export default function JobDetailModal({
                       <select
                         value={isRetainer ? "Retainer" : "Project"}
                         onChange={(e) => handleDraftFieldChange("projectRetainer", e.target.value)}
+                        disabled={isJobLocked}
+                        title={lockTooltip}
                         style={{
                           width: "100%", padding: "6px 8px", borderRadius: "5px",
                           border: draftEdits.projectRetainer !== undefined ? "1px solid #f59e0b" : "1px solid #cbd5e1",
-                          fontSize: "13px", fontWeight: "600", background: isRetainer ? "#e0f2fe" : "#f3e8ff",
-                          color: isRetainer ? "#0284c7" : "#7e22ce", outline: "none", boxSizing: "border-box"
+                          fontSize: "13px", fontWeight: "600",
+                          background: isJobLocked ? "#f8fafc" : (isRetainer ? "#e0f2fe" : "#f3e8ff"),
+                          color: isJobLocked ? "#64748b" : (isRetainer ? "#0284c7" : "#7e22ce"),
+                          cursor: isJobLocked ? "not-allowed" : "pointer",
+                          outline: "none", boxSizing: "border-box"
                         }}
                       >
                         <option value="Project">Project</option>
@@ -1168,10 +1257,14 @@ export default function JobDetailModal({
                         type="text"
                         value={revVal}
                         onChange={(e) => handleDraftFieldChange("revenue", e.target.value)}
+                        disabled={isJobLocked}
+                        readOnly={isJobLocked}
+                        title={lockTooltip}
                         style={{
                           width: "100%", padding: "6px 8px", borderRadius: "5px",
                           border: draftEdits.revenue !== undefined ? "1px solid #f59e0b" : "1px solid #cbd5e1",
-                          fontSize: "13px", fontWeight: "600", outline: "none", boxSizing: "border-box"
+                          fontSize: "13px", fontWeight: "600", outline: "none", boxSizing: "border-box",
+                          ...lockedInputStyle
                         }}
                       />
                       {isConfirmed && metrics.revenue > 0 && (
@@ -1198,10 +1291,14 @@ export default function JobDetailModal({
                         type="text"
                         value={directCostsVal}
                         onChange={(e) => handleDraftFieldChange("directCosts", e.target.value)}
+                        disabled={isJobLocked}
+                        readOnly={isJobLocked}
+                        title={lockTooltip}
                         style={{
                           width: "100%", padding: "6px 8px", borderRadius: "5px",
                           border: draftEdits.directCosts !== undefined ? "1px solid #f59e0b" : "1px solid #cbd5e1",
-                          fontSize: "13px", color: "#475569", outline: "none", boxSizing: "border-box"
+                          fontSize: "13px", color: isJobLocked ? "#64748b" : "#475569", outline: "none", boxSizing: "border-box",
+                          ...lockedInputStyle
                         }}
                       />
                       {isConfirmed && metrics.directCosts > 0 && (
@@ -1228,9 +1325,15 @@ export default function JobDetailModal({
                         value={startDateVal}
                         onChange={(val) => handleDraftFieldChange("startDate", val)}
                         isDirty={draftEdits.startDate !== undefined}
-                        defaultBorder="1px solid #cbd5e1"
-                        defaultBg="#ffffff"
-                        style={{ width: "100%", padding: "6px 8px", boxSizing: "border-box" }}
+                        disabled={isJobLocked}
+                        readOnly={isJobLocked}
+                        title={lockTooltip}
+                        defaultBorder={isJobLocked ? "1px solid #e2e8f0" : "1px solid #cbd5e1"}
+                        defaultBg={isJobLocked ? "#f8fafc" : "#ffffff"}
+                        style={{
+                          width: "100%", padding: "6px 8px", boxSizing: "border-box",
+                          ...(isJobLocked ? { cursor: "not-allowed", color: "#64748b" } : {})
+                        }}
                       />
                     </div>
 
@@ -1241,9 +1344,15 @@ export default function JobDetailModal({
                         value={endDateVal}
                         onChange={(val) => handleDraftFieldChange("endDate", val)}
                         isDirty={draftEdits.endDate !== undefined}
-                        defaultBorder="1px solid #cbd5e1"
-                        defaultBg="#ffffff"
-                        style={{ width: "100%", padding: "6px 8px", boxSizing: "border-box" }}
+                        disabled={isJobLocked}
+                        readOnly={isJobLocked}
+                        title={lockTooltip}
+                        defaultBorder={isJobLocked ? "1px solid #e2e8f0" : "1px solid #cbd5e1"}
+                        defaultBg={isJobLocked ? "#f8fafc" : "#ffffff"}
+                        style={{
+                          width: "100%", padding: "6px 8px", boxSizing: "border-box",
+                          ...(isJobLocked ? { cursor: "not-allowed", color: "#64748b" } : {})
+                        }}
                       />
                     </div>
 
@@ -1254,11 +1363,17 @@ export default function JobDetailModal({
                         type="text"
                         value={likelihoodVal !== undefined && likelihoodVal !== "" ? likelihoodVal : (isConfirmed ? "100%" : "")}
                         onChange={(e) => handleDraftFieldChange("likelihood", e.target.value)}
+                        disabled={isJobLocked || isConfirmed}
+                        readOnly={isJobLocked || isConfirmed}
+                        title={isJobLocked ? lockTooltip : (isConfirmed ? "Likelihood is 100% for confirmed jobs" : undefined)}
                         style={{
                           width: "100%", padding: "6px 8px", borderRadius: "5px",
                           border: draftEdits.likelihood !== undefined ? "1px solid #f59e0b" : "1px solid #cbd5e1",
                           fontSize: "13px", fontWeight: "600",
-                          color: isConfirmed ? "#15803d" : "#0369a1", outline: "none", boxSizing: "border-box"
+                          color: (isJobLocked || isConfirmed) ? "#64748b" : (isConfirmed ? "#15803d" : "#0369a1"),
+                          backgroundColor: (isJobLocked || isConfirmed) ? "#f8fafc" : "#ffffff",
+                          cursor: (isJobLocked || isConfirmed) ? "not-allowed" : "text",
+                          outline: "none", boxSizing: "border-box"
                         }}
                       />
                     </div>
@@ -1291,9 +1406,15 @@ export default function JobDetailModal({
                           value={dateConfVal}
                           onChange={(val) => handleDraftFieldChange("dateConf", val)}
                           isDirty={draftEdits.dateConf !== undefined}
-                          defaultBorder="1px solid #cbd5e1"
-                          defaultBg="#ffffff"
-                          style={{ width: "100%", padding: "5px 7px", boxSizing: "border-box" }}
+                          disabled={isJobLocked}
+                          readOnly={isJobLocked}
+                          title={lockTooltip}
+                          defaultBorder={isJobLocked ? "1px solid #e2e8f0" : "1px solid #cbd5e1"}
+                          defaultBg={isJobLocked ? "#f8fafc" : "#ffffff"}
+                          style={{
+                            width: "100%", padding: "5px 7px", boxSizing: "border-box",
+                            ...(isJobLocked ? { cursor: "not-allowed", color: "#64748b" } : {})
+                          }}
                         />
                       </div>
 
@@ -1307,10 +1428,14 @@ export default function JobDetailModal({
                           value={projectCodeVal || ""}
                           onChange={(e) => handleDraftFieldChange("projectCode", e.target.value)}
                           placeholder="e.g. PRJ-2026-01"
+                          disabled={isJobLocked}
+                          readOnly={isJobLocked}
+                          title={lockTooltip}
                           style={{
                             width: "100%", padding: "5px 7px", borderRadius: "5px",
                             border: draftEdits.projectCode !== undefined ? "1px solid #f59e0b" : "1px solid #cbd5e1",
-                            fontSize: "12px", outline: "none", boxSizing: "border-box"
+                            fontSize: "12px", outline: "none", boxSizing: "border-box",
+                            ...lockedInputStyle
                           }}
                         />
                       </div>
@@ -1323,10 +1448,16 @@ export default function JobDetailModal({
                         <select
                           value={leadSrcVal || ""}
                           onChange={(e) => handleDraftFieldChange("leadSrc", e.target.value)}
+                          disabled={isJobLocked}
+                          title={lockTooltip}
                           style={{
                             width: "100%", padding: "5px 7px", borderRadius: "5px",
                             border: draftEdits.leadSrc !== undefined ? "1px solid #f59e0b" : "1px solid #cbd5e1",
-                            fontSize: "12px", outline: "none", background: "#ffffff", boxSizing: "border-box"
+                            fontSize: "12px", outline: "none",
+                            background: isJobLocked ? "#f8fafc" : "#ffffff",
+                            color: isJobLocked ? "#64748b" : "#0f172a",
+                            cursor: isJobLocked ? "not-allowed" : "pointer",
+                            boxSizing: "border-box"
                           }}
                         >
                           <option value="">Select Lead Source...</option>
@@ -1344,10 +1475,16 @@ export default function JobDetailModal({
                         <select
                           value={prodLineVal || ""}
                           onChange={(e) => handleDraftFieldChange("prodLine", e.target.value)}
+                          disabled={isJobLocked}
+                          title={lockTooltip}
                           style={{
                             width: "100%", padding: "5px 7px", borderRadius: "5px",
                             border: draftEdits.prodLine !== undefined ? "1px solid #f59e0b" : "1px solid #cbd5e1",
-                            fontSize: "12px", outline: "none", background: "#ffffff", boxSizing: "border-box"
+                            fontSize: "12px", outline: "none",
+                            background: isJobLocked ? "#f8fafc" : "#ffffff",
+                            color: isJobLocked ? "#64748b" : "#0f172a",
+                            cursor: isJobLocked ? "not-allowed" : "pointer",
+                            boxSizing: "border-box"
                           }}
                         >
                           <option value="">Select Product Line...</option>
@@ -1365,10 +1502,16 @@ export default function JobDetailModal({
                         <select
                           value={vatVal}
                           onChange={(e) => handleDraftFieldChange("vat", e.target.value)}
+                          disabled={isJobLocked}
+                          title={lockTooltip}
                           style={{
                             width: "100%", padding: "5px 7px", borderRadius: "5px",
                             border: draftEdits.vat !== undefined ? "1px solid #f59e0b" : "1px solid #cbd5e1",
-                            fontSize: "12px", outline: "none", background: "#ffffff", boxSizing: "border-box"
+                            fontSize: "12px", outline: "none",
+                            background: isJobLocked ? "#f8fafc" : "#ffffff",
+                            color: isJobLocked ? "#64748b" : "#0f172a",
+                            cursor: isJobLocked ? "not-allowed" : "pointer",
+                            boxSizing: "border-box"
                           }}
                         >
                           <option value="Yes">Yes</option>
@@ -1392,7 +1535,10 @@ export default function JobDetailModal({
                           {!isRetainer && (
                             <button
                               type="button"
+                              disabled={isJobLocked}
+                              title={isJobLocked ? lockTooltip : undefined}
                               onClick={() => {
+                                if (isJobLocked) return;
                                 const mergedJobRow = {
                                   ...parentRow,
                                   ...draftEdits,
@@ -1406,9 +1552,9 @@ export default function JobDetailModal({
                               }}
                               style={{
                                 padding: "4px 9px", borderRadius: "5px", border: "1px solid #cbd5e1",
-                                background: String(unevenSplitVal).toLowerCase().startsWith("[split]") ? "#0284c7" : "#ffffff",
-                                color: String(unevenSplitVal).toLowerCase().startsWith("[split]") ? "#ffffff" : "#0284c7",
-                                fontSize: "11px", fontWeight: "600", cursor: "pointer"
+                                background: isJobLocked ? "#f1f5f9" : (String(unevenSplitVal).toLowerCase().startsWith("[split]") ? "#0284c7" : "#ffffff"),
+                                color: isJobLocked ? "#94a3b8" : (String(unevenSplitVal).toLowerCase().startsWith("[split]") ? "#ffffff" : "#0284c7"),
+                                fontSize: "11px", fontWeight: "600", cursor: isJobLocked ? "not-allowed" : "pointer"
                               }}
                             >
                               Configure Split
@@ -1482,7 +1628,7 @@ export default function JobDetailModal({
                               style={{
                                 padding: "8px 10px", borderRadius: "6px", border: "1px solid #e2e8f0",
                                 background: hasData ? "#f8fafc" : "#ffffff", cursor: "pointer", transition: "border-color 0.15s ease",
-                                boxSizing: "border-box", maxWidth: "100%", overflow: "hidden"
+                                boxSizing: "border-box", maxWidth: "100%", overflow: "hidden", flexShrink: 0
                               }}
                               title={
                                 hasAccountingIntegration && !isPlaceholder && slot.ref && String(slot.ref).trim() !== ""
@@ -1608,7 +1754,7 @@ export default function JobDetailModal({
                               style={{
                                 padding: "8px 10px", borderRadius: "6px", border: "1px solid #e2e8f0",
                                 background: hasData ? "#f8fafc" : "#ffffff", cursor: "pointer", transition: "border-color 0.15s ease",
-                                boxSizing: "border-box", maxWidth: "100%", overflow: "hidden"
+                                boxSizing: "border-box", maxWidth: "100%", overflow: "hidden", flexShrink: 0
                               }}
                               onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#93c5fd"; e.currentTarget.style.background = "#eff6ff"; }}
                               onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#e2e8f0"; e.currentTarget.style.background = hasData ? "#f8fafc" : "#ffffff"; }}
@@ -1692,7 +1838,7 @@ export default function JobDetailModal({
             </div>
 
             <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
-              {isDirty && (
+              {!isJobLocked && isDirty && (
                 <button
                   type="button"
                   onClick={handleDiscardChanges}
@@ -1712,7 +1858,7 @@ export default function JobDetailModal({
                 </button>
               )}
 
-              {isDirty && (
+              {!isJobLocked && isDirty && (
                 <button
                   type="button"
                   onClick={handleSaveJob}

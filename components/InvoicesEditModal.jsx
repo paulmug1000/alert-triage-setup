@@ -5,12 +5,19 @@ import { useAuth } from "../hooks/useAuth";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import DateInput from "./DateInput";
 import InvoicesNewJobModal from "./InvoicesNewJobModal";
+import PlaceholderPill, { isAutoPlaceholder, generatePlaceholderInvoiceRef } from "./PlaceholderPill";
 
-export default function InvoicesEditModal({ 
-  editSlot, 
-  invoicesClient, 
-  onClose, 
-  onUpdateInvoiceJobs, 
+function generateManualPlaceholderInvoiceRef(dateStr) {
+  const d = dateStr ? String(dateStr).replace(/[^a-zA-Z0-9]/g, "").slice(0, 6) : "Entry";
+  const rand = Math.floor(1000 + Math.random() * 9000);
+  return `MANUAL-INV-${d}-${rand}`;
+}
+
+export default function InvoicesEditModal({
+  editSlot,
+  invoicesClient,
+  onClose,
+  onUpdateInvoiceJobs,
   onMarkPullPending,
   isAdmin: propIsAdmin,
   availableJobs = [],
@@ -21,7 +28,7 @@ export default function InvoicesEditModal({
   const { allClientsMap } = useAppGlobals();
   const isAdmin = propIsAdmin !== undefined ? propIsAdmin : (!auth.user?.isReadOnly && !!(auth.user?.isAdmin || auth.user?.role === "Admin"));
   const { rowNum, slotNum, slot, jobClient, jobName, tabName, job } = editSlot;
-  
+
   const [invoiceNo, setInvoiceNo] = useState(slot.ref || "");
   const [amount, setAmount] = useState(stripCurrency(slot.amount));
   const [sentDate, setSentDate] = useState(slot.sentDate || "");
@@ -30,7 +37,7 @@ export default function InvoicesEditModal({
   const [saving, setSaving] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [showNewJobModal, setShowNewJobModal] = useState(false);
-  
+
   // Accounting integration status and locking
   const hasAccounting = useMemo(() => {
     if (propHasAccountingIntegration) return true;
@@ -55,21 +62,31 @@ export default function InvoicesEditModal({
     return isPlaceholderInvoice(slot?.ref || invoiceNo, slot?.status || status);
   }, [slot, invoiceNo, status]);
 
+  const isAuto = isPlaceholder && isAutoPlaceholder(invoiceNo || slot?.ref);
+  const isAutoLocked = isPlaceholder && isAuto;
+
   const isLocked = Boolean(
     hasAccounting &&
     !isPlaceholder &&
     (slot?.ref || invoiceNo) &&
     String(slot?.ref || invoiceNo).trim() !== ""
   );
+  const isFieldLocked = isLocked || isAutoLocked;
   const isPaid = String(slot?.status || status || "").trim().toLowerCase() === "paid";
-  
+
+  const fieldLockTitle = isAutoLocked
+    ? "Automatic placeholder. Convert to manual placeholder to edit."
+    : isLocked
+      ? "Synced from accounting software. To modify invoice number, amount, or sent date, update directly in your accounting software."
+      : undefined;
+
   // Move invoice state
   const [movingInvoice, setMovingInvoice] = useState(false);
   const [jobSearch, setJobSearch] = useState("");
   const [jobsList, setJobsList] = useState(availableJobs || []);
   const [loadingJobs, setLoadingJobs] = useState(false);
   const [selectedTargetJob, setSelectedTargetJob] = useState(null);
-  
+
   // Revenue prompt state: { type: "save" | "move", projectedTotal, currentRevenue, onConfirm }
   const [revenuePrompt, setRevenuePrompt] = useState(null);
 
@@ -154,15 +171,15 @@ export default function InvoicesEditModal({
       if (invoicesClient?.masterSheetId) {
         onMarkPullPending(invoicesClient.masterSheetId);
       }
-      onUpdateInvoiceJobs(rowNum, slotNum, { 
-        ref: invoiceNo, 
-        amount: parseFloat(amount) || 0, 
-        sentDate, 
-        daysToPay: parseInt(daysToPay) || 30, 
-        status 
+      onUpdateInvoiceJobs(rowNum, slotNum, {
+        ref: invoiceNo,
+        amount: parseFloat(amount) || 0,
+        sentDate,
+        daysToPay: parseInt(daysToPay) || 30,
+        status
       }, data);
       close();
-    } catch(e) { console.error("update_invoice_slot save error:", e); }
+    } catch (e) { console.error("update_invoice_slot save error:", e); }
     finally { setSaving(false); }
   };
 
@@ -278,7 +295,7 @@ export default function InvoicesEditModal({
     setSelectedTargetJob(targetJob);
     const invAmtNum = parseFloat(amount) || 0;
     const targetRevenue = parseFloat(String(targetJob.rows?.[0]?.revenue || "0").replace(/[£$€,\s]/g, "")) || 0;
-    
+
     // Calculate current real invoiced total on target job
     let targetInvoicedTotal = 0;
     (targetJob.rows || []).forEach(r => {
@@ -322,11 +339,11 @@ export default function InvoicesEditModal({
       if (invoicesClient?.masterSheetId) {
         onMarkPullPending(invoicesClient.masterSheetId);
       }
-      onUpdateInvoiceJobs(rowNum, slotNum, { 
-        ref: "", amount: "", sentDate: "", daysToPay: "", status: "" 
+      onUpdateInvoiceJobs(rowNum, slotNum, {
+        ref: "", amount: "", sentDate: "", daysToPay: "", status: ""
       });
       close();
-    } catch(e) { console.error("update_invoice_slot delete error:", e); }
+    } catch (e) { console.error("update_invoice_slot delete error:", e); }
     finally { setSaving(false); }
   };
 
@@ -348,10 +365,10 @@ export default function InvoicesEditModal({
   const labelStyle = { display: "block", fontSize: "11px", fontWeight: "600", color: "#666", marginBottom: "3px" };
 
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 1200, display: "flex", alignItems: "center", justifyContent: "center" }}
       onClick={e => { if (e.target === e.currentTarget) close(); }}>
       <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(92vw, 520px)", maxHeight: "88vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
-        
+
         {/* Header */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "16px" }}>
           <div>
@@ -424,7 +441,7 @@ export default function InvoicesEditModal({
             <div style={{ fontSize: "13px", color: "#475569", marginBottom: "12px" }}>
               Select a new destination job for invoice <strong>#{invoiceNo || slot.ref}</strong> (£{parseFloat(amount || 0).toFixed(2)}):
             </div>
-            
+
             <div style={{ marginBottom: "12px" }}>
               <input
                 type="text"
@@ -498,6 +515,28 @@ export default function InvoicesEditModal({
         ) : (
           /* STANDARD EDIT FORM */
           <>
+            {isAutoLocked && (
+              <div style={{
+                fontSize: "12px",
+                color: "#4338ca",
+                background: "#f5f3ff",
+                border: "1px solid #ddd6fe",
+                borderRadius: "6px",
+                padding: "8px 12px",
+                marginBottom: "14px",
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+                lineHeight: "1.4"
+              }}>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="12" y1="16" x2="12" y2="12" />
+                  <line x1="12" y1="8" x2="12.01" y2="8" />
+                </svg>
+                <span>This is an automatic placeholder invoice, and the details are locked. To enable editing, click the &quot;Placeholder - auto&quot; button to convert it to a manual placeholder.</span>
+              </div>
+            )}
             {isLocked && (
               <div style={{
                 fontSize: "12px",
@@ -521,17 +560,49 @@ export default function InvoicesEditModal({
             )}
             <div style={{ display: "grid", gap: "12px" }}>
               <div>
-                <label style={labelStyle}>Invoice number</label>
-                <input
-                  style={{
-                    ...inputStyle,
-                    ...(isLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
-                  }}
-                  value={invoiceNo}
-                  onChange={e => setInvoiceNo(e.target.value)}
-                  disabled={isLocked}
-                  title={isLocked ? "Synced from accounting software. To modify invoice number, amount, or sent date, update directly in your accounting software." : undefined}
-                />
+                {isPlaceholder ? (
+                  <div>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
+                      <label style={{ ...labelStyle, marginBottom: 0 }}>Invoice reference</label>
+                      <PlaceholderPill
+                        isAuto={isAuto}
+                        onToggle={(targetAuto) => {
+                          if (targetAuto) {
+                            setInvoiceNo(generatePlaceholderInvoiceRef(sentDate));
+                          } else {
+                            setInvoiceNo(generateManualPlaceholderInvoiceRef(sentDate));
+                          }
+                        }}
+                      />
+                    </div>
+                    {!isAuto ? (
+                      <input
+                        style={inputStyle}
+                        value={invoiceNo}
+                        onChange={e => setInvoiceNo(e.target.value)}
+                        placeholder="e.g. INV-1001 (optional for manual placeholder)"
+                      />
+                    ) : (
+                      <div style={{ fontSize: "12px", color: "#64748b", background: "#f8fafc", padding: "7px 10px", borderRadius: "5px", border: "1px solid #e2e8f0" }}>
+                        Reference: <code style={{ color: "#7c3aed" }}>{invoiceNo || slot?.ref || "Automatic"}</code>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div>
+                    <label style={labelStyle}>Invoice number</label>
+                    <input
+                      style={{
+                        ...inputStyle,
+                        ...(isLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
+                      }}
+                      value={invoiceNo}
+                      onChange={e => setInvoiceNo(e.target.value)}
+                      disabled={isLocked}
+                      title={isLocked ? "Synced from accounting software. To modify invoice number, amount, or sent date, update directly in your accounting software." : undefined}
+                    />
+                  </div>
+                )}
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
                 <div>
@@ -539,14 +610,14 @@ export default function InvoicesEditModal({
                   <input
                     style={{
                       ...inputStyle,
-                      ...(isLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
+                      ...(isFieldLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
                     }}
                     type="number"
                     step="0.01"
                     value={amount}
                     onChange={e => setAmount(e.target.value)}
-                    disabled={isLocked}
-                    title={isLocked ? "Synced from accounting software. To modify invoice number, amount, or sent date, update directly in your accounting software." : undefined}
+                    disabled={isFieldLocked}
+                    title={fieldLockTitle}
                   />
                 </div>
                 <div>
@@ -554,13 +625,13 @@ export default function InvoicesEditModal({
                   <input
                     style={{
                       ...inputStyle,
-                      ...(isPaid ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
+                      ...(isPaid || isAutoLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
                     }}
                     type="number"
                     value={daysToPay}
                     onChange={e => setDaysToPay(e.target.value)}
-                    disabled={isPaid}
-                    title={isPaid ? "Days to pay is determined once an invoice is marked as paid." : undefined}
+                    disabled={isPaid || isAutoLocked}
+                    title={isAutoLocked ? "Automatic placeholder. Convert to manual placeholder to edit." : (isPaid ? "Days to pay is determined once an invoice is marked as paid." : undefined)}
                   />
                 </div>
               </div>
@@ -569,17 +640,17 @@ export default function InvoicesEditModal({
                 <DateInput
                   style={{
                     ...inputStyle,
-                    ...(isLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
+                    ...(isFieldLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
                   }}
                   value={sentDate}
                   onChange={e => setSentDate(e.target.value)}
-                  disabled={isLocked}
-                  title={isLocked ? "Synced from accounting software. To modify invoice number, amount, or sent date, update directly in your accounting software." : undefined}
+                  disabled={isFieldLocked}
+                  title={fieldLockTitle}
                 />
               </div>
               <div>
-                <label style={labelStyle}>Status {isLocked ? "(automation managed)" : ""}</label>
-                {isLocked ? (
+                <label style={labelStyle}>Status</label>
+                {isFieldLocked ? (
                   <div style={{
                     padding: "7px 10px",
                     background: "#f8fafc",
@@ -589,7 +660,7 @@ export default function InvoicesEditModal({
                     fontWeight: "600",
                     color: "#334155",
                     display: "inline-block"
-                  }}>
+                  }} title={fieldLockTitle}>
                     {status || "None"}
                   </div>
                 ) : (

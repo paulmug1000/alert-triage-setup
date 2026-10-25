@@ -1164,7 +1164,7 @@ export default function BudgetView({
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
-          {selectedClient && (
+          {selectedClient && !managedClient && (allOutgoingsClients || []).length > 1 && (
             <button
               type="button"
               onClick={handleBackToClients}
@@ -1446,7 +1446,7 @@ export default function BudgetView({
       )}
 
       {/* Main Loading Skeleton */}
-      {selectedClient && loading && !budgetData && (
+      {selectedClient && (loading || !budgetData) && !error && (
         <BudgetSkeleton />
       )}
 

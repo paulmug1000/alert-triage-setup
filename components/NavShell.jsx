@@ -126,6 +126,14 @@ const GLOBAL_STYLES = `
     .pma-pulse-btn-wrapper {
       flex-shrink: 0;
     }
+    .pma-topbar-actions > .pma-pulse-btn-wrapper:only-child {
+      flex: 1;
+      width: 100%;
+    }
+    .pma-topbar-actions > .pma-pulse-btn-wrapper:only-child .pma-pulse-btn {
+      width: 100% !important;
+      justify-content: center !important;
+    }
     .pma-manage-dropdown {
       left: 0 !important;
       right: auto !important;
@@ -164,10 +172,13 @@ export default function NavShell({
   activeNav, onHome, onAlerts, onOverview, onTasks, onActivity, onAppLog,
   onOutgoings, onInvoices, onRetainers, onJobs, onSalaries, onExpenses, onNBToFind, onBudget, onCash, onViews, onTools, onIntegrations, onSetup, onSettings,
   homeAlertCount, taskCount, integrationsCount, user, onLogout, clients = [],
-  managedClient, onSelectManagedClient, onClearManagedClient, children
+  managedClient, onSelectManagedClient, onClearManagedClient,
+  isSingleClientUser: propIsSingleClientUser, singleClient: propSingleClient,
+  children
 }) {
   const router = useRouter();
   const { preloadClientData } = useAppGlobals();
+  const isAdmin = !user?.isReadOnly && !!(user?.isAdmin || user?.role === "Admin");
   const [showMore, setShowMore] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const [manageDropdownOpen, setManageDropdownOpen] = useState(false);
@@ -187,6 +198,16 @@ export default function NavShell({
   const [clientsLoading, setClientsLoading] = useState(false);
   const [clientSearch, setClientSearch] = useState("");
   const [manageClientSearch, setManageClientSearch] = useState("");
+
+  const isSingleClientUser = Boolean(
+    propIsSingleClientUser ?? (
+      !isAdmin && (
+        portalClients.length === 1 ||
+        (Array.isArray(user?.assignedClients) && user.assignedClients.length === 1)
+      )
+    )
+  );
+  const singleClient = propSingleClient || (portalClients.length === 1 ? portalClients[0] : (managedClient || null));
 
   useEffect(() => {
     const check = () => setIsMobile(window.innerWidth <= 840);
@@ -365,8 +386,9 @@ export default function NavShell({
         {user && (
           <>
             <div className="pma-topbar-actions">
-              {/* Manage Client Dropdown */}
-              <div className="pma-manage-btn-wrapper">
+              {/* Manage Client Dropdown (only shown when user has access to more than one client) */}
+              {!isSingleClientUser && (
+                <div className="pma-manage-btn-wrapper">
                 <button
                   type="button"
                   className="pma-manage-btn triage-btn"
@@ -560,17 +582,22 @@ export default function NavShell({
                 </div>
               )}
             </div>
+          )}
 
-              {/* Pulse Button with Client Chooser Dropdown */}
-              <div className="pma-pulse-btn-wrapper">
+            {/* Pulse Button: direct navigation for single client users, dropdown chooser for multi-client users */}
+            <div className="pma-pulse-btn-wrapper">
               <button
                 type="button"
                 className="pma-pulse-btn triage-btn"
                 onClick={() => {
-                  setPulseDropdownOpen((v) => !v);
-                  setProfileDropdownOpen(false);
-                  setManageDropdownOpen(false);
-                  setEditDropdownOpen(false);
+                  if (isSingleClientUser && (singleClient || managedClient)) {
+                    handleSelectPulseClient(singleClient || managedClient);
+                  } else {
+                    setPulseDropdownOpen((v) => !v);
+                    setProfileDropdownOpen(false);
+                    setManageDropdownOpen(false);
+                    setEditDropdownOpen(false);
+                  }
                 }}
                 style={{
                   background: "#0047AB",
@@ -589,13 +616,15 @@ export default function NavShell({
                 }}
                 onMouseEnter={(e) => { e.currentTarget.style.background = "#003b8e"; }}
                 onMouseLeave={(e) => { e.currentTarget.style.background = "#0047AB"; }}
-                title="Select client to visit in Pulse"
+                title={isSingleClientUser ? `Open Pulse for ${(singleClient || managedClient)?.clientName || "client"}` : "Select client to visit in Pulse"}
               >
                 <span>Pulse</span>
-                <span style={{ fontSize: "10px", opacity: 0.85, lineHeight: 1 }}>{pulseDropdownOpen ? "▲" : "▼"}</span>
+                {!isSingleClientUser && (
+                  <span style={{ fontSize: "10px", opacity: 0.85, lineHeight: 1 }}>{pulseDropdownOpen ? "▲" : "▼"}</span>
+                )}
               </button>
 
-              {pulseDropdownOpen && (
+              {!isSingleClientUser && pulseDropdownOpen && (
                 <div
                   className="pma-pulse-dropdown"
                   style={{
@@ -1048,7 +1077,7 @@ export default function NavShell({
           </>
         )}
       </div>
-      {managedClient && (
+      {managedClient && !isSingleClientUser && (
         <div
           className="pma-managed-banner"
           style={{

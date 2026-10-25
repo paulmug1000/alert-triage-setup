@@ -1893,18 +1893,16 @@ export default function ToolsView({
 
         return (
           <div>
-            <button onClick={() => {
-              if (managedClient) {
-                onClearManagedClient?.();
-              } else {
+            {!managedClient && (allOutgoingsClients || []).length > 1 && (
+              <button onClick={() => {
                 setEomDetailClient(null);
                 setEomAddTaskMode("");
                 setEomEditingNotesFor("");
-              }
-            }}
-              style={{ background: "none", border: "none", color: "#0066cc", cursor: "pointer", fontSize: "13px", padding: "0 0 12px", display: "block" }}>
-              {managedClient ? "‹ Back to all clients" : "‹ Back to overview"}
-            </button>
+              }}
+                style={{ background: "none", border: "none", color: "#0066cc", cursor: "pointer", fontSize: "13px", padding: "0 0 12px", display: "block" }}>
+                ‹ Back to overview
+              </button>
+            )}
 
             <div className="eom-detail-header" style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "16px" }}>
               <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700" }}>{eomDetailClient}</h3>

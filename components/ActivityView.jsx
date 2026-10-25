@@ -1216,7 +1216,7 @@ export default function ActivityView({
 
         <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
           {/* CLIENT SELECTOR DROPDOWN */}
-          {!managedClient && (
+          {!managedClient && (allOutgoingsClients || []).length > 1 && (
             <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
               <label style={{ fontSize: "12px", fontWeight: "600", color: "#475569" }}>Client:</label>
               <select
@@ -1325,9 +1325,11 @@ export default function ActivityView({
             alignItems: "center"
           }}>
             <div>
-              <span style={{ fontSize: "12px", color: "#0284c7", fontWeight: "600", cursor: "pointer" }} onClick={() => managedClient ? onClearManagedClient?.() : setSelectedClient("ALL")}>
-                ← Back to All Clients
-              </span>
+              {!managedClient && (allOutgoingsClients || []).length > 1 && (
+                <span style={{ fontSize: "12px", color: "#0284c7", fontWeight: "600", cursor: "pointer" }} onClick={() => setSelectedClient("ALL")}>
+                  ← Back to all clients
+                </span>
+              )}
               <h3 style={{ margin: "4px 0 0 0", fontSize: "18px", color: "#0f172a" }}>
                 {selectedClient} Timeline
               </h3>

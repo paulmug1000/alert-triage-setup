@@ -65,6 +65,19 @@ export function useJobs(initialClient = null) {
     }
     return [];
   });
+  const [crmTool, setCrmTool] = useState(() => {
+    if (initialClient?.crmTool) return initialClient.crmTool;
+    return "None";
+  });
+  const [crmDrives, setCrmDrives] = useState(() => {
+    if (initialClient?.crmDrives) return initialClient.crmDrives;
+    return "NA";
+  });
+
+  useEffect(() => {
+    if (jobsClient?.crmTool) setCrmTool(jobsClient.crmTool);
+    if (jobsClient?.crmDrives) setCrmDrives(jobsClient.crmDrives);
+  }, [jobsClient]);
 
   const loadJobsData = useCallback(async (client, tabName = "All", bypassCache = false) => {
     if (!client?.clientSheetId) return;
@@ -83,6 +96,8 @@ export function useJobs(initialClient = null) {
       if (cached.data.productLines) setProductLines(cached.data.productLines);
       if (cached.data.leadSources) setLeadSources(cached.data.leadSources);
       if (cached.data.existingClients) setExistingClients(cached.data.existingClients);
+      if (cached.data.crmTool) setCrmTool(cached.data.crmTool);
+      if (cached.data.crmDrives) setCrmDrives(cached.data.crmDrives);
       if (cached.data.hasAccountingIntegration !== undefined) setHasAccountingIntegration(Boolean(cached.data.hasAccountingIntegration));
       else if (client.hasAccountingIntegration !== undefined) setHasAccountingIntegration(Boolean(client.hasAccountingIntegration));
       setJobsLoading(false);
@@ -104,6 +119,8 @@ export function useJobs(initialClient = null) {
             if (fresh.data.productLines) setProductLines(fresh.data.productLines);
             if (fresh.data.leadSources) setLeadSources(fresh.data.leadSources);
             if (fresh.data.existingClients) setExistingClients(fresh.data.existingClients);
+            if (fresh.data.crmTool) setCrmTool(fresh.data.crmTool);
+            if (fresh.data.crmDrives) setCrmDrives(fresh.data.crmDrives);
             if (fresh.data.hasAccountingIntegration !== undefined) setHasAccountingIntegration(Boolean(fresh.data.hasAccountingIntegration));
             else if (client.hasAccountingIntegration !== undefined) setHasAccountingIntegration(Boolean(client.hasAccountingIntegration));
             setJobsLoading(false);
@@ -126,6 +143,8 @@ export function useJobs(initialClient = null) {
         if (data.productLines) setProductLines(data.productLines);
         if (data.leadSources) setLeadSources(data.leadSources);
         if (data.existingClients) setExistingClients(data.existingClients);
+        if (data.crmTool) setCrmTool(data.crmTool);
+        if (data.crmDrives) setCrmDrives(data.crmDrives);
         if (data.hasAccountingIntegration !== undefined) setHasAccountingIntegration(Boolean(data.hasAccountingIntegration));
         else if (client.hasAccountingIntegration !== undefined) setHasAccountingIntegration(Boolean(client.hasAccountingIntegration));
         setCachedClientData(client.clientSheetId, cacheKey, data);
@@ -149,6 +168,8 @@ export function useJobs(initialClient = null) {
     leadSources, setLeadSources,
     existingClients, setExistingClients,
     hasAccountingIntegration,
+    crmTool, setCrmTool,
+    crmDrives, setCrmDrives,
     loadJobsData
   };
 }

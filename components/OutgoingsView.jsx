@@ -128,15 +128,21 @@ export default function OutgoingsView({
   useEffect(() => {
     if (managedClient) {
       const currentName = managedClient.clientName?.toLowerCase();
-      if (prevManagedClientRef.current !== currentName) {
+      const hasFullClient = Boolean(outgoingsClient?.clientSheetId);
+      const clientWithSheet = (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === currentName && c.clientSheetId) || (managedClient.clientSheetId ? managedClient : null);
+      if (prevManagedClientRef.current !== currentName || (!hasFullClient && clientWithSheet)) {
         prevManagedClientRef.current = currentName;
-        const clientObj = (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === currentName) || managedClient;
-        loadOutgoings(clientObj);
+        const clientObj = clientWithSheet || (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === currentName) || managedClient;
+        if (clientObj?.clientSheetId) {
+          loadOutgoings(clientObj);
+        }
       }
-    } else if (initialClient && initialClient !== prevInitialClientRef.current) {
+    } else if (initialClient && (initialClient !== prevInitialClientRef.current || (!outgoingsClient?.clientSheetId && initialClient.clientSheetId))) {
       prevInitialClientRef.current = initialClient;
       const clientObj = (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === initialClient.clientName?.toLowerCase()) || initialClient;
-      loadOutgoings(clientObj);
+      if (clientObj?.clientSheetId) {
+        loadOutgoings(clientObj);
+      }
     } else if (prevManagedClientRef.current && !managedClient) {
       prevManagedClientRef.current = null;
       setOutgoingsData(null);
@@ -144,7 +150,11 @@ export default function OutgoingsView({
       setOutgoingsInbox([]);
       if (typeof clearInboxSelection === "function") clearInboxSelection();
     }
-  }, [managedClient, initialClient, allOutgoingsClients]);
+  }, [managedClient, initialClient, allOutgoingsClients, outgoingsClient?.clientSheetId]);
+
+  const effectiveClientObj = outgoingsClient || (managedClient?.clientName ? (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === managedClient.clientName.toLowerCase()) || managedClient : null) || initialClient;
+  const effectiveSheetId = outgoingsClient?.clientSheetId || managedClient?.clientSheetId || (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === (outgoingsClient?.clientName || managedClient?.clientName)?.toLowerCase())?.clientSheetId;
+  const effectiveClientName = outgoingsClient?.clientName || managedClient?.clientName || "";
 
   const [viewMode, setViewMode] = useState("modern");
   const [expandedRetainerKeys, setExpandedRetainerKeys] = useState(() => new Set());
@@ -547,7 +557,7 @@ export default function OutgoingsView({
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-            {outgoingsClient && (
+            {outgoingsClient && !managedClient && (allOutgoingsClients || []).length > 1 && (
               <button
                 type="button"
                 onClick={() => {
@@ -1300,15 +1310,22 @@ export default function OutgoingsView({
                                         <div style={{ fontWeight: "600", color: "#1e293b" }}>{jr.jobName}</div>
                                         <button
                                           type="button"
-                                          onClick={() => setSelectedJobForDetail({
-                                            client: job.client,
-                                            jobName: job.jobName,
-                                            projectCode: job.projectCode || jr.projectCode,
-                                            rowNum: jr.rowNum,
-                                            tabName: "Confirmed",
-                                            clientSheetId: outgoingsClient?.clientSheetId,
-                                            clientName: outgoingsClient?.clientName
-                                          })}
+                                          onClick={() => {
+                                            const rawCode = job.projectCode || jr.projectCode || "";
+                                            const cleanCode = (rawCode === "-" || rawCode.toLowerCase() === "n/a" || rawCode.toLowerCase() === "none") ? "" : rawCode;
+                                            setSelectedJobForDetail({
+                                              client: job.client,
+                                              endClientName: job.client,
+                                              jobName: job.jobName,
+                                              projectCode: cleanCode,
+                                              rowNum: jr.rowNum,
+                                              tabName: "Confirmed",
+                                              clientSheetId: effectiveSheetId,
+                                              clientName: effectiveClientName,
+                                              crmTool: effectiveClientObj?.crmTool,
+                                              crmDrives: effectiveClientObj?.crmDrives
+                                            });
+                                          }}
                                           style={{
                                             background: "#ffffff",
                                             border: "1px solid #cbd5e1",
@@ -1743,15 +1760,22 @@ export default function OutgoingsView({
                                       <span>{jr.jobName}</span>
                                       <button
                                         type="button"
-                                        onClick={() => setSelectedJobForDetail({
-                                          client: job.client,
-                                          jobName: job.jobName,
-                                          projectCode: job.projectCode || jr.projectCode,
-                                          rowNum: jr.rowNum,
-                                          tabName: "Confirmed",
-                                          clientSheetId: outgoingsClient?.clientSheetId,
-                                          clientName: outgoingsClient?.clientName
-                                        })}
+                                        onClick={() => {
+                                          const rawCode = job.projectCode || jr.projectCode || "";
+                                          const cleanCode = (rawCode === "-" || rawCode.toLowerCase() === "n/a" || rawCode.toLowerCase() === "none") ? "" : rawCode;
+                                          setSelectedJobForDetail({
+                                            client: job.client,
+                                            endClientName: job.client,
+                                            jobName: job.jobName,
+                                            projectCode: cleanCode,
+                                            rowNum: jr.rowNum,
+                                            tabName: "Confirmed",
+                                            clientSheetId: effectiveSheetId,
+                                            clientName: effectiveClientName,
+                                            crmTool: effectiveClientObj?.crmTool,
+                                            crmDrives: effectiveClientObj?.crmDrives
+                                          });
+                                        }}
                                         style={{
                                           background: "#ffffff",
                                           border: "1px solid #cbd5e1",

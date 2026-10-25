@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
 import { isPlaceholderExpense, toSheetDateFormat, toInputDateFormat } from "../utils/helpers";
+import PlaceholderPill, { isAutoPlaceholder } from "./PlaceholderPill";
 
 const STATUS_COLOURS = {
   "Paid":                 { bg: "#e8f5e9", border: "#4caf50", text: "#2e7d32" },
@@ -83,11 +84,38 @@ function computeTargetDate(baseDate, timingStr, dayOfMonth) {
   return `${d.getDate()}-${MONTH_NAMES[d.getMonth()]}-${String(d.getFullYear()).slice(-2)}`;
 }
 
-function generatePlaceholderId(contractorName, dateStr) {
+function generateAutoPlaceholderId(contractorName, dateStr) {
   const cleanName = String(contractorName || "Row").trim().replace(/[^a-zA-Z0-9]/g, "");
   const shortCode = cleanName.slice(0, 5) || "Vend";
   const rand = Math.floor(1000 + Math.random() * 9000);
-  return `PLACE-EXP-${dateStr}-${shortCode}-${rand}`;
+  return `PLACE-EXP-${dateStr || "Entry"}-${shortCode}-${rand}`;
+}
+
+function generateManualPlaceholderId(contractorName, dateStr) {
+  const cleanName = String(contractorName || "Row").trim().replace(/[^a-zA-Z0-9]/g, "");
+  const shortCode = cleanName.slice(0, 5) || "Vend";
+  const rand = Math.floor(1000 + Math.random() * 9000);
+  return `MANUAL-EXP-${dateStr || "Entry"}-${shortCode}-${rand}`;
+}
+
+function LockIcon({ size = 11, color = "#64748b" }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, opacity: 0.85 }}>
+      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+    </svg>
+  );
+}
+
+function SyncIcon({ size = 12, color = "#0047AB" }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, opacity: 0.9 }}>
+      <polyline points="17 4 21 8 17 12" />
+      <path d="M21 8H9a4 4 0 0 0-4 4v1" />
+      <polyline points="7 20 3 16 7 12" />
+      <path d="M3 16h12a4 4 0 0 0 4-4v-1" />
+    </svg>
+  );
 }
 
 function CalendarIcon({ size = 15, color = "#64748b" }) {
@@ -202,7 +230,7 @@ export default function OutgoingsEditModal({ editCellData, outgoingsData, update
       return;
     }
     const newBlock = {
-      appId: generatePlaceholderId(contractor.name, dateStr),
+      appId: generateManualPlaceholderId(contractor.name, dateStr),
       amount: amt,
       status: "",
       recDate: defaultRecDate,
@@ -229,7 +257,7 @@ export default function OutgoingsEditModal({ editCellData, outgoingsData, update
         return;
       }
       const newBlock = {
-        appId: generatePlaceholderId(contractor.name, dateStr),
+        appId: generateManualPlaceholderId(contractor.name, dateStr),
         amount: pendingAmt,
         status: "",
         recDate: defaultRecDate,
@@ -350,48 +378,156 @@ export default function OutgoingsEditModal({ editCellData, outgoingsData, update
 
         {blocks.map((b, i) => {
           const sc = getStatusColour(b.status);
-          const isManual = isPlaceholderExpense(b.appId);
+          const stLower = String(b.status || "").trim().toLowerCase();
+          const isPaid = stLower === "paid" || stLower.includes("part-paid (paid)");
+          const isRealBill = Boolean(b.appId && !isPlaceholderExpense(b.appId));
+          const isPlaceholder = !isRealBill;
+          const isAuto = isPlaceholder && isAutoPlaceholder(b.appId || b.description);
+          const isAutoLocked = isPlaceholder && isAuto;
+          const isAmountLocked = isRealBill || isPaid || isAutoLocked;
+          const isDescriptionLocked = isRealBill || isPaid || isAutoLocked;
+          const canEditPayDate = !isPaid && !isAutoLocked;
+
+          const lockTooltip = isAutoLocked
+            ? "Automatic placeholder. Convert to manual placeholder to edit."
+            : isRealBill
+              ? "Synced from accounting software and cannot be modified."
+              : isPaid
+                ? "Paid expense cannot be modified."
+                : undefined;
+
+          const lockedBoxStyle = {
+            padding: "7px 9px",
+            fontSize: "13px",
+            color: "#0f172a",
+            background: sc.bg,
+            border: `1px solid ${sc.border}`,
+            borderRadius: "5px",
+            cursor: "not-allowed",
+            boxSizing: "border-box",
+            minHeight: "34px",
+            display: "flex",
+            alignItems: "center",
+          };
+
           return (
             <div key={i} style={{ border: `1px solid ${sc.border}`, background: sc.bg, borderRadius: "8px", padding: "14px", marginBottom: "14px" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "8px" }}>
                 <div style={{ flex: 1, marginRight: "8px" }}>
-                  <div style={{ fontSize: "14px", fontWeight: "700", color: "#1e293b", marginBottom: "2px" }}>
-                    {b.description || (isManual ? "Manual estimate" : b.appId)}
+                  <div style={{ fontSize: "14px", fontWeight: "700", color: "#1e293b", marginBottom: "4px" }}>
+                    {b.description || (isRealBill ? b.appId : (isPaid ? "Paid expense" : "Manual estimate"))}
                   </div>
-                  <div style={{ fontSize: "11px", color: "#64748b", fontFamily: "monospace" }}>{b.appId}</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                    {isRealBill ? (
+                      <span style={{ fontSize: "11px", color: "#64748b", fontFamily: "monospace" }}>
+                        {b.appId}
+                      </span>
+                    ) : (
+                      <PlaceholderPill
+                        isAuto={isAuto}
+                        onToggle={(targetAuto) => {
+                          const newId = targetAuto
+                            ? generateAutoPlaceholderId(contractor.name, dateStr)
+                            : generateManualPlaceholderId(contractor.name, dateStr);
+                          updateBlock(i, "appId", newId);
+                        }}
+                      />
+                    )}
+                  </div>
                 </div>
                 <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
                   {!isPlaceholderExpense(b.appId) && (
-                    <button onClick={async () => {
-                      const newBlocks = blocksRef.current.filter((_, idx) => idx !== i);
-                      blocksRef.current = newBlocks;
-                      dirtyRef.current = false;
-                      await updateCell(contractor, colLetter, newBlocks, topNote);
-                      onReturnToInbox({
-                        appId: b.appId, amount: b.amount,
-                        date: b.recDate || "", datePaid: b.payDate || "",
-                        description: b.description || "", accountName: b.description || "",
-                        status: b.status || "",
-                      });
-                      onClose();
-                    }} style={{ background: "none", border: "none", color: "#0066cc", cursor: "pointer", fontSize: "12px", fontWeight: "500" }}>↩ Return to inbox</button>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const newBlocks = blocksRef.current.filter((_, idx) => idx !== i);
+                        blocksRef.current = newBlocks;
+                        dirtyRef.current = false;
+                        await updateCell(contractor, colLetter, newBlocks, topNote);
+                        onReturnToInbox({
+                          appId: b.appId, amount: b.amount,
+                          date: b.recDate || "", datePaid: b.payDate || "",
+                          description: b.description || "", accountName: b.description || "",
+                          status: b.status || "",
+                        });
+                        onClose();
+                      }}
+                      style={{ background: "none", border: "none", color: "#0066cc", cursor: "pointer", fontSize: "12px", fontWeight: "500" }}
+                    >
+                      ↩ Return to inbox
+                    </button>
                   )}
-                  <button onClick={() => removeBlock(i)} style={{ background: "none", border: "none", color: "#e53935", cursor: "pointer", fontSize: "12px", fontWeight: "500" }}>Remove</button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (isAutoLocked) return;
+                      removeBlock(i);
+                    }}
+                    disabled={isAutoLocked}
+                    title={isAutoLocked ? "Automatic placeholder. Convert to manual placeholder to remove." : undefined}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      color: isAutoLocked ? "#94a3b8" : "#e53935",
+                      cursor: isAutoLocked ? "not-allowed" : "pointer",
+                      fontSize: "12px",
+                      fontWeight: "500"
+                    }}
+                  >
+                    Remove
+                  </button>
                 </div>
               </div>
 
-              {/* Prominent Description View/Edit */}
-              {isManual ? (
-                <div style={{ marginBottom: "12px" }}>
-                  <label style={{ fontSize: "11px", fontWeight: "600", color: "#64748b", display: "block", marginBottom: "3px" }}>Description</label>
-                  <input type="text" value={b.description || ""} placeholder="e.g. Freelance design services"
-                    onChange={e => updateBlock(i, "description", e.target.value)}
-                    style={{ width: "100%", padding: "7px 10px", border: "1px solid #cbd5e1", borderRadius: "5px", fontSize: "13px", boxSizing: "border-box" }} />
+              {isAutoLocked && (
+                <div
+                  style={{
+                    background: "#f5f3ff",
+                    border: "1px solid #ddd6fe",
+                    borderRadius: "6px",
+                    padding: "8px 12px",
+                    color: "#6b21a8",
+                    fontSize: "12px",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px",
+                    marginBottom: "12px",
+                    lineHeight: "1.4",
+                  }}
+                >
+                  <LockIcon size={14} color="#6b21a8" />
+                  <span>This is an automatic placeholder expense, and the details are locked. To enable editing, click the &quot;Placeholder - auto&quot; button to convert it to a manual placeholder.</span>
                 </div>
-              ) : (
-                <div style={{ marginBottom: "12px", padding: "8px 12px", background: "rgba(255,255,255,0.85)", borderRadius: "6px", border: "1px solid rgba(0,0,0,0.08)" }}>
-                  <div style={{ fontSize: "11px", fontWeight: "600", color: "#64748b", marginBottom: "2px" }}>Item description</div>
-                  <div style={{ fontSize: "13px", fontWeight: "600", color: "#0f172a" }}>
+              )}
+
+              {/* Prominent Description View/Edit */}
+              {isDescriptionLocked ? (
+                <div style={{ marginBottom: "12px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                      <label style={{ fontSize: "11px", fontWeight: "600", color: "#64748b" }}>Item description</label>
+                      {isRealBill ? <SyncIcon /> : <LockIcon />}
+                    </div>
+                    {isRealBill && (
+                      <span style={{ fontSize: "10px", color: "#64748b", fontWeight: "500" }}>Synced from accounting</span>
+                    )}
+                  </div>
+                  <div
+                    style={{
+                      padding: "8px 10px",
+                      fontSize: "13px",
+                      color: "#0f172a",
+                      background: sc.bg,
+                      border: `1px solid ${sc.border}`,
+                      borderRadius: "5px",
+                      cursor: "not-allowed",
+                      boxSizing: "border-box",
+                      minHeight: "36px",
+                      display: "flex",
+                      alignItems: "center",
+                    }}
+                    title={lockTooltip}
+                  >
                     {(() => {
                       if (!b.description) return "(No description provided)";
                       const bracketMatch = b.description.match(/^([^(]+?)\s*[\(\[]([^)\]]+)[\)\]]$/);
@@ -402,43 +538,122 @@ export default function OutgoingsEditModal({ editCellData, outgoingsData, update
                     })()}
                   </div>
                 </div>
+              ) : (
+                <div style={{ marginBottom: "12px" }}>
+                  <label style={{ fontSize: "11px", fontWeight: "600", color: "#64748b", display: "block", marginBottom: "4px" }}>Description</label>
+                  <input
+                    type="text"
+                    value={b.description || ""}
+                    placeholder="e.g. Freelance design services"
+                    onChange={(e) => updateBlock(i, "description", e.target.value)}
+                    style={{ width: "100%", padding: "7px 10px", border: "1px solid #cbd5e1", borderRadius: "5px", fontSize: "13px", backgroundColor: "#ffffff", boxSizing: "border-box" }}
+                  />
+                </div>
               )}
 
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1.2fr", gap: "10px" }}>
                 <div>
-                  <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "3px" }}>Amount</label>
-                  <input type="number" step="0.01" value={b.amount} onChange={e => updateBlock(i, "amount", parseFloat(e.target.value) || 0)}
-                    style={{ width: "100%", padding: "7px 9px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "13px", boxSizing: "border-box" }} />
+                  <div style={{ display: "flex", alignItems: "center", gap: "4px", marginBottom: "3px" }}>
+                    <label style={{ fontSize: "11px", color: "#64748b" }}>Amount</label>
+                    {isAmountLocked && (isRealBill ? <SyncIcon /> : <LockIcon />)}
+                  </div>
+                  {isAmountLocked ? (
+                    <div
+                      style={{
+                        ...lockedBoxStyle,
+                        fontWeight: "600",
+                      }}
+                      title={lockTooltip}
+                    >
+                      £{Number(b.amount || 0).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </div>
+                  ) : (
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={b.amount}
+                      onChange={(e) => updateBlock(i, "amount", parseFloat(e.target.value) || 0)}
+                      style={{ width: "100%", padding: "7px 9px", border: "1px solid #cbd5e1", borderRadius: "5px", fontSize: "13px", backgroundColor: "#ffffff", boxSizing: "border-box" }}
+                    />
+                  )}
                 </div>
                 <div>
-                  <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "3px" }}>Status</label>
-                  <div style={{ padding: "7px 9px", fontSize: "13px", fontWeight: "600", color: sc.text }}>{b.status || "-"}</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: "4px", marginBottom: "3px" }}>
+                    <label style={{ fontSize: "11px", color: "#64748b" }}>Status</label>
+                    {isRealBill ? <SyncIcon /> : <LockIcon />}
+                  </div>
+                  <div
+                    style={{
+                      ...lockedBoxStyle,
+                      fontWeight: "600",
+                      color: sc.text,
+                    }}
+                  >
+                    {b.status || "-"}
+                  </div>
                 </div>
                 <div>
-                  <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "3px" }}>Rec date</label>
-                  <div style={{ padding: "7px 9px", fontSize: "13px", color: "#334155" }}>{b.recDate || "-"}</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: "4px", marginBottom: "3px" }}>
+                    <label style={{ fontSize: "11px", color: "#64748b" }}>Rec date</label>
+                    {isRealBill ? <SyncIcon /> : <LockIcon />}
+                  </div>
+                  <div
+                    style={{
+                      ...lockedBoxStyle,
+                      color: "#334155",
+                    }}
+                  >
+                    {b.recDate || "-"}
+                  </div>
                 </div>
                 <div>
-                  <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "3px" }}>Pay date</label>
-                  {isManual ? (
-                    <CalendarDatePicker value={b.payDate} onChange={val => updateBlock(i, "payDate", val)} />
-                  ) : <div style={{ padding: "7px 9px", fontSize: "13px", color: "#334155" }}>{b.payDate || "-"}</div>}
+                  <div style={{ display: "flex", alignItems: "center", gap: "4px", marginBottom: "3px" }}>
+                    <label style={{ fontSize: "11px", color: "#64748b" }}>Pay date</label>
+                    {!canEditPayDate && (isRealBill ? <SyncIcon /> : <LockIcon />)}
+                  </div>
+                  {canEditPayDate ? (
+                    <CalendarDatePicker value={b.payDate} onChange={(val) => updateBlock(i, "payDate", val)} />
+                  ) : (
+                    <div
+                      style={{
+                        ...lockedBoxStyle,
+                        color: "#334155",
+                      }}
+                      title={isAutoLocked ? "Automatic placeholder. Convert to manual placeholder to edit." : "Pay date is recorded in accounting software for paid bills."}
+                    >
+                      {b.payDate || "-"}
+                    </div>
+                  )}
                 </div>
               </div>
+
               <div style={{ marginTop: "10px", borderTop: "1px solid rgba(0,0,0,0.06)", paddingTop: "10px" }}>
-                <div style={{ fontSize: "11px", color: "#888", marginBottom: "6px" }}>Split portion to another month:</div>
+                <div style={{ fontSize: "11px", color: "#666", marginBottom: "6px" }}>Split portion to another month:</div>
                 <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
                   {[...(prevMonth ? [{ m: prevMonth, dir: "◀" }] : []), ...(nextMonth ? [{ m: nextMonth, dir: "▶" }] : [])].map(({ m, dir }) => {
                     const key = `${i}_${m.colLetter}`;
                     return (
                       <div key={m.colLetter} style={{ display: "flex", alignItems: "center", gap: "4px" }}>
                         <span style={{ fontSize: "11px", color: "#666" }}>{dir} {fmtMonthLabel(m.isoMonth || m.label)}:</span>
-                        <input type="number" step="0.01" value={splitAmts[key] || ""}
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={splitAmts[key] || ""}
                           onChange={e => setSplitAmts(prev => ({ ...prev, [key]: e.target.value }))}
-                          placeholder="amt" style={{ width: "70px", padding: "4px 6px", border: "1px solid #ddd", borderRadius: "4px", fontSize: "12px" }} />
-                        <button onClick={() => doSplit(i, m.colLetter, splitAmts[key])}
-                          disabled={!splitAmts[key] || parseFloat(splitAmts[key]) <= 0 || parseFloat(splitAmts[key]) >= b.amount}
-                          style={{ padding: "4px 8px", background: "#f0f4ff", border: "1px solid #c5cff0", borderRadius: "4px", cursor: "pointer", fontSize: "11px", color: "#3a57c4" }}>Split</button>
+                          placeholder="amt"
+                          disabled={isAutoLocked}
+                          title={isAutoLocked ? "Convert to manual placeholder to split" : undefined}
+                          style={{ width: "70px", padding: "4px 6px", border: "1px solid #ddd", borderRadius: "4px", fontSize: "12px", backgroundColor: isAutoLocked ? "#f8fafc" : "#ffffff", cursor: isAutoLocked ? "not-allowed" : "text" }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => doSplit(i, m.colLetter, splitAmts[key])}
+                          disabled={isAutoLocked || !splitAmts[key] || parseFloat(splitAmts[key]) <= 0 || parseFloat(splitAmts[key]) >= b.amount}
+                          title={isAutoLocked ? "Convert to manual placeholder to split" : undefined}
+                          style={{ padding: "4px 8px", background: isAutoLocked ? "#f1f5f9" : "#f0f4ff", border: "1px solid #c5cff0", borderRadius: "4px", cursor: isAutoLocked ? "not-allowed" : "pointer", fontSize: "11px", color: isAutoLocked ? "#94a3b8" : "#3a57c4" }}
+                        >
+                          Split
+                        </button>
                       </div>
                     );
                   })}
@@ -446,9 +661,12 @@ export default function OutgoingsEditModal({ editCellData, outgoingsData, update
                 </div>
               </div>
               <div style={{ marginTop: "8px", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
-                <span style={{ fontSize: "11px", color: "#888" }}>Move to:</span>
-                <select value="" onChange={e => doMove(i, e.target.value)}
-                  style={{ padding: "4px 6px", border: "1px solid #ddd", borderRadius: "4px", fontSize: "11px" }}>
+                <span style={{ fontSize: "11px", color: "#666" }}>Move to:</span>
+                <select
+                  value=""
+                  onChange={e => doMove(i, e.target.value)}
+                  style={{ padding: "4px 6px", border: "1px solid #ddd", borderRadius: "4px", fontSize: "11px", backgroundColor: "#ffffff" }}
+                >
                   <option value="">- select month -</option>
                   {(outgoingsData?.months || []).filter(m => m.colLetter !== colLetter).map(m => (
                     <option key={m.colLetter} value={m.colLetter}>{fmtMonthLabel(m.isoMonth || m.label)}</option>
@@ -570,7 +788,6 @@ export default function OutgoingsEditModal({ editCellData, outgoingsData, update
             <label style={{ fontSize: "12px", fontWeight: 700, color: "#334155" }}>
               Cell note
             </label>
-            <span style={{ fontSize: "11px", color: "#64748b" }}>Synced to Google Sheet cell note</span>
           </div>
           <textarea
             value={topNote}

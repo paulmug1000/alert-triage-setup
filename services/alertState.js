@@ -1,7 +1,7 @@
 import { redisClient } from "./redisClient.js";
 import { getSheetsClient, extractSheetIdFromUrl } from "./sheetsClient.js";
 import {
-  readAlertMemory, updateAlertMemoryRow, updateAlertMemoryRowsBatch, appendAlertMemoryRow,
+  readAlertMemory, updateAlertMemoryRow, updateAlertMemoryRowsBatch, appendAlertMemoryRow, appendAlertMemoryRowsBatch,
   ensureAlertMemoryTab, findMemoryRow, buildAlertFingerprint,
   extractCrmComparisonSnapshot, deleteAlertMemoryRows, updateHandledAlertHash
 } from "./alertMemory.js";
@@ -285,6 +285,131 @@ export async function handleResolveNoActionFlag(req, res, sheets) {
   }
 }
 
+export async function handleBulkResolveNoActionFlags(req, res, sheets) {
+  const { sessionId, clientName, flags = [], clearedFlagKeys = [], automationCommanderSheetId: acIdResolve } = req.body;
+  if (!sessionId || !clientName) return res.status(400).json({ success: false, error: "Missing required fields" });
+  if (!Array.isArray(flags) || flags.length === 0) return res.status(200).json({ success: true, count: 0 });
+
+  try {
+    const sessionData = await redisClient.get(`triage_alerts:${sessionId}`);
+    if (sessionData) {
+      const parsed = JSON.parse(sessionData);
+      if (!parsed.resolvedNoActionFlags) parsed.resolvedNoActionFlags = [];
+
+      for (const flag of flags) {
+        const resolvedId = flag.fingerprintHash || flag.flagType;
+        const key = `${clientName}___${resolvedId}`;
+        if (!parsed.resolvedNoActionFlags.includes(key)) {
+          parsed.resolvedNoActionFlags.push(key);
+        }
+      }
+
+      if (clearedFlagKeys.length > 0) {
+        const keysToZero = new Set(clearedFlagKeys);
+        if (parsed.alerts) {
+          parsed.alerts = parsed.alerts.filter(a => {
+            if (a.clientName !== clientName) return true;
+            return !keysToZero.has(a.flagType || a.type);
+          });
+        }
+        if (parsed.noActionAlerts) {
+          parsed.noActionAlerts = parsed.noActionAlerts.filter(na => {
+            if (na.clientName && na.clientName !== clientName) return true;
+            const targetClientId = (parsed.clientsWithFlags || []).find(c => c.clientName === clientName)?.masterSheetId;
+            if (!na.clientName && na.clientId !== targetClientId) return true;
+            return !keysToZero.has(na.flagType);
+          });
+        }
+        if (parsed.clientsWithFlags) {
+          parsed.clientsWithFlags = parsed.clientsWithFlags.map(c => {
+            if (c.clientName !== clientName) return c;
+            const updatedFlags = { ...c.flags };
+            keysToZero.forEach(k => { updatedFlags[k] = false; });
+            return { ...c, flags: updatedFlags };
+          });
+        }
+      }
+
+      await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 86400 * 7 });
+    }
+
+    if (clearedFlagKeys.length > 0) {
+      try {
+        const keysToZero = new Set(clearedFlagKeys);
+        const precomputed = await redisClient.get(PRECOMPUTED_KEY);
+        if (precomputed) {
+          const parsed = JSON.parse(precomputed);
+          parsed.alerts = (parsed.alerts || []).filter(a => { if (a.clientName !== clientName) return true; return !keysToZero.has(a.flagType || a.type); });
+          if (parsed.noActionAlerts) {
+            parsed.noActionAlerts = parsed.noActionAlerts.filter(na => {
+              if (na.clientName && na.clientName !== clientName) return true;
+              const precompTargetClientId = (parsed.clientsWithFlags || []).find(c => c.clientName === clientName)?.masterSheetId;
+              if (!na.clientName && na.clientId !== precompTargetClientId) return true;
+              return !keysToZero.has(na.flagType);
+            });
+          }
+          if (parsed.clientsWithFlags) {
+            parsed.clientsWithFlags = parsed.clientsWithFlags.map(c => {
+              if (c.clientName !== clientName) return c;
+              const updatedFlags = { ...c.flags };
+              keysToZero.forEach(k => { updatedFlags[k] = false; });
+              return { ...c, flags: updatedFlags };
+            });
+          }
+          parsed.totalAlerts = (parsed.alerts || []).length;
+          parsed.noActionCount = (parsed.noActionAlerts || []).length;
+          if (parsed.noActionAnalysisResults) {
+            const richFlags = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete", "retainerInvoicesCreated", "retainerInvoicesDeleted", "invoiceStaleUnsentChanges"];
+            richFlags.forEach(flagType => { if (keysToZero.has(flagType)) delete parsed.noActionAnalysisResults[`${clientName}___${flagType}`]; });
+          }
+          await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(parsed), { EX: 86400 * 7 });
+        }
+      } catch (preErr) {
+        console.warn("⚠️ Failed updating PRECOMPUTED_KEY in handleBulkResolveNoActionFlags:", preErr.message);
+      }
+    }
+
+    if (acIdResolve) {
+      try {
+        const acIdClean = extractSheetIdFromUrl(acIdResolve) || acIdResolve;
+        const memoryRows = await readAlertMemory(sheets, acIdClean);
+        const hashesSet = new Set(flags.map(f => f.fingerprintHash).filter(Boolean));
+        const flagTypesSet = new Set(flags.map(f => f.flagType).filter(Boolean));
+
+        const toAccept = memoryRows.filter(r => {
+          if (r.clientName !== clientName || r.status !== "cached") return false;
+          if (r.fingerprintHash && hashesSet.has(r.fingerprintHash)) return true;
+          if (!r.fingerprintHash && flagTypesSet.has(r.alertType)) return true;
+          return false;
+        });
+
+        if (toAccept.length > 0) {
+          const updateItems = toAccept.map(row => ({
+            rowIndex: row.rowIndex,
+            updates: { ...row, status: "accepted" },
+          }));
+          await updateAlertMemoryRowsBatch(sheets, acIdClean, updateItems);
+        }
+      } catch (amErr) {
+        console.warn("⚠️ AlertMemory update error in handleBulkResolveNoActionFlags:", amErr.message);
+      }
+    }
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId: acIdResolve,
+      clientName,
+      category: "TRIAGE",
+      action: "Flags Resolved",
+      summary: `Resolved ${flags.length} flag${flags.length > 1 ? "s" : ""} for ${clientName}`,
+      details: { count: flags.length, clientName }
+    });
+
+    return res.status(200).json({ success: true, count: flags.length });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
 export async function handleRecordDecision(req, res, sheets) {
   const { alert, decision, automationCommanderSheetId } = req.body;
   if (!alert || !decision || !automationCommanderSheetId) return res.status(400).json({ success: false, error: "Missing alert, decision, or acId" });
@@ -398,8 +523,12 @@ export async function handleBulkIgnoreAlerts(req, res, sheets) {
           status: "ignored", ignoreReason: ignoreReason || "", dataSnapshot });
       }
     }
-    for (const u of rowsToUpdate) await updateAlertMemoryRow(sheets, acId, u.rowIndex, u.row);
-    for (const a of rowsToAppend) await appendAlertMemoryRow(sheets, acId, a);
+    if (rowsToUpdate.length > 0) {
+      await updateAlertMemoryRowsBatch(sheets, acId, rowsToUpdate.map(u => ({ rowIndex: u.rowIndex, updates: u.row })));
+    }
+    if (rowsToAppend.length > 0) {
+      await appendAlertMemoryRowsBatch(sheets, acId, rowsToAppend);
+    }
 
     const firstAlert = alertsToIgnore[0];
     const alertCat = (() => {
@@ -641,8 +770,8 @@ export async function handleBulkAcknowledgeProactiveAlerts(req, res, sheets) {
     if (updateBatchItems.length > 0) {
       await updateAlertMemoryRowsBatch(sheets, acId, updateBatchItems);
     }
-    for (const r of appendItems) {
-      await appendAlertMemoryRow(sheets, acId, r);
+    if (appendItems.length > 0) {
+      await appendAlertMemoryRowsBatch(sheets, acId, appendItems);
     }
 
     if (sessionId) {

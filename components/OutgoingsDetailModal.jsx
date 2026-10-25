@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import Spinner from "./Spinner";
 import { formatCurrency, JobDateInput, toSheetDateFormat } from "./JobsView";
 import { useAppGlobals } from "../hooks/useAppGlobals";
-import { stripRowInfo } from "../utils/helpers";
+import { stripRowInfo, isPlaceholderExpense } from "../utils/helpers";
 
 export default function OutgoingsDetailModal({
   isOpen,
@@ -560,7 +560,9 @@ export default function OutgoingsDetailModal({
             {(appIdVal || target.appId) && (
               <div style={{ marginTop: "12px", paddingTop: "10px", borderTop: "1px solid #f1f5f9", fontSize: "11px", color: "#64748b" }}>
                 <strong>App ID / Identifier:</strong>{" "}
-                <span style={{ fontFamily: "monospace", color: "#334155" }}>{appIdVal || target.appId}</span>
+                <span style={{ fontFamily: isPlaceholderExpense(appIdVal || target.appId) ? "inherit" : "monospace", color: isPlaceholderExpense(appIdVal || target.appId) ? "#6b21a8" : "#334155", fontWeight: isPlaceholderExpense(appIdVal || target.appId) ? 600 : "normal" }}>
+                  {isPlaceholderExpense(appIdVal || target.appId) ? "Placeholder - auto" : (appIdVal || target.appId)}
+                </span>
               </div>
             )}
 

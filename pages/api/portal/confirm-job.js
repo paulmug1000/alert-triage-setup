@@ -4,6 +4,7 @@ import { verifyUserAuthorizedForSheet } from "../../../services/userPermissions.
 import { redisClient } from "../../../services/redisClient.js";
 import { memoryCache } from "../../../services/cacheService.js";
 import { logPulseActivity } from "../../../services/pulseLogger.js";
+import { hasActiveCrmIntegration, isCrmDrivenTab, getCrmDisplayName } from "../../../utils/helpers.js";
 
 function colToLetter(colIndex) {
   let temp, letter = "";
@@ -87,6 +88,44 @@ export default async function handler(req, res) {
 
     if (!parentClient && !parentJobName) {
       throw new Error(`Pipeline row ${pRow} does not contain client or job name`);
+    }
+
+    // Guard: Prevent manual promotion of CRM-originated pipeline deals
+    const parentProjectCode = (parentData[2] || "").trim();
+    if (parentProjectCode) {
+      let crmTool = "None";
+      let crmDrives = "NA";
+      try {
+        const kiResp = await withRetry(() =>
+          sheets.spreadsheets.values.get({
+            spreadsheetId: clientSheetId,
+            range: "KeyInfo!Q8:Q9",
+            valueRenderOption: "FORMATTED_VALUE",
+          })
+        );
+        const kiRows = kiResp.data?.values || [];
+        if (kiRows[0]?.[0]) crmTool = String(kiRows[0][0]).trim();
+        if (kiRows[1]?.[0]) crmDrives = String(kiRows[1][0]).trim();
+      } catch (kiErr) {
+        if (redisClient?.isOpen && verifiedClientName) {
+          try {
+            const normKey = String(verifiedClientName).trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
+            const rawCfg = await redisClient.get(`pulse:setup:${normKey}`);
+            if (rawCfg) {
+              const parsed = JSON.parse(rawCfg);
+              if (parsed.crmTool) crmTool = parsed.crmTool;
+              if (parsed.crmDrives) crmDrives = parsed.crmDrives;
+            }
+          } catch (e) {}
+        }
+      }
+
+      if (hasActiveCrmIntegration(crmTool) && isCrmDrivenTab("pipeline", crmDrives)) {
+        return res.status(400).json({
+          success: false,
+          error: `Cannot manually promote a CRM pipeline deal. Please update the deal status directly in ${getCrmDisplayName(crmTool)}.`,
+        });
+      }
     }
 
     // 3. Find child rows in Pipeline (batch read up to 10 rows below)

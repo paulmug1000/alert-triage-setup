@@ -586,7 +586,7 @@ export default function SalariesView({
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-          {selectedClient && (
+          {selectedClient && !managedClient && (allOutgoingsClients || []).length > 1 && (
             <button
               type="button"
               onClick={handleBackToClients}
@@ -743,7 +743,7 @@ export default function SalariesView({
         </div>
       )}
 
-      {selectedClient && loading && !salariesData && (
+      {selectedClient && (loading || !salariesData) && !error && (
         <PmaSalariesSkeleton />
       )}
 

@@ -36,7 +36,12 @@ export function AppGlobalsProvider({ children }) {
     return null;
   });
 
-  const setManagedClient = (clientOrName) => {
+  const allClientsMapRef = useRef(allClientsMap);
+  useEffect(() => {
+    allClientsMapRef.current = allClientsMap;
+  }, [allClientsMap]);
+
+  const setManagedClient = useCallback((clientOrName) => {
     if (!clientOrName) {
       setManagedClientState(null);
       if (typeof window !== "undefined") {
@@ -45,24 +50,26 @@ export function AppGlobalsProvider({ children }) {
       return;
     }
     let clientObj = typeof clientOrName === "string" ? { clientName: clientOrName } : { ...clientOrName };
-    if (allClientsMap && clientObj.clientName && allClientsMap[clientObj.clientName]) {
-      clientObj = { ...allClientsMap[clientObj.clientName], ...clientObj };
+    const curMap = allClientsMapRef.current;
+    if (curMap && clientObj.clientName && curMap[clientObj.clientName]) {
+      clientObj = { ...curMap[clientObj.clientName], ...clientObj };
     }
     setManagedClientState(clientObj);
     if (typeof window !== "undefined") {
       try { localStorage.setItem("pma_managed_client", JSON.stringify(clientObj)); } catch {}
     }
-  };
+  }, []);
 
   // Keep managedClient sheet IDs in sync with allClientsMap
   useEffect(() => {
-    if (managedClient?.clientName && allClientsMap && allClientsMap[managedClient.clientName]) {
-      const match = allClientsMap[managedClient.clientName];
-      if (match.clientSheetId !== managedClient.clientSheetId || match.masterSheetId !== managedClient.masterSheetId) {
-        setManagedClientState(prev => prev ? ({ ...prev, ...match }) : null);
+    if (managedClient?.clientName && allClientsMap) {
+      const targetName = managedClient.clientName.toLowerCase();
+      const match = allClientsMap[managedClient.clientName] || Object.values(allClientsMap).find(c => c.clientName?.toLowerCase() === targetName);
+      if (match && (match.clientSheetId !== managedClient.clientSheetId || match.masterSheetId !== managedClient.masterSheetId)) {
+        setManagedClientState(prev => prev ? ({ ...prev, ...match }) : match);
       }
     }
-  }, [allClientsMap, managedClient?.clientName]);
+  }, [allClientsMap, managedClient?.clientName, managedClient?.clientSheetId, managedClient?.masterSheetId]);
 
   // Optimistic assignment cache TTL: 15 minutes max to avoid permanent alert suppression
   const ASSIGNED_APP_ID_TTL_MS = 15 * 60 * 1000;

@@ -2,9 +2,36 @@ import React, { useState, useEffect, useMemo } from "react";
 import Spinner from "../Spinner";
 import { PortalTableSkeleton } from "../Skeleton";
 import { formatMoney, parseMoney } from "../../services/deepDiveHelper";
-import { downloadCsv } from "../../utils/helpers";
+import { downloadCsv, isPlaceholderExpense } from "../../utils/helpers";
 import AddContractorModal from "./AddContractorModal";
 import AddExpenseModal from "./AddExpenseModal";
+import ContractorExpenseModal from "./ContractorExpenseModal";
+
+function getContractorColLetter(year, mIdx) {
+  let colIndex = 6 + mIdx; // Year 1: cols G-R (6 to 17)
+  if (year === 2) colIndex = 21 + mIdx; // Year 2: cols V-AG (21 to 32)
+  else if (year === 3) colIndex = 36 + mIdx; // Year 3: cols AK-AV (36 to 47)
+
+  let temp, letter = "";
+  let c = colIndex + 1;
+  while (c > 0) {
+    temp = (c - 1) % 26;
+    letter = String.fromCharCode(65 + temp) + letter;
+    c = Math.floor((c - temp - 1) / 26);
+  }
+  return letter;
+}
+
+const getContractorStatusPill = (status) => {
+  const s = String(status || "").trim().toLowerCase();
+  if (s === "paid") {
+    return { background: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0" };
+  }
+  if (s === "received" || s === "sent") {
+    return { background: "#e0f2fe", color: "#0369a1", border: "1px solid #bae6fd" };
+  }
+  return { background: "#f1f5f9", color: "#475569", border: "1px solid #e2e8f0" };
+};
 
 export default function PortalOutgoingsView({
   clientName,
@@ -20,6 +47,17 @@ export default function PortalOutgoingsView({
 }) {
   const outgoingsData = data?.outgoings;
   const [selectedYear, setSelectedYear] = useState(outgoingsData?.currentYear || 2); // 1, 2, 3
+  const [expandedRows, setExpandedRows] = useState(() => new Set());
+  const [contractorModalConfig, setContractorModalConfig] = useState(null);
+
+  const toggleRowExpand = (rowKey) => {
+    setExpandedRows((prev) => {
+      const next = new Set(prev);
+      if (next.has(rowKey)) next.delete(rowKey);
+      else next.add(rowKey);
+      return next;
+    });
+  };
   const [isEditing, setIsEditing] = useState(false);
   const [editValues, setEditValues] = useState({}); // { [rowNumber]: string[] (12 months) }
   const [editDeliveryPcts, setEditDeliveryPcts] = useState({}); // { [rowNumber]: string } (for Dividends)
@@ -154,6 +192,13 @@ export default function PortalOutgoingsView({
 
   const handleCellChange = (rowNumber, mIdx, val) => {
     if (isReadOnly) return;
+    if (category === "expenses" && outgoingsData?.reconciledMonths?.[selectedYear]?.[mIdx]) {
+      return;
+    }
+    const targetItem = itemsList.find((it) => it.rowNumber === rowNumber);
+    if (category === "contractors" && targetItem?.lockedCells?.[selectedYear]?.[mIdx]) {
+      return;
+    }
     setEditValues((prev) => {
       const current = prev[rowNumber] ? [...prev[rowNumber]] : new Array(12).fill(`${currencySymbol}0`);
       current[mIdx] = val;
@@ -186,12 +231,21 @@ export default function PortalOutgoingsView({
         const edits = editValues[item.rowNumber];
         if (edits) {
           const origAlloc = item.allocations?.[selectedYear] || item.monthlyAllocations || [];
-          const hasChanged = edits.some((v, idx) => v !== origAlloc[idx]);
+          const safeEdits = edits.map((v, idx) => {
+            const isLocked = category === "expenses"
+              ? Boolean(outgoingsData?.reconciledMonths?.[selectedYear]?.[idx])
+              : category === "contractors"
+                ? Boolean(item.lockedCells?.[selectedYear]?.[idx])
+                : false;
+            return isLocked ? (origAlloc[idx] !== undefined ? origAlloc[idx] : `${currencySymbol}0`) : v;
+          });
+
+          const hasChanged = safeEdits.some((v, idx) => v !== origAlloc[idx]);
 
           if (hasChanged) {
             updates.push({
               range: `Outgoings!${startCol}${item.rowNumber}:${endCol}${item.rowNumber}`,
-              values: [edits],
+              values: [safeEdits],
             });
           }
         }
@@ -462,6 +516,7 @@ export default function PortalOutgoingsView({
               borderSpacing: 0,
               fontSize: "12px",
               tableLayout: "fixed",
+              userSelect: "none",
             }}
           >
             <thead>
@@ -496,20 +551,44 @@ export default function PortalOutgoingsView({
                   </th>
                 )}
 
-                {monthHeaders.map((m, idx) => (
-                  <th
-                    key={idx}
-                    style={{
-                      padding: "6px 4px",
-                      textAlign: "right",
-                      fontWeight: 700,
-                      fontSize: "11px",
-                      width: showDeliveryPct ? "5.85%" : "6.1%",
-                    }}
-                  >
-                    {m}
-                  </th>
-                ))}
+                {monthHeaders.map((m, idx) => {
+                  const isMonthReconciled = category === "expenses" && Boolean(outgoingsData?.reconciledMonths?.[selectedYear]?.[idx]);
+                  return (
+                    <th
+                      key={idx}
+                      style={{
+                        padding: "6px 4px",
+                        textAlign: "right",
+                        fontWeight: 700,
+                        fontSize: "11px",
+                        width: showDeliveryPct ? "5.85%" : "6.1%",
+                        background: isMonthReconciled ? "#003b8e" : "#0047AB",
+                        color: isMonthReconciled ? "#e2e8f0" : "#ffffff",
+                      }}
+                      title={isMonthReconciled ? "This month contains actuals and is locked" : undefined}
+                    >
+                      <div style={{ display: "inline-flex", alignItems: "center", justifyContent: "flex-end", gap: "3px" }}>
+                        {isMonthReconciled && (
+                          <svg
+                            width="10"
+                            height="10"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2.5"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            style={{ opacity: 0.85 }}
+                          >
+                            <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                          </svg>
+                        )}
+                        <span>{m}</span>
+                      </div>
+                    </th>
+                  );
+                })}
 
                 <th
                   style={{
@@ -569,10 +648,35 @@ export default function PortalOutgoingsView({
                           overflow: "hidden",
                           textOverflow: "ellipsis",
                           whiteSpace: "nowrap",
+                          verticalAlign: "top",
                         }}
                         title={item.name}
                       >
-                        {item.name}
+                        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                          {category === "contractors" && (
+                            <button
+                              type="button"
+                              onClick={() => toggleRowExpand(item.rowNumber || idx)}
+                              style={{
+                                background: "none",
+                                border: "none",
+                                cursor: "pointer",
+                                color: "#0047AB",
+                                fontSize: "11px",
+                                padding: "2px 4px",
+                                lineHeight: 1,
+                                display: "inline-flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                borderRadius: "4px",
+                              }}
+                              title={expandedRows.has(item.rowNumber || idx) ? "Collapse breakdown" : "Expand breakdown"}
+                            >
+                              {expandedRows.has(item.rowNumber || idx) ? "▼" : "▶"}
+                            </button>
+                          )}
+                          <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{item.name}</span>
+                        </div>
                       </td>
 
                       {/* Delivery % column for Dividends */}
@@ -584,6 +688,7 @@ export default function PortalOutgoingsView({
                             fontSize: "11px",
                             fontWeight: 500,
                             color: "#334155",
+                            verticalAlign: "top",
                           }}
                         >
                           {isEditing ? (
@@ -601,11 +706,151 @@ export default function PortalOutgoingsView({
                       )}
 
                       {/* 12 monthly columns */}
-                      {monthHeaders.map((_, mIdx) => {
+                      {monthHeaders.map((mLabel, mIdx) => {
+                        const isRowExpanded = category === "contractors" && expandedRows.has(item.rowNumber || idx);
+                        const isCellLocked = category === "expenses"
+                          ? Boolean(outgoingsData?.reconciledMonths?.[selectedYear]?.[mIdx])
+                          : category === "contractors"
+                            ? Boolean(item.lockedCells?.[selectedYear]?.[mIdx])
+                            : false;
+
                         const rawCell = currentAllocs[mIdx] !== undefined ? currentAllocs[mIdx] : `${currencySymbol}0`;
                         const val = (isEditing && typeof rawCell === "string" && rawCell.includes("£") && currencySymbol !== "£")
                           ? formatMoney(parseMoney(rawCell, thousandsSeparator), 0, currencySymbol, thousandsSeparator)
                           : rawCell;
+
+                        const lockTooltip = category === "expenses"
+                          ? "This month contains actuals and is locked"
+                          : "Synced from accounting software. Only cells exclusively made up of placeholders can be edited.";
+
+                        if (category === "contractors" && isRowExpanded) {
+                          const monthBlocks = item.monthlyBlocks?.[selectedYear]?.[mIdx] || [];
+                          const colLetter = getContractorColLetter(selectedYear, mIdx);
+
+                          return (
+                            <td
+                              key={mIdx}
+                              style={{
+                                padding: "6px 4px",
+                                verticalAlign: "top",
+                                textAlign: "right",
+                                fontSize: "11px",
+                                background: isCellLocked ? "#f8fafc" : "#ffffff",
+                                borderRight: "1px solid #f1f5f9",
+                              }}
+                            >
+                              {/* Cell Total at top */}
+                              <div style={{ fontWeight: 700, fontSize: "11px", color: "#0047AB", marginBottom: "4px" }}>
+                                {formatGBP(val)}
+                              </div>
+
+                              {/* Breakdown of items */}
+                              <div style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
+                                {monthBlocks.map((b, bIdx) => {
+                                  const status = b.status || (isPlaceholderExpense(b.appId, b.description, b.status) ? "Placeholder" : "Received");
+                                  const statusDisplay = String(status).toLowerCase() === "placeholder" ? "Placeh." : status;
+                                  const statusStyle = getContractorStatusPill(status);
+                                  return (
+                                    <div
+                                      key={b.appId || bIdx}
+                                      onClick={() => {
+                                        setContractorModalConfig({
+                                          item: b,
+                                          contractor: item,
+                                          colLetter,
+                                          monthLabel: mLabel,
+                                          allBlocks: monthBlocks,
+                                          selectedYear,
+                                          mIdx,
+                                        });
+                                      }}
+                                      title={`Click to edit · ${b.description || "Expense"} · ${status}`}
+                                      style={{
+                                        padding: "2px 5px",
+                                        borderRadius: "4px",
+                                        background: statusStyle.background,
+                                        color: statusStyle.color,
+                                        border: statusStyle.border,
+                                        fontSize: "10px",
+                                        cursor: "pointer",
+                                        display: "flex",
+                                        alignItems: "center",
+                                        justifyContent: "space-between",
+                                        gap: "4px",
+                                        textAlign: "left",
+                                        whiteSpace: "nowrap",
+                                        overflow: "hidden",
+                                        textOverflow: "ellipsis",
+                                        boxShadow: "0 1px 2px rgba(0,0,0,0.02)",
+                                      }}
+                                    >
+                                      <span style={{ fontWeight: 600 }}>{formatGBP(b.amount)}</span>
+                                      <span style={{ fontSize: "9px", opacity: 0.9 }}>{statusDisplay}</span>
+                                    </div>
+                                  );
+                                })}
+
+                                {/* Add amount / item button */}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setContractorModalConfig({
+                                      item: null,
+                                      contractor: item,
+                                      colLetter,
+                                      monthLabel: mLabel,
+                                      allBlocks: monthBlocks,
+                                      selectedYear,
+                                      mIdx,
+                                    });
+                                  }}
+                                  title={`Add expense for ${item.name} (${mLabel})`}
+                                  style={{
+                                    marginTop: "2px",
+                                    padding: "2px 4px",
+                                    background: "#ffffff",
+                                    border: "1px dashed #cbd5e1",
+                                    borderRadius: "4px",
+                                    color: "#0047AB",
+                                    fontSize: "10px",
+                                    fontWeight: 700,
+                                    cursor: "pointer",
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: "center",
+                                    gap: "2px",
+                                    width: "100%",
+                                    boxSizing: "border-box",
+                                  }}
+                                >
+                                  <span>+</span>
+                                </button>
+                              </div>
+                            </td>
+                          );
+                        }
+
+                        if (category === "contractors") {
+                          // Unexpanded contractor cell: clicking on amount expands the row!
+                          return (
+                            <td
+                              key={mIdx}
+                              onClick={() => toggleRowExpand(item.rowNumber || idx)}
+                              style={{
+                                padding: "4px 4px",
+                                textAlign: "right",
+                                fontSize: "11px",
+                                background: isCellLocked ? "#f8fafc" : "transparent",
+                                color: "#0f172a",
+                                cursor: "pointer",
+                                verticalAlign: "top",
+                              }}
+                              title="Click to view item breakdown"
+                            >
+                              {formatGBP(val)}
+                            </td>
+                          );
+                        }
 
                         return (
                           <td
@@ -614,9 +859,14 @@ export default function PortalOutgoingsView({
                               padding: "4px 4px",
                               textAlign: "right",
                               fontSize: "11px",
+                              background: isCellLocked ? "#f8fafc" : "transparent",
+                              color: isCellLocked ? "#64748b" : "#0f172a",
+                              cursor: isCellLocked ? "not-allowed" : "default",
+                              verticalAlign: "top",
                             }}
+                            title={isCellLocked ? lockTooltip : undefined}
                           >
-                            {isEditing ? (
+                            {isEditing && !isCellLocked ? (
                               <input
                                 type="text"
                                 value={val}
@@ -639,6 +889,7 @@ export default function PortalOutgoingsView({
                           color: "#0047AB",
                           fontSize: "11.5px",
                           background: idx % 2 === 0 ? "#ffffff" : "#fbfcfe",
+                          verticalAlign: "top",
                         }}
                       >
                         {formatGBP(liveTotal)}
@@ -752,34 +1003,32 @@ export default function PortalOutgoingsView({
 
         {/* Controls */}
         <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-          {isEditing ? (
-            <>
-              {/* Add New Item Button in Edit Mode */}
-              {category === "contractors" && (
-                <button
-                  type="button"
-                  onClick={() => setShowAddContractorModal(true)}
-                  disabled={isSaving}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "6px",
-                    background: "#ffffff",
-                    border: "1px solid #0047AB",
-                    color: "#0047AB",
-                    padding: "5px 12px",
-                    borderRadius: "6px",
-                    fontSize: "12.5px",
-                    fontWeight: 600,
-                    cursor: "pointer",
-                    boxShadow: "0 1px 2px rgba(0, 71, 171, 0.08)",
-                  }}
-                >
-                  <span style={{ fontSize: "15px", lineHeight: "1", fontWeight: 700 }}>+</span>
-                  <span>Add new contractor</span>
-                </button>
-              )}
+          {category === "contractors" && !isReadOnly && (
+            <button
+              type="button"
+              onClick={() => setShowAddContractorModal(true)}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "6px",
+                background: "#ffffff",
+                border: "1px solid #0047AB",
+                color: "#0047AB",
+                padding: "5px 12px",
+                borderRadius: "6px",
+                fontSize: "12.5px",
+                fontWeight: 600,
+                cursor: "pointer",
+                boxShadow: "0 1px 2px rgba(0, 71, 171, 0.08)",
+              }}
+            >
+              <span style={{ fontSize: "15px", lineHeight: "1", fontWeight: 700 }}>+</span>
+              <span>Add new contractor</span>
+            </button>
+          )}
 
+          {category !== "contractors" && isEditing && (
+            <>
               {category === "expenses" && (
                 <button
                   type="button"
@@ -845,33 +1094,33 @@ export default function PortalOutgoingsView({
                 <span>{isSaving ? "Saving..." : "Save"}</span>
               </button>
             </>
-          ) : (
-            !isReadOnly && (
-              <button
-                type="button"
-                onClick={handleStartEdit}
-                title={`Edit ${pageTitle.toLowerCase()}`}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "6px",
-                  background: "#ffffff",
-                  border: "1px solid #cbd5e1",
-                  borderRadius: "6px",
-                  padding: "5px 12px",
-                  fontSize: "12.5px",
-                  fontWeight: 600,
-                  color: "#0047AB",
-                  cursor: "pointer",
-                }}
-              >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
-                </svg>
-                <span>Edit</span>
-              </button>
-            )
+          )}
+
+          {category !== "contractors" && !isEditing && !isReadOnly && (
+            <button
+              type="button"
+              onClick={handleStartEdit}
+              title={`Edit ${pageTitle.toLowerCase()}`}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "6px",
+                background: "#ffffff",
+                border: "1px solid #cbd5e1",
+                borderRadius: "6px",
+                padding: "5px 12px",
+                fontSize: "12.5px",
+                fontWeight: 600,
+                color: "#0047AB",
+                cursor: "pointer",
+              }}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+              </svg>
+              <span>Edit</span>
+            </button>
           )}
 
           <button
@@ -1045,6 +1294,50 @@ export default function PortalOutgoingsView({
           clientName={clientName}
           onClose={() => setShowAddExpenseModal(false)}
           onSuccess={handleExpenseCreated}
+        />
+      )}
+
+      {/* Contractor Expense Modal */}
+      {contractorModalConfig && (
+        <ContractorExpenseModal
+          isOpen={true}
+          item={contractorModalConfig.item}
+          contractor={contractorModalConfig.contractor}
+          colLetter={contractorModalConfig.colLetter}
+          monthLabel={contractorModalConfig.monthLabel}
+          allBlocks={contractorModalConfig.allBlocks}
+          clientSheetId={clientSheetId}
+          clientName={clientName}
+          onClose={() => setContractorModalConfig(null)}
+          onSaveSuccess={(updatedBlocks) => {
+            const { contractor, selectedYear: sYr, mIdx } = contractorModalConfig;
+            if (contractor) {
+              if (!contractor.monthlyBlocks) {
+                contractor.monthlyBlocks = { 1: Array.from({ length: 12 }, () => []), 2: Array.from({ length: 12 }, () => []), 3: Array.from({ length: 12 }, () => []) };
+              }
+              if (!contractor.monthlyBlocks[sYr]) {
+                contractor.monthlyBlocks[sYr] = Array.from({ length: 12 }, () => []);
+              }
+              contractor.monthlyBlocks[sYr][mIdx] = updatedBlocks;
+
+              const newTotal = updatedBlocks.reduce((sum, b) => sum + (parseFloat(b.amount) || 0), 0);
+              const formattedVal = formatGBP(newTotal);
+
+              setOptimisticAllocs((prev) => {
+                const yrAllocs = prev[sYr] || {};
+                const curRowAllocs = [...(yrAllocs[contractor.rowNumber] || contractor.allocations?.[sYr] || contractor.monthlyAllocations || [])];
+                curRowAllocs[mIdx] = formattedVal;
+                return {
+                  ...prev,
+                  [sYr]: {
+                    ...yrAllocs,
+                    [contractor.rowNumber]: curRowAllocs,
+                  },
+                };
+              });
+            }
+            if (onRefresh) onRefresh();
+          }}
         />
       )}
 

@@ -36,18 +36,22 @@ export default function RetainersView({
   useEffect(() => {
     if (managedClient) {
       const currentName = managedClient.clientName?.toLowerCase();
-      if (prevManagedClientRef.current !== currentName) {
+      const hasFullClient = Boolean(retainersClient?.clientSheetId);
+      const clientWithSheet = (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === currentName && c.clientSheetId) || (managedClient.clientSheetId ? managedClient : null);
+      if (prevManagedClientRef.current !== currentName || (!hasFullClient && clientWithSheet)) {
         prevManagedClientRef.current = currentName;
-        const clientObj = (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === currentName) || managedClient;
+        const clientObj = clientWithSheet || (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === currentName) || managedClient;
         setRetainersClient(clientObj);
-        loadRetainersJobs(clientObj);
+        if (clientObj?.clientSheetId) {
+          loadRetainersJobs(clientObj);
+        }
       }
     } else if (prevManagedClientRef.current) {
       prevManagedClientRef.current = null;
       setRetainersClient(null);
       setRetainersJobs(null);
     }
-  }, [managedClient, allOutgoingsClients]);
+  }, [managedClient, allOutgoingsClients, retainersClient?.clientSheetId]);
 
   const noRetClient = !retainersClient && !managedClient;
 
@@ -131,7 +135,7 @@ export default function RetainersView({
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-          {retainersClient && (
+          {retainersClient && !managedClient && (allOutgoingsClients || []).length > 1 && (
             <button
               type="button"
               onClick={() => {

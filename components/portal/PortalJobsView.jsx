@@ -8,6 +8,8 @@ import {
   isPlaceholderInvoice,
   isPlaceholderExpense,
   hasActiveAccountingIntegration,
+  isCrmDeal,
+  getCrmDisplayName,
   INVOICE_STATUS_OPTIONS,
   EXPENSE_STATUS_OPTIONS,
   canonicalizeInvoiceStatus,
@@ -15,6 +17,12 @@ import {
 } from "../../utils/helpers";
 import { parseSplitString, formatSplitString } from "../../services/splitHelper";
 import InvoicesNewJobModal from "../InvoicesNewJobModal";
+import CrmSyncBadge, { CrmSyncIcon } from "../CrmSyncBadge";
+import PlaceholderPill, {
+  isAutoPlaceholder,
+  generatePlaceholderInvoiceRef,
+  generatePlaceholderExpenseId
+} from "../PlaceholderPill";
 
 export default function PortalJobsView({
   clientName,
@@ -35,6 +43,7 @@ export default function PortalJobsView({
   const [isSaving, setIsSaving] = useState(false);
   const [isConfirming, setIsConfirming] = useState(false);
   const [saveError, setSaveError] = useState(null);
+  const [underAllocationPrompt, setUnderAllocationPrompt] = useState(null); // null or { message }
   const [optimisticJobs, setOptimisticJobs] = useState({}); // { [key]: job }
   const [enableSplit, setEnableSplit] = useState(false);
   const [lockedMonths, setLockedMonths] = useState({});
@@ -52,6 +61,21 @@ export default function PortalJobsView({
     if (data?.hasAccountingIntegration !== undefined) return Boolean(data.hasAccountingIntegration);
     return hasActiveAccountingIntegration(data?.accountingTool);
   }, [data?.hasAccountingIntegration, data?.accountingTool]);
+
+  const crmTool = data?.crmTool || "None";
+  const crmDrives = data?.crmDrives || "NA";
+  const crmDisplayName = useMemo(() => getCrmDisplayName(crmTool), [crmTool]);
+  const isEditingCrmDeal = useMemo(() => isCrmDeal(editingJob, crmTool, crmDrives), [editingJob, crmTool, crmDrives]);
+  const isEditingCrmPipelineDeal = useMemo(() => {
+    return isEditingCrmDeal && String(editingJob?.type || editingJob?.tabName || "").toLowerCase() === "pipeline";
+  }, [isEditingCrmDeal, editingJob?.type, editingJob?.tabName]);
+  const crmLockedTooltip = isEditingCrmDeal ? "Locked - syncing with CRM data" : undefined;
+  const getCrmInputStyle = (isSelect = false) => ({
+    ...formInputStyle,
+    cursor: isEditingCrmDeal ? "not-allowed" : (isSelect ? "pointer" : "text"),
+    backgroundColor: isEditingCrmDeal ? "#f8fafc" : "#ffffff",
+    opacity: isEditingCrmDeal ? 0.85 : 1,
+  });
 
   const candidateTargetJobs = useMemo(() => {
     const currentKey = editingJob?.id !== undefined ? editingJob.id : editingJob?.rowNumber;
@@ -569,6 +593,10 @@ export default function PortalJobsView({
 
   const handleConfirmJob = async () => {
     if (isReadOnly || !editingJob?.rowNumber) return;
+    if (isEditingCrmPipelineDeal) {
+      setSaveError(`CRM pipeline deals cannot be manually promoted to confirmed. This must be updated directly in ${crmDisplayName}.`);
+      return;
+    }
     setIsConfirming(true);
     setSaveError(null);
     try {
@@ -638,17 +666,68 @@ export default function PortalJobsView({
     }
   };
 
-  const handleSaveJob = async (e) => {
+  const handleSaveJob = async (e, bypassUnderAllocationWarning = false) => {
     if (e && typeof e.preventDefault === "function") e.preventDefault();
     if (isReadOnly) return;
     if (!editingJob.client?.trim() || !editingJob.jobName?.trim()) {
-      setSaveError("Client name and Job name are required.");
+      setSaveError("Client name and job name are required.");
+      return;
+    }
+
+    if (isEditingCrmPipelineDeal && String(editingJob?.type || "").toLowerCase() === "confirmed") {
+      setSaveError(`CRM pipeline deals cannot be manually promoted to confirmed. This must be updated directly in ${crmDisplayName}.`);
       return;
     }
 
     if (enableSplit && isSplitError) {
-      setSaveError(splitErrorText || "Please resolve the errors in the Uneven Revenue Split section before saving.");
+      setSaveError(splitErrorText || "Please resolve the errors in the Uneven revenue split section before saving.");
       return;
+    }
+
+    // Over-allocation & under-allocation checks
+    const parsedRev = parseMoney(editingJob.revenue);
+    const jobRevenue = isNaN(parsedRev) ? 0 : parsedRev;
+    const totalInvoices = (editingJob.invoices || []).reduce((acc, inv) => {
+      const amt = parseMoney(inv.amount);
+      return acc + (isNaN(amt) ? 0 : amt);
+    }, 0);
+
+    const parsedDc = parseMoney(editingJob.directCosts);
+    const jobDirectCosts = isNaN(parsedDc) ? 0 : parsedDc;
+    const totalExpenses = (editingJob.directExpenses || []).reduce((acc, exp) => {
+      const amt = parseMoney(exp.amount);
+      return acc + (isNaN(amt) ? 0 : amt);
+    }, 0);
+
+    // Over-allocation check (invoices)
+    if (totalInvoices > jobRevenue + 0.01) {
+      setSaveError(`Total invoices (${formatGBP(totalInvoices)}) exceed job revenue (${formatGBP(jobRevenue)}). Please adjust the job revenue or your manual placeholders before saving.`);
+      return;
+    }
+
+    // Over-allocation check (direct expenses)
+    if (totalExpenses > jobDirectCosts + 0.01) {
+      setSaveError(`Total direct expenses (${formatGBP(totalExpenses)}) exceed job direct costs (${formatGBP(jobDirectCosts)}). Please adjust the job direct costs or your manual placeholders before saving.`);
+      return;
+    }
+
+    // Under-allocation warning check
+    if (!bypassUnderAllocationWarning) {
+      const invGap = jobRevenue > totalInvoices + 0.01 ? jobRevenue - totalInvoices : 0;
+      const expGap = jobDirectCosts > totalExpenses + 0.01 ? jobDirectCosts - totalExpenses : 0;
+
+      if (invGap > 0 || expGap > 0) {
+        let msg = "";
+        if (invGap > 0 && expGap > 0) {
+          msg = `Invoices and direct expenses do not match revenue and direct costs. New automatic placeholders will be created to fill the remaining gaps of ${formatGBP(invGap)} for invoices and ${formatGBP(expGap)} for direct expenses. Would you like to proceed?`;
+        } else if (invGap > 0) {
+          msg = `Invoices do not match revenue. New automatic placeholders will be created to fill the remaining gap of ${formatGBP(invGap)}. Would you like to proceed?`;
+        } else {
+          msg = `Direct expenses do not match direct costs. New automatic placeholders will be created to fill the remaining gap of ${formatGBP(expGap)}. Would you like to proceed?`;
+        }
+        setUnderAllocationPrompt({ message: msg });
+        return;
+      }
     }
 
     setIsSaving(true);
@@ -1057,6 +1136,7 @@ export default function PortalJobsView({
               ) : (
                 paginatedJobs.map((job, idx) => {
                   const isConfirmed = job.type === "Confirmed";
+                  const isJobFromCrm = isCrmDeal(job, crmTool, crmDrives);
 
                   return (
                     <tr
@@ -1076,18 +1156,21 @@ export default function PortalJobsView({
                     >
                       {/* Status */}
                       <td style={{ padding: "10px 12px" }}>
-                        <span
-                          style={{
-                            padding: "2px 8px",
-                            borderRadius: "10px",
-                            fontSize: "11.5px",
-                            fontWeight: 700,
-                            background: isConfirmed ? "#dcfce7" : "#e0f2fe",
-                            color: isConfirmed ? "#166534" : "#0369a1",
-                          }}
-                        >
-                          {job.type}
-                        </span>
+                        <div style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                          <span
+                            style={{
+                              padding: "2px 8px",
+                              borderRadius: "10px",
+                              fontSize: "11.5px",
+                              fontWeight: 700,
+                              background: isConfirmed ? "#dcfce7" : "#e0f2fe",
+                              color: isConfirmed ? "#166534" : "#0369a1",
+                            }}
+                          >
+                            {job.type}
+                          </span>
+                          {isJobFromCrm && <CrmSyncBadge crmDisplayName={crmDisplayName} />}
+                        </div>
                       </td>
 
                       {/* Client & Job Name */}
@@ -1259,7 +1342,7 @@ export default function PortalJobsView({
             >
               <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
                 <h3 style={{ margin: 0, fontSize: "1.25rem", fontWeight: 700, color: "#0047AB" }}>
-                  {isReadOnly ? "View Job" : (editingJob.rowNumber ? "Edit Job" : "Add New Job")}
+                  {isReadOnly ? "View Job" : (editingJob.rowNumber ? "Edit job" : "Add New Job")}
                 </h3>
                 {isReadOnly && (
                   <span
@@ -1321,37 +1404,67 @@ export default function PortalJobsView({
               {/* Form */}
               <form id="job-modal-form" onSubmit={handleSaveJob} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
                 <fieldset disabled={isReadOnly} style={{ border: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: "1rem" }}>
+                  {isEditingCrmDeal && (
+                    <div style={{ marginBottom: "-0.25rem" }}>
+                      <span
+                        title={crmDisplayName ? `Synced with ${crmDisplayName}` : "Synced with CRM"}
+                        style={{
+                          fontSize: "11px",
+                          fontWeight: "normal",
+                          color: "#64748b",
+                          background: "#f1f5f9",
+                          padding: "2px 7px",
+                          borderRadius: "4px",
+                          border: "1px solid #e2e8f0",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "5px",
+                        }}
+                      >
+                        <CrmSyncIcon size={11} color="#64748b" />
+                        <span>Syncing with CRM</span>
+                      </span>
+                    </div>
+                  )}
+
                   {/* Row 1: Client Name (25%) | Job Name (75%) */}
                   <div className="modal-form-row modal-form-row-1" style={{ display: "grid", gridTemplateColumns: "1fr 3fr", gap: "0.75rem" }}>
-                    <div>
+                    <div title={crmLockedTooltip}>
                       <label style={formLabelStyle}>Client Name *</label>
                       <input
                         type="text"
                         required
+                        disabled={isReadOnly || isEditingCrmDeal}
+                        title={crmLockedTooltip}
                         value={editingJob.client || ""}
                         onChange={(e) => setEditingJob({ ...editingJob, client: e.target.value })}
-                        style={formInputStyle}
+                        style={getCrmInputStyle(false)}
                       />
                     </div>
-                    <div>
+                    <div title={crmLockedTooltip}>
                       <label style={formLabelStyle}>Job Name *</label>
                       <input
                         type="text"
                         required
+                        disabled={isReadOnly || isEditingCrmDeal}
+                        title={crmLockedTooltip}
                         value={editingJob.jobName || ""}
                         onChange={(e) => setEditingJob({ ...editingJob, jobName: e.target.value })}
-                        style={formInputStyle}
+                        style={getCrmInputStyle(false)}
                       />
                     </div>
                   </div>
 
                   {/* Row 2: Type | Status | % Likelihood | Project Code */}
                   <div className="modal-form-row modal-form-row-2" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "0.75rem" }}>
-                    <div>
+                    <div title={crmLockedTooltip}>
                       <label style={formLabelStyle}>Type *</label>
                       <select
                         value={editingJob.projectRetainer || "Project"}
+                        disabled={isReadOnly || isEditingCrmDeal}
+                        title={crmLockedTooltip}
                         onChange={(e) => {
+                          if (isEditingCrmDeal) return;
                           const val = e.target.value;
                           setEditingJob({ ...editingJob, projectRetainer: val });
                           if (val === "Retainer") {
@@ -1359,17 +1472,20 @@ export default function PortalJobsView({
                             setLockedMonths({});
                           }
                         }}
-                        style={formInputStyle}
+                        style={getCrmInputStyle(true)}
                       >
                         <option value="Project">Project</option>
                         <option value="Retainer">Retainer</option>
                       </select>
                     </div>
-                    <div>
+                    <div title={crmLockedTooltip}>
                       <label style={formLabelStyle}>Status *</label>
                       <select
                         value={editingJob.type || "Confirmed"}
+                        disabled={isReadOnly || isEditingCrmDeal || isEditingCrmPipelineDeal}
+                        title={crmLockedTooltip || (isEditingCrmPipelineDeal ? `Status must be updated directly in ${crmDisplayName}` : undefined)}
                         onChange={(e) => {
+                          if (isEditingCrmPipelineDeal || isEditingCrmDeal) return;
                           const newType = e.target.value;
                           if (newType === "Confirmed") {
                             setEditingJob({ ...editingJob, type: "Confirmed", likelihood: "100%" });
@@ -1381,22 +1497,33 @@ export default function PortalJobsView({
                             });
                           }
                         }}
-                        style={formInputStyle}
+                        style={{
+                          ...formInputStyle,
+                          cursor: (isEditingCrmDeal || isEditingCrmPipelineDeal) ? "not-allowed" : "pointer",
+                          backgroundColor: (isEditingCrmDeal || isEditingCrmPipelineDeal) ? "#f8fafc" : "#ffffff",
+                          opacity: (isEditingCrmDeal || isEditingCrmPipelineDeal) ? 0.85 : 1,
+                        }}
                       >
                         <option value="Confirmed">Confirmed</option>
                         <option value="Pipeline">Pipeline</option>
                       </select>
                     </div>
-                    <div>
+                    <div title={crmLockedTooltip}>
                       <label style={formLabelStyle}>% Likelihood</label>
                       <input
                         type="text"
                         value={editingJob.likelihood || (editingJob.type === "Confirmed" ? "100%" : "50%")}
-                        disabled={editingJob.type === "Confirmed"}
+                        disabled={isReadOnly || isEditingCrmDeal || editingJob.type === "Confirmed"}
+                        title={crmLockedTooltip}
                         onChange={(e) => {
+                          if (isEditingCrmDeal) return;
                           const val = e.target.value;
                           const num = parseFloat(String(val).replace(/[%,\s]/g, ""));
                           if (!isNaN(num) && num >= 100) {
+                            if (isEditingCrmPipelineDeal) {
+                              setSaveError(`CRM pipeline deals cannot be manually promoted to confirmed. This must be updated directly in ${crmDisplayName}.`);
+                              return;
+                            }
                             setEditingJob({ ...editingJob, likelihood: "100%", type: "Confirmed" });
                           } else {
                             setEditingJob({ ...editingJob, likelihood: val });
@@ -1404,95 +1531,113 @@ export default function PortalJobsView({
                         }}
                         style={{
                           ...formInputStyle,
-                          opacity: editingJob.type === "Confirmed" ? 0.6 : 1,
+                          cursor: (isEditingCrmDeal || editingJob.type === "Confirmed") ? "not-allowed" : "text",
+                          backgroundColor: (isEditingCrmDeal || editingJob.type === "Confirmed") ? "#f8fafc" : "#ffffff",
+                          opacity: (isEditingCrmDeal || editingJob.type === "Confirmed") ? 0.85 : 1,
                         }}
                       />
                     </div>
-                    <div>
+                    <div title={crmLockedTooltip}>
                       <label style={formLabelStyle}>Project Code</label>
                       <input
                         type="text"
                         value={editingJob.projectCode || ""}
+                        disabled={isReadOnly || isEditingCrmDeal}
+                        title={crmLockedTooltip}
                         onChange={(e) => setEditingJob({ ...editingJob, projectCode: e.target.value })}
-                        style={formInputStyle}
+                        style={getCrmInputStyle(false)}
                       />
                     </div>
                   </div>
 
                   {/* Row 3: Revenue | Direct Costs | VAT | Date Confirmed */}
                   <div className="modal-form-row modal-form-row-3" style={{ display: "grid", gridTemplateColumns: "2fr 2fr 1fr 2fr", gap: "0.75rem" }}>
-                    <div>
+                    <div title={crmLockedTooltip}>
                       <label style={formLabelStyle}>Revenue (excl. VAT) *</label>
                       <input
                         type="text"
                         required
+                        disabled={isReadOnly || isEditingCrmDeal}
+                        title={crmLockedTooltip}
                         value={editingJob.revenue || ""}
                         onChange={(e) => setEditingJob({ ...editingJob, revenue: e.target.value })}
-                        style={formInputStyle}
+                        style={getCrmInputStyle(false)}
                       />
                     </div>
-                    <div>
+                    <div title={crmLockedTooltip}>
                       <label style={formLabelStyle}>Direct Costs (excl. VAT) *</label>
                       <input
                         type="text"
                         required
+                        disabled={isReadOnly || isEditingCrmDeal}
+                        title={crmLockedTooltip}
                         value={editingJob.directCosts || ""}
                         onChange={(e) => setEditingJob({ ...editingJob, directCosts: e.target.value })}
-                        style={formInputStyle}
+                        style={getCrmInputStyle(false)}
                       />
                     </div>
-                    <div>
+                    <div title={crmLockedTooltip}>
                       <label style={formLabelStyle}>VAT? *</label>
                       <select
                         value={editingJob.vat || "Yes"}
+                        disabled={isReadOnly || isEditingCrmDeal}
+                        title={crmLockedTooltip}
                         onChange={(e) => setEditingJob({ ...editingJob, vat: e.target.value })}
-                        style={formInputStyle}
+                        style={getCrmInputStyle(true)}
                       >
                         <option value="Yes">Yes</option>
                         <option value="No">No</option>
                       </select>
                     </div>
-                    <div>
+                    <div title={crmLockedTooltip}>
                       <label style={formLabelStyle}>
                         {editingJob.type === "Pipeline" ? "Date Added" : "Date Confirmed"}
                       </label>
                       <input
                         type="date"
+                        disabled={isReadOnly || isEditingCrmDeal}
+                        title={crmLockedTooltip}
                         value={editingJob.dateConfirmed || ""}
                         onChange={(e) => setEditingJob({ ...editingJob, dateConfirmed: e.target.value })}
-                        style={formInputStyle}
+                        style={getCrmInputStyle(false)}
                       />
                     </div>
                   </div>
 
                   {/* Row 4: Start Date | End Date | Product Line | Lead Source */}
                   <div className="modal-form-row modal-form-row-4" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "0.75rem" }}>
-                    <div>
+                    <div title={crmLockedTooltip}>
                       <label style={formLabelStyle}>Start Date *</label>
                       <input
                         type="date"
                         required
+                        disabled={isReadOnly || isEditingCrmDeal}
+                        title={crmLockedTooltip}
                         value={editingJob.startDate || ""}
                         onChange={(e) => setEditingJob({ ...editingJob, startDate: e.target.value })}
-                        style={formInputStyle}
+                        style={getCrmInputStyle(false)}
                       />
                     </div>
-                    <div>
+                    <div title={crmLockedTooltip}>
                       <label style={formLabelStyle}>End Date *</label>
                       <input
                         type="date"
                         required
+                        disabled={isReadOnly || isEditingCrmDeal}
+                        title={crmLockedTooltip}
                         value={editingJob.endDate || ""}
                         onChange={(e) => setEditingJob({ ...editingJob, endDate: e.target.value })}
-                        style={formInputStyle}
+                        style={getCrmInputStyle(false)}
                       />
                     </div>
-                    <div>
+                    <div title={crmLockedTooltip}>
                       <label style={formLabelStyle}>Product Line</label>
                       <select
                         value={editingJob.productLine || ""}
+                        disabled={isReadOnly || isEditingCrmDeal}
+                        title={crmLockedTooltip}
                         onChange={(e) => setEditingJob({ ...editingJob, productLine: e.target.value })}
-                        style={formInputStyle}
+                        style={getCrmInputStyle(true)}
                       >
                         <option value="">Select...</option>
                         {productLineOptions.map((opt) => (
@@ -1502,12 +1647,14 @@ export default function PortalJobsView({
                         ))}
                       </select>
                     </div>
-                    <div>
+                    <div title={crmLockedTooltip}>
                       <label style={formLabelStyle}>Lead Source</label>
                       <select
                         value={editingJob.leadSource || ""}
+                        disabled={isReadOnly || isEditingCrmDeal}
+                        title={crmLockedTooltip}
                         onChange={(e) => setEditingJob({ ...editingJob, leadSource: e.target.value })}
-                        style={formInputStyle}
+                        style={getCrmInputStyle(true)}
                       >
                         <option value="">Select...</option>
                         {leadSourceOptions.map((opt) => (
@@ -1523,6 +1670,7 @@ export default function PortalJobsView({
                   {isSplitSectionVisible && (
                     <div
                       id="split-revenue-section"
+                      title={crmLockedTooltip}
                       style={{
                         marginTop: "1rem",
                         marginBottom: "0.75rem",
@@ -1533,13 +1681,16 @@ export default function PortalJobsView({
                         transition: "border-color 0.2s ease",
                       }}
                     >
-                      <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }} title={crmLockedTooltip}>
                         <input
                           type="checkbox"
                           id="enable-split"
                           name="enableSplit"
                           checked={enableSplit}
+                          disabled={isReadOnly || isEditingCrmDeal}
+                          title={crmLockedTooltip}
                           onChange={(e) => {
+                            if (isEditingCrmDeal) return;
                             const checked = e.target.checked;
                             setEnableSplit(checked);
                             if (!checked) {
@@ -1547,14 +1698,14 @@ export default function PortalJobsView({
                               lockedMonthsRef.current = {};
                             }
                           }}
-                          style={{ width: "18px", height: "18px", cursor: "pointer" }}
+                          style={{ width: "18px", height: "18px", cursor: isEditingCrmDeal ? "not-allowed" : "pointer" }}
                         />
                         <label
                           htmlFor="enable-split"
                           style={{
                             fontWeight: 600,
-                            color: "#0047AB",
-                            cursor: "pointer",
+                            color: isEditingCrmDeal ? "#64748b" : "#0047AB",
+                            cursor: isEditingCrmDeal ? "not-allowed" : "pointer",
                             userSelect: "none",
                             fontSize: "14px",
                           }}
@@ -1578,7 +1729,15 @@ export default function PortalJobsView({
                       )}
 
                       {enableSplit && (
-                        <div id="split-grid-container" style={{ marginTop: "0.75rem" }}>
+                        <div
+                          id="split-grid-container"
+                          title={crmLockedTooltip}
+                          style={{
+                            marginTop: "0.75rem",
+                            pointerEvents: isEditingCrmDeal ? "none" : "auto",
+                            opacity: isEditingCrmDeal ? 0.75 : 1,
+                          }}
+                        >
                           {splitDateError ? (
                             <p style={{ color: "#64748b", fontSize: "0.9rem", margin: "0.5rem 0" }}>
                               {splitDateError}
@@ -1706,7 +1865,7 @@ export default function PortalJobsView({
                         <span>Invoices</span>
                         {hasAccounting && (
                           <span
-                            title="Invoices synced from accounting software are locked to prevent sync conflicts."
+                            title="Invoices are syncing with your accounting software."
                             style={{
                               fontSize: "11px",
                               fontWeight: "normal",
@@ -1715,17 +1874,13 @@ export default function PortalJobsView({
                               padding: "2px 7px",
                               borderRadius: "4px",
                               border: "1px solid #e2e8f0",
-                              cursor: "help",
                               display: "inline-flex",
                               alignItems: "center",
-                              gap: "4px"
+                              gap: "5px",
                             }}
                           >
-                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-                              <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-                              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-                            </svg>
-                            <span>Synced with accounting</span>
+                            <CrmSyncIcon size={11} color="#64748b" />
+                            <span>Syncing with accounting</span>
                           </span>
                         )}
                       </h4>
@@ -1744,7 +1899,7 @@ export default function PortalJobsView({
                             cursor: "pointer",
                           }}
                         >
-                          + Add Invoice
+                          + Add invoice
                         </button>
                       )}
                     </div>
@@ -1752,20 +1907,27 @@ export default function PortalJobsView({
                     <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                       {(editingJob.invoices || []).map((inv, idx) => {
                         const isPlaceholder = isPlaceholderInvoice(inv.ref, inv.status);
+                        const isAuto = isPlaceholder && isAutoPlaceholder(inv.ref);
                         const isLocked = Boolean(hasAccounting && !isPlaceholder && inv.ref && String(inv.ref).trim() !== "");
+                        const isAutoLocked = isPlaceholder && isAuto;
+                        const isFieldLocked = isLocked || isAutoLocked;
                         const isPaid = String(inv.status || "").trim().toLowerCase() === "paid";
+                        const fieldLockTitle = isAutoLocked
+                          ? "Automatic placeholder. Convert to manual placeholder to edit."
+                          : isLocked
+                            ? "Synced from accounting software. To modify invoice number, amount, or sent date, update directly in your accounting software."
+                            : undefined;
 
                         return (
                           <div
                             key={idx}
                             className="modal-sub-grid-row"
-                            title={isLocked ? "Synced from accounting software. Days to pay remains editable." : undefined}
                             style={{
                               display: "grid",
                               gridTemplateColumns: isReadOnly ? "1.2fr 1fr 1.2fr 0.7fr 1fr" : "1.2fr 1fr 1.2fr 0.7fr 1fr 28px",
                               gap: "6px",
                               alignItems: "center",
-                              background: isLocked ? "#f8fafc" : "#ffffff",
+                              background: isFieldLocked ? "#f8fafc" : "#ffffff",
                               padding: "6px 8px",
                               borderRadius: "6px",
                               border: "1px solid #e2e8f0",
@@ -1780,45 +1942,61 @@ export default function PortalJobsView({
                                 placeholder="Amount"
                                 value={inv.amount || ""}
                                 onChange={(e) => updateInvoice(idx, "amount", e.target.value)}
-                                disabled={isLocked}
-                                title={isLocked ? "Synced from accounting software. To modify invoice number, amount, or sent date, update directly in your accounting software." : undefined}
+                                disabled={isFieldLocked}
+                                title={fieldLockTitle}
                                 style={{
                                   ...formInputStyle,
                                   padding: "4px 6px",
                                   fontSize: "12px",
-                                  ...(isLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
+                                  ...(isFieldLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
                                 }}
                               />
                             </div>
                             <div>
                               <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Ref</label>
-                              <input
-                                type="text"
-                                value={inv.ref || ""}
-                                onChange={(e) => updateInvoice(idx, "ref", e.target.value)}
-                                disabled={isLocked}
-                                title={isLocked ? "Synced from accounting software. To modify invoice number, amount, or sent date, update directly in your accounting software." : undefined}
-                                style={{
-                                  ...formInputStyle,
-                                  padding: "4px 6px",
-                                  fontSize: "12px",
-                                  ...(isLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
-                                }}
-                              />
+                              {isPlaceholder ? (
+                                <div style={{ marginTop: "2px" }}>
+                                  <PlaceholderPill
+                                    isAuto={isAuto}
+                                    disabled={isReadOnly}
+                                    onToggle={(targetAuto) => {
+                                      if (targetAuto) {
+                                        updateInvoice(idx, "ref", generatePlaceholderInvoiceRef(inv.sendDate));
+                                      } else {
+                                        updateInvoice(idx, "ref", "");
+                                      }
+                                    }}
+                                  />
+                                </div>
+                              ) : (
+                                <input
+                                  type="text"
+                                  value={inv.ref || ""}
+                                  onChange={(e) => updateInvoice(idx, "ref", e.target.value)}
+                                  disabled={isLocked}
+                                  title={isLocked ? "Synced from accounting software. To modify invoice number, amount, or sent date, update directly in your accounting software." : undefined}
+                                  style={{
+                                    ...formInputStyle,
+                                    padding: "4px 6px",
+                                    fontSize: "12px",
+                                    ...(isLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
+                                  }}
+                                />
+                              )}
                             </div>
                             <div>
-                              <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Send Date</label>
+                              <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Send date</label>
                               <input
                                 type="date"
                                 value={inv.sendDate || ""}
                                 onChange={(e) => updateInvoice(idx, "sendDate", e.target.value)}
-                                disabled={isLocked}
-                                title={isLocked ? "Synced from accounting software. To modify invoice number, amount, or sent date, update directly in your accounting software." : undefined}
+                                disabled={isFieldLocked}
+                                title={fieldLockTitle}
                                 style={{
                                   ...formInputStyle,
                                   padding: "4px 6px",
                                   fontSize: "12px",
-                                  ...(isLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
+                                  ...(isFieldLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
                                 }}
                               />
                             </div>
@@ -1829,13 +2007,13 @@ export default function PortalJobsView({
                                 placeholder="30"
                                 value={inv.days || ""}
                                 onChange={(e) => updateInvoice(idx, "days", e.target.value)}
-                                disabled={isPaid}
-                                title={isPaid ? "Days to pay is determined once an invoice is marked as paid." : undefined}
+                                disabled={isPaid || isAutoLocked}
+                                title={isAutoLocked ? "Automatic placeholder. Convert to manual placeholder to edit." : (isPaid ? "Days to pay is determined once an invoice is marked as paid." : undefined)}
                                 style={{
                                   ...formInputStyle,
                                   padding: "4px 6px",
                                   fontSize: "12px",
-                                  ...(isPaid ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
+                                  ...(isPaid || isAutoLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
                                 }}
                               />
                             </div>
@@ -1847,13 +2025,13 @@ export default function PortalJobsView({
                                   <select
                                     value={currentStatus}
                                     onChange={(e) => updateInvoice(idx, "status", e.target.value)}
-                                    disabled={isLocked}
-                                    title={isLocked ? "Synced from accounting software. To modify invoice number, amount, or sent date, update directly in your accounting software." : undefined}
+                                    disabled={isFieldLocked}
+                                    title={fieldLockTitle}
                                     style={{
                                       ...formInputStyle,
                                       padding: "4px 6px",
                                       fontSize: "12px",
-                                      ...(isLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
+                                      ...(isFieldLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
                                     }}
                                   >
                                     <option value="">Select...</option>
@@ -2100,8 +2278,28 @@ export default function PortalJobsView({
                         marginBottom: "0.6rem",
                       }}
                     >
-                      <h4 style={{ margin: 0, fontSize: "13px", fontWeight: 700, color: "#0047AB" }}>
-                        Direct Expenses
+                      <h4 style={{ margin: 0, fontSize: "13px", fontWeight: 700, color: "#0047AB", display: "flex", alignItems: "center", gap: "8px" }}>
+                        <span>Direct expenses</span>
+                        {hasAccounting && (
+                          <span
+                            title="Direct expenses are syncing with your accounting software."
+                            style={{
+                              fontSize: "11px",
+                              fontWeight: "normal",
+                              color: "#64748b",
+                              background: "#f1f5f9",
+                              padding: "2px 7px",
+                              borderRadius: "4px",
+                              border: "1px solid #e2e8f0",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "5px",
+                            }}
+                          >
+                            <CrmSyncIcon size={11} color="#64748b" />
+                            <span>Syncing with accounting</span>
+                          </span>
+                        )}
                       </h4>
                       {!isReadOnly && (
                         <button
@@ -2118,121 +2316,202 @@ export default function PortalJobsView({
                             cursor: "pointer",
                           }}
                         >
-                          + Add Direct Expense
+                          + Add direct expense
                         </button>
                       )}
                     </div>
 
                     <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                      {(editingJob.directExpenses || []).map((exp, idx) => (
-                        <div
-                          key={idx}
-                          className="modal-sub-grid-row"
-                          style={{
-                            display: "grid",
-                            gridTemplateColumns: isReadOnly ? "1.2fr 1fr 0.7fr 1.2fr 0.6fr 1fr" : "1.2fr 1fr 0.7fr 1.2fr 0.6fr 1fr 28px",
-                            gap: "6px",
-                            alignItems: "center",
-                            background: "#f8fafc",
-                            padding: "6px 8px",
-                            borderRadius: "6px",
-                            border: "1px solid #e2e8f0",
-                          }}
-                        >
-                          <div>
-                            <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>
-                              Description ({idx + 1})
-                            </label>
-                            <input
-                              type="text"
-                              placeholder="Description"
-                              value={exp.desc || ""}
-                              onChange={(e) => updateExpense(idx, "desc", e.target.value)}
-                              style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
-                            />
-                          </div>
-                          <div>
-                            <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Amount</label>
-                            <input
-                              type="text"
-                              placeholder="Amount"
-                              value={exp.amount || ""}
-                              onChange={(e) => updateExpense(idx, "amount", e.target.value)}
-                              style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
-                            />
-                          </div>
-                          <div>
-                            <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>VAT?</label>
-                            <select
-                              value={exp.vat || "Yes"}
-                              onChange={(e) => updateExpense(idx, "vat", e.target.value)}
-                              style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
-                            >
-                              <option value="Yes">Yes</option>
-                              <option value="No">No</option>
-                            </select>
-                          </div>
-                          <div>
-                            <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Receive Date</label>
-                            <input
-                              type="date"
-                              value={exp.recDate || ""}
-                              onChange={(e) => updateExpense(idx, "recDate", e.target.value)}
-                              style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
-                            />
-                          </div>
-                          <div>
-                            <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Days</label>
-                            <input
-                              type="number"
-                              placeholder="30"
-                              value={exp.days || ""}
-                              onChange={(e) => updateExpense(idx, "days", e.target.value)}
-                              style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
-                            />
-                          </div>
-                          <div>
-                            <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Status</label>
-                            {(() => {
-                              const currentStatus = canonicalizeExpenseStatus(exp.status);
-                              return (
-                                <select
-                                  value={currentStatus}
-                                  onChange={(e) => updateExpense(idx, "status", e.target.value)}
-                                  style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
-                                >
-                                  <option value="">Select...</option>
-                                  {EXPENSE_STATUS_OPTIONS.map((st) => (
-                                    <option key={st} value={st}>{st}</option>
-                                  ))}
-                                  {currentStatus && !EXPENSE_STATUS_OPTIONS.includes(currentStatus) && (
-                                    <option value={currentStatus}>{currentStatus}</option>
-                                  )}
-                                </select>
-                              );
-                            })()}
-                          </div>
-                          {!isReadOnly && (
-                            <div style={{ paddingTop: "14px", textAlign: "center" }}>
-                              <button
-                                type="button"
-                                onClick={() => removeExpense(idx)}
-                                title="Delete expense"
+                      {(editingJob.directExpenses || []).map((exp, idx) => {
+                        const isPlaceholder = isPlaceholderExpense(exp.appId, exp.desc, exp.status);
+                        const isAuto = isPlaceholder && isAutoPlaceholder(exp.appId || exp.desc);
+                        const isActual = Boolean(
+                          hasAccounting &&
+                          !isPlaceholder &&
+                          ((exp.appId && String(exp.appId).trim() !== "") || (exp.desc && String(exp.desc).trim() !== ""))
+                        );
+                        const isAutoLocked = isPlaceholder && isAuto;
+                        const isFieldLocked = isActual || isAutoLocked;
+                        const currentStatus = canonicalizeExpenseStatus(exp.status);
+                        const isPaid = currentStatus === "Paid" || currentStatus === "Part-paid (paid)";
+                        const fieldLockTitle = isAutoLocked
+                          ? "Automatic placeholder. Convert to manual placeholder to edit."
+                          : isActual
+                            ? "Synced from accounting software. To modify description, amount, VAT, or date, update directly in your accounting software."
+                            : undefined;
+
+                        return (
+                          <div
+                            key={idx}
+                            className="modal-sub-grid-row"
+                            style={{
+                              display: "grid",
+                              gridTemplateColumns: isReadOnly ? "1.2fr 1fr 0.7fr 1.2fr 0.6fr 1fr" : "1.2fr 1fr 0.7fr 1.2fr 0.6fr 1fr 28px",
+                              gap: "6px",
+                              alignItems: "center",
+                              background: isFieldLocked ? "#f8fafc" : "#ffffff",
+                              padding: "6px 8px",
+                              borderRadius: "6px",
+                              border: "1px solid #e2e8f0",
+                            }}
+                          >
+                            <div>
+                              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "2px" }}>
+                                <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b", margin: 0 }}>
+                                  Description ({idx + 1})
+                                </label>
+                                {isPlaceholder && (
+                                  <PlaceholderPill
+                                    isAuto={isAuto}
+                                    size="sm"
+                                    disabled={isReadOnly}
+                                    onToggle={(targetAuto) => {
+                                      if (targetAuto) {
+                                        updateExpense(idx, "appId", generatePlaceholderExpenseId(exp.recDate));
+                                      } else {
+                                        updateExpense(idx, "appId", "");
+                                      }
+                                    }}
+                                  />
+                                )}
+                              </div>
+                              <input
+                                type="text"
+                                placeholder="Description"
+                                value={exp.desc || ""}
+                                onChange={(e) => updateExpense(idx, "desc", e.target.value)}
+                                disabled={isFieldLocked}
+                                title={fieldLockTitle}
                                 style={{
-                                  background: "transparent",
-                                  border: "none",
-                                  color: "#ef4444",
-                                  cursor: "pointer",
-                                  fontSize: "14px",
-                                  padding: "2px",
+                                  ...formInputStyle,
+                                  padding: "4px 6px",
+                                  fontSize: "12px",
+                                  ...(isFieldLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
+                                }}
+                              />
+                            </div>
+                            <div>
+                              <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Amount</label>
+                              <input
+                                type="text"
+                                placeholder="Amount"
+                                value={exp.amount || ""}
+                                onChange={(e) => updateExpense(idx, "amount", e.target.value)}
+                                disabled={isFieldLocked}
+                                title={fieldLockTitle}
+                                style={{
+                                  ...formInputStyle,
+                                  padding: "4px 6px",
+                                  fontSize: "12px",
+                                  ...(isFieldLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
+                                }}
+                              />
+                            </div>
+                            <div>
+                              <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>VAT?</label>
+                              <select
+                                value={exp.vat || "Yes"}
+                                onChange={(e) => updateExpense(idx, "vat", e.target.value)}
+                                disabled={isFieldLocked}
+                                title={fieldLockTitle || (isActual ? "VAT treatment is determined upstream in your accounting software." : undefined)}
+                                style={{
+                                  ...formInputStyle,
+                                  padding: "4px 6px",
+                                  fontSize: "12px",
+                                  ...(isFieldLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
                                 }}
                               >
-                                ✕
-                              </button>
+                                <option value="Yes">Yes</option>
+                                <option value="No">No</option>
+                              </select>
                             </div>
-                          )}
-                        </div>
-                      ))}
+                            <div>
+                              <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Receive date</label>
+                              <input
+                                type="date"
+                                value={exp.recDate || ""}
+                                onChange={(e) => updateExpense(idx, "recDate", e.target.value)}
+                                disabled={isFieldLocked}
+                                title={fieldLockTitle}
+                                style={{
+                                  ...formInputStyle,
+                                  padding: "4px 6px",
+                                  fontSize: "12px",
+                                  ...(isFieldLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
+                                }}
+                              />
+                            </div>
+                            <div>
+                              <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Days</label>
+                              <input
+                                type="number"
+                                placeholder="30"
+                                value={exp.days || ""}
+                                onChange={(e) => updateExpense(idx, "days", e.target.value)}
+                                disabled={isPaid || isAutoLocked}
+                                title={isAutoLocked ? "Automatic placeholder. Convert to manual placeholder to edit." : (isPaid ? "Days to pay is determined once a bill is marked as paid." : undefined)}
+                                style={{
+                                  ...formInputStyle,
+                                  padding: "4px 6px",
+                                  fontSize: "12px",
+                                  ...(isPaid || isAutoLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
+                                }}
+                              />
+                            </div>
+                            <div>
+                              <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Status</label>
+                              <select
+                                value={currentStatus}
+                                onChange={(e) => updateExpense(idx, "status", e.target.value)}
+                                disabled={isFieldLocked}
+                                title={fieldLockTitle}
+                                style={{
+                                  ...formInputStyle,
+                                  padding: "4px 6px",
+                                  fontSize: "12px",
+                                  ...(isFieldLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
+                                }}
+                              >
+                                <option value="">Select...</option>
+                                {EXPENSE_STATUS_OPTIONS.map((st) => (
+                                  <option key={st} value={st}>{st}</option>
+                                ))}
+                                {currentStatus && !EXPENSE_STATUS_OPTIONS.includes(currentStatus) && (
+                                  <option value={currentStatus}>{currentStatus}</option>
+                                )}
+                              </select>
+                            </div>
+                            {!isReadOnly && (
+                              <div style={{ paddingTop: "14px", textAlign: "center" }}>
+                                {isActual ? (
+                                  <span title="Synced bill cannot be deleted" style={{ color: "#94a3b8", fontSize: "12px", cursor: "not-allowed" }}>
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                                      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                                    </svg>
+                                  </span>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => removeExpense(idx)}
+                                    title="Delete expense"
+                                    style={{
+                                      background: "transparent",
+                                      border: "none",
+                                      color: "#ef4444",
+                                      cursor: "pointer",
+                                      fontSize: "14px",
+                                      padding: "2px",
+                                    }}
+                                  >
+                                    ✕
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
 
@@ -2256,7 +2535,7 @@ export default function PortalJobsView({
             >
               {/* Left side: Confirm / Unconfirm button */}
               <div>
-                {!isReadOnly && editingJob.rowNumber && String(editingJob.type || "").toLowerCase() === "pipeline" && (
+                {!isReadOnly && editingJob.rowNumber && String(editingJob.type || "").toLowerCase() === "pipeline" && !isEditingCrmPipelineDeal && (
                   <button
                     type="button"
                     onClick={handleConfirmJob}
@@ -2376,10 +2655,109 @@ export default function PortalJobsView({
                     }}
                   >
                     {isSaving ? <Spinner size={14} color="#ffffff" /> : null}
-                    <span>{isSaving ? "Saving..." : "Save Job"}</span>
+                    <span>{isSaving ? "Saving..." : "Save job"}</span>
                   </button>
                 )}
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Under-allocation confirmation prompt */}
+      {underAllocationPrompt && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            backgroundColor: "rgba(15, 23, 42, 0.45)",
+            backdropFilter: "blur(2px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 10001,
+            padding: "1rem",
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setUnderAllocationPrompt(null);
+          }}
+        >
+          <div
+            style={{
+              background: "#ffffff",
+              borderRadius: "12px",
+              padding: "1.5rem",
+              maxWidth: "480px",
+              width: "100%",
+              boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)",
+              border: "1px solid #e2e8f0",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "flex-start", gap: "10px", marginBottom: "1rem" }}>
+              <div
+                style={{
+                  width: "32px",
+                  height: "32px",
+                  borderRadius: "50%",
+                  background: "#fef3c7",
+                  color: "#d97706",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  flexShrink: 0,
+                }}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
+                  <line x1="12" y1="9" x2="12" y2="13" />
+                  <line x1="12" y1="17" x2="12.01" y2="17" />
+                </svg>
+              </div>
+              <div>
+                <h4 style={{ margin: "0 0 4px 0", fontSize: "15px", fontWeight: 700, color: "#0f172a" }}>
+                  Confirm placeholder allocation
+                </h4>
+                <p style={{ margin: 0, fontSize: "13px", color: "#475569", lineHeight: "1.5" }}>
+                  {underAllocationPrompt.message}
+                </p>
+              </div>
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px", marginTop: "1.25rem" }}>
+              <button
+                type="button"
+                onClick={() => setUnderAllocationPrompt(null)}
+                style={{
+                  background: "#ffffff",
+                  border: "1px solid #cbd5e1",
+                  borderRadius: "6px",
+                  padding: "6px 14px",
+                  fontSize: "12.5px",
+                  fontWeight: 600,
+                  color: "#475569",
+                  cursor: "pointer",
+                }}
+              >
+                Adjust
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setUnderAllocationPrompt(null);
+                  handleSaveJob(null, true);
+                }}
+                style={{
+                  background: "#0047AB",
+                  border: "none",
+                  borderRadius: "6px",
+                  padding: "6px 16px",
+                  fontSize: "12.5px",
+                  fontWeight: 700,
+                  color: "#ffffff",
+                  cursor: "pointer",
+                }}
+              >
+                Proceed
+              </button>
             </div>
           </div>
         </div>
@@ -2405,7 +2783,7 @@ export default function PortalJobsView({
             defaultDaysToPay: 30,
           }}
           onClose={() => setNewJobFromInvoice(null)}
-          onMarkPullPending={() => {}}
+          onMarkPullPending={() => { }}
           onSuccess={async () => {
             const updatedInvoices = (editingJob?.invoices || []).filter((_, i) => i !== newJobFromInvoice.idx);
             setEditingJob((prev) => ({ ...prev, invoices: updatedInvoices }));

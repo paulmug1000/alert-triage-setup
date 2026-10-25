@@ -77,12 +77,19 @@ let _alertMemoryCachedAt = 0;
 
 export async function updateHandledAlertHash(automationCommanderSheetId, fingerprintHash, status) {
   if (!fingerprintHash) return;
+  return updateHandledAlertHashesBatch(automationCommanderSheetId, { [fingerprintHash]: status });
+}
+
+export async function updateHandledAlertHashesBatch(automationCommanderSheetId, statusByHash) {
+  if (!statusByHash || Object.keys(statusByHash).length === 0) return;
   const now = Date.now();
   if (_handledHashesMemoryCache) {
-    if (status === "cached" || status === "pending_automation") {
-      delete _handledHashesMemoryCache[fingerprintHash];
-    } else {
-      _handledHashesMemoryCache[fingerprintHash] = status;
+    for (const [hash, status] of Object.entries(statusByHash)) {
+      if (status === "cached" || status === "pending_automation") {
+        delete _handledHashesMemoryCache[hash];
+      } else {
+        _handledHashesMemoryCache[hash] = status;
+      }
     }
     _handledHashesCachedAt = now;
   }
@@ -94,17 +101,19 @@ export async function updateHandledAlertHash(automationCommanderSheetId, fingerp
       if (cached) {
         try { map = JSON.parse(cached); } catch (e) {}
       }
-      if (status === "cached" || status === "pending_automation") {
-        delete map[fingerprintHash];
-      } else {
-        map[fingerprintHash] = status;
+      for (const [hash, status] of Object.entries(statusByHash)) {
+        if (status === "cached" || status === "pending_automation") {
+          delete map[hash];
+        } else {
+          map[hash] = status;
+        }
       }
       await redisClient.set(cacheKey, JSON.stringify(map), { EX: 86400 * 7 });
       _handledHashesMemoryCache = map;
       _handledHashesCachedAt = now;
     }
   } catch (err) {
-    console.warn("⚠️ Redis updateHandledAlertHash error:", err.message);
+    console.warn("⚠️ Redis updateHandledAlertHashesBatch error:", err.message);
   }
 }
 
@@ -501,6 +510,49 @@ export async function appendAlertMemoryRow(sheets, automationCommanderSheetId, p
   await invalidateAlertMemoryCache(automationCommanderSheetId);
 }
 
+export async function appendAlertMemoryRowsBatch(sheets, automationCommanderSheetId, items) {
+  if (!items || items.length === 0) return;
+  const now = new Date().toISOString();
+  const rows = items.map(payload => {
+    let {
+      fingerprintHash, alertType, clientName, alertSummary,
+      cachedOptionsJSON, status, ignoreReason, dataSnapshot, category,
+    } = payload;
+
+    cachedOptionsJSON = compressOptionsJSON_(cachedOptionsJSON);
+
+    if (alertType === "expense") alertType = "expenseDashboardDiscr";
+    if (alertType === "crm") alertType = "crmPipeAppDiscr";
+
+    return [
+      fingerprintHash, alertType, clientName, alertSummary,
+      cachedOptionsJSON, status, ignoreReason || "", payload.firstSeen || now, now,
+      now, 
+      dataSnapshot || "",
+      category || "discrepancy",
+    ];
+  });
+
+  const response = await withRetry(() => sheets.spreadsheets.values.append({
+    spreadsheetId: automationCommanderSheetId,
+    range: `${ALERT_MEMORY_TAB}!A:L`,
+    valueInputOption: "RAW",
+    requestBody: {
+      values: rows,
+    },
+  }));
+  console.log(`  📝 DEBUG: Batch appended ${items.length} alerts to ${response.data?.updates?.updatedRange || ALERT_MEMORY_TAB}`);
+
+  const statusByHash = {};
+  for (const item of items) {
+    if (item.fingerprintHash) {
+      statusByHash[item.fingerprintHash] = item.status;
+    }
+  }
+  await updateHandledAlertHashesBatch(automationCommanderSheetId, statusByHash);
+  await invalidateAlertMemoryCache(automationCommanderSheetId);
+}
+
 export async function updateAlertMemoryRow(sheets, automationCommanderSheetId, rowIndex, updates) {
   const compressedOptions = compressOptionsJSON_(updates.cachedOptionsJSON);
   const now = new Date().toISOString();
@@ -560,11 +612,13 @@ export async function updateAlertMemoryRowsBatch(sheets, automationCommanderShee
       data,
     },
   }));
+  const statusByHash = {};
   for (const item of updateItems) {
     if (item.updates?.fingerprintHash) {
-      await updateHandledAlertHash(automationCommanderSheetId, item.updates.fingerprintHash, item.updates.status);
+      statusByHash[item.updates.fingerprintHash] = item.updates.status;
     }
   }
+  await updateHandledAlertHashesBatch(automationCommanderSheetId, statusByHash);
   await invalidateAlertMemoryCache(automationCommanderSheetId);
 }
 

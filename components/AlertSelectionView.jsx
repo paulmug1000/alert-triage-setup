@@ -76,7 +76,8 @@ export default function AlertSelectionView({
   PROACTIVE_TYPE_LABELS, openCreateTaskModal, setActiveNav,
   onNavInvoices, onNavOutgoings,
   isAdmin: propIsAdmin, user,
-  managedClient, onClearManagedClient
+  managedClient, onClearManagedClient,
+  allClients = [], isSingleClientUser = false
 }) {
   const auth = useAuth();
   const currentUser = user || auth.user;
@@ -704,20 +705,23 @@ export default function AlertSelectionView({
       }));
 
       if (sessionId && selectedClient) {
-        Promise.all(alerts.map(na => {
+        const flagItems = alerts.map(na => {
           const alertId = na.fingerprintHash || `${na.flagType}-${na.flagDetail || ""}`;
-          return fetch("/api/triage", {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "resolve_noaction_flag", sessionId, clientName: selectedClient.clientName, flagType: na.flagType, fingerprintHash: na.fingerprintHash || alertId, automationCommanderSheetId }),
-          }).catch(() => { });
-        }));
+          return { flagType: na.flagType, fingerprintHash: na.fingerprintHash || alertId };
+        });
 
-        if (typesToClear.size > 0) {
-          fetch("/api/triage", {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "update_session_flags", sessionId, clientName: selectedClient.clientName, clearedFlagKeys: Array.from(typesToClear) }),
-          }).catch(() => { });
-        }
+        fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "bulk_resolve_noaction_flags",
+            sessionId,
+            clientName: selectedClient.clientName,
+            flags: flagItems,
+            clearedFlagKeys: Array.from(typesToClear),
+            automationCommanderSheetId,
+          }),
+        }).catch(err => console.error("Failed to bulk resolve flags:", err));
       }
 
       const allResolved = clientNoActionAlerts.every(n => isNoActionResolved(n, newResolved));
@@ -1289,15 +1293,14 @@ export default function AlertSelectionView({
 
       <div className="alert-selection-card" style={styles.card}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", marginBottom: "16px" }}>
-          <button className="triage-btn" onClick={() => {
-            if (managedClient && onClearManagedClient) {
-              onClearManagedClient();
-            }
-            setAcceptError("");
-            setScreen("clientSelection");
-          }} style={{ ...styles.buttonSecondary, fontSize: "13px", whiteSpace: "nowrap" }}>
-            ← Back to clients
-          </button>
+          {!managedClient && !isSingleClientUser && (!allClients || allClients.length > 1) && (
+            <button className="triage-btn" onClick={() => {
+              setAcceptError("");
+              setScreen("clientSelection");
+            }} style={{ ...styles.buttonSecondary, fontSize: "13px", whiteSpace: "nowrap" }}>
+              ← Back to clients
+            </button>
+          )}
           <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
             {isAdmin && totalVisibleAlertsCount > 1 && (
               <button className="triage-btn" onClick={() => {

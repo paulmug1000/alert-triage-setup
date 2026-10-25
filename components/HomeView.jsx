@@ -264,7 +264,7 @@ export default function HomeView({
               {totalAlertsCount === 0 && !isLoadingAlerts
                 ? (managedClient?.clientName
                   ? `All alerts for ${managedClient.clientName} are currently clear.`
-                  : "All alerts across your assigned clients are currently clear.")
+                  : "There are no active alerts across your clients.")
                 : (managedClient?.clientName
                   ? `Active discrepancies and proactive alerts for ${managedClient.clientName}.`
                   : `Total active discrepancies and proactive alerts across all ${authorizedClients.length} clients.`)}

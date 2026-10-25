@@ -67,7 +67,7 @@ import { handleGetActivity } from "../../services/activityService";
 import {
   handleBustCache, handleGetAlerts, handleRemoveAlert, handleIgnoreAlert, 
   handleUnignoreAlert, handleGetIgnoredAlerts, handleUpdateSessionFlags,
-  handleResolveNoActionFlag, handleRecordDecision, handleBulkIgnoreAlerts,
+  handleResolveNoActionFlag, handleBulkResolveNoActionFlags, handleRecordDecision, handleBulkIgnoreAlerts,
   handleAcknowledgeProactiveAlert, handleResolveProactiveAlert, handleBulkAcknowledgeProactiveAlerts,
   handleGetProactiveAlerts
 } from "../../services/alertState";
@@ -1168,6 +1168,8 @@ export default async function handler(req, res) {
       return await handleUpdateSessionFlags(req, res);
     } else if (action === "resolve_noaction_flag") {
       return await handleResolveNoActionFlag(req, res, sheets);
+    } else if (action === "bulk_resolve_noaction_flags") {
+      return await handleBulkResolveNoActionFlags(req, res, sheets);
     } else if (action === "record_decision") {
       return await handleRecordDecision(req, res, sheets);
     } else if (action === "bulk_ignore_alerts") {

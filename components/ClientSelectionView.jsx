@@ -16,7 +16,8 @@ export default function ClientSelectionView({
   loadIgnoredAlerts,
   user,
   managedClient,
-  onClearManagedClient
+  onClearManagedClient,
+  isSingleClientUser = false
 }) {
   const auth = useAuth();
   const currentUser = user || auth.user;
@@ -135,7 +136,7 @@ export default function ClientSelectionView({
                 {isLoading ? <><Spinner />{refreshStatus || "Refreshing..."}</> : "↻ Refresh"}
               </button>
             )}
-            {managedClient && onClearManagedClient && (
+            {!isSingleClientUser && managedClient && onClearManagedClient && (
               <button className="triage-btn" onClick={onClearManagedClient} style={{ ...styles.buttonSecondary }}>
                 ← View all clients
               </button>

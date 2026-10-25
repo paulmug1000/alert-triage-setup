@@ -439,7 +439,7 @@ export default function ViewsScreen({
             Client views
           </h1>
 
-          {!managedClient && (
+          {!managedClient && (allClients || []).length > 1 && (
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
               <label htmlFor="pma-views-client-selector" style={{ fontSize: "13px", fontWeight: "600", color: "#64748b" }}>
                 Client:

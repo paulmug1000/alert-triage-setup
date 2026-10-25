@@ -8,9 +8,19 @@ import JobsNewJobModal from "./JobsNewJobModal";
 import EditClientSelector from "./EditClientSelector";
 import CellNoteModal from "./CellNoteModal";
 import NoteIndicatorButton from "./NoteIndicatorButton";
+import CrmSyncBadge, { CrmSyncIcon } from "./CrmSyncBadge";
+import PlaceholderPill, { isAutoPlaceholder } from "./PlaceholderPill";
 import { useJobs } from "../hooks/useJobs";
 import { useAppGlobals } from "../hooks/useAppGlobals";
-import { isPlaceholderInvoice, isPlaceholderExpense, getRetainerRowMonthLabel } from "../utils/helpers";
+import {
+  isPlaceholderInvoice,
+  isPlaceholderExpense,
+  getRetainerRowMonthLabel,
+  hasActiveCrmIntegration,
+  isCrmDrivenTab,
+  isCrmDeal,
+  getCrmDisplayName
+} from "../utils/helpers";
 
 export const parseSheetDate = (dStr) => {
   if (!dStr) return null;
@@ -126,7 +136,11 @@ export const JobDateInput = ({
   dirtyBorder = "1px solid #f59e0b",
   focusBorder = "1px solid #3b82f6",
   defaultBg = "transparent",
-  focusBg = "#ffffff"
+  focusBg = "#ffffff",
+  title,
+  disabled = false,
+  readOnly = false,
+  ...rest
 }) => {
   const inputRef = React.useRef(null);
   const isFocusedRef = React.useRef(false);
@@ -149,6 +163,7 @@ export const JobDateInput = ({
   };
 
   const handleFocus = () => {
+    if (disabled || readOnly) return;
     isFocusedRef.current = true;
     if (inputRef.current) {
       inputRef.current.style.background = focusBg;
@@ -195,6 +210,10 @@ export const JobDateInput = ({
       onFocus={handleFocus}
       onBlur={handleBlur}
       onKeyDown={handleKeyDownInternal}
+      title={title}
+      disabled={disabled}
+      readOnly={readOnly}
+      {...rest}
       style={{
         padding: "3px 4px",
         borderRadius: "5px",
@@ -726,6 +745,8 @@ export default function JobsView({
     leadSources,
     existingClients,
     hasAccountingIntegration,
+    crmTool,
+    crmDrives,
     loadJobsData
   } = useJobs(managedClient);
 
@@ -734,11 +755,15 @@ export default function JobsView({
   useEffect(() => {
     if (managedClient) {
       const currentName = managedClient.clientName?.toLowerCase();
-      if (prevManagedClientRef.current !== currentName) {
+      const hasFullClient = Boolean(jobsClient?.clientSheetId);
+      const clientWithSheet = (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === currentName && c.clientSheetId) || (managedClient.clientSheetId ? managedClient : null);
+      if (prevManagedClientRef.current !== currentName || (!hasFullClient && clientWithSheet)) {
         prevManagedClientRef.current = currentName;
-        const clientObj = (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === currentName) || managedClient;
+        const clientObj = clientWithSheet || (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === currentName) || managedClient;
         setJobsClient(clientObj);
-        loadJobsData(clientObj, "All");
+        if (clientObj?.clientSheetId) {
+          loadJobsData(clientObj, "All");
+        }
       }
     } else if (prevManagedClientRef.current) {
       prevManagedClientRef.current = null;
@@ -748,7 +773,7 @@ export default function JobsView({
       recentlyDeletedJobKeysRef.current.clear();
       recentlyDeletedJobRowsRef.current.clear();
     }
-  }, [managedClient, allOutgoingsClients]);
+  }, [managedClient, allOutgoingsClients, jobsClient?.clientSheetId]);
 
   // Mode: "modern" (default, user-friendly combined view) or "legacy" (spreadsheet view for admins)
   const [viewMode, setViewMode] = useState("modern");
@@ -1121,6 +1146,11 @@ export default function JobsView({
     const parentRow = job?.rows?.[0];
     if (!parentRow || !jobsClient?.clientSheetId) return;
 
+    if (isCrmDeal(job, crmTool, crmDrives)) {
+      setActionError(`Cannot confirm deal: Status must be updated directly in ${getCrmDisplayName(crmTool)}.`);
+      return;
+    }
+
     const pipelineRowNum = parentRow.rowNum;
     if (!pipelineRowNum || pipelineRowNum < 2) return;
 
@@ -1242,6 +1272,11 @@ export default function JobsView({
     const jobKey = getJobKey(job);
     const parentRow = job?.rows?.[0];
     if (!parentRow || !jobsClient?.clientSheetId) return;
+
+    if (isCrmDeal(job, crmTool, crmDrives)) {
+      setActionError(`Cannot mark deal as confirmed: Status must be updated directly in ${getCrmDisplayName(crmTool)}.`);
+      return;
+    }
 
     const pipelineRowNum = parentRow.rowNum;
     if (!pipelineRowNum || pipelineRowNum < 2) return;
@@ -1494,6 +1529,10 @@ export default function JobsView({
     if (currentDraft.likelihood !== undefined) {
       const parsedL = parseLikelihoodValue(currentDraft.likelihood);
       if (!isConfirmed && parsedL !== null && parsedL >= 100) {
+        if (isCrmDeal(job, crmTool, crmDrives)) {
+          setActionError(`Cannot promote deal to Confirmed: Status must be updated directly in ${getCrmDisplayName(crmTool)}.`);
+          return;
+        }
         // Pipeline job changed to 100% -> Confirm Job!
         return await handleConfirmJob(job);
       }
@@ -1813,7 +1852,7 @@ export default function JobsView({
   // ============================================================================
   // LEGACY INLINE CELL FOR SPREADSHEET VIEW
   // ============================================================================
-  const LegacyEditableCell = ({ value, colLetter, rowNum, type = "text", onSave, customStyle = {}, isCurrency = false }) => {
+  const LegacyEditableCell = ({ value, colLetter, rowNum, type = "text", onSave, customStyle = {}, isCurrency = false, title = "Click to edit" }) => {
     const [isEditing, setIsEditing] = React.useState(false);
     const [val, setVal] = React.useState(value || "");
     const inputRef = React.useRef(null);
@@ -1849,6 +1888,7 @@ export default function JobsView({
           onChange={(e) => setVal(e.target.value)}
           onBlur={handleBlur}
           onKeyDown={handleKeyDown}
+          title={title}
           style={{ width: "100%", boxSizing: "border-box", padding: "2px 4px", fontSize: "12px", border: "1px solid #0066cc", borderRadius: "3px" }}
         />
       );
@@ -1860,7 +1900,7 @@ export default function JobsView({
         style={{ minHeight: "20px", cursor: "text", padding: "2px", borderRadius: "3px", ...customStyle }}
         onMouseEnter={(e) => e.currentTarget.style.backgroundColor = customStyle.backgroundColor ? customStyle.backgroundColor : "rgba(0,102,204,0.05)"}
         onMouseLeave={(e) => e.currentTarget.style.backgroundColor = customStyle.backgroundColor || "transparent"}
-        title="Click to edit"
+        title={title}
       >
         {val ? (isCurrency ? formatCurrency(val) : val) : <span style={{ color: "#ccc" }}>-</span>}
       </div>
@@ -2440,7 +2480,7 @@ export default function JobsView({
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-            {jobsClient && (
+            {jobsClient && !managedClient && (allOutgoingsClients || []).length > 1 && (
               <button
                 type="button"
                 onClick={() => {
@@ -2943,6 +2983,8 @@ export default function JobsView({
                           const parentRow = job.rows?.[0] || {};
                           const tabName = job.tabName || parentRow.tabName || "Confirmed";
                           const isConfirmed = tabName.toLowerCase() === "confirmed";
+                          const isJobFromCrm = isCrmDeal(job, crmTool, crmDrives);
+                          const crmDisplayName = getCrmDisplayName(crmTool);
 
                           // Current values (draft if modified, else parentRow)
                           const clientVal = getJobFieldValue(job, "client");
@@ -3017,20 +3059,23 @@ export default function JobsView({
 
                                 {/* Status Badge */}
                                 <td style={{ padding: "9px 10px", verticalAlign: "middle" }}>
-                                  <span
-                                    style={{
-                                      display: "inline-block",
-                                      padding: "2px 8px",
-                                      borderRadius: "12px",
-                                      fontSize: "11px",
-                                      fontWeight: "600",
-                                      background: isConfirmed ? "#dcfce7" : "#e0f2fe",
-                                      color: isConfirmed ? "#15803d" : "#0369a1",
-                                      border: isConfirmed ? "1px solid #bbf7d0" : "1px solid #bae6fd"
-                                    }}
-                                  >
-                                    {isConfirmed ? "Confirmed" : "Pipeline"}
-                                  </span>
+                                  <div style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
+                                    <span
+                                      style={{
+                                        display: "inline-block",
+                                        padding: "2px 8px",
+                                        borderRadius: "12px",
+                                        fontSize: "11px",
+                                        fontWeight: "600",
+                                        background: isConfirmed ? "#dcfce7" : "#e0f2fe",
+                                        color: isConfirmed ? "#15803d" : "#0369a1",
+                                        border: isConfirmed ? "1px solid #bbf7d0" : "1px solid #bae6fd"
+                                      }}
+                                    >
+                                      {isConfirmed ? "Confirmed" : "Pipeline"}
+                                    </span>
+                                    {isJobFromCrm && <CrmSyncBadge crmDisplayName={crmDisplayName} />}
+                                  </div>
                                 </td>
 
                                 {/* Job Note Indicator / Button */}
@@ -3171,6 +3216,7 @@ export default function JobsView({
                                       onChange={(e) => handleDraftFieldChange(job, "revenue", e.target.value)}
                                       onKeyDown={(e) => handleFieldKeyDown(e, job, "revenue")}
                                       placeholder="0.00"
+                                      title={isJobFromCrm ? `Synced with ${crmDisplayName}: Changes to data will be overwritten by CRM data at the next sync.` : undefined}
                                       style={{
                                         width: "100%",
                                         padding: "4px 6px",
@@ -3250,6 +3296,7 @@ export default function JobsView({
                                     onChange={(e) => handleDraftFieldChange(job, "directCosts", e.target.value)}
                                     onKeyDown={(e) => handleFieldKeyDown(e, job, "directCosts")}
                                     placeholder="0.00"
+                                    title={isJobFromCrm ? `Synced with ${crmDisplayName}: Changes to data will be overwritten by CRM data at the next sync.` : undefined}
                                     style={{
                                       width: "100%",
                                       padding: "4px 6px",
@@ -3326,6 +3373,7 @@ export default function JobsView({
                                     onChange={(val) => handleDraftFieldChange(job, "startDate", val)}
                                     onKeyDown={(e) => handleFieldKeyDown(e, job, "startDate")}
                                     isDirty={isDirty && draftEdits[jobKey]?.startDate !== undefined}
+                                    title={isJobFromCrm ? `Synced with ${crmDisplayName}: Changes to data will be overwritten by CRM data at the next sync.` : undefined}
                                   />
                                 </td>
 
@@ -3336,6 +3384,7 @@ export default function JobsView({
                                     onChange={(val) => handleDraftFieldChange(job, "endDate", val)}
                                     onKeyDown={(e) => handleFieldKeyDown(e, job, "endDate")}
                                     isDirty={isDirty && draftEdits[jobKey]?.endDate !== undefined}
+                                    title={isJobFromCrm ? `Synced with ${crmDisplayName}: Changes to data will be overwritten by CRM data at the next sync.` : undefined}
                                   />
                                 </td>
 
@@ -3347,7 +3396,7 @@ export default function JobsView({
                                     onChange={(e) => handleDraftFieldChange(job, "likelihood", e.target.value)}
                                     onKeyDown={(e) => handleFieldKeyDown(e, job, "likelihood")}
                                     placeholder={isConfirmed ? "100%" : "50%"}
-                                    title={isConfirmed ? "Confirmed (100%). Change to <100% and save to unconfirm." : "Pipeline likelihood. Change to 100% and save to confirm."}
+                                    title={isJobFromCrm ? `Synced with ${crmDisplayName}: Changes will be overwritten at next sync.` : (isConfirmed ? "Confirmed (100%). Change to <100% and save to unconfirm." : "Pipeline likelihood. Change to 100% and save to confirm.")}
                                     style={{
                                       width: "60px",
                                       padding: "3px 5px",
@@ -3461,6 +3510,29 @@ export default function JobsView({
                                         boxShadow: "inset 0 2px 4px rgba(0,0,0,0.02)"
                                       }}
                                     >
+                                      {/* CRM Sync Overwrite Warning Banner */}
+                                      {isJobFromCrm && (
+                                        <div
+                                          style={{
+                                            background: "#fffbeb",
+                                            border: "1px solid #fef3c7",
+                                            borderRadius: "8px",
+                                            padding: "10px 14px",
+                                            marginBottom: "14px",
+                                            color: "#92400e",
+                                            fontSize: "12px",
+                                            display: "flex",
+                                            alignItems: "center",
+                                            gap: "8px"
+                                          }}
+                                        >
+                                          <CrmSyncIcon size={14} color="#b45309" strokeWidth={2.2} />
+                                          <span>
+                                            <strong>Synced with {crmDisplayName}:</strong> Changes to data will be overwritten by CRM data at the next sync.
+                                          </span>
+                                        </div>
+                                      )}
+
                                       {/* Sub-grid of cards */}
                                       <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1.4fr 1.4fr", gap: "16px", marginBottom: "16px" }}>
                                         {/* Card 1: Additional Job Details */}
@@ -3497,7 +3569,7 @@ export default function JobsView({
                                             {/* % Likelihood */}
                                             <div>
                                               <label style={{ display: "block", fontSize: "11px", fontWeight: "600", color: "#64748b", marginBottom: "3px" }}>
-                                                % Likelihood {isConfirmed ? "(100% = Confirmed)" : ""}
+                                                % Likelihood {isConfirmed ? "(100% = Confirmed)" : ""} {isJobFromCrm ? `(${crmDisplayName} synced)` : ""}
                                               </label>
                                               <input
                                                 type="text"
@@ -3605,14 +3677,16 @@ export default function JobsView({
                                             {/* Project Code */}
                                             <div>
                                               <label style={{ display: "block", fontSize: "11px", fontWeight: "600", color: "#64748b", marginBottom: "3px" }}>
-                                                Project Code
+                                                Project Code {isJobFromCrm ? `(${crmDisplayName} ID)` : ""}
                                               </label>
                                               <input
                                                 type="text"
                                                 value={projectCodeVal || ""}
-                                                onChange={(e) => handleDraftFieldChange(job, "projectCode", e.target.value)}
+                                                onChange={(e) => !isJobFromCrm && handleDraftFieldChange(job, "projectCode", e.target.value)}
                                                 onKeyDown={(e) => handleFieldKeyDown(e, job, "projectCode")}
                                                 placeholder="e.g. PRJ-2026-01"
+                                                disabled={isJobFromCrm}
+                                                title={isJobFromCrm ? `Project code is the ${crmDisplayName} deal ID and cannot be modified directly` : undefined}
                                                 style={{
                                                   width: "100%",
                                                   padding: "5px 7px",
@@ -3620,7 +3694,10 @@ export default function JobsView({
                                                   border: isDirty && draftEdits[jobKey]?.projectCode !== undefined ? "1px solid #f59e0b" : "1px solid #cbd5e1",
                                                   fontSize: "12px",
                                                   outline: "none",
-                                                  boxSizing: "border-box"
+                                                  boxSizing: "border-box",
+                                                  background: isJobFromCrm ? "#f1f5f9" : "#ffffff",
+                                                  color: isJobFromCrm ? "#64748b" : "inherit",
+                                                  cursor: isJobFromCrm ? "not-allowed" : "text"
                                                 }}
                                               />
                                               {searchQuery.trim() && textMatchesQuery(projectCodeVal, searchQuery) && (
@@ -3799,7 +3876,7 @@ export default function JobsView({
                                                               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
                                                                 <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
                                                                 <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-                                                             </svg>
+                                                              </svg>
                                                             )}
                                                             <NoteIndicatorButton
                                                               size="sm"
@@ -3822,12 +3899,11 @@ export default function JobsView({
                                                         {hasData ? (
                                                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: "4px" }}>
                                                             <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                                                              <span style={{ fontSize: "13px", fontWeight: "600", color: isPlaceholder ? "#9333ea" : "#0f172a" }}>
-                                                                <HighlightText text={slot.ref ? slot.ref : "Placeholder"} query={searchQuery} />
-                                                              </span>
-                                                              {isPlaceholder && slot.ref && (
-                                                                <span style={{ fontSize: "10px", padding: "1px 5px", borderRadius: "6px", background: "#f3e8ff", color: "#7e22ce", fontWeight: "600" }}>
-                                                                  Placeholder
+                                                              {isPlaceholder ? (
+                                                                <PlaceholderPill isAuto={isAutoPlaceholder(slot.ref)} size="sm" />
+                                                              ) : (
+                                                                <span style={{ fontSize: "13px", fontWeight: "600", color: "#0f172a" }}>
+                                                                  <HighlightText text={slot.ref || "Invoice"} query={searchQuery} />
                                                                 </span>
                                                               )}
                                                             </div>
@@ -3988,12 +4064,11 @@ export default function JobsView({
                                                         {hasData ? (
                                                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: "4px" }}>
                                                             <div style={{ display: "flex", alignItems: "center", gap: "6px", overflow: "hidden" }}>
-                                                              <span style={{ fontSize: "13px", fontWeight: "600", color: isPlaceholder ? "#9333ea" : "#0f172a", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "160px" }}>
-                                                                <HighlightText text={slot.description || slot.transactionId || "Expense"} query={searchQuery} />
-                                                              </span>
-                                                              {isPlaceholder && (
-                                                                <span style={{ fontSize: "10px", padding: "1px 5px", borderRadius: "6px", background: "#f3e8ff", color: "#7e22ce", fontWeight: "600", flexShrink: 0 }}>
-                                                                  Placeholder
+                                                              {isPlaceholder ? (
+                                                                <PlaceholderPill isAuto={isAutoPlaceholder(slot.transactionId || slot.description)} size="sm" />
+                                                              ) : (
+                                                                <span style={{ fontSize: "13px", fontWeight: "600", color: "#0f172a", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "160px" }}>
+                                                                  <HighlightText text={slot.description || slot.transactionId || "Expense"} query={searchQuery} />
                                                                 </span>
                                                               )}
                                                             </div>
@@ -4060,7 +4135,7 @@ export default function JobsView({
                                           </button>
 
                                           {/* Mark job as already confirmed (Pipeline only) - sits next to Delete job */}
-                                          {!isConfirmed && (
+                                          {!isConfirmed && !isJobFromCrm && (
                                             <button
                                               type="button"
                                               onClick={() => handleMarkAlreadyConfirmed(job)}
@@ -4134,7 +4209,7 @@ export default function JobsView({
                                                 )}
                                               </div>
                                             );
-                                          })() : (
+                                          })() : isJobFromCrm ? null : (
                                             <button
                                               type="button"
                                               onClick={() => handleConfirmJob(job)}
@@ -4334,6 +4409,11 @@ export default function JobsView({
                         {processedJobs.flatMap((job, jobIdx) => {
                           const isRetainer = String(job.rows[0]?.projectRetainer || "").toLowerCase().includes("retainer");
                           const isExpanded = jobsExpanded.has(job.rows[0]?.rowNum);
+                          const isJobFromCrm = isCrmDeal(job, crmTool, crmDrives);
+                          const crmDisplayName = getCrmDisplayName(crmTool);
+                          const crmWarningTitle = isJobFromCrm
+                            ? `Synced with ${crmDisplayName}: Changes will be overwritten at next sync.`
+                            : undefined;
                           const visibleRows = (isRetainer && !isExpanded) ? job.rows.slice(0, 1) : job.rows;
 
                           return visibleRows.map((r, rIdx) => {
@@ -4368,7 +4448,15 @@ export default function JobsView({
                                   {showIdentity && <LegacyEditableCell value={r.jobName} colLetter="B" rowNum={r.rowNum} onSave={handleLegacyInlineUpdate} />}
                                 </td>
                                 <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
-                                  {showFields && <LegacyEditableCell value={r.projectCode} colLetter="C" rowNum={r.rowNum} onSave={handleLegacyInlineUpdate} />}
+                                  {showFields && (
+                                    isJobFromCrm ? (
+                                      <span style={{ color: "#64748b", fontStyle: "italic" }} title={`Synced ${crmDisplayName} deal ID (read-only)`}>
+                                        {r.projectCode || "-"}
+                                      </span>
+                                    ) : (
+                                      <LegacyEditableCell value={r.projectCode} colLetter="C" rowNum={r.rowNum} onSave={handleLegacyInlineUpdate} />
+                                    )
+                                  )}
                                 </td>
                                 <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
                                   {showFields && <LegacyEditableCell value={r.dateConf} colLetter="D" rowNum={r.rowNum} onSave={handleLegacyInlineUpdate} />}
@@ -4401,27 +4489,35 @@ export default function JobsView({
                                   )}
                                 </td>
                                 <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
-                                  {showFields && <LegacyEditableCell value={r.revenue} colLetter="AG" rowNum={r.rowNum} onSave={handleLegacyInlineUpdate} isCurrency={true} />}
+                                  {showFields && <LegacyEditableCell value={r.revenue} colLetter="AG" rowNum={r.rowNum} onSave={handleLegacyInlineUpdate} isCurrency={true} title={crmWarningTitle} />}
                                 </td>
                                 <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
-                                  {showFields && <LegacyEditableCell value={r.directCosts} colLetter="AH" rowNum={r.rowNum} onSave={handleLegacyInlineUpdate} isCurrency={true} />}
+                                  {showFields && <LegacyEditableCell value={r.directCosts} colLetter="AH" rowNum={r.rowNum} onSave={handleLegacyInlineUpdate} isCurrency={true} title={crmWarningTitle} />}
                                 </td>
                                 <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
                                   {showFields && <LegacyEditableCell value={r.vat} colLetter="AI" rowNum={r.rowNum} onSave={handleLegacyInlineUpdate} isCurrency={true} />}
                                 </td>
                                 <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
-                                  {showFields && <LegacyEditableCell value={r.startDate} colLetter="AL" rowNum={r.rowNum} onSave={handleLegacyInlineUpdate} />}
+                                  {showFields && <LegacyEditableCell value={r.startDate} colLetter="AL" rowNum={r.rowNum} onSave={handleLegacyInlineUpdate} title={crmWarningTitle} />}
                                 </td>
                                 <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
-                                  {showFields && <LegacyEditableCell value={r.endDate} colLetter="AM" rowNum={r.rowNum} onSave={handleLegacyInlineUpdate} />}
+                                  {showFields && <LegacyEditableCell value={r.endDate} colLetter="AM" rowNum={r.rowNum} onSave={handleLegacyInlineUpdate} title={crmWarningTitle} />}
                                 </td>
                                 {jobsTab === "Pipeline" && (
                                   <>
                                     <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
-                                      {showFields && <LegacyEditableCell value={r.likelihood} colLetter="AN" rowNum={r.rowNum} onSave={handleLegacyInlineUpdate} />}
+                                      {showFields && <LegacyEditableCell value={r.likelihood} colLetter="AN" rowNum={r.rowNum} onSave={handleLegacyInlineUpdate} title={crmWarningTitle} />}
                                     </td>
                                     <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
-                                      {showFields && <LegacyEditableCell value={r.copiedToConf} colLetter="DD" rowNum={r.rowNum} onSave={handleLegacyInlineUpdate} />}
+                                      {showFields && (
+                                        isJobFromCrm ? (
+                                          <span style={{ color: "#888" }} title={`Controlled by ${crmDisplayName}`}>
+                                            {r.copiedToConf || "No"}
+                                          </span>
+                                        ) : (
+                                          <LegacyEditableCell value={r.copiedToConf} colLetter="DD" rowNum={r.rowNum} onSave={handleLegacyInlineUpdate} />
+                                        )
+                                      )}
                                     </td>
                                   </>
                                 )}
@@ -4438,8 +4534,12 @@ export default function JobsView({
                                         <span style={{ color: "#ccc" }}>-</span>
                                       ) : (
                                         <div>
-                                          <div style={{ fontWeight: "600", color: isPlaceholderInvoice(s.ref) ? "#9333ea" : "inherit", display: "flex", alignItems: "center", gap: "4px" }}>
-                                            <span>{s.ref ? s.ref : "Placeholder"}</span>
+                                          <div style={{ fontWeight: "600", display: "flex", alignItems: "center", gap: "4px" }}>
+                                            {isPlaceholderInvoice(s.ref, s.status) ? (
+                                              <PlaceholderPill isAuto={isAutoPlaceholder(s.ref)} size="sm" />
+                                            ) : (
+                                              <span>{s.ref}</span>
+                                            )}
                                             {isLocked && (
                                               <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
                                                 <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
@@ -4470,8 +4570,12 @@ export default function JobsView({
                                       <span style={{ color: "#ccc" }}>-</span>
                                     ) : (
                                       <div>
-                                        <div style={{ fontWeight: "600", color: isPlaceholderExpense(s.transactionId) ? "#9333ea" : "inherit" }}>
-                                          {s.description || s.transactionId}
+                                        <div style={{ fontWeight: "600" }}>
+                                          {isPlaceholderExpense(s.transactionId, s.description, s.status) ? (
+                                            <PlaceholderPill isAuto={isAutoPlaceholder(s.transactionId || s.description)} size="sm" />
+                                          ) : (
+                                            <span>{s.description || s.transactionId}</span>
+                                          )}
                                         </div>
                                         <div style={{ color: "#888", fontSize: "10px", marginTop: "3px" }}>
                                           <span>{formatCurrency(s.amount)}</span>

@@ -71,17 +71,9 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
     outgoingsPullPendingRef, allClientsMap, setAllClientsMap,
     showDebugPanel, setShowDebugPanel, debugClientName, setDebugClientName,
     debugResult, setDebugResult, debugLoading, setDebugLoading, runDebug,
-    managedClient, setManagedClient
+    managedClient, setManagedClient, preloadClientData
   } = appGlobals;
 
-  const handleClearManagedClient = () => {
-    setManagedClient(null);
-    setSetupClientName("");
-    if (activeNav === "alerts") {
-      triageEngine.setSelectedClient(null);
-      setScreen("clientSelection");
-    }
-  };
 
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
@@ -390,6 +382,54 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
   });
   const [allClientsLoaded, setAllClientsLoaded] = useState(false);
 
+  // Single client access check: only non-admins who only have access to a single client
+  const isSingleClientUser = Boolean(
+    !isAdmin && (
+      (Array.isArray(allOutgoingsClients) && allOutgoingsClients.length === 1) ||
+      (Array.isArray(user?.assignedClients) && user.assignedClients.length === 1)
+    )
+  );
+
+  const singleClient = useMemo(() => {
+    if (!isSingleClientUser) return null;
+    if (Array.isArray(allOutgoingsClients) && allOutgoingsClients.length === 1 && allOutgoingsClients[0]?.clientName) {
+      return allOutgoingsClients[0];
+    }
+    if (Array.isArray(user?.assignedClients) && user.assignedClients.length === 1) {
+      const assignedName = user.assignedClients[0];
+      const match =
+        (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === assignedName?.toLowerCase()) ||
+        (allClientsMap && (allClientsMap[assignedName] || Object.values(allClientsMap).find(c => c.clientName?.toLowerCase() === assignedName?.toLowerCase()))) ||
+        { clientName: assignedName };
+      return match;
+    }
+    return null;
+  }, [isSingleClientUser, allOutgoingsClients, user?.assignedClients, allClientsMap]);
+
+  // When a non-admin only has access to a single client, automatically operate in managed mode and preload data
+  useEffect(() => {
+    if (isSingleClientUser && singleClient?.clientName) {
+      const isDifferentClient = !managedClient || managedClient.clientName?.toLowerCase() !== singleClient.clientName?.toLowerCase();
+      const needsSheetId = !managedClient?.clientSheetId && Boolean(singleClient.clientSheetId);
+      if (isDifferentClient || needsSheetId) {
+        setManagedClient(singleClient);
+      }
+      if (singleClient.clientSheetId) {
+        preloadClientData?.(singleClient);
+      }
+    }
+  }, [isSingleClientUser, singleClient, managedClient, setManagedClient, preloadClientData]);
+
+  const handleClearManagedClient = () => {
+    if (isSingleClientUser) return;
+    setManagedClient(null);
+    setSetupClientName("");
+    if (activeNav === "alerts") {
+      triageEngine.setSelectedClient(null);
+      setScreen("clientSelection");
+    }
+  };
+
   const { ignoredAlerts, isLoadingIgnored, isUnignoring, loadIgnoredAlerts, unignoreAlert } = useIgnoredAlerts(automationCommanderSheetId, setAcceptError);
 
   const openCreateTaskModal = (alert, isProactive = false, isInfo = false) => {
@@ -445,27 +485,52 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
           if (data.clientsMap && setAllClientsMap) {
             setAllClientsMap(data.clientsMap);
           }
+          if (data.clients.length === 1 && !isAdmin) {
+            const sc = data.clients[0];
+            setManagedClient(sc);
+            if (sc.clientSheetId) {
+              preloadClientData?.(sc);
+            }
+          }
           setAllClientsLoaded(true);
           clientsLoadedRef.current = true;
         }
       })
-      .catch(e => console.error("get_all_clients error:", e))
+      .catch(e => {
+        console.error("get_all_clients error:", e);
+        try {
+          const stored = localStorage.getItem("pulse_cached_all_clients");
+          if (stored) {
+            const parsed = JSON.parse(stored);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              setAllOutgoingsClients(parsed);
+              setAllClientsLoaded(true);
+            }
+          }
+        } catch {}
+      })
       .finally(() => {
         clientsLoadingRef.current = false;
       });
-  }, [automationCommanderSheetId, setAllClientsMap]);
+  }, [automationCommanderSheetId, setAllClientsMap, isAdmin, setManagedClient, preloadClientData]);
 
+  const prevUserEmailRef = useRef(null);
   useEffect(() => {
     if (isAuthenticated && user?.email) {
-      if (!clientsLoadedRef.current) {
+      if (prevUserEmailRef.current !== user.email) {
+        prevUserEmailRef.current = user.email;
+        clientsLoadedRef.current = false;
+        loadClients(true);
+      } else if (!clientsLoadedRef.current) {
         loadClients(true);
       }
-    } else if (!isAuthenticated) {
+    } else if (!authChecking && !isAuthenticated) {
+      prevUserEmailRef.current = null;
       clientsLoadedRef.current = false;
       setAllOutgoingsClients([]);
       setAllClientsLoaded(false);
     }
-  }, [isAuthenticated, user?.email, loadClients]);
+  }, [isAuthenticated, authChecking, user?.email, loadClients]);
 
   // ── Navigation Guard for Unsaved Changes ──────────────────────────────
   const navGuardRef = useRef(null);
@@ -803,6 +868,8 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
             user={user}
             managedClient={managedClient}
             onClearManagedClient={handleClearManagedClient}
+            allClients={allOutgoingsClients}
+            isSingleClientUser={isSingleClientUser}
           />
         );
       }
@@ -821,6 +888,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
             user={user}
             managedClient={managedClient}
             onClearManagedClient={handleClearManagedClient}
+            isSingleClientUser={isSingleClientUser}
           />
         );
       }
@@ -1117,6 +1185,8 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
         onLogout={logout}
         clients={allOutgoingsClients}
         managedClient={managedClient}
+        isSingleClientUser={isSingleClientUser}
+        singleClient={singleClient}
         onSelectManagedClient={(c) => navigateWithGuard(() => setManagedClient(c))}
         onClearManagedClient={() => navigateWithGuard(() => handleClearManagedClient())}
       >

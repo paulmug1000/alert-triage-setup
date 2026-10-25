@@ -14,11 +14,12 @@
  * ============================================================================
  */
 
-import { getSheetsClient, withRetry, getSheetGid, colLetterToNum } from "./sheetsClient.js";
+import { getSheetsClient, withRetry, getSheetGid, colLetterToNum, extractSheetIdFromUrl } from "./sheetsClient.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { sanitizeFormulaInput } from "./userPermissions.js";
 import { memoryCache } from "./cacheService.js";
 import { redisClient } from "./redisClient.js";
+import { getClients } from "./workspaces.js";
 
 export function colIdxToLetter(colIdx) {
   let temp = colIdx + 1;
@@ -99,6 +100,61 @@ export async function fetchExpensesData(clientName, clientSheetId, bypassCache =
     }),
   ]);
 
+  // Resolve client reconSheetId to inspect CR2 reconciliation status per month
+  let reconSheetId = null;
+  const cleanClientId = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+  try {
+    const clients = await getClients();
+    const match = (clients || []).find(
+      (c) =>
+        (c.clientSheetId && (extractSheetIdFromUrl(c.clientSheetId) || c.clientSheetId) === cleanClientId) ||
+        (c.clientName && c.clientName.toLowerCase().trim() === clientName.toLowerCase().trim())
+    );
+    if (match) {
+      reconSheetId = match.reconSheetId || extractSheetIdFromUrl(match.reconSheetUrl) || null;
+    }
+  } catch (err) {
+    console.warn("Could not resolve reconSheetId for client:", clientName, err?.message);
+  }
+
+  const reconStatusMap = {};
+  if (reconSheetId) {
+    try {
+      const metaResp = await withRetry(() =>
+        sheets.spreadsheets.get({
+          spreadsheetId: reconSheetId,
+          fields: "sheets.properties.title",
+        })
+      );
+      const reconTabs = (metaResp.data.sheets || [])
+        .map((s) => s.properties?.title)
+        .filter((t) => /^\d{4}$/.test(t));
+
+      if (reconTabs.length > 0) {
+        const batchRanges = reconTabs.map((t) => `'${t}'!CR2`);
+        const batchResp = await withRetry(() =>
+          sheets.spreadsheets.values.batchGet({
+            spreadsheetId: reconSheetId,
+            ranges: batchRanges,
+            valueRenderOption: "FORMATTED_VALUE",
+          })
+        );
+        const vRanges = batchResp.data.valueRanges || [];
+        reconTabs.forEach((tab, idx) => {
+          const val = vRanges[idx]?.values?.[0]?.[0];
+          const isRecon = Boolean(val === true || String(val || "").trim().toUpperCase() === "TRUE");
+          reconStatusMap[tab] = isRecon;
+          const yy = parseInt(tab.slice(0, 2), 10);
+          const mm = tab.slice(2, 4);
+          const fullYear = yy < 50 ? 2000 + yy : 1900 + yy;
+          reconStatusMap[`${fullYear}-${mm}`] = isRecon;
+        });
+      }
+    } catch (e) {
+      console.warn("Failed to fetch CR2 reconciliation status from Recon Sheet:", e?.message);
+    }
+  }
+
   const row1 = headerResp.data.values?.[0] || [];
   const rowData = gridResp.data.sheets?.[0]?.data?.[0]?.rowData || [];
 
@@ -143,14 +199,27 @@ export async function fetchExpensesData(clientName, clientSheetId, bypassCache =
       const colIdx = fy.startCol + j;
       const rawHdr = String(row1[colIdx] || "").trim();
       const colLetter = colIdxToLetter(colIdx);
+      const parsed = parseMonthYearHeader(rawHdr);
+
+      let isReconciled = false;
+      let tabName = null;
+      let isoMonth = null;
+      if (parsed) {
+        tabName = `${String(parsed.year).slice(-2)}${String(parsed.monthIdx + 1).padStart(2, "0")}`;
+        isoMonth = `${parsed.year}-${String(parsed.monthIdx + 1).padStart(2, "0")}`;
+        isReconciled = Boolean(reconStatusMap[tabName] || reconStatusMap[isoMonth]);
+      }
+
       monthCols.push({
         colIdx,
         colLetter,
         label: rawHdr || `M${j + 1}`,
+        isReconciled,
+        tabName,
+        isoMonth,
       });
 
       // Check if current date falls in this FY
-      const parsed = parseMonthYearHeader(rawHdr);
       if (parsed) {
         const mDate = new Date(parsed.year, parsed.monthIdx, 1);
         const mEnd = new Date(parsed.year, parsed.monthIdx + 1, 0, 23, 59, 59);
@@ -190,6 +259,7 @@ export async function fetchExpensesData(clientName, clientSheetId, bypassCache =
         return {
           colLetter: m.colLetter,
           monthLabel: m.label,
+          isReconciled: Boolean(m.isReconciled),
           value: cell?.formattedValue || "£0",
           note: cell?.note || "",
         };
@@ -242,6 +312,8 @@ export async function fetchExpensesData(clientName, clientSheetId, bypassCache =
     success: true,
     clientName,
     clientSheetId,
+    reconSheetId: reconSheetId || null,
+    reconStatusMap,
     defaultFyIndex,
     fyConfigs,
     expenses,
@@ -393,6 +465,28 @@ export async function saveExpenseAmount({
   const rowNum = parseInt(sheetRow, 10);
   if (isNaN(rowNum) || rowNum < 126 || rowNum > 225) {
     throw new Error(`Invalid expense sheet row: ${sheetRow}. Must be between 126 and 225.`);
+  }
+
+  // Verify CR2 gate: if any target column belongs to a reconciled month, reject modification
+  const currentData = await fetchExpensesData(clientName, clientSheetId, false);
+  const reconciledColLetters = new Set();
+  (currentData?.fyConfigs || []).forEach((fy) => {
+    (fy.monthCols || []).forEach((m) => {
+      if (m.isReconciled && m.colLetter) {
+        reconciledColLetters.add(m.colLetter.toUpperCase());
+      }
+    });
+  });
+
+  const targetCols = [
+    ...Object.keys(monthlyAmounts || {}),
+    ...Object.keys(cellNotes || {}),
+  ].map((c) => String(c).toUpperCase().trim());
+
+  for (const c of targetCols) {
+    if (reconciledColLetters.has(c)) {
+      throw new Error(`Cannot modify expenses for a reconciled month. Column ${c} is locked.`);
+    }
   }
 
   const dataUpdates = [];

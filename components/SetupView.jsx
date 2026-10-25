@@ -561,7 +561,7 @@ export default function SetupView({
       {/* Top Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "20px", flexWrap: "wrap", gap: "12px" }}>
         <div>
-          {!managedClient && (
+          {!managedClient && (allOutgoingsClients || []).length > 1 && (
             <button
               type="button"
               onClick={handleBackToOverview}
@@ -607,7 +607,7 @@ export default function SetupView({
 
         {/* Client Chooser & Actions */}
         <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
-          {!managedClient && (
+          {!managedClient && (allOutgoingsClients || []).length > 1 && (
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
               <label htmlFor="client-selector" style={{ fontSize: "13px", fontWeight: "600", color: "#475569" }}>Client:</label>
               <select

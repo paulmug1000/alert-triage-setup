@@ -139,7 +139,7 @@ export default function ExpensesView({
             setLoading(false);
             return;
           }
-        } catch {}
+        } catch { }
       }
     }
 
@@ -516,44 +516,58 @@ export default function ExpensesView({
         </td>
 
         {/* 12 Months Columns */}
-        {months.map((m) => (
-          <td
-            key={m.colLetter}
-            onClick={() => {
-              if (isAdmin) {
-                setEditingCell({
-                  sheetRow: exp.sheetRow,
-                  colLetter: m.colLetter,
-                  label: m.monthLabel,
-                  value: m.value,
-                  category: exp.category,
-                  note: m.note || "",
-                });
-                setCellInputValue(m.value);
-                setCellNoteValue(m.note || "");
+        {months.map((m) => {
+          const isLocked = Boolean(m.isReconciled);
+          return (
+            <td
+              key={m.colLetter}
+              onClick={() => {
+                if (isAdmin) {
+                  if (isLocked) {
+                    return;
+                  }
+                  setEditingCell({
+                    sheetRow: exp.sheetRow,
+                    colLetter: m.colLetter,
+                    label: m.monthLabel,
+                    value: m.value,
+                    category: exp.category,
+                    note: m.note || "",
+                    isReconciled: isLocked,
+                  });
+                  setCellInputValue(m.value);
+                  setCellNoteValue(m.note || "");
+                }
+              }}
+              style={{
+                position: "relative",
+                padding: "8px 10px",
+                textAlign: "right",
+                color: isLocked ? "#64748b" : "#0f172a",
+                fontWeight: isLocked ? 400 : 500,
+                background: isLocked ? "#f8fafc" : "transparent",
+                cursor: isAdmin ? (isLocked ? "not-allowed" : "pointer") : "default",
+                transition: "background 0.1s",
+              }}
+              onMouseEnter={(e) => {
+                if (isAdmin && !isLocked) e.currentTarget.style.background = "#eff6ff";
+              }}
+              onMouseLeave={(e) => {
+                if (isAdmin) e.currentTarget.style.background = isLocked ? "#f8fafc" : "transparent";
+              }}
+              title={
+                isLocked
+                  ? `${m.monthLabel} is reconciled (locked)`
+                  : isAdmin
+                    ? `Click to edit ${m.monthLabel} amount & note`
+                    : undefined
               }
-            }}
-            style={{
-              position: "relative",
-              padding: "8px 10px",
-              textAlign: "right",
-              color: "#0f172a",
-              fontWeight: 500,
-              cursor: isAdmin ? "pointer" : "default",
-              transition: "background 0.1s",
-            }}
-            onMouseEnter={(e) => {
-              if (isAdmin) e.currentTarget.style.background = "#eff6ff";
-            }}
-            onMouseLeave={(e) => {
-              if (isAdmin) e.currentTarget.style.background = "transparent";
-            }}
-            title={isAdmin ? `Click to edit ${m.monthLabel} amount & note` : undefined}
-          >
-            <CellNoteIndicator note={m.note} />
-            {m.value || "£0"}
-          </td>
-        ))}
+            >
+              <CellNoteIndicator note={m.note} />
+              {m.value || "£0"}
+            </td>
+          );
+        })}
 
         {/* FY Total */}
         <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 800, color: "#0047AB", background: "#f8fafc" }}>
@@ -582,7 +596,7 @@ export default function ExpensesView({
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-          {selectedClient && (
+          {selectedClient && !managedClient && (allOutgoingsClients || []).length > 1 && (
             <button
               type="button"
               onClick={handleBackToClients}
@@ -783,7 +797,7 @@ export default function ExpensesView({
         </div>
       )}
 
-      {selectedClient && loading && !expensesData && (
+      {selectedClient && (loading || !expensesData) && !error && (
         <PmaExpensesTableSkeleton />
       )}
 
@@ -899,8 +913,37 @@ export default function ExpensesView({
                     <th style={{ padding: "8px 12px", textAlign: "left", fontWeight: 700, color: "#475569", minWidth: "220px" }}>Category</th>
                     <th style={{ padding: "8px 10px", textAlign: "center", fontWeight: 700, color: "#475569", width: "80px" }}>VAT?</th>
                     {currentFy.monthCols.map((m) => (
-                      <th key={m.colLetter} style={{ padding: "8px 10px", fontWeight: 700, color: "#475569", minWidth: "75px" }}>
-                        {m.label}
+                      <th
+                        key={m.colLetter}
+                        style={{
+                          padding: "8px 10px",
+                          fontWeight: 700,
+                          color: m.isReconciled ? "#64748b" : "#475569",
+                          minWidth: "75px",
+                          background: m.isReconciled ? "#f8fafc" : "transparent",
+                          whiteSpace: "nowrap",
+                        }}
+                        title={m.isReconciled ? "Reconciled (locked)" : undefined}
+                      >
+                        <div style={{ display: "inline-flex", alignItems: "center", justifyContent: "flex-end", gap: "4px", whiteSpace: "nowrap" }}>
+                          {m.isReconciled && (
+                            <svg
+                              width="11"
+                              height="11"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="#64748b"
+                              strokeWidth="2.5"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              style={{ opacity: 0.8 }}
+                            >
+                              <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                            </svg>
+                          )}
+                          <span>{m.label}</span>
+                        </div>
                       </th>
                     ))}
                     <th style={{ padding: "8px 12px", fontWeight: 800, color: "#0047AB", background: "#f0f7ff", minWidth: "90px" }}>
@@ -1083,7 +1126,7 @@ export default function ExpensesView({
                   gap: "12px",
                 }}
               >
-                <span style={{ fontSize: "13px", fontWeight: 700, color: "#1e293b" }}>+ Add New Expense:</span>
+                <span style={{ fontSize: "13px", fontWeight: 700, color: "#1e293b" }}>+ Add new expense:</span>
                 <input
                   type="text"
                   placeholder="Enter expense category name..."

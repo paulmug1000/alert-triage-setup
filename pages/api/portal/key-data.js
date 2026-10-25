@@ -4,7 +4,8 @@ import { verifyUserAuthorizedForSheet } from "../../../services/userPermissions.
 import { redisClient } from "../../../services/redisClient.js";
 import { memoryCache } from "../../../services/cacheService.js";
 import { parseMoney, formatMoney } from "../../../services/deepDiveHelper.js";
-import { canonicalizeInvoiceStatus, canonicalizeExpenseStatus } from "../../../utils/helpers.js";
+import { canonicalizeInvoiceStatus, canonicalizeExpenseStatus, isPlaceholderExpense } from "../../../utils/helpers.js";
+import { getClients } from "../../../services/workspaces.js";
 
 const KEYDATA_CACHE_TTL_SECS = 60; // 60s cache
 
@@ -22,6 +23,17 @@ function parseMonthYear(str) {
   }
   const d = new Date(str);
   return isNaN(d.getTime()) ? null : d;
+}
+
+function colToLetter(colIndex) {
+  let temp, letter = "";
+  let c = colIndex + 1;
+  while (c > 0) {
+    temp = (c - 1) % 26;
+    letter = String.fromCharCode(65 + temp) + letter;
+    c = Math.floor((c - temp - 1) / 26);
+  }
+  return letter;
 }
 
 export default async function handler(req, res) {
@@ -211,7 +223,23 @@ export default async function handler(req, res) {
     const contractorSource = String(contractorSourceRows[0]?.[0] || "Cell Values").trim();
     const isNotesMode = contractorSource.toLowerCase().includes("notes");
     const masterUrl = String(masterUrlRows[0]?.[0] || "").trim();
-    const masterSheetId = extractSheetIdFromUrl(masterUrl);
+    let masterSheetId = extractSheetIdFromUrl(masterUrl);
+    if (!masterSheetId) {
+      try {
+        const allClients = await getClients();
+        const cleanClientSheetId = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+        const found = allClients.find(
+          (c) =>
+            (c.clientSheetId && (extractSheetIdFromUrl(c.clientSheetId) || c.clientSheetId) === cleanClientSheetId) ||
+            (clientName && c.clientName?.toLowerCase().trim() === clientName.toLowerCase().trim())
+        );
+        if (found?.masterSheetId) {
+          masterSheetId = extractSheetIdFromUrl(found.masterSheetId) || found.masterSheetId;
+        }
+      } catch (clientErr) {
+        console.warn("⚠️ Failed to look up masterSheetId in getClients:", clientErr.message);
+      }
+    }
 
     // Helper: Safely parse dates, including Google Sheets serial numbers (e.g. 46296 or 55000), returning YYYY-MM-DD
     const formatDateVal = (val) => {
@@ -474,6 +502,7 @@ export default async function handler(req, res) {
             const dateH = [`dir inv. ${slot} rec date`, `direct inv ${slot} rec date`];
             const daysH = [`dir inv ${slot} days to pay`, `dir inv. ${slot} days to pay`];
             const statusH = [`dir inv ${slot} status`];
+            const appIdH = [`dir inv ${slot} app id`, `dir inv. ${slot} app id`, `direct inv ${slot} app id`];
 
             const amt = getValueByHeader(r, colMap, amtH);
             const desc = getValueByHeader(r, colMap, descH);
@@ -481,8 +510,9 @@ export default async function handler(req, res) {
             const recDateRaw = getValueByHeader(r, colMap, dateH);
             const days = getValueByHeader(r, colMap, daysH) || "30";
             const status = getValueByHeader(r, colMap, statusH) || "";
+            const appId = getValueByHeader(r, colMap, appIdH) || "";
 
-            if (amt || desc || recDateRaw) {
+            if (amt || desc || recDateRaw || appId) {
               return {
                 num: currentExpNum++,
                 desc,
@@ -491,6 +521,7 @@ export default async function handler(req, res) {
                 recDate: formatDateVal(recDateRaw),
                 days,
                 status: canonicalizeExpenseStatus(status),
+                appId,
               };
             }
             return null;
@@ -765,6 +796,9 @@ export default async function handler(req, res) {
 
     // In Notes metadata mode, fetch and parse transactions from Master Sheet's OutgNotes tab
     let contractorTransactions = [];
+    const contractorLockedMap = {};
+    const contractorBlocksMap = {};
+
     if (isNotesMode && masterSheetId) {
       try {
         const notesResp = await withRetry(() =>
@@ -775,7 +809,12 @@ export default async function handler(req, res) {
           })
         );
         const notesRows = notesResp.data.values || [];
-        const blockRegex = /\{App ID:\s*([^}]+)\}\{Amt:\s*([^}]+)\}(?:\{Status:\s*([^}]*)\})?(?:\{Rec date:\s*([^}]*)\})?(?:\{Pay date:\s*([^}]*)\})?(?:\{Description:\s*([^}]*)\})?/g;
+
+        const yearColRanges = [
+          { yr: 1, start: 6, count: 12 },  // Year 1: cols G-R (indices 6-17)
+          { yr: 2, start: 21, count: 12 }, // Year 2: cols V-AG (indices 21-32)
+          { yr: 3, start: 36, count: 12 }, // Year 3: cols AK-AV (indices 36-47)
+        ];
 
         // Loop rows 13 to 111 (0-indexed indices 12 to 110)
         // Row 111 (index 110) is "Making up CoS amount"
@@ -791,60 +830,129 @@ export default async function handler(req, res) {
           const isVat = vatSetting.toLowerCase() === "yes";
 
           const notesCells = notesRows[r] || [];
-          for (let c = 0; c < notesCells.length; c++) {
-            const cellText = notesCells[c];
-            if (!cellText || !cellText.includes("{App ID:")) continue;
 
-            let match;
-            blockRegex.lastIndex = 0;
-            while ((match = blockRegex.exec(cellText)) !== null) {
-              const appId = match[1]?.trim() || "";
-              const netAmount = parseFloat(String(match[2] || "").replace(/[£$€,\s]/g, "")) || 0;
-              const status = match[3]?.trim() || "";
-              const recDate = match[4]?.trim() || "";
-              const payDate = match[5]?.trim() || "";
-              const rawDesc = match[6]?.trim() || "";
+          // Track locked cells for this contractor row:
+          // Only cells exclusively made up of placeholders should be editable. Any other cells should be locked.
+          const locked = {
+            1: new Array(12).fill(false),
+            2: new Array(12).fill(false),
+            3: new Array(12).fill(false),
+          };
 
-              let vendor = contractorName;
-              let itemDesc = rawDesc;
-              const parenMatch = rawDesc.match(/^(.*?)\s*\((.*)\)$/);
-              if (parenMatch && parenMatch[1].trim() && parenMatch[2].trim()) {
-                vendor = parenMatch[1].trim();
-                itemDesc = parenMatch[2].trim();
-              } else if (rawDesc.startsWith("Placeholder Entry - ")) {
-                vendor = rawDesc.replace("Placeholder Entry - ", "").trim() || vendor;
-                itemDesc = "Placeholder Entry";
-              } else if (rawDesc === "Placeholder Entry") {
-                vendor = contractorName;
-                itemDesc = "Placeholder Entry";
+          const blocksForContractor = {
+            1: Array.from({ length: 12 }, () => []),
+            2: Array.from({ length: 12 }, () => []),
+            3: Array.from({ length: 12 }, () => []),
+          };
+
+          for (const yrRange of yearColRanges) {
+            for (let mIdx = 0; mIdx < yrRange.count; mIdx++) {
+              const c = yrRange.start + mIdx;
+              const cellText = notesCells[c];
+              if (!cellText || !cellText.includes("{App ID:")) continue;
+
+              const rawBlocks = cellText.split(/(?=\{App ID:)/).map((s) => s.trim()).filter(Boolean);
+              const cellBlocks = [];
+              for (const raw of rawBlocks) {
+                if (!raw.includes("{App ID:")) continue;
+                const getTag = (key) => {
+                  const m = raw.match(new RegExp(`\\{${key}:\\s*([^}]*)\\}`, "i"));
+                  return m ? m[1].trim() : "";
+                };
+                const appId = getTag("App ID");
+                const amtStr = getTag("Amt");
+                const netAmount = parseFloat(amtStr.replace(/[£$€,\s]/g, "")) || 0;
+                const status = getTag("Status");
+                const recDate = getTag("Rec date");
+                const payDate = getTag("Pay date");
+                const rawDesc = getTag("Description");
+
+                if (appId) {
+                  cellBlocks.push({ appId, netAmount, status, recDate, payDate, rawDesc });
+                }
               }
 
-              const vatAmount = isVat ? Math.round(netAmount * 0.20 * 100) / 100 : 0;
-              const grossAmount = Math.round((netAmount + vatAmount) * 100) / 100;
+              if (cellBlocks.length > 0) {
+                blocksForContractor[yrRange.yr][mIdx] = cellBlocks.map((b) => ({
+                  appId: b.appId,
+                  amount: b.netAmount,
+                  status: b.status,
+                  recDate: b.recDate,
+                  payDate: b.payDate,
+                  description: b.rawDesc,
+                  vat: isVat ? "Yes" : "No",
+                  colLetter: colToLetter(c),
+                  sheetRow: r + 1,
+                }));
 
-              contractorTransactions.push({
-                appId,
-                vendor,
-                itemDesc,
-                rawDesc,
-                contractorName,
-                netAmount,
-                vatAmount,
-                grossAmount,
-                amount: -Math.abs(grossAmount),
-                vatSetting: isVat ? "Yes" : "No",
-                status,
-                recDate,
-                payDate,
-                rowNumber: r + 1,
-              });
+                // If ANY block in this cell is an actual accounting bill (not a placeholder),
+                // then this cell is NOT exclusively made up of placeholders -> locked!
+                const hasActualBill = cellBlocks.some((b) => !isPlaceholderExpense(b.appId, b.rawDesc, b.status));
+                if (hasActualBill) {
+                  locked[yrRange.yr][mIdx] = true;
+                }
+
+                // Add to contractorTransactions
+                for (const b of cellBlocks) {
+                  let vendor = contractorName;
+                  let itemDesc = b.rawDesc;
+                  const parenMatch = b.rawDesc.match(/^(.*?)\s*\((.*)\)$/);
+                  if (parenMatch && parenMatch[1].trim() && parenMatch[2].trim()) {
+                    vendor = parenMatch[1].trim();
+                    itemDesc = parenMatch[2].trim();
+                  } else if (b.rawDesc.startsWith("Placeholder Entry - ")) {
+                    vendor = b.rawDesc.replace("Placeholder Entry - ", "").trim() || vendor;
+                    itemDesc = "Placeholder Entry";
+                  } else if (b.rawDesc === "Placeholder Entry") {
+                    vendor = contractorName;
+                    itemDesc = "Placeholder Entry";
+                  }
+
+                  const vatAmount = isVat ? Math.round(b.netAmount * 0.20 * 100) / 100 : 0;
+                  const grossAmount = Math.round((b.netAmount + vatAmount) * 100) / 100;
+
+                  contractorTransactions.push({
+                    appId: b.appId,
+                    vendor,
+                    itemDesc,
+                    rawDesc: b.rawDesc,
+                    contractorName,
+                    netAmount: b.netAmount,
+                    vatAmount,
+                    grossAmount,
+                    amount: -Math.abs(grossAmount),
+                    vatSetting: isVat ? "Yes" : "No",
+                    status: b.status,
+                    recDate: b.recDate,
+                    payDate: b.payDate,
+                    rowNumber: r + 1,
+                  });
+                }
+              }
             }
           }
+
+          contractorLockedMap[r + 1] = locked;
+          contractorBlocksMap[r + 1] = blocksForContractor;
         }
       } catch (notesErr) {
         console.warn("⚠️ Failed to fetch OutgNotes from master sheet:", notesErr.message);
       }
     }
+
+    // Attach lockedCells state to each contractor in contractorsList
+    contractorsList.forEach((c) => {
+      c.lockedCells = contractorLockedMap[c.rowNumber] || {
+        1: new Array(12).fill(false),
+        2: new Array(12).fill(false),
+        3: new Array(12).fill(false),
+      };
+      c.monthlyBlocks = contractorBlocksMap[c.rowNumber] || {
+        1: Array.from({ length: 12 }, () => []),
+        2: Array.from({ length: 12 }, () => []),
+        3: Array.from({ length: 12 }, () => []),
+      };
+    });
 
     // Fetch Recon Sheet bank transactions and CR2 "Month ready" gate
     const reconMonths = {};
@@ -865,6 +973,23 @@ export default async function handler(req, res) {
         }
       } catch (err) {
         console.warn("⚠️ Failed to read KeyInfo!G1 from master sheet:", err.message);
+      }
+    }
+
+    if (!reconSheetId) {
+      try {
+        const allClients = await getClients();
+        const cleanClientSheetId = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+        const found = allClients.find(
+          (c) =>
+            (c.clientSheetId && (extractSheetIdFromUrl(c.clientSheetId) || c.clientSheetId) === cleanClientSheetId) ||
+            (clientName && c.clientName?.toLowerCase().trim() === clientName.toLowerCase().trim())
+        );
+        if (found?.reconSheetId) {
+          reconSheetId = extractSheetIdFromUrl(found.reconSheetId) || found.reconSheetId;
+        }
+      } catch (clientErr) {
+        console.warn("⚠️ Failed to look up reconSheetId in getClients:", clientErr.message);
       }
     }
 
@@ -1109,6 +1234,30 @@ export default async function handler(req, res) {
       2: outgoingsHeadersY2,
       3: outgoingsHeadersY3,
     };
+
+    // Calculate reconciledMonths across each FY: { 1: [bool x 12], 2: [bool x 12], 3: [bool x 12] }
+    const reconciledMonths = {
+      1: new Array(12).fill(false),
+      2: new Array(12).fill(false),
+      3: new Array(12).fill(false),
+    };
+
+    [1, 2, 3].forEach((yr) => {
+      const hdrs = yearHeaders[yr] || [];
+      for (let mIdx = 0; mIdx < 12; mIdx++) {
+        const h = hdrs[mIdx];
+        if (h) {
+          const d = parseMonthYear(h);
+          if (d) {
+            const tabName = `${String(d.getFullYear()).slice(-2)}${String(d.getMonth() + 1).padStart(2, "0")}`;
+            if (reconMonths[tabName]) {
+              reconciledMonths[yr][mIdx] = Boolean(reconMonths[tabName].isReconciled);
+            }
+          }
+        }
+      }
+    });
+
     for (const y of [1, 2, 3]) {
       const hdrs = yearHeaders[y] || [];
       if (hdrs.length > 0) {
@@ -1247,6 +1396,7 @@ export default async function handler(req, res) {
         contractorTransactions,
         transactionsByMonth,
         reconMonths,
+        reconciledMonths,
         vatCashByMonth,
         vatAccrualByMonth,
       },

@@ -180,6 +180,8 @@ export function useAuth() {
       localStorage.removeItem("pma_token");
       localStorage.removeItem("pma_user");
       localStorage.removeItem("pulse_access_token");
+      localStorage.removeItem("pma_managed_client");
+      localStorage.removeItem("pulse_cached_all_clients");
     } catch {}
     setIsAuthenticated(false);
     setUser(null);

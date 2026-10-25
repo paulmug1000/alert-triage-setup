@@ -1,9 +1,20 @@
 import { getSheetsClient, withRetry, extractSheetIdFromUrl, colLetterToNum, colIndexToLetter, getSheetGid, getSheetId, applySheetFontFormat } from "./sheetsClient.js";
 import { setMasterSwitch, checkAllGASLocks, fetchJobRowsForDisplay, getToleranceValues } from "./sharedHelpers.js";
-import { logPmaActivity, DEFAULT_AC_SHEET_ID } from "./pmaLogger.js";
-import { isPlaceholderInvoice, isPlaceholderExpense, toSheetDateFormat, parseSheetDate, canonicalizeInvoiceStatus, canonicalizeExpenseStatus } from "../utils/helpers.js";
+import {
+  isPlaceholderInvoice,
+  isPlaceholderExpense,
+  toSheetDateFormat,
+  parseSheetDate,
+  canonicalizeInvoiceStatus,
+  canonicalizeExpenseStatus,
+  hasActiveCrmIntegration,
+  isCrmDrivenTab,
+  getCrmDisplayName
+} from "../utils/helpers.js";
+import { isUserAuthorizedForClient, matchesClientName, sanitizeFormulaInput, getClientManagerClientMap, DEFAULT_AC_SHEET_ID } from "./userPermissions.js";
+export { DEFAULT_AC_SHEET_ID };
+import { logPmaActivity } from "./pmaLogger.js";
 import { getSessionUser } from "./authService.js";
-import { isUserAuthorizedForClient, matchesClientName, sanitizeFormulaInput, getClientManagerClientMap } from "./userPermissions.js";
 import { redisClient } from "./redisClient.js";
 import { memoryCache, get2TierCache, set2TierCache, invalidatePmaClientCache } from "./cacheService.js";
 
@@ -609,17 +620,23 @@ export async function handleGetOutgoings(req, res, sheets) {
       }
 
       const blocks = [];
-      const blockRegex = /\{App ID:\s*([^}]+)\}\{Amt:\s*([^}]+)\}(?:\{Status:\s*([^}]*)\})?(?:\{Rec date:\s*([^}]*)\})?(?:\{Pay date:\s*([^}]*)\})?(?:\{Description:\s*([^}]*)\})?/g;
-      let match;
-      while ((match = blockRegex.exec(blockText)) !== null) {
-        blocks.push({
-          appId:       match[1]?.trim() || "",
-          amount:      parseFloat(String(match[2] || "").replace(/[£$€,\s]/g, "")) || 0,
-          status:      match[3]?.trim() || "",
-          recDate:     match[4]?.trim() || "",
-          payDate:     match[5]?.trim() || "",
-          description: match[6]?.trim() || "",
-        });
+      const rawBlocks = blockText.split(/(?=\{App ID:)/).map((s) => s.trim()).filter(Boolean);
+      for (const raw of rawBlocks) {
+        if (!raw.includes("{App ID:")) continue;
+        const getTag = (key) => {
+          const m = raw.match(new RegExp(`\\{${key}:\\s*([^}]*)\\}`, "i"));
+          return m ? m[1].trim() : "";
+        };
+        const appId = getTag("App ID");
+        const amtStr = getTag("Amt");
+        const amount = parseFloat(amtStr.replace(/[£$€,\s]/g, "")) || 0;
+        const status = getTag("Status");
+        const recDate = getTag("Rec date");
+        const payDate = getTag("Pay date");
+        const description = getTag("Description");
+        if (appId) {
+          blocks.push({ appId, amount, status, recDate, payDate, description });
+        }
       }
       return { topNote, blocks };
     };
@@ -3683,6 +3700,55 @@ export async function handleMarkPipelineAlreadyConfirmed(req, res, sheets) {
   }
 
   try {
+    // Guard: Prevent manual promotion of CRM-originated pipeline deals
+    try {
+      const codeResp = await withRetry(() =>
+        sheets.spreadsheets.values.get({
+          spreadsheetId: sheetIdClean,
+          range: `Pipeline!C${pRow}`,
+          valueRenderOption: "FORMATTED_VALUE",
+        })
+      );
+      const parentProjectCode = (codeResp.data?.values?.[0]?.[0] || "").trim();
+      if (parentProjectCode) {
+        let crmTool = "None";
+        let crmDrives = "NA";
+        try {
+          const kiResp = await withRetry(() =>
+            sheets.spreadsheets.values.get({
+              spreadsheetId: sheetIdClean,
+              range: "KeyInfo!Q8:Q9",
+              valueRenderOption: "FORMATTED_VALUE",
+            })
+          );
+          const kiRows = kiResp.data?.values || [];
+          if (kiRows[0]?.[0]) crmTool = String(kiRows[0][0]).trim();
+          if (kiRows[1]?.[0]) crmDrives = String(kiRows[1][0]).trim();
+        } catch (kiErr) {
+          if (redisClient?.isOpen && clientName) {
+            try {
+              const normKey = String(clientName).trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
+              const rawCfg = await redisClient.get(`pulse:setup:${normKey}`);
+              if (rawCfg) {
+                const parsed = JSON.parse(rawCfg);
+                if (parsed.crmTool) crmTool = parsed.crmTool;
+                if (parsed.crmDrives) crmDrives = parsed.crmDrives;
+              }
+            } catch (e) {}
+          }
+        }
+
+        if (hasActiveCrmIntegration(crmTool) && isCrmDrivenTab("pipeline", crmDrives)) {
+          return res.status(400).json({
+            success: false,
+            error: `Cannot manually confirm a CRM pipeline deal. Please update the deal status directly in ${getCrmDisplayName(crmTool)}.`,
+          });
+        }
+      }
+    } catch (crmCheckErr) {
+      console.warn("⚠️ CRM check warning in handleMarkPipelineAlreadyConfirmed:", crmCheckErr.message);
+    }
+
     let likelihoodCol = "AN";
     let copiedStatusCol = "DD";
     try {

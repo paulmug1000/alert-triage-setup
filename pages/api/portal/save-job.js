@@ -4,7 +4,13 @@ import { verifyUserAuthorizedForSheet, sanitizeFormulaInput } from "../../../ser
 import { redisClient } from "../../../services/redisClient.js";
 import { memoryCache } from "../../../services/cacheService.js";
 import { logPulseActivity } from "../../../services/pulseLogger.js";
-import { canonicalizeInvoiceStatus, canonicalizeExpenseStatus } from "../../../utils/helpers.js";
+import {
+  canonicalizeInvoiceStatus,
+  canonicalizeExpenseStatus,
+  hasActiveCrmIntegration,
+  isCrmDrivenTab,
+  getCrmDisplayName
+} from "../../../utils/helpers.js";
 
 // Helper to convert 0-indexed column number to letters (e.g. 0 -> A, 27 -> AB)
 function colToLetter(colIndex) {
@@ -466,6 +472,59 @@ export default async function handler(req, res) {
     const wasConfirmed = origId.startsWith("confirmed");
     const isSheetChange = (wasPipeline && isTargetConfirmed) || (wasConfirmed && !isTargetConfirmed);
     const isNewJob = origId === "new" || !job.rowNumber || isSheetChange;
+
+    if (wasPipeline && isTargetConfirmed) {
+      let code = String(job.projectCode || "").trim();
+      const oldRow = parseInt(job.rowNumber, 10);
+      if (!code && !isNaN(oldRow) && oldRow >= 2) {
+        try {
+          const pRowResp = await withRetry(() =>
+            sheets.spreadsheets.values.get({
+              spreadsheetId: clientSheetId,
+              range: `Pipeline!C${oldRow}`,
+              valueRenderOption: "FORMATTED_VALUE",
+            })
+          );
+          code = (pRowResp.data?.values?.[0]?.[0] || "").trim();
+        } catch (e) {}
+      }
+
+      if (code) {
+        let crmTool = "None";
+        let crmDrives = "NA";
+        try {
+          const kiResp = await withRetry(() =>
+            sheets.spreadsheets.values.get({
+              spreadsheetId: clientSheetId,
+              range: "KeyInfo!Q8:Q9",
+              valueRenderOption: "FORMATTED_VALUE",
+            })
+          );
+          const kiRows = kiResp.data?.values || [];
+          if (kiRows[0]?.[0]) crmTool = String(kiRows[0][0]).trim();
+          if (kiRows[1]?.[0]) crmDrives = String(kiRows[1][0]).trim();
+        } catch (kiErr) {
+          if (redisClient?.isOpen && verifiedClientName) {
+            try {
+              const normKey = String(verifiedClientName).trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
+              const rawCfg = await redisClient.get(`pulse:setup:${normKey}`);
+              if (rawCfg) {
+                const parsed = JSON.parse(rawCfg);
+                if (parsed.crmTool) crmTool = parsed.crmTool;
+                if (parsed.crmDrives) crmDrives = parsed.crmDrives;
+              }
+            } catch (e) {}
+          }
+        }
+
+        if (hasActiveCrmIntegration(crmTool) && isCrmDrivenTab("pipeline", crmDrives)) {
+          return res.status(400).json({
+            success: false,
+            error: `Cannot manually promote a CRM pipeline deal. Please update the deal status directly in ${getCrmDisplayName(crmTool)}.`,
+          });
+        }
+      }
+    }
 
     let parentRow = parseInt(job.rowNumber, 10);
     let existingChildRows = Array.isArray(job.childRowNumbers) ? [...job.childRowNumbers] : [];

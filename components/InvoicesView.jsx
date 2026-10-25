@@ -131,28 +131,34 @@ export default function InvoicesView({
   useEffect(() => {
     if (managedClient) {
       const currentName = managedClient.clientName?.toLowerCase();
-      if (prevManagedClientRef.current !== currentName) {
+      const hasFullClient = Boolean(invoicesClient?.clientSheetId);
+      const clientWithSheet = (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === currentName && c.clientSheetId) || (managedClient.clientSheetId ? managedClient : null);
+      if (prevManagedClientRef.current !== currentName || (!hasFullClient && clientWithSheet)) {
         prevManagedClientRef.current = currentName;
-        const clientObj = (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === currentName) || managedClient;
+        const clientObj = clientWithSheet || (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === currentName) || managedClient;
         setInvoicesClient(clientObj);
+        if (clientObj?.clientSheetId) {
+          loadInvoicesInbox(clientObj);
+          loadInvoicesJobs(clientObj, false);
+          setInvoicesShowAll(false);
+        }
+      }
+    } else if (initialClient && (initialClient !== prevInitialClientRef.current || (!invoicesClient?.clientSheetId && initialClient.clientSheetId))) {
+      prevInitialClientRef.current = initialClient;
+      const clientObj = (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === initialClient.clientName?.toLowerCase()) || initialClient;
+      setInvoicesClient(clientObj);
+      if (clientObj?.clientSheetId) {
         loadInvoicesInbox(clientObj);
         loadInvoicesJobs(clientObj, false);
         setInvoicesShowAll(false);
       }
-    } else if (initialClient && initialClient !== prevInitialClientRef.current) {
-      prevInitialClientRef.current = initialClient;
-      const clientObj = (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === initialClient.clientName?.toLowerCase()) || initialClient;
-      setInvoicesClient(clientObj);
-      loadInvoicesInbox(clientObj);
-      loadInvoicesJobs(clientObj, false);
-      setInvoicesShowAll(false);
     } else if (prevManagedClientRef.current && !managedClient) {
       prevManagedClientRef.current = null;
       setInvoicesClient(null);
       setInvoicesInbox([]);
       setInvoicesJobs(null);
     }
-  }, [managedClient, initialClient, allOutgoingsClients]);
+  }, [managedClient, initialClient, allOutgoingsClients, invoicesClient?.clientSheetId]);
 
   const [viewMode, setViewMode] = useState("modern");
   const [invoicesSubTab, setInvoicesSubTab] = useState(() => {
@@ -824,7 +830,7 @@ export default function InvoicesView({
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-            {invoicesClient && (
+            {invoicesClient && !managedClient && (allOutgoingsClients || []).length > 1 && (
               <button
                 type="button"
                 onClick={() => {
@@ -1248,15 +1254,22 @@ export default function InvoicesView({
                                             <div style={{ fontWeight: "600", color: "#1e293b" }}>{jr.jobName}</div>
                                             <button
                                               type="button"
-                                              onClick={() => setSelectedJobForDetail({
-                                                client: job.client,
-                                                jobName: job.jobName,
-                                                projectCode: job.projectCode || jr.projectCode,
-                                                rowNum: jr.rowNum,
-                                                tabName: "Confirmed",
-                                                clientSheetId: invoicesClient?.clientSheetId,
-                                                clientName: invoicesClient?.clientName
-                                              })}
+                                              onClick={() => {
+                                                const rawCode = String(job.projectCode || jr.projectCode || "").trim();
+                                                const cleanCode = ["-", "n/a", "none"].includes(rawCode.toLowerCase()) ? "" : rawCode;
+                                                setSelectedJobForDetail({
+                                                  client: job.client,
+                                                  endClientName: job.client,
+                                                  jobName: job.jobName,
+                                                  projectCode: cleanCode,
+                                                  rowNum: jr.rowNum,
+                                                  tabName: "Confirmed",
+                                                  clientSheetId: invoicesClient?.clientSheetId,
+                                                  clientName: invoicesClient?.clientName,
+                                                  crmTool: invoicesClient?.crmTool,
+                                                  crmDrives: invoicesClient?.crmDrives
+                                                });
+                                              }}
                                               style={{
                                                 background: "#ffffff",
                                                 border: "1px solid #cbd5e1",
@@ -1602,15 +1615,22 @@ export default function InvoicesView({
                                             <span>{jr.jobName}</span>
                                             <button
                                               type="button"
-                                              onClick={() => setSelectedJobForDetail({
-                                                client: job.client,
-                                                jobName: job.jobName,
-                                                projectCode: job.projectCode || jr.projectCode,
-                                                rowNum: jr.rowNum,
-                                                tabName: "Confirmed",
-                                                clientSheetId: invoicesClient?.clientSheetId,
-                                                clientName: invoicesClient?.clientName
-                                              })}
+                                              onClick={() => {
+                                                const rawCode = String(job.projectCode || jr.projectCode || "").trim();
+                                                const cleanCode = ["-", "n/a", "none"].includes(rawCode.toLowerCase()) ? "" : rawCode;
+                                                setSelectedJobForDetail({
+                                                  client: job.client,
+                                                  endClientName: job.client,
+                                                  jobName: job.jobName,
+                                                  projectCode: cleanCode,
+                                                  rowNum: jr.rowNum,
+                                                  tabName: "Confirmed",
+                                                  clientSheetId: invoicesClient?.clientSheetId,
+                                                  clientName: invoicesClient?.clientName,
+                                                  crmTool: invoicesClient?.crmTool,
+                                                  crmDrives: invoicesClient?.crmDrives
+                                                });
+                                              }}
                                               style={{
                                                 background: "#ffffff",
                                                 border: "1px solid #cbd5e1",

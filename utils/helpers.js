@@ -88,6 +88,43 @@ export function hasActiveAccountingIntegration(accountingTool, integrations) {
   return false;
 }
 
+export function hasActiveCrmIntegration(crmTool) {
+  if (!crmTool) return false;
+  const s = String(crmTool).trim().toLowerCase();
+  return s !== "none" && s !== "" && s !== "false";
+}
+
+export function isCrmDrivenTab(currentTab, crmDrives) {
+  const tab = String(currentTab || "").trim().toLowerCase();
+  const drives = String(crmDrives || "").trim().toLowerCase();
+  if (drives === "pipeandconf") return true;
+  if (drives === "pipeline" && tab === "pipeline") return true;
+  return false;
+}
+
+export function isCrmDeal(job, crmTool, crmDrives) {
+  if (!hasActiveCrmIntegration(crmTool)) return false;
+  const tab = String(job?.tabName || job?.status || job?.type || job?.rows?.[0]?.tabName || "").trim().toLowerCase();
+  if (!isCrmDrivenTab(tab, crmDrives)) return false;
+  const code = String(job?.projectCode || job?.rows?.[0]?.projectCode || "").trim();
+  return code !== "";
+}
+
+export function getCrmDisplayName(crmTool) {
+  if (!crmTool || String(crmTool).trim().toLowerCase() === "none") return "CRM";
+  const s = String(crmTool).trim().toLowerCase();
+  if (s.includes("hubspot")) return "HubSpot";
+  if (s.includes("pipedrive")) return "Pipedrive";
+  if (s.includes("monday")) return "Monday";
+  if (s.includes("close")) return "Close";
+  if (s.includes("capsule")) return "Capsule";
+  if (s.includes("clickup")) return "ClickUp";
+  if (s.includes("sheet")) return "Google Sheet";
+  if (s.includes("excel")) return "Excel";
+  return String(crmTool).trim();
+}
+
+
 export function parseYearMonth(val) {
   if (!val) return null;
   if (val instanceof Date && !isNaN(val.getTime())) {
@@ -151,13 +188,13 @@ export function getAlertSummary(alert) {
     const crm = alert.data;
     const flagType = alert.alertType || alert.flagType || "";
 
-    const isAppDiscr  = flagType === "crmConfAppDiscr" || flagType === "crmPipeAppDiscr";
+    const isAppDiscr = flagType === "crmConfAppDiscr" || flagType === "crmPipeAppDiscr";
     const isDashDiscr = flagType === "crmPipeDashDiscr" || flagType === "crmConfDashDiscr";
     const src = isAppDiscr ? crm?.sheetData : crm?.crmData;
     const client = src?.[0] || "";
-    const job    = src?.[1] || "";
-    const code   = src?.[2] || "";
-    const base   = `${client}${job ? " - " + job : ""}${code ? " (" + code + ")" : ""}` || "CRM alert";
+    const job = src?.[1] || "";
+    const code = src?.[2] || "";
+    const base = `${client}${job ? " - " + job : ""}${code ? " (" + code + ")" : ""}` || "CRM alert";
     if (isDashDiscr && alert.subType === "field_mismatch" && alert.mismatchFields?.length) {
       return `${base} - ⚠ ${alert.mismatchFields.join(", ")} mismatch`;
     }
@@ -181,24 +218,24 @@ export function eomTargetMonthToWorkMonth(targetMonthKey) {
 }
 
 export const PROACTIVE_TYPE_LABELS = {
-  retainer_invoice:           "Retainer invoice",
-  crm_wipe:                   "CRM data wipe",
-  revenue_mismatch:           "Revenue / invoiced mismatch",
-  direct_costs_mismatch:      "Direct costs / expenses mismatch",
+  retainer_invoice: "Retainer invoice",
+  crm_wipe: "CRM data wipe",
+  revenue_mismatch: "Revenue / invoiced mismatch",
+  direct_costs_mismatch: "Direct costs / expenses mismatch",
   pipeline_confirmed_overlap: "Pipeline / Confirmed overlap",
-  retainer_shrink_blocked:    "Retainer row blocked from trimming",
-  uninvoiced_new_job:         "Uninvoiced new job",
-  uninvoiced_revenue:         "Uninvoiced revenue",
-  deleted_invoice:            "Deleted invoice",
-  job_structure_error:        "Job structure error",
-  deleted_expense:            "Deleted expense",
-  unreceived_expenses:        "Unreceived expenses",
-  autolog_error:              "Automation error",
-  infinite_loop:              "Infinite loop / automation conflict",
-  stale_unrecon_gap:          "Stale UNRECON-GAP expense",
+  retainer_shrink_blocked: "Retainer row blocked from trimming",
+  uninvoiced_new_job: "Uninvoiced new job",
+  uninvoiced_revenue: "Uninvoiced revenue",
+  deleted_invoice: "Deleted invoice",
+  job_structure_error: "Job structure error",
+  deleted_expense: "Deleted expense",
+  unreceived_expenses: "Unreceived expenses",
+  autolog_error: "Automation error",
+  infinite_loop: "Infinite loop / automation conflict",
+  stale_unrecon_gap: "Stale UNRECON-GAP expense",
   retroactive_outgoings_update: "Retroactive P&L outgoings update",
-  unmapped_pl_category:       "Unmapped P&L category",
-  part_paid_balance:          "Part-paid balance",
+  unmapped_pl_category: "Unmapped P&L category",
+  part_paid_balance: "Part-paid balance",
 };
 
 export const ADMIN_ONLY_FLAG_KEYS = new Set([
@@ -271,31 +308,31 @@ export function cleanUserFacingText(text) {
 export const getFlagName = (flagKey) => {
   const flagNames = {
     "invoiceDashboardDiscr": "Invoice discrepancy",
-    "crmPipeDashDiscr":      "Job discrepancy - Pulse-CRM (Pipeline)",
-    "crmPipeAppDiscr":       "Job discrepancy - in Pulse but not in CRM (Pipeline)",
-    "crmConfDashDiscr":      "Job discrepancy - Pulse-CRM (Confirmed)",
-    "crmConfAppDiscr":       "Job discrepancy - in Pulse but not in CRM (Confirmed)",
-    "crmCopiedConfChecked":  "CRM copied to conf box checked",
-    "crmCopiedConfUnchecked":"CRM copied to conf box UNchecked",
-    "crmCopiedConfDelete":   "CRM copied to conf box DELETE",
+    "crmPipeDashDiscr": "Job discrepancy - Pulse-CRM (Pipeline)",
+    "crmPipeAppDiscr": "Job discrepancy - in Pulse but not in CRM (Pipeline)",
+    "crmConfDashDiscr": "Job discrepancy - Pulse-CRM (Confirmed)",
+    "crmConfAppDiscr": "Job discrepancy - in Pulse but not in CRM (Confirmed)",
+    "crmCopiedConfChecked": "CRM copied to conf box checked",
+    "crmCopiedConfUnchecked": "CRM copied to conf box UNchecked",
+    "crmCopiedConfDelete": "CRM copied to conf box DELETE",
     "retainerInvoicesCreated": "Retainer invoices created",
     "retainerInvoicesDeleted": "Retainer invoices deleted",
     "expenseDashboardDiscr": "Expense discrepancy",
-    "expenseAdded":          "Expense added",
-    "expenseUnreconGaps":    "Stale unreceived expense date changed",
+    "expenseAdded": "Expense added",
+    "expenseUnreconGaps": "Stale unreceived expense date changed",
     "invoiceStaleUnsentChanges": "Stale unsent invoice send date changed",
   };
   return flagNames[flagKey] || flagKey;
 };
 
 export const RICH_NOACTION_FLAG_GROUP = {
-  crmCopiedConfChecked:    "crm",
-  crmCopiedConfUnchecked:  "crm",
-  crmCopiedConfDelete:     "crm",
+  crmCopiedConfChecked: "crm",
+  crmCopiedConfUnchecked: "crm",
+  crmCopiedConfDelete: "crm",
   retainerInvoicesCreated: "invoice",
   retainerInvoicesDeleted: "invoice",
   invoiceStaleUnsentChanges: "invoice",
-  expenseUnreconGaps:      "expense",
+  expenseUnreconGaps: "expense",
 };
 
 export const ALERT_CATEGORY_FLAGS = {
@@ -627,7 +664,7 @@ export function parseStaleExpenseDetail(detail = "") {
         type: "Rec",
         from: res.oldRec,
         to: res.newRec,
-        label: `Receive Date: ${res.oldRec} → ${res.newRec}`
+        label: `Receive date: ${res.oldRec} → ${res.newRec}`
       }];
     } else {
       res.rawText = clean.replace(/\[Confirmed\]\s*/i, "");
@@ -877,11 +914,11 @@ export function getCleanPLCategoryName(alertOrRaw) {
     name = alertOrRaw;
   } else if (alertOrRaw && typeof alertOrRaw === "object") {
     name = alertOrRaw.metadata?.categoryName ||
-           alertOrRaw.metadata?.cleanName ||
-           alertOrRaw.categoryName ||
-           alertOrRaw.cleanName ||
-           alertOrRaw.heading ||
-           "";
+      alertOrRaw.metadata?.cleanName ||
+      alertOrRaw.categoryName ||
+      alertOrRaw.cleanName ||
+      alertOrRaw.heading ||
+      "";
   }
   name = String(name || "").trim();
   const match = name.match(/Unmapped P&L (?:category|Account):\s*["“]?([^"”]+)["”]?/i);

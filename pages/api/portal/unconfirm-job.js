@@ -1,6 +1,6 @@
 import { getSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
-import { verifyUserAuthorizedForSheet } from "../../../services/userPermissions.js";
+import { verifyUserAuthorizedForSheet, sanitizeFormulaInput } from "../../../services/userPermissions.js";
 import { redisClient } from "../../../services/redisClient.js";
 import { memoryCache } from "../../../services/cacheService.js";
 import { logPulseActivity } from "../../../services/pulseLogger.js";
@@ -332,12 +332,17 @@ export default async function handler(req, res) {
       pipelineChildRows.push(targetChildRow);
     }
 
+    const sanitizedPipelineBatchData = pipelineBatchData.map(item => ({
+      ...item,
+      values: item.values.map(row => row.map(cell => sanitizeFormulaInput(cell)))
+    }));
+
     await withRetry(() =>
       sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: clientSheetId,
         requestBody: {
           valueInputOption: "USER_ENTERED",
-          data: pipelineBatchData,
+          data: sanitizedPipelineBatchData,
         },
       })
     );

@@ -392,7 +392,7 @@ export async function handleUpdateViewCell(req, res, sheets) {
     } catch (e) {}
   }
 
-  if (resolvedClient && !sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, resolvedClient)) {
+  if (!sessionUser.isAdmin && (!resolvedClient || !isUserAuthorizedForClient(sessionUser, resolvedClient))) {
     return res.status(403).json({ success: false, error: "Access denied to this client" });
   }
 
@@ -677,7 +677,7 @@ export async function handleSpreadViewRow(req, res, sheets) {
     } catch (e) {}
   }
 
-  if (resolvedClient && !sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, resolvedClient)) {
+  if (!sessionUser.isAdmin && (!resolvedClient || !isUserAuthorizedForClient(sessionUser, resolvedClient))) {
     return res.status(403).json({ success: false, error: "Access denied to this client" });
   }
 

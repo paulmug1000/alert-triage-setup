@@ -7,6 +7,7 @@
 import { exchangePipedriveCodeForTokens, getPipedriveAccountInfo } from "../../../../services/pipedriveService.js";
 import { saveIntegrationTokens } from "../../../../services/vaultService.js";
 import { notifyStaffOnClientConnection } from "../../../../services/connectionNotifier.js";
+import { sanitizeRedirectUrl } from "../../../../utils/helpers.js";
 
 function parseCookies(cookieHeader) {
   if (!cookieHeader) return {};
@@ -97,13 +98,13 @@ export default async function handler(req, res) {
       masterSheetId
     }).catch(err => console.error("Notification email error:", err.message));
 
-    const returnUrl = statePayload.redirectBack || "/portal";
+    const returnUrl = sanitizeRedirectUrl(statePayload?.redirectBack, "/pma");
     const separator = returnUrl.includes("?") ? "&" : "?";
     return res.redirect(`${returnUrl}${separator}integration=pipedrive&status=success&company=${encodeURIComponent(companyName)}`);
 
   } catch (err) {
     console.error("Pipedrive OAuth callback processing error:", err);
-    const returnUrl = statePayload?.redirectBack || "/portal";
+    const returnUrl = sanitizeRedirectUrl(statePayload?.redirectBack, "/pma");
     const separator = returnUrl.includes("?") ? "&" : "?";
     return res.redirect(`${returnUrl}${separator}integration=pipedrive&status=error&message=${encodeURIComponent(err.message)}`);
   }

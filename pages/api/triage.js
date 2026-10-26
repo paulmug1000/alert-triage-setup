@@ -106,8 +106,27 @@ import {
 } from "../../services/bankTransactionsService";
 import { handleClassifyPLCategory, handleUpdatePartPaidDate } from "../../services/proactiveChecks";
 import { getSessionUser, sendOtp, verifyOtp, clearSessionCookie } from "../../services/authService";
-import { getAllUsers, isUserAuthorizedForClient, updateUserDailyAlertsEmail, getUserByEmail } from "../../services/userPermissions";
+import { getAllUsers, isUserAuthorizedForClient, updateUserDailyAlertsEmail, getUserByEmail, resolveClientNameBySheetId } from "../../services/userPermissions";
 import { matchesClientName } from "../../utils/helpers";
+
+async function checkTriageClientAuth(sheets, sessionUser, clientNameClaim, sheetIds = []) {
+  if (sessionUser?.isAdmin) return true;
+  let client = clientNameClaim;
+  if (!client) {
+    for (const sid of sheetIds) {
+      if (sid) {
+        try {
+          const resolved = await resolveClientNameBySheetId(sheets, sid);
+          if (resolved) {
+            client = resolved;
+            break;
+          }
+        } catch (_) {}
+      }
+    }
+  }
+  return Boolean(client && isUserAuthorizedForClient(sessionUser, client));
+}
 
 // eomTabsVerified moved to eomTools.js
 
@@ -498,7 +517,7 @@ export default async function handler(req, res) {
     } else if (action === "get_client_view_data") {
       try {
         const { clientSheetId, masterSheetId, tab, clientName, bypassCache } = req.body;
-        if (!sessionUser.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
+        if (!(await checkTriageClientAuth(sheets, sessionUser, clientName, [clientSheetId, masterSheetId]))) {
           return res.status(403).json({ success: false, error: "Access denied to this client" });
         }
         const data = await getClientViewData({ clientSheetId, masterSheetId, tab, bypassCache });
@@ -516,7 +535,7 @@ export default async function handler(req, res) {
     } else if (action === "get_cashflow_recon_data") {
       try {
         const { clientSheetId, reconSheetUrl, reconSheetId, eomMonthKey, targetMonthKey, clientName } = req.body;
-        if (!sessionUser.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
+        if (!(await checkTriageClientAuth(sheets, sessionUser, clientName, [clientSheetId, reconSheetId, reconSheetUrl]))) {
           return res.status(403).json({ success: false, error: "Access denied to this client" });
         }
         const data = await getCashflowReconData({ clientSheetId, reconSheetUrl, reconSheetId, eomMonthKey, targetMonthKey });
@@ -528,7 +547,7 @@ export default async function handler(req, res) {
     } else if (action === "update_cash_adjustment") {
       try {
         const { clientSheetId, colLetter, sheetRow, value, clientName, automationCommanderSheetId } = req.body;
-        if (!sessionUser.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
+        if (!(await checkTriageClientAuth(sheets, sessionUser, clientName, [clientSheetId]))) {
           return res.status(403).json({ success: false, error: "Access denied to this client" });
         }
         const result = await updateCashAdjustment({
@@ -547,7 +566,7 @@ export default async function handler(req, res) {
     } else if (action === "toggle_cash_cell_resolved") {
       try {
         const { clientSheetId, cashTabSheetId, sheetRow, colIdx, resolved, clientName, automationCommanderSheetId } = req.body;
-        if (!sessionUser.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
+        if (!(await checkTriageClientAuth(sheets, sessionUser, clientName, [clientSheetId, cashTabSheetId]))) {
           return res.status(403).json({ success: false, error: "Access denied to this client" });
         }
         const result = await toggleCashCellResolved({
@@ -567,7 +586,7 @@ export default async function handler(req, res) {
     } else if (action === "update_cash_cell_note") {
       try {
         const { clientSheetId, cashTabSheetId, sheetRow, colIdx, note, clientName, automationCommanderSheetId } = req.body;
-        if (!sessionUser.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
+        if (!(await checkTriageClientAuth(sheets, sessionUser, clientName, [clientSheetId, cashTabSheetId]))) {
           return res.status(403).json({ success: false, error: "Access denied to this client" });
         }
         const result = await updateCashCellNote({
@@ -588,7 +607,7 @@ export default async function handler(req, res) {
     } else if (action === "batch_match_cashflow_actuals") {
       try {
         const { clientSheetId, cashTabSheetId, colIdx, colLetter, adjustments, resolvedRows, clientName, automationCommanderSheetId } = req.body;
-        if (!sessionUser.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
+        if (!(await checkTriageClientAuth(sheets, sessionUser, clientName, [clientSheetId, cashTabSheetId]))) {
           return res.status(403).json({ success: false, error: "Access denied to this client" });
         }
         const result = await batchMatchCashflowActuals({
@@ -610,7 +629,7 @@ export default async function handler(req, res) {
     } else if (action === "set_recon_da1_platform") {
       try {
         const { reconSheetId, tabName, platform, clientName } = req.body;
-        if (!sessionUser.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
+        if (!(await checkTriageClientAuth(sheets, sessionUser, clientName, [reconSheetId]))) {
           return res.status(403).json({ success: false, error: "Access denied to this client" });
         }
         const result = await setReconDa1Platform({
@@ -627,7 +646,7 @@ export default async function handler(req, res) {
     } else if (action === "ensure_recon_tab") {
       try {
         const { reconSheetId, reconSheetUrl, targetDateInput, tabName, targetTabName, clientName } = req.body;
-        if (!sessionUser?.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
+        if (!(await checkTriageClientAuth(sheets, sessionUser, clientName, [reconSheetId, reconSheetUrl]))) {
           return res.status(403).json({ success: false, error: "Access denied to this client" });
         }
         const result = await ensureReconTabExists({
@@ -662,7 +681,7 @@ export default async function handler(req, res) {
     } else if (action === "fetch_api_bank_transactions") {
       try {
         const { clientName, masterSheetId, reconSheetId, monthKey } = req.body;
-        if (!req.isSystemAuthorized && !sessionUser?.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
+        if (!req.isSystemAuthorized && !(await checkTriageClientAuth(sheets, sessionUser, clientName, [masterSheetId, reconSheetId]))) {
           return res.status(403).json({ success: false, error: "Access denied to this client" });
         }
         const result = await fetchClientReconciledBankTransactions({
@@ -680,7 +699,7 @@ export default async function handler(req, res) {
     } else if (action === "auto_reconcile_bank_feeds") {
       try {
         const { clientName, masterSheetId, reconSheetId, monthKey, automationCommanderSheetId } = req.body;
-        if (!req.isSystemAuthorized && !sessionUser?.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
+        if (!req.isSystemAuthorized && !(await checkTriageClientAuth(sheets, sessionUser, clientName, [masterSheetId, reconSheetId]))) {
           return res.status(403).json({ success: false, error: "Access denied to this client" });
         }
         const result = await autoReconcileClientBankTransactions({
@@ -699,7 +718,7 @@ export default async function handler(req, res) {
     } else if (action === "recategorise_all_transactions") {
       try {
         const { clientName, reconSheetId, transactions } = req.body;
-        if (!sessionUser?.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
+        if (!(await checkTriageClientAuth(sheets, sessionUser, clientName, [reconSheetId]))) {
           return res.status(403).json({ success: false, error: "Access denied to this client" });
         }
         const result = await recategoriseTransactions({
@@ -725,7 +744,7 @@ export default async function handler(req, res) {
     } else if (action === "update_recon_transaction_category") {
       try {
         const { reconSheetId, tabName, rowNum, category, clientName, automationCommanderSheetId } = req.body;
-        if (!sessionUser?.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
+        if (!(await checkTriageClientAuth(sheets, sessionUser, clientName, [reconSheetId]))) {
           return res.status(403).json({ success: false, error: "Access denied to this client" });
         }
         const result = await updateReconTransactionCategory({
@@ -745,7 +764,7 @@ export default async function handler(req, res) {
     } else if (action === "sync_recon_bank_transactions") {
       try {
         const { reconSheetId, tabName, transactions, clientName } = req.body;
-        if (!sessionUser?.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
+        if (!(await checkTriageClientAuth(sheets, sessionUser, clientName, [reconSheetId]))) {
           return res.status(403).json({ success: false, error: "Access denied to this client" });
         }
         const result = await syncReconBankTransactions({
@@ -762,7 +781,7 @@ export default async function handler(req, res) {
     } else if (action === "sync_recon_unreconciled_items") {
       try {
         const { reconSheetId, tabName, unreconciledItems, clientName } = req.body;
-        if (!sessionUser?.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
+        if (!(await checkTriageClientAuth(sheets, sessionUser, clientName, [reconSheetId]))) {
           return res.status(403).json({ success: false, error: "Access denied to this client" });
         }
         const result = await syncReconUnreconciledItems({
@@ -779,7 +798,7 @@ export default async function handler(req, res) {
     } else if (action === "set_recon_month_ready") {
       try {
         const { reconSheetId, tabName, isComplete, clientName, automationCommanderSheetId } = req.body;
-        if (!sessionUser?.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
+        if (!(await checkTriageClientAuth(sheets, sessionUser, clientName, [reconSheetId]))) {
           return res.status(403).json({ success: false, error: "Access denied to this client" });
         }
         const result = await setReconMonthReadyStatus({
@@ -798,7 +817,7 @@ export default async function handler(req, res) {
     } else if (action === "dismiss_new_bank_transactions") {
       try {
         const { reconSheetId, tabName, clientName, automationCommanderSheetId } = req.body;
-        if (!sessionUser?.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
+        if (!(await checkTriageClientAuth(sheets, sessionUser, clientName, [reconSheetId]))) {
           return res.status(403).json({ success: false, error: "Access denied to this client" });
         }
         const result = await dismissNewBankTransactions({
@@ -816,7 +835,7 @@ export default async function handler(req, res) {
     } else if (action === "sync_client_expense_breakdown") {
       try {
         const { clientName, automationCommanderSheetId } = req.body;
-        if (!sessionUser?.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
+        if (!(await checkTriageClientAuth(sheets, sessionUser, clientName, []))) {
           return res.status(403).json({ success: false, error: "Access denied to this client" });
         }
         const webAppUrl = await getClientWebAppUrl(sheets, clientName, automationCommanderSheetId);
@@ -842,7 +861,7 @@ export default async function handler(req, res) {
     } else if (action === "classify_pl_category") {
       try {
         const { clientName, categoryName, classification, automationCommanderSheetId, masterSheetId, clientSheetId } = req.body;
-        if (!sessionUser?.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
+        if (!(await checkTriageClientAuth(sheets, sessionUser, clientName, [masterSheetId, clientSheetId]))) {
           return res.status(403).json({ success: false, error: "Access denied to this client" });
         }
         const result = await handleClassifyPLCategory(sheets, {

@@ -15,6 +15,7 @@
  * 6. Returns a fresh, ready-to-use access token to the Master Sheet.
  */
 
+import crypto from "crypto";
 import { saveIntegrationTokens } from "../../../services/vaultService.js";
 import { refreshXeroTokens, getXeroConnections } from "../../../services/xeroService.js";
 import { refreshQBTokens, getQBCompanyInfo } from "../../../services/quickbooksService.js";
@@ -25,32 +26,90 @@ import { refreshCapsuleTokens, getCapsuleAccountInfo } from "../../../services/c
 import { refreshCloseTokens, getCloseAccountInfo } from "../../../services/closeService.js";
 import { refreshHubSpotTokens, getHubSpotAccountInfo } from "../../../services/hubspotService.js";
 import { getSessionUser } from "../../../services/authService.js";
+import { redisClient } from "../../../services/redisClient.js";
+
+function safeCompare(a, b) {
+  if (typeof a !== "string" || typeof b !== "string") return false;
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ success: false, error: "Method not allowed" });
   }
 
-  // 1. Verify Authentication: Ecosystem Secret (for GAS) OR Admin Session (for PMA)
-  const authHeader = req.headers.authorization || "";
-  const tokenMatch = authHeader.match(/^Bearer\s+(.+)$/i);
-  const providedSecret = tokenMatch ? tokenMatch[1].trim() : (req.body?.secret || "");
-
-  const expectedSecret = process.env.PULSE_INTERNAL_SECRET;
-  const isSecretValid = Boolean(expectedSecret && providedSecret && providedSecret === expectedSecret);
-
-  const sessionUser = getSessionUser(req);
-  const isAdmin = Boolean(sessionUser?.isAdmin);
-
-  if (!isSecretValid && !isAdmin) {
-    console.warn("🚨 Integration Import: Unauthorized attempt.");
-    return res.status(401).json({ success: false, error: "Unauthorized: Invalid internal secret or admin session required." });
-  }
-
   const { tool = "xero", spreadsheetId, clientName, refreshToken, tenantId } = req.body;
 
   if (!spreadsheetId) {
     return res.status(400).json({ success: false, error: "Missing required spreadsheetId parameter." });
+  }
+
+  // 1. Verify Authentication: Ecosystem Secret, Client-Specific Secret, OR Admin Session
+  const authHeader = req.headers.authorization || "";
+  const tokenMatch = authHeader.match(/^Bearer\s+(.+)$/i);
+  const providedSecret = tokenMatch ? tokenMatch[1].trim() : (req.body?.secret || "");
+
+  const expectedSecret = process.env.PULSE_INTERNAL_SECRET || "";
+  const isMasterSecretValid = Boolean(expectedSecret && providedSecret && safeCompare(providedSecret, expectedSecret));
+
+  const sessionUser = getSessionUser(req);
+  const isAdmin = Boolean(sessionUser?.isAdmin);
+
+  const providedClientSecret = String(
+    req.headers["x-pulse-client-secret"] ||
+    req.headers["x-client-secret"] ||
+    req.body?.clientSecret ||
+    ""
+  ).trim();
+
+  let isAuthorized = isAdmin;
+  const redisSecretKey = `pulse:client_secret:${spreadsheetId}`;
+
+  if (!isAuthorized) {
+    let registeredHash = null;
+    if (redisClient?.isOpen) {
+      try {
+        registeredHash = await redisClient.get(redisSecretKey);
+      } catch (redisErr) {
+        console.warn("⚠️ Integration Import: Error checking client secret in Redis:", redisErr.message);
+      }
+    }
+
+    if (providedClientSecret) {
+      const providedHash = crypto.createHash("sha256").update(providedClientSecret).digest("hex");
+      if (registeredHash) {
+        if (safeCompare(providedHash, registeredHash)) {
+          isAuthorized = true;
+        } else {
+          return res.status(401).json({ success: false, error: "Unauthorized: Invalid client-specific secret." });
+        }
+      } else {
+        if (isMasterSecretValid) {
+          if (redisClient?.isOpen) {
+            try {
+              await redisClient.set(redisSecretKey, providedHash);
+            } catch (_) {}
+          }
+          isAuthorized = true;
+        } else {
+          return res.status(401).json({ success: false, error: "Unauthorized: Valid ecosystem secret required for initial client registration." });
+        }
+      }
+    } else {
+      if (registeredHash) {
+        return res.status(401).json({ success: false, error: "Unauthorized: Client-specific secret is required for this registered sheet." });
+      } else if (isMasterSecretValid) {
+        isAuthorized = true;
+      }
+    }
+  }
+
+  if (!isAuthorized) {
+    console.warn("🚨 Integration Import: Unauthorized attempt.");
+    return res.status(401).json({ success: false, error: "Unauthorized: Invalid internal secret or admin session required." });
   }
 
   try {

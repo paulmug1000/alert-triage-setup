@@ -7,6 +7,16 @@ export function stripCurrency(v) {
   return isNaN(Number(clean)) || clean === "" ? "" : clean;
 }
 
+export function formatCurrency(val) {
+  const s = String(val || "").trim();
+  if (!s) return "";
+  const hasSymbol = /^[£$€]/.test(s);
+  const symbol = hasSymbol ? s.charAt(0) : "£";
+  const num = parseFloat(s.replace(/[£$€,\s]/g, ""));
+  if (isNaN(num)) return s;
+  return symbol + num.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 export function isPlaceholderInvoice(ref, status) {
   const s = String(typeof ref === "object" ? (ref?.ref || "") : ref || "").trim().toUpperCase();
   const st = String(typeof ref === "object" ? (ref?.status || "") : status || "").trim().toUpperCase();
@@ -1809,3 +1819,32 @@ export function isPipelineJobSuppressed(likelihood, copiedToConf) {
   if (isLikelihoodHundred(likelihood) && isCopiedToConfYes(copiedToConf)) return true;
   return false;
 }
+
+/**
+ * Sanitize redirect targets to prevent Open Redirect vulnerabilities (CWE-601).
+ * Restricts redirects to relative internal paths (starting with / but not // or /\)
+ * or explicitly trusted pulse domains.
+ */
+export function sanitizeRedirectUrl(url, defaultTarget = "/pma") {
+  if (!url || typeof url !== "string") return defaultTarget;
+  const trimmed = url.trim();
+  // Valid relative internal path: starts with / and not // or /\
+  if (trimmed.startsWith("/") && !trimmed.startsWith("//") && !trimmed.startsWith("/\\")) {
+    return trimmed;
+  }
+  // Explicit trusted domains
+  try {
+    const parsed = new URL(trimmed);
+    const trustedHosts = [
+      "app.pulsedashboard.co.uk",
+      "pma.pulsedashboard.co.uk",
+      "pulsedashboard.co.uk",
+      "localhost"
+    ];
+    if (trustedHosts.includes(parsed.hostname) || parsed.hostname.endsWith(".pulsedashboard.co.uk")) {
+      return trimmed;
+    }
+  } catch (_) {}
+  return defaultTarget;
+}
+

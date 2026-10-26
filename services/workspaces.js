@@ -11,7 +11,7 @@ import {
   isCrmDrivenTab,
   getCrmDisplayName
 } from "../utils/helpers.js";
-import { isUserAuthorizedForClient, matchesClientName, sanitizeFormulaInput, getClientManagerClientMap, DEFAULT_AC_SHEET_ID } from "./userPermissions.js";
+import { isUserAuthorizedForClient, matchesClientName, sanitizeFormulaInput, getClientManagerClientMap, DEFAULT_AC_SHEET_ID, verifyUserAuthorizedForSheet } from "./userPermissions.js";
 export { DEFAULT_AC_SHEET_ID };
 import { logPmaActivity } from "./pmaLogger.js";
 import { getSessionUser } from "./authService.js";
@@ -249,8 +249,20 @@ export async function handleGetAssignedExpenses(req, res, sheets) {
   const now = Date.now();
 
   try {
+    const sessionUser = getSessionUser(req);
+    const filterAssignedForUser = (assignedMap) => {
+      if (!sessionUser || sessionUser.isAdmin) return assignedMap;
+      const filtered = {};
+      for (const [cName, ids] of Object.entries(assignedMap || {})) {
+        if (isUserAuthorizedForClient(sessionUser, cName)) {
+          filtered[cName] = ids;
+        }
+      }
+      return filtered;
+    };
+
     if (!bypassCache && _assignedExpensesMemoryCache && (now - _assignedExpensesCachedAt < 60000)) {
-      return res.status(200).json({ success: true, assignedByClient: _assignedExpensesMemoryCache });
+      return res.status(200).json({ success: true, assignedByClient: filterAssignedForUser(_assignedExpensesMemoryCache) });
     }
 
     if (!bypassCache && redisClient?.isOpen) {
@@ -260,7 +272,7 @@ export async function handleGetAssignedExpenses(req, res, sheets) {
           const parsed = JSON.parse(cached);
           _assignedExpensesMemoryCache = parsed;
           _assignedExpensesCachedAt = now;
-          return res.status(200).json({ success: true, assignedByClient: parsed });
+          return res.status(200).json({ success: true, assignedByClient: filterAssignedForUser(parsed) });
         }
       } catch (e) {
         console.warn("⚠️ Redis get assigned expenses cache error:", e.message);
@@ -286,7 +298,7 @@ export async function handleGetAssignedExpenses(req, res, sheets) {
     _assignedExpensesMemoryCache = assignedByClient;
     _assignedExpensesCachedAt = now;
 
-    return res.status(200).json({ success: true, assignedByClient });
+    return res.status(200).json({ success: true, assignedByClient: filterAssignedForUser(assignedByClient) });
   } catch (err) {
     console.error("❌ get_assigned_expenses error:", err);
     return res.status(500).json({ success: false, error: err.message });
@@ -343,11 +355,19 @@ export async function handlePruneAssignedExpenses(req, res, sheets) {
 }
 
 export async function handleGetOutgoingsInbox(req, res, sheets) {
-  const { masterSheetId, clientSheetId, bypassCache } = req.body;
+  const { masterSheetId, clientSheetId, bypassCache, clientName } = req.body;
   const sheetId = masterSheetId || clientSheetId;
   if (!sheetId) return res.status(400).json({ success: false, error: "Missing masterSheetId or clientSheetId" });
   try {
     const sheetIdClean = extractSheetIdFromUrl(sheetId) || sheetId;
+
+    const sessionUser = getSessionUser(req);
+    if (sessionUser && !sessionUser.isAdmin) {
+      const auth = await verifyUserAuthorizedForSheet(sessionUser, sheetIdClean, clientName, sheets);
+      if (!auth.authorized) {
+        return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
+      }
+    }
     const cacheKey = `pulse:pma:outgoings_inbox:${sheetIdClean}`;
 
     if (!bypassCache) {
@@ -405,11 +425,19 @@ export async function handleGetOutgoingsInbox(req, res, sheets) {
 }
 
 export async function handleGetInvoicesInbox(req, res, sheets) {
-  const { masterSheetId, clientSheetId, bypassCache } = req.body;
+  const { masterSheetId, clientSheetId, bypassCache, clientName } = req.body;
   const sheetId = masterSheetId || clientSheetId;
   if (!sheetId) return res.status(400).json({ success: false, error: "Missing masterSheetId or clientSheetId" });
   try {
     const sheetIdClean = extractSheetIdFromUrl(sheetId) || sheetId;
+
+    const sessionUser = getSessionUser(req);
+    if (sessionUser && !sessionUser.isAdmin) {
+      const auth = await verifyUserAuthorizedForSheet(sessionUser, sheetIdClean, clientName, sheets);
+      if (!auth.authorized) {
+        return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
+      }
+    }
     const cacheKey = `pulse:pma:invoices_inbox:${sheetIdClean}`;
 
     if (!bypassCache) {
@@ -3613,15 +3641,25 @@ export async function handleUpdateOutgoingNote(req, res, sheets) {
 }
 
 export async function handleFireOutgoingsPull(req, res, sheets) {
-  const { clientSheetId: pullClientSheetId, masterSheetId: pullMasterSheetId } = req.body;
+  const { clientSheetId: pullClientSheetId, masterSheetId: pullMasterSheetId, clientName } = req.body;
   if (!pullClientSheetId || !pullMasterSheetId) return res.status(400).json({ success: false, error: "Missing clientSheetId or masterSheetId" });
   try {
     const pullClientIdClean = extractSheetIdFromUrl(pullClientSheetId) || pullClientSheetId;
     const pullMasterIdClean = extractSheetIdFromUrl(pullMasterSheetId) || pullMasterSheetId;
+
+    const sessionUser = getSessionUser(req);
+    if (sessionUser && !sessionUser.isAdmin) {
+      const auth = await verifyUserAuthorizedForSheet(sessionUser, pullClientIdClean || pullMasterIdClean, clientName, sheets);
+      if (!auth.authorized) {
+        return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
+      }
+    }
+
+    const cronSecret = process.env.CRON_SECRET || "triage-cron-2026-AY4K2LDMXBV8DS7";
     const gasResp = await fetch("https://script.google.com/macros/s/AKfycbzVvLSDtqWj3aHcn0UV9VPCybNm82sBNWynMo1-bMpvs3NzerPZXWkrpPJvVHaqDwwy/exec", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "refreshOutgoings", clientSheetId: pullClientIdClean, masterSheetId: pullMasterIdClean }),
+      body: JSON.stringify({ action: "refreshOutgoings", clientSheetId: pullClientIdClean, masterSheetId: pullMasterIdClean, secret: cronSecret }),
     });
     const gasData = await gasResp.json().catch(() => ({}));
     console.log(`  📋 fire_outgoings_pull GAS call: ${gasData.success ? "OK" : gasData.error || "no response"}`);

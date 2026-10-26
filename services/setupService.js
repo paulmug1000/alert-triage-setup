@@ -1349,14 +1349,19 @@ export async function saveScriptIdsToTracker(sheets, { clientName, clientScriptI
 export async function saveDeploymentUrl(sheets, { clientName, masterSheetId, deploymentUrl, userEmail }) {
   if (!clientName || !deploymentUrl) throw new Error("Missing clientName or deploymentUrl");
 
+  const trimmedUrl = String(deploymentUrl).trim();
+  if (!trimmedUrl.startsWith("https://script.google.com/macros/s/")) {
+    throw new Error("Invalid deployment URL: Must start with https://script.google.com/macros/s/");
+  }
+
   // 1. Write to Master Sheet KeyInfo!X29
   if (masterSheetId) {
     await withRetry(() =>
       sheets.spreadsheets.values.update({
         spreadsheetId: masterSheetId,
         range: "KeyInfo!X29",
-        valueInputOption: "USER_ENTERED",
-        requestBody: { values: [[deploymentUrl]] }
+        valueInputOption: "RAW",
+        requestBody: { values: [[trimmedUrl]] }
       })
     );
   }
@@ -1377,8 +1382,8 @@ export async function saveDeploymentUrl(sheets, { clientName, masterSheetId, dep
       sheets.spreadsheets.values.update({
         spreadsheetId: TRACKER_SHEET_ID,
         range: `Clients!W${rowNum}`,
-        valueInputOption: "USER_ENTERED",
-        requestBody: { values: [[deploymentUrl]] }
+        valueInputOption: "RAW",
+        requestBody: { values: [[trimmedUrl]] }
       })
     );
   }

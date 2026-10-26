@@ -1375,7 +1375,9 @@ export async function handleGetPrecomputed(req, res, sheets) {
 export async function handleStorePrecomputed(req, res, sheets) {
   const { secret, computedAt, noActionAnalysisResults, automationCommanderSheetId } = req.body;
 
-  if (secret !== process.env.CRON_SECRET) {
+  const expectedCronSecret = (process.env.CRON_SECRET || "").trim();
+  const incomingSecret = (secret || req.headers.authorization?.replace(/^Bearer\s+/i, "") || req.headers["x-cron-secret"] || "").trim();
+  if (!expectedCronSecret || incomingSecret !== expectedCronSecret) {
     return res.status(401).json({ success: false, error: "Unauthorised" });
   }
 

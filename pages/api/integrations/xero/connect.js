@@ -11,11 +11,18 @@
 import crypto from "crypto";
 import { buildXeroAuthUrl } from "../../../../services/xeroService.js";
 import { getSheetsClient, extractSheetIdFromUrl } from "../../../../services/sheetsClient.js";
-import { DEFAULT_AC_SHEET_ID, matchesClientName } from "../../../../services/userPermissions.js";
+import { DEFAULT_AC_SHEET_ID, matchesClientName, isUserAuthorizedForClient } from "../../../../services/userPermissions.js";
+import { getSessionUser } from "../../../../services/authService.js";
+import { sanitizeRedirectUrl } from "../../../../utils/helpers.js";
 
 export default async function handler(req, res) {
   if (req.method !== "GET" && req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
+  }
+
+  const sessionUser = getSessionUser(req);
+  if (!sessionUser) {
+    return res.status(401).json({ error: "Active session required." });
   }
 
   const { clientKey, clientName, masterSheetId, clientSheetId, redirectBack, mode } = req.method === "POST" ? req.body : req.query;
@@ -24,12 +31,18 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "Missing required clientKey, clientName, or masterSheetId parameter." });
   }
 
+  const targetName = clientName || clientKey;
+  if (!sessionUser.isAdmin && targetName && targetName !== "advisor" && !isUserAuthorizedForClient(sessionUser, targetName)) {
+    return res.status(403).json({ error: "Access denied to this client." });
+  }
+
   // Determine connection mode:
   // - "advisor": powers Central Advisor Shared Grant (accumulates orgs)
   // - "dedicated": isolated per-client dedicated grant (e.g. client self-service in setup)
   const isExplicitAdvisor = mode === "advisor" || clientKey === "advisor";
   const isClientPortal = !mode && (redirectBack?.startsWith("/pulse") || redirectBack?.startsWith("/portal"));
   const effectiveMode = isExplicitAdvisor ? "advisor" : (isClientPortal ? "dedicated" : (mode || "advisor"));
+  const sanitizedRedirectBack = sanitizeRedirectUrl(redirectBack, isClientPortal ? "/pulse" : "/pma");
 
   try {
     let resolvedMasterSheetId = masterSheetId || "";
@@ -78,7 +91,7 @@ export default async function handler(req, res) {
       clientName: clientName || clientKey,
       masterSheetId: resolvedMasterSheetId,
       clientSheetId: resolvedClientSheetId,
-      redirectBack: redirectBack || "/portal",
+      redirectBack: sanitizedRedirectBack,
       mode: effectiveMode
     };
 

@@ -12,7 +12,7 @@
 
 import { getIntegrationStatus, getSharedXeroGrant, INTEGRATIONS_STATUS_CACHE_KEY } from "../../../services/vaultService.js";
 import { getSheetsClient, extractSheetIdFromUrl } from "../../../services/sheetsClient.js";
-import { DEFAULT_AC_SHEET_ID, matchesClientName } from "../../../services/userPermissions.js";
+import { DEFAULT_AC_SHEET_ID, matchesClientName, isUserAuthorizedForClient } from "../../../services/userPermissions.js";
 import { getClientSetupConfig, revalidateClientsSetupInBackground } from "../../../services/setupService.js";
 import { getSessionUser } from "../../../services/authService.js";
 import { redisClient } from "../../../services/redisClient.js";
@@ -25,15 +25,16 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
+  const sessionUser = getSessionUser(req);
+  if (!sessionUser) {
+    return res.status(401).json({ error: "Active session required." });
+  }
+
   const { all, clientKey, clientName, masterSheetId, refresh, force } = req.query;
   const forceRefresh = refresh === "true" || force === "true";
 
   // Mode 1: All Clients Status (for the new Multi-Client Integrations page)
   if (all === "true" || all === "1") {
-    const sessionUser = getSessionUser(req);
-    if (!sessionUser) {
-      return res.status(401).json({ error: "Active session required." });
-    }
 
     const now = Date.now();
     const cacheKey = INTEGRATIONS_STATUS_CACHE_KEY;
@@ -299,6 +300,11 @@ function evaluateAutomationHealth({ frequency, isRunning, lastCommandTime, signa
   // Mode 2: Single Client Status (backwards compatible)
   if (!clientKey && !masterSheetId && !clientName) {
     return res.status(400).json({ error: "Missing clientKey, clientName, or masterSheetId parameter." });
+  }
+
+  const targetClient = clientName || clientKey;
+  if (!sessionUser.isAdmin && targetClient && !isUserAuthorizedForClient(sessionUser, targetClient)) {
+    return res.status(403).json({ error: "Access denied to this client." });
   }
 
   try {

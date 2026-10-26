@@ -80,6 +80,10 @@ export async function handleBulkCreateTasks(req, res, sheets) {
     const statusByHash = {};
 
     for (const alert of alertsToTask) {
+      if (!sessionUser.isAdmin && (!alert.clientName || !isUserAuthorizedForClient(sessionUser, alert.clientName))) {
+        results.push({ fingerprintHash: alert.fingerprintHash || null, error: "Access denied to this client" });
+        continue;
+      }
       try {
         const fingerprintHash = alert.fingerprintHash || buildAlertFingerprint(alert);
         const taskRef = `TASK-${Date.now()}-${Math.random().toString(36).slice(2,7).toUpperCase()}`;

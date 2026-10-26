@@ -4,7 +4,7 @@ import { anthropic } from "./claudeClient";
 import { logClaudeUsage_ } from "./systemConfig";
 import { monthStrToEomKey_, eomTargetMonthToWorkMonth_, autoCompleteLinkedEomTask_ } from "./eomTools";
 import { getSessionUser } from "./authService";
-import { isUserAuthorizedForClient } from "./userPermissions";
+import { isUserAuthorizedForClient, resolveClientNameBySheetId } from "./userPermissions";
 
 const CLIENT_NAME_NOISE_WORDS_ = new Set([
   "ltd","limited","plc","inc","llc","llp","the","and","&",
@@ -598,7 +598,14 @@ export async function handleProcessPayrollDocument(req, res, sheets) {
 
   const sessionUser = getSessionUser(req);
   if (!sessionUser) return res.status(401).json({ success: false, error: "Unauthorized" });
-  if (!sessionUser.isAdmin && payrollClientName && !isUserAuthorizedForClient(sessionUser, payrollClientName)) {
+
+  let targetClient = payrollClientName || "";
+  if (!targetClient && payrollClientSheetId) {
+    try {
+      targetClient = await resolveClientNameBySheetId(sheets, payrollClientSheetId, automationCommanderSheetId);
+    } catch (_) {}
+  }
+  if (!sessionUser.isAdmin && (!targetClient || !isUserAuthorizedForClient(sessionUser, targetClient))) {
     return res.status(403).json({ success: false, error: "Access denied to this client" });
   }
   let fileData;
@@ -717,7 +724,14 @@ export async function handleProcessTimeDocument(req, res, sheets) {
 
   const sessionUser = getSessionUser(req);
   if (!sessionUser) return res.status(401).json({ success: false, error: "Unauthorized" });
-  if (!sessionUser.isAdmin && timeClientName && !isUserAuthorizedForClient(sessionUser, timeClientName)) {
+
+  let targetClient = timeClientName || "";
+  if (!targetClient && timeMasterSheetId) {
+    try {
+      targetClient = await resolveClientNameBySheetId(sheets, timeMasterSheetId, automationCommanderSheetId);
+    } catch (_) {}
+  }
+  if (!sessionUser.isAdmin && (!targetClient || !isUserAuthorizedForClient(sessionUser, targetClient))) {
     return res.status(403).json({ success: false, error: "Access denied to this client" });
   }
   let fileData;

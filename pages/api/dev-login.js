@@ -1,12 +1,13 @@
 import jwt from "jsonwebtoken";
 import { getJwtSecret } from "../../services/authService";
+import { sanitizeRedirectUrl } from "../../utils/helpers";
 
 /**
  * Dev-only login endpoint to test authenticated portal and PMA flows in local development.
  * Restricted strictly to non-production environments.
  */
 export default async function handler(req, res) {
-  if (process.env.NODE_ENV === "production") {
+  if (process.env.NODE_ENV === "production" || process.env.VERCEL_ENV === "production") {
     return res.status(403).json({ error: "Dev login only allowed in local development" });
   }
 
@@ -29,6 +30,6 @@ export default async function handler(req, res) {
   const token = jwt.sign(payload, secret, { expiresIn: "7d" });
 
   res.setHeader("Set-Cookie", `pma_session=${token}; Path=/; HttpOnly; SameSite=Lax`);
-  const redirectTarget = req.query.redirect || "/pulse";
+  const redirectTarget = sanitizeRedirectUrl(req.query.redirect, "/pulse");
   return res.redirect(redirectTarget);
 }

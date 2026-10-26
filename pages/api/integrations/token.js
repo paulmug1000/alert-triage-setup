@@ -14,6 +14,7 @@
  * - Only returns short-lived, ready-to-use access tokens and tenant IDs.
  */
 
+import crypto from "crypto";
 import {
   getIntegrationTokens,
   updateRefreshedTokens,
@@ -30,6 +31,14 @@ import { refreshCloseTokens } from "../../../services/closeService.js";
 import { refreshHubSpotTokens } from "../../../services/hubspotService.js";
 import { getSessionUser } from "../../../services/authService.js";
 import { redisClient } from "../../../services/redisClient.js";
+
+function safeCompare(a, b) {
+  if (typeof a !== "string" || typeof b !== "string") return false;
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
 
 // Module-level in-flight refresh mutex to prevent local container concurrent refresh token collisions
 const inFlightRefreshes = new Map();
@@ -90,29 +99,90 @@ export default async function handler(req, res) {
     return res.status(405).json({ success: false, error: "Method not allowed" });
   }
 
-  // 1. Verify Authentication: Ecosystem Secret (for GAS) OR Admin Session (for PMA)
-  const authHeader = req.headers.authorization || "";
-  const tokenMatch = authHeader.match(/^Bearer\s+(.+)$/i);
-  const providedSecret = tokenMatch ? tokenMatch[1].trim() : (req.query.secret || req.body?.secret || "");
-
-  const expectedSecret = process.env.PULSE_INTERNAL_SECRET;
-  const isSecretValid = Boolean(expectedSecret && providedSecret && providedSecret === expectedSecret);
-
-  const sessionUser = getSessionUser(req);
-  const isAdmin = Boolean(sessionUser?.isAdmin);
-
-  if (!isSecretValid && !isAdmin) {
-    console.warn("🚨 Token Broker: Unauthorized attempt to request integration token.");
-    return res.status(401).json({ success: false, error: "Unauthorized: Invalid internal secret or admin session required." });
-  }
-
-  // 2. Parse Target Integration & Client Identifier
+  // 1. Parse Target Integration & Client Identifier
   const tool = String(req.query.tool || req.body?.tool || "xero").trim().toLowerCase();
   const spreadsheetId = req.query.spreadsheetId || req.query.sheetId || req.body?.spreadsheetId || req.body?.sheetId || "";
   const clientKey = req.query.clientKey || req.query.clientName || req.body?.clientKey || req.body?.clientName || "";
 
   if (!spreadsheetId && !clientKey) {
     return res.status(400).json({ success: false, error: "Missing spreadsheetId or clientKey parameter." });
+  }
+
+  // 2. Verify Authentication: Ecosystem Secret, Client-Specific Secret, OR Admin Session
+  const authHeader = req.headers.authorization || "";
+  const tokenMatch = authHeader.match(/^Bearer\s+(.+)$/i);
+  const providedSecret = tokenMatch ? tokenMatch[1].trim() : (req.query.secret || req.body?.secret || "");
+
+  const expectedSecret = process.env.PULSE_INTERNAL_SECRET || "";
+  const isMasterSecretValid = Boolean(expectedSecret && providedSecret && safeCompare(providedSecret, expectedSecret));
+
+  const sessionUser = getSessionUser(req);
+  const isAdmin = Boolean(sessionUser?.isAdmin);
+
+  // Client-specific secret sent in custom header (or body fallback)
+  const providedClientSecret = String(
+    req.headers["x-pulse-client-secret"] ||
+    req.headers["x-client-secret"] ||
+    req.body?.clientSecret ||
+    ""
+  ).trim();
+
+  let isAuthorized = isAdmin;
+  const targetIdentifier = spreadsheetId || clientKey;
+  const redisSecretKey = `pulse:client_secret:${targetIdentifier}`;
+
+  if (!isAuthorized) {
+    let registeredHash = null;
+    if (redisClient?.isOpen) {
+      try {
+        registeredHash = await redisClient.get(redisSecretKey);
+      } catch (redisErr) {
+        console.warn("⚠️ Token Broker: Error checking client secret in Redis:", redisErr.message);
+      }
+    }
+
+    if (providedClientSecret) {
+      const providedHash = crypto.createHash("sha256").update(providedClientSecret).digest("hex");
+      if (registeredHash) {
+        if (safeCompare(providedHash, registeredHash)) {
+          isAuthorized = true;
+        } else {
+          console.warn(`🚨 Token Broker: Invalid client-specific secret presented for ${targetIdentifier}.`);
+          return res.status(401).json({ success: false, error: "Unauthorized: Invalid client-specific secret." });
+        }
+      } else {
+        // Auto-registration handshake: requires valid ecosystem master secret to bind
+        if (isMasterSecretValid) {
+          if (redisClient?.isOpen) {
+            try {
+              await redisClient.set(redisSecretKey, providedHash);
+              console.log(`✅ Token Broker: Registered new client-specific secret for ${targetIdentifier}`);
+            } catch (regErr) {
+              console.warn("⚠️ Token Broker: Failed to persist client secret in Redis:", regErr.message);
+            }
+          }
+          isAuthorized = true;
+        } else {
+          console.warn(`🚨 Token Broker: Unauthorized attempt to register client secret for ${targetIdentifier}.`);
+          return res.status(401).json({ success: false, error: "Unauthorized: Valid ecosystem secret required for initial client registration." });
+        }
+      }
+    } else {
+      // Legacy fallback: no client secret provided
+      if (registeredHash) {
+        // Once a sheet is registered with its own secret, legacy calls without that secret are rejected
+        console.warn(`🚨 Token Broker: Legacy secret rejected for already-registered sheet ${targetIdentifier}.`);
+        return res.status(401).json({ success: false, error: "Unauthorized: Client-specific secret is required for this registered sheet." });
+      } else if (isMasterSecretValid) {
+        // Sheet has not yet upgraded its script; allow under legacy master secret
+        isAuthorized = true;
+      }
+    }
+  }
+
+  if (!isAuthorized) {
+    console.warn("🚨 Token Broker: Unauthorized attempt to request integration token.");
+    return res.status(401).json({ success: false, error: "Unauthorized: Invalid internal secret or admin session required." });
   }
 
   try {

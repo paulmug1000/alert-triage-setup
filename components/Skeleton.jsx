@@ -327,22 +327,22 @@ export function MonthViewSkeleton() {
               height: "271px",
               minHeight: "271px",
               boxSizing: "border-box",
-              background: "#f0f5fc",
-              border: "1px solid #d0e1f9",
-              borderLeft: "4px solid #0047AB",
+              background: "#ffffff",
+              border: "1px solid #e2e8f0",
+              borderLeft: "4px solid #cbd5e1",
               borderRadius: "8px",
               padding: "22px 24px",
-              boxShadow: "0 1px 4px rgba(0, 71, 171, 0.06)",
+              boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)",
               display: "flex",
               flexDirection: "column",
               gap: "12px",
             }}
           >
-            <Skeleton className="pulse-skeleton-blue" width="140px" height="13px" borderRadius="3px" />
-            <Skeleton className="pulse-skeleton-blue" width="190px" height="38px" borderRadius="6px" style={{ margin: "4px 0" }} />
-            <Skeleton className="pulse-skeleton-blue" width="92%" height="16px" borderRadius="3px" />
-            <Skeleton className="pulse-skeleton-blue" width="85%" height="16px" borderRadius="3px" />
-            <Skeleton className="pulse-skeleton-blue" width="68%" height="16px" borderRadius="3px" />
+            <Skeleton width="140px" height="13px" borderRadius="3px" />
+            <Skeleton width="190px" height="38px" borderRadius="6px" style={{ margin: "4px 0" }} />
+            <Skeleton width="92%" height="16px" borderRadius="3px" />
+            <Skeleton width="85%" height="16px" borderRadius="3px" />
+            <Skeleton width="68%" height="16px" borderRadius="3px" />
           </div>
 
           {/* Macro Table Container (Clean structural silhouette) */}
@@ -360,9 +360,9 @@ export function MonthViewSkeleton() {
             }}
           >
             {/* Header Month Bar */}
-            <div style={{ height: "31px", background: "#0047AB", padding: "0 16px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <Skeleton className="pulse-skeleton-dark" width="90px" height="14px" />
-              <Skeleton className="pulse-skeleton-dark" width="65px" height="14px" />
+            <div style={{ height: "31px", background: "#f1f5f9", borderBottom: "1px solid #e2e8f0", padding: "0 16px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <Skeleton width="90px" height="14px" />
+              <Skeleton width="65px" height="14px" />
             </div>
 
             {/* Status Row */}
@@ -377,7 +377,7 @@ export function MonthViewSkeleton() {
                 <Skeleton width="60px" height="12px" />
               </div>
               <Skeleton width="100%" height="42px" borderRadius="5px" />
-              <Skeleton width="100%" height="28px" borderRadius="4px" style={{ background: "rgba(153, 0, 255, 0.12)" }} />
+              <Skeleton width="100%" height="28px" borderRadius="4px" />
             </div>
 
             {/* Macro Section 2: Direct Costs Block */}
@@ -392,7 +392,7 @@ export function MonthViewSkeleton() {
 
             {/* Macro Section 3: Gross Profit Block */}
             <div style={{ padding: "16px 18px", borderBottom: "1px solid #f1f5f9", display: "flex", flexDirection: "column", gap: "10px" }}>
-              <Skeleton width="100%" height="32px" borderRadius="4px" style={{ background: "rgba(255, 153, 0, 0.15)" }} />
+              <Skeleton width="100%" height="32px" borderRadius="4px" />
               <div style={{ display: "flex", justifyContent: "space-between" }}>
                 <Skeleton width="110px" height="12px" />
                 <Skeleton width="45px" height="12px" />
@@ -406,7 +406,7 @@ export function MonthViewSkeleton() {
                 <Skeleton width="60px" height="12px" />
               </div>
               <Skeleton width="100%" height="42px" borderRadius="5px" />
-              <Skeleton width="100%" height="32px" borderRadius="4px" style={{ background: "rgba(0, 71, 171, 0.12)" }} />
+              <Skeleton width="100%" height="32px" borderRadius="4px" />
               <div style={{ display: "flex", justifyContent: "space-between" }}>
                 <Skeleton width="120px" height="12px" />
                 <Skeleton width="45px" height="12px" />

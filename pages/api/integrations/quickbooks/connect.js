@@ -11,11 +11,18 @@
 import crypto from "crypto";
 import { buildQBAuthUrl } from "../../../../services/quickbooksService.js";
 import { getSheetsClient, extractSheetIdFromUrl } from "../../../../services/sheetsClient.js";
-import { DEFAULT_AC_SHEET_ID, matchesClientName } from "../../../../services/userPermissions.js";
+import { DEFAULT_AC_SHEET_ID, matchesClientName, isUserAuthorizedForClient } from "../../../../services/userPermissions.js";
+import { getSessionUser } from "../../../../services/authService.js";
+import { sanitizeRedirectUrl } from "../../../../utils/helpers.js";
 
 export default async function handler(req, res) {
   if (req.method !== "GET" && req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
+  }
+
+  const sessionUser = getSessionUser(req);
+  if (!sessionUser) {
+    return res.status(401).json({ error: "Active session required." });
   }
 
   const { clientKey, clientName, masterSheetId, clientSheetId, redirectBack } = req.method === "POST" ? req.body : req.query;
@@ -23,6 +30,13 @@ export default async function handler(req, res) {
   if (!clientKey && !masterSheetId && !clientName) {
     return res.status(400).json({ error: "Missing required clientKey, clientName, or masterSheetId parameter." });
   }
+
+  const targetName = clientName || clientKey;
+  if (!sessionUser.isAdmin && targetName && !isUserAuthorizedForClient(sessionUser, targetName)) {
+    return res.status(403).json({ error: "Access denied to this client." });
+  }
+
+  const sanitizedRedirectBack = sanitizeRedirectUrl(redirectBack, "/pma");
 
   try {
     let resolvedMasterSheetId = masterSheetId || "";
@@ -71,7 +85,7 @@ export default async function handler(req, res) {
       clientName: clientName || clientKey,
       masterSheetId: resolvedMasterSheetId,
       clientSheetId: resolvedClientSheetId,
-      redirectBack: redirectBack || "/portal"
+      redirectBack: sanitizedRedirectBack
     };
 
     const stateToken = Buffer.from(JSON.stringify(statePayload)).toString("base64url");

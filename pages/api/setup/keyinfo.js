@@ -8,7 +8,7 @@
  */
 
 import { getSessionUser } from "../../../services/authService.js";
-import { isUserAuthorizedForClient } from "../../../services/userPermissions.js";
+import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { getMasterKeyInfoSettings, saveMasterKeyInfoSettings } from "../../../services/setupService.js";
 
@@ -30,8 +30,11 @@ export default async function handler(req, res) {
       return res.status(400).json({ success: false, error: "Missing masterSheetId" });
     }
 
-    if (clientName && !sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, clientName)) {
-      return res.status(403).json({ success: false, error: "Access denied to this client." });
+    if (!sessionUser.isAdmin) {
+      const auth = await verifyUserAuthorizedForSheet(sessionUser, masterSheetId, clientName, sheets);
+      if (!auth.authorized) {
+        return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
+      }
     }
 
     try {
@@ -49,8 +52,11 @@ export default async function handler(req, res) {
       return res.status(400).json({ success: false, error: "Missing masterSheetId or settings." });
     }
 
-    if (clientName && !sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, clientName)) {
-      return res.status(403).json({ success: false, error: "Access denied to this client." });
+    if (!sessionUser.isAdmin) {
+      const auth = await verifyUserAuthorizedForSheet(sessionUser, masterSheetId, clientName, sheets);
+      if (!auth.authorized) {
+        return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
+      }
     }
 
     try {

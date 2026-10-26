@@ -6,6 +6,8 @@ import {
   saveDividendsData,
 } from "../../../services/salariesService.js";
 import { getClients } from "../../../services/workspaces.js";
+import { verifyUserAuthorizedForSheet } from "../../../services/userPermissions.js";
+import { getSheetsClient } from "../../../services/sheetsClient.js";
 
 export default async function handler(req, res) {
   // 1. Authenticate user
@@ -51,6 +53,14 @@ export default async function handler(req, res) {
       });
     }
 
+    if (!sessionUser.isAdmin) {
+      const sheets = await getSheetsClient();
+      const auth = await verifyUserAuthorizedForSheet(sessionUser, masterSheetId || clientSheetId, clientName, sheets);
+      if (!auth.authorized) {
+        return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
+      }
+    }
+
     try {
       const data = await getSalariesData({
         clientName: clientName || "Client",
@@ -75,6 +85,14 @@ export default async function handler(req, res) {
         success: false,
         error: "Missing required masterSheetId or clientSheetId parameter.",
       });
+    }
+
+    if (!sessionUser.isAdmin) {
+      const sheets = await getSheetsClient();
+      const auth = await verifyUserAuthorizedForSheet(sessionUser, masterSheetId || clientSheetId, clientName, sheets);
+      if (!auth.authorized) {
+        return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
+      }
     }
 
     try {

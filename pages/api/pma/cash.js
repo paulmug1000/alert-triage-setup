@@ -1,6 +1,8 @@
 import { getSessionUser } from "../../../services/authService.js";
 import { fetchCashData, saveCashBatch, saveCashCellNote } from "../../../services/cashEditService.js";
 import { getClients } from "../../../services/workspaces.js";
+import { verifyUserAuthorizedForSheet } from "../../../services/userPermissions.js";
+import { getSheetsClient } from "../../../services/sheetsClient.js";
 
 export default async function handler(req, res) {
   // 1. Authenticate user
@@ -39,6 +41,14 @@ export default async function handler(req, res) {
         success: false,
         error: "Missing required clientSheetId parameter.",
       });
+    }
+
+    if (!sessionUser.isAdmin) {
+      const sheets = await getSheetsClient();
+      const auth = await verifyUserAuthorizedForSheet(sessionUser, clientSheetId, clientName, sheets);
+      if (!auth.authorized) {
+        return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
+      }
     }
 
     try {
@@ -81,6 +91,14 @@ export default async function handler(req, res) {
 
     if (!clientSheetId) {
       return res.status(400).json({ success: false, error: "Missing required clientSheetId." });
+    }
+
+    if (!sessionUser.isAdmin) {
+      const sheets = await getSheetsClient();
+      const auth = await verifyUserAuthorizedForSheet(sessionUser, clientSheetId, clientName, sheets);
+      if (!auth.authorized) {
+        return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
+      }
     }
 
     try {

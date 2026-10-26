@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import Spinner from "./Spinner";
-import Skeleton, { PmaOutgoingsTableSkeleton } from "./Skeleton";
+import Skeleton, { PmaOutgoingsTableSkeleton, PmaInvoicesTableSkeleton } from "./Skeleton";
 import OutgoingsEditModal from "./OutgoingsEditModal";
 import DirectCostsEditModal from "./DirectCostsEditModal";
 import OutgoingsEstimateModal from "./OutgoingsEstimateModal";
@@ -8,11 +8,14 @@ import OutgoingsNewVendorModal from "./OutgoingsNewVendorModal";
 import JobDetailModal from "./JobDetailModal";
 import CellNoteIndicator from "./CellNoteIndicator";
 import EditClientSelector from "./EditClientSelector";
+import PlaceholderChoiceModal from "./PlaceholderChoiceModal";
+import PlaceholderPill, { isAutoPlaceholder } from "./PlaceholderPill";
+import { getJobExpenseItems } from "./JobsView";
 import { useOutgoings } from "../hooks/useOutgoings";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useTriage } from "../contexts/TriageContext";
 import { useAuth } from "../hooks/useAuth";
-import { isPlaceholderExpense } from "../utils/helpers";
+import { isPlaceholderExpense, groupSlotItemsForDisplay, getRetainerRowMonthLabel, getRetainerDurationMonths } from "../utils/helpers";
 
 const formatCurrency = (val) => {
   const s = String(val || "").trim();
@@ -173,6 +176,7 @@ export default function OutgoingsView({
   const [contractorSearch, setContractorSearch] = useState("");
   const [directCostsJobSearch, setDirectCostsJobSearch] = useState("");
   const [selectedJobForDetail, setSelectedJobForDetail] = useState(null);
+  const [placeholderChoicePrompt, setPlaceholderChoicePrompt] = useState(null);
 
   const filteredContractors = React.useMemo(() => {
     const list = outgoingsData?.contractors || [];
@@ -225,6 +229,12 @@ export default function OutgoingsView({
     }
   }, [outgoingsInbox.length, outgoingsClient, outgoingsLoading, markClientCleared]);
 
+  useEffect(() => {
+    if (vendorsSubTab === "directCosts" && outgoingsClient?.clientSheetId && !directCostsJobs && !directCostsLoading) {
+      loadDirectCostsJobs(outgoingsClient, directCostsShowAll);
+    }
+  }, [vendorsSubTab, outgoingsClient?.clientSheetId, directCostsJobs, directCostsLoading, directCostsShowAll, loadDirectCostsJobs]);
+
   const toggleInboxSelection = (exp) => {
     setSelectedInboxAppIds(prev => {
       const next = new Set(prev);
@@ -244,6 +254,168 @@ export default function OutgoingsView({
   const clearInboxSelection = () => {
     setSelectedInboxAppIds(new Set());
     setOutgoingsPlacing(null);
+  };
+
+  const executeExpensePlacement = async (job, toPlace, rowNum, slotNum, createNewRow = false, cellSavingKey = null) => {
+    if (!toPlace || toPlace.length === 0) return;
+    const savingKey = cellSavingKey || (createNewRow ? `newrow-${job.client}|||${job.jobName}` : `${rowNum}-${slotNum}`);
+    setDirectCostsSavingCell(savingKey);
+
+    const placedIds = new Set(toPlace.map(e => e.appId));
+    toPlace.forEach(exp => addAssignedAppId(exp.appId, outgoingsClient?.clientName));
+    decrementClientExpenseCount(outgoingsClient?.clientName, toPlace.length);
+    setOutgoingsInbox(prev => {
+      const remaining = prev.filter(e => !placedIds.has(e.appId));
+      if (remaining.length === 0 && outgoingsClient) {
+        markClientCleared(outgoingsClient.clientName);
+      }
+      return remaining;
+    });
+    clearInboxSelection();
+    setOutgoingsPlacing(null);
+    outgoingsPlacingRef.current = null;
+
+    const jobLastRow = job.rows[job.rows.length - 1]?.rowNum;
+
+    try {
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "assign_expense_to_job",
+          clientSheetId: outgoingsClient?.clientSheetId,
+          clientName: outgoingsClient?.clientName || outgoingsClient?.name || "",
+          masterSheetId: outgoingsClient?.masterSheetId || "",
+          createNewRow: !!createNewRow,
+          rowNum: !createNewRow ? rowNum : undefined,
+          slotNum: !createNewRow ? slotNum : undefined,
+          jobLastRow: createNewRow ? jobLastRow : undefined,
+          expenses: toPlace,
+          jobClient: job.client,
+          jobName: job.jobName,
+          jobRows: job.rows,
+        }),
+      });
+      const data = await res.json();
+      if (outgoingsClient?.masterSheetId) {
+        outgoingsPullPendingRef.current = { clientSheetId: outgoingsClient.clientSheetId, masterSheetId: outgoingsClient.masterSheetId };
+      }
+      if (data.newRowsCreated) {
+        await loadDirectCostsJobs(outgoingsClient, directCostsShowAll);
+      } else if (data.placed && Array.isArray(data.placed)) {
+        setDirectCostsJobs(prev => prev && prev.map(j => {
+          if (j.client !== job.client || j.jobName !== job.jobName) return j;
+          return {
+            ...j,
+            rows: j.rows.map(r => {
+              const placedForThisRow = data.placed.filter(p => p.rowNum === r.rowNum);
+              if (placedForThisRow.length === 0) return r;
+              return {
+                ...r,
+                expenseSlots: r.expenseSlots.map(sl => {
+                  const match = placedForThisRow.find(p => p.slotNum === sl.slotNum);
+                  if (!match) return sl;
+                  return {
+                    ...sl,
+                    description: match.description,
+                    amount: match.amount,
+                    vat: match.vat,
+                    date: match.date,
+                    status: match.status,
+                    transactionId: match.transactionId
+                  };
+                })
+              };
+            })
+          };
+        }));
+      } else {
+        await loadDirectCostsJobs(outgoingsClient, directCostsShowAll);
+      }
+    } catch (e) {
+      console.error("assign_expense_to_job error:", e);
+    } finally {
+      setDirectCostsSavingCell(null);
+    }
+  };
+
+  const proceedWithAutoExpensePlacement = (job, toPlace, targetRowNum = null) => {
+    const targetRows = targetRowNum
+      ? (job.rows || []).filter(r => r.rowNum === targetRowNum)
+      : (job.rows || []);
+
+    // 1. Look for auto-placeholder slot
+    for (const r of targetRows) {
+      for (const s of (r.expenseSlots || [])) {
+        const hasDesc = !!(s.description && String(s.description).trim() !== "");
+        const isPlhdr = isPlaceholderExpense(s) || String(s.description || "").toUpperCase().startsWith("PLACE");
+        if (hasDesc && isPlhdr && isAutoPlaceholder(s.description)) {
+          executeExpensePlacement(job, toPlace, r.rowNum, s.slotNum, false, `${r.rowNum}-${s.slotNum}`);
+          return;
+        }
+      }
+    }
+
+    // 2. Look for empty slot
+    for (const r of targetRows) {
+      for (const s of (r.expenseSlots || [])) {
+        const hasDesc = !!(s.description && String(s.description).trim() !== "");
+        const hasAmt = !!(s.amount && parseFloat(String(s.amount).replace(/[£$€,\s]/g, "")) > 0);
+        if (!hasDesc && !hasAmt) {
+          executeExpensePlacement(job, toPlace, r.rowNum, s.slotNum, false, `${r.rowNum}-${s.slotNum}`);
+          return;
+        }
+      }
+    }
+
+    // 3. If no auto-placeholders and no empty slots:
+    const isRetainer = String(job.rows?.[0]?.projectRetainer || "").toLowerCase().includes("retainer");
+    if (!isRetainer) {
+      executeExpensePlacement(job, toPlace, null, null, true);
+      return;
+    } else {
+      alert("All direct cost slots for this retainer month are already occupied by actual expenses.");
+    }
+  };
+
+  const handleInitiateExpensePlacement = (job, targetRowNum = null, explicitExpenses = null) => {
+    const toPlace = explicitExpenses
+      ? (Array.isArray(explicitExpenses) ? explicitExpenses : [explicitExpenses])
+      : (selectedInboxAppIds.size > 0
+          ? outgoingsInbox.filter(e => selectedInboxAppIds.has(e.appId))
+          : (outgoingsPlacingRef.current ? [outgoingsPlacingRef.current] : []));
+
+    if (toPlace.length === 0) return;
+
+    const targetRows = targetRowNum
+      ? (job.rows || []).filter(r => r.rowNum === targetRowNum)
+      : (job.rows || []);
+
+    // Check for manual placeholders
+    const manualPlaceholders = [];
+    for (const r of targetRows) {
+      for (const s of (r.expenseSlots || [])) {
+        const hasDesc = !!(s.description && String(s.description).trim() !== "");
+        const hasAmt = !!(s.amount && parseFloat(String(s.amount).replace(/[£$€,\s]/g, "")) > 0);
+        const isPlhdr = isPlaceholderExpense(s) || String(s.description || "").toUpperCase().startsWith("MANUAL") || (!hasDesc && hasAmt);
+        if ((hasDesc || hasAmt) && isPlhdr && !isAutoPlaceholder(s.description)) {
+          manualPlaceholders.push({ ...s, rowNum: r.rowNum, slotNum: s.slotNum });
+        }
+      }
+    }
+
+    if (manualPlaceholders.length > 0) {
+      setPlaceholderChoicePrompt({
+        job,
+        itemToPlace: toPlace[0],
+        allExpensesToPlace: toPlace,
+        targetRowNum,
+        manualPlaceholders,
+      });
+      return;
+    }
+
+    proceedWithAutoExpensePlacement(job, toPlace, targetRowNum);
   };
 
   const updateCell = async (contractor, colLetter, newBlocks, newTopNote) => {
@@ -331,6 +503,26 @@ export default function OutgoingsView({
             });
           }}
           onClose={() => setOutgoingsEditCell(null)}
+        />
+      )}
+      {placeholderChoicePrompt && (
+        <PlaceholderChoiceModal
+          isOpen={!!placeholderChoicePrompt}
+          type="expense"
+          job={placeholderChoicePrompt.job}
+          itemToPlace={placeholderChoicePrompt.itemToPlace}
+          manualPlaceholders={placeholderChoicePrompt.manualPlaceholders}
+          onReplaceManual={(p) => {
+            const { job, allExpensesToPlace } = placeholderChoicePrompt;
+            setPlaceholderChoicePrompt(null);
+            executeExpensePlacement(job, allExpensesToPlace, p.rowNum, p.slotNum, false, `${p.rowNum}-${p.slotNum}`);
+          }}
+          onUseAuto={() => {
+            const { job, allExpensesToPlace, targetRowNum } = placeholderChoicePrompt;
+            setPlaceholderChoicePrompt(null);
+            proceedWithAutoExpensePlacement(job, allExpensesToPlace, targetRowNum);
+          }}
+          onClose={() => setPlaceholderChoicePrompt(null)}
         />
       )}
       {directCostsEditSlot && (
@@ -1115,7 +1307,7 @@ export default function OutgoingsView({
         {!noClient && outgoingsData && vendorsSubTab === "directCosts" && (
           <>
             {directCostsLoading && (
-              <div style={{ textAlign: "center", color: "#999", padding: "24px" }}>Loading jobs...</div>
+              <PmaInvoicesTableSkeleton />
             )}
             {!directCostsLoading && directCostsJobs && (
               <>
@@ -1209,497 +1401,350 @@ export default function OutgoingsView({
                     <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "12px", minWidth: "1200px" }}>
                       <thead>
                         <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0", color: "#475569", fontSize: "11px", fontWeight: "600", textTransform: "uppercase", letterSpacing: "0.03em" }}>
-                          <th style={{ padding: "10px 10px", width: "36px", textAlign: "center" }}></th>
+                          
                           <th style={{ padding: "10px 12px", width: "160px", textAlign: "left" }}>Client</th>
-                          <th style={{ padding: "10px 12px", width: "200px", textAlign: "left" }}>Job Name</th>
+                          <th style={{ padding: "10px 12px", width: "200px", textAlign: "left" }}>Job name</th>
                           <th style={{ padding: "10px 10px", width: "80px", textAlign: "left" }}>Code</th>
                           <th style={{ padding: "10px 10px", width: "110px", textAlign: "left" }}>Type</th>
-                          <th style={{ padding: "10px 10px", width: "110px", textAlign: "left" }}>Direct Costs</th>
+                          <th style={{ padding: "10px 10px", width: "110px", textAlign: "left" }}>Budget</th>
                           <th style={{ padding: "10px 10px", width: "100px", textAlign: "left" }}>Revenue</th>
                           <th style={{ padding: "10px 10px", width: "150px", textAlign: "left" }}>Dates</th>
-                          <th style={{ padding: "10px 10px", width: "170px", textAlign: "left" }}>Slot 1</th>
-                          <th style={{ padding: "10px 10px", width: "170px", textAlign: "left" }}>Slot 2</th>
-                          <th style={{ padding: "10px 10px", width: "170px", textAlign: "left" }}>Slot 3</th>
-                          <th style={{ padding: "10px 8px", width: "40px", textAlign: "center" }}></th>
+                          <th style={{ padding: "10px 10px", minWidth: "340px", textAlign: "left" }}>Direct costs</th>
+                          <th style={{ padding: "10px 8px", width: "160px", textAlign: "center" }}>Actions</th>
                         </tr>
                       </thead>
                       <tbody>
                         {filteredDirectCostsJobs.length === 0 ? (
                           <tr>
-                            <td colSpan={12} style={{ padding: "36px", textAlign: "center", color: "#64748b" }}>
+                            <td colSpan={9} style={{ padding: "36px", textAlign: "center", color: "#64748b" }}>
                               No matching jobs found.
                             </td>
                           </tr>
                         ) : (
                           filteredDirectCostsJobs.map((job) => {
-                            const jobKey = `${job.client}|||${job.jobName}`;
                             const isRetainer = String(job.rows?.[0]?.projectRetainer || "").toLowerCase().includes("retainer");
-                            const hasMultipleRows = job.rows && job.rows.length > 1;
-                            const isRetainerExpanded = expandedRetainerKeys.has(jobKey);
                             const isPlacing = selectedInboxAppIds.size > 0 || !!outgoingsPlacing;
-
-                            let visibleRows;
-                            if (isRetainer) {
-                              visibleRows = (isRetainer && !isRetainerExpanded) ? [job.rows[0]] : job.rows;
-                            } else {
-                              // Project job: only show multiple rows if expenses go over multiple rows
-                              const lastRowWithExpenseIdx = job.rows.reduce((maxIdx, r, idx) => rowHasExpense(r) ? idx : maxIdx, 0);
-                              let neededIdx = lastRowWithExpenseIdx;
-                              if (isPlacing) {
-                                const firstRowWithSpaceIdx = job.rows.findIndex(r => r.expenseSlots.some(s => !s.description && !s.amount));
-                                if (firstRowWithSpaceIdx > neededIdx) {
-                                  neededIdx = firstRowWithSpaceIdx;
-                                }
-                              }
-                              visibleRows = job.rows.slice(0, neededIdx + 1);
-                            }
+                            const jr = job.rows[0] || {};
 
                             const jobTotalExpenses = job.rows.reduce((sum, r) => sum + r.expenseSlots.reduce((s, slot) => {
                               const isReal = (slot.transactionId || slot.description) && !isPlaceholderExpense(slot.transactionId, slot.description, slot.status);
-                              return s + (isReal ? (parseFloat(String(slot.amount).replace(/[£$€,\s]/g, "")) || 0) : 0);
+                              return s + (isReal ? (parseFloat(String(slot.amount).replace(/[£$€,s]/g, "")) || 0) : 0);
                             }, 0), 0);
-                            const jobBudget = parseFloat(String(job.rows[0]?.directCosts || "").replace(/[£$€,\s]/g, "")) || 0;
+                            const jobBudget = parseFloat(String(job.rows[0]?.directCosts || "").replace(/[£$€,s]/g, "")) || 0;
                             const unreceived = jobBudget - jobTotalExpenses;
-                            const jobHasEmptySlot = visibleRows.some(jr => jr.expenseSlots.some(s => !s.description && !s.amount));
-                            const jobLastRow = job.rows[job.rows.length - 1]?.rowNum;
 
-                            return visibleRows.map((jr, rIdx) => {
-                              const isLastRowOfJob = rIdx === visibleRows.length - 1;
-                              const isChildRow = rIdx > 0;
+                            return (
+                              <tr
+                                key={jr.rowNum || job.jobName}
+                                onClick={() => {
+                                  if (isPlacing) {
+                                    handleInitiateExpensePlacement(job, null);
+                                  }
+                                }}
+                                style={{
+                                  borderBottom: "1px solid #e2e8f0",
+                                  backgroundColor: "#ffffff",
+                                  cursor: isPlacing ? "pointer" : "default",
+                                  transition: "background-color 0.1s ease"
+                                }}
+                                onMouseEnter={(e) => {
+                                  if (isPlacing) {
+                                    e.currentTarget.style.backgroundColor = "#eff6ff";
+                                  }
+                                }}
+                                onMouseLeave={(e) => {
+                                  if (isPlacing) {
+                                    e.currentTarget.style.backgroundColor = "#ffffff";
+                                  }
+                                }}
+                                title={isPlacing ? `Click to place direct cost against ${job.jobName}` : undefined}
+                              >
+                                {/* Client */}
+                                <td style={{ padding: "8px 12px", verticalAlign: "top", fontWeight: "600", color: "#0f172a" }}>
+                                  {jr.client}
+                                </td>
 
-                              return (
-                                <tr
-                                  key={jr.rowNum}
-                                  style={{
-                                    borderBottom: isLastRowOfJob ? "1px solid #e2e8f0" : "1px solid #f1f5f9",
-                                    backgroundColor: isChildRow ? "#f8fafc" : "#ffffff",
-                                    transition: "background-color 0.1s ease"
-                                  }}
-                                >
-                                  {/* Expand/Collapse Chevron (for Retainers) */}
-                                  <td style={{ padding: "8px 6px", textAlign: "center", verticalAlign: "top" }}>
-                                    {rIdx === 0 && isRetainer && hasMultipleRows && (
-                                      <button
-                                        type="button"
-                                        onClick={() => toggleRetainerExpand(jobKey)}
-                                        style={{
-                                          background: "none",
-                                          border: "none",
-                                          color: "#64748b",
-                                          cursor: "pointer",
-                                          padding: "2px 4px",
-                                          fontSize: "11px",
-                                          lineHeight: 1
-                                        }}
-                                        title={isRetainerExpanded ? "Collapse retainer months" : `Expand all ${job.rows.length} retainer months`}
-                                      >
-                                        {isRetainerExpanded ? "▼" : "▶"}
-                                      </button>
-                                    )}
-                                  </td>
+                                {/* Job Name */}
+                                <td style={{ padding: "8px 12px", verticalAlign: "top" }}>
+                                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "6px" }}>
+                                    <div style={{ fontWeight: "600", color: "#1e293b" }}>{jr.jobName}</div>
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        const rawCode = job.projectCode || jr.projectCode || "";
+                                        const cleanCode = (rawCode === "-" || rawCode.toLowerCase() === "n/a" || rawCode.toLowerCase() === "none") ? "" : rawCode;
+                                        setSelectedJobForDetail({
+                                          client: job.client,
+                                          endClientName: job.client,
+                                          jobName: job.jobName,
+                                          projectCode: cleanCode,
+                                          rowNum: jr.rowNum,
+                                          tabName: "Confirmed",
+                                          clientSheetId: effectiveSheetId,
+                                          clientName: effectiveClientName,
+                                          crmTool: effectiveClientObj?.crmTool,
+                                          crmDrives: effectiveClientObj?.crmDrives
+                                        });
+                                      }}
+                                      style={{
+                                        background: "#ffffff",
+                                        border: "1px solid #cbd5e1",
+                                        borderRadius: "4px",
+                                        padding: "2px 7px",
+                                        fontSize: "11px",
+                                        color: "#475569",
+                                        cursor: "pointer",
+                                        fontWeight: "600",
+                                        whiteSpace: "nowrap"
+                                      }}
+                                      title="Edit job details"
+                                    >
+                                      Edit job
+                                    </button>
+                                  </div>
+                                </td>
 
-                                  {/* Client */}
-                                  <td style={{ padding: "8px 12px", verticalAlign: "top", fontWeight: "600", color: "#0f172a" }}>
-                                    {rIdx === 0 ? jr.client : ""}
-                                  </td>
+                                {/* Project Code */}
+                                <td style={{ padding: "8px 10px", verticalAlign: "top", color: "#64748b", fontSize: "11px" }}>
+                                  {jr.projectCode || "-"}
+                                </td>
 
-                                  {/* Job Name */}
-                                  <td style={{ padding: "8px 12px", verticalAlign: "top" }}>
-                                    {rIdx === 0 ? (
-                                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "6px" }}>
-                                        <div style={{ fontWeight: "600", color: "#1e293b" }}>{jr.jobName}</div>
-                                        <button
-                                          type="button"
-                                          onClick={() => {
-                                            const rawCode = job.projectCode || jr.projectCode || "";
-                                            const cleanCode = (rawCode === "-" || rawCode.toLowerCase() === "n/a" || rawCode.toLowerCase() === "none") ? "" : rawCode;
-                                            setSelectedJobForDetail({
-                                              client: job.client,
-                                              endClientName: job.client,
-                                              jobName: job.jobName,
-                                              projectCode: cleanCode,
-                                              rowNum: jr.rowNum,
-                                              tabName: "Confirmed",
-                                              clientSheetId: effectiveSheetId,
-                                              clientName: effectiveClientName,
-                                              crmTool: effectiveClientObj?.crmTool,
-                                              crmDrives: effectiveClientObj?.crmDrives
-                                            });
-                                          }}
-                                          style={{
-                                            background: "#ffffff",
-                                            border: "1px solid #cbd5e1",
-                                            borderRadius: "4px",
-                                            padding: "2px 7px",
-                                            fontSize: "11px",
-                                            color: "#475569",
-                                            cursor: "pointer",
-                                            fontWeight: "600",
-                                            whiteSpace: "nowrap"
-                                          }}
-                                          title="Edit job details"
-                                        >
-                                          Edit job
-                                        </button>
+                                {/* Type */}
+                                <td style={{ padding: "8px 10px", verticalAlign: "top" }}>
+                                  {isRetainer ? (
+                                    <span
+                                      style={{
+                                        display: "inline-block",
+                                        padding: "2px 8px",
+                                        borderRadius: "12px",
+                                        background: "#f0fdf4",
+                                        color: "#166534",
+                                        border: "1px solid #bbf7d0",
+                                        fontSize: "11px",
+                                        fontWeight: "600"
+                                      }}
+                                    >
+                                      Retainer ({getRetainerDurationMonths(job)}m)
+                                    </span>
+                                  ) : (
+                                    <span
+                                      style={{
+                                        display: "inline-block",
+                                        padding: "2px 8px",
+                                        borderRadius: "12px",
+                                        background: "#eff6ff",
+                                        color: "#1d4ed8",
+                                        border: "1px solid #bfdbfe",
+                                        fontSize: "11px",
+                                        fontWeight: "600"
+                                      }}
+                                    >
+                                      Project
+                                    </span>
+                                  )}
+                                </td>
+
+                                {/* Budget */}
+                                <td style={{ padding: "8px 10px", verticalAlign: "top" }}>
+                                  <div>
+                                    <div style={{ fontWeight: "600", color: "#0f172a" }}>{formatCurrency(jobBudget)}</div>
+                                    {unreceived > 0 && (
+                                      <div style={{ display: "inline-block", marginTop: "3px", padding: "1px 6px", borderRadius: "4px", background: "#fef2f2", color: "#b91c1c", border: "1px solid #fecaca", fontSize: "10px", fontWeight: "600" }}>
+                                        £{unreceived.toLocaleString("en-GB", { minimumFractionDigits: 2 })} left
                                       </div>
-                                    ) : (
-                                      <div style={{ fontSize: "11px", color: "#64748b", paddingLeft: "8px" }}>
-                                        {isRetainer ? `↳ Month ${rIdx + 1}` : (isAdmin ? `↳ Row ${rIdx + 1}` : `↳ Part ${rIdx + 1}`)}
-                                      </div>
                                     )}
-                                  </td>
+                                  </div>
+                                </td>
 
-                                  {/* Project Code */}
-                                  <td style={{ padding: "8px 10px", verticalAlign: "top", color: "#64748b", fontSize: "11px" }}>
-                                    {rIdx === 0 ? (jr.projectCode || "-") : ""}
-                                  </td>
+                                {/* Revenue */}
+                                <td style={{ padding: "8px 10px", verticalAlign: "top", color: "#475569" }}>
+                                  {formatCurrency(jr.revenue) || jr.revenue || "-"}
+                                </td>
 
-                                  {/* Type */}
-                                  <td style={{ padding: "8px 10px", verticalAlign: "top" }}>
-                                    {rIdx === 0 ? (
-                                      isRetainer ? (
-                                        <button
-                                          type="button"
-                                          onClick={() => hasMultipleRows && toggleRetainerExpand(jobKey)}
-                                          style={{
-                                            display: "inline-flex",
-                                            alignItems: "center",
-                                            gap: "4px",
-                                            padding: "2px 8px",
-                                            borderRadius: "12px",
-                                            background: "#f0fdf4",
-                                            color: "#166534",
-                                            border: "1px solid #bbf7d0",
-                                            fontSize: "11px",
-                                            fontWeight: "600",
-                                            cursor: hasMultipleRows ? "pointer" : "default"
-                                          }}
-                                          title={hasMultipleRows ? (isRetainerExpanded ? "Collapse" : "Expand all months") : undefined}
-                                        >
-                                          <span>Retainer</span>
-                                          {hasMultipleRows && (
-                                            <span style={{ fontSize: "10px", color: "#15803d" }}>
-                                              {isRetainerExpanded ? "▲" : `(${job.rows.length}m)`}
-                                            </span>
-                                          )}
-                                        </button>
-                                      ) : (
-                                        <span
-                                          style={{
-                                            display: "inline-block",
-                                            padding: "2px 8px",
-                                            borderRadius: "12px",
-                                            background: "#eff6ff",
-                                            color: "#1d4ed8",
-                                            border: "1px solid #bfdbfe",
-                                            fontSize: "11px",
-                                            fontWeight: "600"
-                                          }}
-                                        >
-                                          Project
+                                {/* Dates */}
+                                <td style={{ padding: "8px 10px", verticalAlign: "top", fontSize: "11px", color: "#475569", whiteSpace: "nowrap" }}>
+                                  <div>{jr.startDate || "-"}</div>
+                                  <div style={{ color: "#94a3b8" }}>{jr.endDate ? `to ${jr.endDate}` : ""}</div>
+                                </td>
+
+                                {/* Direct Costs */}
+                                <td style={{ padding: "8px 10px", verticalAlign: "top" }}>
+                                  {(() => {
+                                    const rawJobExpenses = getJobExpenseItems(job, false);
+                                    const displayExpenseItems = groupSlotItemsForDisplay(rawJobExpenses, "expense");
+
+                                    if (displayExpenseItems.length === 0) {
+                                      return (
+                                        <span style={{ color: "#94a3b8", fontSize: "11px", fontStyle: "italic" }}>
+                                          No direct costs found.
                                         </span>
-                                      )
-                                    ) : (
-                                      <span style={{ fontSize: "10px", color: "#94a3b8" }}>
-                                        {isRetainer ? `mo. ${rIdx + 1}` : (isAdmin ? `row ${rIdx + 1}` : `part ${rIdx + 1}`)}
-                                      </span>
-                                    )}
-                                  </td>
-
-                                  {/* Direct Costs */}
-                                  <td style={{ padding: "8px 10px", verticalAlign: "top" }}>
-                                    {rIdx === 0 ? (
-                                      <div>
-                                        <div style={{ fontWeight: "600", color: "#0f172a" }}>{formatCurrency(jr.directCosts) || jr.directCosts}</div>
-                                        {unreceived > 0 && (
-                                          <div style={{ display: "inline-block", marginTop: "3px", padding: "1px 6px", borderRadius: "4px", background: "#fef2f2", color: "#b91c1c", border: "1px solid #fecaca", fontSize: "10px", fontWeight: "600" }}>
-                                            £{unreceived.toLocaleString("en-GB", { minimumFractionDigits: 2 })} left
-                                          </div>
-                                        )}
-                                      </div>
-                                    ) : (
-                                      <div style={{ color: "#94a3b8", fontSize: "11px" }}>-</div>
-                                    )}
-                                  </td>
-
-                                  {/* Revenue */}
-                                  <td style={{ padding: "8px 10px", verticalAlign: "top", color: "#475569" }}>
-                                    {rIdx === 0 ? (formatCurrency(jr.revenue) || jr.revenue || "-") : ""}
-                                  </td>
-
-                                  {/* Dates */}
-                                  <td style={{ padding: "8px 10px", verticalAlign: "top", fontSize: "11px", color: "#475569", whiteSpace: "nowrap" }}>
-                                    <div>{jr.startDate || "-"}</div>
-                                    <div style={{ color: "#94a3b8" }}>{jr.endDate ? `to ${jr.endDate}` : ""}</div>
-                                  </td>
-
-                                  {/* Expense Slots 1, 2, 3 */}
-                                  {jr.expenseSlots.map((s) => {
-                                    const txUpper = String(s.transactionId || "").trim().toUpperCase();
-                                    const descUpper = String(s.description || "").trim().toUpperCase();
-                                    const statusUpper = String(s.status || "").trim().toUpperCase();
-                                    const isPlaceholder = isPlaceholderExpense(s.transactionId, s.description, s.status) ||
-                                      txUpper.startsWith("PLACE") ||
-                                      descUpper.startsWith("PLACE") ||
-                                      txUpper.includes("PLACEHOLDER") ||
-                                      descUpper.includes("PLACEHOLDER") ||
-                                      statusUpper.includes("PLACEHOLDER") ||
-                                      txUpper.startsWith("MANUAL") ||
-                                      descUpper.startsWith("MANUAL") ||
-                                      (!s.description && !!s.amount);
-                                    const isGenuinelyBlank = !s.description && !s.amount;
-                                    const isEmpty = isGenuinelyBlank || isPlaceholder;
-                                    const cellSavingKey = `${jr.rowNum}-${s.slotNum}`;
-                                    const isSaving = directCostsSavingCell === cellSavingKey;
+                                      );
+                                    }
 
                                     return (
-                                      <td
-                                        key={s.slotNum}
-                                        onClick={async () => {
-                                          if (isSaving) return;
-                                          const toPlace = selectedInboxAppIds.size > 0
-                                            ? outgoingsInbox.filter(e => selectedInboxAppIds.has(e.appId))
-                                            : (outgoingsPlacingRef.current ? [outgoingsPlacingRef.current] : []);
+                                      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "6px", width: "100%" }}>
+                                        {displayExpenseItems.map((expItem, itemIdx) => {
+                                          const isPlhdr = isPlaceholderExpense(expItem) ||
+                                            String(expItem.description || "").toUpperCase().startsWith("PLACE") ||
+                                            String(expItem.description || "").toUpperCase().startsWith("MANUAL") ||
+                                            (!expItem.description && !!expItem.amount);
+                                          const cellSavingKey = `${expItem.rowNum}-${expItem.slotNum}`;
+                                          const isSaving = directCostsSavingCell === cellSavingKey;
 
-                                          if (toPlace.length > 0 && isEmpty) {
-                                            setDirectCostsSavingCell(cellSavingKey);
-                                            const placedIds = new Set(toPlace.map(e => e.appId));
-                                            toPlace.forEach(exp => addAssignedAppId(exp.appId, outgoingsClient?.clientName));
-                                            decrementClientExpenseCount(outgoingsClient?.clientName, toPlace.length);
-                                            setOutgoingsInbox(prev => {
-                                              const remaining = prev.filter(e => !placedIds.has(e.appId));
-                                              if (remaining.length === 0 && outgoingsClient) {
-                                                markClientCleared(outgoingsClient.clientName);
-                                              }
-                                              return remaining;
-                                            });
-                                            clearInboxSelection();
-
-                                            try {
-                                              const res = await fetch("/api/triage", {
-                                                method: "POST", headers: { "Content-Type": "application/json" },
-                                                body: JSON.stringify({
-                                                  action: "assign_expense_to_job",
-                                                  clientSheetId: outgoingsClient?.clientSheetId,
-                                                  clientName: outgoingsClient?.clientName || outgoingsClient?.name || "",
-                                                  masterSheetId: outgoingsClient?.masterSheetId || "",
-                                                  rowNum: jr.rowNum, slotNum: s.slotNum,
-                                                  expenses: toPlace,
+                                          return (
+                                            <div
+                                              key={itemIdx}
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                if (isSaving) return;
+                                                setDirectCostsEditSlot({
+                                                  rowNum: expItem.rowNum,
+                                                  slotNum: expItem.slotNum,
+                                                  slot: expItem,
                                                   jobClient: job.client,
                                                   jobName: job.jobName,
-                                                  jobLastRow,
-                                                  jobRows: job.rows
-                                                }),
-                                              });
-                                              const data = await res.json();
-                                              if (outgoingsClient?.masterSheetId) {
-                                                outgoingsPullPendingRef.current = { clientSheetId: outgoingsClient.clientSheetId, masterSheetId: outgoingsClient.masterSheetId };
-                                              }
-                                              if (data.newRowsCreated) {
-                                                await loadDirectCostsJobs(outgoingsClient, directCostsShowAll);
-                                              } else if (data.placed && Array.isArray(data.placed)) {
-                                                setDirectCostsJobs(prev => prev && prev.map(j => {
-                                                  if (j.client !== job.client || j.jobName !== job.jobName) return j;
-                                                  return {
-                                                    ...j,
-                                                    rows: j.rows.map(r => {
-                                                      const placedForThisRow = data.placed.filter(p => p.rowNum === r.rowNum);
-                                                      if (placedForThisRow.length === 0) return r;
-                                                      return {
-                                                        ...r,
-                                                        expenseSlots: r.expenseSlots.map(sl => {
-                                                          const match = placedForThisRow.find(p => p.slotNum === sl.slotNum);
-                                                          if (!match) return sl;
-                                                          return {
-                                                            ...sl,
-                                                            description: match.description,
-                                                            amount: match.amount,
-                                                            vat: match.vat,
-                                                            date: match.date,
-                                                            status: match.status,
-                                                            transactionId: match.transactionId
-                                                          };
-                                                        })
-                                                      };
-                                                    })
-                                                  };
-                                                }));
-                                              } else {
-                                                await loadDirectCostsJobs(outgoingsClient, directCostsShowAll);
-                                              }
-                                            } catch (e) { console.error("assign_expense_to_job error:", e); }
-                                            finally { setDirectCostsSavingCell(null); }
-                                          } else if (toPlace.length === 0 && !isGenuinelyBlank) {
-                                            setDirectCostsEditSlot({
-                                              rowNum: jr.rowNum,
-                                              slotNum: s.slotNum,
-                                              slot: s,
-                                              jobName: job.jobName,
-                                              jobClient: job.client
-                                            });
-                                          }
-                                        }}
-                                        style={{
-                                          padding: "6px 8px",
-                                          verticalAlign: "top",
-                                          cursor: isSaving ? "default" : (isPlacing && isEmpty) ? "pointer" : (!isPlacing && !isGenuinelyBlank) ? "pointer" : "default"
-                                        }}
-                                      >
-                                        <div
-                                          style={{
-                                            borderRadius: "6px",
-                                            padding: "6px 8px",
-                                            minHeight: "44px",
-                                            display: "flex",
-                                            flexDirection: "column",
-                                            justifyContent: "center",
-                                            transition: "all 0.15s ease",
-                                            background: isSaving
-                                              ? "#f8fafc"
-                                              : (isPlacing && isEmpty)
-                                                ? "#eff6ff"
-                                                : isGenuinelyBlank
-                                                  ? "transparent"
-                                                  : "#ffffff",
-                                            border: (isPlacing && isEmpty && !isSaving)
-                                              ? "1.5px dashed #2563eb"
-                                              : isGenuinelyBlank
-                                                ? "1px dashed #e2e8f0"
-                                                : "1px solid #e2e8f0",
-                                            boxShadow: (!isGenuinelyBlank && !isSaving) ? "0 1px 2px rgba(0,0,0,0.03)" : "none"
-                                          }}
-                                        >
-                                          {isSaving ? (
-                                            <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#64748b", fontSize: "11px" }}>
-                                              <Spinner size={12} color="#2563eb" /> Saving...
-                                            </div>
-                                          ) : isGenuinelyBlank ? (
-                                            isPlacing ? (
-                                              <div style={{ color: "#1d4ed8", fontWeight: "700", textAlign: "center", fontSize: "11px" }}>
-                                                + Place expense
-                                              </div>
-                                            ) : (
-                                              <div style={{ color: "#cbd5e1", textAlign: "center", fontSize: "12px" }}>—</div>
-                                            )
-                                          ) : (
-                                            <div>
-                                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "4px" }}>
-                                                <span
-                                                  title={!isAdmin && isPlaceholder ? "Placeholder" : (s.description || "")}
-                                                  style={{
-                                                    fontWeight: "700",
-                                                    fontSize: "12px",
-                                                    color: isPlaceholder ? "#9333ea" : "#0f172a",
-                                                    overflow: "hidden",
-                                                    textOverflow: "ellipsis",
-                                                    whiteSpace: "nowrap",
-                                                    maxWidth: "105px"
-                                                  }}
-                                                >
-                                                  {isPlaceholder
-                                                    ? (isAdmin ? `⚠️ ${s.description || "Placeholder"}` : "⚠️ Placeholder")
-                                                    : (s.description || "-")}
-                                                </span>
-                                                <span style={{ fontWeight: "600", fontSize: "11px", color: "#0f172a" }}>
-                                                  {formatCurrency(s.amount) || `£${s.amount}`}
-                                                </span>
-                                              </div>
-                                              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: "4px", gap: "4px" }}>
-                                                <span style={{ color: "#64748b", fontSize: "10px" }}>{s.date || "-"}</span>
-                                                {s.status && (
-                                                  <span style={{ ...getStatusPill(s.status), padding: "1px 5px", borderRadius: "4px", fontSize: "9px", fontWeight: "600" }}>
-                                                    {s.status}
-                                                  </span>
-                                                )}
-                                              </div>
-                                              {isPlaceholder && isPlacing && (
-                                                <div style={{ color: "#2563eb", fontWeight: "700", fontSize: "10px", marginTop: "3px" }}>
-                                                  Click to overwrite
+                                                  job,
+                                                });
+                                              }}
+                                              style={{
+                                                padding: "6px 8px",
+                                                borderRadius: "6px",
+                                                border: isPlhdr ? "1px dashed #c084fc" : "1px solid #e2e8f0",
+                                                background: isPlhdr ? "#faf5ff" : "#ffffff",
+                                                boxShadow: "0 1px 2px rgba(0,0,0,0.03)",
+                                                cursor: isSaving ? "default" : "pointer",
+                                                width: "100%",
+                                                boxSizing: "border-box",
+                                                display: "flex",
+                                                flexDirection: "column",
+                                                gap: "3px",
+                                                transition: "border-color 0.15s ease",
+                                              }}
+                                              onMouseEnter={(e) => { if (!isSaving) e.currentTarget.style.borderColor = isPlhdr ? "#9333ea" : "#94a3b8"; }}
+                                              onMouseLeave={(e) => { if (!isSaving) e.currentTarget.style.borderColor = isPlhdr ? "#c084fc" : "#e2e8f0"; }}
+                                              title="Click to edit direct cost details"
+                                            >
+                                              {isSaving ? (
+                                                <div style={{ display: "flex", alignItems: "center", gap: "4px", color: "#64748b", fontSize: "10px" }}>
+                                                  <Spinner size={10} color="#2563eb" /> Saving...
                                                 </div>
-                                              )}
-                                              {!isPlacing && (
-                                                <div style={{ color: "#2563eb", fontSize: "10px", marginTop: "2px" }}>
-                                                  Edit
-                                                </div>
+                                              ) : (
+                                                <>
+                                                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "4px" }}>
+                                                    <span
+                                                      title={expItem.description || "Placeholder"}
+                                                      style={{
+                                                        fontWeight: "700",
+                                                        fontSize: "11px",
+                                                        color: isPlhdr ? "#9333ea" : "#0f172a",
+                                                        overflow: "hidden",
+                                                        textOverflow: "ellipsis",
+                                                        whiteSpace: "nowrap",
+                                                      }}
+                                                    >
+                                                      {isPlhdr
+                                                        ? (isAutoPlaceholder(expItem.description) ? "Placeholder (A)" : "Placeholder (M)")
+                                                        : (expItem.description || (expItem.transactionId ? `#${expItem.transactionId}` : "Expense"))}
+                                                    </span>
+                                                    <span style={{ fontWeight: "700", fontSize: "11px", color: "#0f172a", flexShrink: 0 }}>
+                                                      {formatCurrency(expItem.amount)}
+                                                    </span>
+                                                  </div>
+                                                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "4px", fontSize: "10px", color: "#64748b" }}>
+                                                    <span>{expItem.date || "-"}</span>
+                                                    {expItem.status && (
+                                                      <span style={{ ...getStatusPill(expItem.status), padding: "1px 5px", borderRadius: "3px", fontSize: "9px", fontWeight: "600" }}>
+                                                        {expItem.status}
+                                                      </span>
+                                                    )}
+                                                  </div>
+                                                  {expItem.isGroupedTranche && (
+                                                    <div style={{ display: "flex", flexWrap: "wrap", gap: "3px", marginTop: "2px" }}>
+                                                      <span style={{ background: "#dcfce7", color: "#166534", padding: "1px 4px", borderRadius: "3px", fontSize: "9px", fontWeight: "600" }}>
+                                                        Rec: {formatCurrency(expItem.receivedAmount)}
+                                                      </span>
+                                                      <span style={{ background: "#fef3c7", color: "#92400e", padding: "1px 4px", borderRadius: "3px", fontSize: "9px", fontWeight: "600" }}>
+                                                        Bal: {formatCurrency(expItem.balanceAmount)}
+                                                      </span>
+                                                    </div>
+                                                  )}
+                                                </>
                                               )}
                                             </div>
-                                          )}
-                                        </div>
-                                      </td>
-                                    );
-                                  })}
-
-                                  {/* Add Row Action Column */}
-                                  <td style={{ padding: "6px 4px", verticalAlign: "middle", textAlign: "center" }}>
-                                    {directCostsSavingCell === `newrow-${job.client}|||${job.jobName}` ? (
-                                      <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
-                                        <Spinner size={12} color="#2563eb" />
+                                          );
+                                        })}
                                       </div>
-                                    ) : isLastRowOfJob && !jobHasEmptySlot && isPlacing ? (
+                                    );
+                                  })()}
+                                </td>
+
+                                {/* Actions */}
+                                <td style={{ padding: "8px 10px", verticalAlign: "top", textAlign: "center" }}>
+                                  <div style={{ display: "flex", flexDirection: "column", gap: "6px", alignItems: "stretch", width: "100%", maxWidth: "160px", margin: "0 auto" }}>
+                                    {(selectedInboxAppIds.size > 0 || outgoingsPlacing) && (
                                       <button
                                         type="button"
-                                        title={isAdmin ? "No spare expense slot - click to add a new row for this job" : "No spare expense slot - click to add more space for this job"}
-                                        onClick={async () => {
-                                          const toPlace = selectedInboxAppIds.size > 0
-                                            ? outgoingsInbox.filter(e => selectedInboxAppIds.has(e.appId))
-                                            : (outgoingsPlacingRef.current ? [outgoingsPlacingRef.current] : []);
-                                          if (toPlace.length === 0) return;
-                                          const savingKey = `newrow-${job.client}|||${job.jobName}`;
-                                          setDirectCostsSavingCell(savingKey);
-                                          const placedIds = new Set(toPlace.map(e => e.appId));
-                                          toPlace.forEach(exp => addAssignedAppId(exp.appId, outgoingsClient?.clientName));
-                                          decrementClientExpenseCount(outgoingsClient?.clientName, toPlace.length);
-                                          setOutgoingsInbox(prev => {
-                                            const remaining = prev.filter(e => !placedIds.has(e.appId));
-                                            if (remaining.length === 0 && outgoingsClient) {
-                                              markClientCleared(outgoingsClient.clientName);
-                                            }
-                                            return remaining;
-                                          });
-                                          clearInboxSelection();
-                                          try {
-                                            await fetch("/api/triage", {
-                                              method: "POST", headers: { "Content-Type": "application/json" },
-                                              body: JSON.stringify({
-                                                action: "assign_expense_to_job",
-                                                clientSheetId: outgoingsClient?.clientSheetId,
-                                                clientName: outgoingsClient?.clientName || outgoingsClient?.name || "",
-                                                masterSheetId: outgoingsClient?.masterSheetId || "",
-                                                createNewRow: true,
-                                                jobLastRow, jobClient: job.client, jobName: job.jobName,
-                                                expenses: toPlace,
-                                                jobRows: job.rows
-                                              }),
-                                            });
-                                            if (outgoingsClient?.masterSheetId) {
-                                              outgoingsPullPendingRef.current = { clientSheetId: outgoingsClient.clientSheetId, masterSheetId: outgoingsClient.masterSheetId };
-                                            }
-                                            await loadDirectCostsJobs(outgoingsClient, directCostsShowAll);
-                                          } catch (e) { console.error("assign_expense_to_job (new row) error:", e); }
-                                          finally { setDirectCostsSavingCell(null); }
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleInitiateExpensePlacement(job, null);
                                         }}
                                         style={{
-                                          cursor: "pointer",
-                                          background: "#eff6ff",
-                                          border: "1.5px solid #2563eb",
+                                          padding: "5px 10px",
                                           borderRadius: "6px",
-                                          width: "28px",
-                                          height: "28px",
-                                          display: "inline-flex",
-                                          alignItems: "center",
-                                          justifyContent: "center",
-                                          color: "#1d4ed8",
-                                          fontWeight: "700",
-                                          fontSize: "16px"
+                                          border: "1px solid #2563eb",
+                                          background: "#2563eb",
+                                          color: "#ffffff",
+                                          fontSize: "11px",
+                                          fontWeight: "600",
+                                          cursor: "pointer",
+                                          whiteSpace: "nowrap",
+                                          boxShadow: "0 1px 2px rgba(37,99,235,0.2)",
+                                          transition: "background 0.15s ease",
+                                        }}
+                                        onMouseEnter={(e) => { e.currentTarget.style.background = "#1d4ed8"; }}
+                                        onMouseLeave={(e) => { e.currentTarget.style.background = "#2563eb"; }}
+                                      >
+                                        + Place expense
+                                      </button>
+                                    )}
+
+                                    {!(selectedInboxAppIds.size > 0 || outgoingsPlacing) && outgoingsInbox && outgoingsInbox.length > 0 && (
+                                      <select
+                                        onChange={(e) => {
+                                          const selectedAppId = e.target.value;
+                                          if (!selectedAppId) return;
+                                          const chosenExp = outgoingsInbox.find((i) => i.appId === selectedAppId);
+                                          if (chosenExp) {
+                                            handleInitiateExpensePlacement(job, null, chosenExp);
+                                          }
+                                          e.target.value = "";
+                                        }}
+                                        defaultValue=""
+                                        style={{
+                                          padding: "4px 6px",
+                                          borderRadius: "5px",
+                                          border: "1px solid #cbd5e1",
+                                          background: "#ffffff",
+                                          color: "#475569",
+                                          fontSize: "11px",
+                                          cursor: "pointer",
+                                          width: "100%",
+                                          textOverflow: "ellipsis",
                                         }}
                                       >
-                                        +
-                                      </button>
-                                    ) : null}
-                                  </td>
-                                </tr>
-                              );
-                            });
+                                        <option value="" disabled>Select expense to place...</option>
+                                        {outgoingsInbox.map((exp) => (
+                                          <option key={exp.appId} value={exp.appId}>
+                                            {exp.description} - {exp.vendor} ({formatCurrency(exp.amount)})
+                                          </option>
+                                        ))}
+                                      </select>
+                                    )}
+                                  </div>
+                                </td>
+                              </tr>
+                            );
                           })
                         )}
                       </tbody>
@@ -1936,7 +1981,7 @@ export default function OutgoingsView({
                                     </div>
                                   ) : isLastRowOfJob && !jobHasEmptySlot && (selectedInboxAppIds.size > 0 || !!outgoingsPlacing) && (
                                     <div
-                                      title="No spare expense slot - click to add a new row for this job"
+                                      title="Add more space for this job"
                                       onClick={async () => {
                                         const toPlace = selectedInboxAppIds.size > 0
                                           ? outgoingsInbox.filter(e => selectedInboxAppIds.has(e.appId))

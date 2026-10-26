@@ -1034,6 +1034,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
           styles={styles}
           managedClient={managedClient}
           onClearManagedClient={handleClearManagedClient}
+          isAdmin={isAdmin}
         />
       );
     }

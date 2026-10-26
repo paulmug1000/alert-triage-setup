@@ -23,10 +23,13 @@ export function isPlaceholderInvoice(ref, status) {
 }
 
 export function isPlaceholderExpense(appId, description, status) {
-  if (!appId && !description && !status) return false;
-  const id = String(typeof appId === "object" ? (appId?.transactionId || appId?.id || appId?.appId || "") : appId || "").trim().toUpperCase();
-  const desc = String(typeof appId === "object" ? (appId?.description || "") : description || "").trim().toUpperCase();
+  const id = String(typeof appId === "object" ? (appId?.transactionId || appId?.appId || appId?.id || appId?.ref || "") : appId || "").trim().toUpperCase();
+  const desc = String(typeof appId === "object" ? (appId?.description || appId?.desc || appId?.rawDesc || "") : description || "").trim().toUpperCase();
   const st = String(typeof appId === "object" ? (appId?.status || "") : status || "").trim().toUpperCase();
+
+  // A blank, missing, or fallback reference makes the expense a placeholder / manual entry
+  if (!id || id === "NO REF" || id === "REF" || id === "-") return true;
+
   const tags = ["PLACE-EXP", "MANUAL-ENTRY", "UNRECON-GAP", "PLACE-GAP", "MANUAL-GAP", "PLACEHOLDER"];
   return (
     tags.some((t) => id.includes(t) || desc.includes(t) || st.includes(t)) ||
@@ -79,6 +82,382 @@ export function canonicalizeExpenseStatus(st) {
     return "Part-paid (paid)";
   }
   return s;
+}
+
+export function getStatusPill(status) {
+  const s = String(status || "").trim();
+  const lower = s.toLowerCase();
+  if (lower === "paid") return { background: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0" };
+  if (lower === "draft") return { background: "#ffedd5", color: "#9a3412", border: "1px solid #fed7aa" };
+  if (lower === "sent" || lower === "received") return { background: "#e0f2fe", color: "#0369a1", border: "1px solid #bae6fd" };
+  if (lower.includes("part-paid") || lower.includes("part paid") || lower.includes("partpaid")) {
+    return { background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a" };
+  }
+  return { background: "#f1f5f9", color: "#475569", border: "1px solid #e2e8f0" };
+}
+
+/**
+ * Groups raw invoice slots for display on Job views/modals.
+ * Invoices sharing the same non-placeholder reference where at least one tranche
+ * is part-paid (or one is received/paid and one is balance) are collapsed into a
+ * single composite object. The underlying array indices are preserved so that edits
+ * (e.g. days to pay on the balance tranche) can update the exact slot in editingJob.invoices.
+ */
+export function groupInvoicesForDisplay(invoices) {
+  if (!Array.isArray(invoices) || invoices.length === 0) return [];
+
+  // 1. Identify companion groups by normalized reference
+  const groupsByRef = new Map();
+  invoices.forEach((inv, idx) => {
+    const rawRef = String(inv?.ref || "").trim();
+    const isPlaceholder = isPlaceholderInvoice(rawRef, inv?.status);
+    if (rawRef && !isPlaceholder) {
+      const key = rawRef.toUpperCase();
+      if (!groupsByRef.has(key)) {
+        groupsByRef.set(key, []);
+      }
+      groupsByRef.get(key).push({ ...inv, originalIndex: idx });
+    }
+  });
+
+  const processedIndices = new Set();
+  const result = [];
+
+  invoices.forEach((inv, idx) => {
+    if (processedIndices.has(idx)) return;
+
+    const rawRef = String(inv?.ref || "").trim();
+    const isPlaceholder = isPlaceholderInvoice(rawRef, inv?.status);
+    const key = rawRef ? rawRef.toUpperCase() : null;
+    const group = key ? groupsByRef.get(key) : null;
+    // Check if this invoice is part of a multi-slot part-paid or multi-tranche group
+    const isMultiTranche = group && group.length > 1;
+
+    if (isMultiTranche) {
+      group.forEach((item) => processedIndices.add(item.originalIndex));
+
+      const receivedTranches = [];
+      let balanceTranche = null;
+
+      group.forEach((item) => {
+        const st = String(item.status || "").toLowerCase();
+        if (st.includes("balance")) {
+          if (!balanceTranche) {
+            balanceTranche = item;
+          } else {
+            receivedTranches.push(item);
+          }
+        } else {
+          receivedTranches.push(item);
+        }
+      });
+
+      let totalAmount = 0;
+      let receivedAmount = 0;
+      let balanceAmount = 0;
+
+      group.forEach((item) => {
+        const amt = parseFloat(stripCurrency(item.amount)) || 0;
+        totalAmount += amt;
+        const st = String(item.status || "").toLowerCase();
+        if (st.includes("balance")) {
+          balanceAmount += amt;
+        } else {
+          receivedAmount += amt;
+        }
+      });
+
+      const allMarkedPaid = group.every((item) => {
+        const st = String(item.status || "").toLowerCase();
+        return st === "paid" || st.includes("paid in full");
+      });
+
+      if (allMarkedPaid || (!balanceTranche && balanceAmount <= 0.005)) {
+        receivedAmount = totalAmount;
+        balanceAmount = 0;
+        balanceTranche = null;
+      } else if (balanceAmount === 0 && balanceTranche) {
+        balanceAmount = Math.max(0, totalAmount - receivedAmount);
+      }
+
+      const percentPaid = totalAmount > 0 ? Math.min(100, Math.max(0, (receivedAmount / totalAmount) * 100)) : (allMarkedPaid ? 100 : 0);
+      const isFullyPaid = allMarkedPaid || balanceAmount <= 0.005 || !balanceTranche || String(balanceTranche.status || "").toLowerCase() === "paid";
+      const primaryTranche = balanceTranche || receivedTranches[0] || group[0];
+
+      result.push({
+        ...primaryTranche,
+        isComposite: true,
+        ref: group[0].ref,
+        totalAmount,
+        receivedAmount,
+        balanceAmount,
+        percentPaid,
+        isFullyPaid,
+        status: isFullyPaid ? "Paid" : "Part-paid",
+        receivedTranches,
+        balanceTranche,
+        allTranches: group,
+        originalIndex: primaryTranche.originalIndex,
+        originalIndices: group.map((g) => g.originalIndex),
+      });
+    } else {
+      processedIndices.add(idx);
+      result.push({
+        ...inv,
+        originalIndex: idx,
+        isComposite: false,
+      });
+    }
+  });
+
+  return result;
+}
+
+/**
+ * Groups raw expense slots for display on Job views/modals.
+ */
+export function groupExpensesForDisplay(expenses) {
+  if (!Array.isArray(expenses) || expenses.length === 0) return [];
+
+  const groupsByKey = new Map();
+  expenses.forEach((exp, idx) => {
+    const rawId = String(exp?.appId || exp?.transactionId || exp?.id || exp?.ref || "").trim();
+    const isPlaceholder = isPlaceholderExpense(rawId, exp?.desc || exp?.description, exp?.status);
+    if (rawId && !isPlaceholder) {
+      const key = rawId.toUpperCase();
+      if (!groupsByKey.has(key)) {
+        groupsByKey.set(key, []);
+      }
+      groupsByKey.get(key).push({ ...exp, originalIndex: idx });
+    }
+  });
+
+  const processedIndices = new Set();
+  const result = [];
+
+  expenses.forEach((exp, idx) => {
+    if (processedIndices.has(idx)) return;
+
+    const rawId = String(exp?.appId || exp?.transactionId || exp?.id || exp?.ref || "").trim();
+    const isPlaceholder = isPlaceholderExpense(rawId, exp?.desc || exp?.description, exp?.status);
+    const key = (rawId && !isPlaceholder) ? rawId.toUpperCase() : null;
+    const group = key ? groupsByKey.get(key) : null;
+
+    const isMultiTranche = group && group.length > 1;
+
+    if (isMultiTranche) {
+      group.forEach((item) => processedIndices.add(item.originalIndex));
+
+      const paidTranches = [];
+      let balanceTranche = null;
+
+      group.forEach((item) => {
+        const st = String(item.status || "").toLowerCase();
+        if (st.includes("balance")) {
+          if (!balanceTranche) balanceTranche = item;
+          else paidTranches.push(item);
+        } else {
+          paidTranches.push(item);
+        }
+      });
+
+      let totalAmount = 0;
+      let paidAmount = 0;
+      let balanceAmount = 0;
+
+      group.forEach((item) => {
+        const amt = parseFloat(stripCurrency(item.amount)) || 0;
+        totalAmount += amt;
+        const st = String(item.status || "").toLowerCase();
+        if (st.includes("balance")) {
+          balanceAmount += amt;
+        } else {
+          paidAmount += amt;
+        }
+      });
+
+      const allMarkedPaid = group.every((item) => {
+        const st = String(item.status || "").toLowerCase();
+        return st === "paid" || st === "complete" || st.includes("paid in full");
+      });
+
+      if (allMarkedPaid || (!balanceTranche && balanceAmount <= 0.005)) {
+        paidAmount = totalAmount;
+        balanceAmount = 0;
+        balanceTranche = null;
+      } else if (balanceAmount === 0 && balanceTranche) {
+        balanceAmount = Math.max(0, totalAmount - paidAmount);
+      }
+
+      const percentPaid = totalAmount > 0 ? Math.min(100, Math.max(0, (paidAmount / totalAmount) * 100)) : (allMarkedPaid ? 100 : 0);
+      const isFullyPaid = allMarkedPaid || balanceAmount <= 0.005 || !balanceTranche || String(balanceTranche.status || "").toLowerCase() === "paid";
+      const primaryTranche = balanceTranche || paidTranches[0] || group[0];
+
+      result.push({
+        ...primaryTranche,
+        isComposite: true,
+        desc: group[0].desc,
+        appId: group[0].appId,
+        totalAmount,
+        paidAmount,
+        balanceAmount,
+        percentPaid,
+        isFullyPaid,
+        status: isFullyPaid ? "Paid" : "Part-paid",
+        paidTranches,
+        balanceTranche,
+        allTranches: group,
+        originalIndex: primaryTranche.originalIndex,
+        originalIndices: group.map((g) => g.originalIndex),
+      });
+    } else {
+      processedIndices.add(idx);
+      result.push({
+        ...exp,
+        originalIndex: idx,
+        isComposite: false,
+      });
+    }
+  });
+
+  return result;
+}
+
+/**
+ * Groups slot items for JobDetailModal and JobsView.
+ * Takes the output array of getJobInvoiceItems() or getJobExpenseItems()
+ * (where each item is { id, rowNum, slotNum, slot, row, label, subLabel })
+ * and groups multi-tranche part-paid companion slots into a unified composite item.
+ */
+export function groupSlotItemsForDisplay(items, type = "invoice") {
+  if (!Array.isArray(items) || items.length === 0) return [];
+
+  const groupsByKey = new Map();
+  items.forEach((item, idx) => {
+    const slot = item.slot || {};
+    let key = null;
+    if (type === "invoice") {
+      const ref = String(slot.ref || "").trim();
+      if (ref && !isPlaceholderInvoice(ref, slot.status)) {
+        key = ref.toUpperCase();
+      }
+    } else {
+      const id = String(slot.transactionId || slot.id || slot.appId || slot.ref || "").trim();
+      const desc = String(slot.description || slot.desc || "").trim();
+      if (id && !isPlaceholderExpense(id, desc, slot.status)) {
+        key = id.toUpperCase();
+      }
+    }
+
+    if (key) {
+      if (!groupsByKey.has(key)) groupsByKey.set(key, []);
+      groupsByKey.get(key).push({ ...item, itemIndex: idx });
+    }
+  });
+
+  const processedIndices = new Set();
+  const result = [];
+
+  items.forEach((item, idx) => {
+    if (processedIndices.has(idx)) return;
+
+    const slot = item.slot || {};
+    let key = null;
+    if (type === "invoice") {
+      const ref = String(slot.ref || "").trim();
+      if (ref && !isPlaceholderInvoice(ref, slot.status)) {
+        key = ref.toUpperCase();
+      }
+    } else {
+      const id = String(slot.transactionId || slot.id || slot.appId || slot.ref || "").trim();
+      const desc = String(slot.description || slot.desc || "").trim();
+      if (id && !isPlaceholderExpense(id, desc, slot.status)) {
+        key = id.toUpperCase();
+      }
+    }
+
+    const group = key ? groupsByKey.get(key) : null;
+    const isMultiTranche = group && group.length > 1;
+
+    if (isMultiTranche) {
+      group.forEach((g) => processedIndices.add(g.itemIndex));
+
+      const receivedTranches = [];
+      let balanceTranche = null;
+
+      let totalAmount = 0;
+      let receivedAmount = 0;
+      let balanceAmount = 0;
+
+      group.forEach((g) => {
+        const s = g.slot || {};
+        const amt = parseFloat(stripCurrency(s.amount)) || 0;
+        totalAmount += amt;
+        const st = String(s.status || "").toLowerCase();
+        if (st.includes("balance")) {
+          balanceAmount += amt;
+          if (!balanceTranche) balanceTranche = g;
+          else receivedTranches.push(g);
+        } else {
+          receivedAmount += amt;
+          receivedTranches.push(g);
+        }
+      });
+
+      const allMarkedPaid = group.every((g) => {
+        const st = String(g.slot?.status || "").toLowerCase();
+        return st === "paid" || st === "complete" || st.includes("paid in full");
+      });
+
+      if (allMarkedPaid || (!balanceTranche && balanceAmount <= 0.005)) {
+        receivedAmount = totalAmount;
+        balanceAmount = 0;
+        balanceTranche = null;
+      } else if (balanceAmount === 0 && balanceTranche) {
+        balanceAmount = Math.max(0, totalAmount - receivedAmount);
+      }
+
+      const percentPaid = totalAmount > 0 ? Math.min(100, Math.max(0, (receivedAmount / totalAmount) * 100)) : (allMarkedPaid ? 100 : 0);
+      const isFullyPaid = allMarkedPaid || balanceAmount <= 0.005 || !balanceTranche || String(balanceTranche.slot?.status || "").toLowerCase() === "paid";
+      const primaryItem = balanceTranche || receivedTranches[0] || group[0];
+
+      // Reference by invoice number (e.g. #0844) or expense description/ref without sequential slot numbers
+      const refStr = primaryItem.slot?.ref ? `#${primaryItem.slot.ref}` : null;
+      const descStr = primaryItem.slot?.description || (primaryItem.slot?.transactionId ? `#${primaryItem.slot.transactionId}` : null);
+      const combinedLabel = type === "invoice"
+        ? (refStr || primaryItem.label)
+        : (descStr || primaryItem.label || "Direct cost");
+
+      result.push({
+        ...primaryItem,
+        id: `composite_${primaryItem.id}`,
+        isComposite: true,
+        type,
+        label: combinedLabel,
+        totalAmount,
+        receivedAmount,
+        balanceAmount,
+        percentPaid,
+        isFullyPaid,
+        receivedTranches,
+        balanceTranche,
+        allTranches: group,
+        slot: {
+          ...primaryItem.slot,
+          amount: totalAmount,
+          status: isFullyPaid ? "Paid" : "Part-paid",
+        },
+      });
+    } else {
+      processedIndices.add(idx);
+      result.push({
+        ...item,
+        isComposite: false,
+      });
+    }
+  });
+
+  return result;
 }
 
 export function hasActiveAccountingIntegration(accountingTool, integrations) {
@@ -970,8 +1349,8 @@ export function parseSheetDate(dStr) {
     }
   }
 
-  // 4. DD/MM/YYYY
-  const slashMatch = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  // 4. DD/MM/YYYY, DD-MM-YYYY, or DD.MM.YYYY
+  const slashMatch = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})$/);
   if (slashMatch) {
     let yr = parseInt(slashMatch[3], 10);
     if (yr < 100) yr += (yr <= 69 ? 2000 : 1900);
@@ -1007,6 +1386,21 @@ export function toSheetDateFormat(dStr) {
   const mmm = months[d.getMonth()];
   const yy = String(d.getFullYear()).slice(-2);
   return `${day}-${mmm}-${yy}`;
+}
+
+/**
+ * Calculates payment date given a base date string and number of days to pay.
+ * Returns formatted date as "d-Mmm-yy" (e.g. "24-Nov-26") or null if invalid.
+ */
+export function calculatePaymentDate(baseDateStr, daysToPay) {
+  if (!baseDateStr && baseDateStr !== 0) return null;
+  const d = parseSheetDate(baseDateStr);
+  if (!d || isNaN(d.getTime())) return null;
+  const days = parseInt(daysToPay, 10);
+  if (isNaN(days)) return null;
+  const target = new Date(d.getTime());
+  target.setDate(target.getDate() + days);
+  return toSheetDateFormat(target);
 }
 
 /**
@@ -1256,6 +1650,15 @@ const RET_MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug",
 const RET_MONTH_INDEX = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
 
 export function getRetainerRowMonthLabel(r, rIdx = 0, job = null) {
+  // Defensive swap if called as (job, r, rIdx) or (job, r)
+  if (r && typeof rIdx === "object" && rIdx !== null) {
+    const tempJob = r;
+    r = rIdx;
+    rIdx = typeof job === "number" ? job : (typeof job === "string" ? parseInt(job, 10) || 0 : 0);
+    job = tempJob;
+  }
+  const safeRIdx = typeof rIdx === "number" ? rIdx : (parseInt(rIdx, 10) || 0);
+
   // 1. Check if the row has an explicit date in slots or row fields
   const slotDate = r?.invoiceSlots?.[0]?.sentDate || r?.expenseSlots?.[0]?.date || r?.startDate || r?.date;
   if (slotDate) {
@@ -1274,8 +1677,8 @@ export function getRetainerRowMonthLabel(r, rIdx = 0, job = null) {
     }
   }
 
-  // 2. Derive by projecting from the retainer job's startDate + rIdx months
-  const parentStart = job?.startDate || job?.rows?.[0]?.startDate;
+  // 2. Derive by projecting from the retainer job's startDate + safeRIdx months
+  const parentStart = job?.startDate || job?.rows?.[0]?.startDate || r?.startDate;
   if (parentStart) {
     const s = String(parentStart).trim();
     const m = s.match(/^(\d{1,2})[-/ ]([A-Za-z]{3})[-/ ](\d{2,4})$/);
@@ -1284,7 +1687,7 @@ export function getRetainerRowMonthLabel(r, rIdx = 0, job = null) {
       if (mIdx !== undefined) {
         const fullYr = m[3].length === 2 ? 2000 + parseInt(m[3], 10) : parseInt(m[3], 10);
         const day = Math.min(parseInt(m[1], 10) || 1, 28);
-        const projectedDate = new Date(fullYr, mIdx + (rIdx || 0), day);
+        const projectedDate = new Date(fullYr, mIdx + safeRIdx, day);
         const monStr = RET_MONTH_NAMES[projectedDate.getMonth()];
         const yrStr = String(projectedDate.getFullYear()).slice(-2);
         return `${monStr}-${yrStr}`;
@@ -1292,14 +1695,53 @@ export function getRetainerRowMonthLabel(r, rIdx = 0, job = null) {
     }
     const d = new Date(s);
     if (!isNaN(d.getTime())) {
-      const projectedDate = new Date(d.getFullYear(), d.getMonth() + (rIdx || 0), Math.min(d.getDate(), 28));
+      const projectedDate = new Date(d.getFullYear(), d.getMonth() + safeRIdx, Math.min(d.getDate(), 28));
       const monStr = RET_MONTH_NAMES[projectedDate.getMonth()];
       const yrStr = String(projectedDate.getFullYear()).slice(-2);
       return `${monStr}-${yrStr}`;
     }
   }
 
-  return `Month ${(rIdx || 0) + 1}`;
+  return `Month ${safeRIdx + 1}`;
+}
+
+export function getRetainerDurationMonths(job) {
+  if (!job) return 1;
+  const startStr = job.startDate || job.rows?.[0]?.startDate;
+  const endStr = job.endDate || job.rows?.[0]?.endDate;
+
+  if (startStr && endStr) {
+    const parse = (s) => {
+      if (!s) return null;
+      const str = String(s).trim();
+      const m = str.match(/^(\d{1,2})[-/ ]([A-Za-z]{3})[-/ ](\d{2,4})$/);
+      if (m) {
+        const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+        const mIdx = months[m[2].toLowerCase()];
+        if (mIdx !== undefined) {
+          const yr = m[3].length === 2 ? 2000 + parseInt(m[3], 10) : parseInt(m[3], 10);
+          return new Date(yr, mIdx, parseInt(m[1], 10));
+        }
+      }
+      const d = new Date(str);
+      return isNaN(d.getTime()) ? null : d;
+    };
+
+    const dStart = parse(startStr);
+    const dEnd = parse(endStr);
+    if (dStart && dEnd && dEnd >= dStart) {
+      if (dEnd.getFullYear() < 2035) {
+        const totalDays = Math.round((dEnd.getTime() - dStart.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+        const approxMonths = Math.round(totalDays / 30.4375);
+        if (approxMonths > 0) return approxMonths;
+      }
+    }
+  }
+
+  if (job.rows && job.rows.length > 1) {
+    return job.rows.length - 1;
+  }
+  return 1;
 }
 
 export function formatSeenTimestamp(ts) {

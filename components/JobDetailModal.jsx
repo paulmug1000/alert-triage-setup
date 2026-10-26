@@ -5,6 +5,7 @@ import InvoicesEditModal from "./InvoicesEditModal";
 import DirectCostsEditModal from "./DirectCostsEditModal";
 import CellNoteModal from "./CellNoteModal";
 import NoteIndicatorButton from "./NoteIndicatorButton";
+import PlaceholderPill, { isAutoPlaceholder, generatePlaceholderInvoiceRef } from "./PlaceholderPill";
 import {
   JobDateInput,
   parseSheetDate,
@@ -21,7 +22,9 @@ import {
   hasActiveCrmIntegration,
   isCrmDrivenTab,
   isCrmDeal,
-  getCrmDisplayName
+  getCrmDisplayName,
+  calculatePaymentDate,
+  groupSlotItemsForDisplay
 } from "../utils/helpers";
 import CrmSyncBadge, { CrmSyncIcon } from "./CrmSyncBadge";
 import { useAppGlobals } from "../hooks/useAppGlobals";
@@ -545,48 +548,50 @@ export default function JobDetailModal({
       job.rows.forEach((r, rIdx) => {
         const monthLabel = getRetainerRowMonthLabel(r, rIdx, job);
         const slots = r.invoiceSlots || [];
-        const mainSlot = slots.find((s) => s.slotNum === 1) || { slotNum: 1, amount: "", ref: "", sentDate: "", daysToPay: "", status: "" };
-        items.push({
-          id: `ret_inv_${r.rowNum}_1`,
-          rowNum: r.rowNum,
-          slotNum: 1,
-          slot: mainSlot,
-          row: r,
-          label: monthLabel,
-          subLabel: `Row ${r.rowNum}${mainSlot.sentDate ? ` · ${mainSlot.sentDate}` : ""}`
-        });
-        slots.filter((s) => s.slotNum > 1).forEach((extraSlot) => {
-          if ((extraSlot.ref && String(extraSlot.ref).trim() !== "") || (extraSlot.amount && String(extraSlot.amount).trim() !== "")) {
+        slots.forEach((s) => {
+          const hasRef = Boolean(s.ref && String(s.ref).trim() !== "");
+        const hasAmt = Boolean(s.amount && parseFloat(String(s.amount).replace(/[£$€,\s]/g, "")) > 0);
+        const hasData = hasRef || hasAmt;
+          if (hasData) {
+            const isPartPaid = String(s.status || "").toLowerCase().includes("part");
+            const isPlace = isPlaceholderInvoice(s.ref, s.status);
+            const extraRef = s.ref && String(s.ref).trim() !== ""
+              ? `#${String(s.ref).trim()}`
+              : (isPlace ? "Placeholder" : (isPartPaid ? "Part payment" : monthLabel));
             items.push({
-              id: `ret_inv_${r.rowNum}_${extraSlot.slotNum}`,
+              id: `ret_inv_${r.rowNum}_${s.slotNum}`,
               rowNum: r.rowNum,
-              slotNum: extraSlot.slotNum,
-              slot: extraSlot,
+              slotNum: s.slotNum,
+              slot: s,
               row: r,
-              label: `${monthLabel} (Extra Inv ${extraSlot.slotNum})`,
-              subLabel: `Row ${r.rowNum}`
+              label: extraRef,
+              subLabel: s.sentDate ? `${s.sentDate}` : ""
             });
           }
         });
       });
     } else {
-      job.rows.forEach((r, rIdx) => {
-        const slots = r.invoiceSlots || [
-          { slotNum: 1, amount: "", ref: "", sentDate: "", daysToPay: "", status: "" },
-          { slotNum: 2, amount: "", ref: "", sentDate: "", daysToPay: "", status: "" },
-          { slotNum: 3, amount: "", ref: "", sentDate: "", daysToPay: "", status: "" }
-        ];
+      job.rows.forEach((r) => {
+        const slots = r.invoiceSlots || [];
         slots.forEach((s) => {
-          const seqNum = rIdx * 3 + s.slotNum;
-          items.push({
-            id: `proj_inv_${r.rowNum}_${s.slotNum}`,
-            rowNum: r.rowNum,
-            slotNum: s.slotNum,
-            slot: s,
-            row: r,
-            label: `Invoice ${seqNum}`,
-            subLabel: rIdx > 0 ? `Row ${r.rowNum}` : ""
-          });
+          const hasRef = Boolean(s.ref && String(s.ref).trim() !== "");
+        const hasAmt = Boolean(s.amount && parseFloat(String(s.amount).replace(/[£$€,\s]/g, "")) > 0);
+        const hasData = hasRef || hasAmt;
+          if (hasData) {
+            const isPlace = isPlaceholderInvoice(s.ref, s.status);
+            const refStr = s.ref && String(s.ref).trim() !== ""
+              ? `#${String(s.ref).trim()}`
+              : (isPlace ? "Placeholder" : "Invoice");
+            items.push({
+              id: `proj_inv_${r.rowNum}_${s.slotNum}`,
+              rowNum: r.rowNum,
+              slotNum: s.slotNum,
+              slot: s,
+              row: r,
+              label: refStr,
+              subLabel: ""
+            });
+          }
         });
       });
     }
@@ -602,46 +607,172 @@ export default function JobDetailModal({
         const monthLabel = getRetainerRowMonthLabel(r, rIdx, job);
         const slots = r.expenseSlots || [];
         slots.forEach((s) => {
-          const hasData = Boolean((s.description && String(s.description).trim() !== "") || (s.amount && String(s.amount).trim() !== "") || (s.transactionId && String(s.transactionId).trim() !== ""));
-          if (hasData || (rIdx === 0 && s.slotNum === 1)) {
+          const hasDesc = Boolean(s.description && String(s.description).trim() !== "");
+        const hasAmt = Boolean(s.amount && parseFloat(String(s.amount).replace(/[£$€,\s]/g, "")) > 0);
+        const hasTx = Boolean(s.transactionId && String(s.transactionId).trim() !== "");
+        const hasData = hasDesc || hasAmt || hasTx;
+          if (hasData) {
+            const expLabel = s.description && String(s.description).trim() !== ""
+              ? String(s.description).trim()
+              : (s.transactionId && String(s.transactionId).trim() !== ""
+                  ? `#${String(s.transactionId).trim()}`
+                  : (isPlaceholderExpense(s) ? "Placeholder" : `${monthLabel} direct cost`));
             items.push({
               id: `ret_exp_${r.rowNum}_${s.slotNum}`,
               rowNum: r.rowNum,
               slotNum: s.slotNum,
               slot: s,
               row: r,
-              label: s.slotNum === 1 ? `${monthLabel} Cost` : `${monthLabel} Cost ${s.slotNum}`,
-              subLabel: `Row ${r.rowNum}`
+              label: expLabel,
+              subLabel: ""
             });
           }
         });
       });
     } else {
-      job.rows.forEach((r, rIdx) => {
-        const slots = r.expenseSlots || [
-          { slotNum: 1, description: "", amount: "", vat: "", date: "", daysToPay: "", status: "", transactionId: "" },
-          { slotNum: 2, description: "", amount: "", vat: "", date: "", daysToPay: "", status: "", transactionId: "" },
-          { slotNum: 3, description: "", amount: "", vat: "", date: "", daysToPay: "", status: "", transactionId: "" }
-        ];
+      job.rows.forEach((r) => {
+        const slots = r.expenseSlots || [];
         slots.forEach((s) => {
-          const seqNum = rIdx * 3 + s.slotNum;
-          items.push({
-            id: `proj_exp_${r.rowNum}_${s.slotNum}`,
-            rowNum: r.rowNum,
-            slotNum: s.slotNum,
-            slot: s,
-            row: r,
-            label: `Direct Cost ${seqNum}`,
-            subLabel: rIdx > 0 ? `Row ${r.rowNum}` : ""
-          });
+          const hasDesc = Boolean(s.description && String(s.description).trim() !== "");
+        const hasAmt = Boolean(s.amount && parseFloat(String(s.amount).replace(/[£$€,\s]/g, "")) > 0);
+        const hasTx = Boolean(s.transactionId && String(s.transactionId).trim() !== "");
+        const hasData = hasDesc || hasAmt || hasTx;
+          if (hasData) {
+            const expLabel = s.description && String(s.description).trim() !== ""
+              ? String(s.description).trim()
+              : (s.transactionId && String(s.transactionId).trim() !== ""
+                  ? `#${String(s.transactionId).trim()}`
+                  : (isPlaceholderExpense(s) ? "Placeholder" : "Direct cost"));
+            items.push({
+              id: `proj_exp_${r.rowNum}_${s.slotNum}`,
+              rowNum: r.rowNum,
+              slotNum: s.slotNum,
+              slot: s,
+              row: r,
+              label: expLabel,
+              subLabel: ""
+            });
+          }
         });
       });
     }
     return items;
   };
 
-  const invoiceItems = getJobInvoiceItems();
-  const expenseItems = getJobExpenseItems();
+  const handleAddNewInvoicePlaceholder = () => {
+    if (!job) return;
+    const parentRow = job.rows?.[0] || job;
+    let targetRowNum = null;
+    let targetSlotNum = null;
+    let createNewRow = false;
+
+    for (const r of (job.rows || [])) {
+      const slots = r.invoiceSlots || [];
+      for (let sNum = 1; sNum <= 3; sNum++) {
+        const existing = slots.find((s) => s.slotNum === sNum);
+        const isOccupied = existing && Boolean(
+          (existing.ref && String(existing.ref).trim() !== "") ||
+          (existing.amount && String(existing.amount).trim() !== "") ||
+          isPlaceholderInvoice(existing.ref, existing.status)
+        );
+        if (!isOccupied) {
+          targetRowNum = r.rowNum;
+          targetSlotNum = sNum;
+          break;
+        }
+      }
+      if (targetRowNum) break;
+    }
+
+    if (!targetRowNum) {
+      const lastRow = job.rows?.[job.rows.length - 1];
+      targetRowNum = lastRow ? lastRow.rowNum : (job.rowNum || 2);
+      targetSlotNum = 1;
+      createNewRow = true;
+    }
+
+    const defaultAmt = metrics.leftToInvoice > 0 ? String(metrics.leftToInvoice) : "";
+    const defaultRef = generatePlaceholderInvoiceRef(new Date().toISOString().slice(0, 10));
+
+    setInvoicesEditSlot({
+      rowNum: targetRowNum,
+      slotNum: targetSlotNum,
+      createNewRow,
+      isNewPlaceholder: true,
+      slot: {
+        ref: defaultRef,
+        amount: defaultAmt,
+        status: "Placeholder",
+        sentDate: "",
+        daysToPay: 30
+      },
+      jobClient: parentRow.client || job.client,
+      jobName: parentRow.jobName || job.jobName,
+      slotLabel: "New placeholder",
+      tabName,
+      job
+    });
+  };
+
+  const handleAddNewExpensePlaceholder = () => {
+    if (!job) return;
+    const parentRow = job.rows?.[0] || job;
+    let targetRowNum = null;
+    let targetSlotNum = null;
+    let createNewRow = false;
+
+    for (const r of (job.rows || [])) {
+      const slots = r.expenseSlots || [];
+      for (let sNum = 1; sNum <= 3; sNum++) {
+        const existing = slots.find((s) => s.slotNum === sNum);
+        const isOccupied = existing && Boolean(
+          (existing.description && String(existing.description).trim() !== "") ||
+          (existing.amount && String(existing.amount).trim() !== "") ||
+          (existing.transactionId && String(existing.transactionId).trim() !== "") ||
+          isPlaceholderExpense(existing)
+        );
+        if (!isOccupied) {
+          targetRowNum = r.rowNum;
+          targetSlotNum = sNum;
+          break;
+        }
+      }
+      if (targetRowNum) break;
+    }
+
+    if (!targetRowNum) {
+      const lastRow = job.rows?.[job.rows.length - 1];
+      targetRowNum = lastRow ? lastRow.rowNum : (job.rowNum || 2);
+      targetSlotNum = 1;
+      createNewRow = true;
+    }
+
+    const defaultAmt = metrics.costsLeftToReceive > 0 ? String(metrics.costsLeftToReceive) : "";
+    const defaultDesc = "Direct cost placeholder";
+
+    setDirectCostsEditSlot({
+      rowNum: targetRowNum,
+      slotNum: targetSlotNum,
+      createNewRow,
+      isNewPlaceholder: true,
+      slot: {
+        description: defaultDesc,
+        amount: defaultAmt,
+        vat: "Yes",
+        date: "",
+        daysToPay: 30,
+        status: "Placeholder",
+        transactionId: ""
+      },
+      jobName: parentRow.jobName || job.jobName,
+      jobClient: parentRow.client || job.client,
+      slotLabel: "New placeholder",
+      tabName
+    });
+  };
+
+  const invoiceItems = groupSlotItemsForDisplay(getJobInvoiceItems(), "invoice");
+  const expenseItems = groupSlotItemsForDisplay(getJobExpenseItems(), "expense");
 
   const getStatusPill = (status) => {
     const s = String(status || "").trim();
@@ -688,9 +819,10 @@ export default function JobDetailModal({
       : (slotNum === 1 ? "BX" : slotNum === 2 ? "CE" : "CL");
     const currentNote = item.slot?.note || "";
 
+    const invRefDisplay = item.slot?.ref ? `#${item.slot.ref}` : (item.label || "Invoice");
     setCellNoteModalConfig({
       isOpen: true,
-      title: type === "invoice" ? `Invoice note (${item.label})` : `Direct cost note (${item.label})`,
+      title: type === "invoice" ? `Invoice note (${invRefDisplay})` : `Direct cost note (${item.label})`,
       subtitle: `${clientVal || job.client || ""} · ${jobNameVal || job.jobName || ""} (${currentTab} Row ${rowNum})`,
       initialNote: currentNote,
       tabName: currentTab,
@@ -869,6 +1001,10 @@ export default function JobDetailModal({
           onMarkPullPending={(masterId) => onMarkPullPending && onMarkPullPending(masterId)}
           onInvoiceMoved={() => setReloadTrigger((prev) => prev + 1)}
           onUpdateInvoiceJobs={(rNum, sNum, newData, resData) => {
+            if (invoicesEditSlot?.createNewRow) {
+              setReloadTrigger((prev) => prev + 1);
+              return;
+            }
             setRecentlySaved(true);
             setTimeout(() => setRecentlySaved(false), 3000);
             setJob((prev) => {
@@ -915,6 +1051,10 @@ export default function JobDetailModal({
           onClose={() => setDirectCostsEditSlot(null)}
           onMarkPullPending={(masterId) => onMarkPullPending && onMarkPullPending(masterId)}
           onUpdateJobs={(rNum, sNum, newData) => {
+            if (directCostsEditSlot?.createNewRow) {
+              setReloadTrigger((prev) => prev + 1);
+              return;
+            }
             setRecentlySaved(true);
             setTimeout(() => setRecentlySaved(false), 3000);
             setJob((prev) => {
@@ -1356,27 +1496,29 @@ export default function JobDetailModal({
                       />
                     </div>
 
-                    {/* % Likelihood */}
-                    <div>
-                      <label style={{ display: "block", fontSize: "11px", fontWeight: "600", color: "#64748b", marginBottom: "3px" }}>Likelihood</label>
-                      <input
-                        type="text"
-                        value={likelihoodVal !== undefined && likelihoodVal !== "" ? likelihoodVal : (isConfirmed ? "100%" : "")}
-                        onChange={(e) => handleDraftFieldChange("likelihood", e.target.value)}
-                        disabled={isJobLocked || isConfirmed}
-                        readOnly={isJobLocked || isConfirmed}
-                        title={isJobLocked ? lockTooltip : (isConfirmed ? "Likelihood is 100% for confirmed jobs" : undefined)}
-                        style={{
-                          width: "100%", padding: "6px 8px", borderRadius: "5px",
-                          border: draftEdits.likelihood !== undefined ? "1px solid #f59e0b" : "1px solid #cbd5e1",
-                          fontSize: "13px", fontWeight: "600",
-                          color: (isJobLocked || isConfirmed) ? "#64748b" : (isConfirmed ? "#15803d" : "#0369a1"),
-                          backgroundColor: (isJobLocked || isConfirmed) ? "#f8fafc" : "#ffffff",
-                          cursor: (isJobLocked || isConfirmed) ? "not-allowed" : "text",
-                          outline: "none", boxSizing: "border-box"
-                        }}
-                      />
-                    </div>
+                    {/* % Likelihood - Only for Pipeline jobs */}
+                    {!isConfirmed && (
+                      <div>
+                        <label style={{ display: "block", fontSize: "11px", fontWeight: "600", color: "#64748b", marginBottom: "3px" }}>Likelihood</label>
+                        <input
+                          type="text"
+                          value={likelihoodVal !== undefined && likelihoodVal !== "" ? likelihoodVal : ""}
+                          onChange={(e) => handleDraftFieldChange("likelihood", e.target.value)}
+                          disabled={isJobLocked}
+                          readOnly={isJobLocked}
+                          title={isJobLocked ? lockTooltip : undefined}
+                          style={{
+                            width: "100%", padding: "6px 8px", borderRadius: "5px",
+                            border: draftEdits.likelihood !== undefined ? "1px solid #f59e0b" : "1px solid #cbd5e1",
+                            fontSize: "13px", fontWeight: "600",
+                            color: isJobLocked ? "#64748b" : "#0369a1",
+                            backgroundColor: isJobLocked ? "#f8fafc" : "#ffffff",
+                            cursor: isJobLocked ? "not-allowed" : "text",
+                            outline: "none", boxSizing: "border-box"
+                          }}
+                        />
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -1601,14 +1743,130 @@ export default function JobDetailModal({
                     <div style={{ display: "flex", flexDirection: "column", gap: "8px", maxHeight: "380px", overflowY: "auto", paddingRight: "4px" }}>
                       {invoiceItems.length === 0 ? (
                         <div style={{ fontSize: "12px", color: "#94a3b8", fontStyle: "italic", padding: "8px 0" }}>
-                          No invoice slots found.
+                          No invoices found.
                         </div>
                       ) : (
                         invoiceItems.map((item) => {
+                          if (item.isComposite) {
+                            return (
+                              <div
+                                key={item.id}
+                                onClick={() => {
+                                  const targetSlotItem = item.balanceTranche || item.receivedTranches[0] || item;
+                                  setInvoicesEditSlot({
+                                    rowNum: targetSlotItem.rowNum,
+                                    slotNum: targetSlotItem.slotNum,
+                                    slot: targetSlotItem.slot,
+                                    jobClient: targetSlotItem.row?.client || parentRow.client || job.client,
+                                    jobName: targetSlotItem.row?.jobName || parentRow.jobName || job.jobName,
+                                    slotLabel: item.label,
+                                    tabName,
+                                    job
+                                  });
+                                }}
+                                style={{
+                                  padding: "9px 12px",
+                                  borderRadius: "7px",
+                                  border: "1px solid #bfdbfe",
+                                  background: "#ffffff",
+                                  cursor: "pointer",
+                                  transition: "all 0.15s ease",
+                                  boxSizing: "border-box",
+                                  maxWidth: "100%",
+                                  overflow: "hidden",
+                                  flexShrink: 0,
+                                  display: "flex",
+                                  flexDirection: "column",
+                                  gap: "5px"
+                                }}
+                                title="Part-paid invoice. Click to view or edit balance payment terms."
+                                onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#60a5fa"; e.currentTarget.style.background = "#eff6ff"; }}
+                                onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#bfdbfe"; e.currentTarget.style.background = "#ffffff"; }}
+                              >
+                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
+                                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                    <span style={{ fontSize: "13px", fontWeight: "700", color: "#0047AB" }}>
+                                      #{item.slot.ref}
+                                    </span>
+                                    <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "8px", fontWeight: "600", background: item.isFullyPaid ? "#dcfce7" : "#eff6ff", color: item.isFullyPaid ? "#166534" : "#1d4ed8", border: item.isFullyPaid ? "1px solid #bbf7d0" : "1px solid #bfdbfe" }}>
+                                      {item.isFullyPaid ? `Paid in full (${item.receivedTranches.length} payments)` : `Part-paid (${item.percentPaid.toFixed(1)}%)`}
+                                    </span>
+                                    {hasAccountingIntegration && item.slot.ref && (
+                                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                                        <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                                        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                                      </svg>
+                                    )}
+                                    {isRetainer && item.row && (
+                                      <span style={{ fontSize: "10px", color: "#64748b" }}>
+                                        ({getRetainerRowMonthLabel(item.row, 0, job)})
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div style={{ fontSize: "13px", fontWeight: "700", color: "#0f172a" }}>
+                                    Total: {formatCurrency(item.totalAmount)}
+                                  </div>
+                                </div>
+
+                                <div style={{ width: "100%", height: "4px", background: "#f1f5f9", borderRadius: "2px", overflow: "hidden" }}>
+                                  <div
+                                    style={{
+                                      width: `${Math.min(100, Math.max(0, item.percentPaid))}%`,
+                                      height: "100%",
+                                      background: "#10b981",
+                                      borderRadius: "2px",
+                                    }}
+                                  />
+                                </div>
+
+                                {item.isFullyPaid ? (
+                                  <div style={{ display: "flex", flexDirection: "column", gap: "2px", marginTop: "1px", fontSize: "10px", color: "#475569" }}>
+                                    {item.receivedTranches.map((t, tIdx) => (
+                                      <div key={tIdx} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                        <span style={{ color: "#166534", fontWeight: "600" }}>
+                                          ✓ Payment {tIdx + 1}: {formatCurrency(parseFloat(stripCurrency(t.slot?.amount)) || 0)}
+                                        </span>
+                                        <span style={{ color: "#64748b" }}>
+                                          {t.slot?.sentDate ? `Sent: ${t.slot.sentDate}` : ""}
+                                          {t.slot?.daysToPay ? ` · Paid: ${t.slot.daysToPay}d` : ""}
+                                        </span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <div style={{ display: "flex", flexDirection: "column", gap: "2px", marginTop: "1px", fontSize: "10px", color: "#475569" }}>
+                                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                      <span style={{ color: "#166534", fontWeight: "600" }}>
+                                        ✓ {formatCurrency(item.receivedAmount)} received
+                                      </span>
+                                      <span style={{ color: "#64748b" }}>
+                                        {item.receivedTranches[0]?.slot?.sentDate ? `Sent: ${toSheetDateFormat(item.receivedTranches[0].slot.sentDate)}` : ""}
+                                        {item.receivedTranches[0]?.slot?.daysToPay ? ` · Paid: ${item.receivedTranches[0].slot.daysToPay}d` : ""}
+                                      </span>
+                                    </div>
+                                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                      <span style={{ color: "#b45309", fontWeight: "600" }}>
+                                        ⏳ {formatCurrency(item.balanceAmount)} balance
+                                      </span>
+                                      <span style={{ color: "#64748b" }}>
+                                        {item.balanceTranche?.slot?.sentDate && calculatePaymentDate(item.balanceTranche.slot.sentDate, item.balanceTranche.slot.daysToPay || 30) ? (
+                                          `Due: ${calculatePaymentDate(item.balanceTranche.slot.sentDate, item.balanceTranche.slot.daysToPay || 30)} (${item.balanceTranche.slot.daysToPay || 30}d)`
+                                        ) : (
+                                          item.balanceTranche ? `${item.balanceTranche.slot?.daysToPay || 30} days` : "Fully paid"
+                                        )}
+                                      </span>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          }
+
                           const slot = item.slot;
                           const hasData = Boolean((slot.ref && String(slot.ref).trim() !== "") || (slot.amount && String(slot.amount).trim() !== ""));
                           const isPlaceholder = isPlaceholderInvoice(slot.ref, slot.status);
                           const pillStyle = getStatusPill(slot.status);
+                          const isPaid = String(slot.status || "").trim().toLowerCase() === "paid";
 
                           return (
                             <div
@@ -1620,75 +1878,151 @@ export default function JobDetailModal({
                                   slot,
                                   jobClient: item.row.client || parentRow.client || job.client,
                                   jobName: item.row.jobName || parentRow.jobName || job.jobName,
-                                  slotLabel: item.label,
+                                  slotLabel: slot.ref ? `#${slot.ref}` : (isPlaceholder ? "Placeholder" : `Slot ${item.slotNum}`),
                                   tabName,
                                   job
                                 });
                               }}
                               style={{
-                                padding: "8px 10px", borderRadius: "6px", border: "1px solid #e2e8f0",
-                                background: hasData ? "#f8fafc" : "#ffffff", cursor: "pointer", transition: "border-color 0.15s ease",
-                                boxSizing: "border-box", maxWidth: "100%", overflow: "hidden", flexShrink: 0
+                                padding: "9px 12px",
+                                borderRadius: "7px",
+                                border: "1px solid #e2e8f0",
+                                background: "#ffffff",
+                                cursor: "pointer",
+                                transition: "all 0.15s ease",
+                                boxSizing: "border-box",
+                                maxWidth: "100%",
+                                overflow: "hidden",
+                                display: "flex",
+                                flexDirection: "column",
+                                gap: "5px",
+                                boxShadow: "0 1px 2px rgba(0,0,0,0.02)"
                               }}
                               title={
                                 hasAccountingIntegration && !isPlaceholder && slot.ref && String(slot.ref).trim() !== ""
                                   ? "Synced from accounting software. Click to view or edit days to pay."
                                   : "Click to edit invoice slot"
                               }
-                              onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#93c5fd"; e.currentTarget.style.background = "#eff6ff"; }}
-                              onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#e2e8f0"; e.currentTarget.style.background = hasData ? "#f8fafc" : "#ffffff"; }}
+                              onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#60a5fa"; e.currentTarget.style.background = "#eff6ff"; }}
+                              onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#e2e8f0"; e.currentTarget.style.background = "#ffffff"; }}
                             >
-                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "4px" }}>
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
                                 <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                                  <span style={{ fontSize: "11px", fontWeight: "700", color: "#475569" }}>{item.label}</span>
+                                  {isPlaceholder ? (
+                                      <PlaceholderPill isAuto={isAutoPlaceholder(slot.ref)} size="sm" />
+                                    ) : slot.ref ? (
+                                      <span style={{ fontSize: "13px", fontWeight: "700", color: "#0047AB" }}>
+                                        #{slot.ref}
+                                      </span>
+                                    ) : (
+                                      <span style={{ fontSize: "12px", fontWeight: "600", color: "#475569" }}>
+                                        Invoice
+                                      </span>
+                                    )}
+
+                                  {hasData && slot.status && (
+                                    <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "8px", fontWeight: "600", ...pillStyle }}>
+                                      {slot.status}
+                                    </span>
+                                  )}
+
                                   {hasAccountingIntegration && !isPlaceholder && slot.ref && String(slot.ref).trim() !== "" && (
                                     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
                                       <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
                                       <path d="M7 11V7a5 5 0 0 1 10 0v4" />
                                     </svg>
                                   )}
+
                                   <NoteIndicatorButton
                                     size="sm"
                                     note={slot.note || ""}
                                     onClick={() => openSlotNoteModal({ item, type: "invoice" })}
                                     title={slot.note ? `Invoice note: ${slot.note}` : "Add note to invoice slot"}
                                   />
-                                </div>
-                                <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
-                                  {item.subLabel && <span style={{ fontSize: "10px", color: "#94a3b8" }}>{item.subLabel}</span>}
-                                  {slot.status && <span style={{ fontSize: "10px", padding: "1px 5px", borderRadius: "8px", fontWeight: "600", ...pillStyle }}>{slot.status}</span>}
-                                </div>
-                              </div>
-                              {hasData ? (
-                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: "4px", gap: "6px" }}>
-                                  <div style={{ display: "flex", alignItems: "center", gap: "6px", minWidth: 0, flex: 1, overflow: "hidden" }}>
-                                    <span style={{ fontSize: "13px", fontWeight: "600", color: isPlaceholder ? "#9333ea" : "#0f172a", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                      {slot.ref ? slot.ref : "Placeholder"}
+
+                                  {isRetainer && item.row && (
+                                    <span style={{ fontSize: "10px", color: "#64748b" }}>
+                                      ({getRetainerRowMonthLabel(item.row, 0, job)})
                                     </span>
-                                    {isPlaceholder && slot.ref && (
-                                      <span style={{ fontSize: "10px", padding: "1px 5px", borderRadius: "6px", background: "#f3e8ff", color: "#7e22ce", fontWeight: "600", flexShrink: 0 }}>
-                                        Placeholder
-                                      </span>
-                                    )}
-                                  </div>
-                                  <span style={{ fontSize: "13px", fontWeight: "600", color: "#0f172a", flexShrink: 0, whiteSpace: "nowrap" }}>
+                                  )}
+                                </div>
+
+                                {hasData ? (
+                                  <span style={{ fontSize: "13px", fontWeight: "700", color: "#0f172a" }}>
                                     {formatCurrency(slot.amount)}
                                   </span>
-                                </div>
-                              ) : (
-                                <div style={{ fontSize: "12px", color: "#94a3b8", fontStyle: "italic", marginTop: "4px" }}>
-                                  Empty slot · Click to edit
+                                ) : (
+                                  <span style={{ fontSize: "11px", color: "#94a3b8" }}>
+                                    Click to add
+                                  </span>
+                                )}
+                              </div>
+
+                              {/* Progress bar (100% green if Paid) */}
+                              {isPaid && (
+                                <div style={{ width: "100%", height: "4px", background: "#f1f5f9", borderRadius: "2px", overflow: "hidden" }}>
+                                  <div style={{ width: "100%", height: "100%", background: "#10b981", borderRadius: "2px" }} />
                                 </div>
                               )}
-                              {slot.sentDate && (
-                                <div style={{ fontSize: "10px", color: "#64748b", marginTop: "2px", wordBreak: "break-word" }}>
-                                  Sent: {slot.sentDate} ({slot.daysToPay || 30} days)
-                                </div>
+
+                              {hasData && (
+                                isPaid ? (
+                                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "10px", color: "#475569" }}>
+                                    <span style={{ color: "#166534", fontWeight: 600 }}>
+                                      ✓ {formatCurrency(slot.amount)} paid
+                                    </span>
+                                    <span style={{ color: "#64748b" }}>
+                                      {slot.sentDate ? `Sent: ${toSheetDateFormat(slot.sentDate)}` : ""}
+                                      {slot.daysToPay ? ` · Paid: ${slot.daysToPay}d` : ""}
+                                    </span>
+                                  </div>
+                                ) : (
+                                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "10px", color: "#475569" }}>
+                                    <span style={{ color: "#b45309", fontWeight: 600 }}>
+                                      {calculatePaymentDate(slot.sentDate, slot.daysToPay || 30) ? (
+                                        `Due: ${calculatePaymentDate(slot.sentDate, slot.daysToPay || 30)}`
+                                      ) : (
+                                        `Expected in ${slot.daysToPay || 30}d`
+                                      )}
+                                    </span>
+                                    <span style={{ color: "#64748b" }}>
+                                      {slot.sentDate ? `Sent: ${toSheetDateFormat(slot.sentDate)} (${slot.daysToPay || 30}d)` : `Terms: ${slot.daysToPay || 30}d`}
+                                    </span>
+                                  </div>
+                                )
                               )}
                             </div>
                           );
                         })
                       )}
+                      <button
+                        type="button"
+                        onClick={handleAddNewInvoicePlaceholder}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          gap: "6px",
+                          padding: "8px 12px",
+                          borderRadius: "6px",
+                          border: "1px dashed #cbd5e1",
+                          background: "#f8fafc",
+                          color: "#475569",
+                          fontSize: "12px",
+                          fontWeight: "600",
+                          cursor: "pointer",
+                          transition: "all 0.15s ease",
+                          marginTop: "2px"
+                        }}
+                        onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#94a3b8"; e.currentTarget.style.background = "#f1f5f9"; e.currentTarget.style.color = "#0f172a"; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#cbd5e1"; e.currentTarget.style.background = "#f8fafc"; e.currentTarget.style.color = "#475569"; }}
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                          <line x1="12" y1="5" x2="12" y2="19" />
+                          <line x1="5" y1="12" x2="19" y2="12" />
+                        </svg>
+                        Add new
+                      </button>
                     </div>
                   </div>
 
@@ -1728,14 +2062,118 @@ export default function JobDetailModal({
                     <div style={{ display: "flex", flexDirection: "column", gap: "8px", maxHeight: "380px", overflowY: "auto", paddingRight: "4px" }}>
                       {expenseItems.length === 0 ? (
                         <div style={{ fontSize: "12px", color: "#94a3b8", fontStyle: "italic", padding: "8px 0" }}>
-                          No direct cost slots found.
+                          No direct costs found.
                         </div>
                       ) : (
                         expenseItems.map((item) => {
+                          if (item.isComposite) {
+                            return (
+                              <div
+                                key={item.id}
+                                onClick={() => {
+                                  const targetSlotItem = item.balanceTranche || item.receivedTranches[0] || item;
+                                  setDirectCostsEditSlot({
+                                    rowNum: targetSlotItem.rowNum,
+                                    slotNum: targetSlotItem.slotNum,
+                                    slot: targetSlotItem.slot,
+                                    jobName: targetSlotItem.row?.jobName || parentRow.jobName || job.jobName,
+                                    jobClient: targetSlotItem.row?.client || parentRow.client || job.client,
+                                    slotLabel: item.label,
+                                    tabName
+                                  });
+                                }}
+                                style={{
+                                  padding: "9px 12px",
+                                  borderRadius: "7px",
+                                  border: "1px solid #bfdbfe",
+                                  background: "#ffffff",
+                                  cursor: "pointer",
+                                  transition: "all 0.15s ease",
+                                  boxSizing: "border-box",
+                                  maxWidth: "100%",
+                                  overflow: "hidden",
+                                  flexShrink: 0,
+                                  display: "flex",
+                                  flexDirection: "column",
+                                  gap: "5px"
+                                }}
+                                title="Part-paid expense. Click to view or edit balance payment terms."
+                                onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#60a5fa"; e.currentTarget.style.background = "#eff6ff"; }}
+                                onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#bfdbfe"; e.currentTarget.style.background = "#ffffff"; }}
+                              >
+                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
+                                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                    <span style={{ fontSize: "13px", fontWeight: "700", color: "#0047AB" }}>
+                                      {item.slot.description || item.slot.transactionId || "Expense"}
+                                    </span>
+                                    <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "8px", fontWeight: "600", background: item.isFullyPaid ? "#dcfce7" : "#eff6ff", color: item.isFullyPaid ? "#166534" : "#1d4ed8", border: item.isFullyPaid ? "1px solid #bbf7d0" : "1px solid #bfdbfe" }}>
+                                      {item.isFullyPaid ? `Paid in full (${item.receivedTranches.length} payments)` : `Part-paid (${item.percentPaid.toFixed(1)}%)`}
+                                    </span>
+                                  </div>
+                                  <div style={{ fontSize: "13px", fontWeight: "700", color: "#0f172a" }}>
+                                    {formatCurrency(item.totalAmount)}
+                                  </div>
+                                </div>
+
+                                <div style={{ width: "100%", height: "4px", background: "#f1f5f9", borderRadius: "2px", overflow: "hidden" }}>
+                                  <div
+                                    style={{
+                                      width: `${Math.min(100, Math.max(0, item.percentPaid))}%`,
+                                      height: "100%",
+                                      background: "#10b981",
+                                      borderRadius: "2px",
+                                    }}
+                                  />
+                                </div>
+
+                                {item.isFullyPaid ? (
+                                  <div style={{ display: "flex", flexDirection: "column", gap: "2px", marginTop: "1px", fontSize: "10px", color: "#475569" }}>
+                                    {item.receivedTranches.map((t, tIdx) => (
+                                      <div key={tIdx} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                        <span style={{ color: "#166534", fontWeight: "600" }}>
+                                          ✓ Payment {tIdx + 1}: {formatCurrency(parseFloat(stripCurrency(t.slot?.amount)) || 0)}
+                                        </span>
+                                        <span style={{ color: "#64748b" }}>
+                                          {t.slot?.date ? `Date: ${toSheetDateFormat(t.slot.date)}` : ""}
+                                          {t.slot?.daysToPay ? ` · Paid: ${t.slot.daysToPay}d` : ""}
+                                        </span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <div style={{ display: "flex", flexDirection: "column", gap: "2px", marginTop: "1px", fontSize: "10px", color: "#475569" }}>
+                                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                      <span style={{ color: "#166534", fontWeight: "600" }}>
+                                        ✓ {formatCurrency(item.receivedAmount)} paid
+                                      </span>
+                                      <span style={{ color: "#64748b" }}>
+                                        {item.receivedTranches[0]?.slot?.date ? `Date: ${toSheetDateFormat(item.receivedTranches[0].slot.date)}` : ""}
+                                        {item.receivedTranches[0]?.slot?.daysToPay ? ` · Paid: ${item.receivedTranches[0].slot.daysToPay}d` : ""}
+                                      </span>
+                                    </div>
+                                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                      <span style={{ color: "#b45309", fontWeight: "600" }}>
+                                        ⏳ {formatCurrency(item.balanceAmount)} balance
+                                      </span>
+                                      <span style={{ color: "#64748b" }}>
+                                        {item.balanceTranche?.slot?.date && calculatePaymentDate(item.balanceTranche.slot.date, item.balanceTranche.slot.daysToPay || 30) ? (
+                                          `Due: ${calculatePaymentDate(item.balanceTranche.slot.date, item.balanceTranche.slot.daysToPay || 30)} (${item.balanceTranche.slot.daysToPay || 30}d)`
+                                        ) : (
+                                          item.balanceTranche ? `${item.balanceTranche.slot?.daysToPay || 30} days` : "Fully paid"
+                                        )}
+                                      </span>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          }
+
                           const slot = item.slot;
-                          const hasData = Boolean((slot.description && String(slot.description).trim() !== "") || (slot.amount && String(slot.amount).trim() !== ""));
+                          const hasData = Boolean((slot.description && String(slot.description).trim() !== "") || (slot.amount && String(slot.amount).trim() !== "") || (slot.transactionId && String(slot.transactionId).trim() !== ""));
                           const isPlaceholder = isPlaceholderExpense(slot);
                           const pillStyle = getStatusPill(slot.status);
+                          const isPaid = String(slot.status || "").trim().toLowerCase() === "paid";
 
                           return (
                             <div
@@ -1752,58 +2190,150 @@ export default function JobDetailModal({
                                 });
                               }}
                               style={{
-                                padding: "8px 10px", borderRadius: "6px", border: "1px solid #e2e8f0",
-                                background: hasData ? "#f8fafc" : "#ffffff", cursor: "pointer", transition: "border-color 0.15s ease",
-                                boxSizing: "border-box", maxWidth: "100%", overflow: "hidden", flexShrink: 0
+                                padding: "9px 12px",
+                                borderRadius: "7px",
+                                border: "1px solid #e2e8f0",
+                                background: "#ffffff",
+                                cursor: "pointer",
+                                transition: "all 0.15s ease",
+                                boxSizing: "border-box",
+                                maxWidth: "100%",
+                                overflow: "hidden",
+                                display: "flex",
+                                flexDirection: "column",
+                                gap: "5px",
+                                boxShadow: "0 1px 2px rgba(0,0,0,0.02)"
                               }}
-                              onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#93c5fd"; e.currentTarget.style.background = "#eff6ff"; }}
-                              onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#e2e8f0"; e.currentTarget.style.background = hasData ? "#f8fafc" : "#ffffff"; }}
+                              title={
+                                hasAccountingIntegration && !isPlaceholder && slot.transactionId && String(slot.transactionId).trim() !== ""
+                                  ? "Synced from accounting software. Click to view or edit days to pay."
+                                  : "Click to edit direct cost slot"
+                              }
+                              onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#60a5fa"; e.currentTarget.style.background = "#eff6ff"; }}
+                              onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#e2e8f0"; e.currentTarget.style.background = "#ffffff"; }}
                             >
-                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "4px" }}>
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
                                 <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                                  <span style={{ fontSize: "11px", fontWeight: "700", color: "#475569" }}>{item.label}</span>
+                                  {isPlaceholder ? (
+                                      <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                        {slot.description && !String(slot.description).trim().toUpperCase().startsWith("PLACE") && (
+                                          <span style={{ fontSize: "13px", fontWeight: "700", color: "#0047AB" }}>
+                                            {slot.description}
+                                          </span>
+                                        )}
+                                        <PlaceholderPill isAuto={isAutoPlaceholder(slot.transactionId || slot.description)} size="sm" />
+                                      </div>
+                                    ) : (
+                                      <span style={{ fontSize: "13px", fontWeight: "700", color: "#0047AB" }}>
+                                        {slot.description || (slot.transactionId ? `#${slot.transactionId}` : "Expense")}
+                                      </span>
+                                    )}
+
+                                  {hasData && slot.status && (
+                                    <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "8px", fontWeight: "600", ...pillStyle }}>
+                                      {slot.status}
+                                    </span>
+                                  )}
+
+                                  {hasAccountingIntegration && !isPlaceholder && slot.transactionId && String(slot.transactionId).trim() !== "" && (
+                                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                                      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                                      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                                    </svg>
+                                  )}
+
                                   <NoteIndicatorButton
                                     size="sm"
                                     note={slot.note || ""}
                                     onClick={() => openSlotNoteModal({ item, type: "expense" })}
                                     title={slot.note ? `Cost note: ${slot.note}` : "Add note to direct cost slot"}
                                   />
-                                </div>
-                                <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
-                                  {item.subLabel && <span style={{ fontSize: "10px", color: "#94a3b8" }}>{item.subLabel}</span>}
-                                  {slot.status && <span style={{ fontSize: "10px", padding: "1px 5px", borderRadius: "8px", fontWeight: "600", ...pillStyle }}>{slot.status}</span>}
-                                </div>
-                              </div>
-                              {hasData ? (
-                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: "4px", gap: "6px" }}>
-                                  <div style={{ display: "flex", alignItems: "center", gap: "6px", minWidth: 0, flex: 1, overflow: "hidden" }}>
-                                    <span style={{ fontSize: "13px", fontWeight: "600", color: isPlaceholder ? "#9333ea" : "#0f172a", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                      {slot.description || slot.transactionId || "Expense"}
+
+                                  {isRetainer && item.row && (
+                                    <span style={{ fontSize: "10px", color: "#64748b" }}>
+                                      ({getRetainerRowMonthLabel(item.row, 0, job)})
                                     </span>
-                                    {isPlaceholder && (
-                                      <span style={{ fontSize: "10px", padding: "1px 5px", borderRadius: "6px", background: "#f3e8ff", color: "#7e22ce", fontWeight: "600", flexShrink: 0 }}>
-                                        Placeholder
-                                      </span>
-                                    )}
-                                  </div>
-                                  <span style={{ fontSize: "13px", fontWeight: "600", color: "#0f172a", flexShrink: 0, whiteSpace: "nowrap" }}>
+                                  )}
+                                </div>
+
+                                {hasData ? (
+                                  <span style={{ fontSize: "13px", fontWeight: "700", color: "#0f172a" }}>
                                     {formatCurrency(slot.amount)}
                                   </span>
-                                </div>
-                              ) : (
-                                <div style={{ fontSize: "12px", color: "#94a3b8", fontStyle: "italic", marginTop: "4px" }}>
-                                  Empty slot · Click to edit
+                                ) : (
+                                  <span style={{ fontSize: "11px", color: "#94a3b8" }}>
+                                    Click to add
+                                  </span>
+                                )}
+                              </div>
+
+                              {/* Progress bar (100% green if Paid) */}
+                              {isPaid && (
+                                <div style={{ width: "100%", height: "4px", background: "#f1f5f9", borderRadius: "2px", overflow: "hidden" }}>
+                                  <div style={{ width: "100%", height: "100%", background: "#10b981", borderRadius: "2px" }} />
                                 </div>
                               )}
-                              {slot.date && (
-                                <div style={{ fontSize: "10px", color: "#64748b", marginTop: "2px", wordBreak: "break-word" }}>
-                                  Date: {slot.date} {slot.vat ? `· VAT: ${slot.vat}` : ""}
-                                </div>
+
+                              {hasData && (
+                                isPaid ? (
+                                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "10px", color: "#475569" }}>
+                                    <span style={{ color: "#166534", fontWeight: 600 }}>
+                                      ✓ {formatCurrency(slot.amount)} paid
+                                    </span>
+                                    <span style={{ color: "#64748b" }}>
+                                      {slot.date ? `Date: ${toSheetDateFormat(slot.date)}` : ""}
+                                      {slot.daysToPay ? ` · Paid: ${slot.daysToPay}d` : ""}
+                                      {slot.vat ? ` · VAT: ${slot.vat}` : ""}
+                                    </span>
+                                  </div>
+                                ) : (
+                                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "10px", color: "#475569" }}>
+                                    <span style={{ color: "#b45309", fontWeight: 600 }}>
+                                      {calculatePaymentDate(slot.date, slot.daysToPay || 30) ? (
+                                        `Due: ${calculatePaymentDate(slot.date, slot.daysToPay || 30)}`
+                                      ) : (
+                                        `Expected in ${slot.daysToPay || 30}d`
+                                      )}
+                                    </span>
+                                    <span style={{ color: "#64748b" }}>
+                                      {slot.date ? `Date: ${toSheetDateFormat(slot.date)} (${slot.daysToPay || 30}d)` : `Terms: ${slot.daysToPay || 30}d`}
+                                      {slot.vat ? ` · VAT: ${slot.vat}` : ""}
+                                    </span>
+                                  </div>
+                                )
                               )}
                             </div>
                           );
                         })
                       )}
+                      <button
+                        type="button"
+                        onClick={handleAddNewExpensePlaceholder}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          gap: "6px",
+                          padding: "8px 12px",
+                          borderRadius: "6px",
+                          border: "1px dashed #cbd5e1",
+                          background: "#f8fafc",
+                          color: "#475569",
+                          fontSize: "12px",
+                          fontWeight: "600",
+                          cursor: "pointer",
+                          transition: "all 0.15s ease",
+                          marginTop: "2px"
+                        }}
+                        onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#94a3b8"; e.currentTarget.style.background = "#f1f5f9"; e.currentTarget.style.color = "#0f172a"; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#cbd5e1"; e.currentTarget.style.background = "#f8fafc"; e.currentTarget.style.color = "#475569"; }}
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                          <line x1="12" y1="5" x2="12" y2="19" />
+                          <line x1="5" y1="12" x2="19" y2="12" />
+                        </svg>
+                        Add new
+                      </button>
                     </div>
                   </div>
                 </div>

@@ -5,6 +5,7 @@ import SplitMonthCard from "../SplitMonthCard";
 import { formatMoney, parseMoney } from "../../services/deepDiveHelper";
 import {
   downloadCsv,
+  stripCurrency,
   isPlaceholderInvoice,
   isPlaceholderExpense,
   hasActiveAccountingIntegration,
@@ -13,7 +14,13 @@ import {
   INVOICE_STATUS_OPTIONS,
   EXPENSE_STATUS_OPTIONS,
   canonicalizeInvoiceStatus,
-  canonicalizeExpenseStatus
+  canonicalizeExpenseStatus,
+  calculatePaymentDate,
+  groupInvoicesForDisplay,
+  groupExpensesForDisplay,
+  getStatusPill,
+  toSheetDateFormat,
+  toInputDateFormat
 } from "../../utils/helpers";
 import { parseSplitString, formatSplitString } from "../../services/splitHelper";
 import InvoicesNewJobModal from "../InvoicesNewJobModal";
@@ -1090,7 +1097,7 @@ export default function PortalJobsView({
             className="portal-data-table"
             style={{
               width: "100%",
-              minWidth: "880px",
+              minWidth: "980px",
               borderCollapse: "separate",
               borderSpacing: 0,
               fontSize: "13.8px",
@@ -1099,11 +1106,14 @@ export default function PortalJobsView({
           >
             <thead style={{ background: "#0047AB" }}>
               <tr style={{ background: "#0047AB", color: "#ffffff" }}>
-                <th style={{ padding: "10px 12px", textAlign: "left", fontWeight: 700, width: "10%", fontSize: "13.5px", background: "#0047AB", whiteSpace: "nowrap" }}>
+                <th style={{ padding: "10px 12px", textAlign: "left", fontWeight: 700, width: "9%", fontSize: "13.5px", background: "#0047AB", whiteSpace: "nowrap" }}>
                   Status
                 </th>
-                <th style={{ padding: "10px 12px", textAlign: "left", fontWeight: 700, width: "27%", fontSize: "13.5px", background: "#0047AB" }}>
-                  Client & Job Name
+                <th style={{ padding: "10px 12px", textAlign: "left", fontWeight: 700, width: "13%", fontSize: "13.5px", background: "#0047AB" }}>
+                  Client
+                </th>
+                <th style={{ padding: "10px 12px", textAlign: "left", fontWeight: 700, width: "15%", fontSize: "13.5px", background: "#0047AB" }}>
+                  Job name
                 </th>
                 <th style={{ padding: "10px 12px", textAlign: "center", fontWeight: 700, width: "7%", fontSize: "13.5px", background: "#0047AB", whiteSpace: "nowrap" }}>
                   Type
@@ -1112,13 +1122,13 @@ export default function PortalJobsView({
                   Revenue
                 </th>
                 <th style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700, width: "11%", fontSize: "13.5px", background: "#0047AB", whiteSpace: "nowrap" }}>
-                  Direct Costs
+                  Direct costs
                 </th>
                 <th style={{ padding: "10px 12px", textAlign: "center", fontWeight: 700, width: "10%", fontSize: "13.5px", background: "#0047AB", whiteSpace: "nowrap" }}>
-                  Start Date
+                  Start date
                 </th>
                 <th style={{ padding: "10px 12px", textAlign: "center", fontWeight: 700, width: "10%", fontSize: "13.5px", background: "#0047AB", whiteSpace: "nowrap" }}>
-                  End Date
+                  End date
                 </th>
                 <th style={{ padding: "10px 10px", textAlign: "center", fontWeight: 700, width: "12%", fontSize: "13.5px", background: "#0047AB", whiteSpace: "nowrap" }}>
                   Likelihood
@@ -1129,7 +1139,7 @@ export default function PortalJobsView({
             <tbody>
               {paginatedJobs.length === 0 ? (
                 <tr>
-                  <td colSpan={8} style={{ padding: "3rem", textAlign: "center", color: "#64748b", fontSize: "14px" }}>
+                  <td colSpan={9} style={{ padding: "3rem", textAlign: "center", color: "#64748b", fontSize: "14px" }}>
                     No jobs match your search/filter criteria.
                   </td>
                 </tr>
@@ -1173,10 +1183,16 @@ export default function PortalJobsView({
                         </div>
                       </td>
 
-                      {/* Client & Job Name */}
-                      <td style={{ padding: "10px 12px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        <div style={{ fontWeight: 700, color: "#0f172a", fontSize: "14px" }}>{job.client}</div>
-                        <div style={{ color: "#64748b", fontSize: "12.5px" }}>
+                      {/* Client */}
+                      <td style={{ padding: "10px 12px", verticalAlign: "middle", wordBreak: "break-word", overflowWrap: "break-word", whiteSpace: "normal" }}>
+                        <div style={{ fontWeight: 700, color: "#0f172a", fontSize: "13.5px", lineHeight: "1.35", wordBreak: "break-word", overflowWrap: "break-word", whiteSpace: "normal" }}>
+                          {job.client}
+                        </div>
+                      </td>
+
+                      {/* Job name */}
+                      <td style={{ padding: "10px 12px", verticalAlign: "middle", wordBreak: "break-word", overflowWrap: "break-word", whiteSpace: "normal" }}>
+                        <div style={{ color: "#334155", fontWeight: 500, fontSize: "13px", lineHeight: "1.35", wordBreak: "break-word", overflowWrap: "break-word", whiteSpace: "normal" }}>
                           {job.jobName}
                         </div>
                       </td>
@@ -1904,8 +1920,164 @@ export default function PortalJobsView({
                       )}
                     </div>
 
-                    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                      {(editingJob.invoices || []).map((inv, idx) => {
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      {groupInvoicesForDisplay(editingJob.invoices || []).map((inv, displayIdx) => {
+                        if (inv.isComposite) {
+                          const isLocked = Boolean(hasAccounting && inv.ref && String(inv.ref).trim() !== "");
+                          return (
+                            <div
+                              key={`comp_inv_${inv.ref || displayIdx}`}
+                              style={{
+                                background: "#ffffff",
+                                border: "1px solid #bfdbfe",
+                                borderRadius: "8px",
+                                padding: "10px 12px",
+                                boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)",
+                                display: "flex",
+                                flexDirection: "column",
+                                gap: "8px",
+                              }}
+                            >
+                              {/* Header */}
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                                  <span style={{ fontWeight: 700, fontSize: "13px", color: "#0047AB" }}>
+                                    #{inv.ref}
+                                  </span>
+                                  <span
+                                    style={{
+                                      fontSize: "10px",
+                                      fontWeight: 600,
+                                      background: inv.isFullyPaid ? "#dcfce7" : "#eff6ff",
+                                      color: inv.isFullyPaid ? "#166534" : "#1d4ed8",
+                                      border: inv.isFullyPaid ? "1px solid #bbf7d0" : "1px solid #bfdbfe",
+                                      borderRadius: "10px",
+                                      padding: "1px 7px",
+                                    }}
+                                  >
+                                    {inv.isFullyPaid ? `Paid in full (${inv.receivedTranches.length} payments)` : `Part-paid (${inv.percentPaid.toFixed(1)}% received)`}
+                                  </span>
+                                  {isLocked && (
+                                    <span
+                                      title="Synced from accounting software"
+                                      style={{ display: "inline-flex", alignItems: "center", gap: "3px", fontSize: "10px", color: "#64748b" }}
+                                    >
+                                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                        <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                                        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                                      </svg>
+                                      <span>Synced</span>
+                                    </span>
+                                  )}
+                                </div>
+                                <div style={{ fontSize: "13px", fontWeight: 700, color: "#0f172a" }}>
+                                  Total: {currencySymbol}{formatSummaryNum(inv.totalAmount)}
+                                </div>
+                              </div>
+
+                              {/* Progress Bar */}
+                              <div style={{ width: "100%", height: "6px", background: "#f1f5f9", borderRadius: "3px", overflow: "hidden", display: "flex" }}>
+                                <div
+                                  style={{
+                                    width: `${Math.min(100, Math.max(0, inv.percentPaid))}%`,
+                                    background: "#10b981",
+                                    borderRadius: "3px 0 0 3px",
+                                    transition: "width 0.3s ease",
+                                  }}
+                                  title={`Received: ${currencySymbol}{formatSummaryNum(inv.receivedAmount)}`}
+                                />
+                              </div>
+
+                              {/* Tranches Grid */}
+                              {inv.isFullyPaid ? (
+                                <div style={{ display: "grid", gridTemplateColumns: inv.receivedTranches.length === 2 ? "1fr 1fr" : "repeat(auto-fit, minmax(130px, 1fr))", gap: "10px", background: "#f8fafc", padding: "8px 10px", borderRadius: "6px", border: "1px solid #e2e8f0" }}>
+                                  {inv.receivedTranches.map((t, tIdx) => (
+                                    <div key={tIdx}>
+                                      <div style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "10px", fontWeight: 700, color: "#166534" }}>
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#166534" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                          <polyline points="20 6 9 17 4 12" />
+                                        </svg>
+                                        <span>Payment {tIdx + 1}</span>
+                                      </div>
+                                      <div style={{ fontSize: "12.5px", fontWeight: 600, color: "#0f172a", marginTop: "2px" }}>
+                                        {currencySymbol}{formatSummaryNum(parseFloat(stripCurrency(t.amount)) || 0)}
+                                      </div>
+                                      <div style={{ fontSize: "10px", color: "#64748b", marginTop: "2px" }}>
+                                        Sent: {toSheetDateFormat(t.sendDate) || "-"}
+                                        {t.days ? <span> · Paid in {t.days} days</span> : ""}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", background: "#f8fafc", padding: "8px 10px", borderRadius: "6px", border: "1px solid #e2e8f0" }}>
+                                  {/* Received Tranche */}
+                                  <div>
+                                    <div style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "10px", fontWeight: 700, color: "#166534" }}>
+                                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#166534" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                        <polyline points="20 6 9 17 4 12" />
+                                      </svg>
+                                      <span>Received payment</span>
+                                    </div>
+                                    <div style={{ fontSize: "12.5px", fontWeight: 600, color: "#0f172a", marginTop: "2px" }}>
+                                      {currencySymbol}{formatSummaryNum(inv.receivedAmount)}
+                                    </div>
+                                    <div style={{ fontSize: "10px", color: "#64748b", marginTop: "2px" }}>
+                                      Sent: {toSheetDateFormat(inv.receivedTranches[0]?.sendDate) || "-"}
+                                      {inv.receivedTranches[0]?.days ? (
+                                        <span> · Paid in {inv.receivedTranches[0].days} days</span>
+                                      ) : ""}
+                                    </div>
+                                  </div>
+
+                                  {/* Balance Tranche */}
+                                  <div>
+                                    <div style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "10px", fontWeight: 700, color: "#b45309" }}>
+                                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#b45309" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                        <circle cx="12" cy="12" r="10" />
+                                        <polyline points="12 6 12 12 16 14" />
+                                      </svg>
+                                      <span>Remaining balance</span>
+                                    </div>
+                                    <div style={{ fontSize: "12.5px", fontWeight: 600, color: "#b45309", marginTop: "2px" }}>
+                                      {currencySymbol}{formatSummaryNum(inv.balanceAmount)}
+                                    </div>
+                                    {inv.balanceTranche ? (
+                                      <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "4px" }}>
+                                        <label style={{ fontSize: "10px", color: "#64748b", fontWeight: 600, whiteSpace: "nowrap" }}>
+                                          Days to pay:
+                                        </label>
+                                        <input
+                                          type="number"
+                                          value={inv.balanceTranche.days || ""}
+                                          onChange={(e) => updateInvoice(inv.balanceTranche.originalIndex, "days", e.target.value)}
+                                          disabled={isReadOnly}
+                                          style={{
+                                            ...formInputStyle,
+                                            width: "55px",
+                                            padding: "2px 5px",
+                                            fontSize: "11px",
+                                            textAlign: "center",
+                                            background: "#ffffff",
+                                          }}
+                                        />
+                                        {calculatePaymentDate(inv.balanceTranche.sendDate, inv.balanceTranche.days) && (
+                                          <span style={{ fontSize: "10px", color: "#64748b", whiteSpace: "nowrap" }}>
+                                            Expected payment date: <strong style={{ color: "#0f172a" }}>{calculatePaymentDate(inv.balanceTranche.sendDate, inv.balanceTranche.days)}</strong>
+                                          </span>
+                                        )}
+                                      </div>
+                                    ) : (
+                                      <div style={{ fontSize: "10px", color: "#64748b", marginTop: "2px" }}>Fully paid</div>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        }
+
+                        const idx = inv.originalIndex;
                         const isPlaceholder = isPlaceholderInvoice(inv.ref, inv.status);
                         const isAuto = isPlaceholder && isAutoPlaceholder(inv.ref);
                         const isLocked = Boolean(hasAccounting && !isPlaceholder && inv.ref && String(inv.ref).trim() !== "");
@@ -1918,44 +2090,29 @@ export default function PortalJobsView({
                             ? "Synced from accounting software. To modify invoice number, amount, or sent date, update directly in your accounting software."
                             : undefined;
 
+                        const currentStatus = canonicalizeInvoiceStatus(inv.status);
+                        const pillStyle = getStatusPill(currentStatus);
+                        const hasRef = Boolean(inv.ref && String(inv.ref).trim() !== "");
+                        const hasAmount = Boolean(inv.amount && String(inv.amount).trim() !== "");
+
                         return (
                           <div
                             key={idx}
-                            className="modal-sub-grid-row"
                             style={{
-                              display: "grid",
-                              gridTemplateColumns: isReadOnly ? "1.2fr 1fr 1.2fr 0.7fr 1fr" : "1.2fr 1fr 1.2fr 0.7fr 1fr 28px",
-                              gap: "6px",
-                              alignItems: "center",
-                              background: isFieldLocked ? "#f8fafc" : "#ffffff",
-                              padding: "6px 8px",
-                              borderRadius: "6px",
                               border: "1px solid #e2e8f0",
+                              background: "#ffffff",
+                              borderRadius: "8px",
+                              padding: "10px 12px",
+                              display: "flex",
+                              flexDirection: "column",
+                              gap: "8px",
+                              boxShadow: "0 1px 2px rgba(0,0,0,0.03)"
                             }}
                           >
-                            <div>
-                              <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>
-                                Amount ({idx + 1})
-                              </label>
-                              <input
-                                type="text"
-                                placeholder="Amount"
-                                value={inv.amount || ""}
-                                onChange={(e) => updateInvoice(idx, "amount", e.target.value)}
-                                disabled={isFieldLocked}
-                                title={fieldLockTitle}
-                                style={{
-                                  ...formInputStyle,
-                                  padding: "4px 6px",
-                                  fontSize: "12px",
-                                  ...(isFieldLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
-                                }}
-                              />
-                            </div>
-                            <div>
-                              <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Ref</label>
-                              {isPlaceholder ? (
-                                <div style={{ marginTop: "2px" }}>
+                            {/* Top Bar: Ref / Placeholder + Status Badge + Synced + Total + Delete */}
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                                {isPlaceholder ? (
                                   <PlaceholderPill
                                     isAuto={isAuto}
                                     disabled={isReadOnly}
@@ -1967,74 +2124,64 @@ export default function PortalJobsView({
                                       }
                                     }}
                                   />
-                                </div>
-                              ) : (
-                                <input
-                                  type="text"
-                                  value={inv.ref || ""}
-                                  onChange={(e) => updateInvoice(idx, "ref", e.target.value)}
-                                  disabled={isLocked}
-                                  title={isLocked ? "Synced from accounting software. To modify invoice number, amount, or sent date, update directly in your accounting software." : undefined}
-                                  style={{
-                                    ...formInputStyle,
-                                    padding: "4px 6px",
-                                    fontSize: "12px",
-                                    ...(isLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
-                                  }}
-                                />
-                              )}
-                            </div>
-                            <div>
-                              <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Send date</label>
-                              <input
-                                type="date"
-                                value={inv.sendDate || ""}
-                                onChange={(e) => updateInvoice(idx, "sendDate", e.target.value)}
-                                disabled={isFieldLocked}
-                                title={fieldLockTitle}
-                                style={{
-                                  ...formInputStyle,
-                                  padding: "4px 6px",
-                                  fontSize: "12px",
-                                  ...(isFieldLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
-                                }}
-                              />
-                            </div>
-                            <div>
-                              <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Days</label>
-                              <input
-                                type="number"
-                                placeholder="30"
-                                value={inv.days || ""}
-                                onChange={(e) => updateInvoice(idx, "days", e.target.value)}
-                                disabled={isPaid || isAutoLocked}
-                                title={isAutoLocked ? "Automatic placeholder. Convert to manual placeholder to edit." : (isPaid ? "Days to pay is determined once an invoice is marked as paid." : undefined)}
-                                style={{
-                                  ...formInputStyle,
-                                  padding: "4px 6px",
-                                  fontSize: "12px",
-                                  ...(isPaid || isAutoLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
-                                }}
-                              />
-                            </div>
-                            <div>
-                              <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Status</label>
-                              {(() => {
-                                const currentStatus = canonicalizeInvoiceStatus(inv.status);
-                                return (
+                                ) : hasRef ? (
+                                  <span style={{ fontSize: "14px", fontWeight: 700, color: "#0047AB" }}>
+                                    #{inv.ref}
+                                  </span>
+                                ) : (
+                                  <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                                    <span style={{ fontSize: "11px", color: "#64748b", fontWeight: 600 }}>Ref:</span>
+                                    <input
+                                      type="text"
+                                      placeholder="e.g. 0849"
+                                      value={inv.ref || ""}
+                                      onChange={(e) => updateInvoice(idx, "ref", e.target.value)}
+                                      disabled={isLocked}
+                                      title={isLocked ? "Synced from accounting software. To modify invoice number, amount, or sent date, update directly in your accounting software." : undefined}
+                                      style={{
+                                        ...formInputStyle,
+                                        width: "90px",
+                                        padding: "2px 6px",
+                                        fontSize: "12px",
+                                        fontWeight: 600,
+                                        color: "#0047AB",
+                                        ...(isLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
+                                      }}
+                                    />
+                                  </div>
+                                )}
+
+                                {/* Status Badge */}
+                                {isFieldLocked ? (
+                                  <span
+                                    style={{
+                                      fontSize: "11px",
+                                      padding: "2px 8px",
+                                      borderRadius: "12px",
+                                      fontWeight: 600,
+                                      ...pillStyle
+                                    }}
+                                  >
+                                    {currentStatus || "Draft"}
+                                  </span>
+                                ) : (
                                   <select
                                     value={currentStatus}
                                     onChange={(e) => updateInvoice(idx, "status", e.target.value)}
-                                    disabled={isFieldLocked}
+                                    disabled={isReadOnly}
                                     title={fieldLockTitle}
                                     style={{
-                                      ...formInputStyle,
-                                      padding: "4px 6px",
-                                      fontSize: "12px",
-                                      ...(isFieldLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
+                                      fontSize: "11px",
+                                      fontWeight: 600,
+                                      padding: "2px 8px",
+                                      borderRadius: "12px",
+                                      border: pillStyle.border || "1px solid #cbd5e1",
+                                      background: pillStyle.background || "#f8fafc",
+                                      color: pillStyle.color || "#334155",
+                                      cursor: "pointer"
                                     }}
                                   >
-                                    <option value="">Select...</option>
+                                    <option value="">Status...</option>
                                     {INVOICE_STATUS_OPTIONS.map((st) => (
                                       <option key={st} value={st}>{st}</option>
                                     ))}
@@ -2042,35 +2189,171 @@ export default function PortalJobsView({
                                       <option value={currentStatus}>{currentStatus}</option>
                                     )}
                                   </select>
-                                );
-                              })()}
+                                )}
+
+                                {hasAccounting && isLocked && (
+                                  <span
+                                    title="Synced from accounting software"
+                                    style={{ display: "inline-flex", alignItems: "center", gap: "3px", fontSize: "10px", color: "#64748b" }}
+                                  >
+                                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                                      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                                    </svg>
+                                    <span>Synced</span>
+                                  </span>
+                                )}
+                              </div>
+
+                              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                                <div style={{ fontSize: "13px", fontWeight: 700, color: "#0f172a" }}>
+                                  Total: {currencySymbol}{formatSummaryNum(parseFloat(stripCurrency(inv.amount)) || 0)}
+                                </div>
+                                {!isReadOnly && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      if (inv.ref || inv.amount) {
+                                        setDeletePromptInvoice({ idx, inv });
+                                        setMovingPromptInvoice(null);
+                                      } else {
+                                        removeInvoice(idx);
+                                      }
+                                    }}
+                                    title="Delete invoice"
+                                    style={{
+                                      background: "transparent",
+                                      border: "none",
+                                      color: "#94a3b8",
+                                      cursor: "pointer",
+                                      fontSize: "14px",
+                                      padding: "2px",
+                                      display: "flex",
+                                      alignItems: "center"
+                                    }}
+                                    onMouseEnter={(e) => { e.currentTarget.style.color = "#ef4444"; }}
+                                    onMouseLeave={(e) => { e.currentTarget.style.color = "#94a3b8"; }}
+                                  >
+                                    ✕
+                                  </button>
+                                )}
+                              </div>
                             </div>
-                            {!isReadOnly && (
-                              <div style={{ paddingTop: "14px", textAlign: "center" }}>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    if (inv.ref || inv.amount) {
-                                      setDeletePromptInvoice({ idx, inv });
-                                      setMovingPromptInvoice(null);
-                                    } else {
-                                      removeInvoice(idx);
-                                    }
-                                  }}
-                                  title="Delete invoice"
+
+                            {/* Progress Bar (100% green if Paid) */}
+                            {isPaid && (
+                              <div style={{ width: "100%", height: "6px", background: "#f1f5f9", borderRadius: "3px", overflow: "hidden", display: "flex" }}>
+                                <div
                                   style={{
-                                    background: "transparent",
-                                    border: "none",
-                                    color: "#ef4444",
-                                    cursor: "pointer",
-                                    fontSize: "14px",
-                                    padding: "2px",
+                                    width: "100%",
+                                    background: "#10b981",
+                                    borderRadius: "3px",
+                                    transition: "width 0.3s ease",
                                   }}
-                                >
-                                  ✕
-                                </button>
+                                  title={`Paid: ${currencySymbol}{formatSummaryNum(parseFloat(stripCurrency(inv.amount)) || 0)}`}
+                                />
                               </div>
                             )}
+
+                            {/* Inner Details Card */}
+                            <div style={{ background: "#f8fafc", padding: "8px 10px", borderRadius: "6px", border: "1px solid #e2e8f0" }}>
+                              {isPaid ? (
+                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
+                                  <div>
+                                    <div style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "10px", fontWeight: 700, color: "#166534" }}>
+                                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#166534" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                        <polyline points="20 6 9 17 4 12" />
+                                      </svg>
+                                      <span>Payment received</span>
+                                    </div>
+                                    <div style={{ fontSize: "12.5px", fontWeight: 600, color: "#0f172a", marginTop: "2px" }}>
+                                      {currencySymbol}{formatSummaryNum(parseFloat(stripCurrency(inv.amount)) || 0)}
+                                    </div>
+                                    <div style={{ fontSize: "10px", color: "#64748b", marginTop: "2px" }}>
+                                      Sent: {toSheetDateFormat(inv.sendDate) || "-"}
+                                      {inv.days ? <span> · Paid in {inv.days} days</span> : ""}
+                                    </div>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+                                  {/* Left: Amount & send date */}
+                                  <div>
+                                    {isFieldLocked ? (
+                                      <>
+                                        <div style={{ fontSize: "12.5px", fontWeight: 600, color: "#0f172a" }}>
+                                          {currencySymbol}{formatSummaryNum(parseFloat(stripCurrency(inv.amount)) || 0)}
+                                        </div>
+                                        <div style={{ fontSize: "10px", color: "#64748b", marginTop: "2px" }}>
+                                          Sent: {toSheetDateFormat(inv.sendDate) || "Unsent"}
+                                        </div>
+                                      </>
+                                    ) : (
+                                      <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                                        <input
+                                          type="text"
+                                          placeholder="Amount"
+                                          value={inv.amount || ""}
+                                          onChange={(e) => updateInvoice(idx, "amount", e.target.value)}
+                                          disabled={isReadOnly}
+                                          style={{
+                                            ...formInputStyle,
+                                            width: "105px",
+                                            padding: "2px 5px",
+                                            fontSize: "11px",
+                                            fontWeight: 600
+                                          }}
+                                        />
+                                        <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                                          <label style={{ fontSize: "9.5px", color: "#64748b", fontWeight: 600, whiteSpace: "nowrap" }}>Sent:</label>
+                                          <input
+                                            type="date"
+                                            value={toInputDateFormat(inv.sendDate) || ""}
+                                            onChange={(e) => updateInvoice(idx, "sendDate", e.target.value)}
+                                            disabled={isReadOnly}
+                                            style={{
+                                              ...formInputStyle,
+                                              padding: "2px 4px",
+                                              fontSize: "10px"
+                                            }}
+                                          />
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  {/* Right: Days to pay & projected collection */}
+                                  <div style={{ display: "flex", alignItems: "center" }}>
+                                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                      <label style={{ fontSize: "10px", color: "#64748b", fontWeight: 600, whiteSpace: "nowrap" }}>
+                                        Days to pay:
+                                      </label>
+                                      <input
+                                        type="number"
+                                        placeholder="30"
+                                        value={inv.days || ""}
+                                        onChange={(e) => updateInvoice(idx, "days", e.target.value)}
+                                        disabled={isPaid || isAutoLocked || isReadOnly}
+                                        title={isAutoLocked ? "Automatic placeholder. Convert to manual placeholder to edit." : (isPaid ? "Days to pay is determined once an invoice is marked as paid." : undefined)}
+                                        style={{
+                                          ...formInputStyle,
+                                          width: "55px",
+                                          padding: "2px 5px",
+                                          fontSize: "11px",
+                                          textAlign: "center",
+                                          background: (isPaid || isAutoLocked) ? "#f8fafc" : "#ffffff",
+                                        }}
+                                      />
+                                      {calculatePaymentDate(inv.sendDate, inv.days) && (
+                                        <span style={{ fontSize: "10px", color: "#64748b", whiteSpace: "nowrap" }}>
+                                          Expected payment date: <strong style={{ color: "#0f172a" }}>{calculatePaymentDate(inv.sendDate, inv.days)}</strong>
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
                           </div>
                         );
                       })}
@@ -2321,14 +2604,176 @@ export default function PortalJobsView({
                       )}
                     </div>
 
-                    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                      {(editingJob.directExpenses || []).map((exp, idx) => {
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      {groupExpensesForDisplay(editingJob.directExpenses || []).map((exp, displayIdx) => {
+                        if (exp.isComposite) {
+                          const isActual = Boolean(
+                            hasAccounting &&
+                            !isPlaceholderExpense(exp.appId, exp.desc, exp.status) &&
+                            exp.appId &&
+                            String(exp.appId).trim() !== ""
+                          );
+                          return (
+                            <div
+                              key={`comp_exp_${exp.appId || exp.desc || displayIdx}`}
+                              style={{
+                                background: "#ffffff",
+                                border: "1px solid #bfdbfe",
+                                borderRadius: "8px",
+                                padding: "10px 12px",
+                                boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)",
+                                display: "flex",
+                                flexDirection: "column",
+                                gap: "8px",
+                              }}
+                            >
+                              {/* Header */}
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                                  <span style={{ fontWeight: 700, fontSize: "13px", color: "#0047AB" }}>
+                                    {exp.desc || "Expense"}
+                                  </span>
+                                  <span
+                                    style={{
+                                      fontSize: "10px",
+                                      fontWeight: 600,
+                                      background: exp.isFullyPaid ? "#dcfce7" : "#eff6ff",
+                                      color: exp.isFullyPaid ? "#166534" : "#1d4ed8",
+                                      border: exp.isFullyPaid ? "1px solid #bbf7d0" : "1px solid #bfdbfe",
+                                      borderRadius: "10px",
+                                      padding: "1px 7px",
+                                    }}
+                                  >
+                                    {exp.isFullyPaid ? `Paid in full (${exp.paidTranches.length} payments)` : `Part-paid (${exp.percentPaid.toFixed(1)}% paid)`}
+                                  </span>
+                                  {isActual && (
+                                    <span
+                                      title="Synced from accounting software"
+                                      style={{ display: "inline-flex", alignItems: "center", gap: "3px", fontSize: "10px", color: "#64748b" }}
+                                    >
+                                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                        <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                                        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                                      </svg>
+                                      <span>Synced</span>
+                                    </span>
+                                  )}
+                                </div>
+                                <div style={{ fontSize: "13px", fontWeight: 700, color: "#0f172a" }}>
+                                  Total: {currencySymbol}{formatSummaryNum(exp.totalAmount)}
+                                </div>
+                              </div>
+
+                              {/* Progress Bar */}
+                              <div style={{ width: "100%", height: "6px", background: "#f1f5f9", borderRadius: "3px", overflow: "hidden", display: "flex" }}>
+                                <div
+                                  style={{
+                                    width: `${Math.min(100, Math.max(0, exp.percentPaid))}%`,
+                                    background: "#10b981",
+                                    borderRadius: "3px 0 0 3px",
+                                    transition: "width 0.3s ease",
+                                  }}
+                                  title={`Paid: ${currencySymbol}{formatSummaryNum(exp.paidAmount)}`}
+                                />
+                              </div>
+
+                              {/* Tranches Grid */}
+                              {exp.isFullyPaid ? (
+                                <div style={{ display: "grid", gridTemplateColumns: exp.paidTranches.length === 2 ? "1fr 1fr" : "repeat(auto-fit, minmax(130px, 1fr))", gap: "10px", background: "#f8fafc", padding: "8px 10px", borderRadius: "6px", border: "1px solid #e2e8f0" }}>
+                                  {exp.paidTranches.map((t, tIdx) => (
+                                    <div key={tIdx}>
+                                      <div style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "10px", fontWeight: 700, color: "#166534" }}>
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#166534" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                          <polyline points="20 6 9 17 4 12" />
+                                        </svg>
+                                        <span>Payment {tIdx + 1}</span>
+                                      </div>
+                                      <div style={{ fontSize: "12.5px", fontWeight: 600, color: "#0f172a", marginTop: "2px" }}>
+                                        {currencySymbol}{formatSummaryNum(parseFloat(stripCurrency(t.amount)) || 0)}
+                                      </div>
+                                      <div style={{ fontSize: "10px", color: "#64748b", marginTop: "2px" }}>
+                                        Date: {toSheetDateFormat(t.recDate) || "-"}
+                                        {t.days ? <span> · Paid in {t.days} days</span> : ""}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", background: "#f8fafc", padding: "8px 10px", borderRadius: "6px", border: "1px solid #e2e8f0" }}>
+                                  {/* Paid Tranche */}
+                                  <div>
+                                    <div style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "10px", fontWeight: 700, color: "#166534" }}>
+                                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#166534" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                        <polyline points="20 6 9 17 4 12" />
+                                      </svg>
+                                      <span>Paid payment</span>
+                                    </div>
+                                    <div style={{ fontSize: "12.5px", fontWeight: 600, color: "#0f172a", marginTop: "2px" }}>
+                                      {currencySymbol}{formatSummaryNum(exp.paidAmount)}
+                                    </div>
+                                    <div style={{ fontSize: "10px", color: "#64748b", marginTop: "2px" }}>
+                                      Date: {toSheetDateFormat(exp.paidTranches[0]?.recDate) || "-"}
+                                      {exp.paidTranches[0]?.days ? (
+                                        <span> · Paid in {exp.paidTranches[0].days} days</span>
+                                      ) : ""}
+                                    </div>
+                                  </div>
+
+                                  {/* Balance Tranche */}
+                                  <div>
+                                    <div style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "10px", fontWeight: 700, color: "#b45309" }}>
+                                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#b45309" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                        <circle cx="12" cy="12" r="10" />
+                                        <polyline points="12 6 12 12 16 14" />
+                                      </svg>
+                                      <span>Remaining balance</span>
+                                    </div>
+                                    <div style={{ fontSize: "12.5px", fontWeight: 600, color: "#b45309", marginTop: "2px" }}>
+                                      {currencySymbol}{formatSummaryNum(exp.balanceAmount)}
+                                    </div>
+                                    {exp.balanceTranche ? (
+                                      <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "4px" }}>
+                                        <label style={{ fontSize: "10px", color: "#64748b", fontWeight: 600, whiteSpace: "nowrap" }}>
+                                          Days to pay:
+                                        </label>
+                                        <input
+                                          type="number"
+                                          value={exp.balanceTranche.days || ""}
+                                          onChange={(e) => updateExpense(exp.balanceTranche.originalIndex, "days", e.target.value)}
+                                          disabled={isReadOnly}
+                                          style={{
+                                            ...formInputStyle,
+                                            width: "55px",
+                                            padding: "2px 5px",
+                                            fontSize: "11px",
+                                            textAlign: "center",
+                                            background: "#ffffff",
+                                          }}
+                                        />
+                                        {calculatePaymentDate(exp.balanceTranche.recDate, exp.balanceTranche.days) && (
+                                          <span style={{ fontSize: "10px", color: "#64748b", whiteSpace: "nowrap" }}>
+                                            Expected payment date: <strong style={{ color: "#0f172a" }}>{calculatePaymentDate(exp.balanceTranche.recDate, exp.balanceTranche.days)}</strong>
+                                          </span>
+                                        )}
+                                      </div>
+                                    ) : (
+                                      <div style={{ fontSize: "10px", color: "#64748b", marginTop: "2px" }}>Fully paid</div>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        }
+
+                        const idx = exp.originalIndex;
                         const isPlaceholder = isPlaceholderExpense(exp.appId, exp.desc, exp.status);
                         const isAuto = isPlaceholder && isAutoPlaceholder(exp.appId || exp.desc);
                         const isActual = Boolean(
                           hasAccounting &&
                           !isPlaceholder &&
-                          ((exp.appId && String(exp.appId).trim() !== "") || (exp.desc && String(exp.desc).trim() !== ""))
+                          exp.appId &&
+                          String(exp.appId).trim() !== ""
                         );
                         const isAutoLocked = isPlaceholder && isAuto;
                         const isFieldLocked = isActual || isAutoLocked;
@@ -2340,175 +2785,313 @@ export default function PortalJobsView({
                             ? "Synced from accounting software. To modify description, amount, VAT, or date, update directly in your accounting software."
                             : undefined;
 
+                        const pillStyle = getStatusPill(currentStatus);
+
                         return (
                           <div
                             key={idx}
-                            className="modal-sub-grid-row"
                             style={{
-                              display: "grid",
-                              gridTemplateColumns: isReadOnly ? "1.2fr 1fr 0.7fr 1.2fr 0.6fr 1fr" : "1.2fr 1fr 0.7fr 1.2fr 0.6fr 1fr 28px",
-                              gap: "6px",
-                              alignItems: "center",
-                              background: isFieldLocked ? "#f8fafc" : "#ffffff",
-                              padding: "6px 8px",
-                              borderRadius: "6px",
-                              border: "1px solid #e2e8f0",
+                              background: "#ffffff",
+                              border: "1px solid #bfdbfe",
+                              borderRadius: "8px",
+                              padding: "10px 12px",
+                              boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)",
+                              display: "flex",
+                              flexDirection: "column",
+                              gap: "8px",
                             }}
                           >
-                            <div>
-                              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "2px" }}>
-                                <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b", margin: 0 }}>
-                                  Description ({idx + 1})
-                                </label>
-                                {isPlaceholder && (
-                                  <PlaceholderPill
-                                    isAuto={isAuto}
-                                    size="sm"
-                                    disabled={isReadOnly}
-                                    onToggle={(targetAuto) => {
-                                      if (targetAuto) {
-                                        updateExpense(idx, "appId", generatePlaceholderExpenseId(exp.recDate));
-                                      } else {
-                                        updateExpense(idx, "appId", "");
-                                      }
+                            {/* Top Bar: Description / Placeholder + Status Badge + VAT + Synced + Total + Delete */}
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                                {isPlaceholder ? (
+                                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                    <PlaceholderPill
+                                      isAuto={isAuto}
+                                      disabled={isReadOnly}
+                                      onToggle={(targetAuto) => {
+                                        if (targetAuto) {
+                                          updateExpense(idx, "appId", generatePlaceholderExpenseId(exp.recDate));
+                                        } else {
+                                          updateExpense(idx, "appId", "");
+                                        }
+                                      }}
+                                    />
+                                    <input
+                                      type="text"
+                                      placeholder="Description / supplier"
+                                      value={exp.desc || ""}
+                                      onChange={(e) => updateExpense(idx, "desc", e.target.value)}
+                                      disabled={isFieldLocked || isReadOnly}
+                                      title={fieldLockTitle}
+                                      style={{
+                                        ...formInputStyle,
+                                        width: "160px",
+                                        padding: "2px 6px",
+                                        fontSize: "12px",
+                                        fontWeight: 600,
+                                        color: "#0047AB",
+                                        ...(isFieldLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
+                                      }}
+                                    />
+                                  </div>
+                                ) : isFieldLocked && exp.desc ? (
+                                  <span style={{ fontSize: "14px", fontWeight: 700, color: "#0047AB" }}>
+                                    {exp.desc}
+                                  </span>
+                                ) : (
+                                  <input
+                                    type="text"
+                                    placeholder="Description / supplier"
+                                    value={exp.desc || ""}
+                                    onChange={(e) => updateExpense(idx, "desc", e.target.value)}
+                                    disabled={isFieldLocked || isReadOnly}
+                                    title={fieldLockTitle}
+                                    style={{
+                                      ...formInputStyle,
+                                      width: "160px",
+                                      padding: "2px 6px",
+                                      fontSize: "12px",
+                                      fontWeight: 600,
+                                      color: "#0047AB",
+                                      ...(isFieldLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
                                     }}
                                   />
                                 )}
-                              </div>
-                              <input
-                                type="text"
-                                placeholder="Description"
-                                value={exp.desc || ""}
-                                onChange={(e) => updateExpense(idx, "desc", e.target.value)}
-                                disabled={isFieldLocked}
-                                title={fieldLockTitle}
-                                style={{
-                                  ...formInputStyle,
-                                  padding: "4px 6px",
-                                  fontSize: "12px",
-                                  ...(isFieldLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
-                                }}
-                              />
-                            </div>
-                            <div>
-                              <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Amount</label>
-                              <input
-                                type="text"
-                                placeholder="Amount"
-                                value={exp.amount || ""}
-                                onChange={(e) => updateExpense(idx, "amount", e.target.value)}
-                                disabled={isFieldLocked}
-                                title={fieldLockTitle}
-                                style={{
-                                  ...formInputStyle,
-                                  padding: "4px 6px",
-                                  fontSize: "12px",
-                                  ...(isFieldLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
-                                }}
-                              />
-                            </div>
-                            <div>
-                              <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>VAT?</label>
-                              <select
-                                value={exp.vat || "Yes"}
-                                onChange={(e) => updateExpense(idx, "vat", e.target.value)}
-                                disabled={isFieldLocked}
-                                title={fieldLockTitle || (isActual ? "VAT treatment is determined upstream in your accounting software." : undefined)}
-                                style={{
-                                  ...formInputStyle,
-                                  padding: "4px 6px",
-                                  fontSize: "12px",
-                                  ...(isFieldLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
-                                }}
-                              >
-                                <option value="Yes">Yes</option>
-                                <option value="No">No</option>
-                              </select>
-                            </div>
-                            <div>
-                              <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Receive date</label>
-                              <input
-                                type="date"
-                                value={exp.recDate || ""}
-                                onChange={(e) => updateExpense(idx, "recDate", e.target.value)}
-                                disabled={isFieldLocked}
-                                title={fieldLockTitle}
-                                style={{
-                                  ...formInputStyle,
-                                  padding: "4px 6px",
-                                  fontSize: "12px",
-                                  ...(isFieldLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
-                                }}
-                              />
-                            </div>
-                            <div>
-                              <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Days</label>
-                              <input
-                                type="number"
-                                placeholder="30"
-                                value={exp.days || ""}
-                                onChange={(e) => updateExpense(idx, "days", e.target.value)}
-                                disabled={isPaid || isAutoLocked}
-                                title={isAutoLocked ? "Automatic placeholder. Convert to manual placeholder to edit." : (isPaid ? "Days to pay is determined once a bill is marked as paid." : undefined)}
-                                style={{
-                                  ...formInputStyle,
-                                  padding: "4px 6px",
-                                  fontSize: "12px",
-                                  ...(isPaid || isAutoLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
-                                }}
-                              />
-                            </div>
-                            <div>
-                              <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Status</label>
-                              <select
-                                value={currentStatus}
-                                onChange={(e) => updateExpense(idx, "status", e.target.value)}
-                                disabled={isFieldLocked}
-                                title={fieldLockTitle}
-                                style={{
-                                  ...formInputStyle,
-                                  padding: "4px 6px",
-                                  fontSize: "12px",
-                                  ...(isFieldLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
-                                }}
-                              >
-                                <option value="">Select...</option>
-                                {EXPENSE_STATUS_OPTIONS.map((st) => (
-                                  <option key={st} value={st}>{st}</option>
-                                ))}
-                                {currentStatus && !EXPENSE_STATUS_OPTIONS.includes(currentStatus) && (
-                                  <option value={currentStatus}>{currentStatus}</option>
+
+                                {/* Status Badge */}
+                                {!isPlaceholder && (
+                                  isFieldLocked ? (
+                                    <span
+                                      style={{
+                                        fontSize: "11px",
+                                        padding: "2px 8px",
+                                        borderRadius: "12px",
+                                        fontWeight: 600,
+                                        ...pillStyle
+                                      }}
+                                    >
+                                      {currentStatus || "Draft"}
+                                    </span>
+                                  ) : (
+                                    <select
+                                      value={currentStatus}
+                                      onChange={(e) => updateExpense(idx, "status", e.target.value)}
+                                      disabled={isReadOnly}
+                                      title={fieldLockTitle}
+                                      style={{
+                                        fontSize: "11px",
+                                        fontWeight: 600,
+                                        padding: "2px 8px",
+                                        borderRadius: "12px",
+                                        border: pillStyle.border || "1px solid #cbd5e1",
+                                        background: pillStyle.background || "#f8fafc",
+                                        color: pillStyle.color || "#334155",
+                                        cursor: "pointer"
+                                      }}
+                                    >
+                                      <option value="">Status...</option>
+                                      {EXPENSE_STATUS_OPTIONS.map((st) => (
+                                        <option key={st} value={st}>{st}</option>
+                                      ))}
+                                      {currentStatus && !EXPENSE_STATUS_OPTIONS.includes(currentStatus) && (
+                                        <option value={currentStatus}>{currentStatus}</option>
+                                      )}
+                                    </select>
+                                  )
                                 )}
-                              </select>
-                            </div>
-                            {!isReadOnly && (
-                              <div style={{ paddingTop: "14px", textAlign: "center" }}>
-                                {isActual ? (
-                                  <span title="Synced bill cannot be deleted" style={{ color: "#94a3b8", fontSize: "12px", cursor: "not-allowed" }}>
-                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+
+                                {/* VAT Selector / Pill */}
+                                {isFieldLocked ? (
+                                  <span style={{ fontSize: "10px", color: "#64748b", background: "#f1f5f9", padding: "1px 6px", borderRadius: "4px", border: "1px solid #e2e8f0" }}>
+                                    VAT: {exp.vat || "Yes"}
+                                  </span>
+                                ) : (
+                                  <select
+                                    value={exp.vat || "Yes"}
+                                    onChange={(e) => updateExpense(idx, "vat", e.target.value)}
+                                    disabled={isReadOnly}
+                                    title={fieldLockTitle || (isActual ? "VAT treatment is determined upstream in your accounting software." : undefined)}
+                                    style={{
+                                      fontSize: "10px",
+                                      padding: "2px 6px",
+                                      borderRadius: "4px",
+                                      border: "1px solid #cbd5e1",
+                                      background: "#f8fafc",
+                                      color: "#475569",
+                                      cursor: "pointer"
+                                    }}
+                                  >
+                                    <option value="Yes">VAT: Yes</option>
+                                    <option value="No">VAT: No</option>
+                                  </select>
+                                )}
+
+                                {hasAccounting && isActual && (
+                                  <span
+                                    title="Synced from accounting software"
+                                    style={{ display: "inline-flex", alignItems: "center", gap: "3px", fontSize: "10px", color: "#64748b" }}
+                                  >
+                                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                                       <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
                                       <path d="M7 11V7a5 5 0 0 1 10 0v4" />
                                     </svg>
+                                    <span>Synced</span>
                                   </span>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    onClick={() => removeExpense(idx)}
-                                    title="Delete expense"
-                                    style={{
-                                      background: "transparent",
-                                      border: "none",
-                                      color: "#ef4444",
-                                      cursor: "pointer",
-                                      fontSize: "14px",
-                                      padding: "2px",
-                                    }}
-                                  >
-                                    ✕
-                                  </button>
                                 )}
                               </div>
+
+                              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                                <div style={{ fontSize: "13px", fontWeight: 700, color: "#0f172a" }}>
+                                  Total: {currencySymbol}{formatSummaryNum(parseFloat(stripCurrency(exp.amount)) || 0)}
+                                </div>
+                                {!isReadOnly && (
+                                  isActual ? (
+                                    <span title="Synced bill cannot be deleted" style={{ color: "#cbd5e1", fontSize: "12px", cursor: "not-allowed" }}>
+                                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                        <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                                        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                                      </svg>
+                                    </span>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => removeExpense(idx)}
+                                      title="Delete expense"
+                                      style={{
+                                        background: "transparent",
+                                        border: "none",
+                                        color: "#94a3b8",
+                                        cursor: "pointer",
+                                        fontSize: "14px",
+                                        padding: "2px",
+                                        display: "flex",
+                                        alignItems: "center"
+                                      }}
+                                      onMouseEnter={(e) => { e.currentTarget.style.color = "#ef4444"; }}
+                                      onMouseLeave={(e) => { e.currentTarget.style.color = "#94a3b8"; }}
+                                    >
+                                      ✕
+                                    </button>
+                                  )
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Progress Bar (100% green if Paid) */}
+                            {isPaid && (
+                              <div style={{ width: "100%", height: "6px", background: "#f1f5f9", borderRadius: "3px", overflow: "hidden", display: "flex" }}>
+                                <div
+                                  style={{
+                                    width: "100%",
+                                    background: "#10b981",
+                                    borderRadius: "3px",
+                                    transition: "width 0.3s ease",
+                                  }}
+                                  title={`Paid: ${currencySymbol}${formatSummaryNum(parseFloat(stripCurrency(exp.amount)) || 0)}`}
+                                />
+                              </div>
                             )}
+
+                            {/* Inner Details Card */}
+                            <div style={{ background: "#f8fafc", padding: "8px 10px", borderRadius: "6px", border: "1px solid #e2e8f0" }}>
+                              {isPaid ? (
+                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
+                                  <div>
+                                    <div style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "10px", fontWeight: 700, color: "#166534" }}>
+                                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#166534" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                        <polyline points="20 6 9 17 4 12" />
+                                      </svg>
+                                      <span>Payment settled</span>
+                                    </div>
+                                    <div style={{ fontSize: "12.5px", fontWeight: 600, color: "#0f172a", marginTop: "2px" }}>
+                                      {currencySymbol}{formatSummaryNum(parseFloat(stripCurrency(exp.amount)) || 0)}
+                                    </div>
+                                    <div style={{ fontSize: "10px", color: "#64748b", marginTop: "2px" }}>
+                                      Received date: {toSheetDateFormat(exp.recDate) || "-"}
+                                      {exp.days ? <span> · Paid in {exp.days} days</span> : ""}
+                                    </div>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+                                  {/* Left: Amount & receive date */}
+                                  <div>
+                                    {isFieldLocked ? (
+                                      <>
+                                        <div style={{ fontSize: "12.5px", fontWeight: 600, color: "#0f172a" }}>
+                                          {currencySymbol}{formatSummaryNum(parseFloat(stripCurrency(exp.amount)) || 0)}
+                                        </div>
+                                        <div style={{ fontSize: "10px", color: "#64748b", marginTop: "2px" }}>
+                                          Received date: {toSheetDateFormat(exp.recDate) || "Unset"}
+                                        </div>
+                                      </>
+                                    ) : (
+                                      <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                                        <input
+                                          type="text"
+                                          placeholder="Amount"
+                                          value={exp.amount || ""}
+                                          onChange={(e) => updateExpense(idx, "amount", e.target.value)}
+                                          disabled={isReadOnly}
+                                          style={{
+                                            ...formInputStyle,
+                                            width: "105px",
+                                            padding: "2px 5px",
+                                            fontSize: "11px",
+                                            fontWeight: 600
+                                          }}
+                                        />
+                                        <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                                          <label style={{ fontSize: "9.5px", color: "#64748b", fontWeight: 600, whiteSpace: "nowrap" }}>Received date:</label>
+                                          <input
+                                            type="date"
+                                            value={toInputDateFormat(exp.recDate) || ""}
+                                            onChange={(e) => updateExpense(idx, "recDate", e.target.value)}
+                                            disabled={isReadOnly}
+                                            style={{
+                                              ...formInputStyle,
+                                              padding: "2px 4px",
+                                              fontSize: "10px"
+                                            }}
+                                          />
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  {/* Right: Payment timing */}
+                                  <div style={{ display: "flex", alignItems: "center" }}>
+                                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                      <label style={{ fontSize: "10px", color: "#64748b", fontWeight: 600, whiteSpace: "nowrap" }}>
+                                        Days to pay:
+                                      </label>
+                                      <input
+                                        type="number"
+                                        placeholder="30"
+                                        value={exp.days || ""}
+                                        onChange={(e) => updateExpense(idx, "days", e.target.value)}
+                                        disabled={isPaid || isAutoLocked || isReadOnly}
+                                        title={isAutoLocked ? "Automatic placeholder. Convert to manual placeholder to edit." : (isPaid ? "Days to pay is determined once a bill is marked as paid." : undefined)}
+                                        style={{
+                                          ...formInputStyle,
+                                          width: "55px",
+                                          padding: "2px 5px",
+                                          fontSize: "11px",
+                                          textAlign: "center",
+                                          background: (isPaid || isAutoLocked) ? "#f8fafc" : "#ffffff",
+                                        }}
+                                      />
+                                      {calculatePaymentDate(exp.recDate, exp.days) && (
+                                        <span style={{ fontSize: "10px", color: "#64748b", whiteSpace: "nowrap" }}>
+                                          Expected payment date: <strong style={{ color: "#0f172a" }}>{calculatePaymentDate(exp.recDate, exp.days)}</strong>
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
                           </div>
                         );
                       })}

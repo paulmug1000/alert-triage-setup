@@ -71,6 +71,51 @@ export default function CashflowReconTab({
   const [pulseNoteDraft, setPulseNoteDraft] = useState("");
   const [savingNote, setSavingNote] = useState(false);
 
+  // Status for Reconciled & ready for automated P&L updates
+  const [updatingReconStatus, setUpdatingReconStatus] = useState(false);
+
+  const handleToggleReconciledComplete = async () => {
+    const tabName = reconData?.reconTabName || reconData?.tabName;
+    if (!currentClientInfo?.reconSheetId || !tabName || updatingReconStatus) return;
+    const nextVal = !reconData?.isReconciledComplete;
+    setUpdatingReconStatus(true);
+    try {
+      const resp = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "set_recon_month_ready",
+          reconSheetId: currentClientInfo.reconSheetId,
+          tabName,
+          isComplete: nextVal,
+          clientName: selectedClient,
+          automationCommanderSheetId
+        })
+      });
+      const data = await resp.json();
+      if (!data.success) throw new Error(data.error || "Failed to update status");
+
+      setReconData(prev => prev ? ({ ...prev, isReconciledComplete: nextVal }) : prev);
+      setSuccessMsg(nextVal ? "Month marked as reconciled & ready for automated P&L updates" : "Month marked as in-progress");
+      setTimeout(() => setSuccessMsg(""), 3500);
+
+      fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "sync_client_expense_breakdown",
+          clientName: selectedClient,
+          automationCommanderSheetId
+        })
+      }).catch(e => console.warn("Failed to trigger P&L breakdown sync:", e));
+    } catch (err) {
+      setError(`Failed to update reconciliation status: ${err.message}`);
+      setTimeout(() => setError(""), 4000);
+    } finally {
+      setUpdatingReconStatus(false);
+    }
+  };
+
   // Auto-restore or sync client
   useEffect(() => {
     if (initialClient && initialClient !== selectedClient) {
@@ -806,7 +851,7 @@ export default function CashflowReconTab({
         boxShadow: "0 1px 3px rgba(0,0,0,0.04)"
       }}>
         {/* Title row */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "16px" }}>
+        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "16px" }}>
           <div>
             <h3 style={{ margin: 0, fontSize: "20px", fontWeight: "700", color: "#0f172a" }}>
               Cashflow recon
@@ -814,10 +859,7 @@ export default function CashflowReconTab({
           </div>
 
           {!selectedClient && (
-            <div style={{ minWidth: "260px", flex: "0 1 300px" }}>
-              <label style={{ display: "block", fontSize: "11px", fontWeight: "700", textTransform: "uppercase", color: "#64748b", marginBottom: "4px", letterSpacing: "0.5px" }}>
-                Select client
-              </label>
+            <div style={{ minWidth: "260px" }}>
               <select
                 value={selectedClient}
                 onChange={e => {
@@ -825,8 +867,7 @@ export default function CashflowReconTab({
                   setReconData(null);
                 }}
                 style={{
-                  width: "100%",
-                  padding: "8px 12px",
+                  padding: "6px 12px",
                   border: "1px solid #cbd5e1",
                   borderRadius: "8px",
                   fontSize: "14px",
@@ -922,8 +963,38 @@ export default function CashflowReconTab({
                 </div>
               </div>
 
-              {/* Right: EoM task complete button and Sheet links */}
+              {/* Right: Reconciled & ready toggle, EoM task complete button and Sheet links */}
               <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+                {reconData && (
+                  <label style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    cursor: updatingReconStatus ? "wait" : "pointer",
+                    userSelect: "none",
+                    padding: "5px 10px",
+                    borderRadius: "6px",
+                    background: reconData?.isReconciledComplete ? "#f0fdf4" : "#f8fafc",
+                    border: `1px solid ${reconData?.isReconciledComplete ? "#86efac" : "#cbd5e1"}`
+                  }}>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(reconData?.isReconciledComplete)}
+                      disabled={updatingReconStatus}
+                      onChange={handleToggleReconciledComplete}
+                      style={{ width: "14px", height: "14px", cursor: "pointer", accentColor: "#15803d" }}
+                    />
+                    <span style={{
+                      fontSize: "12px",
+                      fontWeight: "600",
+                      color: reconData?.isReconciledComplete ? "#15803d" : "#475569"
+                    }}>
+                      Reconciled & ready for automated P&L updates
+                    </span>
+                    {updatingReconStatus && <Spinner size={11} />}
+                  </label>
+                )}
+
                 {linkedTask && onTaskMarkedDone && (
                   <button
                     onClick={() => onTaskMarkedDone(selectedClient, linkedTask.taskId)}
@@ -949,7 +1020,7 @@ export default function CashflowReconTab({
                     rel="noreferrer"
                     style={{ fontSize: "12px", color: "#0284c7", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: "4px", fontWeight: "600" }}
                   >
-                    📊 Client sheet ↗
+                    Client sheet ↗
                   </a>
                 )}
 
@@ -960,7 +1031,7 @@ export default function CashflowReconTab({
                     rel="noreferrer"
                     style={{ fontSize: "12px", color: "#0284c7", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: "4px", fontWeight: "600" }}
                   >
-                    📑 Recon sheet ↗
+                    Recon sheet ↗
                   </a>
                 )}
               </div>

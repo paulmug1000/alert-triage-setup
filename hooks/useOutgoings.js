@@ -206,9 +206,7 @@ export function useOutgoings(assignedAppIds, assignedByClient, setAssignedByClie
     } catch(e) { console.error("loadOutgoings error:", e); }
     finally {
       setOutgoingsLoading(false);
-      setVendorsSubTab("contractors");
       setDirectCostsJobs(null);
-      setDirectCostsShowAll(false);
     }
   };
 

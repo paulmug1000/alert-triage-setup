@@ -6,6 +6,7 @@ import {
   hasActiveAccountingIntegration,
   EXPENSE_STATUS_OPTIONS,
   canonicalizeExpenseStatus,
+  calculatePaymentDate
 } from "../utils/helpers";
 import { useAuth } from "../hooks/useAuth";
 import { useAppGlobals } from "../hooks/useAppGlobals";
@@ -64,8 +65,8 @@ export default function DirectCostsEditModal({
   const isLocked = Boolean(
     hasAccounting &&
     !isPlaceholder &&
-    (((slot?.transactionId || transactionId) && String(slot?.transactionId || transactionId).trim() !== "") ||
-      ((slot?.description || description) && String(slot?.description || description).trim() !== ""))
+    (slot?.transactionId || transactionId) &&
+    String(slot?.transactionId || transactionId).trim() !== ""
   );
   const isFieldLocked = isLocked || isAutoLocked;
 
@@ -99,13 +100,16 @@ export default function DirectCostsEditModal({
           clientName: client?.clientName || client?.name || "",
           tabName: tabName || editSlot.tabName || "Confirmed",
           rowNum, slotNum,
+          createNewRow: !!editSlot.createNewRow,
+          jobClient: editSlot.jobClient || client?.clientName || "",
+          jobName: editSlot.jobName || "",
           expense: {
             description: isLocked ? (slot.description || description) : description,
             amount: isLocked ? (parseFloat(slot.amount) || parseFloat(amount) || 0) : (parseFloat(amount) || 0),
             vat: isLocked ? (slot.vat || vat) : vat,
             date: isLocked ? (slot.date || date) : date,
             daysToPay: isPaid ? (parseInt(slot.daysToPay, 10) || parseInt(daysToPay, 10) || 30) : (parseInt(daysToPay, 10) || 30),
-            status: isLocked ? (slot.status || status) : status,
+            status: isLocked ? (slot.status || status) : (isPlaceholder ? (slot.status || "") : status),
             transactionId: isLocked ? (slot.transactionId || transactionId) : transactionId,
           },
         }),
@@ -120,7 +124,7 @@ export default function DirectCostsEditModal({
         vat: isLocked ? (slot.vat || vat) : vat,
         date: isLocked ? (slot.date || date) : date,
         daysToPay: isPaid ? (parseInt(slot.daysToPay, 10) || parseInt(daysToPay, 10) || 30) : (parseInt(daysToPay, 10) || 30),
-        status: isLocked ? (slot.status || status) : status,
+        status: isLocked ? (slot.status || status) : (isPlaceholder ? (slot.status || "") : status),
         transactionId: isLocked ? (slot.transactionId || transactionId) : transactionId,
       }, data);
       close();
@@ -164,13 +168,19 @@ export default function DirectCostsEditModal({
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "16px" }}>
           <div>
             <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700", color: "#1e293b" }}>
-              {jobName
-                ? `${jobName} · ${isAdmin ? (editSlot.slotLabel || `Slot ${slotNum}`) : (editSlot.slotLabel ? editSlot.slotLabel.replace(/\s*\(Row\s*\d+\)/gi, "").replace(/\bRow\s*\d+\b,?\s*/gi, "").trim() : `Slot ${slotNum}`)}`
-                : `Edit expense - ${isAdmin
-                  ? (editSlot.slotLabel ? `${editSlot.slotLabel} (Row ${rowNum})` : `Row ${rowNum}, Slot ${slotNum}`)
-                  : (editSlot.slotLabel ? editSlot.slotLabel.replace(/\s*\(Row\s*\d+\)/gi, "").replace(/\bRow\s*\d+\b,?\s*/gi, "").trim() : `Slot ${slotNum}`)}`}
+              {(() => {
+                if (editSlot.isNewPlaceholder) {
+                  return jobName ? `${jobName} · New placeholder` : "New placeholder";
+                }
+                const rawLabel = editSlot.slotLabel || "";
+                const isGeneric = !rawLabel || /^slot\s*\d+$/i.test(rawLabel.trim()) || /^direct\s*cost\s*\d+$/i.test(rawLabel.trim());
+                const cleanLabel = isGeneric
+                  ? (description || (transactionId ? `#${transactionId}` : (isPlaceholder ? "Placeholder" : "Direct cost")))
+                  : rawLabel.replace(/\s*\(Row\s*\d+\)/gi, "").replace(/\bRow\s*\d+\b,?\s*/gi, "").trim();
+                return jobName ? `${jobName} · ${cleanLabel}` : `Edit expense: ${cleanLabel}`;
+              })()}
             </h3>
-            {jobClient && <div style={{ fontSize: "12px", color: "#64748b", marginTop: "2px" }}>Client: <strong>{jobClient}</strong>{isAdmin ? ` · Row ${rowNum}` : ""}</div>}
+            {jobClient && <div style={{ fontSize: "12px", color: "#64748b", marginTop: "2px" }}>Client: <strong>{jobClient}</strong></div>}
           </div>
           <button onClick={close} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}>×</button>
         </div>
@@ -288,7 +298,7 @@ export default function DirectCostsEditModal({
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
             <div>
-              <label style={labelStyle}>Date</label>
+              <label style={labelStyle}>Received date</label>
               <DateInput
                 style={{
                   ...inputStyle,
@@ -313,29 +323,36 @@ export default function DirectCostsEditModal({
                 disabled={isPaid || isAutoLocked}
                 title={isAutoLocked ? "Automatic placeholder. Convert to manual placeholder to edit." : (isPaid ? "Days to pay is determined once a bill is marked as paid." : undefined)}
               />
+              {calculatePaymentDate(date, daysToPay) && (
+                <div style={{ fontSize: "11px", color: "#64748b", marginTop: "4px" }}>
+                  Expected payment date: <strong style={{ color: "#0f172a", fontWeight: "600" }}>{calculatePaymentDate(date, daysToPay)}</strong>
+                </div>
+              )}
             </div>
           </div>
-          <div>
-            <label style={labelStyle}>Status</label>
-            <select
-              style={{
-                ...inputStyle,
-                ...(isFieldLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
-              }}
-              value={canonicalStatus}
-              onChange={e => setStatus(e.target.value)}
-              disabled={isFieldLocked}
-              title={fieldLockTitle}
-            >
-              <option value="">Select...</option>
-              {EXPENSE_STATUS_OPTIONS.map((st) => (
-                <option key={st} value={st}>{st}</option>
-              ))}
-              {canonicalStatus && !EXPENSE_STATUS_OPTIONS.includes(canonicalStatus) && (
-                <option value={canonicalStatus}>{canonicalStatus}</option>
-              )}
-            </select>
-          </div>
+          {!isPlaceholder && (
+            <div>
+              <label style={labelStyle}>Status</label>
+              <select
+                style={{
+                  ...inputStyle,
+                  ...(isFieldLocked ? { background: "#f8fafc", color: "#64748b", cursor: "not-allowed", borderColor: "#e2e8f0" } : {})
+                }}
+                value={canonicalStatus}
+                onChange={e => setStatus(e.target.value)}
+                disabled={isFieldLocked}
+                title={fieldLockTitle}
+              >
+                <option value="">Select...</option>
+                {EXPENSE_STATUS_OPTIONS.map((st) => (
+                  <option key={st} value={st}>{st}</option>
+                ))}
+                {canonicalStatus && !EXPENSE_STATUS_OPTIONS.includes(canonicalStatus) && (
+                  <option value={canonicalStatus}>{canonicalStatus}</option>
+                )}
+              </select>
+            </div>
+          )}
           <div>
             <label style={labelStyle}>Transaction ID</label>
             <input
@@ -352,7 +369,7 @@ export default function DirectCostsEditModal({
 
         {confirmingDelete ? (
           <div style={{ marginTop: "18px", padding: "12px", background: "#fff5f5", border: "1px solid #fecaca", borderRadius: "8px" }}>
-            <div style={{ fontSize: "13px", color: "#991b1b", marginBottom: "10px" }}>Delete this expense? This clears all 7 fields for this slot and can&apos;t be undone from here.</div>
+            <div style={{ fontSize: "13px", color: "#991b1b", marginBottom: "10px" }}>Delete this direct cost? This cannot be undone from here.</div>
             <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end" }}>
               <button onClick={() => setConfirmingDelete(false)} disabled={saving}
                 style={{ padding: "7px 14px", background: "#f5f5f5", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>Cancel</button>

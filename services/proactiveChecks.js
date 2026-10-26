@@ -963,7 +963,15 @@ export async function checkJobStructureErrors_(clientName, clientSheetId, shared
     if (data.length < 2) return alerts;
 
     const invAmtIdx = [41, 48, 55], expAmtIdx = [76, 83, 90];
-    const hasVal = (v) => v !== "" && v !== null && v !== undefined;
+    const hasVal = (v) => v !== "" && v !== null && v !== undefined && String(v).trim() !== "";
+    const hasInvSlotData = (row, sIdx) => {
+      const base = sIdx === 0 ? 41 : sIdx === 1 ? 48 : 55;
+      return hasVal(row[base]) || hasVal(row[base + 1]);
+    };
+    const hasExpSlotData = (row, sIdx) => {
+      const base = sIdx === 0 ? 75 : sIdx === 1 ? 82 : 89;
+      return hasVal(row[base]) || hasVal(row[base + 1]) || hasVal(row[base + 6]);
+    };
     const fmtDate = (d) => {
       const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
       return `${d.getDate()}-${months[d.getMonth()]}-${String(d.getFullYear()).slice(-2)}`;
@@ -1031,13 +1039,18 @@ export async function checkJobStructureErrors_(clientName, clientSheetId, shared
             problems.push(`${rowLabel}: retainer has data in invoice slot 2 or 3 - retainers should only ever use slot 1 per row (unless tracking part-payment installments)`);
           }
         }
-        if (isRetainer && hasChildren && jobRows[jr].isParent && hasVal(jRow[invAmtIdx[0]])) {
-          problems.push(`${rowLabel}: retainer has child rows but the parent row also holds an invoice - once child rows exist, the parent should stay empty`);
+        if (isRetainer && hasChildren && jobRows[jr].isParent) {
+          if (hasInvSlotData(jRow, 0) || hasInvSlotData(jRow, 1) || hasInvSlotData(jRow, 2)) {
+            problems.push(`${rowLabel}: retainer has child rows but the parent row also holds an invoice - once child rows exist, the parent should stay empty`);
+          }
+          if (hasExpSlotData(jRow, 0) || hasExpSlotData(jRow, 1) || hasExpSlotData(jRow, 2)) {
+            problems.push(`${rowLabel}: retainer has child rows but the parent row also holds a direct cost / expense - once child rows exist, the parent should stay empty`);
+          }
         }
-        if (hasVal(jRow[invAmtIdx[1]]) && !hasVal(jRow[invAmtIdx[0]])) problems.push(`${rowLabel}: invoice slot 2 has data but slot 1 is empty`);
-        if (hasVal(jRow[invAmtIdx[2]]) && (!hasVal(jRow[invAmtIdx[0]]) || !hasVal(jRow[invAmtIdx[1]]))) problems.push(`${rowLabel}: invoice slot 3 has data but slot 1 or 2 is empty`);
-        if (hasVal(jRow[expAmtIdx[1]]) && !hasVal(jRow[expAmtIdx[0]])) problems.push(`${rowLabel}: expense slot 2 has data but slot 1 is empty`);
-        if (hasVal(jRow[expAmtIdx[2]]) && (!hasVal(jRow[expAmtIdx[0]]) || !hasVal(jRow[expAmtIdx[1]]))) problems.push(`${rowLabel}: expense slot 3 has data but slot 1 or 2 is empty`);
+        if (hasInvSlotData(jRow, 1) && !hasInvSlotData(jRow, 0)) problems.push(`${rowLabel}: invoice slot 2 has data but slot 1 is empty`);
+        if (hasInvSlotData(jRow, 2) && (!hasInvSlotData(jRow, 0) || !hasInvSlotData(jRow, 1))) problems.push(`${rowLabel}: invoice slot 3 has data but slot 1 or 2 is empty`);
+        if (hasExpSlotData(jRow, 1) && !hasExpSlotData(jRow, 0)) problems.push(`${rowLabel}: expense slot 2 has data but slot 1 is empty`);
+        if (hasExpSlotData(jRow, 2) && (!hasExpSlotData(jRow, 0) || !hasExpSlotData(jRow, 1))) problems.push(`${rowLabel}: expense slot 3 has data but slot 1 or 2 is empty`);
       }
 
       if (problems.length > 0) {
@@ -1049,6 +1062,9 @@ export async function checkJobStructureErrors_(clientName, clientSheetId, shared
           heading: "Job structure doesn't match expected invoice/expense layout",
           detail: `${jobClient} | ${jobNameV}${projectCode ? ` [${projectCode}]` : ""} (${isRetainer ? "Retainer" : "Project"}): ${problems.join("; ")}`,
           jobName: jobNameV, endClientName: jobClient, projectCode, confirmedRow: r + 1, isRetainer,
+          metadata: {
+            jobName: jobNameV, endClientName: jobClient, projectCode, confirmedRow: r + 1, isRetainer, clientName
+          }
         });
       }
       r += jobRows.length;

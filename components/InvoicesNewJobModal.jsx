@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from "react";
-import { stripCurrency, parseSheetDate, toSheetDateFormat } from "../utils/helpers";
+import { stripCurrency, parseSheetDate, toSheetDateFormat, calculatePaymentDate } from "../utils/helpers";
 import DateInput from "./DateInput";
 
 export default function InvoicesNewJobModal({
@@ -212,6 +212,11 @@ export default function InvoicesNewJobModal({
               value={daysToPay}
               onChange={e => setDaysToPay(e.target.value)}
             />
+            {calculatePaymentDate(inv.sentDate, daysToPay) && (
+              <div style={{ fontSize: "11px", color: "#64748b", marginTop: "4px" }}>
+                Payment date: <strong style={{ color: "#0f172a", fontWeight: "600" }}>{calculatePaymentDate(inv.sentDate, daysToPay)}</strong>
+              </div>
+            )}
           </div>
         </div>
 

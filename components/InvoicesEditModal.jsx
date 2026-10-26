@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from "react";
 import Spinner from "./Spinner";
-import { stripCurrency, isPlaceholderInvoice, hasActiveAccountingIntegration, INVOICE_STATUS_OPTIONS, canonicalizeInvoiceStatus } from "../utils/helpers";
+import { stripCurrency, isPlaceholderInvoice, hasActiveAccountingIntegration, INVOICE_STATUS_OPTIONS, canonicalizeInvoiceStatus, calculatePaymentDate } from "../utils/helpers";
 import { useAuth } from "../hooks/useAuth";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import DateInput from "./DateInput";
@@ -80,6 +80,72 @@ export default function InvoicesEditModal({
       ? "Synced from accounting software. To modify invoice number, amount, or sent date, update directly in your accounting software."
       : undefined;
 
+  const partPaidOverview = useMemo(() => {
+    const rawRef = String(slot?.ref || invoiceNo || "").trim();
+    if (!rawRef || isPlaceholder) return null;
+    const key = rawRef.toUpperCase();
+
+    const siblingSlots = [];
+    (job?.rows || []).forEach((r) => {
+      (r.invoiceSlots || []).forEach((s) => {
+        if (s && String(s.ref || "").trim().toUpperCase() === key) {
+          siblingSlots.push({ ...s, rowNum: r.rowNum });
+        }
+      });
+    });
+
+    if (siblingSlots.length < 2) return null;
+
+    let totalAmount = 0;
+    let receivedAmount = 0;
+    let balanceAmount = 0;
+    let balanceSlot = null;
+    const receivedSlots = [];
+
+    siblingSlots.forEach((s) => {
+      const amt = parseFloat(stripCurrency(s.amount)) || 0;
+      totalAmount += amt;
+      const st = String(s.status || "").toLowerCase();
+      if (st.includes("balance")) {
+        balanceAmount += amt;
+        balanceSlot = s;
+      } else {
+        receivedAmount += amt;
+        receivedSlots.push(s);
+      }
+    });
+
+    const allMarkedPaid = siblingSlots.every((s) => {
+      const st = String(s.status || "").toLowerCase();
+      return st === "paid" || st.includes("paid in full");
+    });
+
+    if (allMarkedPaid || (!balanceSlot && balanceAmount <= 0.005)) {
+      receivedAmount = totalAmount;
+      balanceAmount = 0;
+      balanceSlot = null;
+    } else if (balanceAmount === 0 && balanceSlot) {
+      balanceAmount = Math.max(0, totalAmount - receivedAmount);
+    }
+
+    const currentStatus = String(slot?.status || status || "").toLowerCase();
+    const isCurrentBalance = currentStatus.includes("balance");
+    const isFullyPaid = allMarkedPaid || balanceAmount <= 0.005 || !balanceSlot || String(balanceSlot.status || "").toLowerCase() === "paid";
+    const percentPaid = totalAmount > 0 ? Math.min(100, Math.max(0, (receivedAmount / totalAmount) * 100)) : (allMarkedPaid ? 100 : 0);
+
+    return {
+      totalAmount,
+      receivedAmount,
+      balanceAmount,
+      isCurrentBalance,
+      isFullyPaid,
+      siblingSlots,
+      receivedSlots,
+      balanceSlot,
+      percentPaid
+    };
+  }, [slot, invoiceNo, isPlaceholder, job, status]);
+
   // Move invoice state
   const [movingInvoice, setMovingInvoice] = useState(false);
   const [jobSearch, setJobSearch] = useState("");
@@ -156,6 +222,7 @@ export default function InvoicesEditModal({
           clientName: invoicesClient?.clientName || invoicesClient?.name || "",
           tabName: tabName || editSlot.tabName || "Confirmed",
           rowNum, slotNum,
+          createNewRow: !!editSlot.createNewRow,
           jobClient, jobName,
           invoice: { invoiceNo, amount: parseFloat(amount) || 0, sentDate, daysToPay: parseInt(daysToPay) || 30, status },
           updateJobRevenue,
@@ -375,17 +442,17 @@ export default function InvoicesEditModal({
             <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700", color: "#1e293b" }}>
               {movingInvoice ? (
                 `Move invoice #${invoiceNo || slot.ref}`
+              ) : editSlot.isNewPlaceholder ? (
+                `${jobName ? `${jobName} · ` : ""}New placeholder`
               ) : jobName ? (
-                `${jobName} · ${isAdmin ? (editSlot.slotLabel || `Slot ${slotNum}`) : (editSlot.slotLabel ? editSlot.slotLabel.replace(/\s*\(Row\s*\d+\)/gi, "").replace(/\bRow\s*\d+\b,?\s*/gi, "").trim() : `Slot ${slotNum}`)}`
+                `${jobName} · ${invoiceNo ? `#${invoiceNo}` : (isPlaceholder ? "Placeholder" : "Invoice")}`
               ) : (
-                `Edit invoice - ${isAdmin
-                  ? (editSlot.slotLabel ? `${editSlot.slotLabel} (Row ${rowNum})` : `Row ${rowNum}, Slot ${slotNum}`)
-                  : (editSlot.slotLabel ? editSlot.slotLabel.replace(/\s*\(Row\s*\d+\)/gi, "").replace(/\bRow\s*\d+\b,?\s*/gi, "").trim() : `Slot ${slotNum}`)}`
+                invoiceNo ? `Invoice #${invoiceNo}` : (isPlaceholder ? "Placeholder" : "Edit invoice")
               )}
             </h3>
             {jobClient && (
               <div style={{ fontSize: "12px", color: "#64748b", marginTop: "2px" }}>
-                Client: <strong>{jobClient}</strong>{isAdmin ? ` · Row ${rowNum}` : ""}
+                Client: <strong>{jobClient}</strong>
               </div>
             )}
           </div>
@@ -515,6 +582,108 @@ export default function InvoicesEditModal({
         ) : (
           /* STANDARD EDIT FORM */
           <>
+            {partPaidOverview && (
+              <div
+                style={{
+                  fontSize: "12px",
+                  color: partPaidOverview.isFullyPaid ? "#166534" : "#0369a1",
+                  background: partPaidOverview.isFullyPaid ? "#f0fdf4" : "#f0f9ff",
+                  border: `1px solid ${partPaidOverview.isFullyPaid ? "#bbf7d0" : "#bae6fd"}`,
+                  borderRadius: "6px",
+                  padding: "10px 12px",
+                  marginBottom: "14px",
+                  lineHeight: "1.4",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "6px"
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div style={{ fontWeight: 700, color: partPaidOverview.isFullyPaid ? "#166534" : "#0369a1", display: "flex", alignItems: "center", gap: "6px" }}>
+                    <span>
+                      {partPaidOverview.isFullyPaid
+                        ? `Paid invoice #${slot?.ref || invoiceNo}`
+                        : `Part-paid invoice #${slot?.ref || invoiceNo}`}
+                    </span>
+                    <span
+                      style={{
+                        fontSize: "10px",
+                        background: partPaidOverview.isFullyPaid ? "#dcfce7" : "#e0f2fe",
+                        color: partPaidOverview.isFullyPaid ? "#15803d" : "#0369a1",
+                        padding: "1px 6px",
+                        borderRadius: "10px",
+                        fontWeight: 600
+                      }}
+                    >
+                      {partPaidOverview.isFullyPaid
+                        ? `Paid in full (${partPaidOverview.siblingSlots.length} payments)`
+                        : `${partPaidOverview.percentPaid.toFixed(1)}% received`}
+                    </span>
+                  </div>
+                  <div style={{ fontWeight: 600, color: "#0f172a" }}>
+                    Total: £{partPaidOverview.totalAmount.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </div>
+                </div>
+
+                {partPaidOverview.isFullyPaid ? (
+                  <div
+                    style={{
+                      background: "#ffffff",
+                      padding: "6px 10px",
+                      borderRadius: "4px",
+                      border: "1px solid #dcfce7",
+                      fontSize: "11px",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: "4px"
+                    }}
+                  >
+                    <div style={{ color: "#166534", fontWeight: 600, marginBottom: "2px" }}>
+                      Settled payment breakdown ({partPaidOverview.siblingSlots.length} tranches):
+                    </div>
+                    {partPaidOverview.siblingSlots.map((s, idx) => {
+                      const amt = parseFloat(stripCurrency(s.amount)) || 0;
+                      return (
+                        <div key={idx} style={{ display: "flex", justifyContent: "space-between", color: "#334155" }}>
+                          <span>
+                            ✓ Payment {idx + 1}: <strong>£{amt.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
+                            {s.daysToPay && (
+                              <span style={{ color: "#64748b" }}> · Paid in {s.daysToPay}d</span>
+                            )}
+                          </span>
+                          <span style={{ fontSize: "10px", color: "#64748b" }}>
+                            {s.slotNum ? `Slot ${s.slotNum}` : `Row ${s.rowNum}`}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", background: "#ffffff", padding: "6px 10px", borderRadius: "4px", border: "1px solid #e0f2fe", fontSize: "11px" }}>
+                    <div>
+                      <span style={{ color: "#166534", fontWeight: 600 }}>✓ Received: </span>
+                      <strong style={{ color: "#0f172a" }}>
+                        £{partPaidOverview.receivedAmount.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </strong>
+                      {partPaidOverview.receivedSlots[0]?.daysToPay && (
+                        <span style={{ color: "#64748b" }}> ({partPaidOverview.receivedSlots[0].daysToPay}d to pay)</span>
+                      )}
+                    </div>
+                    <div>
+                      <span style={{ color: "#b45309", fontWeight: 600 }}>⏳ Balance: </span>
+                      <strong style={{ color: "#0f172a" }}>
+                        £{partPaidOverview.balanceAmount.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </strong>
+                      {partPaidOverview.isCurrentBalance ? (
+                        <span style={{ color: "#0284c7", fontWeight: 600 }}> (this slot)</span>
+                      ) : (
+                        <span style={{ color: "#64748b" }}> (other slot)</span>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
             {isAutoLocked && (
               <div style={{
                 fontSize: "12px",
@@ -633,6 +802,11 @@ export default function InvoicesEditModal({
                     disabled={isPaid || isAutoLocked}
                     title={isAutoLocked ? "Automatic placeholder. Convert to manual placeholder to edit." : (isPaid ? "Days to pay is determined once an invoice is marked as paid." : undefined)}
                   />
+                  {calculatePaymentDate(sentDate, daysToPay) && (
+                    <div style={{ fontSize: "11px", color: "#64748b", marginTop: "4px" }}>
+                      Expected payment date: <strong style={{ color: "#0f172a", fontWeight: "600" }}>{calculatePaymentDate(sentDate, daysToPay)}</strong>
+                    </div>
+                  )}
                 </div>
               </div>
               <div>

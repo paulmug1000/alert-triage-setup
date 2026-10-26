@@ -322,7 +322,7 @@ export default function JobMatchCard({
         if (item.slotNum === 1) return true;
         const s = item.slot || {};
         return Boolean(
-          ((s.description && String(s.description).trim() !== "") || (s.transactionId && String(s.transactionId).trim() !== "")) &&
+          s.transactionId && String(s.transactionId).trim() !== "" &&
           !isPlaceholderExpense(s)
         );
       })
@@ -348,7 +348,7 @@ export default function JobMatchCard({
     expenseItems.forEach((item) => {
       const s = item.slot || {};
       const hasReal = Boolean(
-        ((s.description && String(s.description).trim() !== "") || (s.transactionId && String(s.transactionId).trim() !== "")) &&
+        s.transactionId && String(s.transactionId).trim() !== "" &&
         !isPlaceholderExpense(s)
       );
       if (hasReal) placedExpenses.push(item);

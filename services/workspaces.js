@@ -755,10 +755,48 @@ export async function handleGetDirectCostsJobs(req, res, sheets) {
       }
       ri = cj;
 
-      const startDate = parseSheetDate(row[37]);
-      const passesFilter = showAll || (budgetNum > 0 && startDate && startDate >= sixMonthsAgo);
+      let realCostsTotal = 0;
+      let hasAnyExpenses = false;
+      for (const jr of jobRows) {
+        for (const slot of jr.expenseSlots) {
+          const isReal = (slot.transactionId || slot.description) && !isPlaceholderExpense(slot);
+          if (isReal) {
+            realCostsTotal += parseFloat(String(slot.amount || "").replace(/[£$€,\s]/g, "")) || 0;
+            hasAnyExpenses = true;
+          } else if (slot.amount || slot.description || slot.transactionId) {
+            hasAnyExpenses = true;
+          }
+        }
+      }
+      const revenueNum = parseFloat(String(row[32] || "").replace(/[£$€,\s]/g, "")) || 0;
+      const unreceivedCosts = budgetNum - realCostsTotal;
+
+      const hasDirectCosts = budgetNum > 0 || hasAnyExpenses;
+      const parentStart = parseSheetDate(row[37]);
+      const parentEnd = parseSheetDate(row[38]);
+      let hasRecentDate = (parentStart && parentStart >= sixMonthsAgo) || (parentEnd && parentEnd >= sixMonthsAgo);
+      if (!hasRecentDate) {
+        for (const jr of jobRows) {
+          const rStart = parseSheetDate(jr.startDate);
+          const rEnd = parseSheetDate(jr.endDate);
+          if ((rStart && rStart >= sixMonthsAgo) || (rEnd && rEnd >= sixMonthsAgo)) {
+            hasRecentDate = true;
+            break;
+          }
+          for (const slot of jr.expenseSlots) {
+            const sDate = parseSheetDate(slot.date);
+            if (sDate && sDate >= sixMonthsAgo) {
+              hasRecentDate = true;
+              break;
+            }
+          }
+          if (hasRecentDate) break;
+        }
+      }
+
+      const passesFilter = showAll ? true : (hasDirectCosts && hasRecentDate);
       if (passesFilter) {
-        jobs.push({ client, jobName, projectCode: row[2] || "", rows: jobRows });
+        jobs.push({ client, jobName, projectCode: row[2] || "", rows: jobRows, unreceivedCosts });
       }
     }
 
@@ -1520,6 +1558,14 @@ async function insertChildJobRow_(sheets, sheetIdClean, jobLastRow, jobClient, j
   return targetRowNum;
 }
 
+function generateAutoPlaceholderRef_(prefix = "PLACE-INV") {
+  const ms = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const now = new Date();
+  const dateStr = `${ms[now.getMonth()]}-${String(now.getFullYear()).slice(-2)}`;
+  const rand = Math.floor(1000 + Math.random() * 9000);
+  return `${prefix}-${dateStr}-${rand}`;
+}
+
 export async function adjustJobInvoicePlaceholders_(sheets, sheetIdClean, targetTab, rowNums, jobRevenue) {
   try {
     const validRowNums = (Array.isArray(rowNums) ? rowNums : [rowNums]).map(Number).filter(n => n && n >= 2);
@@ -1547,7 +1593,9 @@ export async function adjustJobInvoicePlaceholders_(sheets, sheetIdClean, target
     }
 
     let realInvoicedTotal = 0;
-    let placeholderInvoice = null;
+    let manualPlaceholdersTotal = 0;
+    const autoPlaceholders = [];
+    let firstEmptySlot = null;
 
     for (const rNum of validRowNums) {
       const rowArr = rows[rNum - minRow] || [];
@@ -1558,39 +1606,82 @@ export async function adjustJobInvoicePlaceholders_(sheets, sheetIdClean, target
         const st = String(rowArr[base + 4] || "").trim();
 
         const isPlace = isPlaceholderInvoice(ref, st);
-        if (isPlace) {
-          if (!placeholderInvoice) {
-            placeholderInvoice = { rowNum: rNum, slotNum: s, currentAmount: amt };
+        const isEmpty = !ref && !amt;
+
+        if (isEmpty) {
+          if (!firstEmptySlot) firstEmptySlot = { rowNum: rNum, slotNum: s };
+        } else if (isPlace) {
+          const isAuto = !ref || ref.toUpperCase().startsWith("PLACE");
+          if (isAuto) {
+            autoPlaceholders.push({ rowNum: rNum, slotNum: s, currentAmount: amt });
+          } else {
+            manualPlaceholdersTotal += amt;
           }
-        } else if (ref && !isPlace) {
+        } else {
           realInvoicedTotal += amt;
         }
       }
     }
 
-    if (placeholderInvoice && effectiveRev > 0) {
-      const remainingToInvoice = Math.max(0, Math.round((effectiveRev - realInvoicedTotal) * 100) / 100);
-      const cols = slotCols[placeholderInvoice.slotNum];
+    if (effectiveRev > 0) {
+      const remainingToInvoice = Math.max(0, Math.round((effectiveRev - realInvoicedTotal - manualPlaceholdersTotal) * 100) / 100);
+
       if (remainingToInvoice > 0.01) {
-        await withRetry(() =>
-          sheets.spreadsheets.values.update({
-            spreadsheetId: sheetIdClean,
-            range: `${targetTab}!${cols.a}${placeholderInvoice.rowNum}`,
-            valueInputOption: "RAW",
-            requestBody: { values: [[remainingToInvoice]] }
-          })
-        );
-        return { rowNum: placeholderInvoice.rowNum, slotNum: placeholderInvoice.slotNum, amount: remainingToInvoice, cleared: false };
+        if (autoPlaceholders.length > 0) {
+          const primary = autoPlaceholders[0];
+          const cols = slotCols[primary.slotNum];
+          await withRetry(() =>
+            sheets.spreadsheets.values.update({
+              spreadsheetId: sheetIdClean,
+              range: `${targetTab}!${cols.a}${primary.rowNum}`,
+              valueInputOption: "RAW",
+              requestBody: { values: [[remainingToInvoice]] }
+            })
+          );
+
+          // Clear any extra auto placeholders
+          for (let i = 1; i < autoPlaceholders.length; i++) {
+            const extra = autoPlaceholders[i];
+            const extraCols = slotCols[extra.slotNum];
+            await withRetry(() =>
+              sheets.spreadsheets.values.update({
+                spreadsheetId: sheetIdClean,
+                range: `${targetTab}!${extraCols.a}${extra.rowNum}:${extraCols.st}${extra.rowNum}`,
+                valueInputOption: "RAW",
+                requestBody: { values: [["", "", "", "", ""]] }
+              })
+            );
+          }
+          return { rowNum: primary.rowNum, slotNum: primary.slotNum, amount: remainingToInvoice, cleared: false };
+        } else if (firstEmptySlot) {
+          const cols = slotCols[firstEmptySlot.slotNum];
+          const autoRef = generateAutoPlaceholderRef_("PLACE-INV");
+          await withRetry(() =>
+            sheets.spreadsheets.values.update({
+              spreadsheetId: sheetIdClean,
+              range: `${targetTab}!${cols.a}${firstEmptySlot.rowNum}:${cols.st}${firstEmptySlot.rowNum}`,
+              valueInputOption: "RAW",
+              requestBody: { values: [[remainingToInvoice, autoRef, "", 30, "Placeholder"]] }
+            })
+          );
+          return { rowNum: firstEmptySlot.rowNum, slotNum: firstEmptySlot.slotNum, amount: remainingToInvoice, cleared: false };
+        }
       } else {
-        await withRetry(() =>
-          sheets.spreadsheets.values.update({
-            spreadsheetId: sheetIdClean,
-            range: `${targetTab}!${cols.a}${placeholderInvoice.rowNum}:${cols.st}${placeholderInvoice.rowNum}`,
-            valueInputOption: "RAW",
-            requestBody: { values: [["", "", "", "", ""]] }
-          })
-        );
-        return { rowNum: placeholderInvoice.rowNum, slotNum: placeholderInvoice.slotNum, amount: 0, cleared: true };
+        // Clear all auto placeholders
+        for (const p of autoPlaceholders) {
+          const cols = slotCols[p.slotNum];
+          await withRetry(() =>
+            sheets.spreadsheets.values.update({
+              spreadsheetId: sheetIdClean,
+              range: `${targetTab}!${cols.a}${p.rowNum}:${cols.st}${p.rowNum}`,
+              valueInputOption: "RAW",
+              requestBody: { values: [["", "", "", "", ""]] }
+            })
+          );
+        }
+        if (autoPlaceholders.length > 0) {
+          return { rowNum: autoPlaceholders[0].rowNum, slotNum: autoPlaceholders[0].slotNum, amount: 0, cleared: true };
+        }
       }
     }
   } catch (err) {
@@ -1626,7 +1717,9 @@ export async function adjustJobExpensePlaceholders_(sheets, sheetIdClean, target
     }
 
     let realExpensesTotal = 0;
-    let placeholderExpense = null;
+    let manualExpensesTotal = 0;
+    const autoPlaceholders = [];
+    let firstEmptySlot = null;
 
     for (const rNum of validRowNums) {
       const rowArr = rows[rNum - minRow] || [];
@@ -1638,9 +1731,16 @@ export async function adjustJobExpensePlaceholders_(sheets, sheetIdClean, target
         const id = String(rowArr[base + 6] || "").trim();
 
         const isPlace = isPlaceholderExpense(id, desc, st);
-        if (isPlace) {
-          if (!placeholderExpense) {
-            placeholderExpense = { rowNum: rNum, slotNum: s, currentAmount: amt };
+        const isEmpty = !desc && !id && !amt;
+
+        if (isEmpty) {
+          if (!firstEmptySlot) firstEmptySlot = { rowNum: rNum, slotNum: s };
+        } else if (isPlace) {
+          const isAuto = (!id && !desc) || id.toUpperCase().startsWith("PLACE") || desc.toUpperCase().startsWith("PLACE");
+          if (isAuto) {
+            autoPlaceholders.push({ rowNum: rNum, slotNum: s, currentAmount: amt });
+          } else {
+            manualExpensesTotal += amt;
           }
         } else if ((id || desc) && amt > 0) {
           realExpensesTotal += amt;
@@ -1648,29 +1748,63 @@ export async function adjustJobExpensePlaceholders_(sheets, sheetIdClean, target
       }
     }
 
-    if (placeholderExpense && effectiveBudget > 0) {
-      const remainingDC = Math.max(0, Math.round((effectiveBudget - realExpensesTotal) * 100) / 100);
-      const cols = slotCols[placeholderExpense.slotNum];
+    if (effectiveBudget > 0) {
+      const remainingDC = Math.max(0, Math.round((effectiveBudget - realExpensesTotal - manualExpensesTotal) * 100) / 100);
+
       if (remainingDC > 0.01) {
-        await withRetry(() =>
-          sheets.spreadsheets.values.update({
-            spreadsheetId: sheetIdClean,
-            range: `${targetTab}!${cols.a}${placeholderExpense.rowNum}`,
-            valueInputOption: "RAW",
-            requestBody: { values: [[remainingDC]] }
-          })
-        );
-        return { rowNum: placeholderExpense.rowNum, slotNum: placeholderExpense.slotNum, amount: remainingDC, cleared: false };
+        if (autoPlaceholders.length > 0) {
+          const primary = autoPlaceholders[0];
+          const cols = slotCols[primary.slotNum];
+          await withRetry(() =>
+            sheets.spreadsheets.values.update({
+              spreadsheetId: sheetIdClean,
+              range: `${targetTab}!${cols.a}${primary.rowNum}`,
+              valueInputOption: "RAW",
+              requestBody: { values: [[remainingDC]] }
+            })
+          );
+
+          for (let i = 1; i < autoPlaceholders.length; i++) {
+            const extra = autoPlaceholders[i];
+            const extraCols = slotCols[extra.slotNum];
+            await withRetry(() =>
+              sheets.spreadsheets.values.update({
+                spreadsheetId: sheetIdClean,
+                range: `${targetTab}!${extraCols.d}${extra.rowNum}:${extraCols.id}${extra.rowNum}`,
+                valueInputOption: "RAW",
+                requestBody: { values: [["", "", "", "", "", "", ""]] }
+              })
+            );
+          }
+          return { rowNum: primary.rowNum, slotNum: primary.slotNum, amount: remainingDC, cleared: false };
+        } else if (firstEmptySlot) {
+          const cols = slotCols[firstEmptySlot.slotNum];
+          const autoId = generateAutoPlaceholderRef_("PLACE-EXP");
+          await withRetry(() =>
+            sheets.spreadsheets.values.update({
+              spreadsheetId: sheetIdClean,
+              range: `${targetTab}!${cols.d}${firstEmptySlot.rowNum}:${cols.id}${firstEmptySlot.rowNum}`,
+              valueInputOption: "RAW",
+              requestBody: { values: [["Placeholder - Direct cost", remainingDC, "Yes", "", 30, "Placeholder", autoId]] }
+            })
+          );
+          return { rowNum: firstEmptySlot.rowNum, slotNum: firstEmptySlot.slotNum, amount: remainingDC, cleared: false };
+        }
       } else {
-        await withRetry(() =>
-          sheets.spreadsheets.values.update({
-            spreadsheetId: sheetIdClean,
-            range: `${targetTab}!${cols.d}${placeholderExpense.rowNum}:${cols.id}${placeholderExpense.rowNum}`,
-            valueInputOption: "RAW",
-            requestBody: { values: [["", "", "", "", "", "", ""]] }
-          })
-        );
-        return { rowNum: placeholderExpense.rowNum, slotNum: placeholderExpense.slotNum, amount: 0, cleared: true };
+        for (const p of autoPlaceholders) {
+          const cols = slotCols[p.slotNum];
+          await withRetry(() =>
+            sheets.spreadsheets.values.update({
+              spreadsheetId: sheetIdClean,
+              range: `${targetTab}!${cols.d}${p.rowNum}:${cols.id}${p.rowNum}`,
+              valueInputOption: "RAW",
+              requestBody: { values: [["", "", "", "", "", "", ""]] }
+            })
+          );
+        }
+        if (autoPlaceholders.length > 0) {
+          return { rowNum: autoPlaceholders[0].rowNum, slotNum: autoPlaceholders[0].slotNum, amount: 0, cleared: true };
+        }
       }
     }
   } catch (err) {

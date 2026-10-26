@@ -7,7 +7,8 @@ import {
   INVOICE_STATUS_OPTIONS,
   EXPENSE_STATUS_OPTIONS,
   canonicalizeInvoiceStatus,
-  canonicalizeExpenseStatus
+  canonicalizeExpenseStatus,
+  calculatePaymentDate
 } from "../utils/helpers";
 
 export default function JobsNewJobModal({
@@ -992,7 +993,7 @@ export default function JobsNewJobModal({
                         />
                       </div>
                       <div>
-                        <label style={labelStyle}>Days To Pay</label>
+                        <label style={labelStyle}>Days to pay</label>
                         <input
                           type="number"
                           style={inputStyle}
@@ -1000,12 +1001,17 @@ export default function JobsNewJobModal({
                           onChange={e => updateInvoice(activeInvoiceSlot, "daysToPay", e.target.value)}
                           placeholder="30"
                         />
+                        {calculatePaymentDate(currentInvoice.sentDate, currentInvoice.daysToPay) && (
+                          <div style={{ fontSize: "11px", color: "#64748b", marginTop: "4px" }}>
+                            Payment date: <strong style={{ color: "#0f172a", fontWeight: "600" }}>{calculatePaymentDate(currentInvoice.sentDate, currentInvoice.daysToPay)}</strong>
+                          </div>
+                        )}
                       </div>
                     </div>
 
                     <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1.5fr auto", gap: "10px", alignItems: "flex-end" }}>
                       <div>
-                        <label style={labelStyle}>Sent Date</label>
+                        <label style={labelStyle}>Sent date</label>
                         <DateInput
                           style={inputStyle}
                           value={currentInvoice.sentDate}
@@ -1181,7 +1187,7 @@ export default function JobsNewJobModal({
                         />
                       </div>
                       <div>
-                        <label style={labelStyle}>Days To Pay</label>
+                        <label style={labelStyle}>Days to pay</label>
                         <input
                           type="number"
                           style={inputStyle}
@@ -1189,6 +1195,11 @@ export default function JobsNewJobModal({
                           onChange={e => updateExpense(activeExpenseSlot, "daysToPay", e.target.value)}
                           placeholder="30"
                         />
+                        {calculatePaymentDate(currentExpense.date, currentExpense.daysToPay) && (
+                          <div style={{ fontSize: "11px", color: "#64748b", marginTop: "4px" }}>
+                            Payment date: <strong style={{ color: "#0f172a", fontWeight: "600" }}>{calculatePaymentDate(currentExpense.date, currentExpense.daysToPay)}</strong>
+                          </div>
+                        )}
                       </div>
                       <div>
                         <label style={labelStyle}>Status</label>

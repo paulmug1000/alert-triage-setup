@@ -393,7 +393,7 @@ export default function ContractorExpenseModal({
           {/* Receive date & Pay date */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
             <div title={lockTooltip}>
-              <label style={labelStyle}>Receive date</label>
+              <label style={labelStyle}>Received date</label>
               <input
                 type="date"
                 disabled={isFieldLocked || isSaving || isDeleting}

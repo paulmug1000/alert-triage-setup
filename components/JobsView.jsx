@@ -9,8 +9,9 @@ import EditClientSelector from "./EditClientSelector";
 import CellNoteModal from "./CellNoteModal";
 import NoteIndicatorButton from "./NoteIndicatorButton";
 import CrmSyncBadge, { CrmSyncIcon } from "./CrmSyncBadge";
-import PlaceholderPill, { isAutoPlaceholder } from "./PlaceholderPill";
+import PlaceholderPill, { isAutoPlaceholder, generatePlaceholderInvoiceRef } from "./PlaceholderPill";
 import { useJobs } from "../hooks/useJobs";
+import { useAuth } from "../hooks/useAuth";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import {
   isPlaceholderInvoice,
@@ -19,7 +20,9 @@ import {
   hasActiveCrmIntegration,
   isCrmDrivenTab,
   isCrmDeal,
-  getCrmDisplayName
+  getCrmDisplayName,
+  calculatePaymentDate,
+  groupSlotItemsForDisplay
 } from "../utils/helpers";
 
 export const parseSheetDate = (dStr) => {
@@ -59,8 +62,8 @@ export const parseSheetDate = (dStr) => {
     }
   }
 
-  // 4. DD/MM/YYYY
-  const slashMatch = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  // 4. DD/MM/YYYY, DD-MM-YYYY, or DD.MM.YYYY
+  const slashMatch = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})$/);
   if (slashMatch) {
     let yr = parseInt(slashMatch[3], 10);
     if (yr < 100) yr += (yr <= 69 ? 2000 : 1900);
@@ -466,58 +469,60 @@ export const getJobInvoiceItems = (job, isRetainer) => {
       const monthLabel = getRetainerRowMonthLabel(r, rIdx, job);
       const slots = r.invoiceSlots || [];
 
-      const mainSlot = slots.find((s) => s.slotNum === 1) || {
-        slotNum: 1, amount: "", ref: "", sentDate: "", daysToPay: "", status: ""
-      };
-      items.push({
-        id: `ret_inv_${r.rowNum}_1`,
-        rowNum: r.rowNum,
-        slotNum: 1,
-        slot: mainSlot,
-        row: r,
-        label: monthLabel,
-        subLabel: `Row ${r.rowNum}${mainSlot.sentDate ? ` · ${mainSlot.sentDate}` : ""}`
-      });
-
-      slots.filter((s) => s.slotNum > 1).forEach((extraSlot) => {
-        const hasData = Boolean(
-          (extraSlot.ref && String(extraSlot.ref).trim() !== "") ||
-          (extraSlot.amount && String(extraSlot.amount).trim() !== "")
-        );
+      slots.forEach((s) => {
+        const hasRef = Boolean(s.ref && String(s.ref).trim() !== "");
+        const hasAmt = Boolean(s.amount && parseFloat(String(s.amount).replace(/[£$€,\s]/g, "")) > 0);
+        const hasData = hasRef || hasAmt;
         if (hasData) {
-          const isPartPaid = String(extraSlot.status || "").toLowerCase().includes("part");
-          const slotTag = isPartPaid ? `Part payment ${extraSlot.slotNum}` : `Extra inv ${extraSlot.slotNum}`;
+          const isPartPaid = String(s.status || "").toLowerCase().includes("part");
+          const isPlace = isPlaceholderInvoice(s.ref, s.status);
+          const extraRef = hasRef
+            ? `#${String(s.ref).trim()}`
+            : (isPlace ? "Placeholder" : (isPartPaid ? "Part payment" : monthLabel));
           items.push({
-            id: `ret_inv_${r.rowNum}_${extraSlot.slotNum}`,
+            ...s,
+            id: `ret_inv_${r.rowNum}_${s.slotNum}`,
             rowNum: r.rowNum,
-            slotNum: extraSlot.slotNum,
-            slot: extraSlot,
+            slotNum: s.slotNum,
+            ref: s.ref || "",
+            amount: s.amount || "",
+            status: s.status || "",
+            sentDate: s.sentDate || "",
+            slot: s,
             row: r,
-            label: `${monthLabel} (${slotTag})`,
-            subLabel: `Row ${r.rowNum}`
+            label: extraRef,
+            subLabel: s.sentDate ? `${s.sentDate}` : ""
           });
         }
       });
     });
   } else {
-    job.rows.forEach((r, rIdx) => {
-      const slots = r.invoiceSlots || [
-        { slotNum: 1, amount: "", ref: "", sentDate: "", daysToPay: "", status: "" },
-        { slotNum: 2, amount: "", ref: "", sentDate: "", daysToPay: "", status: "" },
-        { slotNum: 3, amount: "", ref: "", sentDate: "", daysToPay: "", status: "" }
-      ];
-
+    job.rows.forEach((r) => {
+      const slots = r.invoiceSlots || [];
       slots.forEach((s) => {
-        const seqNum = rIdx * 3 + s.slotNum;
-        items.push({
-          id: `proj_inv_${r.rowNum}_${s.slotNum}`,
-          rowNum: r.rowNum,
-          slotNum: s.slotNum,
-          slot: s,
-          row: r,
-          label: `Invoice ${seqNum}`,
-          subLabel: rIdx > 0 ? `Row ${r.rowNum}` : ""
-        });
+        const hasRef = Boolean(s.ref && String(s.ref).trim() !== "");
+        const hasAmt = Boolean(s.amount && parseFloat(String(s.amount).replace(/[£$€,\s]/g, "")) > 0);
+        const hasData = hasRef || hasAmt;
+        if (hasData) {
+          const isPlace = isPlaceholderInvoice(s.ref, s.status);
+          const refStr = hasRef
+            ? `#${String(s.ref).trim()}`
+            : (isPlace ? "Placeholder" : "Invoice");
+          items.push({
+            ...s,
+            id: `proj_inv_${r.rowNum}_${s.slotNum}`,
+            rowNum: r.rowNum,
+            slotNum: s.slotNum,
+            ref: s.ref || "",
+            amount: s.amount || "",
+            status: s.status || "",
+            sentDate: s.sentDate || "",
+            slot: s,
+            row: r,
+            label: refStr,
+            subLabel: ""
+          });
+        }
       });
     });
   }
@@ -535,43 +540,66 @@ export const getJobExpenseItems = (job, isRetainer) => {
       const slots = r.expenseSlots || [];
 
       slots.forEach((s) => {
-        const hasData = Boolean(
-          (s.description && String(s.description).trim() !== "") ||
-          (s.amount && String(s.amount).trim() !== "") ||
-          (s.transactionId && String(s.transactionId).trim() !== "")
-        );
-        if (hasData || (rIdx === 0 && s.slotNum === 1)) {
+        const hasDesc = Boolean(s.description && String(s.description).trim() !== "");
+        const hasAmt = Boolean(s.amount && parseFloat(String(s.amount).replace(/[£$€,\s]/g, "")) > 0);
+        const hasTx = Boolean(s.transactionId && String(s.transactionId).trim() !== "");
+        const hasData = hasDesc || hasAmt || hasTx;
+        if (hasData) {
+          const isPlace = isPlaceholderExpense(s);
+          const expLabel = hasDesc
+            ? String(s.description).trim()
+            : (hasTx
+                ? `#${String(s.transactionId).trim()}`
+                : (isPlace ? "Placeholder" : `${monthLabel} direct cost`));
           items.push({
+            ...s,
             id: `ret_exp_${r.rowNum}_${s.slotNum}`,
             rowNum: r.rowNum,
             slotNum: s.slotNum,
+            description: s.description || "",
+            amount: s.amount || "",
+            status: s.status || "",
+            date: s.date || "",
+            transactionId: s.transactionId || "",
             slot: s,
             row: r,
-            label: s.slotNum === 1 ? `${monthLabel} Cost` : `${monthLabel} Cost ${s.slotNum}`,
-            subLabel: `Row ${r.rowNum}`
+            label: expLabel,
+            subLabel: ""
           });
         }
       });
     });
   } else {
-    job.rows.forEach((r, rIdx) => {
-      const slots = r.expenseSlots || [
-        { slotNum: 1, description: "", amount: "", vat: "", date: "", daysToPay: "", status: "", transactionId: "" },
-        { slotNum: 2, description: "", amount: "", vat: "", date: "", daysToPay: "", status: "", transactionId: "" },
-        { slotNum: 3, description: "", amount: "", vat: "", date: "", daysToPay: "", status: "", transactionId: "" }
-      ];
-
+    job.rows.forEach((r) => {
+      const slots = r.expenseSlots || [];
       slots.forEach((s) => {
-        const seqNum = rIdx * 3 + s.slotNum;
-        items.push({
-          id: `proj_exp_${r.rowNum}_${s.slotNum}`,
-          rowNum: r.rowNum,
-          slotNum: s.slotNum,
-          slot: s,
-          row: r,
-          label: `Direct Cost ${seqNum}`,
-          subLabel: rIdx > 0 ? `Row ${r.rowNum}` : ""
-        });
+        const hasDesc = Boolean(s.description && String(s.description).trim() !== "");
+        const hasAmt = Boolean(s.amount && parseFloat(String(s.amount).replace(/[£$€,\s]/g, "")) > 0);
+        const hasTx = Boolean(s.transactionId && String(s.transactionId).trim() !== "");
+        const hasData = hasDesc || hasAmt || hasTx;
+        if (hasData) {
+          const isPlace = isPlaceholderExpense(s);
+          const expLabel = hasDesc
+            ? String(s.description).trim()
+            : (hasTx
+                ? `#${String(s.transactionId).trim()}`
+                : (isPlace ? "Placeholder" : "Direct cost"));
+          items.push({
+            ...s,
+            id: `proj_exp_${r.rowNum}_${s.slotNum}`,
+            rowNum: r.rowNum,
+            slotNum: s.slotNum,
+            description: s.description || "",
+            amount: s.amount || "",
+            status: s.status || "",
+            date: s.date || "",
+            transactionId: s.transactionId || "",
+            slot: s,
+            row: r,
+            label: expLabel,
+            subLabel: ""
+          });
+        }
       });
     });
   }
@@ -725,12 +753,84 @@ export const getJobFinancialMetrics = (job, isRetainer, isConfirmed, currentRevV
   };
 };
 
+function AutoResizeTextarea({
+  value,
+  onChange,
+  onKeyDown,
+  placeholder,
+  isDirty,
+  style = {},
+  ...props
+}) {
+  const textareaRef = useRef(null);
+
+  useEffect(() => {
+    if (textareaRef.current) {
+      textareaRef.current.style.height = "auto";
+      textareaRef.current.style.height = `${Math.max(26, textareaRef.current.scrollHeight)}px`;
+    }
+  }, [value]);
+
+  return (
+    <textarea
+      ref={textareaRef}
+      value={value}
+      rows={1}
+      onChange={(e) => {
+        if (onChange) onChange(e);
+        e.target.style.height = "auto";
+        e.target.style.height = `${Math.max(26, e.target.scrollHeight)}px`;
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          e.target.blur();
+        }
+        if (onKeyDown) onKeyDown(e);
+      }}
+      placeholder={placeholder}
+      style={{
+        width: "100%",
+        padding: "4px 6px",
+        borderRadius: "5px",
+        border: isDirty ? "1px solid #f59e0b" : "1px solid transparent",
+        background: "transparent",
+        fontSize: "13px",
+        outline: "none",
+        boxSizing: "border-box",
+        resize: "none",
+        overflow: "hidden",
+        whiteSpace: "pre-wrap",
+        wordBreak: "break-word",
+        overflowWrap: "break-word",
+        fontFamily: "inherit",
+        lineHeight: "1.35",
+        display: "block",
+        minHeight: "26px",
+        ...style
+      }}
+      onFocus={(e) => {
+        e.target.style.background = "#ffffff";
+        e.target.style.borderColor = "#3b82f6";
+      }}
+      onBlur={(e) => {
+        e.target.style.background = "transparent";
+        e.target.style.borderColor = isDirty ? "#f59e0b" : "transparent";
+      }}
+      {...props}
+    />
+  );
+}
+
 export default function JobsView({
   allOutgoingsClients,
   styles = {},
   managedClient,
-  onClearManagedClient
+  onClearManagedClient,
+  isAdmin: propIsAdmin
 }) {
+  const auth = useAuth();
+  const isAdmin = propIsAdmin !== undefined ? propIsAdmin : (!auth?.user?.isReadOnly && !!(auth?.user?.isAdmin || auth?.user?.role === "Admin"));
   const { outgoingsPullPendingRef, assignedAppIds, setAssignedAppIds } = useAppGlobals();
 
   const {
@@ -777,6 +877,7 @@ export default function JobsView({
 
   // Mode: "modern" (default, user-friendly combined view) or "legacy" (spreadsheet view for admins)
   const [viewMode, setViewMode] = useState("modern");
+  const effectiveViewMode = isAdmin ? viewMode : "modern";
 
   // Modern view filter: 'all' | 'confirmed' | 'pipeline'
   const [filterType, setFilterType] = useState("all");
@@ -869,9 +970,10 @@ export default function JobsView({
       : (slotNum === 1 ? "BX" : slotNum === 2 ? "CE" : "CL");
     const currentNote = item.slot?.note || "";
 
+    const invRefDisplay = item.slot?.ref ? `#${item.slot.ref}` : (item.label || "Invoice");
     setCellNoteModalConfig({
       isOpen: true,
-      title: type === "invoice" ? `Invoice note (${item.label})` : `Direct cost note (${item.label})`,
+      title: type === "invoice" ? `Invoice note (${invRefDisplay})` : `Direct cost note (${item.label})`,
       subtitle: `${job?.client || ""} · ${job?.jobName || ""} (${tabName} Row ${rowNum})`,
       initialNote: currentNote,
       tabName,
@@ -928,6 +1030,125 @@ export default function JobsView({
       throw new Error(data.error || "Failed to update cell note");
     }
     if (onSaveSuccess) onSaveSuccess(newNote);
+  };
+
+  const handleAddNewInvoicePlaceholder = (job) => {
+    if (!job) return;
+    const isRetainer = String(job.rows?.[0]?.projectRetainer || "").toLowerCase().includes("retainer");
+    const parentRow = job.rows?.[0] || job;
+    const metrics = getJobFinancialMetrics(job, isRetainer, filterType !== "pipeline");
+
+    let targetRowNum = null;
+    let targetSlotNum = null;
+    let createNewRow = false;
+
+    for (const r of (job.rows || [])) {
+      const slots = r.invoiceSlots || [];
+      for (let sNum = 1; sNum <= 3; sNum++) {
+        const existing = slots.find((s) => s.slotNum === sNum);
+        const isOccupied = existing && Boolean(
+          (existing.ref && String(existing.ref).trim() !== "") ||
+          (existing.amount && String(existing.amount).trim() !== "") ||
+          isPlaceholderInvoice(existing.ref, existing.status)
+        );
+        if (!isOccupied) {
+          targetRowNum = r.rowNum;
+          targetSlotNum = sNum;
+          break;
+        }
+      }
+      if (targetRowNum) break;
+    }
+
+    if (!targetRowNum) {
+      const lastRow = job.rows?.[job.rows.length - 1];
+      targetRowNum = lastRow ? lastRow.rowNum : (job.rowNum || 2);
+      targetSlotNum = 1;
+      createNewRow = true;
+    }
+
+    const defaultAmt = metrics.leftToInvoice > 0 ? String(metrics.leftToInvoice) : "";
+    const defaultRef = generatePlaceholderInvoiceRef(new Date().toISOString().slice(0, 10));
+
+    setInvoicesEditSlot({
+      rowNum: targetRowNum,
+      slotNum: targetSlotNum,
+      createNewRow,
+      isNewPlaceholder: true,
+      slot: {
+        ref: defaultRef,
+        amount: defaultAmt,
+        status: "Placeholder",
+        sentDate: "",
+        daysToPay: 30
+      },
+      jobClient: parentRow.client || job.client,
+      jobName: parentRow.jobName || job.jobName,
+      slotLabel: "New placeholder",
+      tabName: parentRow.tabName || job.tabName || (filterType === "pipeline" ? "Pipeline" : "Confirmed"),
+      job
+    });
+  };
+
+  const handleAddNewExpensePlaceholder = (job) => {
+    if (!job) return;
+    const isRetainer = String(job.rows?.[0]?.projectRetainer || "").toLowerCase().includes("retainer");
+    const parentRow = job.rows?.[0] || job;
+    const metrics = getJobFinancialMetrics(job, isRetainer, filterType !== "pipeline");
+
+    let targetRowNum = null;
+    let targetSlotNum = null;
+    let createNewRow = false;
+
+    for (const r of (job.rows || [])) {
+      const slots = r.expenseSlots || [];
+      for (let sNum = 1; sNum <= 3; sNum++) {
+        const existing = slots.find((s) => s.slotNum === sNum);
+        const isOccupied = existing && Boolean(
+          (existing.description && String(existing.description).trim() !== "") ||
+          (existing.amount && String(existing.amount).trim() !== "") ||
+          (existing.transactionId && String(existing.transactionId).trim() !== "") ||
+          isPlaceholderExpense(existing)
+        );
+        if (!isOccupied) {
+          targetRowNum = r.rowNum;
+          targetSlotNum = sNum;
+          break;
+        }
+      }
+      if (targetRowNum) break;
+    }
+
+    if (!targetRowNum) {
+      const lastRow = job.rows?.[job.rows.length - 1];
+      targetRowNum = lastRow ? lastRow.rowNum : (job.rowNum || 2);
+      targetSlotNum = 1;
+      createNewRow = true;
+    }
+
+    const defaultAmt = metrics.costsLeftToReceive > 0 ? String(metrics.costsLeftToReceive) : "";
+    const defaultDesc = "Direct cost placeholder";
+
+    setDirectCostsEditSlot({
+      rowNum: targetRowNum,
+      slotNum: targetSlotNum,
+      createNewRow,
+      isNewPlaceholder: true,
+      slot: {
+        description: defaultDesc,
+        amount: defaultAmt,
+        vat: "Yes",
+        date: "",
+        daysToPay: 30,
+        status: "Placeholder",
+        transactionId: ""
+      },
+      jobName: parentRow.jobName || job.jobName,
+      jobClient: parentRow.client || job.client,
+      slotLabel: "New placeholder",
+      tabName: parentRow.tabName || job.tabName || (filterType === "pipeline" ? "Pipeline" : "Confirmed"),
+      job
+    });
   };
 
   const noJobsClient = !jobsClient && !managedClient;
@@ -1698,7 +1919,7 @@ export default function JobsView({
     }
 
     // 1. Filter by Confirmed / Pipeline in modern view
-    if (viewMode === "modern") {
+    if (effectiveViewMode === "modern") {
       if (filterType === "confirmed") {
         list = list.filter((j) => {
           const tab = String(j.tabName || j.status || j.rows?.[0]?.tabName || "").toLowerCase();
@@ -1811,7 +2032,7 @@ export default function JobsView({
         }
       }
     });
-  }, [jobsData, viewMode, filterType, jobsTab, searchQuery, jobsSortBy, showZeroPercentJobs, draftEdits]);
+  }, [jobsData, effectiveViewMode, filterType, jobsTab, searchQuery, jobsSortBy, showZeroPercentJobs, draftEdits]);
 
   // Counts for filter pills
   const counts = useMemo(() => {
@@ -2352,6 +2573,10 @@ export default function JobsView({
             await loadJobsData(jobsClient, "All");
           }}
           onUpdateInvoiceJobs={(rNum, sNum, newData, resData) => {
+            if (invoicesEditSlot?.createNewRow) {
+              loadJobsData(jobsClient, "All");
+              return;
+            }
             setJobsData((prev) =>
               prev &&
               prev.map((j) => {
@@ -2407,6 +2632,10 @@ export default function JobsView({
           onClose={() => setDirectCostsEditSlot(null)}
           onMarkPullPending={(masterId) => (outgoingsPullPendingRef.current = masterId)}
           onUpdateJobs={(rNum, sNum, newData) => {
+            if (directCostsEditSlot?.createNewRow) {
+              loadJobsData(jobsClient, "All");
+              return;
+            }
             setJobsData((prev) =>
               prev &&
               prev.map((j) => ({
@@ -2527,9 +2756,9 @@ export default function JobsView({
             <div>
               <h1 style={{ margin: 0, fontSize: "20px", fontWeight: 700, color: "#1e293b", display: "flex", alignItems: "center", gap: "8px" }}>
                 <span>Jobs</span>
-                {jobsClient && (
+                {isAdmin && jobsClient && (
                   <span style={{ fontSize: "12px", background: "#f1f5f9", color: "#475569", padding: "2px 8px", borderRadius: "12px", fontWeight: "600" }}>
-                    {viewMode === "modern" ? "Modern view" : "Legacy view"}
+                    {effectiveViewMode === "modern" ? "Modern view" : "Legacy view"}
                   </span>
                 )}
               </h1>
@@ -2547,28 +2776,30 @@ export default function JobsView({
 
           {jobsClient && (
             <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
-              {/* Legacy View Toggle Button */}
-              <button
-                type="button"
-                onClick={() => setViewMode((prev) => (prev === "modern" ? "legacy" : "modern"))}
-                style={{
-                  padding: "7px 14px",
-                  borderRadius: "7px",
-                  border: "1px solid #cbd5e1",
-                  background: viewMode === "legacy" ? "#0f172a" : "#ffffff",
-                  color: viewMode === "legacy" ? "#ffffff" : "#334155",
-                  fontSize: "13px",
-                  fontWeight: "600",
-                  cursor: "pointer",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: "6px",
-                  boxShadow: "0 1px 2px rgba(0,0,0,0.05)"
-                }}
-                title={viewMode === "modern" ? "Switch to traditional spreadsheet view" : "Switch to improved modern view"}
-              >
-                <span>{viewMode === "modern" ? "📋 Legacy view" : "✨ Modern view"}</span>
-              </button>
+              {/* Legacy View Toggle Button - Admins only */}
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={() => setViewMode((prev) => (prev === "modern" ? "legacy" : "modern"))}
+                  style={{
+                    padding: "7px 14px",
+                    borderRadius: "7px",
+                    border: "1px solid #cbd5e1",
+                    background: effectiveViewMode === "legacy" ? "#0f172a" : "#ffffff",
+                    color: effectiveViewMode === "legacy" ? "#ffffff" : "#334155",
+                    fontSize: "13px",
+                    fontWeight: "600",
+                    cursor: "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    boxShadow: "0 1px 2px rgba(0,0,0,0.05)"
+                  }}
+                  title={effectiveViewMode === "modern" ? "Switch to traditional spreadsheet view" : "Switch to improved modern view"}
+                >
+                  <span>{effectiveViewMode === "modern" ? "📋 Legacy view" : "✨ Modern view"}</span>
+                </button>
+              )}
 
               {/* Add job Button */}
               <button
@@ -2622,7 +2853,7 @@ export default function JobsView({
             {/* ========================================================================= */}
             {/* MODERN VIEW                                                               */}
             {/* ========================================================================= */}
-            {viewMode === "modern" && (
+            {effectiveViewMode === "modern" && (
               <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
                 {/* Filter and Control Bar */}
                 <div
@@ -2960,13 +3191,13 @@ export default function JobsView({
                           <th style={{ padding: "10px 10px", width: "36px", textAlign: "center" }}></th>
                           <th style={{ padding: "10px 10px", width: "95px" }}>Status</th>
                           <th style={{ padding: "10px 4px", width: "36px", textAlign: "center" }} title="Job notes"></th>
-                          <th style={{ padding: "10px 10px", width: "160px" }}>Client</th>
-                          <th style={{ padding: "10px 10px", width: "210px" }}>Job Name</th>
+                          <th style={{ padding: "10px 10px", width: "180px", minWidth: "160px" }}>Client</th>
+                          <th style={{ padding: "10px 10px", width: "240px", minWidth: "200px" }}>Job name</th>
                           <th style={{ padding: "10px 10px", width: "115px" }}>Type</th>
                           <th style={{ padding: "10px 10px", width: "125px" }}>Revenue</th>
-                          <th style={{ padding: "10px 10px", width: "125px" }}>Direct Costs</th>
-                          <th style={{ padding: "10px 10px", width: "130px" }}>Start Date</th>
-                          <th style={{ padding: "10px 10px", width: "130px" }}>End Date</th>
+                          <th style={{ padding: "10px 10px", width: "125px" }}>Direct costs</th>
+                          <th style={{ padding: "10px 10px", width: "130px" }}>Start date</th>
+                          <th style={{ padding: "10px 10px", width: "130px" }}>End date</th>
                           <th style={{ padding: "10px 10px", width: "100px" }}>Likelihood</th>
                           <th style={{ padding: "10px 12px", width: "110px", textAlign: "right" }}>Actions</th>
                         </tr>
@@ -3088,32 +3319,16 @@ export default function JobsView({
                                 </td>
 
                                 {/* Client Name (Inline Editable) */}
-                                <td style={{ padding: "9px 10px", verticalAlign: "middle" }}>
-                                  <input
-                                    type="text"
+                                <td style={{ padding: "6px 8px", verticalAlign: "middle", wordBreak: "break-word", overflowWrap: "break-word" }}>
+                                  <AutoResizeTextarea
                                     value={clientVal}
                                     onChange={(e) => handleDraftFieldChange(job, "client", e.target.value)}
                                     onKeyDown={(e) => handleFieldKeyDown(e, job, "client")}
-                                    placeholder="Client Name"
+                                    placeholder="Client name"
+                                    isDirty={isDirty && draftEdits[jobKey]?.client !== undefined}
                                     style={{
-                                      width: "100%",
-                                      padding: "4px 6px",
-                                      borderRadius: "5px",
-                                      border: isDirty && draftEdits[jobKey]?.client !== undefined ? "1px solid #f59e0b" : "1px solid transparent",
-                                      background: "transparent",
-                                      fontSize: "13px",
                                       fontWeight: "600",
-                                      color: "#0f172a",
-                                      outline: "none",
-                                      boxSizing: "border-box"
-                                    }}
-                                    onFocus={(e) => {
-                                      e.target.style.background = "#ffffff";
-                                      e.target.style.borderColor = "#3b82f6";
-                                    }}
-                                    onBlur={(e) => {
-                                      e.target.style.background = "transparent";
-                                      e.target.style.borderColor = isDirty && draftEdits[jobKey]?.client !== undefined ? "#f59e0b" : "transparent";
+                                      color: "#0f172a"
                                     }}
                                   />
                                   {searchQuery.trim() && textMatchesQuery(clientVal, searchQuery) && (
@@ -3124,32 +3339,16 @@ export default function JobsView({
                                 </td>
 
                                 {/* Job Name (Inline Editable) */}
-                                <td style={{ padding: "9px 10px", verticalAlign: "middle" }}>
-                                  <input
-                                    type="text"
+                                <td style={{ padding: "6px 8px", verticalAlign: "middle", wordBreak: "break-word", overflowWrap: "break-word" }}>
+                                  <AutoResizeTextarea
                                     value={jobNameVal}
                                     onChange={(e) => handleDraftFieldChange(job, "jobName", e.target.value)}
                                     onKeyDown={(e) => handleFieldKeyDown(e, job, "jobName")}
-                                    placeholder="Job Name"
+                                    placeholder="Job name"
+                                    isDirty={isDirty && draftEdits[jobKey]?.jobName !== undefined}
                                     style={{
-                                      width: "100%",
-                                      padding: "4px 6px",
-                                      borderRadius: "5px",
-                                      border: isDirty && draftEdits[jobKey]?.jobName !== undefined ? "1px solid #f59e0b" : "1px solid transparent",
-                                      background: "transparent",
-                                      fontSize: "13px",
                                       fontWeight: "500",
-                                      color: "#334155",
-                                      outline: "none",
-                                      boxSizing: "border-box"
-                                    }}
-                                    onFocus={(e) => {
-                                      e.target.style.background = "#ffffff";
-                                      e.target.style.borderColor = "#3b82f6";
-                                    }}
-                                    onBlur={(e) => {
-                                      e.target.style.background = "transparent";
-                                      e.target.style.borderColor = isDirty && draftEdits[jobKey]?.jobName !== undefined ? "#f59e0b" : "transparent";
+                                      color: "#334155"
                                     }}
                                   />
                                   {searchQuery.trim() && textMatchesQuery(jobNameVal, searchQuery) && (
@@ -3760,7 +3959,7 @@ export default function JobsView({
 
                                         {/* Card 2: Invoices */}
                                         {(() => {
-                                          const invoiceItems = getJobInvoiceItems(job, isRetainer);
+                                          const invoiceItems = groupSlotItemsForDisplay(getJobInvoiceItems(job, isRetainer), "invoice");
                                           return (
                                             <div
                                               style={{
@@ -3827,14 +4026,129 @@ export default function JobsView({
                                               <div style={{ display: "flex", flexDirection: "column", gap: "8px", maxHeight: "380px", overflowY: "auto", paddingRight: "4px" }}>
                                                 {invoiceItems.length === 0 ? (
                                                   <div style={{ fontSize: "12px", color: "#94a3b8", fontStyle: "italic", padding: "8px 0" }}>
-                                                    No invoice slots found.
+                                                    No invoices found.
                                                   </div>
                                                 ) : (
                                                   invoiceItems.map((item) => {
+                                                    if (item.isComposite) {
+                                                      return (
+                                                        <div
+                                                          key={item.id}
+                                                          onClick={() => {
+                                                            const targetSlotItem = item.balanceTranche || item.receivedTranches[0] || item;
+                                                            setInvoicesEditSlot({
+                                                              rowNum: targetSlotItem.rowNum,
+                                                              slotNum: targetSlotItem.slotNum,
+                                                              slot: targetSlotItem.slot,
+                                                              jobClient: targetSlotItem.row?.client || parentRow.client || job.client,
+                                                              jobName: targetSlotItem.row?.jobName || parentRow.jobName || job.jobName,
+                                                              slotLabel: item.label,
+                                                              tabName: item.row?.tabName || parentRow.tabName || job.tabName || (filterType === "pipeline" ? "Pipeline" : "Confirmed"),
+                                                              job,
+                                                            });
+                                                          }}
+                                                          style={{
+                                                            padding: "9px 12px",
+                                                            borderRadius: "7px",
+                                                            border: "1px solid #bfdbfe",
+                                                            background: "#ffffff",
+                                                            cursor: "pointer",
+                                                            transition: "all 0.15s ease",
+                                                            boxSizing: "border-box",
+                                                            maxWidth: "100%",
+                                                            overflow: "hidden",
+                                                            display: "flex",
+                                                            flexDirection: "column",
+                                                            gap: "5px"
+                                                          }}
+                                                          title="Part-paid invoice. Click to view or edit balance payment terms."
+                                                          onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#60a5fa"; e.currentTarget.style.background = "#eff6ff"; }}
+                                                          onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#bfdbfe"; e.currentTarget.style.background = "#ffffff"; }}
+                                                        >
+                                                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
+                                                            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                                              <span style={{ fontSize: "13px", fontWeight: "700", color: "#0047AB" }}>
+                                                                #{item.slot.ref}
+                                                              </span>
+                                                              <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "8px", fontWeight: "600", background: item.isFullyPaid ? "#dcfce7" : "#eff6ff", color: item.isFullyPaid ? "#166534" : "#1d4ed8", border: item.isFullyPaid ? "1px solid #bbf7d0" : "1px solid #bfdbfe" }}>
+                                                                {item.isFullyPaid ? `Paid in full (${item.receivedTranches.length} payments)` : `Part-paid (${item.percentPaid.toFixed(1)}%)`}
+                                                              </span>
+                                                              {hasAccountingIntegration && item.slot.ref && (
+                                                                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                                                                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                                                                  <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                                                                </svg>
+                                                             )}
+                                                              {isRetainer && item.row && (
+                                                                <span style={{ fontSize: "10px", color: "#64748b" }}>
+                                                                  ({getRetainerRowMonthLabel(item.row, 0, job)})
+                                                                </span>
+                                                              )}
+                                                            </div>
+                                                            <div style={{ fontSize: "13px", fontWeight: "700", color: "#0f172a" }}>
+                                                              Total: {formatCurrency(item.totalAmount)}
+                                                            </div>
+                                                          </div>
+
+                                                          <div style={{ width: "100%", height: "4px", background: "#f1f5f9", borderRadius: "2px", overflow: "hidden" }}>
+                                                            <div
+                                                              style={{
+                                                                width: `${Math.min(100, Math.max(0, item.percentPaid))}%`,
+                                                                height: "100%",
+                                                                background: "#10b981",
+                                                                borderRadius: "2px",
+                                                              }}
+                                                            />
+                                                          </div>
+
+                                                            {item.isFullyPaid ? (
+                                                              <div style={{ display: "flex", flexDirection: "column", gap: "2px", marginTop: "1px", fontSize: "10px", color: "#475569" }}>
+                                                                {item.receivedTranches.map((t, tIdx) => (
+                                                                  <div key={tIdx} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                                                    <span style={{ color: "#166534", fontWeight: "600" }}>
+                                                                      ✓ Payment {tIdx + 1}: {formatCurrency(parseFloat(stripCurrency(t.slot?.amount)) || 0)}
+                                                                    </span>
+                                                                    <span style={{ color: "#64748b" }}>
+                                                                      {t.slot?.sentDate ? `Sent: ${t.slot.sentDate}` : ""}
+                                                                      {t.slot?.daysToPay ? ` · Paid: ${t.slot.daysToPay}d` : ""}
+                                                                    </span>
+                                                                  </div>
+                                                                ))}
+                                                              </div>
+                                                            ) : (
+                                                              <div style={{ display: "flex", flexDirection: "column", gap: "2px", marginTop: "1px", fontSize: "10px", color: "#475569" }}>
+                                                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                                                  <span style={{ color: "#166534", fontWeight: "600" }}>
+                                                                    ✓ {formatCurrency(item.receivedAmount)} received
+                                                                  </span>
+                                                                  <span style={{ color: "#64748b" }}>
+                                                                    {item.receivedTranches[0]?.slot?.sentDate ? `Sent: ${item.receivedTranches[0].slot.sentDate}` : ""}
+                                                                    {item.receivedTranches[0]?.slot?.daysToPay ? ` · Paid: ${item.receivedTranches[0].slot.daysToPay}d` : ""}
+                                                                  </span>
+                                                                </div>
+                                                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                                                  <span style={{ color: "#b45309", fontWeight: "600" }}>
+                                                                    ⏳ {formatCurrency(item.balanceAmount)} balance
+                                                                  </span>
+                                                                  <span style={{ color: "#64748b" }}>
+                                                                    {item.balanceTranche?.slot?.sentDate && calculatePaymentDate(item.balanceTranche.slot.sentDate, item.balanceTranche.slot.daysToPay || 30) ? (
+                                                                      `Due: ${calculatePaymentDate(item.balanceTranche.slot.sentDate, item.balanceTranche.slot.daysToPay || 30)} (${item.balanceTranche.slot.daysToPay || 30}d)`
+                                                                    ) : (
+                                                                      item.balanceTranche ? `${item.balanceTranche.slot?.daysToPay || 30} days` : "Fully paid"
+                                                                    )}
+                                                                  </span>
+                                                                </div>
+                                                              </div>
+                                                            )}
+                                                        </div>
+                                                      );
+                                                    }
+
                                                     const slot = item.slot;
                                                     const hasData = Boolean((slot.ref && String(slot.ref).trim() !== "") || (slot.amount && String(slot.amount).trim() !== ""));
                                                     const isPlaceholder = isPlaceholderInvoice(slot.ref, slot.status);
                                                     const pillStyle = getStatusPill(slot.status);
+                                                    const isPaid = String(slot.status || "").trim().toLowerCase() === "paid";
                                                     const isInvoiceMatched = searchQuery.trim() && (textMatchesQuery(slot.ref, searchQuery) || textMatchesQuery(slot.note, searchQuery) || textMatchesQuery(slot.status, searchQuery));
                                                     return (
                                                       <div
@@ -3846,81 +4160,114 @@ export default function JobsView({
                                                             slot,
                                                             jobClient: item.row.client || parentRow.client || job.client,
                                                             jobName: item.row.jobName || parentRow.jobName || job.jobName,
-                                                            slotLabel: item.label,
+                                                            slotLabel: slot.ref ? `#${slot.ref}` : (isPlaceholder ? "Placeholder" : `Slot ${item.slotNum}`),
                                                             tabName: item.row.tabName || parentRow.tabName || job.tabName || (filterType === "pipeline" ? "Pipeline" : "Confirmed"),
                                                             job,
                                                           });
                                                         }}
                                                         style={{
-                                                          padding: "8px 10px",
-                                                          borderRadius: "6px",
+                                                          padding: "9px 12px",
+                                                          borderRadius: "7px",
                                                           border: isInvoiceMatched ? "1px solid #fde047" : "1px solid #e2e8f0",
-                                                          background: isInvoiceMatched ? "#fefce8" : (hasData ? "#f8fafc" : "#ffffff"),
+                                                          background: isInvoiceMatched ? "#fefce8" : "#ffffff",
                                                           cursor: "pointer",
-                                                          transition: "border-color 0.15s ease"
+                                                          transition: "all 0.15s ease",
+                                                          boxSizing: "border-box",
+                                                          maxWidth: "100%",
+                                                          overflow: "hidden",
+                                                          display: "flex",
+                                                          flexDirection: "column",
+                                                          gap: "5px",
+                                                          boxShadow: "0 1px 2px rgba(0,0,0,0.02)"
                                                         }}
                                                         title={
                                                           hasAccountingIntegration && !isPlaceholder && slot.ref && String(slot.ref).trim() !== ""
                                                             ? "Synced from accounting software. Click to view or edit days to pay."
                                                             : "Click to edit invoice slot"
                                                         }
-                                                        onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#93c5fd"; e.currentTarget.style.background = "#eff6ff"; }}
-                                                        onMouseLeave={(e) => { e.currentTarget.style.borderColor = isInvoiceMatched ? "#fde047" : "#e2e8f0"; e.currentTarget.style.background = isInvoiceMatched ? "#fefce8" : (hasData ? "#f8fafc" : "#ffffff"); }}
+                                                        onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#60a5fa"; e.currentTarget.style.background = "#eff6ff"; }}
+                                                        onMouseLeave={(e) => { e.currentTarget.style.borderColor = isInvoiceMatched ? "#fde047" : "#e2e8f0"; e.currentTarget.style.background = isInvoiceMatched ? "#fefce8" : "#ffffff"; }}
                                                       >
-                                                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
                                                           <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                                                            <span style={{ fontSize: "11px", fontWeight: "700", color: "#475569" }}>
-                                                              {item.label}
-                                                            </span>
+                                                            {isPlaceholder ? (
+                                                                <PlaceholderPill isAuto={isAutoPlaceholder(slot.ref)} size="sm" />
+                                                              ) : slot.ref ? (
+                                                                <span style={{ fontSize: "13px", fontWeight: "700", color: "#0047AB" }}>
+                                                                  #<HighlightText text={slot.ref} query={searchQuery} />
+                                                                </span>
+                                                              ) : (
+                                                                <span style={{ fontSize: "12px", fontWeight: "600", color: "#475569" }}>
+                                                                  Invoice
+                                                                </span>
+                                                              )}
+
+                                                            {hasData && slot.status && (
+                                                              <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "8px", fontWeight: "600", ...pillStyle }}>
+                                                                <HighlightText text={slot.status} query={searchQuery} />
+                                                              </span>
+                                                            )}
+
                                                             {hasAccountingIntegration && !isPlaceholder && slot.ref && String(slot.ref).trim() !== "" && (
                                                               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
                                                                 <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
                                                                 <path d="M7 11V7a5 5 0 0 1 10 0v4" />
                                                               </svg>
                                                             )}
+
                                                             <NoteIndicatorButton
                                                               size="sm"
                                                               note={slot.note || ""}
                                                               onClick={() => openSlotNoteModal({ item, type: "invoice", job })}
                                                               title={slot.note ? `Invoice note: ${slot.note}` : "Add note to invoice slot"}
                                                             />
-                                                          </div>
-                                                          <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
-                                                            {item.subLabel && (
-                                                              <span style={{ fontSize: "10px", color: "#94a3b8" }}>{item.subLabel}</span>
-                                                            )}
-                                                            {slot.status && (
-                                                              <span style={{ fontSize: "10px", padding: "1px 5px", borderRadius: "8px", fontWeight: "600", ...pillStyle }}>
-                                                                <HighlightText text={slot.status} query={searchQuery} />
+
+                                                            {isRetainer && item.row && (
+                                                              <span style={{ fontSize: "10px", color: "#64748b" }}>
+                                                                ({getRetainerRowMonthLabel(item.row, 0, job)})
                                                               </span>
                                                             )}
                                                           </div>
-                                                        </div>
-                                                        {hasData ? (
-                                                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: "4px" }}>
-                                                            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                                                              {isPlaceholder ? (
-                                                                <PlaceholderPill isAuto={isAutoPlaceholder(slot.ref)} size="sm" />
-                                                              ) : (
-                                                                <span style={{ fontSize: "13px", fontWeight: "600", color: "#0f172a" }}>
-                                                                  <HighlightText text={slot.ref || "Invoice"} query={searchQuery} />
-                                                                </span>
-                                                              )}
-                                                            </div>
-                                                            <span style={{ fontSize: "13px", fontWeight: "600", color: "#0f172a" }}>
+
+                                                          <span style={{ fontSize: "13px", fontWeight: "700", color: "#0f172a" }}>
                                                               {formatCurrency(slot.amount)}
                                                             </span>
-                                                          </div>
-                                                        ) : (
-                                                          <div style={{ fontSize: "12px", color: "#94a3b8", fontStyle: "italic", marginTop: "4px" }}>
-                                                            Empty · Click to assign invoice
-                                                          </div>
-                                                        )}
-                                                        {slot.sentDate && (
-                                                          <div style={{ fontSize: "10px", color: "#64748b", marginTop: "2px" }}>
-                                                            Sent: <HighlightText text={slot.sentDate} query={searchQuery} /> ({slot.daysToPay || 30} days)
+                                                        </div>
+
+                                                        {/* Progress bar (100% green if Paid) */}
+                                                        {isPaid && (
+                                                          <div style={{ width: "100%", height: "4px", background: "#f1f5f9", borderRadius: "2px", overflow: "hidden" }}>
+                                                            <div style={{ width: "100%", height: "100%", background: "#10b981", borderRadius: "2px" }} />
                                                           </div>
                                                         )}
+
+                                                        {hasData && (
+                                                          isPaid ? (
+                                                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "10px", color: "#475569" }}>
+                                                              <span style={{ color: "#166534", fontWeight: 600 }}>
+                                                                ✓ {formatCurrency(slot.amount)} paid
+                                                              </span>
+                                                              <span style={{ color: "#64748b" }}>
+                                                                {slot.sentDate ? <span>Sent: <HighlightText text={toSheetDateFormat(slot.sentDate)} query={searchQuery} /></span> : ""}
+                                                                {slot.daysToPay ? ` · Paid: ${slot.daysToPay}d` : ""}
+                                                              </span>
+                                                            </div>
+                                                          ) : (
+                                                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "10px", color: "#475569" }}>
+                                                              <span style={{ color: "#b45309", fontWeight: 600 }}>
+                                                                {calculatePaymentDate(slot.sentDate, slot.daysToPay || 30) ? (
+                                                                  `Due: ${calculatePaymentDate(slot.sentDate, slot.daysToPay || 30)}`
+                                                                ) : (
+                                                                  `Expected in ${slot.daysToPay || 30}d`
+                                                                )}
+                                                              </span>
+                                                              <span style={{ color: "#64748b" }}>
+                                                                {slot.sentDate ? <span>Sent: <HighlightText text={toSheetDateFormat(slot.sentDate)} query={searchQuery} /> ({slot.daysToPay || 30}d)</span> : `Terms: ${slot.daysToPay || 30}d`}
+                                                              </span>
+                                                            </div>
+                                                          )
+                                                        )}
+
                                                         {slot.note && isInvoiceMatched && textMatchesQuery(slot.note, searchQuery) && (
                                                           <div style={{ fontSize: "10px", color: "#a16207", marginTop: "2px" }}>
                                                             Note: <HighlightText text={slot.note} query={searchQuery} />
@@ -3930,6 +4277,34 @@ export default function JobsView({
                                                     );
                                                   })
                                                 )}
+                                                <button
+                                                  type="button"
+                                                  onClick={() => handleAddNewInvoicePlaceholder(job)}
+                                                  style={{
+                                                    display: "flex",
+                                                    alignItems: "center",
+                                                    justifyContent: "center",
+                                                    gap: "6px",
+                                                    padding: "8px 12px",
+                                                    borderRadius: "6px",
+                                                    border: "1px dashed #cbd5e1",
+                                                    background: "#f8fafc",
+                                                    color: "#475569",
+                                                    fontSize: "12px",
+                                                    fontWeight: "600",
+                                                    cursor: "pointer",
+                                                    transition: "all 0.15s ease",
+                                                    marginTop: "2px"
+                                                  }}
+                                                  onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#94a3b8"; e.currentTarget.style.background = "#f1f5f9"; e.currentTarget.style.color = "#0f172a"; }}
+                                                  onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#cbd5e1"; e.currentTarget.style.background = "#f8fafc"; e.currentTarget.style.color = "#475569"; }}
+                                                >
+                                                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                                    <line x1="12" y1="5" x2="12" y2="19" />
+                                                    <line x1="5" y1="12" x2="19" y2="12" />
+                                                  </svg>
+                                                  Add new
+                                                </button>
                                               </div>
                                             </div>
                                           );
@@ -3937,7 +4312,7 @@ export default function JobsView({
 
                                         {/* Card 3: Direct Costs / Expenses */}
                                         {(() => {
-                                          const expenseItems = getJobExpenseItems(job, isRetainer);
+                                          const expenseItems = groupSlotItemsForDisplay(getJobExpenseItems(job, isRetainer), "expense");
                                           return (
                                             <div
                                               style={{
@@ -4004,14 +4379,117 @@ export default function JobsView({
                                               <div style={{ display: "flex", flexDirection: "column", gap: "8px", maxHeight: "380px", overflowY: "auto", paddingRight: "4px" }}>
                                                 {expenseItems.length === 0 ? (
                                                   <div style={{ fontSize: "12px", color: "#94a3b8", fontStyle: "italic", padding: "8px 0" }}>
-                                                    No direct cost slots found.
+                                                    No direct costs found.
                                                   </div>
                                                 ) : (
                                                   expenseItems.map((item) => {
+                                                    if (item.isComposite) {
+                                                      return (
+                                                        <div
+                                                          key={item.id}
+                                                          onClick={() => {
+                                                            const targetSlotItem = item.balanceTranche || item.receivedTranches[0] || item;
+                                                            setDirectCostsEditSlot({
+                                                              rowNum: targetSlotItem.rowNum,
+                                                              slotNum: targetSlotItem.slotNum,
+                                                              slot: targetSlotItem.slot,
+                                                              jobName: targetSlotItem.row?.jobName || parentRow.jobName || job.jobName,
+                                                              jobClient: targetSlotItem.row?.client || parentRow.client || job.client,
+                                                              slotLabel: item.label,
+                                                              tabName: item.row?.tabName || parentRow.tabName || job.tabName || (filterType === "pipeline" ? "Pipeline" : "Confirmed"),
+                                                            });
+                                                          }}
+                                                          style={{
+                                                            padding: "9px 12px",
+                                                            borderRadius: "7px",
+                                                            border: "1px solid #bfdbfe",
+                                                            background: "#ffffff",
+                                                            cursor: "pointer",
+                                                            transition: "all 0.15s ease",
+                                                            boxSizing: "border-box",
+                                                            maxWidth: "100%",
+                                                            overflow: "hidden",
+                                                            display: "flex",
+                                                            flexDirection: "column",
+                                                            gap: "5px"
+                                                          }}
+                                                          title="Part-paid expense. Click to view or edit balance payment terms."
+                                                          onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#60a5fa"; e.currentTarget.style.background = "#eff6ff"; }}
+                                                          onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#bfdbfe"; e.currentTarget.style.background = "#ffffff"; }}
+                                                        >
+                                                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
+                                                            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                                              <span style={{ fontSize: "13px", fontWeight: "700", color: "#0047AB" }}>
+                                                                {item.slot.description || item.slot.transactionId || "Expense"}
+                                                              </span>
+                                                              <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "8px", fontWeight: "600", background: item.isFullyPaid ? "#dcfce7" : "#eff6ff", color: item.isFullyPaid ? "#166534" : "#1d4ed8", border: item.isFullyPaid ? "1px solid #bbf7d0" : "1px solid #bfdbfe" }}>
+                                                                {item.isFullyPaid ? `Paid in full (${item.receivedTranches.length} payments)` : `Part-paid (${item.percentPaid.toFixed(1)}%)`}
+                                                              </span>
+                                                            </div>
+                                                            <div style={{ fontSize: "13px", fontWeight: "700", color: "#0f172a" }}>
+                                                              {formatCurrency(item.totalAmount)}
+                                                            </div>
+                                                          </div>
+
+                                                          <div style={{ width: "100%", height: "4px", background: "#f1f5f9", borderRadius: "2px", overflow: "hidden" }}>
+                                                            <div
+                                                              style={{
+                                                                width: `${Math.min(100, Math.max(0, item.percentPaid))}%`,
+                                                                height: "100%",
+                                                                background: "#10b981",
+                                                                borderRadius: "2px",
+                                                              }}
+                                                            />
+                                                          </div>
+
+                                                          {item.isFullyPaid ? (
+                                                            <div style={{ display: "flex", flexDirection: "column", gap: "2px", marginTop: "1px", fontSize: "10px", color: "#475569" }}>
+                                                              {item.receivedTranches.map((t, tIdx) => (
+                                                                <div key={tIdx} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                                                  <span style={{ color: "#166534", fontWeight: "600" }}>
+                                                                    ✓ Payment {tIdx + 1}: {formatCurrency(parseFloat(stripCurrency(t.slot?.amount)) || 0)}
+                                                                  </span>
+                                                                  <span style={{ color: "#64748b" }}>
+                                                                    {t.slot?.date ? `Date: ${toSheetDateFormat(t.slot.date)}` : ""}
+                                                                    {t.slot?.daysToPay ? ` · Paid: ${t.slot.daysToPay}d` : ""}
+                                                                  </span>
+                                                                </div>
+                                                              ))}
+                                                            </div>
+                                                          ) : (
+                                                            <div style={{ display: "flex", flexDirection: "column", gap: "2px", marginTop: "1px", fontSize: "10px", color: "#475569" }}>
+                                                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                                                <span style={{ color: "#166534", fontWeight: "600" }}>
+                                                                  ✓ {formatCurrency(item.receivedAmount)} paid
+                                                                </span>
+                                                                <span style={{ color: "#64748b" }}>
+                                                                  {item.receivedTranches[0]?.slot?.date ? `Date: ${toSheetDateFormat(item.receivedTranches[0].slot.date)}` : ""}
+                                                                  {item.receivedTranches[0]?.slot?.daysToPay ? ` · Paid: ${item.receivedTranches[0].slot.daysToPay}d` : ""}
+                                                                </span>
+                                                              </div>
+                                                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                                                <span style={{ color: "#b45309", fontWeight: "600" }}>
+                                                                  ⏳ {formatCurrency(item.balanceAmount)} balance
+                                                                </span>
+                                                                <span style={{ color: "#64748b" }}>
+                                                                  {item.balanceTranche?.slot?.date && calculatePaymentDate(item.balanceTranche.slot.date, item.balanceTranche.slot.daysToPay || 30) ? (
+                                                                    `Due: ${calculatePaymentDate(item.balanceTranche.slot.date, item.balanceTranche.slot.daysToPay || 30)} (${item.balanceTranche.slot.daysToPay || 30}d)`
+                                                                  ) : (
+                                                                    item.balanceTranche ? `${item.balanceTranche.slot?.daysToPay || 30} days` : "Fully paid"
+                                                                  )}
+                                                                </span>
+                                                              </div>
+                                                            </div>
+                                                          )}
+                                                        </div>
+                                                      );
+                                                    }
+
                                                     const slot = item.slot;
                                                     const hasData = Boolean((slot.description && String(slot.description).trim() !== "") || (slot.amount && String(slot.amount).trim() !== ""));
                                                     const isPlaceholder = isPlaceholderExpense(slot);
                                                     const pillStyle = getStatusPill(slot.status);
+                                                    const isPaid = String(slot.status || "").trim().toLowerCase() === "paid";
                                                     const isExpenseMatched = searchQuery.trim() && (textMatchesQuery(slot.description, searchQuery) || textMatchesQuery(slot.transactionId, searchQuery) || textMatchesQuery(slot.note, searchQuery) || textMatchesQuery(slot.status, searchQuery));
                                                     return (
                                                       <div
@@ -4021,76 +4499,126 @@ export default function JobsView({
                                                             rowNum: item.rowNum,
                                                             slotNum: item.slotNum,
                                                             slot,
-                                                            jobName: item.row.jobName || parentRow.jobName || job.jobName,
-                                                            jobClient: item.row.client || parentRow.client || job.client,
+                                                            jobName: item.row?.jobName || parentRow.jobName || job.jobName,
+                                                            jobClient: item.row?.client || parentRow.client || job.client,
                                                             slotLabel: item.label,
-                                                            tabName: item.row.tabName || parentRow.tabName || job.tabName || (filterType === "pipeline" ? "Pipeline" : "Confirmed"),
+                                                            tabName: item.row?.tabName || parentRow.tabName || job.tabName || (filterType === "pipeline" ? "Pipeline" : "Confirmed"),
                                                           });
                                                         }}
                                                         style={{
-                                                          padding: "8px 10px",
-                                                          borderRadius: "6px",
+                                                          padding: "9px 12px",
+                                                          borderRadius: "7px",
                                                           border: isExpenseMatched ? "1px solid #fde047" : "1px solid #e2e8f0",
-                                                          background: isExpenseMatched ? "#fefce8" : (hasData ? "#f8fafc" : "#ffffff"),
+                                                          background: isExpenseMatched ? "#fefce8" : "#ffffff",
                                                           cursor: "pointer",
-                                                          transition: "border-color 0.15s ease"
+                                                          transition: "all 0.15s ease",
+                                                          boxSizing: "border-box",
+                                                          maxWidth: "100%",
+                                                          overflow: "hidden",
+                                                          display: "flex",
+                                                          flexDirection: "column",
+                                                          gap: "5px",
+                                                          boxShadow: "0 1px 2px rgba(0,0,0,0.02)"
                                                         }}
-                                                        onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#93c5fd"; e.currentTarget.style.background = "#eff6ff"; }}
-                                                        onMouseLeave={(e) => { e.currentTarget.style.borderColor = isExpenseMatched ? "#fde047" : "#e2e8f0"; e.currentTarget.style.background = isExpenseMatched ? "#fefce8" : (hasData ? "#f8fafc" : "#ffffff"); }}
+                                                        title={
+                                                          hasAccountingIntegration && !isPlaceholder && slot.transactionId && String(slot.transactionId).trim() !== ""
+                                                            ? "Synced from accounting software. Click to view or edit days to pay."
+                                                            : "Click to edit direct cost slot"
+                                                        }
+                                                        onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#60a5fa"; e.currentTarget.style.background = "#eff6ff"; }}
+                                                        onMouseLeave={(e) => { e.currentTarget.style.borderColor = isExpenseMatched ? "#fde047" : "#e2e8f0"; e.currentTarget.style.background = isExpenseMatched ? "#fefce8" : "#ffffff"; }}
                                                       >
-                                                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
                                                           <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                                                            <span style={{ fontSize: "11px", fontWeight: "700", color: "#475569" }}>
-                                                              {item.label}
-                                                            </span>
+                                                            {isPlaceholder ? (
+                                                                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                                                  {slot.description && !String(slot.description).trim().toUpperCase().startsWith("PLACE") && (
+                                                                    <span style={{ fontSize: "13px", fontWeight: "700", color: "#0047AB" }}>
+                                                                      <HighlightText text={slot.description} query={searchQuery} />
+                                                                    </span>
+                                                                  )}
+                                                                  <PlaceholderPill isAuto={isAutoPlaceholder(slot.transactionId || slot.description)} size="sm" />
+                                                                </div>
+                                                              ) : (
+                                                                <span style={{ fontSize: "13px", fontWeight: "700", color: "#0047AB" }}>
+                                                                  <HighlightText text={slot.description || (slot.transactionId ? `#${slot.transactionId}` : "Expense")} query={searchQuery} />
+                                                                </span>
+                                                              )}
+
+                                                            {hasData && slot.status && (
+                                                              <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "8px", fontWeight: "600", ...pillStyle }}>
+                                                                <HighlightText text={slot.status} query={searchQuery} />
+                                                              </span>
+                                                            )}
+
+                                                            {hasAccountingIntegration && !isPlaceholder && slot.transactionId && String(slot.transactionId).trim() !== "" && (
+                                                              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                                                                <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                                                                <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                                                              </svg>
+                                                            )}
+
                                                             <NoteIndicatorButton
                                                               size="sm"
                                                               note={slot.note || ""}
                                                               onClick={() => openSlotNoteModal({ item, type: "expense", job })}
                                                               title={slot.note ? `Cost note: ${slot.note}` : "Add note to direct cost slot"}
                                                             />
-                                                          </div>
-                                                          <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
-                                                            {item.subLabel && (
-                                                              <span style={{ fontSize: "10px", color: "#94a3b8" }}>{item.subLabel}</span>
-                                                            )}
-                                                            {slot.status && (
-                                                              <span style={{ fontSize: "10px", padding: "1px 5px", borderRadius: "8px", fontWeight: "600", ...pillStyle }}>
-                                                                <HighlightText text={slot.status} query={searchQuery} />
+
+                                                            {isRetainer && item.row && (
+                                                              <span style={{ fontSize: "10px", color: "#64748b" }}>
+                                                                ({getRetainerRowMonthLabel(item.row, 0, job)})
                                                               </span>
                                                             )}
                                                           </div>
-                                                        </div>
-                                                        {hasData ? (
-                                                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: "4px" }}>
-                                                            <div style={{ display: "flex", alignItems: "center", gap: "6px", overflow: "hidden" }}>
-                                                              {isPlaceholder ? (
-                                                                <PlaceholderPill isAuto={isAutoPlaceholder(slot.transactionId || slot.description)} size="sm" />
-                                                              ) : (
-                                                                <span style={{ fontSize: "13px", fontWeight: "600", color: "#0f172a", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "160px" }}>
-                                                                  <HighlightText text={slot.description || slot.transactionId || "Expense"} query={searchQuery} />
-                                                                </span>
-                                                              )}
-                                                            </div>
-                                                            <span style={{ fontSize: "13px", fontWeight: "600", color: "#0f172a" }}>
+
+                                                          <span style={{ fontSize: "13px", fontWeight: "700", color: "#0f172a" }}>
                                                               {formatCurrency(slot.amount)}
                                                             </span>
-                                                          </div>
-                                                        ) : (
-                                                          <div style={{ fontSize: "12px", color: "#94a3b8", fontStyle: "italic", marginTop: "4px" }}>
-                                                            Empty · Click to assign direct cost
+                                                        </div>
+
+                                                        {/* Progress bar (100% green if Paid) */}
+                                                        {isPaid && (
+                                                          <div style={{ width: "100%", height: "4px", background: "#f1f5f9", borderRadius: "2px", overflow: "hidden" }}>
+                                                            <div style={{ width: "100%", height: "100%", background: "#10b981", borderRadius: "2px" }} />
                                                           </div>
                                                         )}
+
+                                                        {hasData && (
+                                                          isPaid ? (
+                                                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "10px", color: "#475569" }}>
+                                                              <span style={{ color: "#166534", fontWeight: 600 }}>
+                                                                ✓ {formatCurrency(slot.amount)} paid
+                                                              </span>
+                                                              <span style={{ color: "#64748b" }}>
+                                                                {slot.date ? <span>Date: <HighlightText text={toSheetDateFormat(slot.date)} query={searchQuery} /></span> : ""}
+                                                                {slot.daysToPay ? ` · Paid: ${slot.daysToPay}d` : ""}
+                                                                {slot.vat ? ` · VAT: ${slot.vat}` : ""}
+                                                              </span>
+                                                            </div>
+                                                          ) : (
+                                                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "10px", color: "#475569" }}>
+                                                              <span style={{ color: "#b45309", fontWeight: 600 }}>
+                                                                {calculatePaymentDate(slot.date, slot.daysToPay || 30) ? (
+                                                                  `Due: ${calculatePaymentDate(slot.date, slot.daysToPay || 30)}`
+                                                                ) : (
+                                                                  `Expected in ${slot.daysToPay || 30}d`
+                                                                )}
+                                                              </span>
+                                                              <span style={{ color: "#64748b" }}>
+                                                                {slot.date ? <span>Date: <HighlightText text={toSheetDateFormat(slot.date)} query={searchQuery} /> ({slot.daysToPay || 30}d)</span> : `Terms: ${slot.daysToPay || 30}d`}
+                                                                {slot.vat ? ` · VAT: ${slot.vat}` : ""}
+                                                              </span>
+                                                            </div>
+                                                          )
+                                                        )}
+
                                                         {slot.transactionId && slot.description && isExpenseMatched && textMatchesQuery(slot.transactionId, searchQuery) && (
                                                           <div style={{ fontSize: "10px", color: "#a16207", marginTop: "1px" }}>
                                                             ID: <HighlightText text={slot.transactionId} query={searchQuery} />
                                                           </div>
                                                         )}
-                                                        {slot.date && (
-                                                          <div style={{ fontSize: "10px", color: "#64748b", marginTop: "2px" }}>
-                                                            Date: <HighlightText text={slot.date} query={searchQuery} /> {slot.vat ? `· VAT: ${slot.vat}` : ""}
-                                                          </div>
-                                                        )}
+
                                                         {slot.note && isExpenseMatched && textMatchesQuery(slot.note, searchQuery) && (
                                                           <div style={{ fontSize: "10px", color: "#a16207", marginTop: "1px" }}>
                                                             Note: <HighlightText text={slot.note} query={searchQuery} />
@@ -4100,6 +4628,34 @@ export default function JobsView({
                                                     );
                                                   })
                                                 )}
+                                                <button
+                                                  type="button"
+                                                  onClick={() => handleAddNewExpensePlaceholder(job)}
+                                                  style={{
+                                                    display: "flex",
+                                                    alignItems: "center",
+                                                    justifyContent: "center",
+                                                    gap: "6px",
+                                                    padding: "8px 12px",
+                                                    borderRadius: "6px",
+                                                    border: "1px dashed #cbd5e1",
+                                                    background: "#f8fafc",
+                                                    color: "#475569",
+                                                    fontSize: "12px",
+                                                    fontWeight: "600",
+                                                    cursor: "pointer",
+                                                    transition: "all 0.15s ease",
+                                                    marginTop: "2px"
+                                                  }}
+                                                  onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#94a3b8"; e.currentTarget.style.background = "#f1f5f9"; e.currentTarget.style.color = "#0f172a"; }}
+                                                  onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#cbd5e1"; e.currentTarget.style.background = "#f8fafc"; e.currentTarget.style.color = "#475569"; }}
+                                                >
+                                                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                                    <line x1="12" y1="5" x2="12" y2="19" />
+                                                    <line x1="5" y1="12" x2="19" y2="12" />
+                                                  </svg>
+                                                  Add new
+                                                </button>
                                               </div>
                                             </div>
                                           );
@@ -4294,7 +4850,7 @@ export default function JobsView({
             {/* ========================================================================= */}
             {/* LEGACY VIEW (PRESERVED SPREADSHEET TABLE FOR ADMINS)                      */}
             {/* ========================================================================= */}
-            {viewMode === "legacy" && (
+            {effectiveViewMode === "legacy" && (
               <div>
                 <div style={{ display: "flex", gap: "8px", marginBottom: "14px", borderBottom: "1px solid #e0e0e0", alignItems: "center" }}>
                   {["Confirmed", "Pipeline"].map((tab) => (
@@ -4572,7 +5128,12 @@ export default function JobsView({
                                       <div>
                                         <div style={{ fontWeight: "600" }}>
                                           {isPlaceholderExpense(s.transactionId, s.description, s.status) ? (
-                                            <PlaceholderPill isAuto={isAutoPlaceholder(s.transactionId || s.description)} size="sm" />
+                                            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                              {s.description && !String(s.description).trim().toUpperCase().startsWith("PLACE") && (
+                                                <span>{s.description}</span>
+                                              )}
+                                              <PlaceholderPill isAuto={isAutoPlaceholder(s.transactionId || s.description)} size="sm" />
+                                            </div>
                                           ) : (
                                             <span>{s.description || s.transactionId}</span>
                                           )}

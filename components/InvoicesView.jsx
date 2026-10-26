@@ -5,11 +5,14 @@ import InvoicesEditModal from "./InvoicesEditModal";
 import InvoicesNewJobModal from "./InvoicesNewJobModal";
 import EditClientSelector from "./EditClientSelector";
 import JobDetailModal from "./JobDetailModal";
+import PlaceholderChoiceModal from "./PlaceholderChoiceModal";
+import PlaceholderPill, { isAutoPlaceholder } from "./PlaceholderPill";
+import { getJobInvoiceItems } from "./JobsView";
 import { useInvoices } from "../hooks/useInvoices";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useTriage } from "../contexts/TriageContext";
 import { useAuth } from "../hooks/useAuth";
-import { isPlaceholderInvoice } from "../utils/helpers";
+import { isPlaceholderInvoice, groupSlotItemsForDisplay, getRetainerRowMonthLabel, getRetainerDurationMonths } from "../utils/helpers";
 
 const formatCurrency = (val) => {
   const s = String(val || "").trim();
@@ -173,10 +176,12 @@ export default function InvoicesView({
   const [invoiceSearchTerm, setInvoiceSearchTerm] = useState("");
   const [invoiceSortOrder, setInvoiceSortOrder] = useState("inv_desc");
   const [expandedRetainerKeys, setExpandedRetainerKeys] = useState(() => new Set());
+  const [placementConfirmPrompt, setPlacementConfirmPrompt] = useState(null);
   const [invoicesEditSlot, setInvoicesEditSlot] = useState(null);
   const [invoicesNewJob, setInvoicesNewJob] = useState(null);
   const [clientMismatchPrompt, setClientMismatchPrompt] = useState(null);
   const [revenueExceedPrompt, setRevenueExceedPrompt] = useState(null);
+  const [placeholderChoicePrompt, setPlaceholderChoicePrompt] = useState(null);
   const [selectedJobForDetail, setSelectedJobForDetail] = useState(null);
   const [updateJobNameChecked, setUpdateJobNameChecked] = useState(false);
   const [newJobNameInput, setNewJobNameInput] = useState("");
@@ -345,6 +350,113 @@ export default function InvoicesView({
     }
 
     executePlacement(promptPayload, false);
+  };
+
+  const proceedWithAutoPlacement = (job, inv, targetRowNum = null) => {
+    const targetRows = targetRowNum
+      ? (job.rows || []).filter(r => r.rowNum === targetRowNum)
+      : (job.rows || []);
+
+    const sheetClient = String(job.client || "").trim();
+    const invClient = String(inv.client || "").trim();
+
+    // 1. Look for auto-placeholder slot
+    for (const r of targetRows) {
+      for (const s of (r.invoiceSlots || [])) {
+        const hasRef = !!(s.ref && String(s.ref).trim() !== "");
+        const isPlaceholder = isPlaceholderInvoice(s.ref, s.status) || String(s.ref || "").toUpperCase().startsWith("PLACE");
+        if (hasRef && isPlaceholder && isAutoPlaceholder(s.ref)) {
+          initiatePlacement({
+            job,
+            inv,
+            isNewRow: false,
+            rowNum: r.rowNum,
+            slotNum: s.slotNum,
+            sheetClientName: sheetClient,
+            invoiceClientName: invClient,
+            savingKey: `${r.rowNum}-${s.slotNum}`,
+          });
+          return;
+        }
+      }
+    }
+
+    // 2. Look for empty slot
+    for (const r of targetRows) {
+      for (const s of (r.invoiceSlots || [])) {
+        const hasRef = !!(s.ref && String(s.ref).trim() !== "");
+        const hasAmt = !!(s.amount && parseFloat(String(s.amount).replace(/[£$€,\s]/g, "")) > 0);
+        if (!hasRef && !hasAmt) {
+          initiatePlacement({
+            job,
+            inv,
+            isNewRow: false,
+            rowNum: r.rowNum,
+            slotNum: s.slotNum,
+            sheetClientName: sheetClient,
+            invoiceClientName: invClient,
+            savingKey: `${r.rowNum}-${s.slotNum}`,
+          });
+          return;
+        }
+      }
+    }
+
+    // 3. If no auto-placeholders and no empty slots:
+    const isRetainer = String(job.rows?.[0]?.projectRetainer || "").toLowerCase().includes("retainer");
+    if (!isRetainer) {
+      const jobLastRow = job.rows[job.rows.length - 1]?.rowNum;
+      initiatePlacement({
+        job,
+        inv,
+        isNewRow: true,
+        jobLastRow,
+        sheetClientName: sheetClient,
+        invoiceClientName: invClient,
+        savingKey: `newrow-${job.client}|||${job.jobName}`,
+      });
+      return;
+    } else {
+      alert("All invoice slots for this retainer month are already occupied by actual invoices.");
+    }
+  };
+
+  const handleInitiateJobPlacement = (job, targetRowNum = null, explicitInv = null) => {
+    const inv = explicitInv || invoicesPlacingRef.current;
+    if (!inv) return;
+    if (explicitInv) {
+      setInvoicesPlacing(explicitInv);
+      invoicesPlacingRef.current = explicitInv;
+    }
+
+    const targetRows = targetRowNum
+      ? (job.rows || []).filter(r => r.rowNum === targetRowNum)
+      : (job.rows || []);
+
+    // Check for manual placeholders
+    const manualPlaceholders = [];
+    for (const r of targetRows) {
+      for (const s of (r.invoiceSlots || [])) {
+        const hasRef = !!(s.ref && String(s.ref).trim() !== "");
+        const hasAmt = !!(s.amount && parseFloat(String(s.amount).replace(/[£$€,\s]/g, "")) > 0);
+        const isPlaceholder = isPlaceholderInvoice(s.ref, s.status) || String(s.ref || "").toUpperCase().startsWith("MANUAL") || (!s.ref && hasAmt);
+        if ((hasRef || hasAmt) && isPlaceholder && !isAutoPlaceholder(s.ref)) {
+          manualPlaceholders.push({ ...s, rowNum: r.rowNum, slotNum: s.slotNum });
+        }
+      }
+    }
+
+    if (manualPlaceholders.length > 0) {
+      setPlaceholderChoicePrompt({
+        job,
+        inv,
+        targetRowNum,
+        manualPlaceholders,
+      });
+      return;
+    }
+
+    proceedWithAutoPlacement(job, inv, targetRowNum);
   };
 
   const executePlacement = async (promptData, shouldUpdateClientName, shouldUpdateJobName = false, customJobName = "") => {
@@ -724,6 +836,37 @@ export default function InvoicesView({
           </div>
         </div>
       )}
+      {placeholderChoicePrompt && (
+        <PlaceholderChoiceModal
+          isOpen={!!placeholderChoicePrompt}
+          type="invoice"
+          job={placeholderChoicePrompt.job}
+          itemToPlace={placeholderChoicePrompt.inv}
+          manualPlaceholders={placeholderChoicePrompt.manualPlaceholders}
+          onReplaceManual={(p) => {
+            const { job, inv } = placeholderChoicePrompt;
+            setPlaceholderChoicePrompt(null);
+            const sheetClient = String(job.client || "").trim();
+            const invClient = String(inv.client || "").trim();
+            initiatePlacement({
+              job,
+              inv,
+              isNewRow: false,
+              rowNum: p.rowNum,
+              slotNum: p.slotNum,
+              sheetClientName: sheetClient,
+              invoiceClientName: invClient,
+              savingKey: `${p.rowNum}-${p.slotNum}`,
+            });
+          }}
+          onUseAuto={() => {
+            const { job, inv, targetRowNum } = placeholderChoicePrompt;
+            setPlaceholderChoicePrompt(null);
+            proceedWithAutoPlacement(job, inv, targetRowNum);
+          }}
+          onClose={() => setPlaceholderChoicePrompt(null)}
+        />
+      )}
       {invoicesEditSlot && (
         <InvoicesEditModal
           editSlot={invoicesEditSlot}
@@ -813,6 +956,84 @@ export default function InvoicesView({
         />
       )}
 
+      {placementConfirmPrompt && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: "rgba(15, 23, 42, 0.4)",
+            backdropFilter: "blur(2px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 9999,
+            padding: "20px",
+          }}
+          onClick={() => setPlacementConfirmPrompt(null)}
+        >
+          <div
+            style={{
+              background: "#ffffff",
+              borderRadius: "10px",
+              boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1)",
+              maxWidth: "440px",
+              width: "100%",
+              padding: "22px 24px",
+              border: "1px solid #e2e8f0",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 style={{ margin: "0 0 10px 0", fontSize: "16px", fontWeight: "700", color: "#0f172a" }}>
+              Place invoice
+            </h3>
+            <p style={{ margin: "0 0 20px 0", fontSize: "14px", color: "#334155", lineHeight: "1.5" }}>
+              Place invoice <strong>#{placementConfirmPrompt.inv.invoiceNo}</strong> ({formatCurrency(placementConfirmPrompt.inv.amount)}) against <strong>{placementConfirmPrompt.job.jobName}</strong>{placementConfirmPrompt.monthLabel ? ` (${placementConfirmPrompt.monthLabel})` : ""}?
+            </p>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
+              <button
+                type="button"
+                onClick={() => setPlacementConfirmPrompt(null)}
+                style={{
+                  padding: "8px 16px",
+                  borderRadius: "6px",
+                  border: "1px solid #cbd5e1",
+                  background: "#ffffff",
+                  color: "#475569",
+                  fontSize: "13px",
+                  fontWeight: "600",
+                  cursor: "pointer",
+                }}
+              >
+                No
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const p = placementConfirmPrompt;
+                  setPlacementConfirmPrompt(null);
+                  handleInitiateJobPlacement(p.job, p.targetRowNum, p.inv);
+                }}
+                style={{
+                  padding: "8px 16px",
+                  borderRadius: "6px",
+                  border: "1px solid #2563eb",
+                  background: "#2563eb",
+                  color: "#ffffff",
+                  fontSize: "13px",
+                  fontWeight: "600",
+                  cursor: "pointer",
+                  boxShadow: "0 1px 2px rgba(37,99,235,0.2)",
+                }}
+              >
+                Yes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <div style={{ maxWidth: "1600px", margin: "0 auto", padding: "16px 24px 60px" }}>
         <div
           style={{
@@ -1016,7 +1237,7 @@ export default function InvoicesView({
               <div style={{ background: "#fff", border: `1px solid ${invoicesInbox.length > 0 ? "#ffc107" : "#e0e0e0"}`, borderRadius: "10px", padding: "14px 16px", marginBottom: "16px" }}>
                 <div style={{ fontSize: "13px", fontWeight: "700", color: invoicesInbox.length > 0 ? "#e65100" : "#888", marginBottom: invoicesInbox.length > 0 ? "6px" : "0" }}>
                   {invoicesInboxLoading ? "Loading..." : invoicesInbox.length > 0
-                    ? `Unmatched invoices (${invoicesInbox.length}) - click to select, then click a slot to place`
+                    ? `Unmatched invoices (${invoicesInbox.length}) - select an invoice, then place against a job`
                     : "No unmatched invoices"}
                 </div>
                 {invoicesInbox.length > 0 && (
@@ -1025,14 +1246,18 @@ export default function InvoicesView({
                       const isPlacing = invoicesPlacing?.invoiceNo === inv.invoiceNo;
                       return (
                         <div key={inv.invoiceNo}
+                          onClick={() => setInvoicesPlacing(isPlacing ? null : inv)}
                           style={{
                             padding: "8px 12px", borderRadius: "8px",
                             background: isPlacing ? "#1a56db" : "#fff8e1",
                             color: isPlacing ? "#fff" : "#333",
                             border: `1px solid ${isPlacing ? "#1a56db" : "#ffe082"}`,
-                            fontSize: "12px", minWidth: "160px"
+                            fontSize: "12px", minWidth: "160px",
+                            cursor: "pointer",
+                            transition: "all 0.15s ease",
+                            boxShadow: isPlacing ? "0 2px 4px rgba(26,86,219,0.25)" : "none",
                           }}>
-                          <div onClick={() => setInvoicesPlacing(isPlacing ? null : inv)} style={{ cursor: "pointer" }}>
+                          <div>
                             <div style={{ fontWeight: "700" }}>#{inv.invoiceNo} - £{inv.amount.toFixed(2)}</div>
                             <div style={{ opacity: 0.85 }}>{inv.client}{inv.job ? ` - ${inv.job}` : ""}</div>
                             <div style={{ opacity: 0.7 }}>{inv.sentDate}{inv.status ? ` · ${inv.status}` : ""}</div>
@@ -1155,22 +1380,20 @@ export default function InvoicesView({
                             <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0", color: "#475569", fontSize: "11px", fontWeight: "600", textTransform: "uppercase", letterSpacing: "0.03em" }}>
                               <th style={{ padding: "10px 10px", width: "36px", textAlign: "center" }}></th>
                               <th style={{ padding: "10px 12px", width: "160px", textAlign: "left" }}>Client</th>
-                              <th style={{ padding: "10px 12px", width: "200px", textAlign: "left" }}>Job Name</th>
+                              <th style={{ padding: "10px 12px", width: "200px", textAlign: "left" }}>Job name</th>
                               <th style={{ padding: "10px 10px", width: "80px", textAlign: "left" }}>Code</th>
                               <th style={{ padding: "10px 10px", width: "110px", textAlign: "left" }}>Type</th>
                               <th style={{ padding: "10px 10px", width: "110px", textAlign: "left" }}>Revenue</th>
-                              <th style={{ padding: "10px 10px", width: "100px", textAlign: "left" }}>Direct Costs</th>
+                              <th style={{ padding: "10px 10px", width: "100px", textAlign: "left" }}>Direct costs</th>
                               <th style={{ padding: "10px 10px", width: "150px", textAlign: "left" }}>Dates</th>
-                              <th style={{ padding: "10px 10px", width: "170px", textAlign: "left" }}>Slot 1</th>
-                              <th style={{ padding: "10px 10px", width: "170px", textAlign: "left" }}>Slot 2</th>
-                              <th style={{ padding: "10px 10px", width: "170px", textAlign: "left" }}>Slot 3</th>
-                              <th style={{ padding: "10px 8px", width: "40px", textAlign: "center" }}></th>
+                              <th style={{ padding: "10px 10px", minWidth: "340px", textAlign: "left" }}>Invoices</th>
+                              <th style={{ padding: "10px 8px", width: "160px", textAlign: "center" }}>Actions</th>
                             </tr>
                           </thead>
                           <tbody>
                             {filteredInvoicesJobs.length === 0 ? (
                               <tr>
-                                <td colSpan={12} style={{ padding: "36px", textAlign: "center", color: "#64748b" }}>
+                                <td colSpan={10} style={{ padding: "36px", textAlign: "center", color: "#64748b" }}>
                                   No matching jobs found.
                                 </td>
                               </tr>
@@ -1182,21 +1405,9 @@ export default function InvoicesView({
                                 const isRetainerExpanded = expandedRetainerKeys.has(jobKey);
                                 const isPlacing = !!invoicesPlacing;
 
-                                let visibleRows;
-                                if (isRetainer) {
-                                  visibleRows = (isRetainer && !isRetainerExpanded) ? [job.rows[0]] : job.rows;
-                                } else {
-                                  // Project job: only show multiple rows if invoices go over multiple rows
-                                  const lastRowWithInvoiceIdx = job.rows.reduce((maxIdx, r, idx) => rowHasInvoice(r) ? idx : maxIdx, 0);
-                                  let neededIdx = lastRowWithInvoiceIdx;
-                                  if (isPlacing) {
-                                    const firstRowWithSpaceIdx = job.rows.findIndex(r => r.invoiceSlots.some(s => (!s.ref || String(s.ref).trim() === "") && !s.amount));
-                                    if (firstRowWithSpaceIdx > neededIdx) {
-                                      neededIdx = firstRowWithSpaceIdx;
-                                    }
-                                  }
-                                  visibleRows = job.rows.slice(0, neededIdx + 1);
-                                }
+                                const visibleRows = isRetainer
+                                  ? (!isRetainerExpanded ? [job.rows[0]] : job.rows)
+                                  : [job.rows[0]];
 
                                 const jobTotalInvoiced = job.rows.reduce((sum, r) => sum + r.invoiceSlots.reduce((s, slot) => {
                                   const isReal = slot.ref && !isPlaceholderInvoice(slot.ref, slot.status);
@@ -1214,18 +1425,45 @@ export default function InvoicesView({
                                   return (
                                     <tr
                                       key={jr.rowNum}
+                                      onClick={() => {
+                                        if (invoicesPlacing) {
+                                          if (isRetainer && !isRetainerExpanded && hasMultipleRows) {
+                                            toggleRetainerExpand(jobKey);
+                                            return;
+                                          }
+                                          const monthLabel = isRetainer ? getRetainerRowMonthLabel(jr, rIdx, job) : null;
+                                          setPlacementConfirmPrompt({
+                                            job,
+                                            targetRowNum: isRetainer ? jr.rowNum : null,
+                                            inv: invoicesPlacing,
+                                            monthLabel,
+                                          });
+                                        }
+                                      }}
                                       style={{
                                         borderBottom: (isLastRowOfJob) ? "1px solid #e2e8f0" : "1px solid #f1f5f9",
                                         backgroundColor: isChildRow ? "#f8fafc" : "#ffffff",
-                                        transition: "background-color 0.1s ease"
+                                        cursor: isPlacing ? "pointer" : "default",
+                                        transition: "background-color 0.1s ease",
                                       }}
+                                      onMouseEnter={(e) => {
+                                        if (isPlacing) {
+                                          e.currentTarget.style.backgroundColor = "#eff6ff";
+                                        }
+                                      }}
+                                      onMouseLeave={(e) => {
+                                        if (isPlacing) {
+                                          e.currentTarget.style.backgroundColor = isChildRow ? "#f8fafc" : "#ffffff";
+                                        }
+                                      }}
+                                      title={isPlacing ? `Click to place invoice #${invoicesPlacing.invoiceNo} against ${job.jobName}${isRetainer ? ` (${getRetainerRowMonthLabel(jr, rIdx, job)})` : ""}` : undefined}
                                     >
                                       {/* Expand/Collapse Chevron (for Retainers) */}
                                       <td style={{ padding: "8px 6px", textAlign: "center", verticalAlign: "top" }}>
                                         {rIdx === 0 && isRetainer && hasMultipleRows && (
                                           <button
                                             type="button"
-                                            onClick={() => toggleRetainerExpand(jobKey)}
+                                            onClick={(e) => { e.stopPropagation(); toggleRetainerExpand(jobKey); }}
                                             style={{
                                               background: "none",
                                               border: "none",
@@ -1254,7 +1492,8 @@ export default function InvoicesView({
                                             <div style={{ fontWeight: "600", color: "#1e293b" }}>{jr.jobName}</div>
                                             <button
                                               type="button"
-                                              onClick={() => {
+                                              onClick={(e) => {
+                                                e.stopPropagation();
                                                 const rawCode = String(job.projectCode || jr.projectCode || "").trim();
                                                 const cleanCode = ["-", "n/a", "none"].includes(rawCode.toLowerCase()) ? "" : rawCode;
                                                 setSelectedJobForDetail({
@@ -1288,7 +1527,7 @@ export default function InvoicesView({
                                           </div>
                                         ) : (
                                           <div style={{ fontSize: "11px", color: "#64748b", paddingLeft: "8px" }}>
-                                            {isRetainer ? `↳ Month ${rIdx + 1}` : (isAdmin ? `↳ Row ${rIdx + 1}` : `↳ Part ${rIdx + 1}`)}
+                                            {isRetainer ? `↳ ${getRetainerRowMonthLabel(jr, rIdx, job)}` : ""}
                                           </div>
                                         )}
                                       </td>
@@ -1304,7 +1543,7 @@ export default function InvoicesView({
                                           isRetainer ? (
                                             <button
                                               type="button"
-                                              onClick={() => hasMultipleRows && toggleRetainerExpand(jobKey)}
+                                              onClick={(e) => { e.stopPropagation(); hasMultipleRows && toggleRetainerExpand(jobKey); }}
                                               style={{
                                                 display: "inline-flex",
                                                 alignItems: "center",
@@ -1323,7 +1562,7 @@ export default function InvoicesView({
                                               <span>Retainer</span>
                                               {hasMultipleRows && (
                                                 <span style={{ fontSize: "10px", color: "#15803d" }}>
-                                                  {isRetainerExpanded ? "▲" : `(${job.rows.length}m)`}
+                                                  {isRetainerExpanded ? "▲" : `(${getRetainerDurationMonths(job)}m)`}
                                                 </span>
                                               )}
                                             </button>
@@ -1344,8 +1583,8 @@ export default function InvoicesView({
                                             </span>
                                           )
                                         ) : (
-                                          <span style={{ fontSize: "10px", color: "#94a3b8" }}>
-                                            {isRetainer ? `mo. ${rIdx + 1}` : (isAdmin ? `row ${rIdx + 1}` : `part ${rIdx + 1}`)}
+                                          <span style={{ fontSize: "10px", color: "#64748b", fontWeight: "500" }}>
+                                            {isRetainer ? getRetainerRowMonthLabel(jr, rIdx, job) : ""}
                                           </span>
                                         )}
                                       </td>
@@ -1377,174 +1616,206 @@ export default function InvoicesView({
                                         <div style={{ color: "#94a3b8" }}>{jr.endDate ? `to ${jr.endDate}` : ""}</div>
                                       </td>
 
-                                      {/* Invoice Slots 1, 2, 3 */}
-                                      {jr.invoiceSlots.map((s) => {
-                                        const refUpper = String(s.ref || "").trim().toUpperCase();
-                                        const statusUpper = String(s.status || "").trim().toUpperCase();
-                                        const isPlaceholder = isPlaceholderInvoice(s.ref, s.status) ||
-                                          refUpper.startsWith("PLACE") ||
-                                          refUpper.includes("PLACEHOLDER") ||
-                                          refUpper.startsWith("MANUAL") ||
-                                          statusUpper.includes("PLACEHOLDER") ||
-                                          (!s.ref && !!s.amount);
-                                        const isGenuinelyBlank = (!s.ref || String(s.ref).trim() === "") && !s.amount;
-                                        const isEmpty = isGenuinelyBlank || isPlaceholder;
-                                        const cellSavingKey = `${jr.rowNum}-${s.slotNum}`;
-                                        const isSaving = invoicesSavingCell === cellSavingKey;
+                                      {/* Invoices Column */}
+                                      <td style={{ padding: "8px 10px", verticalAlign: "top" }}>
+                                        {(() => {
+                                          const rawRowInvoices = (isRetainer && isRetainerExpanded)
+                                            ? (jr.invoiceSlots || [])
+                                                .filter(s => (s.ref && String(s.ref).trim() !== "") || (s.amount && parseFloat(String(s.amount).replace(/[£$€,\s]/g, "")) > 0))
+                                                .map(s => ({ ...s, rowNum: jr.rowNum, slotNum: s.slotNum, client: job.client, jobName: job.jobName, isRetainer: true }))
+                                            : getJobInvoiceItems(job, false);
+                                          const displayInvoiceItems = groupSlotItemsForDisplay(rawRowInvoices, "invoice");
 
-                                        return (
-                                          <td
-                                            key={s.slotNum}
-                                            onClick={async () => {
-                                              if (isSaving) return;
-                                              if (isPlacing && isEmpty) {
-                                                const inv = invoicesPlacingRef.current;
-                                                if (!inv) return;
-                                                const sheetClient = String(job.client || "").trim();
-                                                const invClient = String(inv.client || "").trim();
-                                                const hasMismatch = !!(sheetClient && invClient && sheetClient.toLowerCase() !== invClient.toLowerCase());
-                                                const promptPayload = {
-                                                  job, inv, isNewRow: false, rowNum: jr.rowNum, slotNum: s.slotNum,
-                                                  sheetClientName: sheetClient, invoiceClientName: invClient,
-                                                  savingKey: cellSavingKey,
-                                                };
-                                                initiatePlacement(promptPayload);
-                                              } else if (!isPlacing && !isGenuinelyBlank) {
-                                                setInvoicesEditSlot({ rowNum: jr.rowNum, slotNum: s.slotNum, slot: s, jobClient: job.client, jobName: job.jobName, job });
-                                              }
-                                            }}
-                                            style={{
-                                              padding: "6px 8px",
-                                              verticalAlign: "top",
-                                              cursor: isSaving ? "default" : (isPlacing && isEmpty) ? "pointer" : (!isPlacing && !isGenuinelyBlank) ? "pointer" : "default"
-                                            }}
-                                          >
-                                            <div
-                                              style={{
-                                                borderRadius: "6px",
-                                                padding: "6px 8px",
-                                                minHeight: "44px",
-                                                display: "flex",
-                                                flexDirection: "column",
-                                                justifyContent: "center",
-                                                transition: "all 0.15s ease",
-                                                background: isSaving
-                                                  ? "#f8fafc"
-                                                  : (isPlacing && isEmpty)
-                                                    ? "#eff6ff"
-                                                    : isGenuinelyBlank
-                                                      ? "transparent"
-                                                      : "#ffffff",
-                                                border: (isPlacing && isEmpty && !isSaving)
-                                                  ? "1.5px dashed #2563eb"
-                                                  : isGenuinelyBlank
-                                                    ? "1px dashed #e2e8f0"
-                                                    : "1px solid #e2e8f0",
-                                                boxShadow: (!isGenuinelyBlank && !isSaving) ? "0 1px 2px rgba(0,0,0,0.03)" : "none"
-                                              }}
-                                            >
-                                              {isSaving ? (
-                                                <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#64748b", fontSize: "11px" }}>
-                                                  <Spinner size={12} color="#2563eb" /> Saving...
-                                                </div>
-                                              ) : isGenuinelyBlank ? (
-                                                isPlacing ? (
-                                                  <div style={{ color: "#1d4ed8", fontWeight: "700", textAlign: "center", fontSize: "11px" }}>
-                                                    + Place invoice
-                                                  </div>
-                                                ) : (
-                                                  <div style={{ color: "#cbd5e1", textAlign: "center", fontSize: "12px" }}>—</div>
-                                                )
-                                              ) : (
-                                                <div>
-                                                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "4px" }}>
-                                                    <span
-                                                      title={!isAdmin && isPlaceholder ? "Placeholder" : (s.ref || "")}
-                                                      style={{
-                                                        fontWeight: "700",
-                                                        fontSize: "12px",
-                                                        color: isPlaceholder ? "#9333ea" : "#0f172a",
-                                                        overflow: "hidden",
-                                                        textOverflow: "ellipsis",
-                                                        whiteSpace: "nowrap",
-                                                        maxWidth: "115px"
-                                                      }}
-                                                    >
-                                                      {isPlaceholder
-                                                        ? (isAdmin && s.ref ? `⚠️ ${s.ref.startsWith("#") ? s.ref : `#${s.ref}`}` : "⚠️ Placeholder")
-                                                        : (s.ref ? (s.ref.startsWith("#") ? s.ref : `#${s.ref}`) : "")}
-                                                    </span>
-                                                    <span style={{ fontWeight: "600", fontSize: "11px", color: "#0f172a" }}>
-                                                      {formatCurrency(s.amount) || `£${s.amount}`}
-                                                    </span>
-                                                  </div>
-                                                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: "4px", gap: "4px" }}>
-                                                    <span style={{ color: "#64748b", fontSize: "10px" }}>{s.sentDate || "-"}</span>
-                                                    {s.status && (
-                                                      <span style={{ ...getStatusPill(s.status), padding: "1px 5px", borderRadius: "4px", fontSize: "9px", fontWeight: "600" }}>
-                                                        {s.status}
-                                                      </span>
+                                          if (displayInvoiceItems.length === 0) {
+                                            return (
+                                              <span style={{ color: "#94a3b8", fontSize: "11px", fontStyle: "italic" }}>
+                                                No invoices found.
+                                              </span>
+                                            );
+                                          }
+
+                                          return (
+                                            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "6px", width: "100%" }}>
+                                              {displayInvoiceItems.map((invItem, itemIdx) => {
+                                                const isPlhdr = isPlaceholderInvoice(invItem.ref, invItem.status) ||
+                                                  String(invItem.ref || "").toUpperCase().startsWith("PLACE") ||
+                                                  String(invItem.ref || "").toUpperCase().startsWith("MANUAL") ||
+                                                  (!invItem.ref && !!invItem.amount);
+                                                const cellSavingKey = `${invItem.rowNum}-${invItem.slotNum}`;
+                                                const isSaving = invoicesSavingCell === cellSavingKey;
+
+                                                return (
+                                                  <div
+                                                    key={itemIdx}
+                                                    onClick={(e) => {
+                                                      e.stopPropagation();
+                                                      if (isSaving) return;
+                                                      setInvoicesEditSlot({
+                                                        rowNum: invItem.rowNum,
+                                                        slotNum: invItem.slotNum,
+                                                        slot: invItem,
+                                                        jobClient: job.client,
+                                                        jobName: job.jobName,
+                                                        job,
+                                                      });
+                                                    }}
+                                                    style={{
+                                                      padding: "6px 8px",
+                                                      borderRadius: "6px",
+                                                      border: isPlhdr ? "1px dashed #c084fc" : "1px solid #e2e8f0",
+                                                      background: isPlhdr ? "#faf5ff" : "#ffffff",
+                                                      boxShadow: "0 1px 2px rgba(0,0,0,0.03)",
+                                                      cursor: isSaving ? "default" : "pointer",
+                                                      width: "100%",
+                                                      boxSizing: "border-box",
+                                                      display: "flex",
+                                                      flexDirection: "column",
+                                                      gap: "3px",
+                                                      transition: "border-color 0.15s ease",
+                                                    }}
+                                                    onMouseEnter={(e) => { if (!isSaving) e.currentTarget.style.borderColor = isPlhdr ? "#9333ea" : "#94a3b8"; }}
+                                                    onMouseLeave={(e) => { if (!isSaving) e.currentTarget.style.borderColor = isPlhdr ? "#c084fc" : "#e2e8f0"; }}
+                                                    title="Click to edit invoice details"
+                                                  >
+                                                    {isSaving ? (
+                                                      <div style={{ display: "flex", alignItems: "center", gap: "4px", color: "#64748b", fontSize: "10px" }}>
+                                                        <Spinner size={10} color="#2563eb" /> Saving...
+                                                      </div>
+                                                    ) : (
+                                                      <>
+                                                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "4px" }}>
+                                                          <span
+                                                            title={invItem.ref || "Placeholder"}
+                                                            style={{
+                                                              fontWeight: "700",
+                                                              fontSize: "11px",
+                                                              color: isPlhdr ? "#9333ea" : "#0f172a",
+                                                              overflow: "hidden",
+                                                              textOverflow: "ellipsis",
+                                                              whiteSpace: "nowrap",
+                                                            }}
+                                                          >
+                                                            {isPlhdr
+                                                              ? (isAutoPlaceholder(invItem.ref) ? "Placeholder (A)" : "Placeholder (M)")
+                                                              : (invItem.ref?.startsWith("#") ? invItem.ref : `#${invItem.ref}`)}
+                                                          </span>
+                                                          <span style={{ fontWeight: "700", fontSize: "11px", color: "#0f172a", flexShrink: 0 }}>
+                                                            {formatCurrency(invItem.amount)}
+                                                          </span>
+                                                        </div>
+                                                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "4px", fontSize: "10px", color: "#64748b" }}>
+                                                          <span>{invItem.sentDate || "-"}</span>
+                                                          {invItem.status && (
+                                                            <span style={{ ...getStatusPill(invItem.status), padding: "1px 5px", borderRadius: "3px", fontSize: "9px", fontWeight: "600" }}>
+                                                              {invItem.status}
+                                                            </span>
+                                                          )}
+                                                        </div>
+                                                        {invItem.isGroupedTranche && (
+                                                          <div style={{ display: "flex", flexWrap: "wrap", gap: "3px", marginTop: "2px" }}>
+                                                            <span style={{ background: "#dcfce7", color: "#166534", padding: "1px 4px", borderRadius: "3px", fontSize: "9px", fontWeight: "600" }}>
+                                                              Rec: {formatCurrency(invItem.receivedAmount)}
+                                                            </span>
+                                                            <span style={{ background: "#fef3c7", color: "#92400e", padding: "1px 4px", borderRadius: "3px", fontSize: "9px", fontWeight: "600" }}>
+                                                              Bal: {formatCurrency(invItem.balanceAmount)}
+                                                            </span>
+                                                          </div>
+                                                        )}
+                                                      </>
                                                     )}
                                                   </div>
-                                                  {isPlaceholder && isPlacing && (
-                                                    <div style={{ color: "#2563eb", fontWeight: "700", fontSize: "10px", marginTop: "3px" }}>
-                                                      Click to overwrite
-                                                    </div>
-                                                  )}
-                                                  {!isPlacing && (
-                                                    <div style={{ color: "#2563eb", fontSize: "10px", marginTop: "2px" }}>
-                                                      Edit
-                                                    </div>
-                                                  )}
-                                                </div>
-                                              )}
+                                                );
+                                              })}
                                             </div>
-                                          </td>
-                                        );
-                                      })}
+                                          );
+                                        })()}
+                                      </td>
 
-                                      {/* Add Row Action Column */}
-                                      <td style={{ padding: "6px 4px", verticalAlign: "middle", textAlign: "center" }}>
-                                        {invoicesSavingCell === `newrow-${job.client}|||${job.jobName}` ? (
-                                          <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
-                                            <Spinner size={12} color="#2563eb" />
-                                          </div>
-                                        ) : isLastRowOfJob && !jobHasEmptySlot && isPlacing ? (
-                                          <button
-                                            type="button"
-                                            title={isAdmin ? "No spare invoice slot - click to add a new row for this job" : "No spare invoice slot - click to add more space for this job"}
-                                            onClick={async () => {
-                                              const inv = invoicesPlacingRef.current;
-                                              if (!inv) return;
-                                              const savingKey = `newrow-${job.client}|||${job.jobName}`;
-                                              const sheetClient = String(job.client || "").trim();
-                                              const invClient = String(inv.client || "").trim();
-                                              const hasMismatch = !!(sheetClient && invClient && sheetClient.toLowerCase() !== invClient.toLowerCase());
-                                              const promptPayload = {
-                                                job, inv, isNewRow: true, jobLastRow,
-                                                sheetClientName: sheetClient, invoiceClientName: invClient,
-                                                savingKey,
-                                              };
-                                              initiatePlacement(promptPayload);
-                                            }}
-                                            style={{
-                                              cursor: "pointer",
-                                              background: "#eff6ff",
-                                              border: "1.5px solid #2563eb",
-                                              borderRadius: "6px",
-                                              width: "28px",
-                                              height: "28px",
-                                              display: "inline-flex",
-                                              alignItems: "center",
-                                              justifyContent: "center",
-                                              color: "#1d4ed8",
-                                              fontWeight: "700",
-                                              fontSize: "16px"
-                                            }}
-                                          >
-                                            +
-                                          </button>
-                                        ) : null}
+                                      {/* Actions Column */}
+                                      <td style={{ padding: "8px 10px", verticalAlign: "top", textAlign: "center" }}>
+                                        <div style={{ display: "flex", flexDirection: "column", gap: "6px", alignItems: "stretch", width: "100%", maxWidth: "160px", margin: "0 auto" }}>
+                                          {/* Option A: Prominent button when an inbox item is currently selected for placing */}
+                                          {invoicesPlacing && (
+                                            <button
+                                              type="button"
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                if (isRetainer && !isRetainerExpanded && hasMultipleRows) {
+                                                  toggleRetainerExpand(jobKey);
+                                                  return;
+                                                }
+                                                const monthLabel = isRetainer ? getRetainerRowMonthLabel(jr, rIdx, job) : null;
+                                                setPlacementConfirmPrompt({
+                                                  job,
+                                                  targetRowNum: isRetainer ? jr.rowNum : null,
+                                                  inv: invoicesPlacing,
+                                                  monthLabel,
+                                                });
+                                              }}
+                                              style={{
+                                                padding: "5px 10px",
+                                                borderRadius: "6px",
+                                                border: "1px solid #2563eb",
+                                                background: "#2563eb",
+                                                color: "#ffffff",
+                                                fontSize: "11px",
+                                                fontWeight: "600",
+                                                cursor: "pointer",
+                                                whiteSpace: "nowrap",
+                                                boxShadow: "0 1px 2px rgba(37,99,235,0.2)",
+                                                transition: "background 0.15s ease",
+                                              }}
+                                              onMouseEnter={(e) => { e.currentTarget.style.background = "#1d4ed8"; }}
+                                              onMouseLeave={(e) => { e.currentTarget.style.background = "#2563eb"; }}
+                                            >
+                                              + Place invoice
+                                            </button>
+                                          )}
+
+                                          {/* Option B: Assign from inbox dropdown */}
+                                          {!invoicesPlacing && invoicesInbox && invoicesInbox.length > 0 && (
+                                            <select
+                                              onChange={(e) => {
+                                                const selectedInvNo = e.target.value;
+                                                if (!selectedInvNo) return;
+                                                const chosenInv = invoicesInbox.find((i) => i.invoiceNo === selectedInvNo);
+                                                if (chosenInv) {
+                                                  if (isRetainer && !isRetainerExpanded && hasMultipleRows) {
+                                                    toggleRetainerExpand(jobKey);
+                                                    return;
+                                                  }
+                                                  const monthLabel = isRetainer ? getRetainerRowMonthLabel(jr, rIdx, job) : null;
+                                                  setPlacementConfirmPrompt({
+                                                    job,
+                                                    targetRowNum: isRetainer ? jr.rowNum : null,
+                                                    inv: chosenInv,
+                                                    monthLabel,
+                                                  });
+                                                }
+                                                e.target.value = "";
+                                              }}
+                                              defaultValue=""
+                                              style={{
+                                                padding: "4px 6px",
+                                                borderRadius: "5px",
+                                                border: "1px solid #cbd5e1",
+                                                background: "#ffffff",
+                                                color: "#475569",
+                                                fontSize: "11px",
+                                                cursor: "pointer",
+                                                width: "100%",
+                                                textOverflow: "ellipsis",
+                                              }}
+                                            >
+                                              <option value="" disabled>Select invoice to place...</option>
+                                              {invoicesInbox.map((inv) => (
+                                                <option key={inv.invoiceNo} value={inv.invoiceNo}>
+                                                  #{inv.invoiceNo} - {inv.client} ({formatCurrency(inv.amount)})
+                                                </option>
+                                              ))}
+                                            </select>
+                                          )}
+                                        </div>
                                       </td>
                                     </tr>
                                   );
@@ -1727,7 +1998,7 @@ export default function InvoicesView({
                                           </div>
                                         ) : isLastRowOfJob && !jobHasEmptySlot && isPlacing && (
                                           <div
-                                            title="No spare invoice slot - click to add a new row for this job"
+                                            title="Add more space for this job"
                                             onClick={async () => {
                                               const inv = invoicesPlacingRef.current;
                                               if (!inv) return;

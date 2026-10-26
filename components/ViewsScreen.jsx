@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import Spinner from "./Spinner";
 import { useAuth } from "../hooks/useAuth";
 import { useAppGlobals } from "../hooks/useAppGlobals";
+import EditClientSelector from "./EditClientSelector";
 import PerformanceFYView from "./portal/PerformanceFYView";
 import CashflowView from "./portal/CashflowView";
 import PortalOutgoingsView from "./portal/PortalOutgoingsView";
@@ -35,14 +36,8 @@ export default function ViewsScreen({
     if (managedClient) {
       return (allClients || []).find((c) => c.clientName?.toLowerCase() === managedClient.clientName?.toLowerCase()) || managedClient;
     }
-    if (typeof window !== "undefined") {
-      const saved = sessionStorage.getItem("pma_views_client");
-      const found = saved ? (allClients || []).find((c) => c.clientName === saved) : null;
-      if (found) return found;
-    }
-    return (allClients && allClients.length > 0) ? allClients[0] : null;
+    return null;
   });
-  const [clientSearch, setClientSearch] = useState("");
   const [activeTab, setActiveTab] = useState("fyPerformance");
 
   // Data Caches by clientSheetId
@@ -74,18 +69,16 @@ export default function ViewsScreen({
     }
   }, [managedClient, allClients]);
 
-  // Auto-select first client if none selected, or restore from sessionStorage
-  useEffect(() => {
-    if (!managedClient && !selectedClient && allClients && allClients.length > 0) {
-      const saved = typeof window !== "undefined" ? sessionStorage.getItem("pma_views_client") : null;
-      const found = saved ? allClients.find((c) => c.clientName === saved) : null;
-      if (found) {
-        setSelectedClient(found);
-      } else {
-        setSelectedClient(allClients[0]);
+  const handleBackToClients = () => {
+    if (managedClient && onClearManagedClient) {
+      onClearManagedClient();
+    } else {
+      setSelectedClient(null);
+      if (typeof window !== "undefined") {
+        sessionStorage.removeItem("pma_views_client");
       }
     }
-  }, [allClients, selectedClient, managedClient]);
+  };
 
   const handleSelectClient = (client) => {
     setSelectedClient(client);
@@ -412,10 +405,6 @@ export default function ViewsScreen({
           ? ((loadingBudget && !budgetData) || (loadingPerf && !perfData) || (loadingPayload && !payload))
           : ((loadingKeyData && !keyData) || (loadingPayload && !payload));
 
-  const filteredClients = (allClients || []).filter((c) =>
-    (c.clientName || "").toLowerCase().includes(clientSearch.toLowerCase().trim())
-  );
-
   return (
     <div style={{ padding: "20px 24px", maxWidth: "1500px", margin: "0 auto", fontFamily: "system-ui, -apple-system, sans-serif" }}>
       {/* Top Header & Client Chooser Bar */}
@@ -428,51 +417,61 @@ export default function ViewsScreen({
           flexWrap: "wrap",
           gap: "14px",
           background: "#ffffff",
-          padding: "14px 20px",
-          borderRadius: "12px",
+          padding: "16px 20px",
+          borderRadius: "8px",
           border: "1px solid #e2e8f0",
-          boxShadow: "0 1px 3px rgba(0,0,0,0.03)",
+          boxShadow: "0 1px 3px rgba(0,0,0,0.06)",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: "16px", flexWrap: "wrap" }}>
-          <h1 style={{ margin: 0, fontSize: "20px", fontWeight: "700", color: "#0f172a" }}>
-            Client views
-          </h1>
-
-          {!managedClient && (allClients || []).length > 1 && (
-            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-              <label htmlFor="pma-views-client-selector" style={{ fontSize: "13px", fontWeight: "600", color: "#64748b" }}>
-                Client:
-              </label>
-              <select
-                id="pma-views-client-selector"
-                value={selectedClient?.clientName || ""}
-                onChange={(e) => {
-                  const found = (allClients || []).find((c) => c.clientName === e.target.value);
-                  if (found) handleSelectClient(found);
-                }}
-                style={{
-                  padding: "8px 14px",
-                  fontSize: "13.5px",
-                  fontWeight: "600",
-                  color: "#1e293b",
-                  background: "#f8fafc",
-                  border: "1px solid #cbd5e1",
-                  borderRadius: "8px",
-                  cursor: "pointer",
-                  outline: "none",
-                  minWidth: "220px",
-                }}
-              >
-                <option value="" disabled>-- Select a Client --</option>
-                {(allClients || []).map((c) => (
-                  <option key={c.clientName} value={c.clientName}>
-                    {c.clientName}
-                  </option>
-                ))}
-              </select>
-            </div>
+        <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+          {selectedClient && !managedClient && (allClients || []).length > 1 && (
+            <button
+              type="button"
+              onClick={handleBackToClients}
+              style={{
+                background: "#ffffff",
+                border: "1px solid #cbd5e1",
+                borderRadius: "6px",
+                cursor: "pointer",
+                padding: "6px 12px",
+                fontSize: "16px",
+                color: "#475569",
+                lineHeight: 1,
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                transition: "all 0.15s ease",
+                boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.backgroundColor = "#f1f5f9";
+                e.currentTarget.style.borderColor = "#94a3b8";
+                e.currentTarget.style.color = "#0f172a";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.backgroundColor = "#ffffff";
+                e.currentTarget.style.borderColor = "#cbd5e1";
+                e.currentTarget.style.color = "#475569";
+              }}
+              title="Back to client list"
+            >
+              ←
+            </button>
           )}
+          <div>
+            <h1 style={{ margin: 0, fontSize: "20px", fontWeight: 700, color: "#1e293b", display: "flex", alignItems: "center", gap: "8px" }}>
+              <span>Client views</span>
+            </h1>
+            {selectedClient ? (
+              <div style={{ margin: "3px 0 0", fontSize: "14px", fontWeight: 600, color: "#0047AB" }}>
+                {selectedClient.clientName}
+              </div>
+            ) : (
+              <p style={{ margin: "4px 0 0", fontSize: "13px", color: "#64748b" }}>
+                Select a client to view their dashboard
+              </p>
+            )}
+          </div>
         </div>
 
         {/* Right Actions */}
@@ -545,6 +544,15 @@ export default function ViewsScreen({
           </div>
         )}
       </div>
+
+      {/* Client Selection Screen (when no client chosen) */}
+      {!selectedClient && (
+        <EditClientSelector
+          clients={allClients || []}
+          onSelectClient={(c) => handleSelectClient(c)}
+          title="Select a client to view their dashboard:"
+        />
+      )}
 
       {/* Main Container Area */}
       {selectedClient && (

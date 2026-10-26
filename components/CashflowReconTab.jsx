@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import Spinner from "./Spinner";
 import { useAuth } from "../hooks/useAuth";
 import CashflowWorkbenchView from "./CashflowWorkbenchView";
+import EditClientSelector from "./EditClientSelector";
 
 const DARK_GREEN = "#14532d";
 const RESOLVED_GREEN = "#d9ead3";
@@ -32,12 +33,14 @@ export default function CashflowReconTab({
   onTaskMarkedDone,
   eomAllTasks = [],
   eomStatusOverrides = [],
-  styles = {}
+  styles = {},
+  managedClient,
+  onClearManagedClient
 }) {
   const { user } = useAuth();
   const isAdmin = !user?.isReadOnly && !!(user?.isAdmin || user?.role === "Admin");
 
-  const [selectedClient, setSelectedClient] = useState(initialClient || "");
+  const [selectedClient, setSelectedClient] = useState(initialClient || managedClient?.clientName || "");
   const [reconData, setReconData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -118,17 +121,26 @@ export default function CashflowReconTab({
 
   // Auto-restore or sync client
   useEffect(() => {
-    if (initialClient && initialClient !== selectedClient) {
+    if (managedClient?.clientName && managedClient.clientName !== selectedClient) {
+      setSelectedClient(managedClient.clientName);
+    } else if (initialClient && initialClient !== selectedClient) {
       setSelectedClient(initialClient);
       if (onClearInitialClient) onClearInitialClient();
-    } else if (!selectedClient && allOutgoingsClients && allOutgoingsClients.length > 0) {
-      const saved = sessionStorage.getItem("pma_cashflow_recon_client");
-      const found = saved ? allOutgoingsClients.find(c => c.clientName === saved) : null;
-      if (found) {
-        setSelectedClient(found.clientName);
+    }
+  }, [initialClient, onClearInitialClient, managedClient, selectedClient]);
+
+  const handleBackToClients = () => {
+    if (managedClient && onClearManagedClient) {
+      onClearManagedClient();
+    } else {
+      setSelectedClient("");
+      setReconData(null);
+      if (onClearInitialClient) onClearInitialClient();
+      if (typeof window !== "undefined") {
+        sessionStorage.removeItem("pma_cashflow_recon_client");
       }
     }
-  }, [initialClient, onClearInitialClient, selectedClient, allOutgoingsClients]);
+  };
 
   const currentClientInfo = useMemo(() => {
     return (allOutgoingsClients || []).find(c => c.clientName === selectedClient) || null;
@@ -842,51 +854,65 @@ export default function CashflowReconTab({
   return (
     <div style={{ width: "100%", maxWidth: "100%" }}>
       {/* Top Header Card */}
+      {/* Header card with title & client switcher */}
       <div style={{
         background: "#ffffff",
-        border: "1px solid #cbd5e1",
-        borderRadius: "12px",
-        padding: "14px 20px",
+        border: "1px solid #e2e8f0",
+        borderRadius: "8px",
+        padding: "16px 20px",
         marginBottom: "16px",
-        boxShadow: "0 1px 3px rgba(0,0,0,0.04)"
+        boxShadow: "0 1px 3px rgba(0,0,0,0.06)"
       }}>
         {/* Title row */}
-        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "16px" }}>
-          <div>
-            <h3 style={{ margin: 0, fontSize: "20px", fontWeight: "700", color: "#0f172a" }}>
-              Cashflow recon
-            </h3>
-          </div>
-
-          {!selectedClient && (
-            <div style={{ minWidth: "260px" }}>
-              <select
-                value={selectedClient}
-                onChange={e => {
-                  setSelectedClient(e.target.value);
-                  setReconData(null);
-                }}
-                style={{
-                  padding: "6px 12px",
-                  border: "1px solid #cbd5e1",
-                  borderRadius: "8px",
-                  fontSize: "14px",
-                  fontWeight: "600",
-                  color: "#1e293b",
-                  background: "#f8fafc",
-                  outline: "none",
-                  cursor: "pointer"
-                }}
-              >
-                <option value="">Choose a client...</option>
-                {allOutgoingsClients.map(c => (
-                  <option key={c.clientName} value={c.clientName}>
-                    {c.clientName}
-                  </option>
-                ))}
-              </select>
-            </div>
+        <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+          {selectedClient && !managedClient && (allOutgoingsClients || []).length > 1 && (
+            <button
+              type="button"
+              onClick={handleBackToClients}
+              style={{
+                background: "#ffffff",
+                border: "1px solid #cbd5e1",
+                borderRadius: "6px",
+                cursor: "pointer",
+                padding: "6px 12px",
+                fontSize: "16px",
+                color: "#475569",
+                lineHeight: 1,
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                transition: "all 0.15s ease",
+                boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.backgroundColor = "#f1f5f9";
+                e.currentTarget.style.borderColor = "#94a3b8";
+                e.currentTarget.style.color = "#0f172a";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.backgroundColor = "#ffffff";
+                e.currentTarget.style.borderColor = "#cbd5e1";
+                e.currentTarget.style.color = "#475569";
+              }}
+              title="Back to client list"
+            >
+              ←
+            </button>
           )}
+          <div>
+            <h1 style={{ margin: 0, fontSize: "20px", fontWeight: 700, color: "#1e293b", display: "flex", alignItems: "center", gap: "8px" }}>
+              <span>Cashflow recon</span>
+            </h1>
+            {selectedClient ? (
+              <div style={{ margin: "3px 0 0", fontSize: "14px", fontWeight: 600, color: "#0047AB" }}>
+                {selectedClient}
+              </div>
+            ) : (
+              <p style={{ margin: "4px 0 0", fontSize: "13px", color: "#64748b" }}>
+                Select a client to reconcile cashflow
+              </p>
+            )}
+          </div>
         </div>
 
         {/* Selected Client Toolbar & Month Controls */}
@@ -900,36 +926,9 @@ export default function CashflowReconTab({
             gap: "12px"
           }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "12px" }}>
-              {/* Left: Client selector replacing client name pill in its exact location + Month pill + Month arrows */}
+              {/* Left: Month pill + Month arrows */}
               <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
-                {/* Client selector dropdown: acts as client label (replaces client name pill in its exact current location) */}
-                <select
-                  value={selectedClient}
-                  onChange={e => {
-                    setSelectedClient(e.target.value);
-                    setReconData(null);
-                  }}
-                  style={{
-                    fontSize: "15px",
-                    fontWeight: "700",
-                    background: "#f1f5f9",
-                    color: "#1e293b",
-                    padding: "4px 12px",
-                    borderRadius: "8px",
-                    border: "1px solid #e2e8f0",
-                    outline: "none",
-                    cursor: "pointer"
-                  }}
-                >
-                  <option value="">Choose a client...</option>
-                  {allOutgoingsClients.map(c => (
-                    <option key={c.clientName} value={c.clientName}>
-                      {c.clientName}
-                    </option>
-                  ))}
-                </select>
-
-                {/* Target Month pill: light grey like the client name */}
+                {/* Target Month pill */}
                 {reconData?.targetMonthLabel && (
                   <span style={{
                     fontSize: "15px",
@@ -1092,10 +1091,15 @@ export default function CashflowReconTab({
 
       {/* Main Content Area */}
       {!selectedClient ? (
-        <div style={{ textAlign: "center", padding: "60px 20px", background: "#f8fafc", borderRadius: "12px", border: "1px dashed #cbd5e1" }}>
-          <p style={{ fontSize: "15px", color: "#64748b", margin: "0 0 6px", fontWeight: "600" }}>No client selected</p>
-          <p style={{ fontSize: "13px", color: "#94a3b8", margin: 0 }}>Please select a client from the dropdown above to load their cashflow reconciliation table.</p>
-        </div>
+        <EditClientSelector
+          clients={allOutgoingsClients || []}
+          onSelectClient={(c) => {
+            const name = c.clientName || c.name || c;
+            setSelectedClient(name);
+          }}
+          loading={loading}
+          title="Select a client to reconcile cashflow:"
+        />
       ) : (loading || !reconData) ? (
         <div style={{ textAlign: "center", padding: "80px 20px", background: "#ffffff", borderRadius: "12px", border: "1px solid #e2e8f0" }}>
           <Spinner size={32} />

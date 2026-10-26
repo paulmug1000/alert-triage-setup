@@ -2705,6 +2705,8 @@ export default function ToolsView({
           eomAllTasks={eomAllTasks}
           eomStatusOverrides={eomStatusOverrides}
           styles={styles}
+          managedClient={managedClient}
+          onClearManagedClient={onClearManagedClient}
         />
       )}
 
@@ -2718,6 +2720,8 @@ export default function ToolsView({
           onTaskMarkedDone={handlePushOutgoingsTaskDone}
           eomAllTasks={eomAllTasks}
           styles={styles}
+          managedClient={managedClient}
+          onClearManagedClient={onClearManagedClient}
         />
       )}
 

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import Spinner from "./Spinner";
+import EditClientSelector from "./EditClientSelector";
 
 export default function PushOutgoingsTab({
   allOutgoingsClients = [],
@@ -9,10 +10,11 @@ export default function PushOutgoingsTab({
   onClearInitialClient,
   onTaskMarkedDone,
   eomAllTasks = [],
-  styles = {}
+  styles = {},
+  managedClient,
+  onClearManagedClient
 }) {
-  const [selectedClient, setSelectedClient] = useState(initialClient || "");
-  const [clientSearch, setClientSearch] = useState("");
+  const [selectedClient, setSelectedClient] = useState(initialClient || managedClient?.clientName || "");
   const [plData, setPlData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -31,13 +33,25 @@ export default function PushOutgoingsTab({
   const [pushingOutgoings, setPushingOutgoings] = useState(false);
   const [statusMsg, setStatusMsg] = useState(null); // { type: 'success' | 'error' | 'warning', text: string }
 
-  // Sync initialClient prop if changed externally
+  // Sync initialClient / managedClient prop if changed externally
   useEffect(() => {
-    if (initialClient && initialClient !== selectedClient) {
+    if (managedClient?.clientName && managedClient.clientName !== selectedClient) {
+      setSelectedClient(managedClient.clientName);
+    } else if (initialClient && initialClient !== selectedClient) {
       setSelectedClient(initialClient);
       if (onClearInitialClient) onClearInitialClient();
     }
-  }, [initialClient, onClearInitialClient, selectedClient]);
+  }, [initialClient, onClearInitialClient, managedClient, selectedClient]);
+
+  const handleBackToClients = () => {
+    if (managedClient && onClearManagedClient) {
+      onClearManagedClient();
+    } else {
+      setSelectedClient("");
+      setPlData(null);
+      if (onClearInitialClient) onClearInitialClient();
+    }
+  };
 
   // Load PLComp data when client changes
   const loadPlCompData = useCallback(async (clientNameToLoad) => {
@@ -100,13 +114,6 @@ export default function PushOutgoingsTab({
   const currentClientInfo = useMemo(() => {
     return (allOutgoingsClients || []).find(c => c.clientName === selectedClient) || null;
   }, [allOutgoingsClients, selectedClient]);
-
-  const filteredClients = useMemo(() => {
-    const list = allOutgoingsClients || [];
-    if (!clientSearch.trim()) return list;
-    const q = clientSearch.toLowerCase();
-    return list.filter(c => c.clientName.toLowerCase().includes(q));
-  }, [allOutgoingsClients, clientSearch]);
 
   // Active dataset based on includeUnreconciled toggle
   const activeData = useMemo(() => {
@@ -252,52 +259,63 @@ export default function PushOutgoingsTab({
   return (
     <div style={{ width: "100%", maxWidth: "100%", boxSizing: "border-box" }}>
       {/* Top Header Card */}
+      {/* Top Header Card */}
       <div style={{
         background: "#ffffff",
         border: "1px solid #e2e8f0",
-        borderRadius: "12px",
-        padding: "18px 22px",
+        borderRadius: "8px",
+        padding: "16px 20px",
         marginBottom: "20px",
-        boxShadow: "0 1px 3px rgba(0,0,0,0.04)"
+        boxShadow: "0 1px 3px rgba(0,0,0,0.06)"
       }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "16px" }}>
-          <div style={{ flex: "1 1 320px" }}>
-            <h3 style={{ margin: "0 0 6px", fontSize: "17px", fontWeight: "700", color: "#0f172a" }}>
-              Push Outgoings
-            </h3>
-            <p style={{ margin: 0, fontSize: "13px", color: "#64748b", lineHeight: "1.4" }}>
-              Pull fresh profit &amp; loss figures from accounting and push actual expenses from <strong>PLComp</strong> into the client&apos;s Outgoings sheet.
-            </p>
-          </div>
-
-          {/* Client Selector Dropdown */}
-          <div style={{ minWidth: "260px", flex: "0 1 320px" }}>
-            <label style={{ display: "block", fontSize: "11px", fontWeight: "700", textTransform: "uppercase", color: "#64748b", marginBottom: "6px", letterSpacing: "0.5px" }}>
-              Select Client
-            </label>
-            <select
-              value={selectedClient}
-              onChange={e => setSelectedClient(e.target.value)}
+        <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+          {selectedClient && !managedClient && (allOutgoingsClients || []).length > 1 && (
+            <button
+              type="button"
+              onClick={handleBackToClients}
               style={{
-                width: "100%",
-                padding: "9px 12px",
+                background: "#ffffff",
                 border: "1px solid #cbd5e1",
-                borderRadius: "8px",
-                fontSize: "14px",
-                fontWeight: "600",
-                color: "#1e293b",
-                background: "#f8fafc",
-                outline: "none",
-                cursor: "pointer"
+                borderRadius: "6px",
+                cursor: "pointer",
+                padding: "6px 12px",
+                fontSize: "16px",
+                color: "#475569",
+                lineHeight: 1,
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                transition: "all 0.15s ease",
+                boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
               }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.backgroundColor = "#f1f5f9";
+                e.currentTarget.style.borderColor = "#94a3b8";
+                e.currentTarget.style.color = "#0f172a";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.backgroundColor = "#ffffff";
+                e.currentTarget.style.borderColor = "#cbd5e1";
+                e.currentTarget.style.color = "#475569";
+              }}
+              title="Back to client list"
             >
-              <option value="">Choose a client...</option>
-              {allOutgoingsClients.map(c => (
-                <option key={c.clientName} value={c.clientName}>
-                  {c.clientName}
-                </option>
-              ))}
-            </select>
+              ←
+            </button>
+          )}
+          <div>
+            <h1 style={{ margin: 0, fontSize: "20px", fontWeight: 700, color: "#1e293b", display: "flex", alignItems: "center", gap: "8px" }}>
+              <span>Push outgoings</span>
+            </h1>
+            {selectedClient ? (
+              <div style={{ margin: "3px 0 0", fontSize: "14px", fontWeight: 600, color: "#0047AB" }}>
+                {selectedClient}
+              </div>
+            ) : (
+              <p style={{ margin: "4px 0 0", fontSize: "13px", color: "#64748b" }}>
+                Select a client to push outgoings
+              </p>
+            )}
           </div>
         </div>
 
@@ -315,16 +333,6 @@ export default function PushOutgoingsTab({
           }}>
             {/* Last Updated Timestamp & Mode Toggle */}
             <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
-              <div style={{
-                fontSize: "12px",
-                background: "#f1f5f9",
-                color: "#334155",
-                padding: "5px 10px",
-                borderRadius: "6px",
-                fontWeight: "600"
-              }}>
-                Client: {selectedClient}
-              </div>
               <div style={{
                 fontSize: "12px",
                 color: plData?.lastUpdated ? "#0369a1" : "#64748b",
@@ -475,43 +483,15 @@ export default function PushOutgoingsTab({
 
       {/* Main Content Area */}
       {!selectedClient ? (
-        /* Empty State when no client is selected */
-        <div style={{
-          background: "#ffffff",
-          border: "1px dashed #cbd5e1",
-          borderRadius: "12px",
-          padding: "48px 24px",
-          textAlign: "center"
-        }}>
-          <div style={{ fontSize: "36px", marginBottom: "12px" }}>📊</div>
-          <h4 style={{ margin: "0 0 6px", fontSize: "16px", fontWeight: "700", color: "#1e293b" }}>
-            No Client Selected
-          </h4>
-          <p style={{ margin: "0 0 20px", fontSize: "13px", color: "#64748b", maxWidth: "420px", marginLeft: "auto", marginRight: "auto" }}>
-            Choose a client from the dropdown above to load the comparison data from their master <strong>PLComp</strong> tab.
-          </p>
-
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", justifyContent: "center", maxWidth: "600px", margin: "0 auto" }}>
-            {allOutgoingsClients.slice(0, 10).map(c => (
-              <button
-                key={c.clientName}
-                onClick={() => setSelectedClient(c.clientName)}
-                style={{
-                  padding: "6px 12px",
-                  background: "#f1f5f9",
-                  border: "1px solid #e2e8f0",
-                  borderRadius: "6px",
-                  fontSize: "12px",
-                  color: "#334155",
-                  fontWeight: "500",
-                  cursor: "pointer"
-                }}
-              >
-                {c.clientName}
-              </button>
-            ))}
-          </div>
-        </div>
+        <EditClientSelector
+          clients={allOutgoingsClients || []}
+          onSelectClient={(c) => {
+            const name = c.clientName || c.name || c;
+            setSelectedClient(name);
+          }}
+          loading={loading}
+          title="Select a client to push outgoings:"
+        />
       ) : loading ? (
         /* Loading Spinner */
         <div style={{

@@ -5,13 +5,28 @@ export async function getToleranceValues(sheets, masterSheetId) {
   try {
     const response = await sheets.spreadsheets.values.batchGet({
       spreadsheetId: masterSheetId,
-      ranges: ["DataChgAlert!F39", "DataChgAlert!J111", "DataChgAlert!B52"],
+      ranges: [
+        "DataChgAlert!F39",
+        "DataChgAlert!J111",
+        "DataChgAlert!B52",
+        "DataChgAlert!B50",
+        "DataChgAlert!B51",
+        "DataChgAlert!B105",
+        "DataChgAlert!B106"
+      ],
     });
     const ranges = response.data.valueRanges || [];
+    const b52Val = parseInt(ranges[2]?.values?.[0]?.[0], 10);
+    const b51Val = parseInt(ranges[4]?.values?.[0]?.[0], 10);
+    const b106Val = parseInt(ranges[6]?.values?.[0]?.[0], 10);
     return {
       invoiceMonthsTolerance: ranges[0]?.values?.[0]?.[0] || 2,
       expenseMonthsTolerance: ranges[1]?.values?.[0]?.[0] || 1,
-      defaultDaysToPay:       ranges[2]?.values?.[0]?.[0] || 30,
+      defaultDaysToPay:       !isNaN(b52Val) && b52Val > 0 ? b52Val : 30,
+      invoiceLogicMode:       String(ranges[3]?.values?.[0]?.[0] || "50-50").trim(),
+      retainerInvoiceDay:     !isNaN(b51Val) && b51Val > 0 ? b51Val : 28,
+      expenseLogicMode:       String(ranges[5]?.values?.[0]?.[0] || "100 at start").trim(),
+      retainerExpenseDay:     !isNaN(b106Val) && b106Val > 0 ? b106Val : 28,
     };
   } catch (err) {
     console.log("⚠️ Using default tolerance values");
@@ -19,6 +34,10 @@ export async function getToleranceValues(sheets, masterSheetId) {
       invoiceMonthsTolerance: 2,
       expenseMonthsTolerance: 1,
       defaultDaysToPay: 30,
+      invoiceLogicMode: "50-50",
+      retainerInvoiceDay: 28,
+      expenseLogicMode: "100 at start",
+      retainerExpenseDay: 28,
     };
   }
 }

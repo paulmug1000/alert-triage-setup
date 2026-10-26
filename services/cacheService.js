@@ -177,6 +177,11 @@ export async function invalidatePmaClientCache(clientSheetId, masterSheetId, sco
       patterns.push(`pulse:view_data:${cleanClientId}:*`);
       patterns.push(`pulse:portal:*:${cleanClientId}*`);
     }
+    if (allScopes || scopes.includes("cash")) {
+      patterns.push(`pma_cash_${cleanClientId}*`);
+      patterns.push(`portal_cash_${cleanClientId}*`);
+      patterns.push(`pulse:portal:cash:${cleanClientId}*`);
+    }
   }
 
   if (cleanMasterId) {

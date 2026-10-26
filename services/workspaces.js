@@ -1331,7 +1331,21 @@ export async function handleUpdateJobField(req, res, sheets) {
     });
 
     const targetCol = (colLetter || cellRef.replace(/[0-9]/g, "")).toUpperCase();
-    const targetRow = rowNum || cellRef.replace(/[^0-9]/g, "");
+    const targetRow = parseInt(rowNum || cellRef.replace(/[^0-9]/g, ""), 10);
+
+    // If Revenue (AG), Direct Costs (AH), or Dates (AL, AM) change on Confirmed tab, synchronize placeholders
+    if (tabName === "Confirmed" && targetRow) {
+      if (targetCol === "AG") {
+        const revNum = parseFloat(safeValue) || 0;
+        adjustJobInvoicePlaceholders_(sheets, sheetIdClean, tabName, [targetRow], revNum).catch(e => console.warn("Job revenue placeholder adjust failed:", e.message));
+      } else if (targetCol === "AH") {
+        const costNum = parseFloat(safeValue) || 0;
+        adjustJobExpensePlaceholders_(sheets, sheetIdClean, tabName, [targetRow], costNum).catch(e => console.warn("Job expense placeholder adjust failed:", e.message));
+      } else if (targetCol === "AL" || targetCol === "AM") {
+        adjustJobInvoicePlaceholders_(sheets, sheetIdClean, tabName, [targetRow]).catch(e => console.warn("Job date invoice placeholder adjust failed:", e.message));
+        adjustJobExpensePlaceholders_(sheets, sheetIdClean, tabName, [targetRow]).catch(e => console.warn("Job date expense placeholder adjust failed:", e.message));
+      }
+    }
 
     const FIELD_NAMES = {
       A: "Client",
@@ -1441,6 +1455,28 @@ export async function handleUpdateJobFields(req, res, sheets) {
         data
       }
     });
+
+    // If Revenue (AG), Direct Costs (AH), or Dates (AL, AM) change on Confirmed tab, synchronize placeholders
+    if (tabName === "Confirmed" && rowNum) {
+      const targetRowNum = parseInt(rowNum, 10);
+      const revUpdate = updates.find(u => (u.colLetter || "").toUpperCase() === "AG" || (u.cellRef || "").toUpperCase().startsWith("AG"));
+      const costUpdate = updates.find(u => (u.colLetter || "").toUpperCase() === "AH" || (u.cellRef || "").toUpperCase().startsWith("AH"));
+      const dateUpdate = updates.find(u => ["AL", "AM"].includes((u.colLetter || "").toUpperCase()) || ["AL", "AM"].some(c => (u.cellRef || "").toUpperCase().startsWith(c)));
+
+      if (revUpdate) {
+        const revNum = parseFloat(revUpdate.value) || 0;
+        adjustJobInvoicePlaceholders_(sheets, sheetIdClean, tabName, [targetRowNum], revNum).catch(e => console.warn("Job fields revenue placeholder adjust failed:", e.message));
+      } else if (dateUpdate) {
+        adjustJobInvoicePlaceholders_(sheets, sheetIdClean, tabName, [targetRowNum]).catch(e => console.warn("Job fields date invoice placeholder adjust failed:", e.message));
+      }
+
+      if (costUpdate) {
+        const costNum = parseFloat(costUpdate.value) || 0;
+        adjustJobExpensePlaceholders_(sheets, sheetIdClean, tabName, [targetRowNum], costNum).catch(e => console.warn("Job fields expense placeholder adjust failed:", e.message));
+      } else if (dateUpdate) {
+        adjustJobExpensePlaceholders_(sheets, sheetIdClean, tabName, [targetRowNum]).catch(e => console.warn("Job fields date expense placeholder adjust failed:", e.message));
+      }
+    }
 
     let resolvedClient = req.body.clientName || "";
     if (!resolvedClient) {
@@ -1594,7 +1630,122 @@ function generateAutoPlaceholderRef_(prefix = "PLACE-INV") {
   return `${prefix}-${dateStr}-${rand}`;
 }
 
-export async function adjustJobInvoicePlaceholders_(sheets, sheetIdClean, targetTab, rowNums, jobRevenue) {
+export function calculateRevenueSplit(amount, mode, start, end, retainerDay = 28, xeroCount = 0) {
+  const startDate = start instanceof Date && !isNaN(start.getTime()) ? start : new Date();
+  const endDate = end instanceof Date && !isNaN(end.getTime()) ? end : startDate;
+  const midDate = new Date(startDate.getTime() + (endDate.getTime() - startDate.getTime()) / 2);
+  const modeClean = String(mode || "50-50").trim().toLowerCase();
+
+  if (modeClean === "even-split") {
+    const diffTime = Math.abs(endDate.getTime() - startDate.getTime());
+    const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
+    const totalMonths = Math.round(diffDays / 30.4375);
+    const slotsNeeded = Math.max(1, Math.min(3, totalMonths - xeroCount));
+    const amtPerMonth = amount / slotsNeeded;
+    const allocations = [];
+    for (let m = 0; m < slotsNeeded; m++) {
+      const invDate = new Date(startDate.getFullYear(), startDate.getMonth() + xeroCount + m, retainerDay || 1);
+      allocations.push({ amt: Math.round(amtPerMonth * 100) / 100, date: invDate });
+    }
+    return allocations;
+  }
+
+  let weights = [1];
+  let dates = [endDate];
+
+  if (modeClean.includes("50-50")) {
+    if (xeroCount === 0) {
+      weights = [0.5, 0.5];
+      dates = [startDate, endDate];
+    } else {
+      weights = [1];
+      dates = [endDate];
+    }
+  } else if (modeClean.includes("33-33-33")) {
+    if (xeroCount === 0) {
+      weights = [1 / 3, 1 / 3, 1 / 3];
+      dates = [startDate, midDate, endDate];
+    } else if (xeroCount === 1) {
+      weights = [0.5, 0.5];
+      dates = [midDate, endDate];
+    } else {
+      weights = [1];
+      dates = [endDate];
+    }
+  } else if (modeClean.includes("50-25-25")) {
+    if (xeroCount === 0) {
+      weights = [0.5, 0.25, 0.25];
+      dates = [startDate, midDate, endDate];
+    } else if (xeroCount === 1) {
+      weights = [0.5, 0.5];
+      dates = [midDate, endDate];
+    } else {
+      weights = [1];
+      dates = [endDate];
+    }
+  } else if (modeClean.includes("25-25-50")) {
+    if (xeroCount === 0) {
+      weights = [0.25, 0.25, 0.5];
+      dates = [startDate, midDate, endDate];
+    } else if (xeroCount === 1) {
+      weights = [1 / 3, 2 / 3];
+      dates = [midDate, endDate];
+    } else {
+      weights = [1];
+      dates = [endDate];
+    }
+  } else if (modeClean.includes("25-75")) {
+    if (xeroCount === 0) {
+      weights = [0.25, 0.75];
+      dates = [startDate, endDate];
+    } else {
+      weights = [1];
+      dates = [endDate];
+    }
+  } else if (modeClean.includes("100 at start")) {
+    weights = [1];
+    dates = [startDate];
+  } else {
+    // default / "100 at end"
+    weights = [1];
+    dates = [endDate];
+  }
+
+  const allocations = [];
+  for (let i = 0; i < weights.length; i++) {
+    allocations.push({ amt: Math.round(amount * weights[i] * 100) / 100, date: dates[i] });
+  }
+  return allocations;
+}
+
+export async function resolveMasterSheetIdForClient_(sheets, sheetIdClean, clientName) {
+  if (!sheetIdClean) return null;
+  const cleanId = extractSheetIdFromUrl(sheetIdClean) || sheetIdClean;
+  try {
+    const d1Res = await withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: cleanId,
+      range: "KeyInfo!D1",
+    }));
+    const d1Val = d1Res.data?.values?.[0]?.[0];
+    if (d1Val) return extractSheetIdFromUrl(d1Val) || String(d1Val).trim();
+  } catch (e) {}
+
+  try {
+    const clients = await loadClientsFromCommander(sheets);
+    const found = clients.find(c =>
+      (clientName && c.clientName && c.clientName.toLowerCase() === clientName.toLowerCase()) ||
+      extractSheetIdFromUrl(c.clientSheetId) === cleanId ||
+      extractSheetIdFromUrl(c.masterSheetId) === cleanId
+    );
+    if (found?.masterSheetId) {
+      return extractSheetIdFromUrl(found.masterSheetId) || found.masterSheetId;
+    }
+  } catch (lookupErr) {}
+
+  return null;
+}
+
+export async function adjustJobInvoicePlaceholders_(sheets, sheetIdClean, targetTab, rowNums, jobRevenue, passedMasterSheetId) {
   try {
     const validRowNums = (Array.isArray(rowNums) ? rowNums : [rowNums]).map(Number).filter(n => n && n >= 2);
     if (validRowNums.length === 0) return null;
@@ -1621,9 +1772,10 @@ export async function adjustJobInvoicePlaceholders_(sheets, sheetIdClean, target
     }
 
     let realInvoicedTotal = 0;
+    let realCount = 0;
     let manualPlaceholdersTotal = 0;
+    const availableSlots = [];
     const autoPlaceholders = [];
-    let firstEmptySlot = null;
 
     for (const rNum of validRowNums) {
       const rowArr = rows[rNum - minRow] || [];
@@ -1631,22 +1783,26 @@ export async function adjustJobInvoicePlaceholders_(sheets, sheetIdClean, target
         const base = s === 1 ? 9 : s === 2 ? 16 : 23;
         const amt = parseFloat(String(rowArr[base] || "0").replace(/[£$€,\s]/g, "")) || 0;
         const ref = String(rowArr[base + 1] || "").trim();
+        const sent = String(rowArr[base + 2] || "").trim();
+        const days = String(rowArr[base + 3] || "").trim();
         const st = String(rowArr[base + 4] || "").trim();
 
         const isPlace = isPlaceholderInvoice(ref, st);
         const isEmpty = !ref && !amt;
 
         if (isEmpty) {
-          if (!firstEmptySlot) firstEmptySlot = { rowNum: rNum, slotNum: s };
+          availableSlots.push({ rowNum: rNum, slotNum: s, currentAmount: 0, isAuto: false, currentSent: sent });
         } else if (isPlace) {
           const isAuto = !ref || ref.toUpperCase().startsWith("PLACE");
           if (isAuto) {
-            autoPlaceholders.push({ rowNum: rNum, slotNum: s, currentAmount: amt });
+            autoPlaceholders.push({ rowNum: rNum, slotNum: s, currentAmount: amt, currentSent: sent });
+            availableSlots.push({ rowNum: rNum, slotNum: s, currentAmount: amt, isAuto: true, currentSent: sent });
           } else {
             manualPlaceholdersTotal += amt;
           }
         } else {
           realInvoicedTotal += amt;
+          realCount++;
         }
       }
     }
@@ -1655,21 +1811,55 @@ export async function adjustJobInvoicePlaceholders_(sheets, sheetIdClean, target
       const remainingToInvoice = Math.max(0, Math.round((effectiveRev - realInvoicedTotal - manualPlaceholdersTotal) * 100) / 100);
 
       if (remainingToInvoice > 0.01) {
-        if (autoPlaceholders.length > 0) {
-          const primary = autoPlaceholders[0];
-          const cols = slotCols[primary.slotNum];
+        const masterId = passedMasterSheetId || await resolveMasterSheetIdForClient_(sheets, sheetIdClean);
+        const tols = masterId ? await getToleranceValues(sheets, masterId) : {
+          invoiceLogicMode: "50-50",
+          retainerInvoiceDay: 28,
+          defaultDaysToPay: 30
+        };
+
+        const primaryRowData = rows[0] || [];
+        const rawStartDate = primaryRowData[5]; // AL: Start date (AG=0, AH=1, AI=2, AJ=3, AK=4, AL=5)
+        const rawEndDate = primaryRowData[6];   // AM: End date
+        const startDate = rawStartDate ? parseSheetDate(rawStartDate) : new Date();
+        const endDate = rawEndDate ? parseSheetDate(rawEndDate) : startDate;
+
+        const allocations = calculateRevenueSplit(
+          remainingToInvoice,
+          tols.invoiceLogicMode || "50-50",
+          startDate,
+          endDate,
+          tols.retainerInvoiceDay || 28,
+          realCount
+        );
+
+        const daysToPayVal = tols.defaultDaysToPay || 30;
+        const slotsToUse = Math.min(allocations.length, availableSlots.length);
+
+        for (let k = 0; k < slotsToUse; k++) {
+          const target = availableSlots[k];
+          const cols = slotCols[target.slotNum];
+          let amountToWrite = allocations[k].amt;
+          if (k === slotsToUse - 1 && allocations.length > slotsToUse) {
+            for (let j = k + 1; j < allocations.length; j++) amountToWrite += allocations[j].amt;
+          }
+          const autoRef = generateAutoPlaceholderRef_("PLACE-INV");
+          const sentDate = toSheetDateFormat(allocations[k].date);
+
           await withRetry(() =>
             sheets.spreadsheets.values.update({
               spreadsheetId: sheetIdClean,
-              range: `${targetTab}!${cols.a}${primary.rowNum}`,
+              range: `${targetTab}!${cols.a}${target.rowNum}:${cols.st}${target.rowNum}`,
               valueInputOption: "RAW",
-              requestBody: { values: [[remainingToInvoice]] }
+              requestBody: { values: [[amountToWrite, autoRef, sentDate, daysToPayVal, "Placeholder"]] }
             })
           );
+        }
 
-          // Clear any extra auto placeholders
-          for (let i = 1; i < autoPlaceholders.length; i++) {
-            const extra = autoPlaceholders[i];
+        // Clear any surplus auto placeholders beyond slotsToUse
+        for (let k = slotsToUse; k < availableSlots.length; k++) {
+          const extra = availableSlots[k];
+          if (extra.isAuto) {
             const extraCols = slotCols[extra.slotNum];
             await withRetry(() =>
               sheets.spreadsheets.values.update({
@@ -1680,19 +1870,10 @@ export async function adjustJobInvoicePlaceholders_(sheets, sheetIdClean, target
               })
             );
           }
-          return { rowNum: primary.rowNum, slotNum: primary.slotNum, amount: remainingToInvoice, cleared: false };
-        } else if (firstEmptySlot) {
-          const cols = slotCols[firstEmptySlot.slotNum];
-          const autoRef = generateAutoPlaceholderRef_("PLACE-INV");
-          await withRetry(() =>
-            sheets.spreadsheets.values.update({
-              spreadsheetId: sheetIdClean,
-              range: `${targetTab}!${cols.a}${firstEmptySlot.rowNum}:${cols.st}${firstEmptySlot.rowNum}`,
-              valueInputOption: "RAW",
-              requestBody: { values: [[remainingToInvoice, autoRef, "", 30, "Placeholder"]] }
-            })
-          );
-          return { rowNum: firstEmptySlot.rowNum, slotNum: firstEmptySlot.slotNum, amount: remainingToInvoice, cleared: false };
+        }
+
+        if (availableSlots.length > 0) {
+          return { rowNum: availableSlots[0].rowNum, slotNum: availableSlots[0].slotNum, amount: allocations[0]?.amt || remainingToInvoice, cleared: false };
         }
       } else {
         // Clear all auto placeholders
@@ -1718,7 +1899,7 @@ export async function adjustJobInvoicePlaceholders_(sheets, sheetIdClean, target
   return null;
 }
 
-export async function adjustJobExpensePlaceholders_(sheets, sheetIdClean, targetTab, rowNums, jobBudget) {
+export async function adjustJobExpensePlaceholders_(sheets, sheetIdClean, targetTab, rowNums, jobBudget, passedMasterSheetId) {
   try {
     const validRowNums = (Array.isArray(rowNums) ? rowNums : [rowNums]).map(Number).filter(n => n && n >= 2);
     if (validRowNums.length === 0) return null;
@@ -1745,9 +1926,10 @@ export async function adjustJobExpensePlaceholders_(sheets, sheetIdClean, target
     }
 
     let realExpensesTotal = 0;
+    let realCount = 0;
     let manualExpensesTotal = 0;
+    const availableSlots = [];
     const autoPlaceholders = [];
-    let firstEmptySlot = null;
 
     for (const rNum of validRowNums) {
       const rowArr = rows[rNum - minRow] || [];
@@ -1762,16 +1944,18 @@ export async function adjustJobExpensePlaceholders_(sheets, sheetIdClean, target
         const isEmpty = !desc && !id && !amt;
 
         if (isEmpty) {
-          if (!firstEmptySlot) firstEmptySlot = { rowNum: rNum, slotNum: s };
+          availableSlots.push({ rowNum: rNum, slotNum: s, currentAmount: 0, isAuto: false });
         } else if (isPlace) {
           const isAuto = (!id && !desc) || id.toUpperCase().startsWith("PLACE") || desc.toUpperCase().startsWith("PLACE");
           if (isAuto) {
             autoPlaceholders.push({ rowNum: rNum, slotNum: s, currentAmount: amt });
+            availableSlots.push({ rowNum: rNum, slotNum: s, currentAmount: amt, isAuto: true });
           } else {
             manualExpensesTotal += amt;
           }
         } else if ((id || desc) && amt > 0) {
           realExpensesTotal += amt;
+          realCount++;
         }
       }
     }
@@ -1780,20 +1964,55 @@ export async function adjustJobExpensePlaceholders_(sheets, sheetIdClean, target
       const remainingDC = Math.max(0, Math.round((effectiveBudget - realExpensesTotal - manualExpensesTotal) * 100) / 100);
 
       if (remainingDC > 0.01) {
-        if (autoPlaceholders.length > 0) {
-          const primary = autoPlaceholders[0];
-          const cols = slotCols[primary.slotNum];
+        const masterId = passedMasterSheetId || await resolveMasterSheetIdForClient_(sheets, sheetIdClean);
+        const tols = masterId ? await getToleranceValues(sheets, masterId) : {
+          expenseLogicMode: "100 at start",
+          retainerExpenseDay: 28,
+          defaultDaysToPay: 30
+        };
+
+        const primaryRowData = rows[0] || [];
+        const rawStartDate = primaryRowData[4]; // AL: Start date (AH=0, AI=1, AJ=2, AK=3, AL=4)
+        const rawEndDate = primaryRowData[5];   // AM: End date
+        const startDate = rawStartDate ? parseSheetDate(rawStartDate) : new Date();
+        const endDate = rawEndDate ? parseSheetDate(rawEndDate) : startDate;
+
+        const allocations = calculateRevenueSplit(
+          remainingDC,
+          tols.expenseLogicMode || "100 at start",
+          startDate,
+          endDate,
+          tols.retainerExpenseDay || 28,
+          realCount
+        );
+
+        const daysToPayVal = tols.defaultDaysToPay || 30;
+        const slotsToUse = Math.min(allocations.length, availableSlots.length);
+
+        for (let k = 0; k < slotsToUse; k++) {
+          const target = availableSlots[k];
+          const cols = slotCols[target.slotNum];
+          let amountToWrite = allocations[k].amt;
+          if (k === slotsToUse - 1 && allocations.length > slotsToUse) {
+            for (let j = k + 1; j < allocations.length; j++) amountToWrite += allocations[j].amt;
+          }
+          const autoId = generateAutoPlaceholderRef_("PLACE-EXP");
+          const dt = toSheetDateFormat(allocations[k].date);
+
           await withRetry(() =>
             sheets.spreadsheets.values.update({
               spreadsheetId: sheetIdClean,
-              range: `${targetTab}!${cols.a}${primary.rowNum}`,
+              range: `${targetTab}!${cols.d}${target.rowNum}:${cols.id}${target.rowNum}`,
               valueInputOption: "RAW",
-              requestBody: { values: [[remainingDC]] }
+              requestBody: { values: [["Placeholder - Direct cost", amountToWrite, "Yes", dt, daysToPayVal, "Placeholder", autoId]] }
             })
           );
+        }
 
-          for (let i = 1; i < autoPlaceholders.length; i++) {
-            const extra = autoPlaceholders[i];
+        // Clear any surplus auto placeholders beyond slotsToUse
+        for (let k = slotsToUse; k < availableSlots.length; k++) {
+          const extra = availableSlots[k];
+          if (extra.isAuto) {
             const extraCols = slotCols[extra.slotNum];
             await withRetry(() =>
               sheets.spreadsheets.values.update({
@@ -1804,19 +2023,10 @@ export async function adjustJobExpensePlaceholders_(sheets, sheetIdClean, target
               })
             );
           }
-          return { rowNum: primary.rowNum, slotNum: primary.slotNum, amount: remainingDC, cleared: false };
-        } else if (firstEmptySlot) {
-          const cols = slotCols[firstEmptySlot.slotNum];
-          const autoId = generateAutoPlaceholderRef_("PLACE-EXP");
-          await withRetry(() =>
-            sheets.spreadsheets.values.update({
-              spreadsheetId: sheetIdClean,
-              range: `${targetTab}!${cols.d}${firstEmptySlot.rowNum}:${cols.id}${firstEmptySlot.rowNum}`,
-              valueInputOption: "RAW",
-              requestBody: { values: [["Placeholder - Direct cost", remainingDC, "Yes", "", 30, "Placeholder", autoId]] }
-            })
-          );
-          return { rowNum: firstEmptySlot.rowNum, slotNum: firstEmptySlot.slotNum, amount: remainingDC, cleared: false };
+        }
+
+        if (availableSlots.length > 0) {
+          return { rowNum: availableSlots[0].rowNum, slotNum: availableSlots[0].slotNum, amount: allocations[0]?.amt || remainingDC, cleared: false };
         }
       } else {
         for (const p of autoPlaceholders) {
@@ -3385,8 +3595,9 @@ export async function handleAddNewJob(req, res, sheets) {
         }
       } catch (e) {}
     }
+    let tols = null;
     try {
-      const tols = await getToleranceValues(sheets, targetMasterId || sheetIdClean);
+      tols = await getToleranceValues(sheets, targetMasterId || sheetIdClean);
       const b52Val = parseInt(tols?.defaultDaysToPay, 10);
       if (!isNaN(b52Val) && b52Val >= 0 && b52Val <= 365) {
         clientDefaultDays = b52Val;
@@ -3429,6 +3640,29 @@ export async function handleAddNewJob(req, res, sheets) {
       }
     }
 
+    if (writtenInvoicesCount === 0 && (parseFloat(jobData.revenue) || 0) > 0) {
+      const rev = parseFloat(jobData.revenue) || 0;
+      const startDate = jobData.startDate ? parseSheetDate(jobData.startDate) : new Date();
+      const endDate = jobData.endDate ? parseSheetDate(jobData.endDate) : startDate;
+      const allocations = calculateRevenueSplit(rev, tols?.invoiceLogicMode || "50-50", startDate, endDate, tols?.retainerInvoiceDay || 28, 0);
+
+      allocations.forEach((alloc, idx) => {
+        const sNum = idx + 1;
+        const sCols = invoiceSlotCols[sNum];
+        if (!sCols) return;
+        writtenInvoicesCount++;
+        const autoRef = generateAutoPlaceholderRef_("PLACE-INV");
+        const sent = toSheetDateFormat(alloc.date);
+        updateData.push(
+          { range: `${targetTab}!${sCols.a}${targetRow}`,    values: [[alloc.amt]] },
+          { range: `${targetTab}!${sCols.ref}${targetRow}`,  values: [[autoRef]] },
+          { range: `${targetTab}!${sCols.sent}${targetRow}`, values: [[sent]] },
+          { range: `${targetTab}!${sCols.days}${targetRow}`, values: [[clientDefaultDays]] },
+          { range: `${targetTab}!${sCols.st}${targetRow}`,   values: [["Placeholder"]] }
+        );
+      });
+    }
+
     // Expense / Direct Cost Slots (up to 3)
     const expenseSlotCols = {
       1: { d: "BX", a: "BY", v: "BZ", dt: "CA", dp: "CB", st: "CC", id: "CD" },
@@ -3467,6 +3701,31 @@ export async function handleAddNewJob(req, res, sheets) {
           );
         }
       }
+    }
+
+    if (writtenExpensesCount === 0 && (parseFloat(jobData.directCosts) || 0) > 0) {
+      const dc = parseFloat(jobData.directCosts) || 0;
+      const startDate = jobData.startDate ? parseSheetDate(jobData.startDate) : new Date();
+      const endDate = jobData.endDate ? parseSheetDate(jobData.endDate) : startDate;
+      const allocations = calculateRevenueSplit(dc, tols?.expenseLogicMode || "100 at start", startDate, endDate, tols?.retainerExpenseDay || 28, 0);
+
+      allocations.forEach((alloc, idx) => {
+        const sNum = idx + 1;
+        const eCols = expenseSlotCols[sNum];
+        if (!eCols) return;
+        writtenExpensesCount++;
+        const autoId = generateAutoPlaceholderRef_("PLACE-EXP");
+        const dt = toSheetDateFormat(alloc.date);
+        updateData.push(
+          { range: `${targetTab}!${eCols.d}${targetRow}`,   values: [["Placeholder - Direct cost"]] },
+          { range: `${targetTab}!${eCols.a}${targetRow}`,   values: [[alloc.amt]] },
+          { range: `${targetTab}!${eCols.v}${targetRow}`,   values: [[sanitizeFormulaInput(jobData.vat || "Yes")]] },
+          { range: `${targetTab}!${eCols.dt}${targetRow}`,  values: [[dt]] },
+          { range: `${targetTab}!${eCols.dp}${targetRow}`,  values: [[clientDefaultDays]] },
+          { range: `${targetTab}!${eCols.st}${targetRow}`,  values: [["Placeholder"]] },
+          { range: `${targetTab}!${eCols.id}${targetRow}`,  values: [[autoId]] }
+        );
+      });
     }
 
     await withRetry(() => sheets.spreadsheets.values.batchUpdate({
@@ -3576,31 +3835,123 @@ export async function handleUpdateOutgoingNote(req, res, sheets) {
 
     const colIndex = colLetterToNum(colLetter) - 1; 
     const rowIndex = sheetRow - 1; 
+    const outgoingsGid = await getSheetGid(sheets, sheetIdClean, "Outgoings");
+
+    let newCosNote = null;
+    if (sheetRow >= 12 && sheetRow <= 110) {
+      try {
+        const cosCellResp = await withRetry(() =>
+          sheets.spreadsheets.get({
+            spreadsheetId: sheetIdClean,
+            ranges: [`Outgoings!${colLetter}111`],
+            includeGridData: true,
+            fields: "sheets.data.rowData.values(effectiveValue,formattedValue,note)",
+          })
+        );
+        const cosCell = cosCellResp.data.sheets?.[0]?.data?.[0]?.rowData?.[0]?.values?.[0];
+        if (cosCell) {
+          const cosVal = typeof cosCell.effectiveValue?.numberValue === "number"
+            ? cosCell.effectiveValue.numberValue
+            : parseFloat(String(cosCell.formattedValue || "").replace(/[^0-9.-]/g, "")) || 0;
+          const existingCosNote = cosCell.note || "";
+          if (Math.abs(cosVal) <= 0.001) {
+            if (existingCosNote) {
+              newCosNote = "";
+            }
+          } else if (existingCosNote.includes("{Amt:")) {
+            newCosNote = existingCosNote.replace(/\{Amt:\s*[^}]*\}/, `{Amt: ${cosVal.toFixed(2)}}`);
+          } else if (Math.abs(cosVal) > 0.001) {
+            newCosNote = `{App ID: PLACE-EXP-${colLetter}-Makin-1111}{Amt: ${cosVal.toFixed(2)}}{Status: }{Rec date: }{Pay date: }{Description: Placeholder Entry - Making up CoS}`;
+          }
+        }
+      } catch (cosErr) {
+        console.warn("Could not inspect Row 111 Making up CoS:", cosErr.message);
+      }
+    }
+
+    const noteRequests = [{
+      updateCells: {
+        range: {
+          sheetId: outgoingsGid,
+          startRowIndex: rowIndex,
+          endRowIndex: rowIndex + 1,
+          startColumnIndex: colIndex,
+          endColumnIndex: colIndex + 1,
+        },
+        rows: [{ values: [{ note: noteStr }] }],
+        fields: "note",
+      },
+    }];
+
+    if (newCosNote !== null) {
+      noteRequests.push({
+        updateCells: {
+          range: {
+            sheetId: outgoingsGid,
+            startRowIndex: 110,
+            endRowIndex: 111,
+            startColumnIndex: colIndex,
+            endColumnIndex: colIndex + 1,
+          },
+          rows: [{ values: [{ note: newCosNote }] }],
+          fields: "note",
+        },
+      });
+    }
+
     await sheets.spreadsheets.batchUpdate({
       spreadsheetId: sheetIdClean,
-      requestBody: {
-        requests: [{
-          updateCells: {
-            range: {
-              sheetId: await getSheetGid(sheets, sheetIdClean, "Outgoings"),
-              startRowIndex: rowIndex,
-              endRowIndex: rowIndex + 1,
-              startColumnIndex: colIndex,
-              endColumnIndex: colIndex + 1,
-            },
-            rows: [{ values: [{ note: noteStr }] }],
-            fields: "note",
-          },
-        }],
-      },
+      requestBody: { requests: noteRequests },
     });
 
-    console.log(`  ✅ Outgoings note updated: ${cellRef}`);
+    console.log(`  ✅ Outgoings note updated: ${cellRef}${newCosNote !== null ? " (and Row 111 Making up CoS)" : ""}`);
 
     let tenantClient = req.body.clientName || "";
     if (!tenantClient) {
       tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
     }
+
+    let targetMasterId = req.body.masterSheetId ? (extractSheetIdFromUrl(req.body.masterSheetId) || req.body.masterSheetId) : null;
+    if (!targetMasterId) {
+      try {
+        const clients = await loadClientsFromCommander(sheets);
+        const found = clients.find(c => 
+          (tenantClient && c.clientName && c.clientName.toLowerCase() === tenantClient.toLowerCase()) ||
+          extractSheetIdFromUrl(c.clientSheetId) === sheetIdClean ||
+          extractSheetIdFromUrl(c.masterSheetId) === sheetIdClean
+        );
+        if (found?.masterSheetId) {
+          targetMasterId = extractSheetIdFromUrl(found.masterSheetId) || found.masterSheetId;
+        }
+      } catch (lookupErr) {
+        console.warn("Could not resolve masterSheetId in handleUpdateOutgoingNote:", lookupErr.message);
+      }
+    }
+
+    if (targetMasterId) {
+      const masterData = [
+        { range: `OutgNotes!${colLetter}${sheetRow}`, values: [[noteStr]] }
+      ];
+      if (newCosNote !== null) {
+        masterData.push({ range: `OutgNotes!${colLetter}111`, values: [[newCosNote]] });
+      }
+      sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: targetMasterId,
+        requestBody: {
+          valueInputOption: "USER_ENTERED",
+          data: masterData
+        }
+      }).catch(e => console.warn("Failed to write to Master OutgNotes:", e.message));
+
+      // Trigger GAS refreshOutgoings asynchronously without blocking response
+      const cronSecret = process.env.CRON_SECRET || "triage-cron-2026-AY4K2LDMXBV8DS7";
+      fetch("https://script.google.com/macros/s/AKfycbzVvLSDtqWj3aHcn0UV9VPCybNm82sBNWynMo1-bMpvs3NzerPZXWkrpPJvVHaqDwwy/exec", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "refreshOutgoings", clientSheetId: sheetIdClean, masterSheetId: targetMasterId, secret: cronSecret }),
+      }).catch(e => console.warn("Background refreshOutgoings GAS call failed:", e.message));
+    }
+
     let contractor = req.body.contractorName || "";
     if (!contractor && sheetRow) {
       try {

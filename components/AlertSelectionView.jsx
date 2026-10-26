@@ -746,11 +746,12 @@ export default function AlertSelectionView({
       setInfoBulkSubmitting(true);
       setAcceptError("");
       const snoozedUntil = infoBulkTaskSnoozeDate
-        ? new Date(`${infoBulkTaskSnoozeDate}T${infoBulkTaskSnoozeTime}:00`).toISOString()
+        ? new Date(`${infoBulkTaskSnoozeDate}T${infoBulkTaskSnoozeTime || "07:00"}:00`).toISOString()
         : null;
 
       let successCount = 0;
       const newResolved = new Set(resolvedNoActionFlags);
+      const successfulAlerts = [];
 
       for (const na of alerts) {
         const alertPayload = { ...na, heading: na.flagName, detail: na.flagDetail, summary: { summary: na.flagDetail } };
@@ -761,34 +762,22 @@ export default function AlertSelectionView({
             action: "create_task",
             alert: alertPayload,
             taskNote: infoBulkTaskNote,
+            snoozedUntil,
             automationCommanderSheetId,
             isProactive: false,
+            isInfo: true,
           }),
         });
         const data = await res.json();
         if (data.success) {
           successCount++;
-          newResolved.add(na.fingerprintHash || `${na.flagType}-${na.flagDetail || ""}`);
-
-          if (sessionId && selectedClient) {
-            await fetch("/api/triage", {
-              method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ action: "resolve_noaction_flag", sessionId, clientName: selectedClient.clientName, flagType: na.flagType, fingerprintHash: na.fingerprintHash, automationCommanderSheetId }),
-            }).catch(() => { });
-          }
-
-          if (infoBulkTaskSnoozeDate && data.fingerprintHash) {
-            await fetch("/api/triage", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                action: "snooze_task",
-                fingerprintHash: data.fingerprintHash,
-                snoozedUntil,
-                automationCommanderSheetId,
-              }),
-            }).catch(() => { });
-          }
+          successfulAlerts.push(na);
+          const alertId = na.fingerprintHash || `${na.flagType}-${na.flagDetail || ""}`;
+          newResolved.add(alertId);
+          if (na.fingerprintHash) newResolved.add(na.fingerprintHash);
+          if (na.id) newResolved.add(na.id);
+          if (na.flagDetail) newResolved.add(`${na.flagType}-${na.flagDetail}`);
+          newResolved.add(na.flagType);
         }
       }
 
@@ -805,7 +794,7 @@ export default function AlertSelectionView({
         const updatedCounts = { ...c.alertCounts };
         const updatedFlags = { ...c.flags };
 
-        alerts.forEach(na => {
+        successfulAlerts.forEach(na => {
           if (updatedCounts[na.flagType] > 0) updatedCounts[na.flagType]--;
           const remainingOfType = clientNoActionAlerts.filter(n => n.flagType === na.flagType && !isNoActionResolved(n, newResolved));
           if (remainingOfType.length === 0) {
@@ -816,15 +805,29 @@ export default function AlertSelectionView({
         return { ...c, alertCounts: updatedCounts, flags: updatedFlags };
       }));
 
-      if (sessionId && selectedClient && typesToClear.size > 0) {
+      if (sessionId && selectedClient && successfulAlerts.length > 0) {
+        const flagItems = successfulAlerts.map(na => {
+          const alertId = na.fingerprintHash || `${na.flagType}-${na.flagDetail || ""}`;
+          return { flagType: na.flagType, fingerprintHash: na.fingerprintHash || alertId };
+        });
+
         fetch("/api/triage", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "update_session_flags", sessionId, clientName: selectedClient.clientName, clearedFlagKeys: Array.from(typesToClear) }),
-        }).catch(() => { });
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "bulk_resolve_noaction_flags",
+            sessionId,
+            clientName: selectedClient.clientName,
+            flags: flagItems,
+            clearedFlagKeys: Array.from(typesToClear),
+            automationCommanderSheetId,
+          }),
+        }).catch(err => console.error("Failed to bulk resolve flags:", err));
       }
 
       if (!infoBulkTaskSnoozeDate) setNavTaskCount(prev => prev + successCount);
       else setSnoozedTaskCount(prev => prev + successCount);
+      refreshTaskCount?.(true);
 
       const allResolved = clientNoActionAlerts.every(n => isNoActionResolved(n, newResolved));
       const proactiveDone = proactiveAlerts.filter(a => a.clientName === selectedClient?.clientName).length === 0;
@@ -903,11 +906,12 @@ export default function AlertSelectionView({
       setProactiveBulkSubmitting(true);
       setAcceptError("");
       const snoozedUntil = proactiveBulkTaskSnoozeDate
-        ? new Date(`${proactiveBulkTaskSnoozeDate}T${proactiveBulkTaskSnoozeTime}:00`).toISOString()
+        ? new Date(`${proactiveBulkTaskSnoozeDate}T${proactiveBulkTaskSnoozeTime || "07:00"}:00`).toISOString()
         : null;
 
       let successCount = 0;
       const successfulRowIndexes = new Set();
+      const successfulKeys = new Set();
       for (const alert of alerts) {
         const res = await fetch("/api/triage", {
           method: "POST",
@@ -916,6 +920,7 @@ export default function AlertSelectionView({
             action: "create_task",
             alert: alert,
             taskNote: proactiveBulkTaskNote,
+            snoozedUntil,
             automationCommanderSheetId,
             isProactive: true,
             proactiveAlertKey: alert.alertKey,
@@ -924,27 +929,9 @@ export default function AlertSelectionView({
         const data = await res.json();
         if (data.success) {
           successCount++;
-          successfulRowIndexes.add(alert.rowIndex);
-
-          if (sessionId) {
-            await fetch("/api/triage", {
-              method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ action: "remove_alert", sessionId, alertId: alert.alertKey }),
-            }).catch(() => { });
-          }
-
-          if (proactiveBulkTaskSnoozeDate && data.fingerprintHash) {
-            await fetch("/api/triage", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                action: "snooze_task",
-                fingerprintHash: data.fingerprintHash,
-                snoozedUntil,
-                automationCommanderSheetId,
-              }),
-            }).catch(() => { });
-          }
+          if (alert.rowIndex != null) successfulRowIndexes.add(String(alert.rowIndex));
+          if (alert.alertKey) successfulKeys.add(alert.alertKey);
+          if (alert.fingerprintHash) successfulKeys.add(alert.fingerprintHash);
         }
       }
 
@@ -953,7 +940,41 @@ export default function AlertSelectionView({
         return;
       }
 
-      const remaining = proactiveAlerts.filter(a => !successfulRowIndexes.has(a.rowIndex));
+      if (sessionId && successfulKeys.size > 0) {
+        fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "remove_alert",
+            sessionId,
+            alertIds: Array.from(successfulKeys)
+          }),
+        }).catch(() => { });
+      }
+
+      if (automationCommanderSheetId && successfulKeys.size > 0) {
+        fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "bulk_acknowledge_proactive_alerts",
+            alertKeys: Array.from(successfulKeys),
+            clientName: selectedClient?.clientName,
+            automationCommanderSheetId,
+            sessionId
+          }),
+        }).catch(() => { });
+      }
+
+      const isSuccessfulMatch = (a) => {
+        if (!a) return false;
+        if (a.rowIndex != null && successfulRowIndexes.has(String(a.rowIndex))) return true;
+        if (a.alertKey && successfulKeys.has(a.alertKey)) return true;
+        if (a.fingerprintHash && successfulKeys.has(a.fingerprintHash)) return true;
+        return false;
+      };
+
+      const remaining = proactiveAlerts.filter(a => !isSuccessfulMatch(a));
       const counts = {};
       remaining.forEach(a => {
         const cName = a.clientName || a.metadata?.endClientName || a.metadata?.clientName;
@@ -965,6 +986,7 @@ export default function AlertSelectionView({
 
       if (!proactiveBulkTaskSnoozeDate) setNavTaskCount(prev => prev + successCount);
       else setSnoozedTaskCount(prev => prev + successCount);
+      refreshTaskCount?.(true);
 
       setProactiveBulkSelected(new Set());
       setProactiveBulkMode(false);
@@ -1530,7 +1552,7 @@ export default function AlertSelectionView({
                         background: "#7c3aed", color: "white", border: "none", borderRadius: "6px",
                         padding: "6px 12px", fontWeight: "600", fontSize: "12px", cursor: "pointer"
                       }}>
-                      📋 Create tasks
+                      Create tasks
                     </button>
                   </div>
                 )}
@@ -1800,7 +1822,7 @@ export default function AlertSelectionView({
                                       onClick={() => openCreateTaskModal(na, false, true)}
                                       style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#7c3aed", borderColor: "#c4b5fd" }}
                                     >
-                                      📋 Create Task
+                                      Create task
                                     </button>
                                     <button className="triage-btn no-click-spinner"
                                       onClick={() => handleMarkNoActionResolved(na)}
@@ -1851,7 +1873,7 @@ export default function AlertSelectionView({
                         padding: "6px 12px", fontWeight: "600", fontSize: "12px", cursor: "pointer",
                         opacity: infoBulkSubmitting ? 0.5 : 1
                       }}>
-                      📋 Create tasks
+                      Create tasks
                     </button>
                   </div>
                 )}
@@ -1862,7 +1884,7 @@ export default function AlertSelectionView({
             {showInfoBulkTaskModal && (
               <div style={styles.modalOverlay} onClick={e => { if (e.target === e.currentTarget) setShowInfoBulkTaskModal(false); }}>
                 <div style={styles.modalCard}>
-                  <h3 style={styles.modalTitle}>Create {infoBulkSelected.size} Task{infoBulkSelected.size !== 1 ? "s" : ""}</h3>
+                  <h3 style={styles.modalTitle}>Create {infoBulkSelected.size} task{infoBulkSelected.size !== 1 ? "s" : ""}</h3>
                   <p style={styles.modalSubtitle}>These informational alerts will be added to your task list for follow-up.</p>
                   <textarea value={infoBulkTaskNote} onChange={e => setInfoBulkTaskNote(e.target.value)}
                     placeholder="Shared note for all tasks (optional)..." style={styles.modalTextarea} autoFocus />
@@ -1879,7 +1901,7 @@ export default function AlertSelectionView({
                             onChange={e => setInfoBulkTaskSnoozeTime(e.target.value)}
                             style={{ fontSize: "13px", padding: "6px 8px", border: "1px solid #ddd", borderRadius: "4px", width: "100px" }} />
                           <button className="triage-btn" onClick={() => { setInfoBulkTaskSnoozeDate(""); setInfoBulkTaskSnoozeTime("07:00"); }}
-                            style={{ fontSize: "12px", padding: "5px 8px", color: "#888", borderColor: "#ddd" }}>✕ Clear</button>
+                            style={{ fontSize: "12px", padding: "5px 8px", color: "#888", borderColor: "#ddd" }}>Clear</button>
                         </>
                       )}
                     </div>
@@ -1898,8 +1920,8 @@ export default function AlertSelectionView({
                         cursor: "pointer", opacity: infoBulkSubmitting ? 0.5 : 1
                       }}>
                       {infoBulkSubmitting ? <><Spinner />Creating...</> : infoBulkTaskSnoozeDate
-                        ? `📋 Create & Snooze ${infoBulkSelected.size} task${infoBulkSelected.size !== 1 ? "s" : ""}`
-                        : `📋 Create ${infoBulkSelected.size} task${infoBulkSelected.size !== 1 ? "s" : ""}`}
+                        ? `Create & snooze ${infoBulkSelected.size} task${infoBulkSelected.size !== 1 ? "s" : ""}`
+                        : `Create ${infoBulkSelected.size} task${infoBulkSelected.size !== 1 ? "s" : ""}`}
                     </button>
                   </div>
                 </div>
@@ -2588,7 +2610,7 @@ export default function AlertSelectionView({
                                         </>
                                       );
                                     })()}
-                                    <button className="triage-btn" onClick={() => openCreateTaskModal(alert, true)} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#7c3aed", borderColor: "#c4b5fd", whiteSpace: "nowrap" }}>📋 Create task</button>
+                                    <button className="triage-btn" onClick={() => openCreateTaskModal(alert, true)} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#7c3aed", borderColor: "#c4b5fd", whiteSpace: "nowrap" }}>Create task</button>
                                     <button
                                       className="triage-btn no-click-spinner"
                                       onClick={() => acknowledgeProactiveAlert(alert.alertKey, alert.rowIndex)}
@@ -2639,7 +2661,7 @@ export default function AlertSelectionView({
                         padding: "6px 12px", fontWeight: "600", fontSize: "12px", cursor: "pointer",
                         opacity: proactiveBulkSubmitting ? 0.5 : 1
                       }}>
-                      📋 Create tasks
+                      Create tasks
                     </button>
                   </div>
                 )}
@@ -2652,7 +2674,7 @@ export default function AlertSelectionView({
         {showProactiveBulkTaskModal && (
           <div style={styles.modalOverlay} onClick={e => { if (e.target === e.currentTarget) setShowProactiveBulkTaskModal(false); }}>
             <div style={styles.modalCard}>
-              <h3 style={styles.modalTitle}>Create {proactiveBulkSelected.size} Task{proactiveBulkSelected.size !== 1 ? "s" : ""}</h3>
+              <h3 style={styles.modalTitle}>Create {proactiveBulkSelected.size} task{proactiveBulkSelected.size !== 1 ? "s" : ""}</h3>
               <p style={styles.modalSubtitle}>These proactive alerts will be added to your task list for follow-up.</p>
               <textarea value={proactiveBulkTaskNote} onChange={e => setProactiveBulkTaskNote(e.target.value)}
                 placeholder="Shared note for all tasks (optional)..." style={styles.modalTextarea} autoFocus />
@@ -2669,7 +2691,7 @@ export default function AlertSelectionView({
                         onChange={e => setProactiveBulkTaskSnoozeTime(e.target.value)}
                         style={{ fontSize: "13px", padding: "6px 8px", border: "1px solid #ddd", borderRadius: "4px", width: "100px" }} />
                       <button className="triage-btn" onClick={() => { setProactiveBulkTaskSnoozeDate(""); setProactiveBulkTaskSnoozeTime("07:00"); }}
-                        style={{ fontSize: "12px", padding: "5px 8px", color: "#888", borderColor: "#ddd" }}>✕ Clear</button>
+                        style={{ fontSize: "12px", padding: "5px 8px", color: "#888", borderColor: "#ddd" }}>Clear</button>
                     </>
                   )}
                 </div>
@@ -2688,8 +2710,8 @@ export default function AlertSelectionView({
                     cursor: "pointer", opacity: proactiveBulkSubmitting ? 0.5 : 1
                   }}>
                   {proactiveBulkSubmitting ? <><Spinner />Creating...</> : proactiveBulkTaskSnoozeDate
-                    ? `📋 Create & Snooze ${proactiveBulkSelected.size} task${proactiveBulkSelected.size !== 1 ? "s" : ""}`
-                    : `📋 Create ${proactiveBulkSelected.size} task${proactiveBulkSelected.size !== 1 ? "s" : ""}`}
+                    ? `Create & snooze ${proactiveBulkSelected.size} task${proactiveBulkSelected.size !== 1 ? "s" : ""}`
+                    : `Create ${proactiveBulkSelected.size} task${proactiveBulkSelected.size !== 1 ? "s" : ""}`}
                 </button>
               </div>
             </div>
@@ -2700,7 +2722,7 @@ export default function AlertSelectionView({
         {showBulkIgnoreModal && (
           <div style={styles.modalOverlay} onClick={e => { if (e.target === e.currentTarget) setShowBulkIgnoreModal(false); }}>
             <div style={styles.modalCard}>
-              <h3 style={styles.modalTitle}>Ignore {bulkSelected.size} Alert{bulkSelected.size !== 1 ? "s" : ""}</h3>
+              <h3 style={styles.modalTitle}>Ignore {bulkSelected.size} alert{bulkSelected.size !== 1 ? "s" : ""}</h3>
               <p style={styles.modalSubtitle}>These alerts will be marked as ignored and removed from future triage runs.</p>
               <textarea value={bulkIgnoreReason} onChange={e => setBulkIgnoreReason(e.target.value)}
                 placeholder="Reason for ignoring (optional)..." style={styles.modalTextarea} autoFocus />
@@ -2712,7 +2734,7 @@ export default function AlertSelectionView({
                     padding: "9px 18px", fontWeight: "600", fontSize: "13px", cursor: "pointer",
                     opacity: bulkSubmitting ? 0.5 : 1
                   }}>
-                  {bulkSubmitting ? <><Spinner />Ignoring...</> : `🚫 Ignore ${bulkSelected.size} alert${bulkSelected.size !== 1 ? "s" : ""}`}
+                  {bulkSubmitting ? <><Spinner />Ignoring...</> : `Ignore ${bulkSelected.size} alert${bulkSelected.size !== 1 ? "s" : ""}`}
                 </button>
               </div>
             </div>
@@ -2723,7 +2745,7 @@ export default function AlertSelectionView({
         {showBulkTaskModal && (
           <div style={styles.modalOverlay} onClick={e => { if (e.target === e.currentTarget) setShowBulkTaskModal(false); }}>
             <div style={styles.modalCard}>
-              <h3 style={styles.modalTitle}>Create {bulkSelected.size} Task{bulkSelected.size !== 1 ? "s" : ""}</h3>
+              <h3 style={styles.modalTitle}>Create {bulkSelected.size} task{bulkSelected.size !== 1 ? "s" : ""}</h3>
               <p style={styles.modalSubtitle}>These alerts will be added to your task list for follow-up.</p>
               <textarea value={bulkTaskNote} onChange={e => setBulkTaskNote(e.target.value)}
                 placeholder="Shared note for all tasks (optional)..." style={styles.modalTextarea} autoFocus />
@@ -2740,7 +2762,7 @@ export default function AlertSelectionView({
                         onChange={e => setBulkTaskSnoozeTime(e.target.value)}
                         style={{ fontSize: "13px", padding: "6px 8px", border: "1px solid #ddd", borderRadius: "4px", width: "100px" }} />
                       <button className="triage-btn" onClick={() => { setBulkTaskSnoozeDate(""); setBulkTaskSnoozeTime("07:00"); }}
-                        style={{ fontSize: "12px", padding: "5px 8px", color: "#888", borderColor: "#ddd" }}>✕ Clear</button>
+                        style={{ fontSize: "12px", padding: "5px 8px", color: "#888", borderColor: "#ddd" }}>Clear</button>
                     </>
                   )}
                 </div>
@@ -2759,8 +2781,8 @@ export default function AlertSelectionView({
                     cursor: "pointer", opacity: bulkSubmitting ? 0.5 : 1
                   }}>
                   {bulkSubmitting ? <><Spinner />Creating...</> : bulkTaskSnoozeDate
-                    ? `📋 Create & Snooze ${bulkSelected.size} task${bulkSelected.size !== 1 ? "s" : ""}`
-                    : `📋 Create ${bulkSelected.size} task${bulkSelected.size !== 1 ? "s" : ""}`}
+                    ? `Create & snooze ${bulkSelected.size} task${bulkSelected.size !== 1 ? "s" : ""}`
+                    : `Create ${bulkSelected.size} task${bulkSelected.size !== 1 ? "s" : ""}`}
                 </button>
               </div>
             </div>

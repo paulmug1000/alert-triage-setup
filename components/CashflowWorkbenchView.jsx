@@ -876,6 +876,13 @@ export default function CashflowWorkbenchView({
   const [dismissingNew, setDismissingNew] = useState(false);
   const da1Platform = reconData?.accountingPlatform || reconData?.da1Platform || "Xero";
 
+  // Guided Setup Flow states
+  const [isGuidedSetupOpen, setIsGuidedSetupOpen] = useState(false);
+  const [guidedStep, setGuidedStep] = useState(1); // 1: import, 2: unreconciled accounts, 3: verify unreconciled, 4: review categories
+  const [guidedCashAccountIdx, setGuidedCashAccountIdx] = useState(0);
+  const [showSetupCompletePopup, setShowSetupCompletePopup] = useState(false);
+  const [guidedReviewSearch, setGuidedReviewSearch] = useState("");
+
   const handleUpdateDa1Platform = async (newPlatform) => {
     if (!clientInfo?.reconSheetId || !reconData?.reconTabName) return;
     setUpdatingDa1(true);
@@ -917,6 +924,16 @@ export default function CashflowWorkbenchView({
   const defaultAccount = useMemo(() => {
     return (reconData?.trackedBankAccounts || []).find(a => a.toLowerCase().includes("primary")) || reconData?.trackedBankAccounts?.[0] || "";
   }, [reconData]);
+
+  // Cash bank accounts
+  const cashAccounts = useMemo(() => {
+    const tracked = (reconData?.trackedBankAccounts || []).filter(Boolean);
+    if (tracked.length > 0) return tracked;
+    return [defaultAccount || "Primary bank account"];
+  }, [reconData, defaultAccount]);
+
+  // Brand new recon sheet check (no bank transactions and no unreconciled additions)
+  const hasStartedRecon = (bankTxns && bankTxns.length > 0) || (unreconItems && unreconItems.length > 0);
 
   // Tab check
   const hasTargetTab = localHasTargetTab !== null ? localHasTargetTab : Boolean(reconData?.hasTargetTab);
@@ -1326,7 +1343,7 @@ export default function CashflowWorkbenchView({
         message: "Missing Master Sheet ID for client.",
         type: "error"
       });
-      return;
+      return { success: false, error: "Missing Master Sheet ID for client." };
     }
     setFetchingApi(true);
     setApiMsg("");
@@ -1357,8 +1374,10 @@ export default function CashflowWorkbenchView({
         setApiMsg(`✓ Fetched ${mapped.length} reconciled transactions via ${data.tool?.toUpperCase()} API for tracked accounts.`);
         // Automatically save to the Recon Sheet in the background
         triggerAutoSync(mapped, unreconItems);
+        return { success: true, count: mapped.length, tool: data.tool };
       } else {
         setApiMsg(`ℹ️ Connected ${data.tool?.toUpperCase()} returned 0 transactions for the tracked accounts in this month.`);
+        return { success: true, count: 0, tool: data.tool };
       }
     } catch (err) {
       console.error("Error fetching API transactions:", err);
@@ -1368,9 +1387,37 @@ export default function CashflowWorkbenchView({
         message: err.message,
         type: "error"
       });
+      return { success: false, error: err.message };
     } finally {
       setFetchingApi(false);
     }
+  };
+
+  // Restart Month Handler (clears all transactions & unreconciled lines, re-opens guided setup)
+  const handleRestartMonth = () => {
+    setCustomModal({
+      title: "Restart month setup?",
+      message: `Are you sure you want to restart this month? This will clear all bank transactions and unreconciled items for ${reconData?.targetMonthLabel || "this month"}, and restart the guided setup process from the beginning.`,
+      type: "warning",
+      isConfirm: true,
+      confirmText: "Restart month",
+      onConfirm: async () => {
+        setBankTxns([]);
+        setUnreconItems([]);
+        await triggerAutoSync([], []);
+        setGuidedStep(1);
+        setGuidedCashAccountIdx(0);
+        setIsGuidedSetupOpen(true);
+        setApiMsg("Month reset. Guided setup started.");
+      }
+    });
+  };
+
+  // Finish Guided Setup Handler
+  const handleFinishGuidedSetup = async () => {
+    await triggerAutoSync(bankTxns, unreconItems);
+    setIsGuidedSetupOpen(false);
+    setShowSetupCompletePopup(true);
   };
 
   // 2b. Intelligent Delta Update for Bank Transactions
@@ -1717,34 +1764,36 @@ export default function CashflowWorkbenchView({
     setParsedPreview(null);
     setParsedItems([]);
 
-    // Find next bank account if any (cash accounts first, then non-cash)
-    const cashAccs = reconData?.trackedBankAccounts || [];
-    const nonCashAccs = (reconData?.trackedNonCashBankAccounts || []).map(a => a?.name || a);
-    const allAccs = [...cashAccs, ...nonCashAccs];
-    const currentIdx = allAccs.indexOf(selectedUploadAccount);
-    const nextAcc = (currentIdx !== -1 && currentIdx + 1 < allAccs.length)
-      ? allAccs[currentIdx + 1]
-      : (allAccs.length > 0 ? allAccs[0] : "");
+    if (!isGuidedSetupOpen) {
+      // Find next bank account if any (cash accounts first, then non-cash)
+      const cashAccs = reconData?.trackedBankAccounts || [];
+      const nonCashAccs = (reconData?.trackedNonCashBankAccounts || []).map(a => a?.name || a);
+      const allAccs = [...cashAccs, ...nonCashAccs];
+      const currentIdx = allAccs.indexOf(selectedUploadAccount);
+      const nextAcc = (currentIdx !== -1 && currentIdx + 1 < allAccs.length)
+        ? allAccs[currentIdx + 1]
+        : (allAccs.length > 0 ? allAccs[0] : "");
 
-    setCustomModal({
-      title: "Unreconciled items added",
-      message: `✓ Added ${selectedItems.length} unreconciled statement line${selectedItems.length > 1 ? "s" : ""} to the bank transactions list and auto-saved to sheet.`,
-      type: "success",
-      secondaryAction: {
-        label: "Add unreconciled items from another account",
-        onClick: () => {
-          if (nextAcc) {
-            setSelectedUploadAccount(nextAcc);
+      setCustomModal({
+        title: "Unreconciled items added",
+        message: `✓ Added ${selectedItems.length} unreconciled statement line${selectedItems.length > 1 ? "s" : ""} to the bank transactions list and auto-saved to sheet.`,
+        type: "success",
+        secondaryAction: {
+          label: "Add unreconciled items from another account",
+          onClick: () => {
+            if (nextAcc) {
+              setSelectedUploadAccount(nextAcc);
+            }
+            setPasteRawText("");
+            setParsedPreview(null);
+            setParsedItems([]);
+            setShowSkippedAccordion(false);
+            setShowPasteModal(true);
           }
-          setPasteRawText("");
-          setParsedPreview(null);
-          setParsedItems([]);
-          setShowSkippedAccordion(false);
-          setShowPasteModal(true);
-        }
-      },
-      confirmText: "Done"
-    });
+        },
+        confirmText: "Done"
+      });
+    }
   };
 
   // Sort parsed statement lines: in-month & selected items first, then date descending
@@ -1874,6 +1923,16 @@ export default function CashflowWorkbenchView({
     return [...standard, ...extras];
   }, [catCounts]);
 
+  // Review Transactions for Guided Setup Step 4
+  const reviewTxns = useMemo(() => {
+    if (!guidedReviewSearch) return bankTxns;
+    const q = guidedReviewSearch.toLowerCase().trim();
+    return bankTxns.filter(t => {
+      const text = `${t.payee || ""} ${t.particulars || ""} ${t.accountName || ""} ${t.category || ""} ${t.plCategory || ""} ${t.date || ""}`.toLowerCase();
+      return text.includes(q);
+    });
+  }, [bankTxns, guidedReviewSearch]);
+
   if (!hasTargetTab || creatingTab) {
     return (
       <div style={{
@@ -1941,110 +2000,124 @@ export default function CashflowWorkbenchView({
         </div>
       )}
 
-      {/* Top Action Bar */}
-      <div style={{
-        padding: "10px 16px",
-        background: "#ffffff",
-        borderRadius: "10px",
-        border: "1px solid #cbd5e1",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "flex-end",
-        flexWrap: "wrap",
-        gap: "10px",
-        boxShadow: "0 1px 2px rgba(0,0,0,0.03)"
-      }}>
-        {/* Action buttons on the right */}
-        <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", marginLeft: "auto" }}>
+      {!hasStartedRecon ? (
+        <div style={{
+          textAlign: "center",
+          padding: "70px 24px",
+          background: "#ffffff",
+          borderRadius: "12px",
+          border: "1px solid #cbd5e1",
+          boxShadow: "0 1px 3px rgba(0,0,0,0.03)",
+          maxWidth: "580px",
+          margin: "40px auto",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center"
+        }}>
+          <div style={{
+            width: "56px",
+            height: "56px",
+            borderRadius: "50%",
+            background: "#eff6ff",
+            border: "1px solid #bfdbfe",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            marginBottom: "16px",
+            color: "#0284c7"
+          }}>
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+            </svg>
+          </div>
+          <h3 style={{ fontSize: "18px", fontWeight: "700", color: "#0f172a", margin: "0 0 8px" }}>
+            Get started with {reconData?.targetMonthLabel || "this month"}
+          </h3>
+          <p style={{ fontSize: "13px", color: "#64748b", margin: "0 0 24px", lineHeight: "1.5", maxWidth: "420px" }}>
+            This month does not have any bank transactions or unreconciled items yet. Click get started to launch the guided reconciliation setup.
+          </p>
           <button
-            onClick={handleUpdateBankTransactions}
-            disabled={updatingTxns || fetchingApi}
-            title="Check accounting bank feeds for new, updated, or deleted transactions"
-            style={{
-              padding: "6px 12px",
-              background: "#f8fafc",
-              color: "#0369a1",
-              border: "1px solid #cbd5e1",
-              borderRadius: "6px",
-              fontSize: "12px",
-              fontWeight: "600",
-              cursor: (updatingTxns || fetchingApi) ? "default" : "pointer",
-              display: "flex",
-              alignItems: "center",
-              gap: "6px"
-            }}
-          >
-            {updatingTxns ? <Spinner size={12} /> : null} Check for updated transactions
-          </button>
-
-          <button
+            type="button"
             onClick={() => {
-              if (reconData?.trackedBankAccounts?.length && !selectedUploadAccount) {
-                setSelectedUploadAccount(reconData.trackedBankAccounts[0]);
-              }
-              setShowPasteModal(true);
+              setGuidedStep(1);
+              setGuidedCashAccountIdx(0);
+              setIsGuidedSetupOpen(true);
             }}
             style={{
-              padding: "6px 12px",
-              background: "#f8fafc",
-              color: "#0369a1",
-              border: "1px solid #cbd5e1",
-              borderRadius: "6px",
-              fontSize: "12px",
+              padding: "10px 24px",
+              background: "#0284c7",
+              color: "#ffffff",
+              border: "none",
+              borderRadius: "8px",
+              fontSize: "14px",
               fontWeight: "600",
               cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
-              gap: "6px"
+              boxShadow: "0 2px 4px rgba(2, 132, 199, 0.2)"
             }}
           >
-            Paste / upload unreconciled transactions
-          </button>
-
-          <button
-            onClick={handleConfirmOverwriteAll}
-            disabled={fetchingApi || updatingTxns}
-            title="Download full feed and overwrite all bank transactions and categorisations from accounting tool"
-            style={{
-              padding: "6px 12px",
-              background: "#f8fafc",
-              color: "#0369a1",
-              border: "1px solid #cbd5e1",
-              borderRadius: "6px",
-              fontSize: "12px",
-              fontWeight: "600",
-              cursor: (fetchingApi || updatingTxns) ? "default" : "pointer",
-              display: "flex",
-              alignItems: "center",
-              gap: "6px"
-            }}
-          >
-            {fetchingApi ? <Spinner size={12} /> : null} Overwrite all
-          </button>
-
-          <button
-            onClick={handleRecategoriseAll}
-            disabled={recategorising || bankTxns.length === 0}
-            style={{
-              padding: "6px 14px",
-              background: "#f8fafc",
-              color: "#334155",
-              border: "1px solid #cbd5e1",
-              borderRadius: "6px",
-              fontSize: "12px",
-              fontWeight: "600",
-              cursor: (recategorising || bankTxns.length === 0) ? "not-allowed" : "pointer",
-              display: "flex",
-              alignItems: "center",
-              gap: "6px",
-              opacity: bankTxns.length === 0 ? 0.6 : 1
-            }}
-            title="Re-run historical learning and rule-based categorisation across all bank transactions"
-          >
-            {recategorising ? <Spinner size={12} /> : null} Recategorise all
+            Get started
           </button>
         </div>
-      </div>
+      ) : (
+        <>
+          {/* Top Action Bar */}
+          <div style={{
+            padding: "10px 16px",
+            background: "#ffffff",
+            borderRadius: "10px",
+            border: "1px solid #cbd5e1",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "flex-end",
+            flexWrap: "wrap",
+            gap: "10px",
+            boxShadow: "0 1px 2px rgba(0,0,0,0.03)"
+          }}>
+            {/* Action buttons on the right */}
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", marginLeft: "auto" }}>
+              <button
+                onClick={handleUpdateBankTransactions}
+                disabled={updatingTxns || fetchingApi}
+                title="Check accounting bank feeds for new, updated, or deleted transactions"
+                style={{
+                  padding: "6px 12px",
+                  background: "#f8fafc",
+                  color: "#0369a1",
+                  border: "1px solid #cbd5e1",
+                  borderRadius: "6px",
+                  fontSize: "12px",
+                  fontWeight: "600",
+                  cursor: (updatingTxns || fetchingApi) ? "default" : "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "6px"
+                }}
+              >
+                {updatingTxns ? <Spinner size={12} /> : null} Check for updated transactions
+              </button>
+
+              <button
+                onClick={handleRestartMonth}
+                disabled={fetchingApi || updatingTxns}
+                title="Clear all transaction and unreconciled data and restart guided setup"
+                style={{
+                  padding: "6px 12px",
+                  background: "#f8fafc",
+                  color: "#0369a1",
+                  border: "1px solid #cbd5e1",
+                  borderRadius: "6px",
+                  fontSize: "12px",
+                  fontWeight: "600",
+                  cursor: (fetchingApi || updatingTxns) ? "default" : "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "6px"
+                }}
+              >
+                Restart month
+              </button>
+            </div>
+          </div>
 
       {/* Messages */}
       {apiMsg && (
@@ -2496,6 +2569,8 @@ export default function CashflowWorkbenchView({
           </div>
         </div>
       </div>
+        </>
+      )}
 
       {/* PASTE / UPLOAD MODAL */}
       {showPasteModal && (
@@ -3206,6 +3281,824 @@ export default function CashflowWorkbenchView({
                 }}
               >
                 {customModal.confirmText || "OK"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* GUIDED SETUP MODAL */}
+      {isGuidedSetupOpen && (
+        <div style={{
+          position: "fixed",
+          inset: 0,
+          background: "rgba(15, 23, 42, 0.65)",
+          backdropFilter: "blur(4px)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          zIndex: 9990,
+          padding: "20px"
+        }}>
+          <div style={{
+            background: "#ffffff",
+            borderRadius: "14px",
+            width: guidedStep === 4 ? "1050px" : "860px",
+            maxWidth: "96vw",
+            maxHeight: "92vh",
+            display: "flex",
+            flexDirection: "column",
+            boxShadow: "0 20px 25px -5px rgba(0,0,0,0.2), 0 10px 10px -5px rgba(0,0,0,0.05)",
+            overflow: "hidden"
+          }}>
+            {/* Modal Header */}
+            <div style={{
+              padding: "16px 24px",
+              borderBottom: "1px solid #e2e8f0",
+              background: "#f8fafc",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center"
+            }}>
+              <div>
+                <h3 style={{ margin: "0 0 2px", fontSize: "16px", fontWeight: "700", color: "#0f172a" }}>
+                  Guided reconciliation setup
+                </h3>
+                <p style={{ margin: 0, fontSize: "12px", color: "#64748b" }}>
+                  {reconData?.targetMonthLabel || "Target month"} · {selectedClient}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsGuidedSetupOpen(false)}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  fontSize: "18px",
+                  color: "#64748b",
+                  cursor: "pointer",
+                  padding: "4px"
+                }}
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Stepper Progress Bar */}
+            <div style={{
+              padding: "12px 24px",
+              background: "#ffffff",
+              borderBottom: "1px solid #f1f5f9",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: "8px"
+            }}>
+              {[
+                { step: 1, label: "Import transactions" },
+                { step: 2, label: "Add unreconciled items" },
+                { step: 3, label: "Verify unreconciled" },
+                { step: 4, label: "Review categories" }
+              ].map(s => {
+                const isActive = guidedStep === s.step;
+                const isPassed = guidedStep > s.step;
+                return (
+                  <div
+                    key={s.step}
+                    onClick={() => {
+                      setGuidedStep(s.step);
+                      if (s.step === 2) setGuidedCashAccountIdx(0);
+                    }}
+                    style={{
+                      flex: 1,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "8px",
+                      padding: "6px 12px",
+                      borderRadius: "6px",
+                      background: isActive ? "#eff6ff" : isPassed ? "#f0fdf4" : "#f8fafc",
+                      border: `1px solid ${isActive ? "#bfdbfe" : isPassed ? "#bbf7d0" : "#e2e8f0"}`,
+                      fontSize: "12px",
+                      fontWeight: isActive ? "700" : "600",
+                      color: isActive ? "#0369a1" : isPassed ? "#166534" : "#64748b",
+                      cursor: "pointer"
+                    }}
+                  >
+                    <span style={{
+                      width: "18px",
+                      height: "18px",
+                      borderRadius: "50%",
+                      background: isActive ? "#0284c7" : isPassed ? "#166534" : "#cbd5e1",
+                      color: "#ffffff",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontSize: "10.5px",
+                      fontWeight: "700",
+                      flexShrink: 0
+                    }}>
+                      {isPassed ? "✓" : s.step}
+                    </span>
+                    <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                      {s.label}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Modal Body */}
+            <div style={{ padding: "24px", overflowY: "auto", flex: 1 }}>
+              {/* STEP 1: IMPORT BANK TRANSACTIONS */}
+              {guidedStep === 1 && (
+                <div style={{ display: "flex", flexDirection: "column", gap: "18px" }}>
+                  <div>
+                    <h4 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: "700", color: "#1e293b" }}>
+                      Step 1: Import bank transactions from accounting tool
+                    </h4>
+                    <p style={{ margin: 0, fontSize: "13px", color: "#64748b", lineHeight: "1.5" }}>
+                      To get started, import all reconciled bank transactions from {da1Platform} for {reconData?.targetMonthLabel || "this month"}. This will download all transaction lines for your tracked bank accounts into the reconciliation table.
+                    </p>
+                  </div>
+
+                  <div style={{
+                    padding: "16px 20px",
+                    background: "#f8fafc",
+                    border: "1px solid #e2e8f0",
+                    borderRadius: "10px",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "10px"
+                  }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ fontSize: "12px", color: "#64748b", fontWeight: "600" }}>Connected accounting tool:</span>
+                      <span style={{ fontSize: "12px", fontWeight: "700", color: "#1e293b" }}>{da1Platform}</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ fontSize: "12px", color: "#64748b", fontWeight: "600" }}>Tracked cash bank accounts:</span>
+                      <span style={{ fontSize: "12px", fontWeight: "600", color: "#0369a1" }}>
+                        {cashAccounts.join(", ")}
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ fontSize: "12px", color: "#64748b", fontWeight: "600" }}>Current imported transactions:</span>
+                      <span style={{
+                        fontSize: "12px",
+                        fontWeight: "700",
+                        color: bankTxns.filter(t => t.isReconciled !== false).length > 0 ? "#166534" : "#64748b"
+                      }}>
+                        {bankTxns.filter(t => t.isReconciled !== false).length} transaction{bankTxns.filter(t => t.isReconciled !== false).length !== 1 ? "s" : ""}
+                      </span>
+                    </div>
+                  </div>
+
+                  {apiMsg && (
+                    <div style={{ padding: "10px 14px", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "8px", fontSize: "12px", color: "#166534" }}>
+                      {apiMsg}
+                    </div>
+                  )}
+
+                  <div style={{ display: "flex", alignItems: "center", gap: "12px", marginTop: "10px", flexWrap: "wrap" }}>
+                    <button
+                      type="button"
+                      onClick={handleFetchApiTxns}
+                      disabled={fetchingApi}
+                      style={{
+                        padding: "10px 20px",
+                        background: "#0284c7",
+                        color: "#ffffff",
+                        border: "none",
+                        borderRadius: "8px",
+                        fontSize: "13px",
+                        fontWeight: "600",
+                        cursor: fetchingApi ? "wait" : "pointer",
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "8px"
+                      }}
+                    >
+                      {fetchingApi ? <Spinner size={14} /> : null}
+                      {bankTxns.filter(t => t.isReconciled !== false).length > 0 ? "Re-import bank transactions" : "Import bank transactions"}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setGuidedStep(2);
+                        setGuidedCashAccountIdx(0);
+                      }}
+                      style={{
+                        padding: "10px 22px",
+                        background: bankTxns.filter(t => t.isReconciled !== false).length > 0 ? "#166534" : "#ffffff",
+                        color: bankTxns.filter(t => t.isReconciled !== false).length > 0 ? "#ffffff" : "#475569",
+                        border: `1px solid ${bankTxns.filter(t => t.isReconciled !== false).length > 0 ? "#166534" : "#cbd5e1"}`,
+                        borderRadius: "8px",
+                        fontSize: "13px",
+                        fontWeight: "600",
+                        cursor: "pointer",
+                        marginLeft: "auto"
+                      }}
+                    >
+                      {bankTxns.filter(t => t.isReconciled !== false).length > 0 ? "Next: Add unreconciled items →" : "Proceed to add unreconciled items →"}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* STEP 2: ADD UNRECONCILED ITEMS FOR EACH CASH BANK ACCOUNT */}
+              {guidedStep === 2 && (
+                <div style={{ display: "flex", flexDirection: "column", gap: "18px" }}>
+                  {(() => {
+                    const currentAccount = cashAccounts[guidedCashAccountIdx] || "";
+                    const itemsForThisAcc = unreconItems.filter(i => {
+                      const acc = (i.accountName || defaultAccount || "").trim().toLowerCase();
+                      return acc === currentAccount.trim().toLowerCase();
+                    });
+
+                    return (
+                      <>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px", flexWrap: "wrap" }}>
+                          <div>
+                            <h4 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: "700", color: "#1e293b" }}>
+                              Step 2: Add unreconciled items for cash bank accounts
+                            </h4>
+                            <p style={{ margin: 0, fontSize: "13px", color: "#64748b", lineHeight: "1.5" }}>
+                              Add any statement lines for each cash bank account that have not yet been reconciled in {da1Platform}.
+                            </p>
+                          </div>
+                          <div style={{
+                            padding: "4px 12px",
+                            background: "#eff6ff",
+                            border: "1px solid #bfdbfe",
+                            borderRadius: "20px",
+                            fontSize: "12px",
+                            fontWeight: "700",
+                            color: "#0369a1"
+                          }}>
+                            Account {guidedCashAccountIdx + 1} of {cashAccounts.length}
+                          </div>
+                        </div>
+
+                        {/* Account Card */}
+                        <div style={{
+                          padding: "20px",
+                          background: "#ffffff",
+                          border: "1px solid #cbd5e1",
+                          borderRadius: "10px",
+                          boxShadow: "0 1px 3px rgba(0,0,0,0.03)"
+                        }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "14px", flexWrap: "wrap", gap: "8px" }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                              <div style={{ width: "32px", height: "32px", borderRadius: "6px", background: "#f1f5f9", display: "flex", alignItems: "center", justifyContent: "center", color: "#475569" }}>
+                                🏛️
+                              </div>
+                              <div>
+                                <h5 style={{ margin: 0, fontSize: "14px", fontWeight: "700", color: "#0f172a" }}>
+                                  {currentAccount}
+                                </h5>
+                                <span style={{ fontSize: "11px", color: "#64748b" }}>Cash bank account</span>
+                              </div>
+                            </div>
+                            <span style={{
+                              padding: "3px 10px",
+                              borderRadius: "12px",
+                              fontSize: "12px",
+                              fontWeight: "700",
+                              background: itemsForThisAcc.length > 0 ? "#dcfce7" : "#f1f5f9",
+                              color: itemsForThisAcc.length > 0 ? "#166534" : "#64748b",
+                              border: `1px solid ${itemsForThisAcc.length > 0 ? "#86efac" : "#cbd5e1"}`
+                            }}>
+                              {itemsForThisAcc.length} unreconciled item{itemsForThisAcc.length !== 1 ? "s" : ""}
+                            </span>
+                          </div>
+
+                          {itemsForThisAcc.length > 0 ? (
+                            <div style={{ marginBottom: "16px" }}>
+                              <div style={{ maxHeight: "160px", overflowY: "auto", border: "1px solid #e2e8f0", borderRadius: "6px" }}>
+                                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "11.5px" }}>
+                                  <thead>
+                                    <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0", color: "#475569" }}>
+                                      <th style={{ padding: "6px 10px", textAlign: "left" }}>Date</th>
+                                      <th style={{ padding: "6px 10px", textAlign: "left" }}>Payee / Particulars</th>
+                                      <th style={{ padding: "6px 10px", textAlign: "right" }}>Amount</th>
+                                      <th style={{ padding: "6px 10px", textAlign: "left" }}>Category</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {itemsForThisAcc.map((it, idx) => (
+                                      <tr key={idx} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                                        <td style={{ padding: "6px 10px", color: "#64748b" }}>{it.date}</td>
+                                        <td style={{ padding: "6px 10px", fontWeight: "600", color: "#1e293b" }}>{it.payee || it.particulars || "—"}</td>
+                                        <td style={{ padding: "6px 10px", textAlign: "right", fontWeight: "600", color: it.outAmount > 0 ? "#b91c1c" : "#15803d" }}>
+                                          {formatAmount2DP(it.outAmount || it.inAmount || it.amount)}
+                                        </td>
+                                        <td style={{ padding: "6px 10px", color: "#475569" }}>{it.category || "Outgoings"}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
+                          ) : (
+                            <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#64748b" }}>
+                              No unreconciled statement lines have been added for this account yet.
+                            </p>
+                          )}
+
+                          <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", alignItems: "center" }}>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedUploadAccount(currentAccount);
+                                setPasteRawText("");
+                                setParsedPreview(null);
+                                setParsedItems([]);
+                                setShowSkippedAccordion(false);
+                                setShowPasteModal(true);
+                              }}
+                              style={{
+                                padding: "8px 16px",
+                                background: "#0284c7",
+                                color: "#ffffff",
+                                border: "none",
+                                borderRadius: "6px",
+                                fontSize: "12px",
+                                fontWeight: "600",
+                                cursor: "pointer"
+                              }}
+                            >
+                              {itemsForThisAcc.length > 0 ? `Add more or edit items for ${currentAccount}` : `Upload or paste unreconciled items for ${currentAccount}`}
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (guidedCashAccountIdx < cashAccounts.length - 1) {
+                                  setGuidedCashAccountIdx(prev => prev + 1);
+                                } else {
+                                  setGuidedStep(3);
+                                }
+                              }}
+                              style={{
+                                padding: "8px 16px",
+                                background: itemsForThisAcc.length > 0 ? "#166534" : "#ffffff",
+                                color: itemsForThisAcc.length > 0 ? "#ffffff" : "#475569",
+                                border: `1px solid ${itemsForThisAcc.length > 0 ? "#166534" : "#cbd5e1"}`,
+                                borderRadius: "6px",
+                                fontSize: "12px",
+                                fontWeight: "600",
+                                cursor: "pointer",
+                                marginLeft: "auto"
+                              }}
+                            >
+                              {itemsForThisAcc.length > 0
+                                ? (guidedCashAccountIdx < cashAccounts.length - 1 ? "Next account →" : "Proceed to verify unreconciled items →")
+                                : (guidedCashAccountIdx < cashAccounts.length - 1 ? "No unreconciled transactions for this account" : "No unreconciled transactions (proceed to verify) →")
+                              }
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Navigation Footer for Step 2 */}
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "10px" }}>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (guidedCashAccountIdx > 0) {
+                                setGuidedCashAccountIdx(prev => prev - 1);
+                              } else {
+                                setGuidedStep(1);
+                              }
+                            }}
+                            style={{
+                              padding: "6px 14px",
+                              background: "#ffffff",
+                              color: "#475569",
+                              border: "1px solid #cbd5e1",
+                              borderRadius: "6px",
+                              fontSize: "12px",
+                              fontWeight: "600",
+                              cursor: "pointer"
+                            }}
+                          >
+                            {guidedCashAccountIdx > 0 ? "← Previous account" : "← Back to Step 1"}
+                          </button>
+                        </div>
+                      </>
+                    );
+                  })()}
+                </div>
+              )}
+
+              {/* STEP 3: VERIFY ALL UNRECONCILED TRANSACTIONS */}
+              {guidedStep === 3 && (
+                <div style={{ display: "flex", flexDirection: "column", gap: "18px" }}>
+                  <div>
+                    <h4 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: "700", color: "#1e293b" }}>
+                      Step 3: Verify all unreconciled transactions
+                    </h4>
+                    <p style={{ margin: 0, fontSize: "13px", color: "#64748b", lineHeight: "1.5" }}>
+                      Review all unreconciled transactions added across your cash bank accounts before proceeding to category verification.
+                    </p>
+                  </div>
+
+                  {/* Warning Box */}
+                  <div style={{
+                    padding: "14px 18px",
+                    background: "#fffbeb",
+                    border: "1px solid #fde68a",
+                    borderRadius: "8px",
+                    display: "flex",
+                    alignItems: "flex-start",
+                    gap: "10px"
+                  }}>
+                    <span style={{ fontSize: "18px" }}>⚠️</span>
+                    <div>
+                      <h5 style={{ margin: "0 0 3px", fontSize: "13px", fontWeight: "700", color: "#92400e" }}>
+                        Important verification notice
+                      </h5>
+                      <p style={{ margin: 0, fontSize: "12.5px", color: "#b45309", lineHeight: "1.4" }}>
+                        Please check that all unreconciled transactions are correct. If any transactions are missing, the whole process will need to be restarted.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Summary Table */}
+                  <div style={{ border: "1px solid #cbd5e1", borderRadius: "8px", overflow: "hidden" }}>
+                    <div style={{ padding: "10px 14px", background: "#f8fafc", borderBottom: "1px solid #e2e8f0", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ fontSize: "12px", fontWeight: "700", color: "#1e293b" }}>
+                        Unreconciled statement lines ({unreconItems.length})
+                      </span>
+                    </div>
+                    {unreconItems.length === 0 ? (
+                      <div style={{ padding: "30px", textAlign: "center", color: "#64748b", fontSize: "13px" }}>
+                        No unreconciled transactions added across all cash bank accounts.
+                      </div>
+                    ) : (
+                      <div style={{ maxHeight: "240px", overflowY: "auto" }}>
+                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
+                          <thead>
+                            <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0", color: "#475569" }}>
+                              <th style={{ padding: "6px 12px", textAlign: "left" }}>Date</th>
+                              <th style={{ padding: "6px 12px", textAlign: "left" }}>Account</th>
+                              <th style={{ padding: "6px 12px", textAlign: "left" }}>Payee / Description</th>
+                              <th style={{ padding: "6px 12px", textAlign: "right" }}>Amount</th>
+                              <th style={{ padding: "6px 12px", textAlign: "left" }}>P&L account</th>
+                              <th style={{ padding: "6px 12px", textAlign: "center" }}>VAT</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {unreconItems.map((u, idx) => (
+                              <tr key={idx} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                                <td style={{ padding: "6px 12px", color: "#64748b" }}>{u.date}</td>
+                                <td style={{ padding: "6px 12px", color: "#0369a1", fontWeight: "600" }}>{u.accountName || defaultAccount}</td>
+                                <td style={{ padding: "6px 12px", fontWeight: "600", color: "#1e293b" }}>{u.payee || u.particulars || "—"}</td>
+                                <td style={{ padding: "6px 12px", textAlign: "right", fontWeight: "600", color: u.outAmount > 0 ? "#b91c1c" : "#15803d" }}>
+                                  {formatAmount2DP(u.outAmount || u.inAmount || u.amount)}
+                                </td>
+                                <td style={{ padding: "6px 12px", color: "#475569" }}>{u.plCategory || u.category || "—"}</td>
+                                <td style={{ padding: "6px 12px", textAlign: "center", color: u.vatApplies === "Yes" ? "#166534" : "#64748b" }}>
+                                  {u.vatApplies || "No"}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Actions */}
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "10px" }}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setGuidedStep(2);
+                        setGuidedCashAccountIdx(Math.max(0, cashAccounts.length - 1));
+                      }}
+                      style={{
+                        padding: "8px 16px",
+                        background: "#ffffff",
+                        color: "#475569",
+                        border: "1px solid #cbd5e1",
+                        borderRadius: "6px",
+                        fontSize: "12px",
+                        fontWeight: "600",
+                        cursor: "pointer"
+                      }}
+                    >
+                      ← Back to bank accounts
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setGuidedStep(4)}
+                      style={{
+                        padding: "8px 20px",
+                        background: "#166534",
+                        color: "#ffffff",
+                        border: "none",
+                        borderRadius: "6px",
+                        fontSize: "13px",
+                        fontWeight: "600",
+                        cursor: "pointer"
+                      }}
+                    >
+                      Confirm unreconciled items →
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* STEP 4: REVIEW PREDICTED CATEGORIES */}
+              {guidedStep === 4 && (
+                <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px", flexWrap: "wrap" }}>
+                    <div>
+                      <h4 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: "700", color: "#1e293b" }}>
+                        Step 4: Review predicted categories
+                      </h4>
+                      <p style={{ margin: 0, fontSize: "13px", color: "#64748b", lineHeight: "1.5" }}>
+                        Review all transactions and their predicted categories. Ensure each transaction is assigned to the correct category before completing setup.
+                      </p>
+                    </div>
+                    <div style={{ minWidth: "220px" }}>
+                      <input
+                        type="text"
+                        placeholder="Search transactions..."
+                        value={guidedReviewSearch}
+                        onChange={e => setGuidedReviewSearch(e.target.value)}
+                        style={{
+                          width: "100%",
+                          padding: "6px 10px",
+                          fontSize: "12px",
+                          borderRadius: "6px",
+                          border: "1px solid #cbd5e1"
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Review Table */}
+                  <div style={{ border: "1px solid #cbd5e1", borderRadius: "8px", overflow: "hidden" }}>
+                    <div style={{ padding: "8px 12px", background: "#f8fafc", borderBottom: "1px solid #e2e8f0", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ fontSize: "12px", fontWeight: "700", color: "#1e293b" }}>
+                        All transactions ({reviewTxns.length} of {bankTxns.length})
+                      </span>
+                    </div>
+                    <div style={{ maxHeight: "340px", overflowY: "auto" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "11.5px" }}>
+                        <thead>
+                          <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0", color: "#475569" }}>
+                            <th style={{ padding: "6px 8px", textAlign: "left" }}>Date</th>
+                            <th style={{ padding: "6px 8px", textAlign: "left" }}>Account</th>
+                            <th style={{ padding: "6px 8px", textAlign: "left" }}>Payee / Particulars</th>
+                            <th style={{ padding: "6px 8px", textAlign: "center" }}>Status</th>
+                            <th style={{ padding: "6px 8px", textAlign: "right" }}>Amount</th>
+                            <th style={{ padding: "6px 8px", textAlign: "left", width: "150px" }}>Category</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {reviewTxns.map((t, idx) => {
+                            const isUnrecon = t.isReconciled === false;
+                            const currentCat = t.category || t.suggestedCategory || (t.outAmount > 0 ? "Outgoings" : "Revenue");
+                            const catStyle = CATEGORY_COLORS[currentCat] || { bg: "#f1f5f9", color: "#475569", border: "#cbd5e1" };
+
+                            return (
+                              <tr key={idx} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                                <td style={{ padding: "6px 8px", color: "#64748b", whiteSpace: "nowrap" }}>{t.date}</td>
+                                <td style={{ padding: "6px 8px", color: "#0369a1", fontWeight: "600", whiteSpace: "nowrap" }}>
+                                  {t.accountName || defaultAccount}
+                                </td>
+                                <td style={{ padding: "6px 8px", fontWeight: "600", color: "#1e293b" }}>
+                                  {t.payee || t.particulars || "—"}
+                                </td>
+                                <td style={{ padding: "6px 8px", textAlign: "center" }}>
+                                  <span style={{
+                                    padding: "2px 6px",
+                                    borderRadius: "4px",
+                                    fontSize: "10px",
+                                    fontWeight: "700",
+                                    background: isUnrecon ? "#fef3c7" : "#dcfce7",
+                                    color: isUnrecon ? "#92400e" : "#166534",
+                                    border: `1px solid ${isUnrecon ? "#fde68a" : "#86efac"}`
+                                  }}>
+                                    {isUnrecon ? "Unreconciled" : "Reconciled"}
+                                  </span>
+                                </td>
+                                <td style={{
+                                  padding: "6px 8px",
+                                  textAlign: "right",
+                                  fontWeight: "600",
+                                  whiteSpace: "nowrap",
+                                  color: parseAmount(t.outAmount) > 0 ? "#b91c1c" : "#15803d"
+                                }}>
+                                  {formatAmount2DP(t.outAmount || t.inAmount || t.amount)}
+                                </td>
+                                <td style={{ padding: "6px 8px" }}>
+                                  <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                                    <select
+                                      value={currentCat}
+                                      onChange={e => handleCategoryChange(t, e.target.value)}
+                                      style={{
+                                        padding: "3px 6px",
+                                        fontSize: "11px",
+                                        fontWeight: "600",
+                                        borderRadius: "4px",
+                                        background: catStyle.bg,
+                                        color: catStyle.color,
+                                        border: `1px solid ${catStyle.border}`,
+                                        cursor: "pointer",
+                                        width: "100%"
+                                      }}
+                                    >
+                                      {VALID_RECON_CATEGORIES.map(c => (
+                                        <option key={c} value={c}>{c}</option>
+                                      ))}
+                                    </select>
+
+                                    {isUnrecon && (
+                                      <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                                        <select
+                                          value={t.plCategory || t.category || ""}
+                                          onChange={e => handleUnreconCategoryChange(t, e.target.value)}
+                                          title="Assign P&L expense category"
+                                          style={{
+                                            flex: 1,
+                                            padding: "2px 4px",
+                                            fontSize: "9.5px",
+                                            borderRadius: "3px",
+                                            border: "1px solid #cbd5e1",
+                                            background: (t.plCategory || t.category) ? "#f0fdf4" : "#ffffff",
+                                            color: (t.plCategory || t.category) ? "#166534" : "#334155"
+                                          }}
+                                        >
+                                          <option value="">(P&L account...)</option>
+                                          <option value="Not an expense">Not an expense</option>
+                                          {Array.from(new Set([
+                                            ...(reconData?.plAccountOptions || []).filter(c => c && c !== "Not an expense"),
+                                            ...(t.plCategory && t.plCategory !== "Not an expense" ? [t.plCategory] : (t.category && t.category !== "Not an expense" ? [t.category] : []))
+                                          ])).map(catOpt => (
+                                            <option key={catOpt} value={catOpt}>{catOpt}</option>
+                                          ))}
+                                        </select>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleUnreconVatToggle(t)}
+                                          title="Toggle whether VAT applies to this expense"
+                                          style={{
+                                            padding: "2px 5px",
+                                            fontSize: "9px",
+                                            fontWeight: "700",
+                                            borderRadius: "3px",
+                                            border: "1px solid #cbd5e1",
+                                            background: t.vatApplies === "Yes" ? "#dcfce7" : "#f1f5f9",
+                                            color: t.vatApplies === "Yes" ? "#166534" : "#475569",
+                                            cursor: "pointer",
+                                            whiteSpace: "nowrap"
+                                          }}
+                                        >
+                                          {t.vatApplies === "Yes" ? "VAT: Yes" : "VAT: No"}
+                                        </button>
+                                      </div>
+                                    )}
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  {/* Actions */}
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "8px" }}>
+                    <button
+                      type="button"
+                      onClick={() => setGuidedStep(3)}
+                      style={{
+                        padding: "8px 16px",
+                        background: "#ffffff",
+                        color: "#475569",
+                        border: "1px solid #cbd5e1",
+                        borderRadius: "6px",
+                        fontSize: "12px",
+                        fontWeight: "600",
+                        cursor: "pointer"
+                      }}
+                    >
+                      ← Back to unreconciled items
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handleFinishGuidedSetup}
+                      style={{
+                        padding: "8px 22px",
+                        background: "#0284c7",
+                        color: "#ffffff",
+                        border: "none",
+                        borderRadius: "6px",
+                        fontSize: "13px",
+                        fontWeight: "600",
+                        cursor: "pointer",
+                        boxShadow: "0 2px 4px rgba(2, 132, 199, 0.2)"
+                      }}
+                    >
+                      Confirm and finish setup
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SETUP COMPLETE POPUP */}
+      {showSetupCompletePopup && (
+        <div style={{
+          position: "fixed",
+          inset: 0,
+          background: "rgba(15, 23, 42, 0.6)",
+          backdropFilter: "blur(4px)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          zIndex: 9999,
+          padding: "16px"
+        }}>
+          <div style={{
+            background: "#ffffff",
+            borderRadius: "14px",
+            width: "560px",
+            maxWidth: "96vw",
+            boxShadow: "0 20px 25px -5px rgba(0,0,0,0.2), 0 10px 10px -5px rgba(0,0,0,0.05)",
+            overflow: "hidden"
+          }}>
+            <div style={{
+              padding: "16px 20px",
+              borderBottom: "1px solid #e2e8f0",
+              background: "#f0fdf4",
+              display: "flex",
+              alignItems: "center",
+              gap: "10px"
+            }}>
+              <span style={{ fontSize: "20px", color: "#166534" }}>✓</span>
+              <h3 style={{ margin: 0, fontSize: "15px", fontWeight: "700", color: "#166534" }}>
+                Reconciliation setup complete
+              </h3>
+            </div>
+
+            <div style={{ padding: "20px 24px", fontSize: "13px", color: "#334155", lineHeight: "1.6" }}>
+              <p style={{ margin: "0 0 14px" }}>
+                Bank transactions and unreconciled statement lines have been successfully set up for <strong>{reconData?.targetMonthLabel || "this month"}</strong>.
+              </p>
+
+              <div style={{
+                padding: "14px 16px",
+                background: "#eff6ff",
+                border: "1px solid #bfdbfe",
+                borderRadius: "8px",
+                fontSize: "13px",
+                color: "#1e40af",
+                lineHeight: "1.5"
+              }}>
+                <p style={{ margin: "0 0 6px", fontWeight: "700" }}>
+                  Important next step:
+                </p>
+                <p style={{ margin: "0 0 6px" }}>
+                  Notice the <strong>Reconciled & ready for automated P&L updates</strong> checkbox in the top bar.
+                </p>
+                <p style={{ margin: 0 }}>
+                  Once you are happy with the reconciliation, check this box. This will allow the display of cashflow breakdowns and start the automatic updating process.
+                </p>
+              </div>
+            </div>
+
+            <div style={{
+              padding: "12px 20px",
+              background: "#f8fafc",
+              borderTop: "1px solid #e2e8f0",
+              display: "flex",
+              justifyContent: "flex-end"
+            }}>
+              <button
+                type="button"
+                onClick={() => setShowSetupCompletePopup(false)}
+                style={{
+                  padding: "8px 20px",
+                  background: "#0284c7",
+                  color: "#ffffff",
+                  border: "none",
+                  borderRadius: "6px",
+                  fontSize: "13px",
+                  fontWeight: "600",
+                  cursor: "pointer"
+                }}
+              >
+                Got it
               </button>
             </div>
           </div>

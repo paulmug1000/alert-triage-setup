@@ -3,7 +3,7 @@ import { extractSheetIdFromUrl, withRetry, getSheetsClient, getSheetId, colIndex
 import {
   buildAlertFingerprint, buildAlertFingerprintLegacy, ensureAlertMemoryTab, readAlertMemory,
   readHandledAlertHashes, findMemoryRow, appendAlertMemoryRow, updateAlertMemoryRow,
-  deleteAlertMemoryRows, purgeOldAlertMemoryRows, updateHandledAlertHash,
+  deleteAlertMemoryRows, purgeOldAlertMemoryRows, compactAlertMemory, updateHandledAlertHash,
   getHandledFingerprintHashes_, findPreviousIgnoreReason,
   normaliseArrayForFingerprint
 } from "./alertMemory.js";
@@ -470,8 +470,8 @@ export async function readInvCompAlerts(sheets, spreadsheetId, cachedData = null
       const sInvNo = String(row[50] || "").trim();
       if (!sInvNo || sInvNo === "(blank)" || sInvNo === "-") continue;
       const key = sInvNo.toLowerCase();
-      if (!spreadsheetItemsByInv[key]) spreadsheetItemsByInv[key] = [];
-      spreadsheetItemsByInv[key].push({
+      const strippedKey = key.replace(/^#/, "");
+      const itemData = {
         invCompRow: 6 + rIdx,
         client: String(row[45] || "").trim(),
         job: String(row[46] || "").trim(),
@@ -484,7 +484,13 @@ export async function readInvCompAlerts(sheets, spreadsheetId, cachedData = null
         status: String(row[53] || "").trim(),
         invSeq: String(row[54] || "").trim(),
         cellRef: String(row[55] || "").trim(),
-      });
+      };
+      if (!spreadsheetItemsByInv[key]) spreadsheetItemsByInv[key] = [];
+      spreadsheetItemsByInv[key].push(itemData);
+      if (strippedKey !== key) {
+        if (!spreadsheetItemsByInv[strippedKey]) spreadsheetItemsByInv[strippedKey] = [];
+        spreadsheetItemsByInv[strippedKey].push(itemData);
+      }
     }
 
     const alerts = [];
@@ -507,10 +513,24 @@ export async function readInvCompAlerts(sheets, spreadsheetId, cachedData = null
         alert.summary = buildInvCompSummary(alert);
 
         const invNo = String(alert.summary?.invoiceNo || alert.data.accounting?.[5] || alert.data.confirmed?.[0] || "").trim();
-        const items = (invNo && invNo !== "(no reference)" && invNo !== "(unknown)")
-          ? (spreadsheetItemsByInv[invNo.toLowerCase()] || [])
+        const cleanInvKey = invNo.toLowerCase().replace(/^#/, "");
+        let items = (cleanInvKey && cleanInvKey !== "(no reference)" && cleanInvKey !== "(unknown)")
+          ? (spreadsheetItemsByInv[cleanInvKey] || spreadsheetItemsByInv[invNo.toLowerCase()] || [])
           : [];
+        if (items.length === 0 && alert.data.confirmed?.[0]) {
+          const confKey = String(alert.data.confirmed[0]).trim().toLowerCase().replace(/^#/, "");
+          if (confKey && confKey !== cleanInvKey) {
+            items = spreadsheetItemsByInv[confKey] || spreadsheetItemsByInv[String(alert.data.confirmed[0]).trim().toLowerCase()] || [];
+          }
+        }
         alert.spreadsheetItems = items;
+        if (items.length > 0) {
+          alert.pulseAmounts = {
+            gross: items.reduce((s, it) => s + (Number(it.grossAmount) || 0), 0),
+            net: items.reduce((s, it) => s + (Number(it.netAmount) || 0), 0),
+            vat: items.reduce((s, it) => s + (Number(it.vatAmount) || 0), 0),
+          };
+        }
         const isDuplicate = String(alert.data.flags[4] || "").trim() === "1" || items.length > 1;
         alert.isDuplicateInvoice = isDuplicate;
 
@@ -956,49 +976,15 @@ export async function handleDebugTriageState(req, res, sheets) {
 }
 
 export async function handleCleanupAlertMemory(req, res, sheets) {
-  const { automationCommanderSheetId: acId } = req.body;
+  const { automationCommanderSheetId: acId, force = false } = req.body;
   if (!acId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
   try {
     await ensureAlertMemoryTab(sheets, acId);
-    const memoryRows = await readAlertMemory(sheets, acId);
-    console.log(`cleanup_alert_memory: ${memoryRows.length} total rows`);
-
-    const priority = (status) => {
-      if (status === "ignored" || status === "accepted" || status === "task") return 3;
-      if (status === "cached") return 2;
-      return 1;
-    };
-
-    const byHash = {};
-    for (const row of memoryRows) {
-      if (!row.fingerprintHash) continue;
-      if (!byHash[row.fingerprintHash]) byHash[row.fingerprintHash] = [];
-      byHash[row.fingerprintHash].push(row);
-    }
-
-    const rowsToDelete = [];
-    for (const [hash, rows] of Object.entries(byHash)) {
-      if (rows.length <= 1) continue;
-      rows.sort((a, b) => {
-        const pd = priority(b.status) - priority(a.status);
-        if (pd !== 0) return pd;
-        return new Date(b.lastSeen || 0) - new Date(a.lastSeen || 0);
-      });
-      for (let i = 1; i < rows.length; i++) {
-        rowsToDelete.push(rows[i].rowIndex);
-      }
-    }
-
-    console.log(`cleanup_alert_memory: ${rowsToDelete.length} duplicate rows to delete`);
-    if (rowsToDelete.length > 0) {
-      await deleteAlertMemoryRows(sheets, acId, rowsToDelete);
-    }
-
+    console.log(`cleanup_alert_memory: Triggering compactAlertMemory for ${acId} (force=${force})`);
+    const result = await compactAlertMemory(sheets, acId, { force });
     return res.status(200).json({
       success: true,
-      totalRows: memoryRows.length,
-      duplicatesRemoved: rowsToDelete.length,
-      uniqueHashes: Object.keys(byHash).length,
+      ...result
     });
   } catch (err) {
     console.error("❌ cleanup_alert_memory error:", err);
@@ -1409,8 +1395,11 @@ export async function handleStorePrecomputed(req, res, sheets) {
     try {
       await ensureAlertMemoryTab(sheets, acIdForMerge);
 
-      const rowsBeforePurge = await readAlertMemory(sheets, acIdForMerge);
-      await purgeOldAlertMemoryRows(sheets, acIdForMerge, rowsBeforePurge);
+      const currentMemoryRows = await readAlertMemory(sheets, acIdForMerge);
+      if (currentMemoryRows.length > 2000) {
+        console.log(`[store_precomputed] AlertMemory row count (${currentMemoryRows.length}) exceeds 2,000 threshold. Triggering compaction...`);
+        await compactAlertMemory(sheets, acIdForMerge);
+      }
 
       memoryRowsForMerge = await readAlertMemory(sheets, acIdForMerge);
 

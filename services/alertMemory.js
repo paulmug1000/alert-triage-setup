@@ -479,6 +479,25 @@ export function compressOptionsJSON_(jsonStr) {
   }
 }
 
+export async function updateAlertMemoryCacheInPlace(automationCommanderSheetId, updateFn) {
+  const now = Date.now();
+  let cache = _alertMemoryMemoryCache;
+  if (!cache && redisClient?.isOpen && automationCommanderSheetId) {
+    try {
+      const cached = await redisClient.get(`pulse:alert_memory:${automationCommanderSheetId}`);
+      if (cached) cache = JSON.parse(cached);
+    } catch (e) {}
+  }
+  if (cache) {
+    updateFn(cache);
+    _alertMemoryMemoryCache = cache;
+    _alertMemoryCachedAt = now;
+    if (redisClient?.isOpen && automationCommanderSheetId) {
+      redisClient.set(`pulse:alert_memory:${automationCommanderSheetId}`, JSON.stringify(cache), { EX: 86400 * 7 }).catch(() => {});
+    }
+  }
+}
+
 export async function appendAlertMemoryRow(sheets, automationCommanderSheetId, payload) {
   let {
     fingerprintHash, alertType, clientName, alertSummary,
@@ -507,7 +526,10 @@ export async function appendAlertMemoryRow(sheets, automationCommanderSheetId, p
   }));
   console.log(`  📝 DEBUG: Appended alert ${fingerprintHash} to ${response.data.updates.updatedRange} with status "${status}"`);
   await updateHandledAlertHash(automationCommanderSheetId, fingerprintHash, status);
-  await invalidateAlertMemoryCache(automationCommanderSheetId);
+  await updateAlertMemoryCacheInPlace(automationCommanderSheetId, (cache) => {
+    const nextRowIndex = cache.length + 2;
+    cache.push({ ...payload, rowIndex: nextRowIndex });
+  });
 }
 
 export async function appendAlertMemoryRowsBatch(sheets, automationCommanderSheetId, items) {
@@ -550,7 +572,12 @@ export async function appendAlertMemoryRowsBatch(sheets, automationCommanderShee
     }
   }
   await updateHandledAlertHashesBatch(automationCommanderSheetId, statusByHash);
-  await invalidateAlertMemoryCache(automationCommanderSheetId);
+  await updateAlertMemoryCacheInPlace(automationCommanderSheetId, (cache) => {
+    let nextRowIndex = cache.length + 2;
+    for (const item of items) {
+      cache.push({ ...item, rowIndex: nextRowIndex++ });
+    }
+  });
 }
 
 export async function updateAlertMemoryRow(sheets, automationCommanderSheetId, rowIndex, updates) {
@@ -578,7 +605,12 @@ export async function updateAlertMemoryRow(sheets, automationCommanderSheetId, r
   if (updates.fingerprintHash) {
     await updateHandledAlertHash(automationCommanderSheetId, updates.fingerprintHash, updates.status);
   }
-  await invalidateAlertMemoryCache(automationCommanderSheetId);
+  await updateAlertMemoryCacheInPlace(automationCommanderSheetId, (cache) => {
+    const idx = cache.findIndex(r => r.rowIndex === rowIndex || (updates.fingerprintHash && r.fingerprintHash === updates.fingerprintHash));
+    if (idx !== -1) {
+      cache[idx] = { ...cache[idx], ...updates, rowIndex };
+    }
+  });
 }
 
 export async function updateAlertMemoryRowsBatch(sheets, automationCommanderSheetId, updateItems) {
@@ -619,7 +651,232 @@ export async function updateAlertMemoryRowsBatch(sheets, automationCommanderShee
     }
   }
   await updateHandledAlertHashesBatch(automationCommanderSheetId, statusByHash);
-  await invalidateAlertMemoryCache(automationCommanderSheetId);
+  await updateAlertMemoryCacheInPlace(automationCommanderSheetId, (cache) => {
+    for (const item of updateItems) {
+      const idx = cache.findIndex(r => r.rowIndex === item.rowIndex || (item.updates?.fingerprintHash && r.fingerprintHash === item.updates.fingerprintHash));
+      if (idx !== -1) {
+        cache[idx] = { ...cache[idx], ...item.updates, rowIndex: item.rowIndex };
+      }
+    }
+  });
+}
+
+export async function compactAlertMemory(sheets, automationCommanderSheetId, options = {}) {
+  const { dryRun = false, force = false } = options;
+  console.log(`[compactAlertMemory] Starting compaction for Automation Commander ${automationCommanderSheetId} (dryRun=${dryRun})...`);
+
+  // Read all existing rows from sheet directly to be 100% authoritative
+  const response = await withRetry(() => sheets.spreadsheets.values.get({
+    spreadsheetId: automationCommanderSheetId,
+    range: ALERT_MEMORY_RANGE,
+  }));
+  const rawRows = response.data.values || [];
+  if (rawRows.length < 2) {
+    console.log(`[compactAlertMemory] AlertMemory is empty or header only. Nothing to compact.`);
+    return { originalRows: 0, keptRows: 0, prunedRows: 0 };
+  }
+
+  const existingRows = rawRows.slice(1).map((row, i) => ({
+    rowIndex: i + 2,
+    fingerprintHash:  row[0] || "",
+    alertType:        row[1] || "",
+    clientName:       row[2] || "",
+    alertSummary:     row[3] || "",
+    cachedOptionsJSON:row[4] || "",
+    status:           row[5] || "cached",
+    ignoreReason:     row[6] || "",
+    firstSeen:        row[7] || "",
+    lastSeen:         row[8] || "",
+    lastRechecked:    row[9] || "",
+    dataSnapshot:     row[10] || "",
+    category:         row[11] || "discrepancy",
+  }));
+
+  const now = Date.now();
+  const DAY_MS = 24 * 60 * 60 * 1000;
+
+  const kept = [];
+  let prunedCount = 0;
+  let optionsClearedCount = 0;
+
+  for (const r of existingRows) {
+    const status = r.status || "cached";
+    const lastDate = new Date(r.lastRechecked || r.lastSeen || r.firstSeen || 0).getTime();
+    const ageDays = (now - lastDate) / DAY_MS;
+
+    let shouldKeep = false;
+
+    if (status === "task" || status === "pending_automation" || status === "cached") {
+      shouldKeep = true;
+    } else if (status === "accepted" || status === "ignored") {
+      // 100% protection against resurrection for accepted or ignored items
+      shouldKeep = true;
+    } else if (status === "superseded") {
+      if (r.ignoreReason) {
+        // Preserves historical ignore reason if alert recurs
+        shouldKeep = true;
+      } else {
+        // Transient duplicate fingerprint from sweeps; keep recent 7 days only
+        shouldKeep = ageDays <= 7;
+      }
+    } else if (status === "task_resolved") {
+      shouldKeep = ageDays <= 60;
+    } else if (status === "auto_resolved") {
+      shouldKeep = ageDays <= 30;
+    } else {
+      shouldKeep = ageDays <= 30;
+    }
+
+    if (shouldKeep) {
+      const compactRow = { ...r };
+      // Strip bulky options dropdown data on inactive rows
+      if (status !== "cached") {
+        if (compactRow.cachedOptionsJSON) {
+          optionsClearedCount++;
+          compactRow.cachedOptionsJSON = "";
+        }
+      }
+      kept.push(compactRow);
+    } else {
+      prunedCount++;
+    }
+  }
+
+  console.log(`[compactAlertMemory] Evaluated ${existingRows.length} rows: keeping ${kept.length}, pruning ${prunedCount}, cleared options from ${optionsClearedCount} inactive rows.`);
+
+  if (prunedCount === 0 && optionsClearedCount === 0 && !force) {
+    console.log(`[compactAlertMemory] No rows pruned or options cleared. Tab is already compact.`);
+    return { originalRows: existingRows.length, keptRows: kept.length, prunedRows: 0 };
+  }
+
+  if (dryRun) {
+    return { originalRows: existingRows.length, keptRows: kept.length, prunedRows: prunedCount, optionsClearedCount };
+  }
+
+  // Re-assign sequential rowIndex for all kept rows (starting at row 2)
+  for (let idx = 0; idx < kept.length; idx++) {
+    kept[idx].rowIndex = idx + 2;
+  }
+
+  const rows2D = kept.map(r => [
+    r.fingerprintHash || "",
+    r.alertType || "",
+    r.clientName || "",
+    r.alertSummary || "",
+    r.cachedOptionsJSON || "",
+    r.status || "cached",
+    r.ignoreReason || "",
+    r.firstSeen || "",
+    r.lastSeen || "",
+    r.lastRechecked || "",
+    r.dataSnapshot || "",
+    r.category || "discrepancy",
+  ]);
+
+  const targetRange = `${ALERT_MEMORY_TAB}!A2:L${kept.length + 1}`;
+  console.log(`[compactAlertMemory] Overwriting ${targetRange} with ${rows2D.length} compacted rows...`);
+
+  await withRetry(() => sheets.spreadsheets.values.update({
+    spreadsheetId: automationCommanderSheetId,
+    range: targetRange,
+    valueInputOption: "RAW",
+    requestBody: { values: rows2D },
+  }));
+
+  // Clear any leftover rows from the old table
+  const oldRowCount = existingRows.length + 1;
+  const newRowCount = kept.length + 1;
+  if (oldRowCount > newRowCount) {
+    const clearRange = `${ALERT_MEMORY_TAB}!A${newRowCount + 1}:L${oldRowCount}`;
+    console.log(`[compactAlertMemory] Clearing leftover rows: ${clearRange}...`);
+    try {
+      await withRetry(() => sheets.spreadsheets.values.clear({
+        spreadsheetId: automationCommanderSheetId,
+        range: clearRange,
+      }));
+    } catch (clearErr) {
+      console.warn(`[compactAlertMemory] Warning clearing tail rows:`, clearErr.message);
+    }
+  }
+
+  // Truncate sheet grid height to keep the Google Sheet compact and fast
+  try {
+    const meta = await withRetry(() => sheets.spreadsheets.get({
+      spreadsheetId: automationCommanderSheetId,
+      fields: "sheets.properties",
+    }));
+    const sheetTab = meta.data.sheets?.find(s => s.properties.title === ALERT_MEMORY_TAB);
+    if (sheetTab) {
+      const sheetId = sheetTab.properties.sheetId;
+      const currentGridRows = sheetTab.properties.gridProperties?.rowCount || 0;
+      const desiredGridRows = newRowCount + 25; // Keep small 25-row buffer for appends
+      if (currentGridRows > desiredGridRows) {
+        console.log(`[compactAlertMemory] Truncating grid height from ${currentGridRows} to ${desiredGridRows}...`);
+        await withRetry(() => sheets.spreadsheets.batchUpdate({
+          spreadsheetId: automationCommanderSheetId,
+          requestBody: {
+            requests: [
+              {
+                deleteDimension: {
+                  range: {
+                    sheetId,
+                    dimension: "ROWS",
+                    startIndex: desiredGridRows,
+                    endIndex: currentGridRows,
+                  },
+                },
+              },
+            ],
+          },
+        }));
+      }
+    }
+  } catch (truncateErr) {
+    console.warn(`[compactAlertMemory] Warning truncating grid height:`, truncateErr.message);
+  }
+
+  // Synchronize in-memory and Redis caches immediately
+  _alertMemoryMemoryCache = kept;
+  _alertMemoryCachedAt = Date.now();
+
+  try {
+    if (redisClient?.isOpen && automationCommanderSheetId) {
+      await redisClient.set(
+        `pulse:alert_memory:${automationCommanderSheetId}`,
+        JSON.stringify(kept),
+        { EX: 86400 * 7 }
+      );
+      console.log(`[compactAlertMemory] Updated Redis pulse:alert_memory:${automationCommanderSheetId} with ${kept.length} rows.`);
+    }
+  } catch (rErr) {
+    console.warn(`[compactAlertMemory] Redis alert_memory update error:`, rErr.message);
+  }
+
+  // Synchronize handled hashes map
+  const handledMap = {};
+  for (const r of kept) {
+    if (r.status && r.status !== "cached" && r.status !== "pending_automation") {
+      handledMap[r.fingerprintHash] = r.status;
+    }
+  }
+  _handledHashesMemoryCache = handledMap;
+  _handledHashesCachedAt = Date.now();
+
+  try {
+    if (redisClient?.isOpen && automationCommanderSheetId) {
+      await redisClient.set(
+        `pulse:alert_memory_handled:${automationCommanderSheetId}`,
+        JSON.stringify(handledMap),
+        { EX: 86400 * 7 }
+      );
+      console.log(`[compactAlertMemory] Updated Redis handled hashes map with ${Object.keys(handledMap).length} entries.`);
+    }
+  } catch (rErr) {
+    console.warn(`[compactAlertMemory] Redis handled map update error:`, rErr.message);
+  }
+
+  console.log(`[compactAlertMemory] ✅ Successfully compacted AlertMemory! Kept: ${kept.length}, Pruned: ${prunedCount}.`);
+  return { originalRows: existingRows.length, keptRows: kept.length, prunedRows: prunedCount, optionsClearedCount };
 }
 
 export async function deleteAlertMemoryRows(sheets, automationCommanderSheetId, rowIndices) {
@@ -656,19 +913,6 @@ export async function deleteAlertMemoryRows(sheets, automationCommanderSheetId, 
 }
 
 export async function purgeOldAlertMemoryRows(sheets, automationCommanderSheetId, memoryRows) {
-  const cutoff = new Date();
-  cutoff.setMonth(cutoff.getMonth() - ALERT_MEMORY_MAX_AGE_MONTHS);
-
-  const toDelete = memoryRows
-    .filter(row => {
-      if (!row.lastSeen) return false;
-      const lastSeen = new Date(row.lastSeen);
-      return lastSeen < cutoff;
-    })
-    .map(row => row.rowIndex);
-
-  if (toDelete.length > 0) {
-    console.log(`🧹 Purging ${toDelete.length} AlertMemory row(s) older than ${ALERT_MEMORY_MAX_AGE_MONTHS} months`);
-    await deleteAlertMemoryRows(sheets, automationCommanderSheetId, toDelete);
-  }
+  // Delegates to the safe, high-speed atomic compactAlertMemory
+  return compactAlertMemory(sheets, automationCommanderSheetId);
 }

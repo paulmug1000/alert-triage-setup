@@ -33,7 +33,15 @@ export default async function handler(req, res) {
     return res.status(auth.status || 403).json({ success: false, error: auth.error });
   }
 
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+
   const cacheKey = `pulse:portal:payload:${clientSheetId}`;
+
+  // Purge existing cache on explicit refresh
+  if (bypassCache) {
+    memoryCache.del(cacheKey);
+    redisClient.del(cacheKey).catch(() => {});
+  }
 
   // 1. Try L1 Memory Cache first (sub-millisecond)
   if (!bypassCache) {

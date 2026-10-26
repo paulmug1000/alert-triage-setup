@@ -711,28 +711,80 @@ export default function TriageAnalysisView({
               const acc = alert.data?.accounting || [];
               const conf = alert.data?.confirmed || [];
               let mismatchLines = [];
+
+              const fmtMoney = (val) => {
+                if (val === null || val === undefined || val === "") return "£0.00";
+                const num = typeof val === "number" ? val : parseFloat(String(val).replace(/[£$€,\s]/g, ""));
+                if (isNaN(num)) return "£0.00";
+                return `£${num.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+              };
+
               if (alert.type === "expense") {
                 const expFlagNames = ["Missing cost", "Duplicate app ID", "Description mismatch", "Amount mismatch", "VAT mismatch", "Rec date mismatch", "Pay date mismatch", "Status mismatch"];
                 const activeFlags = flags.map((v, i) => String(v || "").trim() === "1" && expFlagNames[i] ? expFlagNames[i] : null).filter(Boolean);
+
+                const expAccGross = (acc[9] !== "" && acc[9] !== undefined)
+                  ? acc[9]
+                  : (parseFloat(String(acc[2] || 0).replace(/[£$€,\s]/g, "")) + parseFloat(String(acc[8] || 0).replace(/[£$€,\s]/g, "")));
+                const expPulseGross = conf[4];
+                const expAccNet = acc[2];
+                const expPulseNet = (conf[5] !== "" && conf[5] !== undefined)
+                  ? conf[5]
+                  : (parseFloat(String(conf[4] || 0).replace(/[£$€,\s]/g, "")) - parseFloat(String(conf[6] || 0).replace(/[£$€,\s]/g, "")));
+                const expAccVat = acc[8];
+                const expPulseVat = conf[6];
+
                 const FIELD_DEFS = [
-                  { name: "Description mismatch", line: `Description in accounting: ${acc[1] || "(blank)"}. Description in Confirmed tab: ${conf[3] || "(blank)"}.` },
-                  { name: "Amount mismatch", line: `Amount in accounting: ${acc[2] ? `£${acc[2]}` : "£0"}. Amount in Confirmed tab: ${conf[4] ? `£${conf[4]}` : "£0"}.` },
-                  { name: "VAT mismatch", line: `VAT in accounting: ${acc[8] ? `£${acc[8]}` : "£0"}. VAT in Confirmed tab: ${conf[6] || "(blank)"}.` },
-                  { name: "Rec date mismatch", line: `Received date in accounting: ${acc[0] || "(blank)"}. Received date in Confirmed tab: ${conf[7] || "(blank)"}.` },
-                  { name: "Pay date mismatch", line: `Pay date in accounting: ${acc[7] || "(blank)"}. Pay date in Confirmed tab: ${conf[8] || "(blank)"}.` },
-                  { name: "Status mismatch", line: `Status in accounting: ${acc[5] || "(blank)"}. Status in Confirmed tab: ${conf[9] || "(blank)"}.` },
+                  { name: "Description mismatch", line: `Description in accounting: ${acc[1] || "(blank)"}. Description in Pulse: ${conf[3] || "(blank)"}.` },
+                  { name: "Amount mismatch", line: `Gross amount in accounting: ${fmtMoney(expAccGross)}. Gross amount in Pulse: ${fmtMoney(expPulseGross)}. Net excl VAT in accounting: ${fmtMoney(expAccNet)}, VAT: ${fmtMoney(expAccVat)}. Net excl VAT in Pulse: ${fmtMoney(expPulseNet)}, VAT: ${fmtMoney(expPulseVat)}.` },
+                  { name: "VAT mismatch", line: `VAT in accounting: ${fmtMoney(acc[8])}. VAT in Pulse: ${fmtMoney(conf[6])}.` },
+                  { name: "Rec date mismatch", line: `Received date in accounting: ${acc[0] || "(blank)"}. Received date in Pulse: ${conf[7] || "(blank)"}.` },
+                  { name: "Pay date mismatch", line: `Pay date in accounting: ${acc[7] || "(blank)"}. Pay date in Pulse: ${conf[8] || "(blank)"}.` },
+                  { name: "Status mismatch", line: `Status in accounting: ${acc[5] || "(blank)"}. Status in Pulse: ${conf[9] || "(blank)"}.` },
                 ];
                 mismatchLines = FIELD_DEFS.filter(f => activeFlags.includes(f.name));
               } else {
                 const invFlagNames = ["Missing invoice", "Client mismatch", "Amount mismatch", "Sent date mismatch", "Duplicate invoice in sheet", "Pay date mismatch", "Status mismatch"];
                 const activeFlags = flags.map((v, i) => String(v || "").trim() === "1" && invFlagNames[i] ? invFlagNames[i] : null).filter(Boolean);
+
+                let pulseGross = alert.pulseAmounts?.gross;
+                let pulseNet = alert.pulseAmounts?.net;
+                let pulseVat = alert.pulseAmounts?.vat;
+
+                if (pulseNet === undefined && spreadsheetItems.length > 0) {
+                  pulseGross = spreadsheetItems.reduce((s, it) => s + (Number(it.grossAmount) || 0), 0);
+                  pulseNet = spreadsheetItems.reduce((s, it) => s + (Number(it.netAmount) || 0), 0);
+                  pulseVat = spreadsheetItems.reduce((s, it) => s + (Number(it.vatAmount) || 0), 0);
+                }
+
+                if (pulseGross === undefined || pulseGross === null) {
+                  pulseGross = parseFloat(String(conf[2] || "0").replace(/[£$€,\s]/g, "")) || 0;
+                }
+
+                if (pulseNet === undefined || pulseNet === null) {
+                  const confGrossNum = parseFloat(String(conf[2] || "0").replace(/[£$€,\s]/g, "")) || 0;
+                  const accNetNum = parseFloat(String(acc[3] || "0").replace(/[£$€,\s]/g, "")) || 0;
+                  const accVatNum = parseFloat(String(acc[4] || "0").replace(/[£$€,\s]/g, "")) || 0;
+                  if (confGrossNum > 0 && accNetNum > 0 && accVatNum > 0) {
+                    const rate = accVatNum / accNetNum;
+                    pulseNet = confGrossNum / (1 + rate);
+                    pulseVat = confGrossNum - pulseNet;
+                  } else if (confGrossNum > 0) {
+                    pulseNet = confGrossNum;
+                    pulseVat = 0;
+                  } else {
+                    pulseNet = 0;
+                    pulseVat = 0;
+                  }
+                }
+
                 const FIELD_DEFS = [
-                  { name: "Client mismatch", line: `Client in accounting: ${acc[0] || "(blank)"}. Client in Confirmed tab: ${conf[1] || "(blank)"}.` },
-                  { name: "Amount mismatch", line: `Gross amount in accounting: ${acc[2] ? `£${acc[2]}` : "£0"}. Gross amount in Confirmed tab: ${conf[2] ? `£${conf[2]}` : "£0"}.${acc[3] ? ` (Net excl VAT in accounting: £${acc[3]}, VAT: ${acc[4] ? `£${acc[4]}` : "£0"})` : ""}` },
-                  { name: "Sent date mismatch", line: `Sent date in accounting: ${acc[6] || "(blank)"}. Sent date in Confirmed tab: ${conf[3] || "(blank)"}.` },
+                  { name: "Client mismatch", line: `Client in accounting: ${acc[0] || "(blank)"}. Client in Pulse: ${conf[1] || "(blank)"}.` },
+                  { name: "Amount mismatch", line: `Gross amount in accounting: ${fmtMoney(acc[2])}. Gross amount in Pulse: ${fmtMoney(pulseGross != null ? pulseGross : conf[2])}. Net excl VAT in accounting: ${fmtMoney(acc[3])}, VAT: ${fmtMoney(acc[4])}. Net excl VAT in Pulse: ${fmtMoney(pulseNet)}, VAT: ${fmtMoney(pulseVat)}.` },
+                  { name: "Sent date mismatch", line: `Sent date in accounting: ${acc[6] || "(blank)"}. Sent date in Pulse: ${conf[3] || "(blank)"}.` },
                   { name: "Duplicate invoice in sheet", line: `Duplicate invoice number: Invoice #${alert.summary?.invoiceNo || acc[5] || conf[0]} appears in multiple rows in the spreadsheet (${spreadsheetItems.length > 0 ? spreadsheetItems.length : 2} entries).` },
-                  { name: "Pay date mismatch", line: `Pay date in accounting: ${acc[8] || "(blank)"}. Pay date in Confirmed tab: ${conf[4] || "(blank)"}.` },
-                  { name: "Status mismatch", line: `Status in accounting: ${acc[9] || "(blank)"}. Status in Confirmed tab: ${conf[5] || "(blank)"}.` },
+                  { name: "Pay date mismatch", line: `Pay date in accounting: ${acc[8] || "(blank)"}. Pay date in Pulse: ${conf[4] || "(blank)"}.` },
+                  { name: "Status mismatch", line: `Status in accounting: ${acc[9] || "(blank)"}. Status in Pulse: ${conf[5] || "(blank)"}.` },
                 ];
                 mismatchLines = FIELD_DEFS.filter(f => activeFlags.includes(f.name));
               }
@@ -1795,19 +1847,19 @@ export default function TriageAnalysisView({
             }}
             style={{ ...styles.buttonSecondary, color: "#d97706", borderColor: "#d97706" }}
           >
-            ⏭ Skip Alert
+            Skip alert
           </button>
           <button className="triage-btn"
             onClick={() => setShowIgnoreModal(true)}
             style={{ ...styles.buttonSecondary, color: "#c62828", borderColor: "#ef9a9a" }}
           >
-            🚫 Ignore Forever
+            Ignore forever
           </button>
           <button className="triage-btn"
             onClick={() => openCreateTaskModal(clientAlerts[currentClientAlertIndex], false)}
             style={{ ...styles.buttonSecondary, color: "#7c3aed", borderColor: "#c4b5fd" }}
           >
-            📋 Create Task
+            Create task
           </button>
           {isAdmin && (selectedClient?.clientSheetId || selectedClient?.masterSheetId) && (
             <button className="triage-btn"
@@ -1823,7 +1875,7 @@ export default function TriageAnalysisView({
               }}
               style={{ ...styles.buttonSecondary, color: "#1d4ed8", borderColor: "#93c5fd" }}
             >
-              📊 Open Sheets
+              Open sheets
             </button>
           )}
 

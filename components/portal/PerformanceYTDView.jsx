@@ -493,13 +493,14 @@ export default function PerformanceYTDView({
 
           <button
             type="button"
+            className="refresh-btn no-click-spinner"
             onClick={onRefresh}
             disabled={isLoading}
             title="Refresh data"
             style={{
               background: "transparent",
               border: "none",
-              cursor: isLoading ? "wait" : "pointer",
+              cursor: "pointer",
               padding: "6px",
               display: "flex",
               alignItems: "center",
@@ -508,15 +509,23 @@ export default function PerformanceYTDView({
               borderRadius: "50%",
             }}
           >
-            {isLoading ? (
-              <Spinner size={18} color="#0047AB" />
-            ) : (
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M23 4v6h-6" />
-                <path d="M1 20v-6h6" />
-                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
-              </svg>
-            )}
+            <svg
+              width="22"
+              height="22"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              style={{
+                animation: isLoading ? "spin 1s linear infinite" : "none",
+              }}
+            >
+              <path d="M23 4v6h-6" />
+              <path d="M1 20v-6h6" />
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+            </svg>
           </button>
 
           <button

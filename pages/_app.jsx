@@ -56,15 +56,22 @@ export default function App({ Component, pageProps }) {
         btn.classList.contains("pma-pulse-btn") ||
         btn.classList.contains("pma-profile-btn") ||
         btn.classList.contains("client-views-tab") ||
-        btn.classList.contains("no-click-spinner")
+        btn.classList.contains("no-click-spinner") ||
+        btn.classList.contains("refresh-btn") ||
+        btn.getAttribute("title")?.toLowerCase()?.includes("refresh")
       );
       if (isMenuBar) return;
 
       btn.classList.add("pulse-btn-clicked");
 
-      // Check if button already contains a spinner or loading icon
+      // Check if button already contains a spinner or loading icon, or is a refresh button
+      const isRefresh = Boolean(
+        btn.classList.contains("refresh-btn") ||
+        btn.getAttribute("title")?.toLowerCase()?.includes("refresh") ||
+        btn.querySelector("svg path[d*='M23 4v6h-6']")
+      );
       const hasSpinner = btn.querySelector(".pulse-click-spinner, svg[class*='spin'], svg[style*='spin']");
-      if (!hasSpinner && !btn.classList.contains("no-click-spinner")) {
+      if (!hasSpinner && !btn.classList.contains("no-click-spinner") && !isRefresh) {
         const isIconOnly = btn.textContent.trim().length === 0;
         const spinner = document.createElement("span");
         spinner.className = "pulse-click-spinner";
@@ -145,7 +152,10 @@ export default function App({ Component, pageProps }) {
         .nav-more-dropdown button,
         .pma-pulse-dropdown button,
         .pma-profile-dropdown button,
-        .portal-mobile-menu button {
+        .portal-mobile-menu button,
+        .client-views-tabs button,
+        .client-views-tab,
+        .refresh-btn {
           transform: none !important;
           filter: none !important;
         }

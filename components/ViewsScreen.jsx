@@ -125,7 +125,7 @@ export default function ViewsScreen({
     setLoadingPayload(true);
     setPayloadError(null);
     try {
-      const url = `/api/portal/payload?clientSheetId=${encodeURIComponent(cid)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? "&bypassCache=true" : ""}`;
+      const url = `/api/portal/payload?clientSheetId=${encodeURIComponent(cid)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? `&bypassCache=true&_t=${Date.now()}` : ""}`;
       const res = await fetch(url);
       const data = await res.json();
       if (data.success && data.payload) {
@@ -171,7 +171,7 @@ export default function ViewsScreen({
     setLoadingPerf(true);
     setPerfError(null);
     try {
-      const url = `/api/portal/performance?clientSheetId=${encodeURIComponent(cid)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? "&bypassCache=true" : ""}`;
+      const url = `/api/portal/performance?clientSheetId=${encodeURIComponent(cid)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? `&bypassCache=true&_t=${Date.now()}` : ""}`;
       const res = await fetch(url);
       const data = await res.json();
       if (data.success && data.data) {
@@ -219,7 +219,7 @@ export default function ViewsScreen({
     setLoadingCash(true);
     setCashError(null);
     try {
-      const url = `/api/portal/cash?clientSheetId=${encodeURIComponent(cid)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? "&bypassCache=true" : ""}`;
+      const url = `/api/portal/cash?clientSheetId=${encodeURIComponent(cid)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? `&bypassCache=true&_t=${Date.now()}` : ""}`;
       const res = await fetch(url);
       const data = await res.json();
       if (data.success && data.data) {
@@ -267,7 +267,7 @@ export default function ViewsScreen({
     setLoadingKeyData(true);
     setKeyDataError(null);
     try {
-      const url = `/api/portal/key-data?clientSheetId=${encodeURIComponent(cid)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? "&bypassCache=true" : ""}`;
+      const url = `/api/portal/key-data?clientSheetId=${encodeURIComponent(cid)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? `&bypassCache=true&_t=${Date.now()}` : ""}`;
       const res = await fetch(url);
       const data = await res.json();
       if (data.success && data.data) {
@@ -315,7 +315,7 @@ export default function ViewsScreen({
     setLoadingBudget(true);
     setBudgetError(null);
     try {
-      const url = `/api/portal/budget?clientSheetId=${encodeURIComponent(cid)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? "&bypassCache=true" : ""}`;
+      const url = `/api/portal/budget?clientSheetId=${encodeURIComponent(cid)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? `&bypassCache=true&_t=${Date.now()}` : ""}`;
       const res = await fetch(url);
       const data = await res.json();
       if (data.success && data.data) {
@@ -497,10 +497,24 @@ export default function ViewsScreen({
               }}
               title="Pull fresh live data from Google Sheet"
             >
-              <span style={{ display: "inline-block", transform: isCurrentViewLoading ? "rotate(180deg)" : "none", transition: "transform 0.5s" }}>
-                🔄
-              </span>
-              <span>{isCurrentViewLoading ? "Refreshing..." : "Refresh Live Data"}</span>
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                style={{
+                  animation: isCurrentViewLoading ? "spin 1s linear infinite" : "none",
+                }}
+              >
+                <path d="M23 4v6h-6" />
+                <path d="M1 20v-6h6" />
+                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+              </svg>
+              <span>{isCurrentViewLoading ? "Refreshing..." : "Refresh live data"}</span>
             </button>
 
             {isAdmin && (selectedClient.clientSheetId || selectedClient.masterSheetId) && (
@@ -539,7 +553,7 @@ export default function ViewsScreen({
           <div
             style={{
               display: "flex",
-              alignItems: "center",
+              alignItems: "flex-end",
               background: "#f8fafc",
               borderBottom: "1px solid #e2e8f0",
               padding: "0 12px",
@@ -553,31 +567,60 @@ export default function ViewsScreen({
               return (
                 <button
                   key={tab.id}
+                  type="button"
                   onClick={() => setActiveTab(tab.id)}
-                  className="no-click-spinner client-views-tab"
+                  className={`no-click-spinner client-views-tab ${isActive ? "active" : ""}`}
                   style={{
+                    position: "relative",
+                    zIndex: isActive ? 2 : 1,
                     background: isActive ? "#ffffff" : "transparent",
-                    border: "none",
                     borderTop: isActive ? "3px solid #0066cc" : "3px solid transparent",
                     borderLeft: isActive ? "1px solid #e2e8f0" : "1px solid transparent",
                     borderRight: isActive ? "1px solid #e2e8f0" : "1px solid transparent",
-                    borderBottom: isActive ? "1px solid #ffffff" : "none",
+                    borderBottom: isActive ? "1px solid #ffffff" : "1px solid transparent",
                     color: isActive ? "#0066cc" : "#64748b",
-                    fontWeight: isActive ? "700" : "500",
                     fontSize: "13.5px",
                     padding: "12px 18px",
                     cursor: "pointer",
                     marginBottom: "-1px",
-                    borderRadius: isActive ? "8px 8px 0 0" : "0",
+                    borderRadius: "8px 8px 0 0",
                     whiteSpace: "nowrap",
-                    transition: "all 0.15s ease",
+                    outline: "none",
+                    transform: "none",
+                    boxShadow: isActive ? "0 1px 0 0 #ffffff" : "none",
+                    transition: "color 0.15s ease",
                   }}
                 >
-                  {tab.label}
+                  <span style={{ fontWeight: isActive ? "700" : "500" }}>{tab.label}</span>
+                  <span
+                    aria-hidden="true"
+                    style={{
+                      display: "block",
+                      fontWeight: "700",
+                      height: 0,
+                      visibility: "hidden",
+                      overflow: "hidden",
+                      userSelect: "none",
+                      pointerEvents: "none",
+                    }}
+                  >
+                    {tab.label}
+                  </span>
                 </button>
               );
             })}
           </div>
+
+          <style jsx>{`
+            .client-views-tab {
+              transform: none !important;
+              filter: none !important;
+            }
+            .client-views-tab:hover:not(.active) {
+              color: #0f172a !important;
+              background-color: rgba(0, 0, 0, 0.02) !important;
+            }
+          `}</style>
 
           {/* View Content Display */}
           <div style={{ padding: "20px" }}>

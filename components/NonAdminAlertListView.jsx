@@ -512,7 +512,7 @@ export default function NonAdminAlertListView({
                               style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#0284c7", borderColor: "#bae6fd" }}
                               title={jobTarget.isOutgoings ? "View Outgoings expense details" : "View and edit job details in pop-up"}
                             >
-                              {jobTarget.isOutgoings ? "🔍 View expense" : "🔍 View job"}
+                              {jobTarget.isOutgoings ? "View expense" : "View job"}
                             </button>
                           );
                         })()}
@@ -520,7 +520,7 @@ export default function NonAdminAlertListView({
                           onClick={() => openCreateTaskModal(na, false, true)}
                           style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#7c3aed", borderColor: "#c4b5fd", whiteSpace: "nowrap" }}
                         >
-                          📋 Create task
+                          Create task
                         </button>
                         <button className="triage-btn no-click-spinner"
                           onClick={() => handleMarkNoActionResolved(na)}
@@ -533,7 +533,7 @@ export default function NonAdminAlertListView({
                             ...(isExiting ? { color: "#16a34a", borderColor: "#86efac", background: "#f0fdf4" } : {})
                           }}
                         >
-                          {isExiting ? "✓ Acknowledged" : "✓ Acknowledge"}
+                          {isExiting ? "Acknowledged" : "Acknowledge"}
                         </button>
                       </div>
                     </div>
@@ -1150,15 +1150,15 @@ export default function NonAdminAlertListView({
                                 </button>
                               )}
                               {alert.alertType === "expenseDashboardDiscr" && clientInfo && (
-                                <button className="triage-btn" onClick={() => onNavOutgoings ? onNavOutgoings(selectedClient || clientInfo) : setActiveNav("outgoings")} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#059669", borderColor: "#6ee7b7", whiteSpace: "nowrap" }}>📤 Assign expense</button>
+                                <button className="triage-btn" onClick={() => onNavOutgoings ? onNavOutgoings(selectedClient || clientInfo) : setActiveNav("outgoings")} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#059669", borderColor: "#6ee7b7", whiteSpace: "nowrap" }}>Assign expense</button>
                               )}
                               {alert.alertType === "invoiceDashboardDiscr" && clientInfo && (
-                                <button className="triage-btn" onClick={() => onNavInvoices ? onNavInvoices(selectedClient || clientInfo) : setActiveNav("invoices")} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#ea580c", borderColor: "#fdba74", whiteSpace: "nowrap" }}>📥 Assign invoices</button>
+                                <button className="triage-btn" onClick={() => onNavInvoices ? onNavInvoices(selectedClient || clientInfo) : setActiveNav("invoices")} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#ea580c", borderColor: "#fdba74", whiteSpace: "nowrap" }}>Assign invoices</button>
                               )}
                             </>
                           );
                         })()}
-                        <button className="triage-btn" onClick={() => openCreateTaskModal(alert, true)} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#7c3aed", borderColor: "#c4b5fd", whiteSpace: "nowrap" }}>📋 Create task</button>
+                        <button className="triage-btn" onClick={() => openCreateTaskModal(alert, true)} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#7c3aed", borderColor: "#c4b5fd", whiteSpace: "nowrap" }}>Create task</button>
                         <button
                           className="triage-btn no-click-spinner"
                           onClick={() => acknowledgeProactiveAlert(alert.alertKey, alert.rowIndex)}
@@ -1171,7 +1171,7 @@ export default function NonAdminAlertListView({
                             ...(isExiting ? { color: "#16a34a", borderColor: "#86efac", background: "#f0fdf4" } : {})
                           }}
                         >
-                          {isExiting ? "✓ Acknowledged" : "✓ Acknowledge"}
+                          {isExiting ? "Acknowledged" : "Acknowledge"}
                         </button>
                       </div>
                     </div>

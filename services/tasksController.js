@@ -1,8 +1,10 @@
 import { createHash } from "crypto";
+import { waitUntil } from "@vercel/functions";
 import { redisClient } from "./redisClient";
 import {
   buildAlertFingerprint, ensureAlertMemoryTab, readAlertMemory,
-  findMemoryRow, updateAlertMemoryRow, updateAlertMemoryRowsBatch, appendAlertMemoryRow
+  findMemoryRow, updateAlertMemoryRow, updateAlertMemoryRowsBatch, appendAlertMemoryRow,
+  appendAlertMemoryRowsBatch, updateHandledAlertHash, updateHandledAlertHashesBatch
 } from "./alertMemory";
 import { logPmaActivity } from "./pmaLogger";
 import { getSessionUser } from "./authService";
@@ -73,16 +75,13 @@ export async function handleBulkCreateTasks(req, res, sheets) {
   const now = new Date().toISOString();
 
   try {
-    console.log(`\n📋 Bulk creating ${alertsToTask.length} tasks by ${createdByEmail || "user"}`);
-    await ensureAlertMemoryTab(sheets, acId);
-    const memoryRows = await readAlertMemory(sheets, acId);
     const results = [];
     const createdTaskRows = [];
+    const statusByHash = {};
 
     for (const alert of alertsToTask) {
       try {
         const fingerprintHash = alert.fingerprintHash || buildAlertFingerprint(alert);
-        const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
         const taskRef = `TASK-${Date.now()}-${Math.random().toString(36).slice(2,7).toUpperCase()}`;
         const taskKey = `${alert.clientName}||${alert.type || alert.flagType || "alert"}||${taskRef}`;
         const alertSummary = alert.summary?.summary || `${alert.type || "alert"} ${alert.summary?.invoiceNo || ""} £${alert.summary?.amount || ""}`.trim();
@@ -92,8 +91,9 @@ export async function handleBulkCreateTasks(req, res, sheets) {
         const taskRow = {
           fingerprintHash, alertType: alertType || "unknown",
           clientName: alert.clientName || "", alertSummary,
-          cachedOptionsJSON: memoryRow?.cachedOptionsJSON || "",
+          cachedOptionsJSON: "",
           status: "task", taskNote: taskNote || "", taskKey,
+          snoozedUntil: snoozedUntil || "",
           dataSnapshot: JSON.stringify({
             alertType,
             flagType: alert.flagType || "",
@@ -104,24 +104,12 @@ export async function handleBulkCreateTasks(req, res, sheets) {
             createdByName,
             isAdminOnly,
             taskKey,
+            snoozedUntil: snoozedUntil || "",
           }),
         };
 
-        if (memoryRow) {
-          await updateAlertMemoryRow(sheets, acId, memoryRow.rowIndex, taskRow);
-        } else {
-          await appendAlertMemoryRow(sheets, acId, taskRow);
-        }
-
-        if (snoozedUntil) {
-          const freshRows = await readAlertMemory(sheets, acId);
-          const taskMemRow = findMemoryRow(freshRows, fingerprintHash);
-          if (taskMemRow) {
-            await updateAlertMemoryRow(sheets, acId, taskMemRow.rowIndex, { ...taskMemRow, snoozedUntil });
-            taskRow.snoozedUntil = snoozedUntil;
-          }
-        }
         createdTaskRows.push(taskRow);
+        statusByHash[fingerprintHash] = "task";
         results.push({ fingerprintHash, taskKey });
       } catch (alertErr) {
         results.push({ fingerprintHash: null, error: alertErr.message });
@@ -130,20 +118,59 @@ export async function handleBulkCreateTasks(req, res, sheets) {
 
     if (createdTaskRows.length > 0) {
       await updateTasksInCache(createdTaskRows);
-    } else {
-      await invalidateTasksCache();
+      await updateHandledAlertHashesBatch(acId, statusByHash);
     }
 
-    const createdCount = results.filter(r => r.taskKey).length;
-    if (createdCount > 0) {
-      logPmaActivity(sheets, {
-        automationCommanderSheetId: acId,
-        clientName: alertsToTask[0]?.clientName || "",
-        category: "TRIAGE",
-        action: "Tasks Created",
-        summary: `Bulk created ${createdCount} task${createdCount > 1 ? "s" : ""}: ${taskNote || "Alert Tasks"}`,
-        details: { count: createdCount, taskNote, clientName: alertsToTask[0]?.clientName, createdBy: createdByEmail }
-      });
+    const syncBulkToSheets = async () => {
+      try {
+        await ensureAlertMemoryTab(sheets, acId);
+        const memoryRows = await readAlertMemory(sheets, acId);
+        const toUpdate = [];
+        const toAppend = [];
+
+        for (const taskRow of createdTaskRows) {
+          const memoryRow = findMemoryRow(memoryRows, taskRow.fingerprintHash);
+          if (memoryRow) {
+            toUpdate.push({
+              rowIndex: memoryRow.rowIndex,
+              updates: {
+                ...memoryRow,
+                ...taskRow,
+                cachedOptionsJSON: memoryRow.cachedOptionsJSON || "",
+              }
+            });
+          } else {
+            toAppend.push(taskRow);
+          }
+        }
+
+        if (toUpdate.length > 0) {
+          await updateAlertMemoryRowsBatch(sheets, acId, toUpdate);
+        }
+        if (toAppend.length > 0) {
+          await appendAlertMemoryRowsBatch(sheets, acId, toAppend);
+        }
+
+        const createdCount = results.filter(r => r.taskKey).length;
+        if (createdCount > 0) {
+          logPmaActivity(sheets, {
+            automationCommanderSheetId: acId,
+            clientName: alertsToTask[0]?.clientName || "",
+            category: "TRIAGE",
+            action: "Tasks Created",
+            summary: `Bulk created ${createdCount} task${createdCount > 1 ? "s" : ""}: ${taskNote || "Alert Tasks"}`,
+            details: { count: createdCount, taskNote, clientName: alertsToTask[0]?.clientName, createdBy: createdByEmail }
+          });
+        }
+      } catch (bgErr) {
+        console.error("❌ Background sheet persist failed for bulk tasks:", bgErr.message);
+      }
+    };
+
+    if (typeof waitUntil === "function") {
+      waitUntil(syncBulkToSheets());
+    } else {
+      syncBulkToSheets();
     }
 
     return res.status(200).json({ success: true, results });
@@ -153,7 +180,7 @@ export async function handleBulkCreateTasks(req, res, sheets) {
 }
 
 export async function handleCreateTask(req, res, sheets) {
-  const { alert, taskNote, automationCommanderSheetId: acId, isProactive, proactiveAlertKey, isInfo } = req.body;
+  const { alert, taskNote, snoozedUntil, automationCommanderSheetId: acId, isProactive, proactiveAlertKey, isInfo } = req.body;
   if (!alert || !acId) return res.status(400).json({ success: false, error: "Missing alert or automationCommanderSheetId" });
 
   const sessionUser = getSessionUser(req);
@@ -172,19 +199,25 @@ export async function handleCreateTask(req, res, sheets) {
   const createdByName = sessionUser.name || (sessionUser.email ? sessionUser.email.split("@")[0] : "");
 
   try {
-    await ensureAlertMemoryTab(sheets, acId);
-    const memoryRows = await readAlertMemory(sheets, acId);
-
     const fingerprintHash = alert.fingerprintHash || (alert.alertKey ? createHash("sha256").update(alert.alertKey).digest("hex").substring(0, 16) : null) || buildAlertFingerprint(alert);
-    const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
     const now = new Date().toISOString();
 
     const taskRef = alert.summary?.invoiceNo || alert.summary?.reference || alert.summary?.jobName || alert.alertKey || fingerprintHash.slice(0, 8);
     const taskKey = `${alert.clientName}||${alert.type || alert.flagType || "alert"}||${taskRef}`;
 
-    const existingTask = memoryRows.find(r => r.status === "task" && r.taskKey === taskKey);
-    if (existingTask) {
-      return res.status(409).json({ success: false, error: "A task already exists for this alert", existingTaskHash: existingTask.fingerprintHash });
+    // Fast duplicate check against in-memory / Redis tasks cache (< 5ms)
+    let currentTasks = _tasksMemoryCache;
+    if (!currentTasks && redisClient?.isOpen) {
+      try {
+        const cached = await redisClient.get("triage_tasks_cache");
+        if (cached) currentTasks = JSON.parse(cached);
+      } catch (e) {}
+    }
+    if (currentTasks) {
+      const existingTask = currentTasks.find(r => r.status === "task" && (r.taskKey === taskKey || r.fingerprintHash === fingerprintHash));
+      if (existingTask) {
+        return res.status(409).json({ success: false, error: "A task already exists for this alert", existingTaskHash: existingTask.fingerprintHash });
+      }
     }
 
     const alertSummary = alert.summary?.summary || alert.heading || `${alert.type || alert.flagType || alert.alertType || "alert"} ${alert.summary?.invoiceNo || alert.summary?.reference || ""} ${alert.summary?.amount ? "£" + alert.summary.amount : ""}`.trim();
@@ -200,15 +233,13 @@ export async function handleCreateTask(req, res, sheets) {
       taskKey,
     };
 
-    let cachedOptionsJSON = memoryRow?.cachedOptionsJSON ? memoryRow.cachedOptionsJSON : "";
-
     const taskMeta = {
       taskNote:          taskNote || "",
       taskCreatedAt:     now,
       createdByEmail,
       createdByName,
       isAdminOnly,
-      snoozedUntil:      "",
+      snoozedUntil:      snoozedUntil || "",
       furtherNotes:      [], 
       taskKey,
       isProactive:       !!isProactive,
@@ -216,31 +247,22 @@ export async function handleCreateTask(req, res, sheets) {
       alertData:         JSON.stringify(alert), 
     };
 
-    if (memoryRow) {
-      const updatedRow = {
-        ...memoryRow,
-        status: "task",
-        ignoreReason: "",
-        cachedOptionsJSON,
-        dataSnapshot: JSON.stringify({ ...JSON.parse(memoryRow.dataSnapshot || "{}"), ...alertFieldsSnapshot, ...taskMeta }),
-      };
-      await updateAlertMemoryRow(sheets, acId, memoryRow.rowIndex, updatedRow);
-      await updateTaskInCache(updatedRow);
-    } else {
-      const createdRow = {
-        fingerprintHash,
-        alertType: alertType || "alert",
-        clientName: alert.clientName || "",
-        alertSummary,
-        cachedOptionsJSON,
-        status: "task",
-        ignoreReason: "",
-        category: isProactive ? "proactive" : (isInfo ? "informational" : "discrepancy"),
-        dataSnapshot: JSON.stringify({ ...alertFieldsSnapshot, ...taskMeta }),
-      };
-      await appendAlertMemoryRow(sheets, acId, createdRow);
-      await updateTaskInCache(createdRow);
-    }
+    const createdRow = {
+      fingerprintHash,
+      alertType: alertType || "alert",
+      clientName: alert.clientName || "",
+      alertSummary,
+      cachedOptionsJSON: "",
+      status: "task",
+      snoozedUntil: snoozedUntil || "",
+      ignoreReason: "",
+      category: isProactive ? "proactive" : (isInfo ? "informational" : "discrepancy"),
+      dataSnapshot: JSON.stringify({ ...alertFieldsSnapshot, ...taskMeta }),
+    };
+
+    // Immediately commit to Redis task cache and handled hash (< 10ms)
+    await updateTaskInCache(createdRow);
+    await updateHandledAlertHash(acId, fingerprintHash, "task");
 
     const taskCat = (() => {
       const t = String(alert.type || alert.flagType || alert.alertType || "").toLowerCase();
@@ -251,16 +273,47 @@ export async function handleCreateTask(req, res, sheets) {
       return "TRIAGE";
     })();
 
-    logPmaActivity(sheets, {
-      automationCommanderSheetId: acId,
-      clientName: alert.clientName || "",
-      category: taskCat,
-      action: "Task Created",
-      summary: `Created task for ${alert.clientName || "Client"}: ${taskNote || alert.type || "Alert Task"}`,
-      details: { taskNote, alertType: alert.type || alert.flagType, clientName: alert.clientName, createdBy: createdByEmail }
-    });
+    // Background sync to Google Sheets and PMA activity log without blocking the HTTP response
+    const syncToSheets = async () => {
+      try {
+        await ensureAlertMemoryTab(sheets, acId);
+        const memoryRows = await readAlertMemory(sheets, acId);
+        const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
 
-    return res.status(200).json({ success: true, taskKey, fingerprintHash });
+        if (memoryRow) {
+          const updatedRow = {
+            ...memoryRow,
+            status: "task",
+            snoozedUntil: snoozedUntil || memoryRow.snoozedUntil || "",
+            ignoreReason: "",
+            cachedOptionsJSON: memoryRow.cachedOptionsJSON || "",
+            dataSnapshot: JSON.stringify({ ...JSON.parse(memoryRow.dataSnapshot || "{}"), ...alertFieldsSnapshot, ...taskMeta }),
+          };
+          await updateAlertMemoryRow(sheets, acId, memoryRow.rowIndex, updatedRow);
+        } else {
+          await appendAlertMemoryRow(sheets, acId, createdRow);
+        }
+
+        logPmaActivity(sheets, {
+          automationCommanderSheetId: acId,
+          clientName: alert.clientName || "",
+          category: taskCat,
+          action: "Task Created",
+          summary: `Created task for ${alert.clientName || "Client"}: ${taskNote || alert.type || "Alert Task"}`,
+          details: { taskNote, alertType: alert.type || alert.flagType, clientName: alert.clientName, createdBy: createdByEmail }
+        });
+      } catch (bgErr) {
+        console.error("❌ Background sheet persist failed for task:", bgErr.message);
+      }
+    };
+
+    if (typeof waitUntil === "function") {
+      waitUntil(syncToSheets());
+    } else {
+      syncToSheets();
+    }
+
+    return res.status(200).json({ success: true, taskKey, fingerprintHash, snoozedHandled: !!snoozedUntil });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
   }

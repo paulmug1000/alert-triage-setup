@@ -308,13 +308,14 @@ export default function MonthView({
       >
         <button
           type="button"
+          className="refresh-btn no-click-spinner"
           onClick={onRefresh}
           disabled={isLoading}
           title="Refresh data"
           style={{
             background: "transparent",
             border: "none",
-            cursor: isLoading ? "wait" : "pointer",
+            cursor: "pointer",
             padding: "8px",
             display: "flex",
             alignItems: "center",

@@ -129,7 +129,7 @@ export default function PortalPage() {
       setPayloadError(null);
     }
     try {
-      const url = `/api/portal/payload?clientSheetId=${encodeURIComponent(client.clientSheetId)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? "&bypassCache=true" : ""}`;
+      const url = `/api/portal/payload?clientSheetId=${encodeURIComponent(client.clientSheetId)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? `&bypassCache=true&_t=${Date.now()}` : ""}`;
       const res = await fetch(url);
       const data = await res.json();
       if (client.clientSheetId !== activeClientSheetIdRef.current) return;
@@ -166,7 +166,7 @@ export default function PortalPage() {
       setPerfError(null);
     }
     try {
-      const url = `/api/portal/performance?clientSheetId=${encodeURIComponent(client.clientSheetId)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? "&bypassCache=true" : ""}`;
+      const url = `/api/portal/performance?clientSheetId=${encodeURIComponent(client.clientSheetId)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? `&bypassCache=true&_t=${Date.now()}` : ""}`;
       const res = await fetch(url);
       const data = await res.json();
       if (client.clientSheetId !== activeClientSheetIdRef.current) return;
@@ -210,7 +210,7 @@ export default function PortalPage() {
       setCashError(null);
     }
     try {
-      const url = `/api/portal/cash?clientSheetId=${encodeURIComponent(client.clientSheetId)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? "&bypassCache=true" : ""}`;
+      const url = `/api/portal/cash?clientSheetId=${encodeURIComponent(client.clientSheetId)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? `&bypassCache=true&_t=${Date.now()}` : ""}`;
       const res = await fetch(url);
       const data = await res.json();
       if (client.clientSheetId !== activeClientSheetIdRef.current) return;
@@ -254,7 +254,7 @@ export default function PortalPage() {
       setKeyDataError(null);
     }
     try {
-      const url = `/api/portal/key-data?clientSheetId=${encodeURIComponent(client.clientSheetId)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? "&bypassCache=true" : ""}`;
+      const url = `/api/portal/key-data?clientSheetId=${encodeURIComponent(client.clientSheetId)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? `&bypassCache=true&_t=${Date.now()}` : ""}`;
       const res = await fetch(url);
       const data = await res.json();
       if (client.clientSheetId !== activeClientSheetIdRef.current) return;
@@ -295,8 +295,6 @@ export default function PortalPage() {
 
   const handleRefreshPayload = () => {
     if (selectedClient) {
-      setPayload(null);
-      setPerformanceData(null);
       fetchPayload(selectedClient, true);
       fetchPerformance(selectedClient, true);
       fetchCashflow(selectedClient, true);
@@ -306,7 +304,6 @@ export default function PortalPage() {
 
   const handleRefreshPerformance = () => {
     if (selectedClient) {
-      setPerformanceData(null);
       fetchPerformance(selectedClient, true);
       fetchKeyData(selectedClient, true);
     }
@@ -314,7 +311,6 @@ export default function PortalPage() {
 
   const handleRefreshCashflow = () => {
     if (selectedClient) {
-      setCashflowData(null);
       fetchCashflow(selectedClient, true);
       fetchKeyData(selectedClient, true);
     }
@@ -322,7 +318,6 @@ export default function PortalPage() {
 
   const handleRefreshKeyData = () => {
     if (selectedClient) {
-      setKeyData(null);
       fetchKeyData(selectedClient, true);
     }
   };
@@ -335,7 +330,7 @@ export default function PortalPage() {
       setBudgetError(null);
     }
     try {
-      const url = `/api/portal/budget?clientSheetId=${encodeURIComponent(client.clientSheetId)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? "&bypassCache=true" : ""}`;
+      const url = `/api/portal/budget?clientSheetId=${encodeURIComponent(client.clientSheetId)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? `&bypassCache=true&_t=${Date.now()}` : ""}`;
       const res = await fetch(url);
       const data = await res.json();
       if (client.clientSheetId !== activeClientSheetIdRef.current) return;
@@ -418,7 +413,6 @@ export default function PortalPage() {
 
   const handleRefreshBudget = () => {
     if (selectedClient) {
-      setBudgetData(null);
       fetchBudget(selectedClient, true);
       fetchPerformance(selectedClient, true);
     }

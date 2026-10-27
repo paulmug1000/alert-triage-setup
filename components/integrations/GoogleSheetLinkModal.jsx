@@ -16,7 +16,18 @@ export default function GoogleSheetLinkModal({
   const resolvedMasterSheetId = client?.masterSheetId || masterSheetId || "";
   const resolvedClientSheetId = client?.clientSheetId || clientSheetId || "";
 
-  const [url, setUrl] = useState(currentConfig?.metadata?.url || currentConfig?.url || "");
+  const [url, setUrl] = useState(() => {
+    if (currentConfig?.metadata?.url) return currentConfig.metadata.url;
+    if (currentConfig?.url) return currentConfig.url;
+    if (client?.integrations?.googlesheet?.metadata?.url) return client.integrations.googlesheet.metadata.url;
+    if (typeof window !== "undefined") {
+      const pUrl = new URLSearchParams(window.location.search).get("url");
+      if (pUrl) return pUrl;
+      const cached = window.sessionStorage.getItem("pulse_pending_google_sheet_url");
+      if (cached) return cached;
+    }
+    return "";
+  });
   const [selectedTab, setSelectedTab] = useState(currentConfig?.metadata?.tabName || currentConfig?.tabName || "");
   const [headerRowNum, setHeaderRowNum] = useState(
     currentConfig?.metadata?.headerRowNum ? String(currentConfig.metadata.headerRowNum) : ""
@@ -31,8 +42,6 @@ export default function GoogleSheetLinkModal({
   const [inspectionData, setInspectionData] = useState(null);
   const [linking, setLinking] = useState(false);
   const [error, setError] = useState(null);
-
-  if (!isOpen || !resolvedClientName) return null;
 
   const isConnected = Boolean(
     currentConfig?.connected ||
@@ -217,18 +226,41 @@ export default function GoogleSheetLinkModal({
     }
   };
 
+  const handleUrlChange = (newUrl) => {
+    setUrl(newUrl);
+    if (typeof window !== "undefined") {
+      window.sessionStorage.setItem("pulse_pending_google_sheet_url", newUrl);
+    }
+  };
+
+  React.useEffect(() => {
+    if (isConnected && url && url.trim() && !inspectionData && !inspecting) {
+      handleInspect();
+    }
+  }, [isConnected]);
+
   const handleOAuthConnect = () => {
+    if (!url.trim()) {
+      setError("Please enter your Google Sheet URL above before signing in.");
+      return;
+    }
+    if (typeof window !== "undefined") {
+      window.sessionStorage.setItem("pulse_pending_google_sheet_url", url.trim());
+    }
     const q = new URLSearchParams({
       clientKey: resolvedClientName,
       clientName: resolvedClientName,
       masterSheetId: resolvedMasterSheetId || "",
       clientSheetId: resolvedClientSheetId || "",
+      url: url.trim(),
       redirectBack
     });
     window.location.href = `/api/integrations/google-sheet/connect?${q.toString()}`;
   };
 
   const availableHeaders = inspectionData?.headers || [];
+
+  if (!isOpen || !resolvedClientName) return null;
 
   return (
     <div
@@ -347,10 +379,62 @@ export default function GoogleSheetLinkModal({
             </div>
           )}
 
-          {/* 1. Google Account Authorization */}
+          {/* 1. Google Sheet URL */}
           <div style={{ marginBottom: "20px" }}>
             <label style={{ display: "block", fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#64748b", marginBottom: "8px" }}>
-              1. Google account authorization
+              1. Google Sheet URL
+            </label>
+            <p style={{ margin: "0 0 10px 0", fontSize: "12px", color: "#475569", lineHeight: "1.4" }}>
+              Paste the web link to your Google Sheet CRM.
+            </p>
+            <div style={{ display: "flex", gap: "8px" }}>
+              <input
+                type="text"
+                value={url}
+                onChange={(e) => handleUrlChange(e.target.value)}
+                placeholder="https://docs.google.com/spreadsheets/d/..."
+                style={{
+                  flex: 1,
+                  padding: "9px 12px",
+                  borderRadius: "7px",
+                  border: "1px solid #cbd5e1",
+                  fontSize: "13px",
+                  boxSizing: "border-box"
+                }}
+              />
+              {isConnected && !isClientView && (
+                <button
+                  type="button"
+                  onClick={() => handleInspect()}
+                  disabled={inspecting || !url.trim()}
+                  style={{
+                    padding: "9px 16px",
+                    borderRadius: "7px",
+                    border: "none",
+                    background: "#0f9d58",
+                    color: "#ffffff",
+                    fontSize: "12.5px",
+                    fontWeight: "600",
+                    cursor: inspecting || !url.trim() ? "not-allowed" : "pointer",
+                    whiteSpace: "nowrap",
+                    opacity: !url.trim() ? 0.6 : 1
+                  }}
+                >
+                  {inspecting ? "Saving..." : "Save"}
+                </button>
+              )}
+            </div>
+            {url.trim() && (url.includes("sharepoint.com") || url.includes("1drv.ms") || url.includes("live.com")) && (
+              <div style={{ marginTop: "6px", fontSize: "11.5px", color: "#b91c1c" }}>
+                This looks like a Microsoft SharePoint/OneDrive link. Please use the Microsoft Excel CRM integration instead.
+              </div>
+            )}
+          </div>
+
+          {/* 2. Google Account Authorization */}
+          <div style={{ marginBottom: isClientView ? "16px" : "20px" }}>
+            <label style={{ display: "block", fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#64748b", marginBottom: "8px" }}>
+              2. Google account authorization
             </label>
             {isConnected ? (
               <div
@@ -371,7 +455,7 @@ export default function GoogleSheetLinkModal({
                       Connected to {connectedEmail}
                     </div>
                     <div style={{ fontSize: "11px", color: "#15803d" }}>
-                      {isClientView ? "Ready to link your Google Sheet below." : "Ready to inspect sheet and map columns below."}
+                      {isClientView ? "Authorized via Google. Ready to save spreadsheet below." : "Ready to inspect sheet and map columns."}
                     </div>
                   </div>
                 </div>
@@ -395,7 +479,7 @@ export default function GoogleSheetLinkModal({
             ) : (
               <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "8px", padding: "14px" }}>
                 <p style={{ margin: "0 0 10px 0", fontSize: "12px", color: "#475569", lineHeight: "1.4" }}>
-                  Authorize Pulse to read your Google Sheets CRM pipeline.
+                  Sign in to grant Pulse read-only access to this Google Sheet.
                 </p>
                 <button
                   type="button"
@@ -429,75 +513,29 @@ export default function GoogleSheetLinkModal({
             )}
           </div>
 
-          {/* 2. Direct URL Link */}
-          {isConnected && (
+          {/* Client View: Primary Save Button */}
+          {isClientView && isConnected && (
             <div style={{ marginBottom: "16px" }}>
-              <label style={{ display: "block", fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#64748b", marginBottom: "8px" }}>
-                {isClientView ? "2. Google Sheet URL" : "2. Google Sheet URL & column mapping"}
-              </label>
-              {isClientView && (
-                <p style={{ margin: "0 0 10px 0", fontSize: "12px", color: "#475569", lineHeight: "1.4" }}>
-                  Paste the web link to your Google Sheet CRM. Pulse will connect securely to read your deal pipeline.
-                </p>
-              )}
-              <div style={{ display: isClientView ? "block" : "flex", gap: "8px" }}>
-                <input
-                  type="text"
-                  value={url}
-                  onChange={(e) => setUrl(e.target.value)}
-                  placeholder="https://docs.google.com/spreadsheets/d/..."
-                  style={{
-                    width: "100%",
-                    flex: isClientView ? undefined : 1,
-                    padding: "9px 12px",
-                    borderRadius: "7px",
-                    border: "1px solid #cbd5e1",
-                    fontSize: "13px",
-                    boxSizing: "border-box",
-                    marginBottom: isClientView ? "12px" : "0"
-                  }}
-                />
-                {isClientView ? (
-                  <button
-                    type="button"
-                    onClick={handleClientSave}
-                    disabled={linking}
-                    style={{
-                      width: "100%",
-                      padding: "10px 16px",
-                      borderRadius: "7px",
-                      border: "none",
-                      background: "#0f9d58",
-                      color: "#ffffff",
-                      fontSize: "13px",
-                      fontWeight: "600",
-                      cursor: linking ? "wait" : "pointer",
-                      boxShadow: "0 1px 2px rgba(0,0,0,0.05)"
-                    }}
-                  >
-                    {linking ? "Saving..." : "Save Google Sheet"}
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => handleInspect()}
-                    disabled={inspecting}
-                    style={{
-                      padding: "9px 16px",
-                      borderRadius: "7px",
-                      border: "none",
-                      background: "#0f9d58",
-                      color: "#ffffff",
-                      fontSize: "12.5px",
-                      fontWeight: "600",
-                      cursor: inspecting ? "wait" : "pointer",
-                      whiteSpace: "nowrap"
-                    }}
-                  >
-                    {inspecting ? "Saving..." : "Save"}
-                  </button>
-                )}
-              </div>
+              <button
+                type="button"
+                onClick={handleClientSave}
+                disabled={linking || !url.trim()}
+                style={{
+                  width: "100%",
+                  padding: "10px 16px",
+                  borderRadius: "7px",
+                  border: "none",
+                  background: "#0f9d58",
+                  color: "#ffffff",
+                  fontSize: "13px",
+                  fontWeight: "600",
+                  cursor: linking || !url.trim() ? "not-allowed" : "pointer",
+                  boxShadow: "0 1px 2px rgba(0,0,0,0.05)",
+                  opacity: !url.trim() ? 0.6 : 1
+                }}
+              >
+                {linking ? "Saving..." : "Save Google Sheet"}
+              </button>
             </div>
           )}
 

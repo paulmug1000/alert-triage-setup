@@ -259,6 +259,7 @@ export default function IntegrationsView({
       const masterSheetIdParam = urlParams.get("masterSheetId");
       const errorMsg = urlParams.get("message") || urlParams.get("error");
       const tenant = urlParams.get("tenant") || urlParams.get("company") || urlParams.get("workspace") || urlParams.get("site") || urlParams.get("org") || urlParams.get("portal") || urlParams.get("account");
+      const returnedUrl = urlParams.get("url") || "";
 
       if (integration) {
         const toolTitle = integration.charAt(0).toUpperCase() + integration.slice(1);
@@ -285,7 +286,8 @@ export default function IntegrationsView({
                   metadata: {
                     userEmail: accountEmail,
                     accountName: accountEmail ? `${integration === "googlesheet" ? "Google" : "Microsoft"} Account (${accountEmail})` : "Connected Account",
-                    tenantName: accountEmail
+                    tenantName: accountEmail,
+                    url: returnedUrl
                   }
                 }
               }
@@ -309,7 +311,8 @@ export default function IntegrationsView({
                       connected: true,
                       metadata: {
                         ...(matched.integrations?.[integration]?.metadata || {}),
-                        userEmail: matched.integrations?.[integration]?.metadata?.userEmail || accountEmail
+                        userEmail: matched.integrations?.[integration]?.metadata?.userEmail || accountEmail,
+                        url: returnedUrl || matched.integrations?.[integration]?.metadata?.url || ""
                       }
                     }
                   }

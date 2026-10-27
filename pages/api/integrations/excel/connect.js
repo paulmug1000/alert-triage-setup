@@ -49,7 +49,8 @@ export default async function handler(req, res) {
       clientName: clientName || clientKey,
       masterSheetId: masterSheetId || "",
       clientSheetId: clientSheetId || "",
-      redirectBack: sanitizedRedirectBack
+      redirectBack: sanitizedRedirectBack,
+      url: (req.query?.url || req.body?.url || "").trim()
     };
 
     const stateToken = Buffer.from(JSON.stringify(statePayload)).toString("base64url");

@@ -113,7 +113,8 @@ export default async function handler(req, res) {
       returnUrl = `${returnUrl}${sep}nav=integrations`;
     }
     const separator = returnUrl.includes("?") ? "&" : "?";
-    return res.redirect(`${returnUrl}${separator}integration=googlesheet&status=success&modal=picker&account=${encodeURIComponent(userEmail)}&client=${encodeURIComponent(clientName)}&masterSheetId=${encodeURIComponent(masterSheetId || "")}&tenant=${encodeURIComponent(userEmail)}`);
+    const pendingUrl = statePayload?.url ? `&url=${encodeURIComponent(statePayload.url)}` : "";
+    return res.redirect(`${returnUrl}${separator}integration=googlesheet&status=success&modal=picker&account=${encodeURIComponent(userEmail)}&client=${encodeURIComponent(clientName)}&masterSheetId=${encodeURIComponent(masterSheetId || "")}&tenant=${encodeURIComponent(userEmail)}${pendingUrl}`);
 
   } catch (err) {
     console.error("Google Sheet OAuth callback error:", err);

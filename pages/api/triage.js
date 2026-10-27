@@ -57,7 +57,9 @@ import {
   handleEomCreateDashboardBackup, handleEomMarkMonthActual, handleEomMarkNbExclude, handleEomSeedFromChecklist,
   handleEomGetPlCompData, handleEomPullFreshPl, handleEomPushOutgoings,
   handleEomGetDefaultTasks, handleEomSaveDefaultTask, handleEomDeleteDefaultTask,
-  handleEomReorderDefaultTasks, handleEomSeedDefaultTasksFromTemplates, handleEomApplyDefaultTasks
+  handleEomReorderDefaultTasks, handleEomSeedDefaultTasksFromTemplates, handleEomApplyDefaultTasks,
+  handleEomGetReportingData, handleEomSaveReportingConfig, handleEomRunReportingAction,
+  handleEomTestReportingWebApp
 } from "../../services/eomTools";
 import {
   handleUploadPayrollChunk, handleIdentifyPayrollClient, handleIdentifyTimeClient,
@@ -277,7 +279,8 @@ export default async function handler(req, res) {
       "get_cash_cells",
       "get_cash_inbox",
       "get_cash_adjustments",
-      "verify_invoice_slot"
+      "verify_invoice_slot",
+      "eom_get_reporting_data"
     ]);
 
     if (req.method === "GET" && !READ_ONLY_ACTIONS.has(action)) {
@@ -1300,6 +1303,14 @@ export default async function handler(req, res) {
       return await handleEomSeedDefaultTasksFromTemplates(req, res, sheets);
     } else if (action === "eom_apply_default_tasks") {
       return await handleEomApplyDefaultTasks(req, res, sheets);
+    } else if (action === "eom_get_reporting_data") {
+      return await handleEomGetReportingData(req, res, sheets);
+    } else if (action === "eom_save_reporting_config") {
+      return await handleEomSaveReportingConfig(req, res, sheets);
+    } else if (action === "eom_run_reporting_action") {
+      return await handleEomRunReportingAction(req, res, sheets);
+    } else if (action === "eom_test_reporting_webapp") {
+      return await handleEomTestReportingWebApp(req, res);
 
     } else if (action === "get_flag_sweep_log") {
       const runs = await readFlagSweepLog(sheets, req.body.automationCommanderSheetId);

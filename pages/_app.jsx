@@ -38,7 +38,7 @@ export default function App({ Component, pageProps }) {
       const btn = e.target.closest("button");
       if (!btn || btn.disabled) return;
 
-      // Never apply universal user feedback (spinner or animation) to the menu bar in either PMA or Pulse
+      // Never apply universal user feedback (spinner or animation) to the menu bar or login box in either PMA or Pulse
       const isMenuBar = Boolean(
         btn.closest("header") ||
         btn.closest("nav") ||
@@ -51,6 +51,7 @@ export default function App({ Component, pageProps }) {
         btn.closest(".pma-profile-dropdown") ||
         btn.closest(".portal-mobile-menu") ||
         btn.closest(".client-views-tabs") ||
+        btn.closest(".login-box") ||
         btn.classList.contains("pulse-nav-item") ||
         btn.classList.contains("nav-more-btn") ||
         btn.classList.contains("pma-pulse-btn") ||

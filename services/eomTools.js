@@ -2,6 +2,8 @@ import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "./sheetsClien
 import { redisClient } from "./redisClient";
 import { memoryCache } from "./cacheService";
 import { logPmaActivity } from "./pmaLogger";
+import { getSessionUser } from "./authService";
+import { getAllClients, DEFAULT_AC_SHEET_ID } from "./workspaces";
 
 // Moved from triage.js local scope
 let eomTabsVerified = false;
@@ -2065,5 +2067,593 @@ export async function handleEomApplyDefaultTasks(req, res, sheets) {
     return res.status(200).json(result);
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+// ============================================================================
+// EOM REPORTING CONTROL (Management Reports & Month-End Email Drafting)
+// ============================================================================
+
+export const REPORTING_CONTROL_SHEET_ID = "1uAJS6ZWn0o-GPU9Ea3DIVU9nzQoRnXrMfmBcQYHNJ_s";
+export const CLIENT_VERSION_TRACKER_SHEET_ID = "1tx4rRD55-W53-B9Z_kMAJjXMf0nrIE9CCczYXFR84co";
+
+export const DEFAULT_CHART_REFS = [
+  { code: "[MonthSnapshot]", range: "C31:J47", label: "Month Snapshot" },
+  { code: "[BusinessPerformance]", range: "U106:AA137", label: "Business Performance" },
+  { code: "[QuarterOutcome]", range: "U202:AA224", label: "Quarter Outcome" },
+  { code: "[QuarterSnapshot]", range: "C231:J243", label: "Quarter Snapshot" },
+  { code: "[Overheads20]", range: "AB371:AG391", label: "Overheads 20" },
+  { code: "[Overheads30]", range: "AB371:AG401", label: "Overheads 30" },
+  { code: "[Overheads40]", range: "AB371:AG411", label: "Overheads 40" },
+  { code: "[Overheads60]", range: "AB371:AG431", label: "Overheads 60" },
+  { code: "[CurrMonth]", range: "U502:AA533", label: "Current Month" },
+  { code: "[PerfYTD]", range: "A544:T574", label: "Performance YTD" },
+  { code: "[FYForecast]", range: "A643:T674", label: "FY Forecast" },
+  { code: "[NextFYForecast]", range: "AH643:AV674", label: "Next FY Forecast" },
+  { code: "[Targets]", range: "A789:M797", label: "Targets" },
+  { code: "[Cashflow]", range: "A831:H843", label: "Cashflow" },
+  { code: "[Bookings3]", range: "A1016:C1016", label: "Bookings 3m" },
+  { code: "[Bookings6]", range: "A983:B983", label: "Bookings 6m" },
+  { code: "[Bookings12]", range: "A954:C954", label: "Bookings 12m" },
+  { code: "[Pipeline3]", range: "A1143:D1143", label: "Pipeline 3m" },
+  { code: "[Pipeline6]", range: "A1112:D1112", label: "Pipeline 6m" },
+  { code: "[Pipeline12]", range: "A1081:D1081", label: "Pipeline 12m" },
+  { code: "[Util10]", range: "A1223:J1234", label: "Utilisation 10" },
+  { code: "[Util15]", range: "A1223:J1239", label: "Utilisation 15" },
+  { code: "[Util20]", range: "A1223:J1244", label: "Utilisation 20" }
+];
+
+/**
+ * Ensures EomReportingConfig and ReportsLog tabs exist in Automation Commander
+ */
+export async function ensureEomReportingTabs_(sheets, spreadsheetId) {
+  try {
+    const meta = await withRetry(() => sheets.spreadsheets.get({
+      spreadsheetId,
+      fields: "sheets.properties.title"
+    }));
+    const existingTitles = new Set(meta.data.sheets?.map(s => s.properties?.title) || []);
+    const requests = [];
+
+    if (!existingTitles.has("EomReportingConfig")) {
+      requests.push({
+        addSheet: {
+          properties: {
+            title: "EomReportingConfig",
+            gridProperties: { rowCount: 200, columnCount: 10, frozenRowCount: 1 }
+          }
+        }
+      });
+    }
+
+    if (!existingTitles.has("ReportsLog")) {
+      requests.push({
+        addSheet: {
+          properties: {
+            title: "ReportsLog",
+            gridProperties: { rowCount: 1000, columnCount: 10, frozenRowCount: 1 }
+          }
+        }
+      });
+    }
+
+    if (requests.length > 0) {
+      await withRetry(() => sheets.spreadsheets.batchUpdate({
+        spreadsheetId,
+        requestBody: { requests }
+      }));
+    }
+
+    // Set headers if new
+    if (!existingTitles.has("EomReportingConfig")) {
+      await withRetry(() => sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: "EomReportingConfig!A1:G1",
+        valueInputOption: "RAW",
+        requestBody: {
+          values: [["ClientName", "EmailTo", "EmailSubj", "EmailBody", "FolderUrl", "WebAppUrl", "UpdatedAt"]]
+        }
+      }));
+
+      // Seed initial data from Reporting Control spreadsheet if accessible
+      try {
+        const seedResp = await withRetry(() => sheets.spreadsheets.values.get({
+          spreadsheetId: REPORTING_CONTROL_SHEET_ID,
+          range: "RepControl!A6:BQ50",
+          valueRenderOption: "FORMATTED_VALUE"
+        }));
+        const seedRows = seedResp.data.values || [];
+        const seedAppends = [];
+        const now = new Date().toISOString();
+
+        seedRows.forEach(r => {
+          const clientName = String(r[0] || "").trim();
+          if (!clientName) return;
+          const folderUrl = String(r[32] || "").trim(); // Col AG
+          const emailTo = String(r[66] || "").trim();   // Col BO
+          const emailSubj = String(r[67] || "").trim(); // Col BP
+          const emailBody = String(r[68] || "").trim(); // Col BQ
+          if (folderUrl || emailTo || emailSubj || emailBody) {
+            seedAppends.push([clientName, emailTo, emailSubj, emailBody, folderUrl, "", now]);
+          }
+        });
+
+        if (seedAppends.length > 0) {
+          await withRetry(() => sheets.spreadsheets.values.append({
+            spreadsheetId,
+            range: "EomReportingConfig!A:G",
+            valueInputOption: "RAW",
+            requestBody: { values: seedAppends }
+          }));
+        }
+      } catch (seedErr) {
+        console.warn("[ensureEomReportingTabs_] Note on seed:", seedErr.message);
+      }
+    }
+
+    if (!existingTitles.has("ReportsLog")) {
+      await withRetry(() => sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: "ReportsLog!A1:E1",
+        valueInputOption: "RAW",
+        requestBody: {
+          values: [["ClientName", "Month", "ReportUrl", "ReportName", "CreatedAt"]]
+        }
+      }));
+    }
+  } catch (err) {
+    console.warn("[ensureEomReportingTabs_] Note:", err.message);
+  }
+}
+
+/**
+ * Loads all reporting control clients, configuration, and latest presentations
+ */
+export async function handleEomGetReportingData(req, res, sheets) {
+  const sessionUser = getSessionUser(req);
+  if (!sessionUser?.isAdmin) {
+    return res.status(403).json({ success: false, error: "Admin access required." });
+  }
+
+  const { automationCommanderSheetId, eomMonthKey, reportMonthKey } = req.body;
+  const acId = automationCommanderSheetId || process.env.AUTOMATION_COMMANDER_SHEET_ID || DEFAULT_AC_SHEET_ID;
+  const targetReportMonth = reportMonthKey || eomMonthKey;
+
+  try {
+    await ensureEomReportingTabs_(sheets, acId);
+
+    // Fetch clients from getAllClients
+    const clientsData = await getAllClients(sheets, { isAdmin: true }, false, acId);
+    const clientsArray = clientsData.clientsArray || [];
+
+    // Fetch folder URLs from Client Version Tracker (Col 53: Mgmt Reports folder)
+    const trackerFolders = {};
+    try {
+      const trackerResp = await withRetry(() => sheets.spreadsheets.values.get({
+        spreadsheetId: CLIENT_VERSION_TRACKER_SHEET_ID,
+        range: "Clients!A2:BA100",
+        valueRenderOption: "FORMATTED_VALUE"
+      }));
+      (trackerResp.data.values || []).forEach(row => {
+        const cName = String(row[0] || "").trim();
+        const folder = String(row[52] || "").trim(); // Col 53 is 0-index 52
+        if (cName && folder) trackerFolders[cName] = folder;
+      });
+    } catch (tErr) {
+      console.warn("Tracker folders fetch note:", tErr.message);
+    }
+
+    // Fetch EomReportingConfig
+    const configResp = await withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: acId,
+      range: "EomReportingConfig!A2:G500",
+      valueRenderOption: "FORMATTED_VALUE"
+    }));
+    const configMap = {};
+    let systemWebAppUrl = process.env.REPORTING_WEBAPP_URL || "";
+    (configResp.data.values || []).forEach(r => {
+      const cName = String(r[0] || "").trim();
+      if (!cName) return;
+      if (cName === "__SYSTEM__") {
+        if (r[5]) systemWebAppUrl = String(r[5]).trim();
+        return;
+      }
+      configMap[cName] = {
+        emailTo: r[1] || "",
+        emailSubj: r[2] || "",
+        emailBody: r[3] || "",
+        folderUrl: r[4] || "",
+        webAppUrl: r[5] || ""
+      };
+    });
+
+    // Fetch ReportsLog
+    const logResp = await withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: acId,
+      range: "ReportsLog!A2:E5000",
+      valueRenderOption: "FORMATTED_VALUE"
+    }));
+    const logsByClient = {};
+    (logResp.data.values || []).forEach(r => {
+      const cName = String(r[0] || "").trim();
+      const mKey = String(r[1] || "").trim();
+      const repUrl = String(r[2] || "").trim();
+      const repName = String(r[3] || "").trim();
+      const createdAt = r[4] || "";
+      if (!cName || !repUrl) return;
+      if (!logsByClient[cName]) logsByClient[cName] = [];
+      logsByClient[cName].push({ month: mKey, reportUrl: repUrl, reportName: repName, createdAt });
+    });
+
+    // Match clients and construct payload
+    const clients = clientsArray.map(c => {
+      const name = c.clientName;
+      const conf = configMap[name] || {};
+      const folderUrl = conf.folderUrl || trackerFolders[name] || "";
+      const history = logsByClient[name] || [];
+      // Latest report for target report month or most recent fallback
+      const monthReport = history.find(h => h.month === targetReportMonth) || null;
+      const latestReport = monthReport || history[history.length - 1] || null;
+
+      return {
+        clientName: name,
+        clientSheetId: c.clientSheetId,
+        masterSheetId: c.masterSheetId,
+        masterSheetUrl: c.masterSheetId ? `https://docs.google.com/spreadsheets/d/${c.masterSheetId}/edit` : "",
+        clientSheetUrl: c.clientSheetId ? `https://docs.google.com/spreadsheets/d/${c.clientSheetId}/edit` : "",
+        folderUrl: folderUrl,
+        hasDeckConfigured: !!folderUrl,
+        emailTo: conf.emailTo || "",
+        emailSubj: conf.emailSubj || "End of month queries",
+        emailBody: conf.emailBody || "",
+        webAppUrl: conf.webAppUrl || systemWebAppUrl || c.webAppUrl || "",
+        latestReport: latestReport,
+        reportHistory: history
+      };
+    });
+
+    return res.status(200).json({
+      success: true,
+      clients,
+      systemWebAppUrl,
+      chartRefs: DEFAULT_CHART_REFS
+    });
+  } catch (err) {
+    console.error("❌ handleEomGetReportingData error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+/**
+ * Saves reporting email template, folder, or system web app URL
+ */
+export async function handleEomSaveReportingConfig(req, res, sheets) {
+  const sessionUser = getSessionUser(req);
+  if (!sessionUser?.isAdmin) {
+    return res.status(403).json({ success: false, error: "Admin access required." });
+  }
+
+  const { automationCommanderSheetId, clientName, emailTo, emailSubj, emailBody, folderUrl, webAppUrl } = req.body;
+  const acId = automationCommanderSheetId || process.env.AUTOMATION_COMMANDER_SHEET_ID || DEFAULT_AC_SHEET_ID;
+
+  if (!clientName) {
+    return res.status(400).json({ success: false, error: "Missing clientName" });
+  }
+
+  try {
+    await ensureEomReportingTabs_(sheets, acId);
+    const resp = await withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: acId,
+      range: "EomReportingConfig!A2:G500"
+    }));
+    const rows = resp.data.values || [];
+    const existingIdx = rows.findIndex(r => String(r[0] || "").trim() === clientName);
+    const now = new Date().toISOString();
+
+    const rowData = [
+      clientName,
+      emailTo !== undefined ? emailTo : (rows[existingIdx]?.[1] || ""),
+      emailSubj !== undefined ? emailSubj : (rows[existingIdx]?.[2] || ""),
+      emailBody !== undefined ? emailBody : (rows[existingIdx]?.[3] || ""),
+      folderUrl !== undefined ? folderUrl : (rows[existingIdx]?.[4] || ""),
+      webAppUrl !== undefined ? webAppUrl : (rows[existingIdx]?.[5] || ""),
+      now
+    ];
+
+    if (existingIdx === -1) {
+      await withRetry(() => sheets.spreadsheets.values.append({
+        spreadsheetId: acId,
+        range: "EomReportingConfig!A:G",
+        valueInputOption: "RAW",
+        requestBody: { values: [rowData] }
+      }));
+    } else {
+      const sheetRow = existingIdx + 2;
+      await withRetry(() => sheets.spreadsheets.values.update({
+        spreadsheetId: acId,
+        range: `EomReportingConfig!A${sheetRow}:G${sheetRow}`,
+        valueInputOption: "RAW",
+        requestBody: { values: [rowData] }
+      }));
+    }
+
+    return res.status(200).json({ success: true, clientName });
+  } catch (err) {
+    console.error("❌ handleEomSaveReportingConfig error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+/**
+ * Proxies a PING test to the GAS Reporting Web App from the backend to prevent browser CORS blocks
+ */
+export async function handleEomTestReportingWebApp(req, res) {
+  const sessionUser = getSessionUser(req);
+  if (!sessionUser?.isAdmin) {
+    return res.status(403).json({ success: false, error: "Admin access required." });
+  }
+
+  const { webAppUrl } = req.body || {};
+  const cleanUrl = String(webAppUrl || "").trim();
+  if (!cleanUrl) {
+    return res.status(400).json({ success: false, error: "Missing Web App URL to test." });
+  }
+
+  try {
+    const secret = process.env.REPORTING_WEBAPP_SECRET || "pulse_agent_trigger_secret_2026";
+    const gasResp = await fetch(cleanUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "PING", secret })
+    });
+
+    const gasText = await gasResp.text();
+    let gasData = null;
+    try { gasData = JSON.parse(gasText); } catch (e) {}
+
+    if (!gasData) {
+      return res.status(200).json({
+        success: false,
+        error: `Server returned HTTP ${gasResp.status} (${gasText.slice(0, 100).replace(/<[^>]*>/g, '').trim() || 'non-JSON response'}).`
+      });
+    }
+
+    if (!gasData.success) {
+      return res.status(200).json({
+        success: false,
+        error: gasData.error || "Web App returned failure."
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: gasData.message || "Connection successful!"
+    });
+  } catch (err) {
+    return res.status(200).json({
+      success: false,
+      error: `Connection error: ${err.message}`
+    });
+  }
+}
+
+/**
+ * Executes a reporting action (GENERATE, UPDATE, EMAIL) across target clients
+ */
+export async function handleEomRunReportingAction(req, res, sheets) {
+  const sessionUser = getSessionUser(req);
+  if (!sessionUser?.isAdmin) {
+    return res.status(403).json({ success: false, error: "Admin access required." });
+  }
+
+  const {
+    mode, // "GENERATE" | "UPDATE" | "EMAIL"
+    clients = [],
+    eomMonthKey,
+    reportMonthKey,
+    webAppUrlOverride,
+    automationCommanderSheetId
+  } = req.body;
+
+  const acId = automationCommanderSheetId || process.env.AUTOMATION_COMMANDER_SHEET_ID || DEFAULT_AC_SHEET_ID;
+
+  if (!mode || !["GENERATE", "UPDATE", "EMAIL"].includes(mode)) {
+    return res.status(400).json({ success: false, error: "Invalid action mode. Expected GENERATE, UPDATE, or EMAIL." });
+  }
+
+  if (!Array.isArray(clients) || clients.length === 0) {
+    return res.status(400).json({ success: false, error: "No clients selected to process." });
+  }
+
+  const effectiveReportMonth = reportMonthKey || eomMonthKey;
+  const effectiveWorkMonth = eomMonthKey || reportMonthKey;
+
+  try {
+    // 1. Resolve target date for reports (e.g. "2026-09" -> 2026-09-01)
+    let rawTargetDate = null;
+    if (effectiveReportMonth && /^\d{4}-\d{2}$/.test(effectiveReportMonth)) {
+      const [y, m] = effectiveReportMonth.split("-").map(Number);
+      rawTargetDate = new Date(Date.UTC(y, m - 1, 1));
+    } else {
+      const now = new Date();
+      rawTargetDate = new Date(Date.UTC(now.getFullYear(), now.getMonth(), 1));
+    }
+    const targetDateFormatted = rawTargetDate.toISOString().slice(0, 10);
+
+    // 2. Phase 1: Update Master Sheet MgmtRep!B1 date natively if GENERATE or UPDATE
+    if (mode === "GENERATE" || mode === "UPDATE") {
+      for (const c of clients) {
+        if (c.masterSheetId) {
+          try {
+            await withRetry(() => sheets.spreadsheets.values.update({
+              spreadsheetId: c.masterSheetId,
+              range: "MgmtRep!B1",
+              valueInputOption: "USER_ENTERED",
+              requestBody: { values: [[targetDateFormatted]] }
+            }));
+          } catch (mErr) {
+            console.warn(`Master MgmtRep date update note for ${c.clientName}:`, mErr.message);
+          }
+        }
+      }
+    }
+
+    // 3. Resolve Web App URL
+    const targetWebAppUrl = webAppUrlOverride || process.env.REPORTING_WEBAPP_URL || clients[0]?.webAppUrl || "";
+    if (!targetWebAppUrl) {
+      return res.status(400).json({
+        success: false,
+        error: "Reporting Web App URL is not configured. Please enter the deployed Google Apps Script Web App URL in settings."
+      });
+    }
+
+    const secret = process.env.REPORTING_WEBAPP_SECRET || "pulse_agent_trigger_secret_2026";
+
+    // 4. Dispatch to GAS Reporting Web App
+    const gasPayload = {
+      secret,
+      action: mode,
+      targetMonth: effectiveReportMonth,
+      clients: clients.map(c => ({
+        clientName: c.clientName,
+        masterSheetUrl: c.masterSheetUrl || (c.masterSheetId ? `https://docs.google.com/spreadsheets/d/${c.masterSheetId}/edit` : ""),
+        folderUrl: c.folderUrl || "",
+        emailTo: c.emailTo || "",
+        emailSubj: c.emailSubj || "End of month queries",
+        emailBody: c.emailBody || ""
+      }))
+    };
+
+    const gasResp = await fetch(targetWebAppUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(gasPayload)
+    });
+
+    const gasText = await gasResp.text();
+    let gasData = null;
+    try { gasData = JSON.parse(gasText); } catch (e) {}
+
+    if (!gasData) {
+      console.error(`❌ Reporting Web App returned HTTP ${gasResp.status}:`, gasText.slice(0, 300));
+      return res.status(502).json({
+        success: false,
+        error: `Reporting Web App returned HTTP ${gasResp.status} (${gasText.slice(0, 150).replace(/<[^>]*>/g, '').trim() || 'non-JSON'}). Please verify script deployment.`
+      });
+    }
+
+    if (!gasData.success) {
+      return res.status(200).json({ success: false, error: gasData.error || "Reporting action failed", results: gasData.results || [] });
+    }
+
+    // 5. Phase 3: Post-processing (ReportsLog & EoM task auto-completion)
+    const clientResults = gasData.results || [];
+    const logAppends = [];
+    const nowIso = new Date().toISOString();
+
+    for (const resItem of clientResults) {
+      const cName = resItem.clientName;
+      if (resItem.success) {
+        if ((mode === "GENERATE" || mode === "UPDATE") && resItem.reportUrl) {
+          logAppends.push([cName, effectiveReportMonth, resItem.reportUrl, resItem.reportName || "", nowIso]);
+
+          // Auto-complete task "Create and send monthly management report" in EoM
+          try {
+            await autoCompleteTaskByKeyword_(sheets, acId, cName, effectiveWorkMonth, "monthly management report");
+          } catch (tErr) {
+            console.warn(`Task auto-completion note for ${cName}:`, tErr.message);
+          }
+        } else if (mode === "EMAIL") {
+          // Auto-complete task "Send end of month data request email" in EoM
+          try {
+            await autoCompleteTaskByKeyword_(sheets, acId, cName, effectiveWorkMonth, "data request email");
+          } catch (tErr) {
+            console.warn(`Task auto-completion note for ${cName}:`, tErr.message);
+          }
+        }
+      }
+    }
+
+    if (logAppends.length > 0) {
+      try {
+        await withRetry(() => sheets.spreadsheets.values.append({
+          spreadsheetId: acId,
+          range: "ReportsLog!A:E",
+          valueInputOption: "RAW",
+          requestBody: { values: logAppends }
+        }));
+      } catch (logErr) {
+        console.warn("ReportsLog append error:", logErr.message);
+      }
+    }
+
+    // Log PMA Activity
+    logPmaActivity(sheets, {
+      automationCommanderSheetId: acId,
+      category: "REPORTING",
+      action: mode === "GENERATE" ? "Generated Management Reports" : (mode === "UPDATE" ? "Updated Management Decks" : "Drafted End of Month Emails"),
+      summary: `${mode === "GENERATE" ? "Generated reports" : (mode === "UPDATE" ? "Updated decks" : "Drafted emails")} for ${clients.map(c => c.clientName).join(", ")} (Report: ${effectiveReportMonth}, Cycle: ${effectiveWorkMonth})`,
+      details: { mode, reportMonthKey: effectiveReportMonth, eomMonthKey: effectiveWorkMonth, clients: clients.map(c => c.clientName), clientResults }
+    }).catch(e => console.error("PMA log failed:", e));
+
+    return res.status(200).json({
+      success: true,
+      message: mode === "GENERATE"
+        ? `Successfully generated ${clientResults.filter(r => r.success).length} report(s).`
+        : (mode === "UPDATE"
+          ? `Successfully updated ${clientResults.filter(r => r.success).length} deck(s).`
+          : `Successfully drafted ${clientResults.filter(r => r.success).length} email(s) in Gmail.`),
+      results: clientResults
+    });
+
+  } catch (err) {
+    console.error("❌ handleEomRunReportingAction error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+/**
+ * Auto-completes an EoM task matching a keyword in its task name
+ */
+export async function autoCompleteTaskByKeyword_(sheets, automationCommanderSheetId, clientName, workMonthKey, keyword) {
+  try {
+    if (!workMonthKey || !automationCommanderSheetId || !keyword) return false;
+    const clientTasksR = await withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: automationCommanderSheetId,
+      range: "EomClientTasks!A2:H5000"
+    }));
+    const clientTasks = clientTasksR.data.values || [];
+    const matchedTask = clientTasks.find(r =>
+      r[0] && r[1] === clientName && String(r[3] || "").toLowerCase().includes(keyword.toLowerCase()) && (r[5] !== "FALSE" && r[5] !== false)
+    );
+    if (!matchedTask) return false;
+
+    const taskId = matchedTask[0];
+    const statusResp = await withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: automationCommanderSheetId,
+      range: "EomMonthlyStatus!A2:E200000"
+    }));
+    const statusRows = statusResp.data.values || [];
+    const existingIdx = statusRows.findIndex(r => r[0] === clientName && r[1] === taskId && r[2] === workMonthKey);
+    const now = new Date().toISOString();
+
+    if (existingIdx === -1) {
+      await withRetry(() => sheets.spreadsheets.values.append({
+        spreadsheetId: automationCommanderSheetId,
+        range: "EomMonthlyStatus!A:E",
+        valueInputOption: "RAW",
+        requestBody: { values: [[clientName, taskId, workMonthKey, "done", now]] },
+      }));
+    } else {
+      await withRetry(() => sheets.spreadsheets.values.update({
+        spreadsheetId: automationCommanderSheetId,
+        range: `EomMonthlyStatus!D${existingIdx + 2}:E${existingIdx + 2}`,
+        valueInputOption: "RAW",
+        requestBody: { values: [["done", now]] },
+      }));
+    }
+    return true;
+  } catch (e) {
+    return false;
   }
 }

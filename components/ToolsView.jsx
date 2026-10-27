@@ -8,27 +8,32 @@ import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useTriage } from "../contexts/TriageContext";
 import PushOutgoingsTab from "./PushOutgoingsTab";
 import CashflowReconTab from "./CashflowReconTab";
+import ReportingTab from "./ReportingTab";
+import { useAuth } from "../hooks/useAuth";
 
 export default function ToolsView({
   allOutgoingsClients,
   allClientsLoaded,
   styles,
   managedClient,
-  onClearManagedClient
+  onClearManagedClient,
+  isAdmin: isAdminProp
 }) {
   const { automationCommanderSheetId } = useAppGlobals();
   const { sessionId, computeAlertCheckCount, isLoading, startTriage } = useTriage();
+  const auth = useAuth();
+  const isAdmin = isAdminProp !== undefined ? isAdminProp : (!auth?.user?.isReadOnly && !!(auth?.user?.isAdmin || auth?.user?.role === "Admin"));
 
   const [eomSubView, setEomSubView] = useState(() => {
     if (typeof window !== "undefined") {
       const p = new URLSearchParams(window.location.search);
       const sub = p.get("subview");
-      if (sub && ["overview", "payroll", "time", "cash", "cashflow_recon", "push_outgoings"].includes(sub)) {
+      if (sub && ["overview", "payroll", "time", "cash", "cashflow_recon", "push_outgoings", "reporting"].includes(sub)) {
         return sub;
       }
     }
     return "overview";
-  }); // "overview" | "payroll" | "time" | "cash" | "cashflow_recon" | "push_outgoings"
+  }); // "overview" | "payroll" | "time" | "cash" | "cashflow_recon" | "push_outgoings" | "reporting"
   const [eomPushOutgoingsClient, setEomPushOutgoingsClient] = useState(managedClient?.clientName || "");
   const [eomCashflowReconClient, setEomCashflowReconClient] = useState(managedClient?.clientName || "");
 
@@ -42,6 +47,12 @@ export default function ToolsView({
       setEomDetailClient(null);
     }
   }, [managedClient]);
+
+  useEffect(() => {
+    if (eomSubView === "reporting" && !isAdmin) {
+      setEomSubView("overview");
+    }
+  }, [eomSubView, isAdmin]);
 
   const {
     eomMonthKey, setEomMonthKey, eomAllTasks, setEomAllTasks, eomStatusOverrides, setEomStatusOverrides,
@@ -952,7 +963,15 @@ export default function ToolsView({
 
       {!managedClient && (
         <div className="eom-subview-tabs">
-          {[["overview", "Overview"], ["payroll", "Payroll import"], ["time", "Time import"], ["cash", "Cash balances"], ["cashflow_recon", "Cashflow recon"], ["push_outgoings", "Push outgoings"]].map(([key, label]) => {
+          {[
+            ["overview", "Overview"],
+            ["payroll", "Payroll import"],
+            ["time", "Time import"],
+            ["cash", "Cash balances"],
+            ["cashflow_recon", "Cashflow recon"],
+            ["push_outgoings", "Push outgoings"],
+            ...(isAdmin ? [["reporting", "Reporting"]] : [])
+          ].map(([key, label]) => {
             const clientQuery = managedClient?.clientName ? `&client=${encodeURIComponent(managedClient.clientName)}` : "";
             const href = key === "overview" ? `/pma?nav=tools${clientQuery}` : `/pma?nav=tools&subview=${key}${clientQuery}`;
             return (
@@ -2722,6 +2741,15 @@ export default function ToolsView({
           styles={styles}
           managedClient={managedClient}
           onClearManagedClient={onClearManagedClient}
+        />
+      )}
+
+      {eomSubView === "reporting" && isAdmin && (
+        <ReportingTab
+          automationCommanderSheetId={automationCommanderSheetId}
+          eomMonthKey={eomMonthKey}
+          isAdmin={isAdmin}
+          styles={styles}
         />
       )}
 

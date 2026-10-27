@@ -284,6 +284,7 @@ export default function AuthGateView({
           {/* Microsoft Sign-In Button */}
           <button
             type="button"
+            className="no-click-spinner"
             onClick={() => {
               setRedirectingProvider("Microsoft");
               window.location.href = "/api/auth/oauth/microsoft";
@@ -339,6 +340,7 @@ export default function AuthGateView({
           {/* Google Sign-In Button */}
           <button
             type="button"
+            className="no-click-spinner"
             onClick={() => {
               setRedirectingProvider("Google");
               window.location.href = "/api/auth/oauth/google";
@@ -552,7 +554,7 @@ export default function AuthGateView({
                   type="button"
                   onClick={() => handleSendCode()}
                   disabled={loading}
-                  className="login-button"
+                  className="login-button no-click-spinner"
                   style={{
                     width: "100%",
                     background: "#ffffff",
@@ -653,7 +655,7 @@ export default function AuthGateView({
               type="button"
               onClick={() => handleVerifyCode()}
               disabled={loading}
-              className="login-button"
+              className="login-button no-click-spinner"
               style={{
                 width: "100%",
                 background: "#ffffff",
@@ -687,6 +689,7 @@ export default function AuthGateView({
               type="button"
               onClick={handleResetToEmail}
               disabled={loading}
+              className="no-click-spinner"
               style={{
                 width: "100%",
                 background: "transparent",

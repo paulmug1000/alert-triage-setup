@@ -148,12 +148,12 @@ export async function runBackgroundTriageRefresh({
     await setTriageRefreshStatus({
       status: "running",
       step: "store",
-      progress: "Finalizing data...",
+      progress: "Finalising data...",
       startedAt: startTime,
       updatedAt: Date.now(),
     });
 
-    console.log(`  [Background Refresh] Finalizing precomputed data in Redis...`);
+    console.log(`  [Background Refresh] Finalising precomputed data in Redis...`);
     let existingNoActionAnalysis = {};
     try {
       if (!redisClient?.isOpen) await redisClient.connect();
@@ -6682,7 +6682,7 @@ export async function handleAcceptOption(req, res, sheets) {
       const mr = findMemoryRow(memRows, fp);
       const alertSummary = alert.summary?.summary || alert.summary || mr?.alertSummary || `${alert.type || alert.flagType || "Alert"} - ${alert.clientName || ""}`.trim();
       const ignoreReason = option.title || "Accepted IGNORE option";
-      
+
       let dataSnapshot = mr?.dataSnapshot || "";
       try {
         const existingSnap = JSON.parse(dataSnapshot || "{}");
@@ -6967,14 +6967,14 @@ export async function handleAcceptOption(req, res, sheets) {
       if (!targetMasterId && (alert.clientId || alert.clientName)) {
         try {
           const { clientsArray } = await getAllClients(sheets, { isAdmin: true }, false);
-          const found = clientsArray?.find(c => 
+          const found = clientsArray?.find(c =>
             (alert.clientId && (extractSheetIdFromUrl(c.clientSheetId) === alert.clientId || extractSheetIdFromUrl(c.masterSheetId) === alert.clientId)) ||
             (alert.clientName && c.clientName?.toLowerCase() === alert.clientName.toLowerCase())
           );
           if (found?.masterSheetId) {
             targetMasterId = extractSheetIdFromUrl(found.masterSheetId) || found.masterSheetId;
           }
-        } catch (e) {}
+        } catch (e) { }
       }
       try {
         const tols = await getToleranceValues(sheets, targetMasterId || alert.clientId);
@@ -6982,7 +6982,7 @@ export async function handleAcceptOption(req, res, sheets) {
         if (!isNaN(b52Val) && b52Val >= 0 && b52Val <= 365) {
           clientDefaultDays = b52Val;
         }
-      } catch (e) {}
+      } catch (e) { }
 
       if (option.newJobData && (!option.newJobData.inv1DaysToPay || option.newJobData.inv1DaysToPay === "30")) {
         option.newJobData.inv1DaysToPay = String(clientDefaultDays);
@@ -7008,7 +7008,7 @@ export async function handleAcceptOption(req, res, sheets) {
         const hasB = row[1] !== undefined && String(row[1]).trim() !== "";
         const hasRev = row[32] !== undefined && String(row[32]).trim() !== "";
         const hasDates = (row[37] !== undefined && String(row[37]).trim() !== "") || (row[38] !== undefined && String(row[38]).trim() !== "");
-        
+
         let hasSlotData = false;
         for (let c = 41; c <= 60; c++) {
           if (row[c] !== undefined && String(row[c]).trim() !== "") { hasSlotData = true; break; }

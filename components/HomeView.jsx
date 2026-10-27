@@ -2,6 +2,50 @@ import React, { useState, useEffect, useMemo } from "react";
 import Spinner from "./Spinner";
 import Skeleton, { PmaHomeSkeleton } from "./Skeleton";
 import { isUserAuthorizedForClient, ADMIN_ONLY_FLAG_KEYS, ADMIN_ONLY_PROACTIVE_TYPES, getFlagName } from "../utils/helpers";
+import { getCrmToolType } from "../utils/integrationsBadge";
+
+function resolveCrmStatus(crmTool, statusObj = {}) {
+  const crmToolKey = getCrmToolType(crmTool, statusObj.integrations);
+  const normCrm = String(crmTool || "").trim().toLowerCase();
+  const isGoogleSheet = normCrm.includes("sheet") || normCrm.includes("google") || crmToolKey === "googlesheet";
+  const isExcel = normCrm.includes("excel") || normCrm.includes("microsoft") || crmToolKey === "excel";
+
+  const toolKey = isGoogleSheet ? "googlesheet" : isExcel ? "excel" : (crmToolKey !== "none" ? crmToolKey : normCrm);
+  const specificStatus = statusObj.integrations?.[toolKey] || {};
+  const generalStatus = statusObj.crmStatus || {};
+
+  const isConnected = Boolean(specificStatus.connected || generalStatus.connected);
+  const isUnhealthy = Boolean(
+    specificStatus.reconnectRequired ||
+    generalStatus.reconnectRequired ||
+    specificStatus.isExpired ||
+    generalStatus.isExpired ||
+    specificStatus.status === "reconnect_required" ||
+    generalStatus.status === "reconnect_required" ||
+    specificStatus.status === "error" ||
+    generalStatus.status === "error"
+  );
+
+  const isHealthy = isConnected && !isUnhealthy;
+  const displayCrm = isGoogleSheet
+    ? "Google Sheet"
+    : isExcel
+      ? "Excel"
+      : crmTool && crmTool !== "None"
+        ? crmTool
+        : toolKey !== "none"
+          ? (toolKey.charAt(0).toUpperCase() + toolKey.slice(1))
+          : "None";
+
+  const hasCrm = displayCrm !== "None" && displayCrm !== "";
+
+  return {
+    hasCrm,
+    displayCrm,
+    isHealthy,
+    toolKey,
+  };
+}
 
 const ACTIONABLE_FLAG_KEYS = [
   "invoiceDashboardDiscr",
@@ -479,6 +523,14 @@ export default function HomeView({
               const accTool = statusObj.accountingTool || "None";
               const crmTool = statusObj.crmTool || "None";
               const isSetupMode = Boolean(statusObj.setupMode || statusObj.isSetupMode);
+              const crmInfo = resolveCrmStatus(crmTool, statusObj);
+              const accHealthy = Boolean(
+                statusObj.accountingStatus?.connected &&
+                !statusObj.accountingStatus?.reconnectRequired &&
+                !statusObj.accountingStatus?.isExpired &&
+                statusObj.accountingStatus?.status !== "reconnect_required" &&
+                statusObj.accountingStatus?.status !== "error"
+              );
 
               return (
                 <div
@@ -506,16 +558,12 @@ export default function HomeView({
                       )}
                     </div>
                     <div style={{ fontSize: "12px", color: "#92400E", lineHeight: "1.5" }}>
-                      <div>Accounting: {accTool} {statusObj.accountingStatus?.connected ? "● Connected" : accTool !== "None" ? "○ Needs Connection" : ""}</div>
+                      <div>Accounting: {accTool} {accHealthy ? "● Connected" : accTool !== "None" ? "○ Needs connection" : ""}</div>
                       <div>
-                        CRM: {String(crmTool || "").toLowerCase().includes("sheet") ? "Google Sheet" : String(crmTool || "").toLowerCase().includes("excel") ? "Excel" : crmTool}{" "}
-                        {statusObj.crmStatus?.connected
-                          ? "● Connected"
-                          : ["clickup", "close", "capsule", "hubspot", "monday", "pipedrive"].some((t) => String(crmTool || "").toLowerCase().includes(t))
-                            ? "○ Needs Connection"
-                            : crmTool !== "None"
-                              ? "(Spreadsheet source)"
-                              : ""}
+                        CRM: {crmInfo.displayCrm !== "None" ? crmInfo.displayCrm : "None"}{" "}
+                        {crmInfo.hasCrm
+                          ? (crmInfo.isHealthy ? "● Connected" : "○ Needs connection")
+                          : ""}
                       </div>
                     </div>
                   </div>
@@ -616,11 +664,14 @@ export default function HomeView({
                   const alertCount = clientAlertCounts[client.clientName] || 0;
                   const accTool = statusObj.accountingTool || "None";
                   const crmTool = statusObj.crmTool || "None";
-                  const accConnected = statusObj.accountingStatus?.connected;
-                  const crmConnected = statusObj.crmStatus?.connected;
-                  const normCrm = String(crmTool || "").trim().toLowerCase();
-                  const isThirdPartyCrm = ["clickup", "close", "capsule", "hubspot", "monday", "pipedrive"].some((t) => normCrm.includes(t));
-                  const displayCrm = normCrm.includes("sheet") ? "Google Sheet" : normCrm.includes("excel") ? "Excel" : crmTool;
+                  const accHealthy = Boolean(
+                    statusObj.accountingStatus?.connected &&
+                    !statusObj.accountingStatus?.reconnectRequired &&
+                    !statusObj.accountingStatus?.isExpired &&
+                    statusObj.accountingStatus?.status !== "reconnect_required" &&
+                    statusObj.accountingStatus?.status !== "error"
+                  );
+                  const crmInfo = resolveCrmStatus(crmTool, statusObj);
 
                   return (
                     <tr
@@ -716,13 +767,13 @@ export default function HomeView({
                                 borderRadius: "4px",
                                 fontSize: "11px",
                                 fontWeight: "600",
-                                background: accConnected ? "#ECFDF5" : "#FEF2F2",
-                                color: accConnected ? "#047857" : "#B91C1C",
-                                border: `1px solid ${accConnected ? "#A7F3D0" : "#FECACA"}`,
+                                background: accHealthy ? "#ECFDF5" : "#FEF2F2",
+                                color: accHealthy ? "#047857" : "#B91C1C",
+                                border: `1px solid ${accHealthy ? "#A7F3D0" : "#FECACA"}`,
                               }}
-                              title={`Accounting: ${accTool} (${accConnected ? "Connected" : "Disconnected"})`}
+                              title={`Accounting: ${accTool} (${accHealthy ? "Connected" : "Disconnected"})`}
                             >
-                              <span>{accConnected ? "●" : "○"}</span>
+                              <span>{accHealthy ? "●" : "○"}</span>
                               <span>{accTool}</span>
                             </span>
                           ) : (
@@ -730,45 +781,25 @@ export default function HomeView({
                           )}
 
                           {/* CRM badge */}
-                          {crmTool !== "None" ? (
-                            isThirdPartyCrm ? (
-                              <span
-                                style={{
-                                  display: "inline-flex",
-                                  alignItems: "center",
-                                  gap: "4px",
-                                  padding: "2px 7px",
-                                  borderRadius: "4px",
-                                  fontSize: "11px",
-                                  fontWeight: "600",
-                                  background: crmConnected ? "#ECFDF5" : "#FEF2F2",
-                                  color: crmConnected ? "#047857" : "#B91C1C",
-                                  border: `1px solid ${crmConnected ? "#A7F3D0" : "#FECACA"}`,
-                                }}
-                                title={`CRM: ${displayCrm} (${crmConnected ? "Connected" : "Disconnected"})`}
-                              >
-                                <span>{crmConnected ? "●" : "○"}</span>
-                                <span>{displayCrm}</span>
-                              </span>
-                            ) : (
-                              <span
-                                style={{
-                                  display: "inline-flex",
-                                  alignItems: "center",
-                                  gap: "4px",
-                                  padding: "2px 7px",
-                                  borderRadius: "4px",
-                                  fontSize: "11px",
-                                  fontWeight: "600",
-                                  background: "#F1F5F9",
-                                  color: "#475569",
-                                  border: "1px solid #CBD5E1",
-                                }}
-                                title={`CRM: ${displayCrm} (Spreadsheet source)`}
-                              >
-                                <span>{displayCrm}</span>
-                              </span>
-                            )
+                          {crmInfo.hasCrm ? (
+                            <span
+                              style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "4px",
+                                padding: "2px 7px",
+                                borderRadius: "4px",
+                                fontSize: "11px",
+                                fontWeight: "600",
+                                background: crmInfo.isHealthy ? "#ECFDF5" : "#FEF2F2",
+                                color: crmInfo.isHealthy ? "#047857" : "#B91C1C",
+                                border: `1px solid ${crmInfo.isHealthy ? "#A7F3D0" : "#FECACA"}`,
+                              }}
+                              title={`CRM: ${crmInfo.displayCrm} (${crmInfo.isHealthy ? "Connected" : "Disconnected"})`}
+                            >
+                              <span>{crmInfo.isHealthy ? "●" : "○"}</span>
+                              <span>{crmInfo.displayCrm}</span>
+                            </span>
                           ) : null}
                         </div>
                       </td>

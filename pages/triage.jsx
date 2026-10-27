@@ -101,6 +101,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
     if (initialNav) return initialNav;
     if (typeof window !== "undefined") {
       const p = new URLSearchParams(window.location.search);
+      if (p.get("integration")) return "integrations";
       const navParam = p.get("nav");
       if (navParam) return navParam;
       const path = window.location.pathname.toLowerCase();
@@ -142,6 +143,9 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
   useEffect(() => {
     if (!router?.isReady) return;
     const query = router.query;
+    if (query.integration && activeNav !== "integrations") {
+      setActiveNav("integrations");
+    }
     const navParam = query.nav;
     if (navParam && typeof navParam === "string" && navParam !== activeNav) {
       setActiveNav(navParam);
@@ -156,7 +160,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
     if (query.subsection && typeof query.subsection === "string") {
       setSettingsSubsection(query.subsection);
     }
-  }, [router?.isReady, router?.asPath, router?.query]);
+  }, [router?.isReady, router?.asPath, router?.query, activeNav]);
   const [invoicesInitialClient, setInvoicesInitialClient] = useState(null);
   const [outgoingsInitialClient, setOutgoingsInitialClient] = useState(null);
 

@@ -1291,6 +1291,7 @@ export default function IntegrationsView({
           masterSheetId={googleSheetModalClient.masterSheetId}
           clientSheetId={googleSheetModalClient.clientSheetId}
           currentConfig={googleSheetModalClient.integrations?.googlesheet}
+          redirectBack="/pma?nav=integrations"
           onSuccess={async () => {
             await fetchAllStatus(true, true);
             setFeedback({
@@ -1311,6 +1312,7 @@ export default function IntegrationsView({
           masterSheetId={excelModalClient.masterSheetId}
           clientSheetId={excelModalClient.clientSheetId}
           currentConfig={excelModalClient.integrations?.excel}
+          redirectBack="/pma?nav=integrations"
           onSuccess={async () => {
             await fetchAllStatus(true, true);
             setFeedback({

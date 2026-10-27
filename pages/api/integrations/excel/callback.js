@@ -112,13 +112,21 @@ export default async function handler(req, res) {
       masterSheetId
     }).catch(err => console.error("Notification email error:", err.message));
 
-    const returnUrl = sanitizeRedirectUrl(statePayload?.redirectBack, "/pma");
+    let returnUrl = sanitizeRedirectUrl(statePayload?.redirectBack, "/pma?nav=integrations");
+    if (!returnUrl.includes("nav=")) {
+      const sep = returnUrl.includes("?") ? "&" : "?";
+      returnUrl = `${returnUrl}${sep}nav=integrations`;
+    }
     const separator = returnUrl.includes("?") ? "&" : "?";
     return res.redirect(`${returnUrl}${separator}integration=excel&status=success&modal=picker&account=${encodeURIComponent(accountLabel)}&client=${encodeURIComponent(clientName)}`);
 
   } catch (err) {
     console.error("Excel OAuth callback error:", err);
-    const returnUrl = sanitizeRedirectUrl(statePayload?.redirectBack, "/pma");
+    let returnUrl = sanitizeRedirectUrl(statePayload?.redirectBack, "/pma?nav=integrations");
+    if (!returnUrl.includes("nav=")) {
+      const sep = returnUrl.includes("?") ? "&" : "?";
+      returnUrl = `${returnUrl}${sep}nav=integrations`;
+    }
     const separator = returnUrl.includes("?") ? "&" : "?";
     const clientName = statePayload?.clientName || statePayload?.clientKey || "";
     return res.redirect(`${returnUrl}${separator}integration=excel&status=error&message=${encodeURIComponent(err.message)}&client=${encodeURIComponent(clientName)}`);

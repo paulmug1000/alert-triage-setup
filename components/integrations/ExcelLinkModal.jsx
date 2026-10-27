@@ -9,7 +9,7 @@ export default function ExcelLinkModal({
   clientSheetId,
   currentConfig,
   onSuccess,
-  redirectBack = "/pma"
+  redirectBack = "/pma?nav=integrations"
 }) {
   const resolvedClientName = client?.clientName || clientName || "";
   const resolvedMasterSheetId = client?.masterSheetId || masterSheetId || "";

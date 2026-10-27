@@ -207,7 +207,7 @@ export default function ExcelLinkModal({
           driveId: inspectData.driveId || driveId.trim(),
           fileId: inspectData.fileId || fileId.trim(),
           sheetName: defaultSheet,
-          rangeAddress: inspectData.rangeAddress || "usedRange",
+          rangeAddress: inspectData.rangeAddress || "",
           headerRowNum: String(candidateRow),
           keyHeaders
         })

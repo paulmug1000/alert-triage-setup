@@ -11,14 +11,12 @@
 import { getSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, extractSheetIdFromUrl, withRetry } from "../../../services/sheetsClient.js";
 import { getIntegrationTokens } from "../../../services/vaultService.js";
+import { verifyUserAuthorizedForSheet } from "../../../services/userPermissions.js";
 
 export default async function handler(req, res) {
-  let sessionUser = await getSessionUser(req);
-  if (!sessionUser && process.env.NODE_ENV !== "production") {
-    sessionUser = { email: "dev@pulsedashboard.co.uk", isAdmin: true, role: "Admin" };
-  }
+  const sessionUser = getSessionUser(req);
   if (!sessionUser) {
-    return res.status(401).json({ success: false, error: "Unauthorized" });
+    return res.status(401).json({ success: false, error: "Active session required." });
   }
 
   const { clientKey, masterSheetId, tool = "", category = "crm" } = req.method === "POST" ? req.body : req.query;
@@ -27,8 +25,20 @@ export default async function handler(req, res) {
     return res.status(400).json({ success: false, error: "Missing masterSheetId parameter" });
   }
 
-  const toolClean = String(tool || "").trim().toLowerCase();
   const sheets = await getSheetsClient();
+
+  if (!sessionUser.isAdmin) {
+    try {
+      const auth = await verifyUserAuthorizedForSheet(sessionUser, masterSheetId, clientKey, sheets);
+      if (!auth.authorized) {
+        return res.status(auth.status || 403).json({ success: false, error: auth.error });
+      }
+    } catch (authErr) {
+      return res.status(403).json({ success: false, error: "Access denied to this sheet." });
+    }
+  }
+
+  const toolClean = String(tool || "").trim().toLowerCase();
 
   try {
     if (toolClean.includes("sheet")) {

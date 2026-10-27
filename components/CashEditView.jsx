@@ -123,7 +123,7 @@ export default function CashEditView({
 
   // Currency
   const currencySymbol = "£";
-  const formatMoney = (val) => universalFormatMoney(val, 0, currencySymbol, ",");
+  const formatMoney = useCallback((val) => universalFormatMoney(val, 0, currencySymbol, ","), [currencySymbol]);
 
   // Horizontal Scroll Reference for Timeline
   const scrollContainerRef = useRef(null);

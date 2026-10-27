@@ -2384,6 +2384,11 @@ export async function handleEomSaveReportingConfig(req, res, sheets) {
   }
 }
 
+export function isValidGoogleScriptUrl(url) {
+  if (!url || typeof url !== "string") return false;
+  return /^https:\/\/script\.google\.com\/macros\/s\/[a-zA-Z0-9_-]+\/exec$/.test(url.trim());
+}
+
 /**
  * Proxies a PING test to the GAS Reporting Web App from the backend to prevent browser CORS blocks
  */
@@ -2399,8 +2404,21 @@ export async function handleEomTestReportingWebApp(req, res) {
     return res.status(400).json({ success: false, error: "Missing Web App URL to test." });
   }
 
+  if (!isValidGoogleScriptUrl(cleanUrl)) {
+    return res.status(400).json({
+      success: false,
+      error: "Invalid Web App URL: Target URL must strictly be a Google Apps Script Web App ending with /exec."
+    });
+  }
+
   try {
-    const secret = process.env.REPORTING_WEBAPP_SECRET || "pulse_agent_trigger_secret_2026";
+    const secret = (process.env.REPORTING_WEBAPP_SECRET || process.env.AGENT_TRIGGER_SECRET || "").trim();
+    if (!secret) {
+      return res.status(500).json({
+        success: false,
+        error: "Reporting Web App secret is not configured on the server."
+      });
+    }
     const gasResp = await fetch(cleanUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -2499,7 +2517,7 @@ export async function handleEomRunReportingAction(req, res, sheets) {
     }
 
     // 3. Resolve Web App URL
-    const targetWebAppUrl = webAppUrlOverride || process.env.REPORTING_WEBAPP_URL || clients[0]?.webAppUrl || "";
+    const targetWebAppUrl = String(webAppUrlOverride || process.env.REPORTING_WEBAPP_URL || clients[0]?.webAppUrl || "").trim();
     if (!targetWebAppUrl) {
       return res.status(400).json({
         success: false,
@@ -2507,7 +2525,20 @@ export async function handleEomRunReportingAction(req, res, sheets) {
       });
     }
 
-    const secret = process.env.REPORTING_WEBAPP_SECRET || "pulse_agent_trigger_secret_2026";
+    if (!isValidGoogleScriptUrl(targetWebAppUrl)) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid Web App URL: Target URL must strictly be a Google Apps Script Web App ending with /exec."
+      });
+    }
+
+    const secret = (process.env.REPORTING_WEBAPP_SECRET || process.env.AGENT_TRIGGER_SECRET || "").trim();
+    if (!secret) {
+      return res.status(500).json({
+        success: false,
+        error: "Reporting Web App secret is not configured on the server."
+      });
+    }
 
     // 4. Dispatch to GAS Reporting Web App
     const gasPayload = {

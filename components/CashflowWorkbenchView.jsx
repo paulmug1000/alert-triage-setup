@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
-import * as XLSX from "xlsx";
 import Spinner from "./Spinner";
 
 export const VALID_RECON_CATEGORIES = [
@@ -1645,6 +1644,7 @@ export default function CashflowWorkbenchView({
     setPasteParsing(true);
     try {
       const data = await file.arrayBuffer();
+      const XLSX = await import("xlsx");
       const workbook = XLSX.read(data, { type: "array" });
       const firstSheetName = workbook.SheetNames[0];
       const worksheet = workbook.Sheets[firstSheetName];

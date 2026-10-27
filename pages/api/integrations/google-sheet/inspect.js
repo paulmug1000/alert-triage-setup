@@ -8,6 +8,7 @@
  */
 
 import { getSessionUser } from "../../../../services/authService.js";
+import { isUserAuthorizedForClient } from "../../../../services/userPermissions.js";
 import { inspectGoogleSpreadsheet } from "../../../../services/googleSheetService.js";
 import { getIntegrationTokens } from "../../../../services/vaultService.js";
 
@@ -18,6 +19,10 @@ export default async function handler(req, res) {
   }
 
   const { url, sheetId, clientKey, tabName, headerRowNum } = req.method === "POST" ? req.body : req.query;
+
+  if (!sessionUser.isAdmin && clientKey && !isUserAuthorizedForClient(sessionUser, clientKey)) {
+    return res.status(403).json({ success: false, error: "Access denied to this client." });
+  }
 
   if (!url && !sheetId) {
     return res.status(400).json({ success: false, error: "Missing url or sheetId parameter" });

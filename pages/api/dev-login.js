@@ -7,8 +7,12 @@ import { sanitizeRedirectUrl } from "../../utils/helpers";
  * Restricted strictly to non-production environments.
  */
 export default async function handler(req, res) {
-  if (process.env.NODE_ENV === "production" || process.env.VERCEL_ENV === "production") {
-    return res.status(403).json({ error: "Dev login only allowed in local development" });
+  if (
+    process.env.NODE_ENV === "production" ||
+    process.env.VERCEL_ENV === "production" ||
+    process.env.ENABLE_DEV_LOGIN !== "true"
+  ) {
+    return res.status(403).json({ error: "Dev login is disabled" });
   }
 
   const role = String(req.query.role || "Admin");
@@ -29,7 +33,8 @@ export default async function handler(req, res) {
   const secret = getJwtSecret();
   const token = jwt.sign(payload, secret, { expiresIn: "7d" });
 
-  res.setHeader("Set-Cookie", `pma_session=${token}; Path=/; HttpOnly; SameSite=Lax`);
+  const isSecure = process.env.NODE_ENV === "production" || req.headers["x-forwarded-proto"] === "https";
+  res.setHeader("Set-Cookie", `pma_session=${token}; Path=/; HttpOnly; SameSite=Lax${isSecure ? "; Secure" : ""}`);
   const redirectTarget = sanitizeRedirectUrl(req.query.redirect, "/pulse");
   return res.redirect(redirectTarget);
 }

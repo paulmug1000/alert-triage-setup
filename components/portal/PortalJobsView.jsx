@@ -1367,7 +1367,7 @@ export default function PortalJobsView({
             >
               <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
                 <h3 style={{ margin: 0, fontSize: "1.25rem", fontWeight: 700, color: "#0047AB" }}>
-                  {isReadOnly ? "View Job" : (editingJob.rowNumber ? "Edit job" : "Add New Job")}
+                  {isReadOnly ? "View job" : (editingJob.rowNumber ? "Edit job" : "Add new job")}
                 </h3>
                 {isReadOnly && (
                   <span

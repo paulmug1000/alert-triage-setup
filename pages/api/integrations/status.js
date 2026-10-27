@@ -12,7 +12,7 @@
 
 import { getIntegrationStatus, getSharedXeroGrant, INTEGRATIONS_STATUS_CACHE_KEY } from "../../../services/vaultService.js";
 import { getSheetsClient, extractSheetIdFromUrl } from "../../../services/sheetsClient.js";
-import { DEFAULT_AC_SHEET_ID, matchesClientName, isUserAuthorizedForClient } from "../../../services/userPermissions.js";
+import { DEFAULT_AC_SHEET_ID, matchesClientName, isUserAuthorizedForClient, resolveClientNameBySheetId } from "../../../services/userPermissions.js";
 import { getClientSetupConfig, revalidateClientsSetupInBackground } from "../../../services/setupService.js";
 import { getSessionUser } from "../../../services/authService.js";
 import { redisClient } from "../../../services/redisClient.js";
@@ -310,9 +310,18 @@ function evaluateAutomationHealth({ frequency, isRunning, lastCommandTime, signa
     return res.status(400).json({ error: "Missing clientKey, clientName, or masterSheetId parameter." });
   }
 
-  const targetClient = clientName || clientKey;
-  if (!sessionUser.isAdmin && targetClient && !isUserAuthorizedForClient(sessionUser, targetClient)) {
-    return res.status(403).json({ error: "Access denied to this client." });
+  let targetClient = clientName || clientKey;
+  if (!targetClient && masterSheetId) {
+    try {
+      const sheets = await getSheetsClient();
+      targetClient = await resolveClientNameBySheetId(sheets, masterSheetId);
+    } catch (_) {}
+  }
+
+  if (!sessionUser.isAdmin) {
+    if (!targetClient || !isUserAuthorizedForClient(sessionUser, targetClient)) {
+      return res.status(403).json({ error: "Access denied to this client." });
+    }
   }
 
   try {

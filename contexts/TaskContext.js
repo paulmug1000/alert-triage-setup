@@ -53,10 +53,17 @@ export function TaskProvider({ children, automationCommanderSheetId, managedClie
     }
   }, [automationCommanderSheetId, managedClient?.clientName]);
 
+  const {
+    tasksFilter,
+    setTasks,
+    setTasksLoading,
+    setTaskActionError
+  } = taskState;
+
   const loadTasks = useCallback(async (filter = "active", bypassCache = false) => {
     try {
-      taskState.setTasksLoading(true);
-      taskState.setTaskActionError("");
+      setTasksLoading(true);
+      setTaskActionError("");
       const res = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -70,7 +77,7 @@ export function TaskProvider({ children, automationCommanderSheetId, managedClie
       });
       const data = await res.json();
       if (data.success) {
-        taskState.setTasks(data.tasks || []);
+        setTasks(data.tasks || []);
         if (data.counts) {
           setNavTaskCount(data.counts.active || 0);
           setSnoozedTaskCount(data.counts.snoozed || 0);
@@ -79,24 +86,24 @@ export function TaskProvider({ children, automationCommanderSheetId, managedClie
           setResolvedTaskCount(data.counts.resolved || 0);
         }
       } else {
-        taskState.setTaskActionError(data.error || "Failed to load tasks");
+        setTaskActionError(data.error || "Failed to load tasks");
       }
       
       // Always update timestamp to prevent infinite retry loops on API failure
       setTasksLoadedAt(Date.now());
     } catch (e) {
-      taskState.setTaskActionError(e.message);
+      setTaskActionError(e.message);
     } finally {
-      taskState.setTasksLoading(false);
+      setTasksLoading(false);
     }
-  }, [automationCommanderSheetId, managedClient?.clientName, taskState.setTasks, taskState.setTasksLoading, taskState.setTaskActionError]);
+  }, [automationCommanderSheetId, managedClient?.clientName, setTasks, setTasksLoading, setTaskActionError]);
 
   useEffect(() => {
     if (automationCommanderSheetId) {
       refreshTaskCount(false);
-      loadTasks(taskState.tasksFilter || "active", false);
+      loadTasks(tasksFilter || "active", false);
     }
-  }, [automationCommanderSheetId, managedClient?.clientName]);
+  }, [automationCommanderSheetId, managedClient?.clientName, refreshTaskCount, loadTasks, tasksFilter]);
 
   useEffect(() => {
     const interval = setInterval(() => {

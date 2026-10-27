@@ -449,7 +449,7 @@ export default function JobsNewJobModal({
                 +
               </span>
               <h2 style={{ margin: 0, fontSize: "17px", fontWeight: "700", color: "#0f172a" }}>
-                Add New Job
+                Add new job
               </h2>
             </div>
             <div style={{ fontSize: "12px", color: "#64748b", marginTop: "3px" }}>

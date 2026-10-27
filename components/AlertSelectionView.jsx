@@ -2315,7 +2315,7 @@ export default function AlertSelectionView({
                                       <div style={{ marginTop: "4px", color: "#0369a1", fontStyle: "italic" }}>Expected fix: set Pipeline likelihood to 0% or mark &quot;Copied to confirmed?&quot; as Yes.</div>
                                       {md.pipelineRow && (
                                         <div style={{ marginTop: "8px", paddingTop: "8px", borderTop: "1px solid #e2e8f0" }}>
-                                          <button className="triage-btn" onClick={() => markPipelineCopied(alert)} style={{ padding: "6px 14px", background: "#16a34a", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>✓ Mark &quot;Copied to confirmed?&quot; = Yes</button>
+                                          <button className="triage-btn" onClick={() => markPipelineCopied(alert)} style={{ padding: "6px 14px", background: "#16a34a", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>Mark &quot;Copied to confirmed?&quot; = Yes</button>
                                         </div>
                                       )}
                                     </div>
@@ -2599,13 +2599,13 @@ export default function AlertSelectionView({
                                             <button className="triage-btn" onClick={() => {
                                               if (clientInfo.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.clientSheetId}/edit`, "_blank");
                                               if (clientInfo.masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.masterSheetId}/edit`, "_blank");
-                                            }} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#1d4ed8", borderColor: "#93c5fd", whiteSpace: "nowrap" }}>📊 Open sheets</button>
+                                            }} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#1d4ed8", borderColor: "#93c5fd", whiteSpace: "nowrap" }}>Open sheets</button>
                                           )}
                                           {alert.alertType === "expenseDashboardDiscr" && clientInfo && (
-                                            <button className="triage-btn" onClick={() => onNavOutgoings ? onNavOutgoings(selectedClient || clientInfo) : setActiveNav("outgoings")} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#059669", borderColor: "#6ee7b7", whiteSpace: "nowrap" }}>📤 Assign expense</button>
+                                            <button className="triage-btn" onClick={() => onNavOutgoings ? onNavOutgoings(selectedClient || clientInfo) : setActiveNav("outgoings")} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#059669", borderColor: "#6ee7b7", whiteSpace: "nowrap" }}>Assign expense</button>
                                           )}
                                           {alert.alertType === "invoiceDashboardDiscr" && clientInfo && (
-                                            <button className="triage-btn" onClick={() => onNavInvoices ? onNavInvoices(selectedClient || clientInfo) : setActiveNav("invoices")} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#ea580c", borderColor: "#fdba74", whiteSpace: "nowrap" }}>📥 Assign invoices</button>
+                                            <button className="triage-btn" onClick={() => onNavInvoices ? onNavInvoices(selectedClient || clientInfo) : setActiveNav("invoices")} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#ea580c", borderColor: "#fdba74", whiteSpace: "nowrap" }}>Assign invoices</button>
                                           )}
                                         </>
                                       );

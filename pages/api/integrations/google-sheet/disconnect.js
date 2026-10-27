@@ -5,6 +5,7 @@
  */
 
 import { getSessionUser } from "../../../../services/authService.js";
+import { isUserAuthorizedForClient } from "../../../../services/userPermissions.js";
 import { getSheetsClient, withRetry } from "../../../../services/sheetsClient.js";
 import { deleteIntegrationTokens } from "../../../../services/vaultService.js";
 import { updateClientChecklistTask } from "../../../../services/setupService.js";
@@ -23,6 +24,10 @@ export default async function handler(req, res) {
   const { clientKey, masterSheetId } = req.body;
   if (!clientKey) {
     return res.status(400).json({ success: false, error: "Missing clientKey parameter" });
+  }
+
+  if (!sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, clientKey)) {
+    return res.status(403).json({ success: false, error: "Access denied to this client." });
   }
 
   try {

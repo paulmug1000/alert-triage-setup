@@ -5,30 +5,36 @@ import Spinner from "../components/Spinner";
 import { PmaAlertsSkeleton } from "../components/Skeleton";
 import TruncatedCode from "../components/TruncatedCode";
 import NavShell from "../components/NavShell";
-import AppLogView from "../components/AppLogView";
-import ActivityView from "../components/ActivityView";
-import IgnoredAlertsView from "../components/IgnoredAlertsView";
-import TasksView from "../components/TasksView";
-import CreateTaskModal from "../components/CreateTaskModal";
-import InvoicesView from "../components/InvoicesView";
-import JobsView from "../components/JobsView";
-import OutgoingsView from "../components/OutgoingsView";
-import RetainersView from "../components/RetainersView";
-import SalariesView from "../components/SalariesView";
-import ExpensesView from "../components/ExpensesView";
-import NBToFindView from "../components/NBToFindView";
-import BudgetView from "../components/BudgetView";
-import CashEditView from "../components/CashEditView";
-import ToolsView from "../components/ToolsView";
-import SettingsView from "../components/SettingsView";
-import IntegrationsView, { calculateIntegrationsAttentionCount } from "../components/IntegrationsView";
-import SetupView from "../components/SetupView";
+import dynamic from "next/dynamic";
+import { calculateIntegrationsAttentionCount } from "../utils/integrationsBadge";
+
+// Core initial views loaded statically for instant render
 import ClientSelectionView from "../components/ClientSelectionView";
 import AlertSelectionView from "../components/AlertSelectionView";
 import TriageAnalysisView from "../components/TriageAnalysisView";
-import ViewsScreen from "../components/ViewsScreen";
 import HomeView from "../components/HomeView";
 import AuthGateView from "../components/AuthGateView";
+
+// Secondary views code-split via next/dynamic to reduce PMA bundle size
+const AppLogView = dynamic(() => import("../components/AppLogView"), { loading: () => <Spinner /> });
+const ActivityView = dynamic(() => import("../components/ActivityView"), { loading: () => <Spinner /> });
+const IgnoredAlertsView = dynamic(() => import("../components/IgnoredAlertsView"), { loading: () => <Spinner /> });
+const TasksView = dynamic(() => import("../components/TasksView"), { loading: () => <Spinner /> });
+const CreateTaskModal = dynamic(() => import("../components/CreateTaskModal"));
+const InvoicesView = dynamic(() => import("../components/InvoicesView"), { loading: () => <Spinner /> });
+const JobsView = dynamic(() => import("../components/JobsView"), { loading: () => <Spinner /> });
+const OutgoingsView = dynamic(() => import("../components/OutgoingsView"), { loading: () => <Spinner /> });
+const RetainersView = dynamic(() => import("../components/RetainersView"), { loading: () => <Spinner /> });
+const SalariesView = dynamic(() => import("../components/SalariesView"), { loading: () => <Spinner /> });
+const ExpensesView = dynamic(() => import("../components/ExpensesView"), { loading: () => <Spinner /> });
+const NBToFindView = dynamic(() => import("../components/NBToFindView"), { loading: () => <Spinner /> });
+const BudgetView = dynamic(() => import("../components/BudgetView"), { loading: () => <Spinner /> });
+const CashEditView = dynamic(() => import("../components/CashEditView"), { loading: () => <Spinner /> });
+const ToolsView = dynamic(() => import("../components/ToolsView"), { loading: () => <Spinner /> });
+const SettingsView = dynamic(() => import("../components/SettingsView"), { loading: () => <Spinner /> });
+const IntegrationsView = dynamic(() => import("../components/IntegrationsView"), { loading: () => <Spinner /> });
+const SetupView = dynamic(() => import("../components/SetupView"), { loading: () => <Spinner /> });
+const ViewsScreen = dynamic(() => import("../components/ViewsScreen"), { loading: () => <Spinner /> });
 import { useAuth } from "../hooks/useAuth";
 import { useOverview } from "../hooks/useOverview";
 import { TaskProvider, useTasks } from "../contexts/TaskContext";
@@ -1205,4 +1211,13 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
       </NavShell>
     </TriageProvider>
   );
+}
+
+export async function getServerSideProps() {
+  return {
+    redirect: {
+      destination: "/pma",
+      permanent: false,
+    },
+  };
 }

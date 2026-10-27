@@ -53,6 +53,11 @@ const nextConfig = {
         destination: "/pma/alerts",
         permanent: false,
       },
+      {
+        source: "/triage",
+        destination: "/pma",
+        permanent: false,
+      },
     ];
   },
   async rewrites() {

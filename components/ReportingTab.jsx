@@ -293,11 +293,20 @@ export default function ReportingTab({
           webAppUrl: cleanUrl
         })
       });
-      const data = await resp.json();
-      if (data.success) {
+      let data = null;
+      try {
+        data = await resp.json();
+      } catch (parseErr) {
+        setSettingsTestResult({
+          success: false,
+          message: `Server returned HTTP ${resp.status}. Please verify the Next.js server is running.`
+        });
+        return;
+      }
+      if (data && data.success) {
         setSettingsTestResult({ success: true, message: data.message || "Connection successful!" });
       } else {
-        setSettingsTestResult({ success: false, message: data.error || "Server returned error." });
+        setSettingsTestResult({ success: false, message: data?.error || "Server returned error." });
       }
     } catch (err) {
       setSettingsTestResult({ success: false, message: `Connection failed: ${err.message}` });

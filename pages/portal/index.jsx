@@ -4,19 +4,21 @@ import { useRouter } from "next/router";
 import { useAuth } from "../../hooks/useAuth";
 import AuthGateView from "../../components/AuthGateView";
 import PortalShell from "../../components/portal/PortalShell";
+import dynamic from "next/dynamic";
 import MonthView from "../../components/portal/MonthView";
-import PerformanceFYView from "../../components/portal/PerformanceFYView";
-import PerformanceYTDView from "../../components/portal/PerformanceYTDView";
-import PerformanceBreakdownView from "../../components/portal/PerformanceBreakdownView";
-import CashflowView from "../../components/portal/CashflowView";
-import CashflowBreakdownView from "../../components/portal/CashflowBreakdownView";
-import PortalJobsView from "../../components/portal/PortalJobsView";
-import PortalOutgoingsView from "../../components/portal/PortalOutgoingsView";
-import PortalSalariesView from "../../components/portal/PortalSalariesView";
-import PortalNBToFindView from "../../components/portal/PortalNBToFindView";
-import BudgetView from "../../components/portal/BudgetView";
-import BudgetVarianceView from "../../components/portal/BudgetVarianceView";
-import ScenariosView from "../../components/portal/ScenariosView";
+
+const PerformanceFYView = dynamic(() => import("../../components/portal/PerformanceFYView"), { loading: () => <Spinner /> });
+const PerformanceYTDView = dynamic(() => import("../../components/portal/PerformanceYTDView"), { loading: () => <Spinner /> });
+const PerformanceBreakdownView = dynamic(() => import("../../components/portal/PerformanceBreakdownView"), { loading: () => <Spinner /> });
+const CashflowView = dynamic(() => import("../../components/portal/CashflowView"), { loading: () => <Spinner /> });
+const CashflowBreakdownView = dynamic(() => import("../../components/portal/CashflowBreakdownView"), { loading: () => <Spinner /> });
+const PortalJobsView = dynamic(() => import("../../components/portal/PortalJobsView"), { loading: () => <Spinner /> });
+const PortalOutgoingsView = dynamic(() => import("../../components/portal/PortalOutgoingsView"), { loading: () => <Spinner /> });
+const PortalSalariesView = dynamic(() => import("../../components/portal/PortalSalariesView"), { loading: () => <Spinner /> });
+const PortalNBToFindView = dynamic(() => import("../../components/portal/PortalNBToFindView"), { loading: () => <Spinner /> });
+const BudgetView = dynamic(() => import("../../components/portal/BudgetView"), { loading: () => <Spinner /> });
+const BudgetVarianceView = dynamic(() => import("../../components/portal/BudgetVarianceView"), { loading: () => <Spinner /> });
+const ScenariosView = dynamic(() => import("../../components/portal/ScenariosView"), { loading: () => <Spinner /> });
 import CompanyChooser from "../../components/portal/CompanyChooser";
 import SetupHoldingGate from "../../components/portal/SetupHoldingGate";
 import Spinner from "../../components/Spinner";
@@ -1205,7 +1207,7 @@ export default function PortalPage() {
 
 function getViewTitle(key) {
   const titles = {
-    month: "Current Month",
+    month: "Current month",
     dashboard: "Financial year performance",
     ytd: "YTD performance",
     perfBreakdown: "Performance breakdowns",
@@ -1221,5 +1223,5 @@ function getViewTitle(key) {
     viewBudget: "Budget overview",
     budgetVariance: "Budget variance analysis"
   };
-  return titles[key] || "Client Portal View";
+  return titles[key] || "Client portal view";
 }

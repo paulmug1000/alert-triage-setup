@@ -1177,7 +1177,7 @@ export async function refreshChartOfAccountsService({ clientName, masterSheetId 
     const webAppUrl = String(clientRow?.[13] || "").trim();
 
     if (webAppUrl) {
-      const secret = process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "triage-cron-2026-AY4K2LDMXBV8DS7";
+      const secret = (process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "").trim();
       const resp = await fetch(webAppUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1228,7 +1228,7 @@ export async function pullFreshPlCategoriesService({ clientName, masterSheetId }
     const webAppUrl = String(clientRow?.[13] || "").trim();
 
     if (webAppUrl) {
-      const secret = process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "triage-cron-2026-AY4K2LDMXBV8DS7";
+      const secret = (process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "").trim();
       const resp = await fetch(webAppUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

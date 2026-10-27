@@ -2406,22 +2406,24 @@ export async function handleClassifyPLCategory(sheets, {
   // (to execute syncExpenseTransactionBreakdownToClientSheet_ for row 300 / rows 304-305).
   const webAppUrl = await getClientWebAppUrl(sheets, clientName, automationCommanderSheetId);
   if (webAppUrl) {
-    const secret = process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "triage-cron-2026-AY4K2LDMXBV8DS7";
-    fetch(webAppUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ secret, action: "push_outgoings", clientName })
-    }).catch(err => {
-      console.warn("⚠️ Master WebApp push_outgoings error:", err.message);
-    });
+    const secret = (process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "").trim();
+    if (secret) {
+      fetch(webAppUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ secret, action: "push_outgoings", clientName })
+      }).catch(err => {
+        console.warn("⚠️ Master WebApp push_outgoings error:", err.message);
+      });
 
-    fetch(webAppUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ secret, action: "sync_expense_breakdown", clientName })
-    }).catch(syncErr => {
-      console.warn("⚠️ Master WebApp sync_expense_breakdown error:", syncErr.message);
-    });
+      fetch(webAppUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ secret, action: "sync_expense_breakdown", clientName })
+      }).catch(syncErr => {
+        console.warn("⚠️ Master WebApp sync_expense_breakdown error:", syncErr.message);
+      });
+    }
   }
 
   return {

@@ -8,6 +8,7 @@
  */
 
 import { getSessionUser } from "../../../../services/authService.js";
+import { isUserAuthorizedForClient } from "../../../../services/userPermissions.js";
 import { inspectExcelWorkbook } from "../../../../services/excelIntegrationService.js";
 import { getIntegrationTokens } from "../../../../services/vaultService.js";
 
@@ -28,6 +29,10 @@ export default async function handler(req, res) {
     clientSecret,
     headerRowNum
   } = req.method === "POST" ? req.body : req.query;
+
+  if (!sessionUser.isAdmin && clientKey && !isUserAuthorizedForClient(sessionUser, clientKey)) {
+    return res.status(403).json({ success: false, error: "Access denied to this client." });
+  }
 
   if (!driveId && !fileId && !url) {
     return res.status(400).json({ success: false, error: "Missing url, driveId, or fileId parameter" });

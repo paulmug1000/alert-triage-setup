@@ -156,8 +156,8 @@ export default async function handler(req, res) {
     const hasNBtoFind = existingSheetTitles.has("NBtoFind");
 
     const batchRanges = [];
-    if (hasConfirmed) batchRanges.push(`${confirmedTitle}!A1:JF`);
-    if (hasPipeline) batchRanges.push(`${pipelineTitle}!A1:JF`);
+    if (hasConfirmed) batchRanges.push(`${confirmedTitle}!A1:CR`);
+    if (hasPipeline) batchRanges.push(`${pipelineTitle}!A1:CR`);
     if (hasSalaries) {
       batchRanges.push("Salaries!A1:I100");
       batchRanges.push("Salaries!A1:JC1");

@@ -8,6 +8,7 @@
  */
 
 import { getSessionUser } from "../../../../services/authService.js";
+import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet } from "../../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../../services/sheetsClient.js";
 import { linkExcelToClient } from "../../../../services/excelIntegrationService.js";
 import { updateClientChecklistTask } from "../../../../services/setupService.js";
@@ -43,6 +44,22 @@ export default async function handler(req, res) {
       success: false,
       error: "Missing required parameters (clientKey, masterSheetId, sheetName, and either url or driveId/fileId)"
     });
+  }
+
+  if (!sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, clientKey)) {
+    return res.status(403).json({ success: false, error: "Access denied to this client." });
+  }
+
+  if (!sessionUser.isAdmin && masterSheetId) {
+    try {
+      const sheets = await getSheetsClient();
+      const auth = await verifyUserAuthorizedForSheet(sessionUser, masterSheetId, clientKey, sheets);
+      if (!auth.authorized) {
+        return res.status(auth.status || 403).json({ success: false, error: auth.error });
+      }
+    } catch (authErr) {
+      return res.status(403).json({ success: false, error: "Failed to verify sheet authorization." });
+    }
   }
 
   try {

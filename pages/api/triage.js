@@ -107,27 +107,28 @@ import {
   autoReconcileClientBankTransactions
 } from "../../services/bankTransactionsService";
 import { handleClassifyPLCategory, handleUpdatePartPaidDate } from "../../services/proactiveChecks";
-import { getSessionUser, sendOtp, verifyOtp, clearSessionCookie } from "../../services/authService";
-import { getAllUsers, isUserAuthorizedForClient, updateUserDailyAlertsEmail, getUserByEmail, resolveClientNameBySheetId } from "../../services/userPermissions";
+import { getSessionUser } from "../../services/authService";
+import { isUserAuthorizedForClient, updateUserDailyAlertsEmail, getUserByEmail, resolveClientNameBySheetId, verifyUserAuthorizedForSheet } from "../../services/userPermissions";
 import { matchesClientName } from "../../utils/helpers";
 
 async function checkTriageClientAuth(sheets, sessionUser, clientNameClaim, sheetIds = []) {
   if (sessionUser?.isAdmin) return true;
-  let client = clientNameClaim;
-  if (!client) {
-    for (const sid of sheetIds) {
-      if (sid) {
-        try {
-          const resolved = await resolveClientNameBySheetId(sheets, sid);
-          if (resolved) {
-            client = resolved;
-            break;
-          }
-        } catch (_) {}
+  if (!sessionUser) return false;
+
+  const validSheetIds = (Array.isArray(sheetIds) ? sheetIds : [sheetIds]).filter(Boolean);
+  if (validSheetIds.length > 0) {
+    for (const sid of validSheetIds) {
+      try {
+        const auth = await verifyUserAuthorizedForSheet(sessionUser, sid, clientNameClaim, sheets);
+        if (!auth.authorized) return false;
+      } catch (_) {
+        return false;
       }
     }
+    return true;
   }
-  return Boolean(client && isUserAuthorizedForClient(sessionUser, client));
+
+  return Boolean(clientNameClaim && isUserAuthorizedForClient(sessionUser, clientNameClaim));
 }
 
 // eomTabsVerified moved to eomTools.js
@@ -310,25 +311,28 @@ export default async function handler(req, res) {
     const validAgentSecrets = [
       process.env.AGENT_TRIGGER_SECRET,
       process.env.CRON_SECRET,
-      "triage-cron-2026-AY4K2LDMXBV8DS7",
-      "^V0#8pSKx)y9xq}|"
     ].filter(Boolean).map(s => String(s).replace(/^["']|["']$/g, '').trim());
     const incomingSecret = String(req.body?.secret || req.headers["x-cron-secret"] || "").replace(/^["']|["']$/g, '').trim();
-    const isAgentAuthorized = validAgentSecrets.some(s =>
-      incomingSecret === s ||
-      req.headers.authorization === `Bearer ${s}`
+    const isAgentAuthorized = Boolean(
+      validAgentSecrets.length > 0 &&
+      incomingSecret &&
+      validAgentSecrets.some(s =>
+        incomingSecret === s ||
+        req.headers.authorization === `Bearer ${s}`
+      )
     );
-    const internalSecret = process.env.PULSE_INTERNAL_SECRET || "pulse-sec-35588181c0c3ed96c191aae2caa23354d3e668173e5e558d";
-    const isInternalAuthorized = internalSecret && (
-      req.body?.secret === internalSecret ||
-      req.query?.secret === internalSecret ||
-      req.headers["x-internal-secret"] === internalSecret ||
-      req.headers.authorization === `Bearer ${internalSecret}`
+    const internalSecret = (process.env.PULSE_INTERNAL_SECRET || "").trim();
+    const isInternalAuthorized = Boolean(
+      internalSecret && (
+        req.body?.secret === internalSecret ||
+        req.query?.secret === internalSecret ||
+        req.headers["x-internal-secret"] === internalSecret ||
+        req.headers.authorization === `Bearer ${internalSecret}`
+      )
     );
 
     const isSystemAuthorized =
       (isCronAuthorized && (
-        action === "start_triage" ||
         action === "trigger_refresh" ||
         action === "get_refresh_status" ||
         action === "run_flag_sweep" ||
@@ -844,7 +848,10 @@ export default async function handler(req, res) {
         const webAppUrl = await getClientWebAppUrl(sheets, clientName, automationCommanderSheetId);
 
         if (webAppUrl) {
-          const secret = process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "triage-cron-2026-AY4K2LDMXBV8DS7";
+          const secret = (process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "").trim();
+          if (!secret) {
+            return res.status(500).json({ success: false, error: "AGENT_TRIGGER_SECRET is not configured on server" });
+          }
           const gasResp = await fetch(webAppUrl, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -929,173 +936,6 @@ export default async function handler(req, res) {
         return res.status(500).json({ success: false, error: err.message });
       }
 
-    } else if (action === "start_triage") {
-      // Proxy orchestrator for frontend chunking. Protects CRON_SECRET.
-      try {
-        const { step } = req.body || {};
-        const host = req.headers["x-forwarded-host"] || req.headers.host || `127.0.0.1:${process.env.PORT || 3000}`;
-        const protocol = req.headers["x-forwarded-proto"] || (host.includes("localhost") || host.includes("127.0.0.1") ? "http" : "https");
-        const prodUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL
-          ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
-          : (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null);
-        const baseUrl = prodUrl || `${protocol}://${host}`;
-        const cronSecret = process.env.CRON_SECRET;
-
-        // Step 1: Sweep
-        if (step === "sweep") {
-          console.log(`🔄 start_triage (sweep): running fresh detection pass from index ${req.body.startIdx || 0}...`);
-          const sweepResp = await fetch(`${baseUrl}/api/triage`, {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "run_flag_sweep", secret: cronSecret, automationCommanderSheetId, startIdx: req.body.startIdx || 0, forceProactive: req.body.forceProactive, forceAll: true }),
-          });
-          const sweepData = await sweepResp.json();
-          return res.status(200).json({ success: true, hasMore: sweepData.hasMore, nextIdx: sweepData.nextIdx });
-        }
-
-        // Step 2: Build Options (Can be looped by frontend)
-        if (step === "build") {
-          console.log(`🔄 start_triage (build): building options...`);
-          const buildResp = await fetch(`${baseUrl}/api/triage`, {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "build_cached_alert_options", baseUrl, secret: cronSecret, automationCommanderSheetId, isContinuation: req.body.isContinuation }),
-          });
-          const buildData = await buildResp.json();
-          return res.status(200).json({ success: true, hasMore: buildData.hasMore });
-        }
-
-        // Step 3: Store and Generate Session
-        if (step === "store") {
-          console.log(`🔄 start_triage (store): rebuilding precomputed cache...`);
-          let existingNoActionAnalysis = {};
-          try {
-            const existingRaw = await redisClient.get(PRECOMPUTED_KEY);
-            if (existingRaw) existingNoActionAnalysis = JSON.parse(existingRaw).noActionAnalysisResults || {};
-          } catch (e) { /* fine to proceed with {} */ }
-
-          const storeResp = await fetch(`${baseUrl}/api/triage`, {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              action: "store_precomputed", secret: cronSecret, automationCommanderSheetId,
-              noActionAnalysisResults: existingNoActionAnalysis,
-            }),
-          });
-          if (!storeResp.ok) throw new Error(`store_precomputed failed (${storeResp.status})`);
-
-          const freshRaw = await redisClient.get(PRECOMPUTED_KEY);
-          if (!freshRaw) return res.status(500).json({ success: false, error: "No precomputed data was found afterwards" });
-          const fresh = JSON.parse(freshRaw);
-
-          let scopedAlerts = fresh.alerts || [];
-          let scopedNoAction = fresh.noActionAlerts || [];
-          let scopedProactive = fresh.proactiveAlerts || [];
-          let clientsSource = fresh.clientsWithFlags || [];
-
-          if (sessionUser && !sessionUser.isAdmin && sessionUser.assignedClients !== "*") {
-            const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
-            scopedAlerts = scopedAlerts.filter(a =>
-              assignedList.some(assigned => matchesClientName(assigned, a.clientName))
-            );
-            scopedProactive = scopedProactive.filter(a =>
-              assignedList.some(assigned => matchesClientName(assigned, a.clientName))
-            );
-            scopedNoAction = scopedNoAction.filter(a =>
-              assignedList.some(assigned => matchesClientName(assigned, a.clientName))
-            );
-            clientsSource = clientsSource.filter(c =>
-              assignedList.some(assigned => matchesClientName(assigned, c.clientName))
-            );
-          }
-
-          const alertCountsByClientAndFlag = {};
-          const activeExpenseIdsByClient = {};
-          const activeInvoiceIdsByClient = {};
-          for (const alert of scopedAlerts) {
-            const key = alert.clientName;
-            let flagKey = alert.flagType || alert.alertType || alert.type;
-            
-            // Upgrade legacy database labels
-            if (flagKey === "invoice") flagKey = "invoiceDashboardDiscr";
-            if (flagKey === "expense") flagKey = "expenseDashboardDiscr";
-            if (flagKey === "crm") flagKey = alert.flagType || alert.alertType || "crmPipeAppDiscr";
-
-            // CRITICAL FIX: Actually apply the upgraded label to the alert object!
-            alert.flagType = flagKey;
-            alert.alertType = flagKey;
-
-            if (!alertCountsByClientAndFlag[key]) alertCountsByClientAndFlag[key] = {};
-            alertCountsByClientAndFlag[key][flagKey] = (alertCountsByClientAndFlag[key][flagKey] || 0) + 1;
-            
-            if (flagKey === "expenseDashboardDiscr") {
-             const txId = alert.summary?.transactionId || alert.summary?.appId || alert.summary?.reference || alert.summary?.id;
-             if (txId !== undefined && txId !== null && txId !== "") {
-                if (!activeExpenseIdsByClient[key]) activeExpenseIdsByClient[key] = [];
-                const s = String(txId).trim();
-                const clean = s.replace(/^#/, "");
-                activeExpenseIdsByClient[key].push(s);
-                if (clean !== s) activeExpenseIdsByClient[key].push(clean);
-             }
-          }
-            if (flagKey === "invoiceDashboardDiscr") {
-             const isMissing = alert.data?.flags?.[0] === "1" || (alert.flagColumns?.[0] === "Missing invoice?" && alert.data?.flags?.[0] === "1");
-             if (isMissing) {
-               const invNo = alert.summary?.invoiceNo || alert.summary?.reference || alert.summary?.id || alert.data?.accounting?.[5];
-               if (invNo !== undefined && invNo !== null && invNo !== "") {
-                  if (!activeInvoiceIdsByClient[key]) activeInvoiceIdsByClient[key] = [];
-                  const s = String(invNo).trim();
-                  const clean = s.replace(/^#/, "");
-                  activeInvoiceIdsByClient[key].push(s);
-                  if (clean !== s) activeInvoiceIdsByClient[key].push(clean);
-               }
-             }
-          }
-        }
-
-        // Tally counts for informational (noAction) alerts
-        for (const alert of scopedNoAction) {
-          const key = alert.clientName;
-          const flagKey = alert.flagType;
-          if (key && flagKey) {
-            if (!alertCountsByClientAndFlag[key]) alertCountsByClientAndFlag[key] = {};
-            alertCountsByClientAndFlag[key][flagKey] = (alertCountsByClientAndFlag[key][flagKey] || 0) + 1;
-          }
-        }
-
-        const clientsWithUpdatedCounts = clientsSource.map(c => {
-          const counts = alertCountsByClientAndFlag[c.clientName] || {};
-          const updatedFlags = { ...(c.flags || {}) };
-          for (const flagKey of Object.keys(updatedFlags)) {
-            if (!counts[flagKey] || counts[flagKey] <= 0) {
-              updatedFlags[flagKey] = false;
-            }
-          }
-          return {
-            ...c,
-            flags: updatedFlags,
-            alertCounts: counts,
-            activeExpenseIds: activeExpenseIdsByClient[c.clientName] || [],
-            activeInvoiceIds: activeInvoiceIdsByClient[c.clientName] || [],
-          };
-        });
-
-          const sessionId = Math.random().toString(36).substring(2, 15);
-          await redisClient.set(
-            `triage_alerts:${sessionId}`,
-            JSON.stringify({ alerts: scopedAlerts, noActionAlerts: scopedNoAction, proactiveAlerts: scopedProactive, clientsWithFlags: clientsWithUpdatedCounts }),
-            { EX: 3600 } // Reduced from 24h to 1h to prevent Redis OOM
-          );
-
-          console.log(`✅ start_triage: refresh complete`);
-          return res.status(200).json({
-            success: true, sessionId, totalAlerts: scopedAlerts.length,
-            noActionCount: scopedNoAction.length, proactiveAlerts: scopedProactive, clientsWithFlags: clientsWithUpdatedCounts,
-          });
-        }
-
-        return res.status(400).json({ success: false, error: "Invalid step parameter" });
-      } catch (err) {
-        console.error("❌ start_triage error:", err);
-        return res.status(500).json({ success: false, error: err.message });
-      }
 
     } else if (action === "fire_outgoings_pull") {
       return await handleFireOutgoingsPull(req, res, sheets);

@@ -206,6 +206,7 @@ export default function IntegrationsView({
   const [verifyingAll, setVerifyingAll] = useState(false);
   const [googleSheetModalClient, setGoogleSheetModalClient] = useState(null);
   const [excelModalClient, setExcelModalClient] = useState(null);
+  const [disconnectDialog, setDisconnectDialog] = useState(null);
 
   const highlightedRef = useRef(null);
   const onStatusRefreshRef = useRef(onStatusRefresh);
@@ -255,6 +256,7 @@ export default function IntegrationsView({
       const integration = urlParams.get("integration");
       const status = urlParams.get("status");
       const clientParam = urlParams.get("client");
+      const masterSheetIdParam = urlParams.get("masterSheetId");
       const errorMsg = urlParams.get("message") || urlParams.get("error");
       const tenant = urlParams.get("tenant") || urlParams.get("company") || urlParams.get("workspace") || urlParams.get("site") || urlParams.get("org") || urlParams.get("portal") || urlParams.get("account");
 
@@ -268,14 +270,54 @@ export default function IntegrationsView({
 
           // Automatically re-open the configuration modal for spreadsheet integrations
           if (integration === "googlesheet" || integration === "excel") {
+            const target = String(clientParam || "").toLowerCase().trim();
+            const accountEmail = tenant || "";
+
+            // Immediately open modal with verified connected state from OAuth return
+            const immediateClient = {
+              clientName: clientParam,
+              masterSheetId: masterSheetIdParam || "",
+              integrations: {
+                [integration]: {
+                  connected: true,
+                  tool: integration,
+                  status: "connected",
+                  metadata: {
+                    userEmail: accountEmail,
+                    accountName: accountEmail ? `${integration === "googlesheet" ? "Google" : "Microsoft"} Account (${accountEmail})` : "Connected Account",
+                    tenantName: accountEmail
+                  }
+                }
+              }
+            };
+            if (integration === "googlesheet") {
+              setGoogleSheetModalClient(immediateClient);
+            } else if (integration === "excel") {
+              setExcelModalClient(immediateClient);
+            }
+
+            // Sync with backend status and merge latest sheet config
             fetchAllStatus(true, true).then((clientsList) => {
-              const target = String(clientParam || "").toLowerCase().trim();
               const matched = (clientsList || []).find((c) => String(c.clientName || "").toLowerCase().trim() === target);
               if (matched) {
+                const mergedClient = {
+                  ...matched,
+                  integrations: {
+                    ...matched.integrations,
+                    [integration]: {
+                      ...(matched.integrations?.[integration] || {}),
+                      connected: true,
+                      metadata: {
+                        ...(matched.integrations?.[integration]?.metadata || {}),
+                        userEmail: matched.integrations?.[integration]?.metadata?.userEmail || accountEmail
+                      }
+                    }
+                  }
+                };
                 if (integration === "googlesheet") {
-                  setGoogleSheetModalClient(matched);
+                  setGoogleSheetModalClient(mergedClient);
                 } else if (integration === "excel") {
-                  setExcelModalClient(matched);
+                  setExcelModalClient(mergedClient);
                 }
               }
             });
@@ -358,42 +400,49 @@ export default function IntegrationsView({
     window.location.href = `/api/integrations/xero/connect?${params.toString()}`;
   };
 
-  const handleDisconnectXero = async (client) => {
+  const handleDisconnectXero = (client) => {
     const xeroData = client.integrations?.xero || {};
     const isShared = Boolean(xeroData.isSharedGrant);
-    const confirmMsg = isShared
-      ? `Are you sure you want to unlink ${client.clientName} from the Central Advisor Account? This will NOT affect your central advisor account or other connected clients.`
-      : `Are you sure you want to disconnect Xero for ${client.clientName}? Tokens will be revoked with Xero and purged from the Vault.`;
-    if (!confirm(confirmMsg)) return;
+    const title = isShared ? "Unlink Xero advisor organisation" : "Disconnect Xero integration";
+    const message = isShared
+      ? `Are you sure you want to unlink ${client.clientName} from the Central Advisor Account? This will not affect other connected clients or your central advisor grant.`
+      : `Are you sure you want to disconnect Xero for ${client.clientName}? Active OAuth tokens will be revoked with Xero and purged from the Central Vault.`;
 
-    const key = `${client.clientName}_xero_disconnect`;
-    setActionLoadingMap((m) => ({ ...m, [key]: true }));
-    try {
-      const res = await fetch("/api/integrations/xero/disconnect", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          clientKey: client.clientName,
-          masterSheetId: client.masterSheetId
-        })
-      });
-      const data = await res.json();
-      if (data.success) {
-        setFeedback({
-          type: "info",
-          message: isShared
-            ? `${client.clientName} unlinked from Central Advisor Account.`
-            : `Xero disconnected and revoked for ${client.clientName}.`
-        });
-        await fetchAllStatus(true);
-      } else {
-        setFeedback({ type: "error", message: data.error || "Failed to disconnect." });
+    setDisconnectDialog({
+      title,
+      message,
+      confirmLabel: isShared ? "Unlink client" : "Disconnect & revoke",
+      onConfirm: async () => {
+        const key = `${client.clientName}_xero_disconnect`;
+        setActionLoadingMap((m) => ({ ...m, [key]: true }));
+        try {
+          const res = await fetch("/api/integrations/xero/disconnect", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              clientKey: client.clientName,
+              masterSheetId: client.masterSheetId
+            })
+          });
+          const data = await res.json();
+          if (data.success) {
+            setFeedback({
+              type: "info",
+              message: isShared
+                ? `${client.clientName} unlinked from Central Advisor Account.`
+                : `Xero disconnected and revoked for ${client.clientName}.`
+            });
+            await fetchAllStatus(true);
+          } else {
+            setFeedback({ type: "error", message: data.error || "Failed to disconnect." });
+          }
+        } catch (err) {
+          setFeedback({ type: "error", message: err.message });
+        } finally {
+          setActionLoadingMap((m) => ({ ...m, [key]: false }));
+        }
       }
-    } catch (err) {
-      setFeedback({ type: "error", message: err.message });
-    } finally {
-      setActionLoadingMap((m) => ({ ...m, [key]: false }));
-    }
+    });
   };
 
   const handleSwitchTenant = async (client, targetTenantId) => {
@@ -446,33 +495,37 @@ export default function IntegrationsView({
     window.location.href = `/api/integrations/quickbooks/connect?${params.toString()}`;
   };
 
-  const handleDisconnectQB = async (client) => {
-    if (!confirm(`Are you sure you want to disconnect QuickBooks for ${client.clientName}? Tokens will be revoked with Intuit and purged from the Vault.`)) {
-      return;
-    }
-    const key = `${client.clientName}_quickbooks_disconnect`;
-    setActionLoadingMap((m) => ({ ...m, [key]: true }));
-    try {
-      const res = await fetch("/api/integrations/quickbooks/disconnect", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          clientKey: client.clientName,
-          masterSheetId: client.masterSheetId
-        })
-      });
-      const data = await res.json();
-      if (data.success) {
-        setFeedback({ type: "info", message: `QuickBooks disconnected and revoked for ${client.clientName}.` });
-        await fetchAllStatus(true);
-      } else {
-        setFeedback({ type: "error", message: data.error || "Failed to disconnect." });
+  const handleDisconnectQB = (client) => {
+    setDisconnectDialog({
+      title: "Disconnect QuickBooks integration",
+      message: `Are you sure you want to disconnect QuickBooks for ${client.clientName}? Active OAuth tokens will be revoked with Intuit and purged from the Central Vault.`,
+      confirmLabel: "Disconnect & revoke",
+      onConfirm: async () => {
+        const key = `${client.clientName}_quickbooks_disconnect`;
+        setActionLoadingMap((m) => ({ ...m, [key]: true }));
+        try {
+          const res = await fetch("/api/integrations/quickbooks/disconnect", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              clientKey: client.clientName,
+              masterSheetId: client.masterSheetId
+            })
+          });
+          const data = await res.json();
+          if (data.success) {
+            setFeedback({ type: "info", message: `QuickBooks disconnected and revoked for ${client.clientName}.` });
+            await fetchAllStatus(true);
+          } else {
+            setFeedback({ type: "error", message: data.error || "Failed to disconnect." });
+          }
+        } catch (err) {
+          setFeedback({ type: "error", message: err.message });
+        } finally {
+          setActionLoadingMap((m) => ({ ...m, [key]: false }));
+        }
       }
-    } catch (err) {
-      setFeedback({ type: "error", message: err.message });
-    } finally {
-      setActionLoadingMap((m) => ({ ...m, [key]: false }));
-    }
+    });
   };
 
   // --------------------------------------------------------------------------
@@ -508,34 +561,38 @@ export default function IntegrationsView({
     }
   };
 
-  const handleDisconnectCrm = async (client, toolKey) => {
+  const handleDisconnectCrm = (client, toolKey) => {
     const cfg = CRM_TOOLS_CONFIG[toolKey] || { name: toolKey };
-    if (!confirm(`Are you sure you want to disconnect ${cfg.name} for ${client.clientName}? Tokens will be purged from the Vault.`)) {
-      return;
-    }
-    const key = `${client.clientName}_${toolKey}_disconnect`;
-    setActionLoadingMap((m) => ({ ...m, [key]: true }));
-    try {
-      const res = await fetch(`/api/integrations/${toolKey}/disconnect`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          clientKey: client.clientName,
-          masterSheetId: client.masterSheetId
-        })
-      });
-      const data = await res.json();
-      if (data.success) {
-        setFeedback({ type: "info", message: `${cfg.name} disconnected for ${client.clientName}.` });
-        await fetchAllStatus(true);
-      } else {
-        setFeedback({ type: "error", message: data.error || "Failed to disconnect." });
+    setDisconnectDialog({
+      title: `Disconnect ${cfg.name} integration`,
+      message: `Are you sure you want to disconnect ${cfg.name} for ${client.clientName}? Stored connection credentials and access tokens will be purged from the Central Vault.`,
+      confirmLabel: "Disconnect & purge",
+      onConfirm: async () => {
+        const key = `${client.clientName}_${toolKey}_disconnect`;
+        setActionLoadingMap((m) => ({ ...m, [key]: true }));
+        try {
+          const res = await fetch(`/api/integrations/${toolKey}/disconnect`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              clientKey: client.clientName,
+              masterSheetId: client.masterSheetId
+            })
+          });
+          const data = await res.json();
+          if (data.success) {
+            setFeedback({ type: "info", message: `${cfg.name} disconnected for ${client.clientName}.` });
+            await fetchAllStatus(true);
+          } else {
+            setFeedback({ type: "error", message: data.error || "Failed to disconnect." });
+          }
+        } catch (err) {
+          setFeedback({ type: "error", message: err.message });
+        } finally {
+          setActionLoadingMap((m) => ({ ...m, [key]: false }));
+        }
       }
-    } catch (err) {
-      setFeedback({ type: "error", message: err.message });
-    } finally {
-      setActionLoadingMap((m) => ({ ...m, [key]: false }));
-    }
+    });
   };
 
   // --------------------------------------------------------------------------
@@ -1278,6 +1335,154 @@ export default function IntegrationsView({
           <p style={{ margin: 0, fontSize: "12px", color: "#475569", lineHeight: "1.6" }}>
             All credentials are encrypted with AES-256-GCM in Redis. Google Apps Script queries <code style={{ background: "#e2e8f0", padding: "2px 5px", borderRadius: "4px" }}>/api/integrations/token</code> during automated sync cycles using client-specific tokens. When any connection is authorised, automated notifications are immediately sent to all Admins and assigned Client Managers.
           </p>
+        </div>
+      )}
+
+      {/* ── BESPOKE PULSE DISCONNECT CONFIRMATION MODAL ────────────── */}
+      {disconnectDialog && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            backgroundColor: "rgba(15, 23, 42, 0.6)",
+            backdropFilter: "blur(4px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 10000,
+            padding: "16px"
+          }}
+          onClick={() => !disconnectDialog.loading && setDisconnectDialog(null)}
+        >
+          <div
+            style={{
+              background: "#ffffff",
+              borderRadius: "16px",
+              width: "100%",
+              maxWidth: "460px",
+              display: "flex",
+              flexDirection: "column",
+              boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.15), 0 10px 10px -5px rgba(0, 0, 0, 0.04)",
+              border: "1px solid #e2e8f0",
+              overflow: "hidden"
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div
+              style={{
+                padding: "18px 24px",
+                borderBottom: "1px solid #f1f5f9",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                background: "#f8fafc"
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                <div
+                  style={{
+                    width: "36px",
+                    height: "36px",
+                    borderRadius: "10px",
+                    background: "#fef2f2",
+                    color: "#dc2626",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0
+                  }}
+                >
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                    <line x1="12" y1="9" x2="12" y2="13" />
+                    <line x1="12" y1="17" x2="12.01" y2="17" />
+                  </svg>
+                </div>
+                <h3 style={{ margin: 0, fontSize: "15px", fontWeight: "700", color: "#0f172a" }}>
+                  {disconnectDialog.title}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => !disconnectDialog.loading && setDisconnectDialog(null)}
+                style={{
+                  background: "none",
+                  border: "none",
+                  fontSize: "18px",
+                  color: "#94a3b8",
+                  cursor: "pointer",
+                  padding: "4px 8px"
+                }}
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Content */}
+            <div style={{ padding: "20px 24px" }}>
+              <p style={{ margin: 0, fontSize: "13.5px", color: "#475569", lineHeight: "1.55" }}>
+                {disconnectDialog.message}
+              </p>
+            </div>
+
+            {/* Actions */}
+            <div
+              style={{
+                padding: "14px 24px",
+                background: "#f8fafc",
+                borderTop: "1px solid #f1f5f9",
+                display: "flex",
+                justifyContent: "flex-end",
+                gap: "10px"
+              }}
+            >
+              <button
+                type="button"
+                disabled={disconnectDialog.loading}
+                onClick={() => setDisconnectDialog(null)}
+                style={{
+                  padding: "8px 16px",
+                  borderRadius: "8px",
+                  border: "1px solid #cbd5e1",
+                  background: "#ffffff",
+                  color: "#475569",
+                  fontSize: "13px",
+                  fontWeight: "600",
+                  cursor: disconnectDialog.loading ? "not-allowed" : "pointer"
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={disconnectDialog.loading}
+                onClick={async () => {
+                  setDisconnectDialog((prev) => ({ ...prev, loading: true }));
+                  try {
+                    await disconnectDialog.onConfirm();
+                  } finally {
+                    setDisconnectDialog(null);
+                  }
+                }}
+                style={{
+                  padding: "8px 16px",
+                  borderRadius: "8px",
+                  border: "none",
+                  background: "#dc2626",
+                  color: "#ffffff",
+                  fontSize: "13px",
+                  fontWeight: "600",
+                  cursor: disconnectDialog.loading ? "wait" : "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "6px"
+                }}
+              >
+                {disconnectDialog.loading ? "Disconnecting..." : (disconnectDialog.confirmLabel || "Disconnect")}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

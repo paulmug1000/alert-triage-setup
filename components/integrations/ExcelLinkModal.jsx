@@ -33,6 +33,20 @@ export default function ExcelLinkModal({
 
   if (!isOpen || !resolvedClientName) return null;
 
+  const isConnected = Boolean(
+    currentConfig?.connected ||
+    client?.integrations?.excel?.connected ||
+    client?.crmStatus?.connected ||
+    currentConfig?.metadata?.userEmail ||
+    client?.integrations?.excel?.metadata?.userEmail
+  );
+  const connectedEmail =
+    currentConfig?.metadata?.userEmail ||
+    client?.integrations?.excel?.metadata?.userEmail ||
+    currentConfig?.tenantName ||
+    client?.tenantName ||
+    "Microsoft 365 Account";
+
   const handleInspect = async (overrideSheet, overrideRow) => {
     if (!driveId.trim() || !fileId.trim()) {
       setError("Please enter Drive ID and File ID.");
@@ -277,89 +291,93 @@ export default function ExcelLinkModal({
             </div>
           )}
 
-          {/* Option 1: Microsoft 365 OAuth Status or Sign in */}
-          {currentConfig?.connected ? (
-            <div
-              style={{
-                background: "#eff6ff",
-                border: "1px solid #bfdbfe",
-                borderRadius: "8px",
-                padding: "10px 14px",
-                marginBottom: "18px",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between"
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                <span style={{ color: "#1d4ed8", fontSize: "14px", fontWeight: "700" }}>✓</span>
-                <div>
-                  <div style={{ fontSize: "12px", color: "#1d4ed8", fontWeight: "600" }}>
-                    Connected to {currentConfig.metadata?.userEmail || currentConfig.metadata?.accountName || currentConfig.tenantName || "Microsoft 365 Account"}
-                  </div>
-                  <div style={{ fontSize: "11px", color: "#2563eb" }}>
-                    Authenticated via Microsoft Graph. Enter Drive ID and File ID below to inspect.
-                  </div>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={handleOAuthConnect}
+          {/* 1. Microsoft 365 Account Authorization */}
+          <div style={{ marginBottom: "20px" }}>
+            <label style={{ display: "block", fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#64748b", marginBottom: "8px" }}>
+              1. Microsoft 365 account authorization
+            </label>
+            {isConnected ? (
+              <div
                 style={{
-                  background: "none",
-                  border: "none",
-                  color: "#2563eb",
-                  fontSize: "11px",
-                  fontWeight: "600",
-                  textDecoration: "underline",
-                  cursor: "pointer",
-                  whiteSpace: "nowrap"
-                }}
-              >
-                Switch account
-              </button>
-            </div>
-          ) : (
-            <div style={{ marginBottom: "18px" }}>
-              <button
-                type="button"
-                onClick={handleOAuthConnect}
-                style={{
-                  width: "100%",
-                  padding: "10px 14px",
+                  background: "#eff6ff",
+                  border: "1px solid #bfdbfe",
                   borderRadius: "8px",
-                  border: "1px solid #cbd5e1",
-                  background: "#ffffff",
-                  color: "#1e293b",
-                  fontSize: "13px",
-                  fontWeight: "600",
-                  cursor: "pointer",
+                  padding: "10px 14px",
                   display: "flex",
                   alignItems: "center",
-                  justifyContent: "center",
-                  gap: "8px",
-                  boxShadow: "0 1px 2px rgba(0,0,0,0.04)"
+                  justifyContent: "space-between"
                 }}
               >
-                <svg width="16" height="16" viewBox="0 0 23 23">
-                  <path fill="#f35325" d="M1 1h10v10H1z" />
-                  <path fill="#81bc06" d="M12 1h10v10H12z" />
-                  <path fill="#05a6f0" d="M1 12h10v10H1z" />
-                  <path fill="#ffba08" d="M12 12h10v10H12z" />
-                </svg>
-                <span>Sign in with Microsoft 365 (recommended)</span>
-              </button>
-            </div>
-          )}
-
-          {/* Divider */}
-          <div style={{ display: "flex", alignItems: "center", margin: "16px 0", color: "#94a3b8", fontSize: "11px" }}>
-            <div style={{ flex: 1, height: "1px", background: "#e2e8f0" }} />
-            <span style={{ padding: "0 10px", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-              {currentConfig?.connected ? "workbook details" : "or configure file IDs"}
-            </span>
-            <div style={{ flex: 1, height: "1px", background: "#e2e8f0" }} />
+                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <span style={{ color: "#1d4ed8", fontSize: "14px", fontWeight: "700" }}>✓</span>
+                  <div>
+                    <div style={{ fontSize: "12px", color: "#1d4ed8", fontWeight: "600" }}>
+                      Connected to {connectedEmail}
+                    </div>
+                    <div style={{ fontSize: "11px", color: "#2563eb" }}>
+                      Authenticated via Microsoft Graph. Ready to inspect workbook below.
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleOAuthConnect}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    color: "#2563eb",
+                    fontSize: "11px",
+                    fontWeight: "600",
+                    textDecoration: "underline",
+                    cursor: "pointer",
+                    whiteSpace: "nowrap"
+                  }}
+                >
+                  Switch account
+                </button>
+              </div>
+            ) : (
+              <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "8px", padding: "14px" }}>
+                <p style={{ margin: "0 0 10px 0", fontSize: "12px", color: "#475569", lineHeight: "1.4" }}>
+                  Authorize Pulse to read your Microsoft Excel workbook via Microsoft Graph API.
+                </p>
+                <button
+                  type="button"
+                  onClick={handleOAuthConnect}
+                  style={{
+                    width: "100%",
+                    padding: "9px 14px",
+                    borderRadius: "8px",
+                    border: "1px solid #cbd5e1",
+                    background: "#ffffff",
+                    color: "#1e293b",
+                    fontSize: "12.5px",
+                    fontWeight: "600",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: "8px",
+                    boxShadow: "0 1px 2px rgba(0,0,0,0.05)"
+                  }}
+                >
+                  <svg width="16" height="16" viewBox="0 0 23 23">
+                    <path fill="#f35325" d="M1 1h10v10H1z" />
+                    <path fill="#81bc06" d="M12 1h10v10H12z" />
+                    <path fill="#05a6f0" d="M1 12h10v10H1z" />
+                    <path fill="#ffba08" d="M12 12h10v10H12z" />
+                  </svg>
+                  <span>Sign in with Microsoft 365 to authorize</span>
+                </button>
+              </div>
+            )}
           </div>
+
+          {/* 2. Workbook Drive & File ID */}
+          <div style={{ marginBottom: "16px" }}>
+            <label style={{ display: "block", fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#64748b", marginBottom: "8px" }}>
+              2. Workbook Drive ID & File ID mapping
+            </label>
 
           {/* Option 2: Direct Drive & File ID configuration */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", marginBottom: "12px" }}>
@@ -389,24 +407,25 @@ export default function ExcelLinkModal({
             </div>
           </div>
 
-          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "16px" }}>
-            <button
-              type="button"
-              onClick={() => handleInspect()}
-              disabled={inspecting}
-              style={{
-                padding: "8px 16px",
-                borderRadius: "6px",
-                border: "none",
-                background: "#0f6cbd",
-                color: "#ffffff",
-                fontSize: "12px",
-                fontWeight: "600",
-                cursor: inspecting ? "wait" : "pointer"
-              }}
-            >
-              {inspecting ? "Inspecting workbook..." : "Inspect workbook & worksheets"}
-            </button>
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <button
+                type="button"
+                onClick={() => handleInspect()}
+                disabled={inspecting}
+                style={{
+                  padding: "8px 16px",
+                  borderRadius: "6px",
+                  border: "none",
+                  background: "#0f6cbd",
+                  color: "#ffffff",
+                  fontSize: "12px",
+                  fontWeight: "600",
+                  cursor: inspecting ? "wait" : "pointer"
+                }}
+              >
+                {inspecting ? "Inspecting workbook..." : "Inspect workbook & worksheets"}
+              </button>
+            </div>
           </div>
 
           {/* Worksheet Selection and Column Mapping */}

@@ -118,7 +118,7 @@ export default async function handler(req, res) {
       returnUrl = `${returnUrl}${sep}nav=integrations`;
     }
     const separator = returnUrl.includes("?") ? "&" : "?";
-    return res.redirect(`${returnUrl}${separator}integration=excel&status=success&modal=picker&account=${encodeURIComponent(accountLabel)}&client=${encodeURIComponent(clientName)}`);
+    return res.redirect(`${returnUrl}${separator}integration=excel&status=success&modal=picker&account=${encodeURIComponent(accountLabel)}&client=${encodeURIComponent(clientName)}&masterSheetId=${encodeURIComponent(masterSheetId || "")}&tenant=${encodeURIComponent(accountLabel)}`);
 
   } catch (err) {
     console.error("Excel OAuth callback error:", err);

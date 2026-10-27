@@ -170,15 +170,12 @@ export default async function handler(req, res) {
         }
       }
     } else {
-      // Legacy fallback: no client secret provided
-      if (registeredHash) {
-        // Once a sheet is registered with its own secret, legacy calls without that secret are rejected
-        console.warn(`🚨 Token Broker: Legacy secret rejected for already-registered sheet ${targetIdentifier}.`);
-        return res.status(401).json({ success: false, error: "Unauthorized: Client-specific secret is required for this registered sheet." });
-      } else if (isMasterSecretValid) {
-        // Sheet has not yet upgraded its script; allow under legacy master secret
-        isAuthorized = true;
-      }
+      // Legacy fallback retired: client secret is strictly required
+      console.warn(`🚨 Token Broker: Missing client-specific secret for ${targetIdentifier}.`);
+      return res.status(401).json({
+        success: false,
+        error: "Unauthorized: Client-specific secret (X-Pulse-Client-Secret) is required."
+      });
     }
   }
 

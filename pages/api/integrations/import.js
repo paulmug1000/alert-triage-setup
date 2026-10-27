@@ -99,11 +99,12 @@ export default async function handler(req, res) {
         }
       }
     } else {
-      if (registeredHash) {
-        return res.status(401).json({ success: false, error: "Unauthorized: Client-specific secret is required for this registered sheet." });
-      } else if (isMasterSecretValid) {
-        isAuthorized = true;
-      }
+      // Legacy fallback retired: client secret is strictly required
+      console.warn(`🚨 Integration Import: Missing client-specific secret for ${spreadsheetId}.`);
+      return res.status(401).json({
+        success: false,
+        error: "Unauthorized: Client-specific secret (X-Pulse-Client-Secret) is required."
+      });
     }
   }
 

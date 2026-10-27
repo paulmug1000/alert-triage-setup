@@ -138,17 +138,21 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
     return "";
   });
   const router = useRouter();
+  const lastHandledAsPathRef = useRef(typeof window !== "undefined" ? window.location.pathname + window.location.search : "");
 
-  // Watch router query changes for client-side Link navigations
+  // Watch router query changes for client-side Link navigations (e.g. <Link href="/pma?nav=settings...">)
   useEffect(() => {
     if (!router?.isReady) return;
+    const asPath = router.asPath || "";
+    // Only process if the router asPath is different from what we last handled/synchronized
+    if (asPath && asPath === lastHandledAsPathRef.current) return;
+    if (asPath) lastHandledAsPathRef.current = asPath;
+
     const query = router.query;
-    if (query.integration && activeNav !== "integrations") {
+    if (query.integration) {
       setActiveNav("integrations");
-    }
-    const navParam = query.nav;
-    if (navParam && typeof navParam === "string" && navParam !== activeNav) {
-      setActiveNav(navParam);
+    } else if (query.nav && typeof query.nav === "string") {
+      setActiveNav(query.nav);
     }
     if (query.client && typeof query.client === "string") {
       setSetupClientName(query.client);
@@ -160,7 +164,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
     if (query.subsection && typeof query.subsection === "string") {
       setSettingsSubsection(query.subsection);
     }
-  }, [router?.isReady, router?.asPath, router?.query, activeNav]);
+  }, [router?.isReady, router?.asPath]);
   const [invoicesInitialClient, setInvoicesInitialClient] = useState(null);
   const [outgoingsInitialClient, setOutgoingsInitialClient] = useState(null);
 
@@ -654,6 +658,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
     }
     const current = window.location.pathname + (window.location.search ? window.location.search : "");
     if (current !== target && !window.location.search.includes("integration=")) {
+      lastHandledAsPathRef.current = target;
       window.history.replaceState({ nav: activeNav }, "", target);
     }
   }, [activeNav, setupClientName, settingsClientName, settingsSection, settingsSubsection, managedClient]);
@@ -1026,6 +1031,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
           withModal={withModal}
           managedClient={managedClient}
           onClearManagedClient={handleClearManagedClient}
+          isAdmin={isAdmin}
         />
       );
     }

@@ -361,22 +361,24 @@ export default function ExcelLinkModal({
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-            <div
-              style={{
-                width: "36px",
-                height: "36px",
-                borderRadius: "8px",
-                background: "rgba(15, 108, 189, 0.12)",
-                color: "#0f6cbd",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                fontWeight: "700",
-                fontSize: "15px"
-              }}
-            >
-              XL
-            </div>
+            {!isClientView && (
+              <div
+                style={{
+                  width: "36px",
+                  height: "36px",
+                  borderRadius: "8px",
+                  background: "rgba(15, 108, 189, 0.12)",
+                  color: "#0f6cbd",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontWeight: "700",
+                  fontSize: "15px"
+                }}
+              >
+                XL
+              </div>
+            )}
             <div>
               <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700", color: "#0f172a" }}>
                 {isClientView ? "Connect Microsoft Excel" : "Connect Microsoft Excel CRM"}
@@ -404,21 +406,23 @@ export default function ExcelLinkModal({
 
         {/* Content Body */}
         <div style={{ padding: "20px 24px", overflowY: "auto", flex: 1 }}>
-          {/* Informational badge */}
-          <div
-            style={{
-              background: "#f0f9ff",
-              border: "1px solid #bae6fd",
-              borderRadius: "8px",
-              padding: "12px 14px",
-              marginBottom: "18px",
-              fontSize: "12.5px",
-              color: "#0369a1",
-              lineHeight: "1.5"
-            }}
-          >
-            <strong>Cloud workbook sync:</strong> Pulse connects to Microsoft Excel files on SharePoint or OneDrive via Microsoft Graph API. Reconciles deal records via the Master Sheet bridge.
-          </div>
+          {/* Informational badge for PMA admin view only */}
+          {!isClientView && (
+            <div
+              style={{
+                background: "#f0f9ff",
+                border: "1px solid #bae6fd",
+                borderRadius: "8px",
+                padding: "12px 14px",
+                marginBottom: "18px",
+                fontSize: "12.5px",
+                color: "#0369a1",
+                lineHeight: "1.5"
+              }}
+            >
+              <strong>Cloud workbook sync:</strong> Pulse connects to Microsoft Excel files on SharePoint or OneDrive via Microsoft Graph API. Reconciles deal records via the Master Sheet bridge.
+            </div>
+          )}
 
           {error && (
             <div
@@ -439,13 +443,17 @@ export default function ExcelLinkModal({
           {/* 1. Excel Workbook URL (Initial Entry) */}
           {!isLinkSubmitted && (
             <div style={{ marginBottom: "20px" }}>
-              <label style={{ display: "block", fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#64748b", marginBottom: "8px" }}>
-                1. Paste link to your Excel workbook
-              </label>
-              <p style={{ margin: "0 0 10px 0", fontSize: "12.5px", color: "#475569", lineHeight: "1.4" }}>
-                Paste the OneDrive or SharePoint web link to your Excel workbook.
+              {!isClientView && (
+                <label style={{ display: "block", fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#64748b", marginBottom: "8px" }}>
+                  1. Paste link to your Excel workbook
+                </label>
+              )}
+              <p style={{ margin: "0 0 12px 0", fontSize: isClientView ? "14px" : "12.5px", color: isClientView ? "#1e293b" : "#475569", lineHeight: "1.5", fontWeight: isClientView ? 500 : 400 }}>
+                {isClientView
+                  ? "To start, please enter the OneDrive or SharePoint URL of your Excel spreadsheet:"
+                  : "Paste the OneDrive or SharePoint web link to your Excel workbook."}
               </p>
-              <form onSubmit={handleSubmitLink} style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+              <form onSubmit={handleSubmitLink} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
                 <input
                   type="text"
                   value={excelUrl}
@@ -453,10 +461,10 @@ export default function ExcelLinkModal({
                   placeholder="https://...sharepoint.com/:x:/... or OneDrive link"
                   style={{
                     width: "100%",
-                    padding: "9px 12px",
-                    borderRadius: "7px",
+                    padding: "10px 14px",
+                    borderRadius: "8px",
                     border: "1px solid #cbd5e1",
-                    fontSize: "13px",
+                    fontSize: "13.5px",
                     boxSizing: "border-box"
                   }}
                 />
@@ -470,8 +478,8 @@ export default function ExcelLinkModal({
                     type="submit"
                     disabled={!excelUrl.trim()}
                     style={{
-                      padding: "9px 18px",
-                      borderRadius: "7px",
+                      padding: "10px 20px",
+                      borderRadius: "8px",
                       border: "none",
                       background: "#0f6cbd",
                       color: "#ffffff",
@@ -506,7 +514,7 @@ export default function ExcelLinkModal({
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#0369a1", display: "flex", alignItems: "center", gap: "6px" }}>
                       <span>✓</span>
-                      <span>1. Excel workbook link submitted</span>
+                      <span>{isClientView ? "Spreadsheet link submitted" : "1. Excel workbook link submitted"}</span>
                     </div>
                     <div style={{ fontSize: "12px", color: "#0f172a", marginTop: "4px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "monospace" }}>
                       {excelUrl}
@@ -534,29 +542,35 @@ export default function ExcelLinkModal({
 
               {/* 2. Microsoft 365 Account Authorisation */}
               <div style={{ marginBottom: isClientView ? "16px" : "20px" }}>
-                <label style={{ display: "block", fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#64748b", marginBottom: "8px" }}>
-                  2. Microsoft 365 account authorisation
-                </label>
+                {!isClientView ? (
+                  <label style={{ display: "block", fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#64748b", marginBottom: "8px" }}>
+                    2. Microsoft 365 account authorisation
+                  </label>
+                ) : (
+                  <label style={{ display: "block", fontSize: "13px", fontWeight: "600", color: "#1e293b", marginBottom: "6px" }}>
+                    Authorise access with Microsoft 365
+                  </label>
+                )}
                 {isConnected ? (
                   <div
                     style={{
                       background: "#eff6ff",
                       border: "1px solid #bfdbfe",
                       borderRadius: "8px",
-                      padding: "10px 14px",
+                      padding: "12px 14px",
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "space-between"
                     }}
                   >
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                      <span style={{ color: "#1d4ed8", fontSize: "14px", fontWeight: "700" }}>✓</span>
+                    <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                      <span style={{ color: "#1d4ed8", fontSize: "16px", fontWeight: "700" }}>✓</span>
                       <div>
-                        <div style={{ fontSize: "12px", color: "#1d4ed8", fontWeight: "600" }}>
+                        <div style={{ fontSize: "13px", color: "#1d4ed8", fontWeight: "600" }}>
                           Connected to {connectedEmail}
                         </div>
-                        <div style={{ fontSize: "11px", color: "#2563eb" }}>
-                          {isClientView ? "Authorised via Microsoft Graph. Ready to save workbook below." : "Ready to inspect workbook and map columns."}
+                        <div style={{ fontSize: "12px", color: "#2563eb", marginTop: "2px" }}>
+                          {isClientView ? "Authorised via Microsoft. Ready to complete connection below." : "Ready to inspect workbook and map columns."}
                         </div>
                       </div>
                     </div>
@@ -567,7 +581,7 @@ export default function ExcelLinkModal({
                         background: "none",
                         border: "none",
                         color: "#2563eb",
-                        fontSize: "11px",
+                        fontSize: "11.5px",
                         fontWeight: "600",
                         textDecoration: "underline",
                         cursor: "pointer",
@@ -579,8 +593,10 @@ export default function ExcelLinkModal({
                   </div>
                 ) : (
                   <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "8px", padding: "14px" }}>
-                    <p style={{ margin: "0 0 10px 0", fontSize: "12px", color: "#475569", lineHeight: "1.4" }}>
-                      Sign in to grant Pulse read-only access to your OneDrive or SharePoint Excel workbook.
+                    <p style={{ margin: "0 0 12px 0", fontSize: isClientView ? "13px" : "12px", color: "#475569", lineHeight: "1.4" }}>
+                      {isClientView
+                        ? "Sign in with your Microsoft 365 account to grant Pulse secure, read-only access to this spreadsheet."
+                        : "Sign in to grant Pulse read-only access to your OneDrive or SharePoint Excel workbook."}
                     </p>
                     <button
                       type="button"
@@ -592,7 +608,7 @@ export default function ExcelLinkModal({
                         border: "1px solid #cbd5e1",
                         background: "#ffffff",
                         color: "#1e293b",
-                        fontSize: "12.5px",
+                        fontSize: "13px",
                         fontWeight: "600",
                         cursor: "pointer",
                         display: "flex",
@@ -623,19 +639,19 @@ export default function ExcelLinkModal({
                     disabled={linking || !excelUrl.trim()}
                     style={{
                       width: "100%",
-                      padding: "10px 16px",
-                      borderRadius: "7px",
+                      padding: "11px 16px",
+                      borderRadius: "8px",
                       border: "none",
                       background: "#0f6cbd",
                       color: "#ffffff",
-                      fontSize: "13px",
+                      fontSize: "13.5px",
                       fontWeight: "600",
                       cursor: linking || !excelUrl.trim() ? "not-allowed" : "pointer",
                       boxShadow: "0 1px 2px rgba(0,0,0,0.05)",
                       opacity: !excelUrl.trim() ? 0.6 : 1
                     }}
                   >
-                    {linking ? "Saving..." : "Save Excel workbook"}
+                    {linking ? "Saving..." : "Complete connection"}
                   </button>
                 </div>
               )}

@@ -473,7 +473,16 @@ export async function getClientSetupStatusForPortal({ clientName, masterSheetId 
     }
 
     const isConnected = Boolean(status?.connected);
-    const needsReconnect = !isConnected || status?.status === "reconnect_required" || Boolean(status?.reconnectRequired);
+    const hasEverConnected = Boolean(
+      status?.updatedAt ||
+      status?.lastRefreshedAt ||
+      status?.tokens ||
+      status?.metadata?.userEmail ||
+      status?.reconnectRequired ||
+      status?.status === "reconnect_required" ||
+      status?.status === "expired"
+    );
+    const needsReconnect = (!isConnected && hasEverConnected) || status?.status === "reconnect_required" || Boolean(status?.reconnectRequired);
 
     configuredTools.push({
       tool: cleanTool,
@@ -481,6 +490,7 @@ export async function getClientSetupStatusForPortal({ clientName, masterSheetId 
       type,
       connected: isConnected,
       needsReconnect,
+      hasEverConnected,
       status: status?.status || (isConnected ? "connected" : "disconnected"),
       tenantName: status?.tenantName || status?.companyName || ""
     });

@@ -825,10 +825,16 @@ export default function PortalPage() {
     );
   }
 
-  // Steady initial loading state: show 'Please wait - loading' only until clients are determined.
-  // Once clients are loaded, PortalShell mounts immediately so header and client name switch instantly,
-  // while the active view displays its skeleton loader.
-  if (!clientsLoaded) {
+  // Steady initial loading state: show 'Please wait - loading' until clients are determined.
+  // When a client user logs in (or when an admin is previewing setup mode), maintain the clean loading
+  // spinner until setup status has finished verifying. This prevents any premature rendering or flashing
+  // of the live dashboard/skeleton before the setup holding gate mounts.
+  const isSetupCheckPending = Boolean(
+    selectedClient &&
+    ((isClientUser && setupStatus === null) || (isPreviewSetup && setupStatus === null))
+  );
+
+  if (!clientsLoaded || isSetupCheckPending) {
     return (
       <div
         style={{

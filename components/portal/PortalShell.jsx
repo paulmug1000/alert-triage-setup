@@ -754,9 +754,9 @@ export default function PortalShell({
                                   window.location.href = connectUrl;
                                 }}
                                 style={{
-                                  background: "#fee2e2",
-                                  color: "#b91c1c",
-                                  border: "1px solid #fca5a5",
+                                  background: t.needsReconnect ? "#fee2e2" : "#eff6ff",
+                                  color: t.needsReconnect ? "#b91c1c" : "#1d4ed8",
+                                  border: t.needsReconnect ? "1px solid #fca5a5" : "1px solid #bfdbfe",
                                   borderRadius: "4px",
                                   padding: "2px 8px",
                                   fontSize: "11px",
@@ -765,11 +765,17 @@ export default function PortalShell({
                                   whiteSpace: "nowrap",
                                   transition: "all 0.15s ease"
                                 }}
-                                onMouseEnter={(e) => { e.currentTarget.style.background = "#ef4444"; e.currentTarget.style.color = "#ffffff"; }}
-                                onMouseLeave={(e) => { e.currentTarget.style.background = "#fee2e2"; e.currentTarget.style.color = "#b91c1c"; }}
-                                title={`Re-connect ${t.name}`}
+                                onMouseEnter={(e) => {
+                                  e.currentTarget.style.background = t.needsReconnect ? "#ef4444" : "#2563eb";
+                                  e.currentTarget.style.color = "#ffffff";
+                                }}
+                                onMouseLeave={(e) => {
+                                  e.currentTarget.style.background = t.needsReconnect ? "#fee2e2" : "#eff6ff";
+                                  e.currentTarget.style.color = t.needsReconnect ? "#b91c1c" : "#1d4ed8";
+                                }}
+                                title={t.needsReconnect ? `Re-connect ${t.name}` : `Connect ${t.name}`}
                               >
-                                Re-connect
+                                {t.needsReconnect ? "Re-connect" : "Connect"}
                               </button>
                             )}
                           </div>
@@ -781,7 +787,7 @@ export default function PortalShell({
                   {/* If user is Admin or ClientManager, offer direct link back to Management Area (PMA) */}
                   {(user?.isAdmin || user?.role === "ClientManager") && (
                     <Link
-                      href="/PMA"
+                      href="/pma"
                       style={{
                         display: "flex",
                         alignItems: "center",

@@ -311,16 +311,26 @@ export async function saveClientSetupConfig({
   const redisKey = getSetupRedisKey(clientName);
   const now = new Date().toISOString();
 
+  // Read existing cached data so we preserve any integration objects (e.g. googleSheet, excel)
+  let existing = {};
+  try {
+    const raw = await redisClient.get(redisKey);
+    if (raw) existing = JSON.parse(raw);
+  } catch (e) {
+    // Ignore read error
+  }
+
   const record = {
+    ...existing,
     clientName,
-    masterSheetId: masterSheetId || "",
+    masterSheetId: masterSheetId || existing.masterSheetId || "",
     setupMode: Boolean(setupMode),
     requestConnections: Boolean(requestConnections),
-    accountingTool: accountingTool || "None",
-    crmTool: crmTool || "None",
-    crmDrives: crmDrives || "NA",
+    accountingTool: accountingTool !== undefined ? accountingTool : (existing.accountingTool || "None"),
+    crmTool: crmTool !== undefined ? crmTool : (existing.crmTool || "None"),
+    crmDrives: crmDrives !== undefined ? crmDrives : (existing.crmDrives || "NA"),
     updatedAt: now,
-    updatedBy: updatedBy || "Admin"
+    updatedBy: updatedBy || existing.updatedBy || "Admin"
   };
 
   // 1. Persist to Redis

@@ -472,7 +472,25 @@ export async function getClientSetupStatusForPortal({ clientName, masterSheetId 
       }
     }
 
-    const isConnected = Boolean(status?.connected);
+    let hasLinkedSpreadsheet = true;
+    if (cleanTool === "googlesheet") {
+      hasLinkedSpreadsheet = Boolean(
+        config?.googleSheetUrl ||
+        status?.metadata?.url ||
+        status?.metadata?.spreadsheetId ||
+        status?.metadata?.spreadsheetTitle
+      );
+    } else if (cleanTool === "excel") {
+      hasLinkedSpreadsheet = Boolean(
+        config?.excel?.fileId ||
+        config?.excel?.driveId ||
+        status?.metadata?.fileId ||
+        status?.metadata?.driveId ||
+        status?.metadata?.url
+      );
+    }
+
+    const isConnected = Boolean(status?.connected) && hasLinkedSpreadsheet;
     const hasEverConnected = Boolean(
       status?.updatedAt ||
       status?.lastRefreshedAt ||

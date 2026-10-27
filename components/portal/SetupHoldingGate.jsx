@@ -604,21 +604,20 @@ export default function SetupHoldingGate({
                     localFeedback.type === "success"
                       ? "#ECFDF5"
                       : localFeedback.type === "warning"
-                      ? "#FFFBEB"
-                      : "#FEF2F2",
-                  border: `1px solid ${
-                    localFeedback.type === "success"
+                        ? "#FFFBEB"
+                        : "#FEF2F2",
+                  border: `1px solid ${localFeedback.type === "success"
                       ? "#A7F3D0"
                       : localFeedback.type === "warning"
-                      ? "#FDE68A"
-                      : "#FECACA"
-                  }`,
+                        ? "#FDE68A"
+                        : "#FECACA"
+                    }`,
                   color:
                     localFeedback.type === "success"
                       ? "#065F46"
                       : localFeedback.type === "warning"
-                      ? "#92400E"
-                      : "#991B1B"
+                        ? "#92400E"
+                        : "#991B1B"
                 }}
               >
                 <div style={{ display: "flex", alignItems: "flex-start", gap: "10px" }}>
@@ -746,8 +745,8 @@ export default function SetupHoldingGate({
                   }}
                 >
                   {unconnectedTools.length === 1
-                    ? `To complete your Pulse setup, please authorise the connection to ${getToolDisplayName(unconnectedTools[0]?.tool)} below.`
-                    : "To complete your Pulse setup, please authorise the connections to the tools your business uses below."}
+                    ? `To complete your Pulse setup, please authorise the connection below.`
+                    : "To complete your Pulse setup, please authorise the connections below."}
                 </p>
 
                 <div style={{ display: "flex", flexDirection: "column", gap: "14px", marginBottom: "28px" }}>

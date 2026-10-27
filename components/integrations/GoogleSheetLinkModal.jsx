@@ -17,12 +17,14 @@ export default function GoogleSheetLinkModal({
   const resolvedClientSheetId = client?.clientSheetId || clientSheetId || "";
 
   const [url, setUrl] = useState(() => {
+    if (typeof window !== "undefined") {
+      const pUrl = new URLSearchParams(window.location.search).get("url");
+      if (pUrl) return pUrl;
+    }
     if (currentConfig?.metadata?.url) return currentConfig.metadata.url;
     if (currentConfig?.url) return currentConfig.url;
     if (client?.integrations?.googlesheet?.metadata?.url) return client.integrations.googlesheet.metadata.url;
     if (typeof window !== "undefined") {
-      const pUrl = new URLSearchParams(window.location.search).get("url");
-      if (pUrl) return pUrl;
       const cached = window.sessionStorage.getItem("pulse_pending_google_sheet_url");
       if (cached) return cached;
     }
@@ -50,7 +52,16 @@ export default function GoogleSheetLinkModal({
   const [inspecting, setInspecting] = useState(false);
   const [inspectionData, setInspectionData] = useState(null);
   const [linking, setLinking] = useState(false);
-  const [error, setError] = useState(null);
+  const [error, setError] = useState(() => {
+    if (typeof window !== "undefined") {
+      const p = new URLSearchParams(window.location.search);
+      const isGoogle = p.get("integration") === "googlesheet" || p.get("tool") === "googlesheet";
+      if (isGoogle && p.get("status") === "error") {
+        return p.get("message") || p.get("error") || null;
+      }
+    }
+    return null;
+  });
 
   const handleSubmitLink = (e) => {
     if (e && e.preventDefault) e.preventDefault();
@@ -272,6 +283,22 @@ export default function GoogleSheetLinkModal({
   };
 
   React.useEffect(() => {
+    if (typeof window !== "undefined") {
+      const p = new URLSearchParams(window.location.search);
+      const isGoogle = p.get("integration") === "googlesheet" || p.get("tool") === "googlesheet";
+      if (isGoogle && p.get("status") === "error") {
+        const msg = p.get("message") || p.get("error");
+        if (msg) setError(msg);
+        const queryUrl = p.get("url");
+        if (queryUrl && !url) {
+          setUrl(queryUrl);
+          setIsLinkSubmitted(true);
+        }
+      }
+    }
+  }, [isOpen]);
+
+  React.useEffect(() => {
     if (isLinkSubmitted && isConnected && url && url.trim() && !inspectionData && !inspecting && !isClientView) {
       handleInspect();
     }
@@ -431,7 +458,7 @@ export default function GoogleSheetLinkModal({
               )}
               <p style={{ margin: "0 0 12px 0", fontSize: isClientView ? "14px" : "12.5px", color: isClientView ? "#1e293b" : "#475569", lineHeight: "1.5", fontWeight: isClientView ? 500 : 400 }}>
                 {isClientView
-                  ? "To start, please enter the URL of your Google Sheets spreadsheet:"
+                  ? "To start, please enter the URL of your CRM Google Sheet:"
                   : "Paste the web link to your Google Sheet CRM."}
               </p>
               <form onSubmit={handleSubmitLink} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>

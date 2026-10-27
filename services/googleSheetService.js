@@ -230,7 +230,14 @@ export async function inspectGoogleSpreadsheet({
     });
     const metaJson = await metaRes.json();
     if (!metaRes.ok || metaJson.error) {
-      throw new Error(`Google Sheets API error: ${metaJson.error?.message || metaRes.statusText}`);
+      const errMsg = metaJson.error?.message || metaRes.statusText || "";
+      if (metaRes.status === 403 || errMsg.toLowerCase().includes("permission") || errMsg.toLowerCase().includes("caller does not have permission")) {
+        throw new Error("Your Google account does not have permission to access this Google Sheet. Please share the Google Sheet with your account (Viewer permissions) or sign in with an account that has access.");
+      }
+      if (metaRes.status === 404 || errMsg.toLowerCase().includes("not found")) {
+        throw new Error("Google Sheet not found. Please verify the spreadsheet URL.");
+      }
+      throw new Error(`Google Sheets API error: ${errMsg}`);
     }
     metadata = metaJson;
   } else {

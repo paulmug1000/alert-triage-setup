@@ -158,6 +158,7 @@ export async function resolveSharePointDriveItem({ sharingUrl, token }) {
   if (!token) throw new Error("Missing access token to resolve sharing URL");
 
   const cleanUrl = sharingUrl.trim();
+  let isAccessDenied = false;
 
   // Strategy 1: Microsoft Graph /shares endpoint with original URL
   try {
@@ -174,6 +175,10 @@ export async function resolveSharePointDriveItem({ sharingUrl, token }) {
         driveId: data.parentReference.driveId,
         name: data.name
       };
+    }
+    const errMsg = (data.error?.message || "").toLowerCase();
+    if (res.status === 403 || data.error?.code === "accessDenied" || errMsg.includes("access denied") || errMsg.includes("permission")) {
+      isAccessDenied = true;
     }
   } catch (err) {
     console.warn("Shares endpoint attempt 1 note:", err.message);
@@ -196,6 +201,10 @@ export async function resolveSharePointDriveItem({ sharingUrl, token }) {
           driveId: data.parentReference.driveId,
           name: data.name
         };
+      }
+      const errMsg = (data.error?.message || "").toLowerCase();
+      if (res.status === 403 || data.error?.code === "accessDenied" || errMsg.includes("access denied") || errMsg.includes("permission")) {
+        isAccessDenied = true;
       }
     } catch (err) {
       console.warn("Shares endpoint attempt 2 note:", err.message);
@@ -225,6 +234,10 @@ export async function resolveSharePointDriveItem({ sharingUrl, token }) {
               driveId: itemData.parentReference?.driveId || myDriveId,
               name: itemData.name
             };
+          }
+          const itemErrMsg = (itemData.error?.message || "").toLowerCase();
+          if (itemRes.status === 403 || itemData.error?.code === "accessDenied" || itemErrMsg.includes("access denied") || itemErrMsg.includes("permission")) {
+            isAccessDenied = true;
           }
         }
 
@@ -277,11 +290,20 @@ export async function resolveSharePointDriveItem({ sharingUrl, token }) {
               };
             }
           }
+        } else {
+          const siteErrMsg = (siteData.error?.message || "").toLowerCase();
+          if (siteRes.status === 403 || siteData.error?.code === "accessDenied" || siteErrMsg.includes("access denied") || siteErrMsg.includes("permission")) {
+            isAccessDenied = true;
+          }
         }
       }
     } catch (siteErr) {
       console.warn("SharePoint site search fallback note:", siteErr.message);
     }
+  }
+
+  if (isAccessDenied) {
+    throw new Error("Your Microsoft 365 account does not have permission to access this Excel workbook. Please ensure the file is shared with your account on OneDrive or SharePoint.");
   }
 
   throw new Error("Could not resolve Excel link. Please ensure the link is a valid OneDrive or SharePoint link and that your signed-in account has access to it.");
@@ -322,7 +344,7 @@ export async function inspectExcelWorkbook({
   }
 
   if (!resolvedDriveId || !resolvedFileId) {
-    throw new Error("Missing driveId or fileId to inspect Excel workbook.");
+    throw new Error("Could not access Excel workbook. Please ensure your Microsoft 365 account has permission to access this SharePoint or OneDrive file, and that the link is correct.");
   }
 
   // 1. List worksheets in the workbook
@@ -333,7 +355,11 @@ export async function inspectExcelWorkbook({
   const sheetsData = await sheetsRes.json();
 
   if (!sheetsRes.ok) {
-    throw new Error(`Graph API worksheets error: ${sheetsData.error?.message || sheetsRes.statusText}`);
+    const errMsg = sheetsData.error?.message || sheetsRes.statusText || "";
+    if (sheetsRes.status === 403 || errMsg.toLowerCase().includes("access denied") || errMsg.toLowerCase().includes("permission")) {
+      throw new Error("Your Microsoft 365 account does not have permission to access this Excel workbook. Please ensure the file is shared with your account on OneDrive or SharePoint.");
+    }
+    throw new Error(`Graph API worksheets error: ${errMsg}`);
   }
 
   const worksheets = (sheetsData.value || []).map((w) => ({

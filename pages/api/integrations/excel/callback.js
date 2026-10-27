@@ -105,7 +105,28 @@ export default async function handler(req, res) {
 
     const accountLabel = userEmail ? `${displayName ? displayName + " " : ""}(${userEmail})` : "Microsoft 365 Account";
 
-    // 5. Encrypt and store tokens in Central Vault
+    // 5. If an Excel URL was submitted, verify access to the workbook via Microsoft Graph with user's token
+    let inspectData = null;
+    if (statePayload?.url) {
+      try {
+        inspectData = await inspectExcelWorkbook({
+          url: statePayload.url,
+          token: tokens.accessToken,
+          clientKey
+        });
+      } catch (accessErr) {
+        console.warn(`⚠️ Excel file access verification failed for ${clientName} (${userEmail}):`, accessErr.message);
+        const separator = returnUrl.includes("?") ? "&" : "?";
+        const clientParam = clientName && !returnUrl.includes("client=") ? `&client=${encodeURIComponent(clientName)}` : "";
+        const pendingUrl = `&url=${encodeURIComponent(statePayload.url)}`;
+        const helpfulMsg = accessErr.message || (userEmail
+          ? `Your Microsoft 365 account (${userEmail}) does not have permission to access the specified Excel spreadsheet on SharePoint/OneDrive. Please ensure the file is shared with ${userEmail} or sign in with an account that has access.`
+          : `The Microsoft 365 account you signed in with does not have permission to access the specified Excel spreadsheet.`);
+        return res.redirect(`${returnUrl}${separator}integration=excel&status=error&error=file_access_denied&message=${encodeURIComponent(helpfulMsg)}${clientParam}${pendingUrl}`);
+      }
+    }
+
+    // 6. Encrypt and store tokens in Central Vault ONLY after file access is verified
     await saveIntegrationTokens({
       clientKey,
       clientName,
@@ -117,17 +138,15 @@ export default async function handler(req, res) {
         displayName,
         accountName: accountLabel,
         tenantName: accountLabel,
-        url: statePayload?.url || ""
+        url: statePayload?.url || "",
+        driveId: inspectData?.driveId || "",
+        fileId: inspectData?.fileId || ""
       }
     });
 
-    // 6. Auto-link Excel workbook behind the scenes if link was submitted
-    if (statePayload?.url && masterSheetId) {
+    // 7. Auto-link Excel workbook behind the scenes
+    if (statePayload?.url && masterSheetId && inspectData) {
       try {
-        const inspectData = await inspectExcelWorkbook({
-          url: statePayload.url,
-          clientKey
-        });
         const defaultSheet = inspectData.defaultWorksheet || inspectData.worksheets?.[0]?.name || "Sheet1";
         const candidateRow = inspectData.candidateHeaderRow || 1;
         const suggested = inspectData.suggestedMapping || {};
@@ -157,7 +176,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // 7. Notify staff
+    // 8. Notify staff only upon verified connection
     notifyStaffOnClientConnection({
       clientName,
       tool: "excel",

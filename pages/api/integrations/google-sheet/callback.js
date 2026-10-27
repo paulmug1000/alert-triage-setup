@@ -101,7 +101,27 @@ export default async function handler(req, res) {
       console.warn("Note fetching Google userinfo:", uErr.message);
     }
 
-    // 5. Encrypt and store tokens in Central Vault
+    // 5. If a spreadsheet URL was provided, verify access via user's Google token
+    let inspectData = null;
+    if (statePayload?.url) {
+      try {
+        inspectData = await inspectGoogleSpreadsheet({
+          url: statePayload.url,
+          accessToken: tokens.accessToken
+        });
+      } catch (accessErr) {
+        console.warn(`⚠️ Google Sheet access verification failed for ${clientName} (${userEmail}):`, accessErr.message);
+        const separator = returnUrl.includes("?") ? "&" : "?";
+        const clientParam = clientName && !returnUrl.includes("client=") ? `&client=${encodeURIComponent(clientName)}` : "";
+        const pendingUrl = `&url=${encodeURIComponent(statePayload.url)}`;
+        const helpfulMsg = accessErr.message || (userEmail
+          ? `Your Google account (${userEmail}) does not have permission to access the specified Google Sheet. Please share the Google Sheet with ${userEmail} (Viewer permissions) or sign in with an account that has access.`
+          : `The Google account you signed in with does not have permission to access the specified Google Sheet.`);
+        return res.redirect(`${returnUrl}${separator}integration=googlesheet&status=error&error=file_access_denied&message=${encodeURIComponent(helpfulMsg)}${clientParam}${pendingUrl}`);
+      }
+    }
+
+    // 6. Encrypt and store tokens in Central Vault ONLY after file access is verified
     await saveIntegrationTokens({
       clientKey,
       clientName,
@@ -112,17 +132,14 @@ export default async function handler(req, res) {
         userEmail,
         accountName: userEmail ? `Google Account (${userEmail})` : "Google Account",
         tenantName: userEmail || "Google Account",
-        url: statePayload?.url || ""
+        url: statePayload?.url || "",
+        spreadsheetTitle: inspectData?.title || ""
       }
     });
 
-    // 6. Auto-link Google Sheet behind the scenes if link was submitted
-    if (statePayload?.url && masterSheetId) {
+    // 7. Auto-link Google Sheet behind the scenes
+    if (statePayload?.url && masterSheetId && inspectData) {
       try {
-        const inspectData = await inspectGoogleSpreadsheet({
-          url: statePayload.url,
-          accessToken: tokens.accessToken
-        });
         const defaultTab = inspectData.selectedTab || inspectData.defaultTab || inspectData.tabs?.[0]?.title || "Sheet1";
         const candidateRow = inspectData.candidateHeaderRow || 1;
         const suggested = inspectData.suggestedMapping || {};
@@ -149,7 +166,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // 7. Notify staff
+    // 8. Notify staff only upon verified connection
     notifyStaffOnClientConnection({
       clientName,
       tool: "googlesheet",

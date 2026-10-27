@@ -17,12 +17,14 @@ export default function ExcelLinkModal({
   const resolvedClientSheetId = client?.clientSheetId || clientSheetId || "";
 
   const [excelUrl, setExcelUrl] = useState(() => {
+    if (typeof window !== "undefined") {
+      const pUrl = new URLSearchParams(window.location.search).get("url");
+      if (pUrl) return pUrl;
+    }
     if (currentConfig?.metadata?.url) return currentConfig.metadata.url;
     if (currentConfig?.url) return currentConfig.url;
     if (client?.integrations?.excel?.metadata?.url) return client.integrations.excel.metadata.url;
     if (typeof window !== "undefined") {
-      const pUrl = new URLSearchParams(window.location.search).get("url");
-      if (pUrl) return pUrl;
       const cached = window.sessionStorage.getItem("pulse_pending_excel_url");
       if (cached) return cached;
     }
@@ -53,7 +55,16 @@ export default function ExcelLinkModal({
   const [inspecting, setInspecting] = useState(false);
   const [inspectionData, setInspectionData] = useState(null);
   const [linking, setLinking] = useState(false);
-  const [error, setError] = useState(null);
+  const [error, setError] = useState(() => {
+    if (typeof window !== "undefined") {
+      const p = new URLSearchParams(window.location.search);
+      const isExcel = p.get("integration") === "excel" || p.get("tool") === "excel";
+      if (isExcel && p.get("status") === "error") {
+        return p.get("message") || p.get("error") || null;
+      }
+    }
+    return null;
+  });
 
   const handleSubmitLink = (e) => {
     if (e && e.preventDefault) e.preventDefault();
@@ -291,6 +302,22 @@ export default function ExcelLinkModal({
   };
 
   React.useEffect(() => {
+    if (typeof window !== "undefined") {
+      const p = new URLSearchParams(window.location.search);
+      const isExcel = p.get("integration") === "excel" || p.get("tool") === "excel";
+      if (isExcel && p.get("status") === "error") {
+        const msg = p.get("message") || p.get("error");
+        if (msg) setError(msg);
+        const queryUrl = p.get("url");
+        if (queryUrl && !excelUrl) {
+          setExcelUrl(queryUrl);
+          setIsLinkSubmitted(true);
+        }
+      }
+    }
+  }, [isOpen]);
+
+  React.useEffect(() => {
     if (isLinkSubmitted && isConnected && excelUrl && excelUrl.trim() && !inspectionData && !inspecting && !isClientView) {
       handleInspect();
     }
@@ -450,7 +477,7 @@ export default function ExcelLinkModal({
               )}
               <p style={{ margin: "0 0 12px 0", fontSize: isClientView ? "14px" : "12.5px", color: isClientView ? "#1e293b" : "#475569", lineHeight: "1.5", fontWeight: isClientView ? 500 : 400 }}>
                 {isClientView
-                  ? "To start, please enter the OneDrive or SharePoint URL of your Excel spreadsheet:"
+                  ? "To start, please enter the OneDrive or SharePoint URL of your CRM Excel spreadsheet:"
                   : "Paste the OneDrive or SharePoint web link to your Excel workbook."}
               </p>
               <form onSubmit={handleSubmitLink} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>

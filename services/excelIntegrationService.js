@@ -456,7 +456,7 @@ export async function linkExcelToClient({
 
   const sheets = await getSheetsClient();
   const rowNumStr = String(headerRowNum || "1").trim();
-  const cleanRange = String(rangeAddress || "").trim();
+  const cleanRange = String(rangeAddress || "").trim() || "usedRange";
   const cleanKeyHeaders = String(keyHeaders || "").trim();
 
   const updates = [

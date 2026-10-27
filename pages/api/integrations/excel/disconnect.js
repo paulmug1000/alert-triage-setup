@@ -6,8 +6,9 @@
 
 import { getSessionUser } from "../../../../services/authService.js";
 import { getSheetsClient, withRetry } from "../../../../services/sheetsClient.js";
-import { deleteIntegrationTokens } from "../../../../services/vaultService.js";
+import { deleteIntegrationTokens, invalidateIntegrationsCache } from "../../../../services/vaultService.js";
 import { updateClientChecklistTask } from "../../../../services/setupService.js";
+import { redisClient } from "../../../../services/redisClient.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -63,6 +64,22 @@ export default async function handler(req, res) {
         userEmail: sessionUser.email || "System"
       });
     } catch (e) {}
+
+    // 4. Invalidate Redis setup cache
+    const cleanClient = String(clientKey || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
+    const redisKey = `pulse:setup:${cleanClient}`;
+    if (redisClient?.isOpen) {
+      try {
+        const raw = await redisClient.get(redisKey);
+        if (raw) {
+          const prev = JSON.parse(raw);
+          delete prev.excel;
+          await redisClient.set(redisKey, JSON.stringify(prev));
+        }
+      } catch (e) {}
+    }
+
+    await invalidateIntegrationsCache();
 
     return res.status(200).json({
       success: true,

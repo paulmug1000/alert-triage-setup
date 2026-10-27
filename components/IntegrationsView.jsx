@@ -432,7 +432,7 @@ export default function IntegrationsView({
                 ? `${client.clientName} unlinked from Central Advisor Account.`
                 : `Xero disconnected and revoked for ${client.clientName}.`
             });
-            await fetchAllStatus(true);
+            await fetchAllStatus(true, true);
           } else {
             setFeedback({ type: "error", message: data.error || "Failed to disconnect." });
           }
@@ -470,7 +470,7 @@ export default function IntegrationsView({
       const data = await res.json();
       if (data.success) {
         setFeedback({ type: "success", message: `Active organisation for ${client.clientName} linked to "${targetName}".` });
-        await fetchAllStatus(true);
+        await fetchAllStatus(true, true);
       } else {
         setFeedback({ type: "error", message: data.error || "Failed to switch organisation." });
       }
@@ -515,7 +515,7 @@ export default function IntegrationsView({
           const data = await res.json();
           if (data.success) {
             setFeedback({ type: "info", message: `QuickBooks disconnected and revoked for ${client.clientName}.` });
-            await fetchAllStatus(true);
+            await fetchAllStatus(true, true);
           } else {
             setFeedback({ type: "error", message: data.error || "Failed to disconnect." });
           }
@@ -582,7 +582,7 @@ export default function IntegrationsView({
           const data = await res.json();
           if (data.success) {
             setFeedback({ type: "info", message: `${cfg.name} disconnected for ${client.clientName}.` });
-            await fetchAllStatus(true);
+            await fetchAllStatus(true, true);
           } else {
             setFeedback({ type: "error", message: data.error || "Failed to disconnect." });
           }

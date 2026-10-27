@@ -243,9 +243,10 @@ export async function getClientSetupConfig({ clientName, masterSheetId, forceShe
   } else if (!crmStatus?.connected && cleanCrm.includes("excel")) {
     if (config?.excel?.fileId || config?.excel?.driveId) {
       crmStatus = {
-        connected: true,
+        connected: false,
+        reconnectRequired: true,
         tool: "excel",
-        status: "connected",
+        status: "reconnect_required",
         tenantName: config?.excel?.sheetName || "Sheet1",
         companyName: config?.excel?.sheetName || "Sheet1"
       };

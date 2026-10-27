@@ -110,11 +110,17 @@ const CRM_TOOLS_CONFIG = {
 // ============================================================================
 // HELPER FUNCTIONS: RESOLVE CONFIGURED TOOLS (KEYINFO + FALLBACK)
 // ============================================================================
-export {
+import {
   getAccountingToolType,
   getCrmToolType,
   calculateIntegrationsAttentionCount
 } from "../utils/integrationsBadge";
+
+export {
+  getAccountingToolType,
+  getCrmToolType,
+  calculateIntegrationsAttentionCount
+};
 
 export default function IntegrationsView({
   allOutgoingsClients = [],

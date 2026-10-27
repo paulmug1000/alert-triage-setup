@@ -15,18 +15,14 @@ function resolveCrmStatus(crmTool, statusObj = {}) {
   const generalStatus = statusObj.crmStatus || {};
 
   const isConnected = Boolean(specificStatus.connected || generalStatus.connected);
-  const isUnhealthy = Boolean(
+  const reconnectNeeded = Boolean(
     specificStatus.reconnectRequired ||
     generalStatus.reconnectRequired ||
-    specificStatus.isExpired ||
-    generalStatus.isExpired ||
     specificStatus.status === "reconnect_required" ||
-    generalStatus.status === "reconnect_required" ||
-    specificStatus.status === "error" ||
-    generalStatus.status === "error"
+    generalStatus.status === "reconnect_required"
   );
 
-  const isHealthy = isConnected && !isUnhealthy;
+  const isHealthy = isConnected && !reconnectNeeded;
   const displayCrm = isGoogleSheet
     ? "Google Sheet"
     : isExcel
@@ -527,9 +523,7 @@ export default function HomeView({
               const accHealthy = Boolean(
                 statusObj.accountingStatus?.connected &&
                 !statusObj.accountingStatus?.reconnectRequired &&
-                !statusObj.accountingStatus?.isExpired &&
-                statusObj.accountingStatus?.status !== "reconnect_required" &&
-                statusObj.accountingStatus?.status !== "error"
+                statusObj.accountingStatus?.status !== "reconnect_required"
               );
 
               return (
@@ -667,9 +661,7 @@ export default function HomeView({
                   const accHealthy = Boolean(
                     statusObj.accountingStatus?.connected &&
                     !statusObj.accountingStatus?.reconnectRequired &&
-                    !statusObj.accountingStatus?.isExpired &&
-                    statusObj.accountingStatus?.status !== "reconnect_required" &&
-                    statusObj.accountingStatus?.status !== "error"
+                    statusObj.accountingStatus?.status !== "reconnect_required"
                   );
                   const crmInfo = resolveCrmStatus(crmTool, statusObj);
 

@@ -37,10 +37,33 @@ export default async function handler(req, res) {
 
   const { code, state, error, error_description } = req.query;
 
-  // Handle user cancellation or denial
+  // 1. Decode state early to extract redirectBack and client context
+  let statePayload = null;
+  if (state) {
+    try {
+      const stateJson = Buffer.from(state, "base64url").toString("utf8");
+      statePayload = JSON.parse(stateJson);
+    } catch (err) {
+      console.warn("Invalid state token structure in Xero callback:", err.message);
+    }
+  }
+
+  const defaultReturnUrl = statePayload?.redirectBack || "/pulse";
+  let returnUrl = sanitizeRedirectUrl(statePayload?.redirectBack, defaultReturnUrl);
+  if (returnUrl.startsWith("/pma") && !returnUrl.includes("nav=")) {
+    const sep = returnUrl.includes("?") ? "&" : "?";
+    returnUrl = `${returnUrl}${sep}nav=integrations`;
+  }
+  const clientKey = statePayload?.clientKey || statePayload?.clientName || "";
+  const clientName = statePayload?.clientName || clientKey;
+  const masterSheetId = statePayload?.masterSheetId;
+
+  // 2. Handle user cancellation or denial gracefully
   if (error) {
-    console.warn("⚠️ Xero OAuth denied by user:", error, error_description);
-    return res.redirect(`/portal?integration=xero&status=denied&error=${encodeURIComponent(error_description || error)}`);
+    console.warn("⚠️ Xero OAuth cancelled or denied by user:", error, error_description);
+    const sep = returnUrl.includes("?") ? "&" : "?";
+    const clientParam = clientName && !returnUrl.includes("client=") ? `&client=${encodeURIComponent(clientName)}` : "";
+    return res.redirect(`${returnUrl}${sep}integration=xero&status=denied&error=${encodeURIComponent(error_description || error)}${clientParam}`);
   }
 
   if (!code || !state) {
@@ -60,15 +83,7 @@ export default async function handler(req, res) {
     `pulse_xero_verifier=; ${clearCookieOptions}`
   ]);
 
-  let statePayload = null;
-  try {
-    const stateJson = Buffer.from(state, "base64url").toString("utf8");
-    statePayload = JSON.parse(stateJson);
-  } catch (err) {
-    return res.status(400).json({ error: "Invalid state token structure." });
-  }
-
-  if (!savedNonce || statePayload.nonce !== savedNonce) {
+  if (!savedNonce || statePayload?.nonce !== savedNonce) {
     return res.status(403).json({ error: "State nonce verification failed (potential CSRF attempt)." });
   }
 
@@ -276,8 +291,8 @@ export default async function handler(req, res) {
       mode: isDedicated ? "dedicated" : "shared"
     }).catch(err => console.error("Notification email error:", err.message));
 
-    const returnUrl = sanitizeRedirectUrl(statePayload?.redirectBack, "/pma");
     const separator = returnUrl.includes("?") ? "&" : "?";
+    const clientParam = clientName && !returnUrl.includes("client=") ? `&client=${encodeURIComponent(clientName)}` : "";
     const redirectParams = new URLSearchParams({
       integration: "xero",
       status: "success",
@@ -289,12 +304,12 @@ export default async function handler(req, res) {
       redirectParams.set("shared", "true");
       redirectParams.set("linkedCount", String(tenants.length));
     }
-    return res.redirect(`${returnUrl}${separator}${redirectParams.toString()}`);
+    return res.redirect(`${returnUrl}${separator}${redirectParams.toString()}${clientParam}`);
 
   } catch (err) {
     console.error("Xero OAuth callback processing error:", err);
-    const returnUrl = sanitizeRedirectUrl(statePayload?.redirectBack, "/pma");
     const separator = returnUrl.includes("?") ? "&" : "?";
-    return res.redirect(`${returnUrl}${separator}integration=xero&status=error&message=${encodeURIComponent(err.message)}`);
+    const clientParam = clientName && !returnUrl.includes("client=") ? `&client=${encodeURIComponent(clientName)}` : "";
+    return res.redirect(`${returnUrl}${separator}integration=xero&status=error&message=${encodeURIComponent(err.message)}${clientParam}`);
   }
 }

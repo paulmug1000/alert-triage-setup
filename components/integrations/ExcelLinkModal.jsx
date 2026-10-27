@@ -28,6 +28,15 @@ export default function ExcelLinkModal({
     }
     return "";
   });
+  const [isLinkSubmitted, setIsLinkSubmitted] = useState(() => {
+    const hasConfigUrl = Boolean(
+      currentConfig?.metadata?.url ||
+      currentConfig?.url ||
+      client?.integrations?.excel?.metadata?.url
+    );
+    const hasQueryUrl = typeof window !== "undefined" && Boolean(new URLSearchParams(window.location.search).get("url"));
+    return (hasConfigUrl && Boolean(currentConfig?.connected || client?.integrations?.excel?.connected)) || hasQueryUrl;
+  });
   const [driveId, setDriveId] = useState(currentConfig?.metadata?.driveId || currentConfig?.driveId || "");
   const [fileId, setFileId] = useState(currentConfig?.metadata?.fileId || currentConfig?.fileId || "");
   const [sheetName, setSheetName] = useState(currentConfig?.metadata?.sheetName || currentConfig?.sheetName || "");
@@ -45,6 +54,31 @@ export default function ExcelLinkModal({
   const [inspectionData, setInspectionData] = useState(null);
   const [linking, setLinking] = useState(false);
   const [error, setError] = useState(null);
+
+  const handleSubmitLink = (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    const trimmed = (excelUrl || "").trim();
+    if (!trimmed) {
+      setError("Please paste your Excel workbook link.");
+      return;
+    }
+    if (trimmed.includes("docs.google.com")) {
+      setError("This looks like a Google Sheet link. Please use the Google Sheet CRM integration instead.");
+      return;
+    }
+    if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
+      setError("Please enter a valid web link starting with https://");
+      return;
+    }
+    setError(null);
+    if (typeof window !== "undefined") {
+      window.sessionStorage.setItem("pulse_pending_excel_url", trimmed);
+    }
+    setIsLinkSubmitted(true);
+    if (isConnected && !isClientView) {
+      handleInspect();
+    }
+  };
 
   const isConnected = Boolean(
     currentConfig?.connected ||
@@ -257,10 +291,10 @@ export default function ExcelLinkModal({
   };
 
   React.useEffect(() => {
-    if (isConnected && excelUrl && excelUrl.trim() && !inspectionData && !inspecting) {
+    if (isLinkSubmitted && isConnected && excelUrl && excelUrl.trim() && !inspectionData && !inspecting && !isClientView) {
       handleInspect();
     }
-  }, [isConnected]);
+  }, [isLinkSubmitted, isConnected]);
 
   const handleOAuthConnect = () => {
     if (!excelUrl.trim()) {
@@ -402,164 +436,210 @@ export default function ExcelLinkModal({
             </div>
           )}
 
-          {/* 1. Excel Workbook URL */}
-          <div style={{ marginBottom: "20px" }}>
-            <label style={{ display: "block", fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#64748b", marginBottom: "8px" }}>
-              1. Excel workbook URL
-            </label>
-            <p style={{ margin: "0 0 10px 0", fontSize: "12px", color: "#475569", lineHeight: "1.4" }}>
-              Paste the OneDrive or SharePoint web link to your Excel workbook.
-            </p>
-            <div style={{ display: "flex", gap: "8px" }}>
-              <input
-                type="text"
-                value={excelUrl}
-                onChange={(e) => handleExcelUrlChange(e.target.value)}
-                placeholder="https://...sharepoint.com/:x:/... or OneDrive link"
-                style={{
-                  flex: 1,
-                  padding: "9px 12px",
-                  borderRadius: "7px",
-                  border: "1px solid #cbd5e1",
-                  fontSize: "13px",
-                  boxSizing: "border-box"
-                }}
-              />
-              {isConnected && !isClientView && (
-                <button
-                  type="button"
-                  onClick={() => handleInspect()}
-                  disabled={inspecting || !excelUrl.trim()}
-                  style={{
-                    padding: "9px 16px",
-                    borderRadius: "7px",
-                    border: "none",
-                    background: "#0f6cbd",
-                    color: "#ffffff",
-                    fontSize: "12.5px",
-                    fontWeight: "600",
-                    cursor: inspecting || !excelUrl.trim() ? "not-allowed" : "pointer",
-                    whiteSpace: "nowrap",
-                    opacity: !excelUrl.trim() ? 0.6 : 1
-                  }}
-                >
-                  {inspecting ? "Saving..." : "Save"}
-                </button>
-              )}
-            </div>
-            {excelUrl.trim() && excelUrl.includes("docs.google.com") && (
-              <div style={{ marginTop: "6px", fontSize: "11.5px", color: "#b91c1c" }}>
-                This looks like a Google Sheet link. Please use the Google Sheet CRM integration instead.
-              </div>
-            )}
-          </div>
-
-          {/* 2. Microsoft 365 Account Authorization */}
-          <div style={{ marginBottom: isClientView ? "16px" : "20px" }}>
-            <label style={{ display: "block", fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#64748b", marginBottom: "8px" }}>
-              2. Microsoft 365 account authorization
-            </label>
-            {isConnected ? (
-              <div
-                style={{
-                  background: "#eff6ff",
-                  border: "1px solid #bfdbfe",
-                  borderRadius: "8px",
-                  padding: "10px 14px",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between"
-                }}
-              >
-                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                  <span style={{ color: "#1d4ed8", fontSize: "14px", fontWeight: "700" }}>✓</span>
-                  <div>
-                    <div style={{ fontSize: "12px", color: "#1d4ed8", fontWeight: "600" }}>
-                      Connected to {connectedEmail}
-                    </div>
-                    <div style={{ fontSize: "11px", color: "#2563eb" }}>
-                      {isClientView ? "Authorized via Microsoft Graph. Ready to save workbook below." : "Ready to inspect workbook and map columns."}
-                    </div>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={handleOAuthConnect}
-                  style={{
-                    background: "none",
-                    border: "none",
-                    color: "#2563eb",
-                    fontSize: "11px",
-                    fontWeight: "600",
-                    textDecoration: "underline",
-                    cursor: "pointer",
-                    whiteSpace: "nowrap"
-                  }}
-                >
-                  Switch account
-                </button>
-              </div>
-            ) : (
-              <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "8px", padding: "14px" }}>
-                <p style={{ margin: "0 0 10px 0", fontSize: "12px", color: "#475569", lineHeight: "1.4" }}>
-                  Sign in to grant Pulse read-only access to your OneDrive or SharePoint Excel workbook.
-                </p>
-                <button
-                  type="button"
-                  onClick={handleOAuthConnect}
+          {/* 1. Excel Workbook URL (Initial Entry) */}
+          {!isLinkSubmitted && (
+            <div style={{ marginBottom: "20px" }}>
+              <label style={{ display: "block", fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#64748b", marginBottom: "8px" }}>
+                1. Paste link to your Excel workbook
+              </label>
+              <p style={{ margin: "0 0 10px 0", fontSize: "12.5px", color: "#475569", lineHeight: "1.4" }}>
+                Paste the OneDrive or SharePoint web link to your Excel workbook.
+              </p>
+              <form onSubmit={handleSubmitLink} style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                <input
+                  type="text"
+                  value={excelUrl}
+                  onChange={(e) => handleExcelUrlChange(e.target.value)}
+                  placeholder="https://...sharepoint.com/:x:/... or OneDrive link"
                   style={{
                     width: "100%",
-                    padding: "9px 14px",
-                    borderRadius: "8px",
+                    padding: "9px 12px",
+                    borderRadius: "7px",
                     border: "1px solid #cbd5e1",
-                    background: "#ffffff",
-                    color: "#1e293b",
-                    fontSize: "12.5px",
-                    fontWeight: "600",
-                    cursor: "pointer",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    gap: "8px",
-                    boxShadow: "0 1px 2px rgba(0,0,0,0.05)"
+                    fontSize: "13px",
+                    boxSizing: "border-box"
                   }}
-                >
-                  <svg width="16" height="16" viewBox="0 0 23 23">
-                    <path fill="#f35325" d="M1 1h10v10H1z" />
-                    <path fill="#81bc06" d="M12 1h10v10H12z" />
-                    <path fill="#05a6f0" d="M1 12h10v10H1z" />
-                    <path fill="#ffba08" d="M12 12h10v10H12z" />
-                  </svg>
-                  <span>Sign in with Microsoft 365 to authorize</span>
-                </button>
-              </div>
-            )}
-          </div>
+                />
+                {excelUrl.trim() && excelUrl.includes("docs.google.com") && (
+                  <div style={{ fontSize: "11.5px", color: "#b91c1c" }}>
+                    This looks like a Google Sheet link. Please use the Google Sheet CRM integration instead.
+                  </div>
+                )}
+                <div>
+                  <button
+                    type="submit"
+                    disabled={!excelUrl.trim()}
+                    style={{
+                      padding: "9px 18px",
+                      borderRadius: "7px",
+                      border: "none",
+                      background: "#0f6cbd",
+                      color: "#ffffff",
+                      fontSize: "13px",
+                      fontWeight: "600",
+                      cursor: !excelUrl.trim() ? "not-allowed" : "pointer",
+                      opacity: !excelUrl.trim() ? 0.6 : 1,
+                      boxShadow: "0 1px 2px rgba(0,0,0,0.05)"
+                    }}
+                  >
+                    Submit link
+                  </button>
+                </div>
+              </form>
+            </div>
+          )}
 
-          {/* Client View: Primary Save Button */}
-          {isClientView && isConnected && (
-            <div style={{ marginBottom: "16px" }}>
-              <button
-                type="button"
-                onClick={handleClientSave}
-                disabled={linking || !excelUrl.trim()}
+          {/* Step 1 Confirmed & Step 2 Authorisation (Revealed only after link is submitted) */}
+          {isLinkSubmitted && (
+            <>
+              {/* Confirmed Step 1 */}
+              <div
                 style={{
-                  width: "100%",
-                  padding: "10px 16px",
-                  borderRadius: "7px",
-                  border: "none",
-                  background: "#0f6cbd",
-                  color: "#ffffff",
-                  fontSize: "13px",
-                  fontWeight: "600",
-                  cursor: linking || !excelUrl.trim() ? "not-allowed" : "pointer",
-                  boxShadow: "0 1px 2px rgba(0,0,0,0.05)",
-                  opacity: !excelUrl.trim() ? 0.6 : 1
+                  marginBottom: "20px",
+                  background: "#f8fafc",
+                  border: "1px solid #e2e8f0",
+                  borderRadius: "8px",
+                  padding: "12px 14px"
                 }}
               >
-                {linking ? "Saving..." : "Save Excel workbook"}
-              </button>
-            </div>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#0369a1", display: "flex", alignItems: "center", gap: "6px" }}>
+                      <span>✓</span>
+                      <span>1. Excel workbook link submitted</span>
+                    </div>
+                    <div style={{ fontSize: "12px", color: "#0f172a", marginTop: "4px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "monospace" }}>
+                      {excelUrl}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsLinkSubmitted(false)}
+                    style={{
+                      background: "none",
+                      border: "1px solid #cbd5e1",
+                      borderRadius: "6px",
+                      padding: "5px 10px",
+                      color: "#475569",
+                      fontSize: "11.5px",
+                      fontWeight: "600",
+                      cursor: "pointer",
+                      whiteSpace: "nowrap"
+                    }}
+                  >
+                    Change link
+                  </button>
+                </div>
+              </div>
+
+              {/* 2. Microsoft 365 Account Authorisation */}
+              <div style={{ marginBottom: isClientView ? "16px" : "20px" }}>
+                <label style={{ display: "block", fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#64748b", marginBottom: "8px" }}>
+                  2. Microsoft 365 account authorisation
+                </label>
+                {isConnected ? (
+                  <div
+                    style={{
+                      background: "#eff6ff",
+                      border: "1px solid #bfdbfe",
+                      borderRadius: "8px",
+                      padding: "10px 14px",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between"
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <span style={{ color: "#1d4ed8", fontSize: "14px", fontWeight: "700" }}>✓</span>
+                      <div>
+                        <div style={{ fontSize: "12px", color: "#1d4ed8", fontWeight: "600" }}>
+                          Connected to {connectedEmail}
+                        </div>
+                        <div style={{ fontSize: "11px", color: "#2563eb" }}>
+                          {isClientView ? "Authorised via Microsoft Graph. Ready to save workbook below." : "Ready to inspect workbook and map columns."}
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleOAuthConnect}
+                      style={{
+                        background: "none",
+                        border: "none",
+                        color: "#2563eb",
+                        fontSize: "11px",
+                        fontWeight: "600",
+                        textDecoration: "underline",
+                        cursor: "pointer",
+                        whiteSpace: "nowrap"
+                      }}
+                    >
+                      Switch account
+                    </button>
+                  </div>
+                ) : (
+                  <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "8px", padding: "14px" }}>
+                    <p style={{ margin: "0 0 10px 0", fontSize: "12px", color: "#475569", lineHeight: "1.4" }}>
+                      Sign in to grant Pulse read-only access to your OneDrive or SharePoint Excel workbook.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={handleOAuthConnect}
+                      style={{
+                        width: "100%",
+                        padding: "10px 14px",
+                        borderRadius: "8px",
+                        border: "1px solid #cbd5e1",
+                        background: "#ffffff",
+                        color: "#1e293b",
+                        fontSize: "12.5px",
+                        fontWeight: "600",
+                        cursor: "pointer",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        gap: "8px",
+                        boxShadow: "0 1px 2px rgba(0,0,0,0.05)"
+                      }}
+                    >
+                      <svg width="16" height="16" viewBox="0 0 23 23">
+                        <path fill="#f35325" d="M1 1h10v10H1z" />
+                        <path fill="#81bc06" d="M12 1h10v10H12z" />
+                        <path fill="#05a6f0" d="M1 12h10v10H1z" />
+                        <path fill="#ffba08" d="M12 12h10v10H12z" />
+                      </svg>
+                      <span>Authorise with Microsoft 365</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Client View: Primary Save Button */}
+              {isClientView && isConnected && (
+                <div style={{ marginBottom: "16px" }}>
+                  <button
+                    type="button"
+                    onClick={handleClientSave}
+                    disabled={linking || !excelUrl.trim()}
+                    style={{
+                      width: "100%",
+                      padding: "10px 16px",
+                      borderRadius: "7px",
+                      border: "none",
+                      background: "#0f6cbd",
+                      color: "#ffffff",
+                      fontSize: "13px",
+                      fontWeight: "600",
+                      cursor: linking || !excelUrl.trim() ? "not-allowed" : "pointer",
+                      boxShadow: "0 1px 2px rgba(0,0,0,0.05)",
+                      opacity: !excelUrl.trim() ? 0.6 : 1
+                    }}
+                  >
+                    {linking ? "Saving..." : "Save Excel workbook"}
+                  </button>
+                </div>
+              )}
+            </>
           )}
 
           {/* Worksheet Selection and Column Mapping */}

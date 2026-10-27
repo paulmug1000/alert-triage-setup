@@ -4,7 +4,11 @@
  * ============================================================================
  */
 
-import { exchangeExcelCodeForTokens } from "../../../../services/excelIntegrationService.js";
+import {
+  exchangeExcelCodeForTokens,
+  inspectExcelWorkbook,
+  linkExcelToClient
+} from "../../../../services/excelIntegrationService.js";
 import { saveIntegrationTokens } from "../../../../services/vaultService.js";
 import { notifyStaffOnClientConnection } from "../../../../services/connectionNotifier.js";
 import { sanitizeRedirectUrl } from "../../../../utils/helpers.js";
@@ -25,9 +29,33 @@ export default async function handler(req, res) {
 
   const { code, state, error, error_description } = req.query;
 
+  // 1. Decode state early to extract redirectBack, client, and pending URL context
+  let statePayload = null;
+  if (state) {
+    try {
+      const stateJson = Buffer.from(state, "base64url").toString("utf8");
+      statePayload = JSON.parse(stateJson);
+    } catch (err) {
+      console.warn("Invalid state token structure:", err.message);
+    }
+  }
+
+  const defaultReturnUrl = statePayload?.redirectBack || "/pulse";
+  let returnUrl = sanitizeRedirectUrl(statePayload?.redirectBack, defaultReturnUrl);
+  if (returnUrl.startsWith("/pma") && !returnUrl.includes("nav=")) {
+    const sep = returnUrl.includes("?") ? "&" : "?";
+    returnUrl = `${returnUrl}${sep}nav=integrations`;
+  }
+  const clientKey = statePayload?.clientKey || statePayload?.clientName || "";
+  const clientName = statePayload?.clientName || clientKey;
+  const masterSheetId = statePayload?.masterSheetId;
+
+  // 2. Handle user cancellation or denial gracefully
   if (error) {
-    console.warn("⚠️ Excel OAuth denied by user:", error, error_description);
-    return res.redirect(`/pulse?integration=excel&status=denied&error=${encodeURIComponent(error_description || error)}`);
+    console.warn("⚠️ Excel OAuth cancelled or denied by user:", error, error_description);
+    const sep = returnUrl.includes("?") ? "&" : "?";
+    const clientParam = clientName && !returnUrl.includes("client=") ? `&client=${encodeURIComponent(clientName)}` : "";
+    return res.redirect(`${returnUrl}${sep}integration=excel&status=denied&error=${encodeURIComponent(error_description || error)}${clientParam}`);
   }
 
   if (!code || !state) {
@@ -41,15 +69,7 @@ export default async function handler(req, res) {
   const clearCookieOptions = `Path=/api/integrations/excel; HttpOnly; SameSite=Lax; Max-Age=0${isProd ? "; Secure" : ""}`;
   res.setHeader("Set-Cookie", `pulse_excel_nonce=; ${clearCookieOptions}`);
 
-  let statePayload = null;
-  try {
-    const stateJson = Buffer.from(state, "base64url").toString("utf8");
-    statePayload = JSON.parse(stateJson);
-  } catch (err) {
-    return res.status(400).json({ error: "Invalid state token structure." });
-  }
-
-  if (!savedNonce || statePayload.nonce !== savedNonce) {
+  if (!savedNonce || statePayload?.nonce !== savedNonce) {
     return res.status(403).json({ error: "State nonce verification failed (potential CSRF attempt)." });
   }
 
@@ -61,17 +81,13 @@ export default async function handler(req, res) {
     const proto = req.headers["x-forwarded-proto"] || (host.includes("localhost") ? "http" : "https");
     const redirectUri = `${proto}://${host}/api/integrations/excel/callback`;
 
-    // 1. Exchange code
+    // 3. Exchange authorization code for tokens
     const tokens = await exchangeExcelCodeForTokens({
       code,
       redirectUri
     });
 
-    const clientKey = statePayload.clientKey || statePayload.clientName;
-    const clientName = statePayload.clientName || clientKey;
-    const masterSheetId = statePayload.masterSheetId;
-
-    // 2. Fetch user profile from Microsoft Graph
+    // 4. Fetch user profile from Microsoft Graph
     let userEmail = "";
     let displayName = "";
     try {
@@ -89,7 +105,7 @@ export default async function handler(req, res) {
 
     const accountLabel = userEmail ? `${displayName ? displayName + " " : ""}(${userEmail})` : "Microsoft 365 Account";
 
-    // 3. Encrypt and store tokens in Central Vault
+    // 5. Encrypt and store tokens in Central Vault
     await saveIntegrationTokens({
       clientKey,
       clientName,
@@ -100,11 +116,48 @@ export default async function handler(req, res) {
         userEmail,
         displayName,
         accountName: accountLabel,
-        tenantName: accountLabel
+        tenantName: accountLabel,
+        url: statePayload?.url || ""
       }
     });
 
-    // Notify staff
+    // 6. Auto-link Excel workbook behind the scenes if link was submitted
+    if (statePayload?.url && masterSheetId) {
+      try {
+        const inspectData = await inspectExcelWorkbook({
+          url: statePayload.url,
+          clientKey
+        });
+        const defaultSheet = inspectData.defaultWorksheet || inspectData.worksheets?.[0]?.name || "Sheet1";
+        const candidateRow = inspectData.candidateHeaderRow || 1;
+        const suggested = inspectData.suggestedMapping || {};
+        const keyHeaders = [
+          suggested.clientCol || "Client",
+          suggested.jobCol || "Job",
+          suggested.revCol || "None",
+          suggested.startCol || "None",
+          suggested.endCol || "None",
+          suggested.likeCol || "None"
+        ].join(", ");
+
+        await linkExcelToClient({
+          clientKey,
+          masterSheetId,
+          url: statePayload.url,
+          driveId: inspectData.driveId,
+          fileId: inspectData.fileId,
+          sheetName: defaultSheet,
+          rangeAddress: inspectData.rangeAddress,
+          headerRowNum: candidateRow,
+          keyHeaders
+        });
+        console.log(`✅ Auto-linked Excel workbook for ${clientName}`);
+      } catch (autoLinkErr) {
+        console.warn(`Auto-link Excel workbook notice for ${clientName}:`, autoLinkErr.message);
+      }
+    }
+
+    // 7. Notify staff
     notifyStaffOnClientConnection({
       clientName,
       tool: "excel",
@@ -112,24 +165,20 @@ export default async function handler(req, res) {
       masterSheetId
     }).catch(err => console.error("Notification email error:", err.message));
 
-    let returnUrl = sanitizeRedirectUrl(statePayload?.redirectBack, "/pma?nav=integrations");
-    if (returnUrl.startsWith("/pma") && !returnUrl.includes("nav=")) {
-      const sep = returnUrl.includes("?") ? "&" : "?";
-      returnUrl = `${returnUrl}${sep}nav=integrations`;
-    }
     const separator = returnUrl.includes("?") ? "&" : "?";
+    const clientParam = clientName && !returnUrl.includes("client=") ? `&client=${encodeURIComponent(clientName)}` : "";
     const pendingUrl = statePayload?.url ? `&url=${encodeURIComponent(statePayload.url)}` : "";
-    return res.redirect(`${returnUrl}${separator}integration=excel&status=success&modal=picker&account=${encodeURIComponent(accountLabel)}&client=${encodeURIComponent(clientName)}&masterSheetId=${encodeURIComponent(masterSheetId || "")}&tenant=${encodeURIComponent(accountLabel)}${pendingUrl}`);
+    
+    // For client portal (/pulse), DO NOT pass modal=picker so modal doesn't pop up over confirmation
+    const isPmaReturn = returnUrl.startsWith("/pma");
+    const modalParam = isPmaReturn ? "&modal=picker" : "";
+
+    return res.redirect(`${returnUrl}${separator}integration=excel&status=success&account=${encodeURIComponent(accountLabel)}${clientParam}&tenant=${encodeURIComponent(accountLabel)}${pendingUrl}${modalParam}`);
 
   } catch (err) {
     console.error("Excel OAuth callback error:", err);
-    let returnUrl = sanitizeRedirectUrl(statePayload?.redirectBack, "/pma?nav=integrations");
-    if (returnUrl.startsWith("/pma") && !returnUrl.includes("nav=")) {
-      const sep = returnUrl.includes("?") ? "&" : "?";
-      returnUrl = `${returnUrl}${sep}nav=integrations`;
-    }
     const separator = returnUrl.includes("?") ? "&" : "?";
-    const clientName = statePayload?.clientName || statePayload?.clientKey || "";
-    return res.redirect(`${returnUrl}${separator}integration=excel&status=error&message=${encodeURIComponent(err.message)}&client=${encodeURIComponent(clientName)}`);
+    const clientParam = clientName && !returnUrl.includes("client=") ? `&client=${encodeURIComponent(clientName)}` : "";
+    return res.redirect(`${returnUrl}${separator}integration=excel&status=error&message=${encodeURIComponent(err.message)}${clientParam}`);
   }
 }

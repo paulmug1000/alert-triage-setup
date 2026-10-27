@@ -22,6 +22,18 @@ export default function SetupHoldingGate({
   const [clientDropdownOpen, setClientDropdownOpen] = useState(false);
   const [googleSheetModalOpen, setGoogleSheetModalOpen] = useState(false);
   const [excelModalOpen, setExcelModalOpen] = useState(false);
+  const [liveSetupStatus, setLiveSetupStatus] = useState(setupStatus);
+  const [localFeedback, setLocalFeedback] = useState(oauthFeedback || null);
+
+  useEffect(() => {
+    setLiveSetupStatus(setupStatus);
+  }, [setupStatus]);
+
+  useEffect(() => {
+    if (oauthFeedback) {
+      setLocalFeedback(oauthFeedback);
+    }
+  }, [oauthFeedback]);
 
   // Close dropdowns when clicking outside or pressing Escape
   useEffect(() => {
@@ -45,35 +57,7 @@ export default function SetupHoldingGate({
     };
   }, []);
 
-  // Auto-open modal if returning from Google Sheet or Excel OAuth
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      const params = new URLSearchParams(window.location.search);
-      const integration = params.get("integration") || params.get("tool");
-      const modal = params.get("modal");
-      if (integration === "googlesheet" || modal === "googlesheet") {
-        setGoogleSheetModalOpen(true);
-      } else if (integration === "excel" || modal === "excel") {
-        setExcelModalOpen(true);
-      }
-    }
-  }, []);
-
-  const {
-    requestConnections = false,
-    requiredTools = [],
-    unconnectedTools = [],
-    connectedTools = [],
-    allToolsConnected = false
-  } = setupStatus || {};
-
-  // Determine view mode
-  let viewMode = "holding";
-  if (requestConnections) {
-    viewMode = allToolsConnected ? "completed" : "connect";
-  }
-
-  const getToolDisplayName = (tool) => {
+  const getToolDisplayName = useCallback((tool) => {
     const map = {
       xero: "Xero",
       quickbooks: "QuickBooks Online",
@@ -87,7 +71,92 @@ export default function SetupHoldingGate({
       excel: "Microsoft Excel"
     };
     return map[String(tool).toLowerCase()] || tool;
-  };
+  }, []);
+
+  const refreshSetupStatus = useCallback(async () => {
+    if (!clientName) return;
+    try {
+      const res = await fetch(`/api/setup/status?clientName=${encodeURIComponent(clientName)}&masterSheetId=${encodeURIComponent(masterSheetId || "")}`);
+      const data = await res.json();
+      if (data.success && data.status) {
+        setLiveSetupStatus(data.status);
+      }
+    } catch (e) {
+      // non-fatal
+    }
+  }, [clientName, masterSheetId]);
+
+  const computeRedirectBack = useCallback(() => {
+    if (typeof window === "undefined") {
+      return `/pulse?client=${encodeURIComponent(clientName || "")}${isPreview ? "&preview=setup" : ""}`;
+    }
+    const p = new URLSearchParams(window.location.search);
+    ["integration", "tool", "status", "error", "error_description", "modal", "account", "tenant", "site", "org", "portal", "workspace", "company", "url", "message"].forEach(k => p.delete(k));
+    if (clientName && !p.get("client")) {
+      p.set("client", clientName);
+    }
+    if (isPreview && !p.get("preview")) {
+      p.set("preview", "setup");
+    }
+    const qs = p.toString();
+    return `${window.location.pathname}${qs ? `?${qs}` : ""}`;
+  }, [clientName, isPreview]);
+
+  // Handle OAuth return params, show feedback banner, refresh status, and clean URL
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const integration = params.get("integration") || params.get("tool");
+    const status = params.get("status");
+    const err = params.get("error_description") || params.get("error") || params.get("message");
+
+    if (integration && status) {
+      const displayName = getToolDisplayName(integration);
+      if (status === "success") {
+        setLocalFeedback({
+          type: "success",
+          message: `Thanks for connecting ${displayName}. Pulse is still in setup mode.`
+        });
+        refreshSetupStatus();
+      } else if (status === "denied") {
+        setLocalFeedback({
+          type: "warning",
+          message: `Authorisation for ${displayName} was cancelled. No changes were made to your account. You can connect ${displayName} whenever you're ready by clicking the button below.`
+        });
+      } else if (status === "error") {
+        setLocalFeedback({
+          type: "error",
+          message: `Could not complete the connection to ${displayName}${err ? `: ${err}` : ""}. Please try again below or email hello@pulsedashboard.co.uk if you need help.`
+        });
+      }
+
+      // Clean transient query parameters from URL with replaceState so modals never pop on refresh
+      ["integration", "tool", "status", "error", "error_description", "modal", "account", "tenant", "site", "org", "portal", "workspace", "company", "url", "message"].forEach(k => params.delete(k));
+      if (clientName && !params.get("client")) {
+        params.set("client", clientName);
+      }
+      if (isPreview && !params.get("preview")) {
+        params.set("preview", "setup");
+      }
+      const qs = params.toString();
+      const newUrl = window.location.pathname + (qs ? `?${qs}` : "");
+      window.history.replaceState({}, "", newUrl);
+    }
+  }, [clientName, isPreview, refreshSetupStatus, getToolDisplayName]);
+
+  const {
+    requestConnections = false,
+    requiredTools = [],
+    unconnectedTools = [],
+    connectedTools = [],
+    allToolsConnected = false
+  } = liveSetupStatus || setupStatus || {};
+
+  // Determine view mode
+  let viewMode = "holding";
+  if (requestConnections) {
+    viewMode = allToolsConnected ? "completed" : "connect";
+  }
 
   const getToolButtonColor = (tool) => {
     const t = String(tool).toLowerCase();
@@ -118,7 +187,7 @@ export default function SetupHoldingGate({
       clientName: clientName || "",
       clientKey: clientName || "",
       mode: "dedicated",
-      redirectBack: "/pulse"
+      redirectBack: computeRedirectBack()
     });
     if (masterSheetId) q.set("masterSheetId", masterSheetId);
     if (clientSheetId) q.set("clientSheetId", clientSheetId);
@@ -519,7 +588,7 @@ export default function SetupHoldingGate({
             }}
           >
             {/* OAuth Feedback Notice if returned with error or status */}
-            {oauthFeedback && (
+            {localFeedback && (
               <div
                 style={{
                   marginBottom: "24px",
@@ -528,15 +597,52 @@ export default function SetupHoldingGate({
                   fontSize: "13px",
                   textAlign: "left",
                   display: "flex",
-                  alignItems: "center",
+                  alignItems: "flex-start",
+                  justifyContent: "space-between",
                   gap: "10px",
-                  background: oauthFeedback.type === "success" ? "#ECFDF5" : "#FEF2F2",
-                  border: `1px solid ${oauthFeedback.type === "success" ? "#A7F3D0" : "#FECACA"}`,
-                  color: oauthFeedback.type === "success" ? "#065F46" : "#991B1B"
+                  background:
+                    localFeedback.type === "success"
+                      ? "#ECFDF5"
+                      : localFeedback.type === "warning"
+                      ? "#FFFBEB"
+                      : "#FEF2F2",
+                  border: `1px solid ${
+                    localFeedback.type === "success"
+                      ? "#A7F3D0"
+                      : localFeedback.type === "warning"
+                      ? "#FDE68A"
+                      : "#FECACA"
+                  }`,
+                  color:
+                    localFeedback.type === "success"
+                      ? "#065F46"
+                      : localFeedback.type === "warning"
+                      ? "#92400E"
+                      : "#991B1B"
                 }}
               >
-                <span>{oauthFeedback.type === "success" ? "✓" : "⚠️"}</span>
-                <span>{oauthFeedback.message}</span>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: "10px" }}>
+                  <span style={{ fontSize: "15px", lineHeight: "1.2" }}>
+                    {localFeedback.type === "success" ? "✓" : "⚠️"}
+                  </span>
+                  <span style={{ lineHeight: "1.4" }}>{localFeedback.message}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setLocalFeedback(null)}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    color: "inherit",
+                    fontSize: "15px",
+                    cursor: "pointer",
+                    padding: "0 4px",
+                    lineHeight: "1"
+                  }}
+                  title="Dismiss"
+                >
+                  ✕
+                </button>
               </div>
             )}
 
@@ -758,7 +864,7 @@ export default function SetupHoldingGate({
                     margin: "0 0 14px 0"
                   }}
                 >
-                  All tools connected!
+                  All tools connected
                 </h1>
                 <p
                   style={{
@@ -768,7 +874,7 @@ export default function SetupHoldingGate({
                     margin: "0 0 24px 0"
                   }}
                 >
-                  Thank you! Your tools have been connected successfully. Pulse is currently finalizing your setup - please check back later or email{" "}
+                  Thank you! Your tools have been connected successfully. Pulse is still in setup mode while our team finalises your dashboard configuration. Please check back later or email{" "}
                   <a
                     href="mailto:hello@pulsedashboard.co.uk"
                     style={{
@@ -806,7 +912,7 @@ export default function SetupHoldingGate({
                 </div>
 
                 <div style={{ fontSize: "12px", color: "#64748B" }}>
-                  Your account manager has been notified and will open your dashboard once data verification is complete.
+                  The Pulse team has been notified and will now complete your dashboard setup.
                 </div>
               </div>
             )}
@@ -821,10 +927,14 @@ export default function SetupHoldingGate({
             clientName={clientName}
             masterSheetId={masterSheetId}
             clientSheetId={clientSheetId}
-            redirectBack="/pulse"
+            redirectBack={computeRedirectBack()}
             isClientView={true}
             onSuccess={() => {
-              window.location.reload();
+              setLocalFeedback({
+                type: "success",
+                message: "Thanks for connecting Google Sheet. Pulse is still in setup mode."
+              });
+              refreshSetupStatus();
             }}
           />
         )}
@@ -837,10 +947,14 @@ export default function SetupHoldingGate({
             clientName={clientName}
             masterSheetId={masterSheetId}
             clientSheetId={clientSheetId}
-            redirectBack="/pulse"
+            redirectBack={computeRedirectBack()}
             isClientView={true}
             onSuccess={() => {
-              window.location.reload();
+              setLocalFeedback({
+                type: "success",
+                message: "Thanks for connecting Microsoft Excel. Pulse is still in setup mode."
+              });
+              refreshSetupStatus();
             }}
           />
         )}

@@ -28,6 +28,15 @@ export default function GoogleSheetLinkModal({
     }
     return "";
   });
+  const [isLinkSubmitted, setIsLinkSubmitted] = useState(() => {
+    const hasConfigUrl = Boolean(
+      currentConfig?.metadata?.url ||
+      currentConfig?.url ||
+      client?.integrations?.googlesheet?.metadata?.url
+    );
+    const hasQueryUrl = typeof window !== "undefined" && Boolean(new URLSearchParams(window.location.search).get("url"));
+    return (hasConfigUrl && Boolean(currentConfig?.connected || client?.integrations?.googlesheet?.connected)) || hasQueryUrl;
+  });
   const [selectedTab, setSelectedTab] = useState(currentConfig?.metadata?.tabName || currentConfig?.tabName || "");
   const [headerRowNum, setHeaderRowNum] = useState(
     currentConfig?.metadata?.headerRowNum ? String(currentConfig.metadata.headerRowNum) : ""
@@ -42,6 +51,35 @@ export default function GoogleSheetLinkModal({
   const [inspectionData, setInspectionData] = useState(null);
   const [linking, setLinking] = useState(false);
   const [error, setError] = useState(null);
+
+  const handleSubmitLink = (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    const trimmed = (url || "").trim();
+    if (!trimmed) {
+      setError("Please paste your Google Sheet link.");
+      return;
+    }
+    if (trimmed.includes("sharepoint.com") || trimmed.includes("1drv.ms") || trimmed.includes("live.com")) {
+      setError("This looks like a Microsoft SharePoint/OneDrive link. Please use the Microsoft Excel CRM integration instead.");
+      return;
+    }
+    if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
+      setError("Please enter a valid web link starting with https://");
+      return;
+    }
+    if (!trimmed.includes("docs.google.com/spreadsheets")) {
+      setError("Please paste a valid Google Sheet link (e.g. https://docs.google.com/spreadsheets/d/...).");
+      return;
+    }
+    setError(null);
+    if (typeof window !== "undefined") {
+      window.sessionStorage.setItem("pulse_pending_google_sheet_url", trimmed);
+    }
+    setIsLinkSubmitted(true);
+    if (isConnected && !isClientView) {
+      handleInspect();
+    }
+  };
 
   const isConnected = Boolean(
     currentConfig?.connected ||
@@ -234,10 +272,10 @@ export default function GoogleSheetLinkModal({
   };
 
   React.useEffect(() => {
-    if (isConnected && url && url.trim() && !inspectionData && !inspecting) {
+    if (isLinkSubmitted && isConnected && url && url.trim() && !inspectionData && !inspecting && !isClientView) {
       handleInspect();
     }
-  }, [isConnected]);
+  }, [isLinkSubmitted, isConnected]);
 
   const handleOAuthConnect = () => {
     if (!url.trim()) {
@@ -379,164 +417,210 @@ export default function GoogleSheetLinkModal({
             </div>
           )}
 
-          {/* 1. Google Sheet URL */}
-          <div style={{ marginBottom: "20px" }}>
-            <label style={{ display: "block", fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#64748b", marginBottom: "8px" }}>
-              1. Google Sheet URL
-            </label>
-            <p style={{ margin: "0 0 10px 0", fontSize: "12px", color: "#475569", lineHeight: "1.4" }}>
-              Paste the web link to your Google Sheet CRM.
-            </p>
-            <div style={{ display: "flex", gap: "8px" }}>
-              <input
-                type="text"
-                value={url}
-                onChange={(e) => handleUrlChange(e.target.value)}
-                placeholder="https://docs.google.com/spreadsheets/d/..."
-                style={{
-                  flex: 1,
-                  padding: "9px 12px",
-                  borderRadius: "7px",
-                  border: "1px solid #cbd5e1",
-                  fontSize: "13px",
-                  boxSizing: "border-box"
-                }}
-              />
-              {isConnected && !isClientView && (
-                <button
-                  type="button"
-                  onClick={() => handleInspect()}
-                  disabled={inspecting || !url.trim()}
-                  style={{
-                    padding: "9px 16px",
-                    borderRadius: "7px",
-                    border: "none",
-                    background: "#0f9d58",
-                    color: "#ffffff",
-                    fontSize: "12.5px",
-                    fontWeight: "600",
-                    cursor: inspecting || !url.trim() ? "not-allowed" : "pointer",
-                    whiteSpace: "nowrap",
-                    opacity: !url.trim() ? 0.6 : 1
-                  }}
-                >
-                  {inspecting ? "Saving..." : "Save"}
-                </button>
-              )}
-            </div>
-            {url.trim() && (url.includes("sharepoint.com") || url.includes("1drv.ms") || url.includes("live.com")) && (
-              <div style={{ marginTop: "6px", fontSize: "11.5px", color: "#b91c1c" }}>
-                This looks like a Microsoft SharePoint/OneDrive link. Please use the Microsoft Excel CRM integration instead.
-              </div>
-            )}
-          </div>
-
-          {/* 2. Google Account Authorization */}
-          <div style={{ marginBottom: isClientView ? "16px" : "20px" }}>
-            <label style={{ display: "block", fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#64748b", marginBottom: "8px" }}>
-              2. Google account authorization
-            </label>
-            {isConnected ? (
-              <div
-                style={{
-                  background: "#f0fdf4",
-                  border: "1px solid #bbf7d0",
-                  borderRadius: "8px",
-                  padding: "10px 14px",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between"
-                }}
-              >
-                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                  <span style={{ color: "#166534", fontSize: "14px", fontWeight: "700" }}>✓</span>
-                  <div>
-                    <div style={{ fontSize: "12px", color: "#166534", fontWeight: "600" }}>
-                      Connected to {connectedEmail}
-                    </div>
-                    <div style={{ fontSize: "11px", color: "#15803d" }}>
-                      {isClientView ? "Authorized via Google. Ready to save spreadsheet below." : "Ready to inspect sheet and map columns."}
-                    </div>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={handleOAuthConnect}
-                  style={{
-                    background: "none",
-                    border: "none",
-                    color: "#15803d",
-                    fontSize: "11px",
-                    fontWeight: "600",
-                    textDecoration: "underline",
-                    cursor: "pointer",
-                    whiteSpace: "nowrap"
-                  }}
-                >
-                  Switch account
-                </button>
-              </div>
-            ) : (
-              <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "8px", padding: "14px" }}>
-                <p style={{ margin: "0 0 10px 0", fontSize: "12px", color: "#475569", lineHeight: "1.4" }}>
-                  Sign in to grant Pulse read-only access to this Google Sheet.
-                </p>
-                <button
-                  type="button"
-                  onClick={handleOAuthConnect}
+          {/* 1. Google Sheet URL (Initial Entry) */}
+          {!isLinkSubmitted && (
+            <div style={{ marginBottom: "20px" }}>
+              <label style={{ display: "block", fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#64748b", marginBottom: "8px" }}>
+                1. Paste link to your Google Sheet
+              </label>
+              <p style={{ margin: "0 0 10px 0", fontSize: "12.5px", color: "#475569", lineHeight: "1.4" }}>
+                Paste the web link to your Google Sheet CRM.
+              </p>
+              <form onSubmit={handleSubmitLink} style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                <input
+                  type="text"
+                  value={url}
+                  onChange={(e) => handleUrlChange(e.target.value)}
+                  placeholder="https://docs.google.com/spreadsheets/d/..."
                   style={{
                     width: "100%",
-                    padding: "9px 14px",
-                    borderRadius: "8px",
+                    padding: "9px 12px",
+                    borderRadius: "7px",
                     border: "1px solid #cbd5e1",
-                    background: "#ffffff",
-                    color: "#1e293b",
-                    fontSize: "12.5px",
-                    fontWeight: "600",
-                    cursor: "pointer",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    gap: "8px",
-                    boxShadow: "0 1px 2px rgba(0,0,0,0.05)"
+                    fontSize: "13px",
+                    boxSizing: "border-box"
                   }}
-                >
-                  <svg width="16" height="16" viewBox="0 0 24 24">
-                    <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
-                    <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
-                    <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" />
-                    <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
-                  </svg>
-                  <span>Sign in with Google to authorize</span>
-                </button>
-              </div>
-            )}
-          </div>
+                />
+                {url.trim() && (url.includes("sharepoint.com") || url.includes("1drv.ms") || url.includes("live.com")) && (
+                  <div style={{ fontSize: "11.5px", color: "#b91c1c" }}>
+                    This looks like a Microsoft SharePoint/OneDrive link. Please use the Microsoft Excel CRM integration instead.
+                  </div>
+                )}
+                <div>
+                  <button
+                    type="submit"
+                    disabled={!url.trim()}
+                    style={{
+                      padding: "9px 18px",
+                      borderRadius: "7px",
+                      border: "none",
+                      background: "#0f9d58",
+                      color: "#ffffff",
+                      fontSize: "13px",
+                      fontWeight: "600",
+                      cursor: !url.trim() ? "not-allowed" : "pointer",
+                      opacity: !url.trim() ? 0.6 : 1,
+                      boxShadow: "0 1px 2px rgba(0,0,0,0.05)"
+                    }}
+                  >
+                    Submit link
+                  </button>
+                </div>
+              </form>
+            </div>
+          )}
 
-          {/* Client View: Primary Save Button */}
-          {isClientView && isConnected && (
-            <div style={{ marginBottom: "16px" }}>
-              <button
-                type="button"
-                onClick={handleClientSave}
-                disabled={linking || !url.trim()}
+          {/* Step 1 Confirmed & Step 2 Authorisation (Revealed only after link is submitted) */}
+          {isLinkSubmitted && (
+            <>
+              {/* Confirmed Step 1 */}
+              <div
                 style={{
-                  width: "100%",
-                  padding: "10px 16px",
-                  borderRadius: "7px",
-                  border: "none",
-                  background: "#0f9d58",
-                  color: "#ffffff",
-                  fontSize: "13px",
-                  fontWeight: "600",
-                  cursor: linking || !url.trim() ? "not-allowed" : "pointer",
-                  boxShadow: "0 1px 2px rgba(0,0,0,0.05)",
-                  opacity: !url.trim() ? 0.6 : 1
+                  marginBottom: "20px",
+                  background: "#f8fafc",
+                  border: "1px solid #e2e8f0",
+                  borderRadius: "8px",
+                  padding: "12px 14px"
                 }}
               >
-                {linking ? "Saving..." : "Save Google Sheet"}
-              </button>
-            </div>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#166534", display: "flex", alignItems: "center", gap: "6px" }}>
+                      <span>✓</span>
+                      <span>1. Google Sheet link submitted</span>
+                    </div>
+                    <div style={{ fontSize: "12px", color: "#0f172a", marginTop: "4px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "monospace" }}>
+                      {url}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsLinkSubmitted(false)}
+                    style={{
+                      background: "none",
+                      border: "1px solid #cbd5e1",
+                      borderRadius: "6px",
+                      padding: "5px 10px",
+                      color: "#475569",
+                      fontSize: "11.5px",
+                      fontWeight: "600",
+                      cursor: "pointer",
+                      whiteSpace: "nowrap"
+                    }}
+                  >
+                    Change link
+                  </button>
+                </div>
+              </div>
+
+              {/* 2. Google Account Authorisation */}
+              <div style={{ marginBottom: isClientView ? "16px" : "20px" }}>
+                <label style={{ display: "block", fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#64748b", marginBottom: "8px" }}>
+                  2. Google account authorisation
+                </label>
+                {isConnected ? (
+                  <div
+                    style={{
+                      background: "#f0fdf4",
+                      border: "1px solid #bbf7d0",
+                      borderRadius: "8px",
+                      padding: "10px 14px",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between"
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <span style={{ color: "#166534", fontSize: "14px", fontWeight: "700" }}>✓</span>
+                      <div>
+                        <div style={{ fontSize: "12px", color: "#166534", fontWeight: "600" }}>
+                          Connected to {connectedEmail}
+                        </div>
+                        <div style={{ fontSize: "11px", color: "#15803d" }}>
+                          {isClientView ? "Authorised via Google. Ready to save spreadsheet below." : "Ready to inspect sheet and map columns."}
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleOAuthConnect}
+                      style={{
+                        background: "none",
+                        border: "none",
+                        color: "#15803d",
+                        fontSize: "11px",
+                        fontWeight: "600",
+                        textDecoration: "underline",
+                        cursor: "pointer",
+                        whiteSpace: "nowrap"
+                      }}
+                    >
+                      Switch account
+                    </button>
+                  </div>
+                ) : (
+                  <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "8px", padding: "14px" }}>
+                    <p style={{ margin: "0 0 10px 0", fontSize: "12px", color: "#475569", lineHeight: "1.4" }}>
+                      Sign in to grant Pulse read-only access to this Google Sheet.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={handleOAuthConnect}
+                      style={{
+                        width: "100%",
+                        padding: "10px 14px",
+                        borderRadius: "8px",
+                        border: "1px solid #cbd5e1",
+                        background: "#ffffff",
+                        color: "#1e293b",
+                        fontSize: "12.5px",
+                        fontWeight: "600",
+                        cursor: "pointer",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        gap: "8px",
+                        boxShadow: "0 1px 2px rgba(0,0,0,0.05)"
+                      }}
+                    >
+                      <svg width="16" height="16" viewBox="0 0 24 24">
+                        <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+                        <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+                        <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" />
+                        <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
+                      </svg>
+                      <span>Authorise with Google</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Client View: Primary Save Button */}
+              {isClientView && isConnected && (
+                <div style={{ marginBottom: "16px" }}>
+                  <button
+                    type="button"
+                    onClick={handleClientSave}
+                    disabled={linking || !url.trim()}
+                    style={{
+                      width: "100%",
+                      padding: "10px 16px",
+                      borderRadius: "7px",
+                      border: "none",
+                      background: "#0f9d58",
+                      color: "#ffffff",
+                      fontSize: "13px",
+                      fontWeight: "600",
+                      cursor: linking || !url.trim() ? "not-allowed" : "pointer",
+                      boxShadow: "0 1px 2px rgba(0,0,0,0.05)",
+                      opacity: !url.trim() ? 0.6 : 1
+                    }}
+                  >
+                    {linking ? "Saving..." : "Save Google Sheet"}
+                  </button>
+                </div>
+              )}
+            </>
           )}
 
           {/* Inspection Results (Tabs + Header Row + Mapping) */}

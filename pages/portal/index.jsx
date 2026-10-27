@@ -52,12 +52,17 @@ export default function PortalPage() {
       if (status === "success") {
         setOauthFeedback({
           type: "success",
-          message: `${String(tool).toUpperCase()} was connected successfully!`
+          message: `Thanks for connecting ${String(tool)}. Pulse is still in setup mode.`
         });
-      } else if (status === "denied" || status === "error" || router.query.error) {
+      } else if (status === "denied") {
+        setOauthFeedback({
+          type: "warning",
+          message: `Authorisation for ${String(tool)} was cancelled. No changes were made to your account. You can connect ${String(tool)} whenever you're ready.`
+        });
+      } else if (status === "error" || router.query.error) {
         setOauthFeedback({
           type: "error",
-          message: `Connection to ${String(tool).toUpperCase()} was not completed. You can try again when you're ready.`
+          message: `Connection to ${String(tool)} could not be completed. Please try again or contact Pulse support.`
         });
       }
     }

@@ -113,7 +113,7 @@ export default async function handler(req, res) {
     }).catch(err => console.error("Notification email error:", err.message));
 
     let returnUrl = sanitizeRedirectUrl(statePayload?.redirectBack, "/pma?nav=integrations");
-    if (!returnUrl.includes("nav=")) {
+    if (returnUrl.startsWith("/pma") && !returnUrl.includes("nav=")) {
       const sep = returnUrl.includes("?") ? "&" : "?";
       returnUrl = `${returnUrl}${sep}nav=integrations`;
     }
@@ -123,7 +123,7 @@ export default async function handler(req, res) {
   } catch (err) {
     console.error("Excel OAuth callback error:", err);
     let returnUrl = sanitizeRedirectUrl(statePayload?.redirectBack, "/pma?nav=integrations");
-    if (!returnUrl.includes("nav=")) {
+    if (returnUrl.startsWith("/pma") && !returnUrl.includes("nav=")) {
       const sep = returnUrl.includes("?") ? "&" : "?";
       returnUrl = `${returnUrl}${sep}nav=integrations`;
     }

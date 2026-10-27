@@ -18,6 +18,7 @@ export default async function handler(req, res) {
   }
 
   const {
+    url,
     driveId,
     fileId,
     sheetName = "",
@@ -28,8 +29,8 @@ export default async function handler(req, res) {
     headerRowNum
   } = req.method === "POST" ? req.body : req.query;
 
-  if (!driveId || !fileId) {
-    return res.status(400).json({ success: false, error: "Missing driveId or fileId parameter" });
+  if (!driveId && !fileId && !url) {
+    return res.status(400).json({ success: false, error: "Missing url, driveId, or fileId parameter" });
   }
 
   try {
@@ -73,6 +74,7 @@ export default async function handler(req, res) {
     }
 
     const inspection = await inspectExcelWorkbook({
+      url,
       driveId,
       fileId,
       sheetName,

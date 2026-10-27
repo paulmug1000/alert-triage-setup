@@ -29,6 +29,7 @@ export default async function handler(req, res) {
     tenantId = "",
     clientId = "",
     clientSecret = "",
+    url = "",
     driveId,
     fileId,
     sheetName,
@@ -37,10 +38,10 @@ export default async function handler(req, res) {
     keyHeaders = ""
   } = req.body;
 
-  if (!clientKey || !masterSheetId || !driveId || !fileId || !sheetName) {
+  if (!clientKey || !masterSheetId || ((!driveId || !fileId) && !url) || !sheetName) {
     return res.status(400).json({
       success: false,
-      error: "Missing required parameters (clientKey, masterSheetId, driveId, fileId, sheetName)"
+      error: "Missing required parameters (clientKey, masterSheetId, sheetName, and either url or driveId/fileId)"
     });
   }
 
@@ -51,6 +52,7 @@ export default async function handler(req, res) {
       tenantId,
       clientId,
       clientSecret,
+      url,
       driveId,
       fileId,
       sheetName,

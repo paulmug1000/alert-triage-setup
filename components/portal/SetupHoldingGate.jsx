@@ -45,6 +45,20 @@ export default function SetupHoldingGate({
     };
   }, []);
 
+  // Auto-open modal if returning from Google Sheet or Excel OAuth
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const integration = params.get("integration") || params.get("tool");
+      const modal = params.get("modal");
+      if (integration === "googlesheet" || modal === "googlesheet") {
+        setGoogleSheetModalOpen(true);
+      } else if (integration === "excel" || modal === "excel") {
+        setExcelModalOpen(true);
+      }
+    }
+  }, []);
+
   const {
     requestConnections = false,
     requiredTools = [],
@@ -807,6 +821,8 @@ export default function SetupHoldingGate({
             clientName={clientName}
             masterSheetId={masterSheetId}
             clientSheetId={clientSheetId}
+            redirectBack="/pulse"
+            isClientView={true}
             onSuccess={() => {
               window.location.reload();
             }}
@@ -821,6 +837,8 @@ export default function SetupHoldingGate({
             clientName={clientName}
             masterSheetId={masterSheetId}
             clientSheetId={clientSheetId}
+            redirectBack="/pulse"
+            isClientView={true}
             onSuccess={() => {
               window.location.reload();
             }}

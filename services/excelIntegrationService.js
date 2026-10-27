@@ -150,10 +150,38 @@ export async function getAzureClientCredentialsToken(tenantId, clientId, clientS
 }
 
 /**
+ * Resolves a SharePoint or OneDrive web sharing URL into a Drive ID and File (DriveItem) ID
+ * via Microsoft Graph API shares endpoint.
+ */
+export async function resolveSharePointDriveItem({ sharingUrl, token }) {
+  if (!sharingUrl) throw new Error("Missing sharingUrl to resolve");
+  if (!token) throw new Error("Missing access token to resolve sharing URL");
+
+  // Microsoft Graph requires base64 encoding (URL-safe without padding)
+  const base64Val = Buffer.from(sharingUrl.trim()).toString("base64");
+  const encodedShare = "u!" + base64Val.replace(/=+$/, "").replace(/\//g, "_").replace(/\+/g, "-");
+
+  const res = await fetch(`https://graph.microsoft.com/v1.0/shares/${encodedShare}/driveItem?$select=id,name,parentReference`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  const data = await res.json();
+  if (!res.ok || data.error) {
+    throw new Error(`Could not resolve Excel link: ${data.error?.message || res.statusText}`);
+  }
+
+  return {
+    fileId: data.id,
+    driveId: data.parentReference?.driveId,
+    name: data.name
+  };
+}
+
+/**
  * Inspects an Excel workbook via Microsoft Graph API.
  * Lists available worksheets, gets used range, and samples header columns.
  */
 export async function inspectExcelWorkbook({
+  url = null,
   driveId,
   fileId,
   sheetName = "",
@@ -174,12 +202,20 @@ export async function inspectExcelWorkbook({
     throw new Error("No Microsoft Graph access token or Azure credentials available.");
   }
 
-  if (!driveId || !fileId) {
+  let resolvedDriveId = driveId;
+  let resolvedFileId = fileId;
+  if ((!resolvedDriveId || !resolvedFileId) && url) {
+    const resolved = await resolveSharePointDriveItem({ sharingUrl: url, token: accessToken });
+    resolvedDriveId = resolved.driveId;
+    resolvedFileId = resolved.fileId;
+  }
+
+  if (!resolvedDriveId || !resolvedFileId) {
     throw new Error("Missing driveId or fileId to inspect Excel workbook.");
   }
 
   // 1. List worksheets in the workbook
-  const sheetsUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${fileId}/workbook/worksheets`;
+  const sheetsUrl = `https://graph.microsoft.com/v1.0/drives/${resolvedDriveId}/items/${resolvedFileId}/workbook/worksheets`;
   const sheetsRes = await fetch(sheetsUrl, {
     headers: { Authorization: `Bearer ${accessToken}` }
   });
@@ -206,7 +242,7 @@ export async function inspectExcelWorkbook({
   let suggestedMapping = {};
 
   try {
-    const rangeUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${fileId}/workbook/worksheets/${encodeURIComponent(targetWorksheet)}/usedRange?$select=address,values`;
+    const rangeUrl = `https://graph.microsoft.com/v1.0/drives/${resolvedDriveId}/items/${resolvedFileId}/workbook/worksheets/${encodeURIComponent(targetWorksheet)}/usedRange?$select=address,values`;
     const rangeRes = await fetch(rangeUrl, {
       headers: { Authorization: `Bearer ${accessToken}` }
     });
@@ -233,8 +269,8 @@ export async function inspectExcelWorkbook({
 
   return {
     success: true,
-    driveId,
-    fileId,
+    driveId: resolvedDriveId,
+    fileId: resolvedFileId,
     worksheets,
     defaultWorksheet: targetWorksheet,
     rangeAddress,
@@ -255,6 +291,7 @@ export async function linkExcelToClient({
   tenantId = "",
   clientId = "",
   clientSecret = "",
+  url = "",
   driveId,
   fileId,
   sheetName,
@@ -263,7 +300,20 @@ export async function linkExcelToClient({
   keyHeaders = ""
 }) {
   if (!masterSheetId) throw new Error("Missing masterSheetId parameter");
-  if (!driveId || !fileId || !sheetName) {
+
+  let resolvedDriveId = driveId;
+  let resolvedFileId = fileId;
+  if ((!resolvedDriveId || !resolvedFileId) && url) {
+    const { getIntegrationTokens } = await import("./vaultService.js");
+    const grant = await getIntegrationTokens({ clientKey, tool: "excel" });
+    if (grant?.tokens?.accessToken) {
+      const resolved = await resolveSharePointDriveItem({ sharingUrl: url, token: grant.tokens.accessToken });
+      resolvedDriveId = resolved.driveId;
+      resolvedFileId = resolved.fileId;
+    }
+  }
+
+  if (!resolvedDriveId || !resolvedFileId || !sheetName) {
     throw new Error("Missing required Excel parameters (driveId, fileId, sheetName)");
   }
 
@@ -273,8 +323,8 @@ export async function linkExcelToClient({
   const cleanKeyHeaders = String(keyHeaders || "").trim();
 
   const updates = [
-    { range: "KeyInfo!X36", values: [[String(driveId || "").trim()]] },
-    { range: "KeyInfo!X37", values: [[String(fileId || "").trim()]] },
+    { range: "KeyInfo!X36", values: [[String(resolvedDriveId || "").trim()]] },
+    { range: "KeyInfo!X37", values: [[String(resolvedFileId || "").trim()]] },
     { range: "KeyInfo!X38", values: [[String(sheetName || "").trim()]] },
     { range: "KeyInfo!X39", values: [[cleanRange]] },
     { range: "KeyInfo!X40", values: [[rowNumStr]] },

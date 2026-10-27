@@ -9,6 +9,7 @@ export default function GoogleSheetLinkModal({
   clientSheetId,
   currentConfig,
   onSuccess,
+  isClientView = false,
   redirectBack = "/pma?nav=integrations"
 }) {
   const resolvedClientName = client?.clientName || clientName || "";
@@ -154,6 +155,68 @@ export default function GoogleSheetLinkModal({
     }
   };
 
+  const handleClientSave = async () => {
+    if (!url.trim()) {
+      setError("Please enter your Google Sheet URL.");
+      return;
+    }
+    setError(null);
+    setLinking(true);
+
+    try {
+      // 1. Inspect sheet behind the scenes to verify access, get default tab, candidate header row & suggested columns
+      const inspectRes = await fetch("/api/integrations/google-sheet/inspect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url: url.trim(),
+          clientKey: resolvedClientName
+        })
+      });
+      const inspectData = await inspectRes.json();
+      if (!inspectData.success) {
+        throw new Error(inspectData.error || "Could not access sheet. Please verify the URL and authorization.");
+      }
+
+      const defaultTab = inspectData.selectedTab || inspectData.defaultTab || inspectData.tabs?.[0]?.title || "Sheet1";
+      const candidateRow = inspectData.candidateHeaderRow || 1;
+      const suggested = inspectData.suggestedMapping || {};
+      const keyHeaders = [
+        suggested.clientCol || "Client",
+        suggested.jobCol || "Job",
+        suggested.revCol || "None",
+        suggested.startCol || "None",
+        suggested.endCol || "None",
+        suggested.likeCol || "None"
+      ].join(", ");
+
+      // 2. Link the sheet to Master Sheet KeyInfo and Central Vault
+      const linkRes = await fetch("/api/integrations/google-sheet/link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clientKey: resolvedClientName,
+          masterSheetId: resolvedMasterSheetId,
+          url: url.trim(),
+          tabName: defaultTab,
+          headerRowNum: candidateRow,
+          keyHeaders
+        })
+      });
+      const linkData = await linkRes.json();
+      if (!linkData.success) {
+        throw new Error(linkData.error || "Failed to link Google Sheet");
+      }
+
+      onSuccess?.(linkData);
+      onClose();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLinking(false);
+    }
+  };
+
   const handleOAuthConnect = () => {
     const q = new URLSearchParams({
       clientKey: resolvedClientName,
@@ -227,7 +290,7 @@ export default function GoogleSheetLinkModal({
             </div>
             <div>
               <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700", color: "#0f172a" }}>
-                Connect Google Sheet CRM
+                {isClientView ? "Connect Google Sheet" : "Connect Google Sheet CRM"}
               </h3>
               <span style={{ fontSize: "12px", color: "#64748b" }}>
                 For {resolvedClientName}
@@ -308,7 +371,7 @@ export default function GoogleSheetLinkModal({
                       Connected to {connectedEmail}
                     </div>
                     <div style={{ fontSize: "11px", color: "#15803d" }}>
-                      Ready to inspect sheet and map columns below.
+                      {isClientView ? "Ready to link your Google Sheet below." : "Ready to inspect sheet and map columns below."}
                     </div>
                   </div>
                 </div>
@@ -370,47 +433,76 @@ export default function GoogleSheetLinkModal({
           {isConnected && (
             <div style={{ marginBottom: "16px" }}>
               <label style={{ display: "block", fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#64748b", marginBottom: "8px" }}>
-                2. Google Sheet URL & column mapping
+                {isClientView ? "2. Google Sheet URL" : "2. Google Sheet URL & column mapping"}
               </label>
-              <div style={{ display: "flex", gap: "8px" }}>
+              {isClientView && (
+                <p style={{ margin: "0 0 10px 0", fontSize: "12px", color: "#475569", lineHeight: "1.4" }}>
+                  Paste the web link to your Google Sheet CRM. Pulse will connect securely to read your deal pipeline.
+                </p>
+              )}
+              <div style={{ display: isClientView ? "block" : "flex", gap: "8px" }}>
                 <input
                   type="text"
                   value={url}
                   onChange={(e) => setUrl(e.target.value)}
                   placeholder="https://docs.google.com/spreadsheets/d/..."
                   style={{
-                    flex: 1,
+                    width: "100%",
+                    flex: isClientView ? undefined : 1,
                     padding: "9px 12px",
                     borderRadius: "7px",
                     border: "1px solid #cbd5e1",
                     fontSize: "13px",
-                    boxSizing: "border-box"
+                    boxSizing: "border-box",
+                    marginBottom: isClientView ? "12px" : "0"
                   }}
                 />
-                <button
-                  type="button"
-                  onClick={() => handleInspect()}
-                  disabled={inspecting}
-                  style={{
-                    padding: "9px 16px",
-                    borderRadius: "7px",
-                    border: "none",
-                    background: "#0f9d58",
-                    color: "#ffffff",
-                    fontSize: "12.5px",
-                    fontWeight: "600",
-                    cursor: inspecting ? "wait" : "pointer",
-                    whiteSpace: "nowrap"
-                  }}
-                >
-                  {inspecting ? "Saving..." : "Save"}
-                </button>
+                {isClientView ? (
+                  <button
+                    type="button"
+                    onClick={handleClientSave}
+                    disabled={linking}
+                    style={{
+                      width: "100%",
+                      padding: "10px 16px",
+                      borderRadius: "7px",
+                      border: "none",
+                      background: "#0f9d58",
+                      color: "#ffffff",
+                      fontSize: "13px",
+                      fontWeight: "600",
+                      cursor: linking ? "wait" : "pointer",
+                      boxShadow: "0 1px 2px rgba(0,0,0,0.05)"
+                    }}
+                  >
+                    {linking ? "Saving..." : "Save Google Sheet"}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => handleInspect()}
+                    disabled={inspecting}
+                    style={{
+                      padding: "9px 16px",
+                      borderRadius: "7px",
+                      border: "none",
+                      background: "#0f9d58",
+                      color: "#ffffff",
+                      fontSize: "12.5px",
+                      fontWeight: "600",
+                      cursor: inspecting ? "wait" : "pointer",
+                      whiteSpace: "nowrap"
+                    }}
+                  >
+                    {inspecting ? "Saving..." : "Save"}
+                  </button>
+                )}
               </div>
             </div>
           )}
 
           {/* Inspection Results (Tabs + Header Row + Mapping) */}
-          {inspectionData && (
+          {!isClientView && inspectionData && (
             <div
               style={{
                 background: "#f8fafc",
@@ -660,8 +752,8 @@ export default function GoogleSheetLinkModal({
             </div>
           )}
 
-          {/* Action Button */}
-          {inspectionData && (
+          {/* Action Button - Admin / Manager Only */}
+          {!isClientView && inspectionData && (
             <button
               type="button"
               onClick={handleSaveLink}

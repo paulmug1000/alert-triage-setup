@@ -9,12 +9,14 @@ export default function ExcelLinkModal({
   clientSheetId,
   currentConfig,
   onSuccess,
+  isClientView = false,
   redirectBack = "/pma?nav=integrations"
 }) {
   const resolvedClientName = client?.clientName || clientName || "";
   const resolvedMasterSheetId = client?.masterSheetId || masterSheetId || "";
   const resolvedClientSheetId = client?.clientSheetId || clientSheetId || "";
 
+  const [excelUrl, setExcelUrl] = useState(currentConfig?.metadata?.url || currentConfig?.url || "");
   const [driveId, setDriveId] = useState(currentConfig?.metadata?.driveId || currentConfig?.driveId || "");
   const [fileId, setFileId] = useState(currentConfig?.metadata?.fileId || currentConfig?.fileId || "");
   const [sheetName, setSheetName] = useState(currentConfig?.metadata?.sheetName || currentConfig?.sheetName || "");
@@ -50,8 +52,8 @@ export default function ExcelLinkModal({
     "Microsoft 365 Account";
 
   const handleInspect = async (overrideSheet, overrideRow) => {
-    if (!driveId.trim() || !fileId.trim()) {
-      setError("Please enter Drive ID and File ID.");
+    if (!driveId.trim() && !fileId.trim() && !excelUrl.trim()) {
+      setError("Please enter Excel URL or Drive ID and File ID.");
       return;
     }
     setError(null);
@@ -65,8 +67,9 @@ export default function ExcelLinkModal({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          driveId: driveId.trim(),
-          fileId: fileId.trim(),
+          url: excelUrl.trim() || undefined,
+          driveId: driveId.trim() || undefined,
+          fileId: fileId.trim() || undefined,
           sheetName: sheetToUse.trim(),
           headerRowNum: rowToUse || undefined,
           clientKey: resolvedClientName
@@ -77,6 +80,8 @@ export default function ExcelLinkModal({
         throw new Error(data.error || "Failed to inspect Excel workbook");
       }
       setInspectionData(data);
+      if (data.driveId) setDriveId(data.driveId);
+      if (data.fileId) setFileId(data.fileId);
       const chosenSheet = sheetToUse.trim() || data.defaultWorksheet || "Sheet1";
       setSheetName(chosenSheet);
       setHeaderRowNum(String(data.candidateHeaderRow || 1));
@@ -100,10 +105,77 @@ export default function ExcelLinkModal({
     }
   };
 
+  const handleClientSave = async () => {
+    if (!excelUrl.trim() && (!driveId.trim() || !fileId.trim())) {
+      setError("Please enter your Excel workbook web link or OneDrive link.");
+      return;
+    }
+    setError(null);
+    setLinking(true);
+
+    try {
+      // 1. Inspect workbook behind the scenes to verify access, default worksheet, candidate header row & suggested columns
+      const inspectRes = await fetch("/api/integrations/excel/inspect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url: excelUrl.trim() || undefined,
+          driveId: driveId.trim() || undefined,
+          fileId: fileId.trim() || undefined,
+          clientKey: resolvedClientName
+        })
+      });
+      const inspectData = await inspectRes.json();
+      if (!inspectData.success) {
+        throw new Error(inspectData.error || "Could not access Excel workbook. Please verify the link and authorization.");
+      }
+
+      const defaultSheet = inspectData.defaultWorksheet || inspectData.worksheets?.[0]?.name || "Sheet1";
+      const candidateRow = inspectData.candidateHeaderRow || 1;
+      const suggested = inspectData.suggestedMapping || {};
+      const keyHeaders = [
+        suggested.clientCol || "Client",
+        suggested.jobCol || "Job",
+        suggested.revCol || "None",
+        suggested.startCol || "None",
+        suggested.endCol || "None",
+        suggested.likeCol || "None"
+      ].join(", ");
+
+      // 2. Link Excel workbook to Master Sheet KeyInfo and Central Vault
+      const linkRes = await fetch("/api/integrations/excel/link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clientKey: resolvedClientName,
+          masterSheetId: resolvedMasterSheetId,
+          url: excelUrl.trim() || undefined,
+          driveId: inspectData.driveId || driveId.trim(),
+          fileId: inspectData.fileId || fileId.trim(),
+          sheetName: defaultSheet,
+          rangeAddress: inspectData.rangeAddress || "usedRange",
+          headerRowNum: String(candidateRow),
+          keyHeaders
+        })
+      });
+      const linkData = await linkRes.json();
+      if (!linkData.success) {
+        throw new Error(linkData.error || "Failed to link Excel workbook");
+      }
+
+      onSuccess?.(linkData);
+      onClose();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLinking(false);
+    }
+  };
+
   const handleSheetChange = (e) => {
     const newSheet = e.target.value;
     setSheetName(newSheet);
-    handleInspect(newSheet, headerRowNum);
+    handleInspect(newSheet, undefined);
   };
 
   const handleHeaderRowChange = (e) => {
@@ -142,6 +214,7 @@ export default function ExcelLinkModal({
         body: JSON.stringify({
           clientKey: resolvedClientName,
           masterSheetId: resolvedMasterSheetId,
+          url: excelUrl.trim() || undefined,
           driveId: driveId.trim(),
           fileId: fileId.trim(),
           sheetName: sheetName.trim(),
@@ -236,7 +309,7 @@ export default function ExcelLinkModal({
             </div>
             <div>
               <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700", color: "#0f172a" }}>
-                Connect Microsoft Excel CRM
+                {isClientView ? "Connect Microsoft Excel" : "Connect Microsoft Excel CRM"}
               </h3>
               <span style={{ fontSize: "12px", color: "#64748b" }}>
                 For {resolvedClientName}
@@ -317,7 +390,7 @@ export default function ExcelLinkModal({
                       Connected to {connectedEmail}
                     </div>
                     <div style={{ fontSize: "11px", color: "#2563eb" }}>
-                      Authenticated via Microsoft Graph. Ready to inspect workbook below.
+                      {isClientView ? "Ready to link your Excel workbook below." : "Authenticated via Microsoft Graph. Ready to inspect workbook below."}
                     </div>
                   </div>
                 </div>
@@ -379,61 +452,109 @@ export default function ExcelLinkModal({
           {isConnected && (
             <div style={{ marginBottom: "16px" }}>
               <label style={{ display: "block", fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#64748b", marginBottom: "8px" }}>
-                2. Workbook Drive ID & File ID mapping
+                {isClientView ? "2. Excel workbook link" : "2. Workbook Drive ID & File ID mapping"}
               </label>
 
-              {/* Direct Drive & File ID configuration */}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", marginBottom: "12px" }}>
+              {isClientView ? (
                 <div>
-                  <label style={{ display: "block", fontSize: "11.5px", fontWeight: "600", color: "#475569", marginBottom: "3px" }}>
-                    Drive ID
-                  </label>
+                  <p style={{ margin: "0 0 10px 0", fontSize: "12px", color: "#475569", lineHeight: "1.4" }}>
+                    Paste the OneDrive or SharePoint web link to your Excel workbook. Pulse will connect securely to read your deal pipeline.
+                  </p>
                   <input
                     type="text"
-                    value={driveId}
-                    onChange={(e) => setDriveId(e.target.value)}
-                    placeholder="b!..."
-                    style={{ width: "100%", padding: "7px 10px", borderRadius: "6px", border: "1px solid #cbd5e1", fontSize: "12px", boxSizing: "border-box" }}
+                    value={excelUrl}
+                    onChange={(e) => setExcelUrl(e.target.value)}
+                    placeholder="https://...sharepoint.com/:x:/... or OneDrive link"
+                    style={{ width: "100%", padding: "9px 12px", borderRadius: "7px", border: "1px solid #cbd5e1", fontSize: "13px", boxSizing: "border-box", marginBottom: "12px" }}
                   />
+                  <button
+                    type="button"
+                    onClick={handleClientSave}
+                    disabled={linking}
+                    style={{
+                      width: "100%",
+                      padding: "10px 16px",
+                      borderRadius: "7px",
+                      border: "none",
+                      background: "#0f6cbd",
+                      color: "#ffffff",
+                      fontSize: "13px",
+                      fontWeight: "600",
+                      cursor: linking ? "wait" : "pointer",
+                      boxShadow: "0 1px 2px rgba(0,0,0,0.05)"
+                    }}
+                  >
+                    {linking ? "Saving..." : "Save Excel workbook"}
+                  </button>
                 </div>
+              ) : (
                 <div>
-                  <label style={{ display: "block", fontSize: "11.5px", fontWeight: "600", color: "#475569", marginBottom: "3px" }}>
-                    File ID
-                  </label>
-                  <input
-                    type="text"
-                    value={fileId}
-                    onChange={(e) => setFileId(e.target.value)}
-                    placeholder="01..."
-                    style={{ width: "100%", padding: "7px 10px", borderRadius: "6px", border: "1px solid #cbd5e1", fontSize: "12px", boxSizing: "border-box" }}
-                  />
-                </div>
-              </div>
+                  <div style={{ marginBottom: "10px" }}>
+                    <label style={{ display: "block", fontSize: "11.5px", fontWeight: "600", color: "#475569", marginBottom: "3px" }}>
+                      Workbook link or SharePoint URL (optional)
+                    </label>
+                    <input
+                      type="text"
+                      value={excelUrl}
+                      onChange={(e) => setExcelUrl(e.target.value)}
+                      placeholder="https://...sharepoint.com/:x:/... or OneDrive link"
+                      style={{ width: "100%", padding: "7px 10px", borderRadius: "6px", border: "1px solid #cbd5e1", fontSize: "12px", boxSizing: "border-box" }}
+                    />
+                  </div>
 
-              <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                <button
-                  type="button"
-                  onClick={() => handleInspect()}
-                  disabled={inspecting}
-                  style={{
-                    padding: "8px 16px",
-                    borderRadius: "6px",
-                    border: "none",
-                    background: "#0f6cbd",
-                    color: "#ffffff",
-                    fontSize: "12px",
-                    fontWeight: "600",
-                    cursor: inspecting ? "wait" : "pointer"
-                  }}
-                >
-                  {inspecting ? "Saving..." : "Save"}
-                </button>
-              </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", marginBottom: "12px" }}>
+                    <div>
+                      <label style={{ display: "block", fontSize: "11.5px", fontWeight: "600", color: "#475569", marginBottom: "3px" }}>
+                        Drive ID
+                      </label>
+                      <input
+                        type="text"
+                        value={driveId}
+                        onChange={(e) => setDriveId(e.target.value)}
+                        placeholder="b!..."
+                        style={{ width: "100%", padding: "7px 10px", borderRadius: "6px", border: "1px solid #cbd5e1", fontSize: "12px", boxSizing: "border-box" }}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ display: "block", fontSize: "11.5px", fontWeight: "600", color: "#475569", marginBottom: "3px" }}>
+                        File ID
+                      </label>
+                      <input
+                        type="text"
+                        value={fileId}
+                        onChange={(e) => setFileId(e.target.value)}
+                        placeholder="01..."
+                        style={{ width: "100%", padding: "7px 10px", borderRadius: "6px", border: "1px solid #cbd5e1", fontSize: "12px", boxSizing: "border-box" }}
+                      />
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                    <button
+                      type="button"
+                      onClick={() => handleInspect()}
+                      disabled={inspecting}
+                      style={{
+                        padding: "8px 16px",
+                        borderRadius: "6px",
+                        border: "none",
+                        background: "#0f6cbd",
+                        color: "#ffffff",
+                        fontSize: "12px",
+                        fontWeight: "600",
+                        cursor: inspecting ? "wait" : "pointer"
+                      }}
+                    >
+                      {inspecting ? "Saving..." : "Save"}
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
           {/* Worksheet Selection and Column Mapping */}
-          {inspectionData && (
+          {!isClientView && inspectionData && (
             <div style={{ background: "#f8fafc", borderRadius: "10px", padding: "16px", border: "1px solid #e2e8f0", marginBottom: "18px" }}>
               <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: "10px", marginBottom: "14px" }}>
                 <div>
@@ -586,10 +707,10 @@ export default function ExcelLinkModal({
                     </select>
                   </div>
 
-                  {/* Start date (Optional) */}
+                  {/* Start date */}
                   <div>
                     <label style={{ display: "block", fontSize: "11px", fontWeight: "600", color: "#334155", marginBottom: "3px" }}>
-                      Start date (optional)
+                      Start date
                     </label>
                     <select
                       value={startDateCol}
@@ -612,10 +733,10 @@ export default function ExcelLinkModal({
                     </select>
                   </div>
 
-                  {/* End date (Optional) */}
+                  {/* End date */}
                   <div>
                     <label style={{ display: "block", fontSize: "11px", fontWeight: "600", color: "#334155", marginBottom: "3px" }}>
-                      End date (optional)
+                      End date
                     </label>
                     <select
                       value={endDateCol}
@@ -638,10 +759,10 @@ export default function ExcelLinkModal({
                     </select>
                   </div>
 
-                  {/* Stage or probability (Optional) */}
+                  {/* Stage or probability */}
                   <div>
                     <label style={{ display: "block", fontSize: "11px", fontWeight: "600", color: "#334155", marginBottom: "3px" }}>
-                      Stage or probability (optional)
+                      Stage or probability
                     </label>
                     <select
                       value={statusCol}
@@ -668,8 +789,8 @@ export default function ExcelLinkModal({
             </div>
           )}
 
-          {/* Action Button */}
-          {inspectionData && (
+          {/* Action Button - Admin / Manager Only */}
+          {!isClientView && inspectionData && (
             <button
               type="button"
               onClick={handleSaveLink}

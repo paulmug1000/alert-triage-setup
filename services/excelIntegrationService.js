@@ -151,29 +151,140 @@ export async function getAzureClientCredentialsToken(tenantId, clientId, clientS
 
 /**
  * Resolves a SharePoint or OneDrive web sharing URL into a Drive ID and File (DriveItem) ID
- * via Microsoft Graph API shares endpoint.
+ * via Microsoft Graph API shares endpoint with intelligent fallbacks.
  */
 export async function resolveSharePointDriveItem({ sharingUrl, token }) {
   if (!sharingUrl) throw new Error("Missing sharingUrl to resolve");
   if (!token) throw new Error("Missing access token to resolve sharing URL");
 
-  // Microsoft Graph requires base64 encoding (URL-safe without padding)
-  const base64Val = Buffer.from(sharingUrl.trim()).toString("base64");
-  const encodedShare = "u!" + base64Val.replace(/=+$/, "").replace(/\//g, "_").replace(/\+/g, "-");
+  const cleanUrl = sharingUrl.trim();
 
-  const res = await fetch(`https://graph.microsoft.com/v1.0/shares/${encodedShare}/driveItem?$select=id,name,parentReference`, {
-    headers: { Authorization: `Bearer ${token}` }
-  });
-  const data = await res.json();
-  if (!res.ok || data.error) {
-    throw new Error(`Could not resolve Excel link: ${data.error?.message || res.statusText}`);
+  // Strategy 1: Microsoft Graph /shares endpoint with original URL
+  try {
+    const base64Val = Buffer.from(cleanUrl).toString("base64");
+    const encodedShare = "u!" + base64Val.replace(/=+$/, "").replace(/\//g, "_").replace(/\+/g, "-");
+
+    const res = await fetch(`https://graph.microsoft.com/v1.0/shares/${encodedShare}/driveItem?$select=id,name,parentReference`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    const data = await res.json();
+    if (res.ok && data.id && data.parentReference?.driveId) {
+      return {
+        fileId: data.id,
+        driveId: data.parentReference.driveId,
+        name: data.name
+      };
+    }
+  } catch (err) {
+    console.warn("Shares endpoint attempt 1 note:", err.message);
   }
 
-  return {
-    fileId: data.id,
-    driveId: data.parentReference?.driveId,
-    name: data.name
-  };
+  // Strategy 2: If URL had query string, try /shares without query string
+  if (cleanUrl.includes("?")) {
+    try {
+      const strippedUrl = cleanUrl.split("?")[0];
+      const base64Val = Buffer.from(strippedUrl).toString("base64");
+      const encodedShare = "u!" + base64Val.replace(/=+$/, "").replace(/\//g, "_").replace(/\+/g, "-");
+
+      const res = await fetch(`https://graph.microsoft.com/v1.0/shares/${encodedShare}/driveItem?$select=id,name,parentReference`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await res.json();
+      if (res.ok && data.id && data.parentReference?.driveId) {
+        return {
+          fileId: data.id,
+          driveId: data.parentReference.driveId,
+          name: data.name
+        };
+      }
+    } catch (err) {
+      console.warn("Shares endpoint attempt 2 note:", err.message);
+    }
+  }
+
+  // Strategy 3: Personal OneDrive (-my.sharepoint.com/personal/)
+  if (cleanUrl.includes("-my.sharepoint.com/personal/")) {
+    try {
+      const driveRes = await fetch("https://graph.microsoft.com/v1.0/me/drive?$select=id,name", {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const driveData = await driveRes.json();
+      if (driveRes.ok && driveData.id) {
+        const myDriveId = driveData.id;
+        const urlWithoutQuery = cleanUrl.split("?")[0];
+        const match = urlWithoutQuery.match(/\/Documents\/(.+)$/i);
+        if (match && match[1]) {
+          const relativePath = decodeURIComponent(match[1]);
+          const itemRes = await fetch(`https://graph.microsoft.com/v1.0/drives/${myDriveId}/root:/${encodeURIComponent(relativePath)}?$select=id,name,parentReference`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          const itemData = await itemRes.json();
+          if (itemRes.ok && itemData.id) {
+            return {
+              fileId: itemData.id,
+              driveId: itemData.parentReference?.driveId || myDriveId,
+              name: itemData.name
+            };
+          }
+        }
+
+        // Search by file name within user's drive
+        const fileName = decodeURIComponent(urlWithoutQuery.split("/").pop());
+        if (fileName && fileName.endsWith(".xlsx")) {
+          const searchRes = await fetch(`https://graph.microsoft.com/v1.0/drives/${myDriveId}/root/search(q='${encodeURIComponent(fileName)}')?$select=id,name,parentReference`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          const searchData = await searchRes.json();
+          const matchItem = (searchData.value || []).find(it => it.name.toLowerCase() === fileName.toLowerCase());
+          if (matchItem) {
+            return {
+              fileId: matchItem.id,
+              driveId: matchItem.parentReference?.driveId || myDriveId,
+              name: matchItem.name
+            };
+          }
+        }
+      }
+    } catch (meDriveErr) {
+      console.warn("me/drive fallback note:", meDriveErr.message);
+    }
+  }
+
+  // Strategy 4: SharePoint team site (/sites/{siteName}/...)
+  if (cleanUrl.includes("/sites/")) {
+    try {
+      const u = new URL(cleanUrl);
+      const siteMatch = u.pathname.match(/\/sites\/([^/]+)/);
+      if (siteMatch && siteMatch[1]) {
+        const siteName = siteMatch[1];
+        const siteRes = await fetch(`https://graph.microsoft.com/v1.0/sites/${u.hostname}:/sites/${siteName}?$select=id,name`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const siteData = await siteRes.json();
+        if (siteRes.ok && siteData.id) {
+          const fileName = decodeURIComponent(u.pathname.split("/").pop());
+          if (fileName && fileName.endsWith(".xlsx")) {
+            const searchRes = await fetch(`https://graph.microsoft.com/v1.0/sites/${siteData.id}/drive/root/search(q='${encodeURIComponent(fileName)}')?$select=id,name,parentReference`, {
+              headers: { Authorization: `Bearer ${token}` }
+            });
+            const searchData = await searchRes.json();
+            const matchItem = (searchData.value || []).find(it => it.name.toLowerCase() === fileName.toLowerCase());
+            if (matchItem) {
+              return {
+                fileId: matchItem.id,
+                driveId: matchItem.parentReference?.driveId,
+                name: matchItem.name
+              };
+            }
+          }
+        }
+      }
+    } catch (siteErr) {
+      console.warn("SharePoint site search fallback note:", siteErr.message);
+    }
+  }
+
+  throw new Error("Could not resolve Excel link. Please ensure the link is a valid OneDrive or SharePoint link and that your signed-in account has access to it.");
 }
 
 /**

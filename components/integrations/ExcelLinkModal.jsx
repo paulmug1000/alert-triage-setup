@@ -53,7 +53,7 @@ export default function ExcelLinkModal({
 
   const handleInspect = async (overrideSheet, overrideRow) => {
     if (!driveId.trim() && !fileId.trim() && !excelUrl.trim()) {
-      setError("Please enter Excel URL or Drive ID and File ID.");
+      setError("Please enter your Excel workbook URL.");
       return;
     }
     setError(null);
@@ -187,8 +187,12 @@ export default function ExcelLinkModal({
   };
 
   const handleSaveLink = async () => {
-    if (!driveId.trim() || !fileId.trim() || !sheetName.trim()) {
-      setError("Please fill in Drive ID, File ID, and worksheet name.");
+    if (!driveId.trim() && !fileId.trim() && !excelUrl.trim()) {
+      setError("Please enter your Excel workbook URL.");
+      return;
+    }
+    if (!sheetName.trim()) {
+      setError("Please select a worksheet.");
       return;
     }
     if (!clientCol.trim() || !jobCol.trim()) {
@@ -215,8 +219,8 @@ export default function ExcelLinkModal({
           clientKey: resolvedClientName,
           masterSheetId: resolvedMasterSheetId,
           url: excelUrl.trim() || undefined,
-          driveId: driveId.trim(),
-          fileId: fileId.trim(),
+          driveId: driveId.trim() || undefined,
+          fileId: fileId.trim() || undefined,
           sheetName: sheetName.trim(),
           rangeAddress: rangeAddress.trim() || "",
           headerRowNum: parseInt(headerRowNum, 10) || 1,
@@ -448,25 +452,35 @@ export default function ExcelLinkModal({
             )}
           </div>
 
-          {/* 2. Workbook Drive & File ID */}
+          {/* 2. Workbook URL */}
           {isConnected && (
             <div style={{ marginBottom: "16px" }}>
               <label style={{ display: "block", fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#64748b", marginBottom: "8px" }}>
-                {isClientView ? "2. Excel workbook link" : "2. Workbook Drive ID & File ID mapping"}
+                {isClientView ? "2. Excel workbook URL" : "2. Excel workbook URL & column mapping"}
               </label>
-
-              {isClientView ? (
-                <div>
-                  <p style={{ margin: "0 0 10px 0", fontSize: "12px", color: "#475569", lineHeight: "1.4" }}>
-                    Paste the OneDrive or SharePoint web link to your Excel workbook. Pulse will connect securely to read your deal pipeline.
-                  </p>
-                  <input
-                    type="text"
-                    value={excelUrl}
-                    onChange={(e) => setExcelUrl(e.target.value)}
-                    placeholder="https://...sharepoint.com/:x:/... or OneDrive link"
-                    style={{ width: "100%", padding: "9px 12px", borderRadius: "7px", border: "1px solid #cbd5e1", fontSize: "13px", boxSizing: "border-box", marginBottom: "12px" }}
-                  />
+              {isClientView && (
+                <p style={{ margin: "0 0 10px 0", fontSize: "12px", color: "#475569", lineHeight: "1.4" }}>
+                  Paste the OneDrive or SharePoint web link to your Excel workbook. Pulse will connect securely to read your deal pipeline.
+                </p>
+              )}
+              <div style={{ display: isClientView ? "block" : "flex", gap: "8px" }}>
+                <input
+                  type="text"
+                  value={excelUrl}
+                  onChange={(e) => setExcelUrl(e.target.value)}
+                  placeholder="https://...sharepoint.com/:x:/... or OneDrive link"
+                  style={{
+                    width: "100%",
+                    flex: isClientView ? undefined : 1,
+                    padding: "9px 12px",
+                    borderRadius: "7px",
+                    border: "1px solid #cbd5e1",
+                    fontSize: "13px",
+                    boxSizing: "border-box",
+                    marginBottom: isClientView ? "12px" : "0"
+                  }}
+                />
+                {isClientView ? (
                   <button
                     type="button"
                     onClick={handleClientSave}
@@ -486,80 +500,40 @@ export default function ExcelLinkModal({
                   >
                     {linking ? "Saving..." : "Save Excel workbook"}
                   </button>
-                </div>
-              ) : (
-                <div>
-                  <div style={{ marginBottom: "10px" }}>
-                    <label style={{ display: "block", fontSize: "11.5px", fontWeight: "600", color: "#475569", marginBottom: "3px" }}>
-                      Workbook link or SharePoint URL (optional)
-                    </label>
-                    <input
-                      type="text"
-                      value={excelUrl}
-                      onChange={(e) => setExcelUrl(e.target.value)}
-                      placeholder="https://...sharepoint.com/:x:/... or OneDrive link"
-                      style={{ width: "100%", padding: "7px 10px", borderRadius: "6px", border: "1px solid #cbd5e1", fontSize: "12px", boxSizing: "border-box" }}
-                    />
-                  </div>
-
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", marginBottom: "12px" }}>
-                    <div>
-                      <label style={{ display: "block", fontSize: "11.5px", fontWeight: "600", color: "#475569", marginBottom: "3px" }}>
-                        Drive ID
-                      </label>
-                      <input
-                        type="text"
-                        value={driveId}
-                        onChange={(e) => setDriveId(e.target.value)}
-                        placeholder="b!..."
-                        style={{ width: "100%", padding: "7px 10px", borderRadius: "6px", border: "1px solid #cbd5e1", fontSize: "12px", boxSizing: "border-box" }}
-                      />
-                    </div>
-                    <div>
-                      <label style={{ display: "block", fontSize: "11.5px", fontWeight: "600", color: "#475569", marginBottom: "3px" }}>
-                        File ID
-                      </label>
-                      <input
-                        type="text"
-                        value={fileId}
-                        onChange={(e) => setFileId(e.target.value)}
-                        placeholder="01..."
-                        style={{ width: "100%", padding: "7px 10px", borderRadius: "6px", border: "1px solid #cbd5e1", fontSize: "12px", boxSizing: "border-box" }}
-                      />
-                    </div>
-                  </div>
-
-                  <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                    <button
-                      type="button"
-                      onClick={() => handleInspect()}
-                      disabled={inspecting}
-                      style={{
-                        padding: "8px 16px",
-                        borderRadius: "6px",
-                        border: "none",
-                        background: "#0f6cbd",
-                        color: "#ffffff",
-                        fontSize: "12px",
-                        fontWeight: "600",
-                        cursor: inspecting ? "wait" : "pointer"
-                      }}
-                    >
-                      {inspecting ? "Saving..." : "Save"}
-                    </button>
-                  </div>
-                </div>
-              )}
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => handleInspect()}
+                    disabled={inspecting}
+                    style={{
+                      padding: "9px 16px",
+                      borderRadius: "7px",
+                      border: "none",
+                      background: "#0f6cbd",
+                      color: "#ffffff",
+                      fontSize: "12.5px",
+                      fontWeight: "600",
+                      cursor: inspecting ? "wait" : "pointer",
+                      whiteSpace: "nowrap"
+                    }}
+                  >
+                    {inspecting ? "Saving..." : "Save"}
+                  </button>
+                )}
+              </div>
             </div>
           )}
 
           {/* Worksheet Selection and Column Mapping */}
           {!isClientView && inspectionData && (
             <div style={{ background: "#f8fafc", borderRadius: "10px", padding: "16px", border: "1px solid #e2e8f0", marginBottom: "18px" }}>
+              <h4 style={{ margin: "0 0 12px 0", fontSize: "13px", fontWeight: "700", color: "#0f172a" }}>
+                Choose sheet
+              </h4>
               <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: "10px", marginBottom: "14px" }}>
                 <div>
                   <label style={{ display: "block", fontSize: "11.5px", fontWeight: "600", color: "#475569", marginBottom: "4px" }}>
-                    Worksheet name
+                    Select pipeline worksheet
                   </label>
                   {inspectionData?.worksheets ? (
                     <select

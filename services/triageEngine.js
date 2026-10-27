@@ -24,7 +24,7 @@ import {
 import { redisClient } from "./redisClient.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { logPrecomputeRun, logFlagSweepRun, logBuildOptionsRun } from "./systemLogs.js";
-import { isPlaceholderInvoice, isPlaceholderExpense, parseYearMonth, parseStaleExpenseDetail, isPipelineJobSuppressed, toSheetDateFormat } from "../utils/helpers.js";
+import { isPlaceholderInvoice, isPlaceholderExpense, parseYearMonth, parseStaleExpenseDetail, isPipelineJobSuppressed, toSheetDateFormat, hasActiveCrmIntegration } from "../utils/helpers.js";
 import { getSessionUser } from "./authService.js";
 import { matchesClientName, getClientManagerClientMap } from "./userPermissions.js";
 
@@ -285,6 +285,13 @@ export function evaluateAutomationStatus_(alertType, category, clientMeta, detec
   return "pending_automation";
 }
 
+export function isValidFrequency(freq) {
+  if (!freq || typeof freq !== "string") return false;
+  const s = freq.trim();
+  if (s.startsWith("#") || s.toLowerCase().includes("loading") || s.toLowerCase().includes("error") || s.toLowerCase().includes("ref")) return false;
+  return /^\d+\s*(?:hr|hrs|min|mins|day|days)$/i.test(s);
+}
+
 export async function readAutoUpdatesClientRows_(sheets, automationCommanderSheetId) {
   const mainResponse = await withRetry(() => sheets.spreadsheets.values.get({
     spreadsheetId: automationCommanderSheetId,
@@ -323,6 +330,9 @@ export async function readAutoUpdatesClientRows_(sheets, automationCommanderShee
       masterSheetUrl: String(masterSheetUrl),
       scriptId,
       hasWebAppUrl,
+      invFreq: row[14] || "",
+      crmFreq: row[15] || "",
+      expFreq: row[16] || "",
       invAutoLastRunMs: parseAutomationTime_(row[24]),
       crmAutoLastRunMs: parseAutomationTime_(row[29]),
       expAutoLastRunMs: parseAutomationTime_(row[34]),
@@ -594,9 +604,14 @@ export async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes,
     try {
       const batchResp = await withRetry(() => sheets.spreadsheets.values.batchGet({
         spreadsheetId: dcaSheetId,
-        ranges: ["DataChgAlert!C59:C66", "DataChgAlert!F59:F66", "DataChgAlert!C72:C79", "DataChgAlert!F72:F79"]
+        ranges: ["DataChgAlert!C59:C66", "DataChgAlert!F59:F66", "DataChgAlert!C72:C79", "DataChgAlert!F72:F79", "KeyInfo!Q8"]
       }));
       const ranges = batchResp.data.valueRanges || [];
+      const crmToolVal = String(ranges[4]?.values?.[0]?.[0] || "").trim();
+      if (!hasActiveCrmIntegration(crmToolVal)) {
+        console.log(`  ⏭ Client has no active CRM integration ("${crmToolVal || "None"}") - skipping CRMComp alerts.`);
+        return [];
+      }
       const SETTING_ROWS = ["missing_job", "client_mismatch", "job_name_mismatch", "revenue_mismatch",
         "direct_costs_mismatch", "start_date_mismatch", "end_date_mismatch", "likelihood_mismatch"];
       const parseSettings = (vals) => {
@@ -1431,6 +1446,14 @@ export async function handleStorePrecomputed(req, res, sheets) {
           let alertObj = null;
           try { alertObj = JSON.parse(row.dataSnapshot); } catch (e) { continue; }
 
+          const isCrmAlert = (row.alertType.startsWith("crm") || row.alertType === "crm" || alertObj?.type === "crm");
+          if (isCrmAlert) {
+            const clientMeta = clientNameToMeta.get(row.clientName);
+            if (!clientMeta || !isValidFrequency(clientMeta.crmFreq)) {
+              continue;
+            }
+          }
+
           const isPipeAlert = (alertObj?.mode === "Pipeline" || alertObj?.alertType === "crmPipeAppDiscr" || alertObj?.alertType === "crmPipeDashDiscr" || alertObj?.flagType === "crmPipeAppDiscr" || alertObj?.flagType === "crmPipeDashDiscr" || row.alertType === "crmPipeAppDiscr" || row.alertType === "crmPipeDashDiscr");
           if (isPipeAlert) {
             const sd = alertObj?.data?.sheetData || [];
@@ -1945,9 +1968,9 @@ export async function handleRunFlagSweep(req, res, sheets) {
     for (const client of clientChunk) {
       try {
         const freqRow = freqRows[client.rowIndex] || [];
-        const hasInvoice = !!freqRow[0];
-        const hasCRM = !!freqRow[1];
-        const hasExpense = !!freqRow[2];
+        const hasInvoice = isValidFrequency(freqRow[0]);
+        let hasCRM = isValidFrequency(freqRow[1]);
+        const hasExpense = isValidFrequency(freqRow[2]);
 
         console.log(`  📦 Batch fetching static data for ${client.clientName}...`);
         let batchData = {};
@@ -1956,6 +1979,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
             spreadsheetId: client.masterSheetId,
             ranges: [
               "DataChgAlert!B4:I4",
+              "KeyInfo!Q8",
               (hasInvoice && actionableDue) ? "InvComp!A5:BD1000" : "DataChgAlert!A1",
               (hasExpense && actionableDue) ? "DirComp!A5:AV1000" : "DataChgAlert!A1",
               (infoDue || proactiveDue) ? "AutoLog!A2:D200" : "DataChgAlert!A1"
@@ -1963,12 +1987,17 @@ export async function handleRunFlagSweep(req, res, sheets) {
           });
           const ranges = batchResp.data.valueRanges || [];
           batchData.gasLocks = ranges[0]?.values || [];
-          batchData.invComp = ranges[1]?.values || [];
-          batchData.dirComp = ranges[2]?.values || [];
-          batchData.autoLog = ranges[3]?.values || [];
+          batchData.crmTool = String(ranges[1]?.values?.[0]?.[0] || "").trim();
+          batchData.invComp = ranges[2]?.values || [];
+          batchData.dirComp = ranges[3]?.values || [];
+          batchData.autoLog = ranges[4]?.values || [];
         } catch (e) {
           console.log(`  ⚠️ Batch fetch failed for ${client.clientName}: ${e.message}`);
         }
+
+        const hasActiveCrm = hasActiveCrmIntegration(batchData.crmTool);
+        client._hasActiveCrm = hasActiveCrm;
+        hasCRM = hasCRM && hasActiveCrm;
 
         const gasLocks = await checkAllGASLocks(sheets, client.masterSheetId, batchData.gasLocks);
 
@@ -2193,6 +2222,38 @@ export async function handleRunFlagSweep(req, res, sheets) {
       console.log(`  run_flag_sweep: ${sweepItems.length} fingerprint items to resolve, ${handledHashes.size} handled hashes, ${existingHashes.size} existing hashes`);
 
       const clientMetaMap = new Map(clientChunk.map(c => [c.clientName, c]));
+
+      // Auto-resolve any legacy/cached CRM discrepancy rows for clients without active CRM integration
+      for (const client of clientChunk) {
+        if (!client._hasActiveCrm) {
+          const clientCrmDiscrepancyRows = memoryRows.filter(r =>
+            r.clientName === client.clientName &&
+            (r.alertType.startsWith("crm") || r.alertType === "crm") &&
+            (r.status === "cached" || r.status === "pending_automation")
+          );
+          for (const crmRow of clientCrmDiscrepancyRows) {
+            try {
+              let updatedSnapshot = crmRow.dataSnapshot;
+              try {
+                const snap = JSON.parse(crmRow.dataSnapshot || "{}");
+                snap.autoResolvedReason = `Client ${client.clientName} has no active CRM integration`;
+                snap.resolvedAt = new Date().toISOString();
+                updatedSnapshot = JSON.stringify(snap);
+              } catch (e) { }
+              await updateAlertMemoryRow(sheets, acIdSweep, crmRow.rowIndex, {
+                ...crmRow,
+                status: "auto_resolved",
+                lastRechecked: new Date().toISOString(),
+                dataSnapshot: updatedSnapshot
+              });
+              crmRow.status = "auto_resolved";
+              console.log(`  🩹 AUTO-RESOLVED inactive CRM alert for ${client.clientName}: ${crmRow.fingerprintHash}`);
+            } catch (e) {
+              console.log(`  ⚠️ Failed to auto-resolve inactive CRM alert: ${e.message}`);
+            }
+          }
+        }
+      }
 
       // Auto-resolve any legacy/cached "crmCopiedConfChecked" rows triggered by skipped duplicate copies
       const invalidCrmRows = memoryRows.filter(r =>
@@ -2799,6 +2860,11 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
             a._legacyFingerprint = buildAlertFingerprintLegacy(a);
           });
         } else if (["crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr", "crm"].includes(alertType)) {
+          if (!isValidFrequency(client.crmFreq)) {
+            console.log(`  ⏭ ${clientName} has no CRM auto-update frequency configured - skipping options build for ${alertType}`);
+            notFound += rows.length;
+            continue;
+          }
           if (alertType === "crm") {
             const pipeAlerts = await readCRMCompAlerts(sheets, client.masterSheetId, "Pipeline", ["crmPipeDashDiscr", "crmPipeAppDiscr"], client.masterSheetId);
             const confAlerts = await readCRMCompAlerts(sheets, client.masterSheetId, "Confirmed", ["crmConfDashDiscr", "crmConfAppDiscr"], client.masterSheetId);

@@ -248,7 +248,6 @@ function applyChildRowValues(rowArray, job, cols, invoiceSlots, expenseSlots) {
   if (cols.leadSource !== -1) rowArray[cols.leadSource] = "";
   if (cols.splitStr !== -1) rowArray[cols.splitStr] = "";
   if (cols.likelihood !== -1) rowArray[cols.likelihood] = "";
-  if (cols.prodTime !== -1) rowArray[cols.prodTime] = "";
 
   // Invoices (slots 1-3)
   for (let s = 1; s <= 3; s++) {
@@ -406,7 +405,7 @@ export default async function handler(req, res) {
       startDate: getColIdx(["start date"], 37),
       endDate: getColIdx(["end date"], 38),
       likelihood: getColIdx(["% likel.", "% likelihood", "% likely", "likelihood"], 39),
-      prodTime: getColIdx(["prod. time", "production time"], 40),
+      prodTime: getColIdx(["prod. time", "production time"], -1),
 
       inv: [
         {
@@ -535,16 +534,26 @@ export default async function handler(req, res) {
       const oldRow = parseInt(job.rowNumber, 10);
       if (!isNaN(oldRow) && oldRow >= 2) {
         const rowsToClear = [oldRow, ...existingChildRows].filter((r) => r >= 2);
+        const oldClearRanges = [];
         for (const r of rowsToClear) {
+          oldClearRanges.push(
+            `${oldSheetName}!A${r}:AM${r}`,
+            `${oldSheetName}!AN${r}`,
+            `${oldSheetName}!AP${r}:BH${r}`,
+            `${oldSheetName}!BX${r}:CR${r}`,
+            `${oldSheetName}!DD${r}`
+          );
+        }
+        if (oldClearRanges.length > 0) {
           try {
             await withRetry(() =>
-              sheets.spreadsheets.values.clear({
+              sheets.spreadsheets.values.batchClear({
                 spreadsheetId: clientSheetId,
-                range: `${oldSheetName}!A${r}:BH${r}`,
+                requestBody: { ranges: oldClearRanges },
               })
             );
           } catch (clearErr) {
-            console.warn(`Warning clearing old row ${r} on ${oldSheetName}:`, clearErr.message);
+            console.warn(`Warning clearing old rows on ${oldSheetName}:`, clearErr.message);
           }
         }
       }
@@ -677,30 +686,44 @@ export default async function handler(req, res) {
       }
     }
 
-    // Clear any excess child rows that are no longer needed
+    // Helper to slice and pad row array to exact column width
+    const slicePad = (arr, start, end) => {
+      const s = arr.slice(start, end);
+      while (s.length < end - start) s.push("");
+      return s;
+    };
+
+    // Clear any excess child rows that are no longer needed (safe segmented ranges preserving AO and BI:BW)
     if (existingChildRows.length > totalChildRowsNeeded) {
+      const excessClearRanges = [];
       for (let i = totalChildRowsNeeded; i < existingChildRows.length; i++) {
         const rowToClear = existingChildRows[i];
+        excessClearRanges.push(
+          `${sheetName}!A${rowToClear}:AM${rowToClear}`,
+          `${sheetName}!AN${rowToClear}`,
+          `${sheetName}!AP${rowToClear}:BH${rowToClear}`,
+          `${sheetName}!BX${rowToClear}:CR${rowToClear}`
+        );
+      }
+      if (excessClearRanges.length > 0) {
         try {
           await withRetry(() =>
             sheets.spreadsheets.values.batchClear({
               spreadsheetId: clientSheetId,
               requestBody: {
-                ranges: [
-                  `${sheetName}!A${rowToClear}:BH${rowToClear}`,
-                  `${sheetName}!BX${rowToClear}:CR${rowToClear}`,
-                ],
+                ranges: excessClearRanges,
               },
             })
           );
         } catch (e) {
-          console.warn(`Warning clearing unused child row ${rowToClear}:`, e.message);
+          console.warn("Warning clearing unused child rows:", e.message);
         }
       }
     }
 
-    // 6. WRITE PARENT ROW (preserving formula cells in BI:BW, and never writing beyond CR to preserve CS:DC and DD)
-    const maxCols = 96; // Columns 1-96 (A:CR) covers all editable job fields, invoices, and direct expenses
+    // 6. PREPARE PARENT ROW (segmented into safe bands: A:AM, AN, AP:BH, BX:CR)
+    // Preserves column AO (col 41) and calculation formulas in BI:BW (cols 61-75), CS:DC, and DD
+    const maxCols = 96;
     const parentRowResp = await withRetry(() =>
       sheets.spreadsheets.values.get({
         spreadsheetId: clientSheetId,
@@ -718,19 +741,26 @@ export default async function handler(req, res) {
 
     applyParentRowValues(updatedParentRow, job, cols, parentInvoices, parentExpenses);
 
-    const parentEndColLetter = "CR";
-    await withRetry(() =>
-      sheets.spreadsheets.values.update({
-        spreadsheetId: clientSheetId,
-        range: `${sheetName}!A${parentRow}:${parentEndColLetter}${parentRow}`,
-        valueInputOption: "USER_ENTERED",
-        requestBody: {
-          values: [updatedParentRow],
-        },
-      })
-    );
+    const batchUpdateData = [
+      {
+        range: `${sheetName}!A${parentRow}:AM${parentRow}`,
+        values: [slicePad(updatedParentRow, 0, 39)],
+      },
+      {
+        range: `${sheetName}!AN${parentRow}`,
+        values: [[updatedParentRow[39] !== undefined ? updatedParentRow[39] : ""]],
+      },
+      {
+        range: `${sheetName}!AP${parentRow}:BH${parentRow}`,
+        values: [slicePad(updatedParentRow, 41, 60)],
+      },
+      {
+        range: `${sheetName}!BX${parentRow}:CR${parentRow}`,
+        values: [slicePad(updatedParentRow, 75, 96)],
+      },
+    ];
 
-    // 7. WRITE CHILD ROWS (confined to A:CR)
+    // 7. PREPARE CHILD ROWS (segmented into identical safe bands)
     for (let k = 0; k < totalChildRowsNeeded; k++) {
       const childRowNum = actualChildRows[k];
       const childRowResp = await withRetry(() =>
@@ -756,18 +786,36 @@ export default async function handler(req, res) {
         childExpenses[k] || {}
       );
 
-      const childEndColLetter = "CR";
-      await withRetry(() =>
-        sheets.spreadsheets.values.update({
-          spreadsheetId: clientSheetId,
-          range: `${sheetName}!A${childRowNum}:${childEndColLetter}${childRowNum}`,
-          valueInputOption: "USER_ENTERED",
-          requestBody: {
-            values: [updatedChildRow],
-          },
-        })
+      batchUpdateData.push(
+        {
+          range: `${sheetName}!A${childRowNum}:AM${childRowNum}`,
+          values: [slicePad(updatedChildRow, 0, 39)],
+        },
+        {
+          range: `${sheetName}!AN${childRowNum}`,
+          values: [[""]],
+        },
+        {
+          range: `${sheetName}!AP${childRowNum}:BH${childRowNum}`,
+          values: [slicePad(updatedChildRow, 41, 60)],
+        },
+        {
+          range: `${sheetName}!BX${childRowNum}:CR${childRowNum}`,
+          values: [slicePad(updatedChildRow, 75, 96)],
+        }
       );
     }
+
+    // 7.1. EXECUTE BATCH UPDATE (atomic, preserves Column AO and BI:BW untouched)
+    await withRetry(() =>
+      sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: clientSheetId,
+        requestBody: {
+          valueInputOption: "USER_ENTERED",
+          data: batchUpdateData,
+        },
+      })
+    );
 
     // 7.5. GROUP CHILD ROWS (grouped with other children, but not with parent)
     try {

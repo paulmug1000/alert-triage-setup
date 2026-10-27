@@ -29,6 +29,8 @@ import { refreshPipedriveTokens } from "../../../services/pipedriveService.js";
 import { refreshCapsuleTokens } from "../../../services/capsuleService.js";
 import { refreshCloseTokens } from "../../../services/closeService.js";
 import { refreshHubSpotTokens } from "../../../services/hubspotService.js";
+import { refreshGoogleSheetTokens } from "../../../services/googleSheetService.js";
+import { refreshExcelTokens } from "../../../services/excelIntegrationService.js";
 import { getSessionUser } from "../../../services/authService.js";
 import { redisClient } from "../../../services/redisClient.js";
 
@@ -559,6 +561,88 @@ export default async function handler(req, res) {
           return res.status(401).json({
             success: false,
             error: `Failed to refresh HubSpot connection (${refreshErr.message}). Re-authorization required.`,
+            reconnectRequired: true
+          });
+        }
+      }
+    } else if (isExpiringSoon && (tool === "googlesheet" || tool === "google_sheet")) {
+      if (record.tokens.refreshToken) {
+        const lockKey = `googlesheet:${record.clientKey}`;
+        try {
+          const refreshResult = await refreshWithConcurrencyLock(
+            lockKey,
+            async () => {
+              const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "googlesheet" });
+              const latestExpiresIn = Math.max(0, Math.round(((latest?.expiresAt || 0) - Date.now()) / 1000));
+              if (latestExpiresIn >= 300) {
+                return { accessToken: latest.tokens.accessToken, expiresIn: latestExpiresIn };
+              }
+              const refreshed = await refreshGoogleSheetTokens(latest?.tokens?.refreshToken || record.tokens.refreshToken);
+              await updateRefreshedTokens({
+                clientKey: record.clientKey,
+                tool: "googlesheet",
+                tokens: refreshed
+              });
+              console.log(`✅ Token Broker: Successfully refreshed Google Sheet token for ${record.clientKey}.`);
+              return { accessToken: refreshed.accessToken, expiresIn: refreshed.expiresIn };
+            },
+            async () => {
+              const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "googlesheet" });
+              const latestExpiresIn = Math.max(0, Math.round(((latest?.expiresAt || 0) - Date.now()) / 1000));
+              return latest?.tokens?.accessToken ? { accessToken: latest.tokens.accessToken, expiresIn: latestExpiresIn } : null;
+            }
+          );
+          accessToken = refreshResult.accessToken;
+          expiresIn = refreshResult.expiresIn;
+        } catch (refreshErr) {
+          console.error(`🚨 Token Broker: Google Sheet refresh failed for ${record.clientKey}:`, refreshErr.message);
+          if (refreshErr.message.includes("invalid_grant") || refreshErr.message.includes("unauthorized") || refreshErr.message.includes("revoked")) {
+            await markIntegrationReconnectRequired({ clientKey: record.clientKey, tool: "googlesheet", error: refreshErr.message });
+          }
+          return res.status(401).json({
+            success: false,
+            error: `Failed to refresh Google Sheet connection (${refreshErr.message}). Re-authorization required.`,
+            reconnectRequired: true
+          });
+        }
+      }
+    } else if (isExpiringSoon && tool === "excel") {
+      if (record.tokens.refreshToken) {
+        const lockKey = `excel:${record.clientKey}`;
+        try {
+          const refreshResult = await refreshWithConcurrencyLock(
+            lockKey,
+            async () => {
+              const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "excel" });
+              const latestExpiresIn = Math.max(0, Math.round(((latest?.expiresAt || 0) - Date.now()) / 1000));
+              if (latestExpiresIn >= 300) {
+                return { accessToken: latest.tokens.accessToken, expiresIn: latestExpiresIn };
+              }
+              const refreshed = await refreshExcelTokens(latest?.tokens?.refreshToken || record.tokens.refreshToken);
+              await updateRefreshedTokens({
+                clientKey: record.clientKey,
+                tool: "excel",
+                tokens: refreshed
+              });
+              console.log(`✅ Token Broker: Successfully refreshed Excel token for ${record.clientKey}.`);
+              return { accessToken: refreshed.accessToken, expiresIn: refreshed.expiresIn };
+            },
+            async () => {
+              const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "excel" });
+              const latestExpiresIn = Math.max(0, Math.round(((latest?.expiresAt || 0) - Date.now()) / 1000));
+              return latest?.tokens?.accessToken ? { accessToken: latest.tokens.accessToken, expiresIn: latestExpiresIn } : null;
+            }
+          );
+          accessToken = refreshResult.accessToken;
+          expiresIn = refreshResult.expiresIn;
+        } catch (refreshErr) {
+          console.error(`🚨 Token Broker: Excel refresh failed for ${record.clientKey}:`, refreshErr.message);
+          if (refreshErr.message.includes("invalid_grant") || refreshErr.message.includes("unauthorized") || refreshErr.message.includes("revoked")) {
+            await markIntegrationReconnectRequired({ clientKey: record.clientKey, tool: "excel", error: refreshErr.message });
+          }
+          return res.status(401).json({
+            success: false,
+            error: `Failed to refresh Excel connection (${refreshErr.message}). Re-authorization required.`,
             reconnectRequired: true
           });
         }
@@ -1110,6 +1194,98 @@ export default async function handler(req, res) {
             success: false,
             verified: false,
             error: `Failed to contact HubSpot API: ${callErr.message}`,
+            reconnectRequired: false
+          });
+        }
+      } else if (tool === "googlesheet" || tool === "google_sheet") {
+        try {
+          if (accessToken.startsWith("manual_")) {
+            return res.status(200).json({
+              success: true,
+              verified: true,
+              tool,
+              clientKey: record.clientKey,
+              clientName: record.clientName,
+              accountName: record.metadata?.accountName || "Google Sheet",
+              message: `Verified successfully via Google Sheets Service Account for "${record.metadata?.accountName || 'Google Sheet'}"!`
+            });
+          }
+          const testRes = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
+            headers: { "Authorization": `Bearer ${accessToken}` }
+          });
+          if (!testRes.ok) {
+            return res.status(testRes.status === 401 ? 401 : 502).json({
+              success: false,
+              verified: false,
+              status: testRes.status,
+              error: `Google API Error: HTTP ${testRes.status}. Re-authorization required.`,
+              reconnectRequired: testRes.status === 401
+            });
+          }
+          const uData = await testRes.json();
+          const email = uData.email || record.metadata?.userEmail || "Google Account";
+          return res.status(200).json({
+            success: true,
+            verified: true,
+            tool,
+            clientKey: record.clientKey,
+            clientName: record.clientName,
+            accessToken,
+            expiresIn,
+            userEmail: email,
+            message: `Verified successfully with Google API for "${email}"!`
+          });
+        } catch (callErr) {
+          return res.status(502).json({
+            success: false,
+            verified: false,
+            error: `Failed to contact Google API: ${callErr.message}`,
+            reconnectRequired: false
+          });
+        }
+      } else if (tool === "excel") {
+        try {
+          if (accessToken.startsWith("manual_")) {
+            return res.status(200).json({
+              success: true,
+              verified: true,
+              tool,
+              clientKey: record.clientKey,
+              clientName: record.clientName,
+              accountName: record.metadata?.accountName || "Microsoft Excel",
+              message: `Verified successfully via Azure Graph Credentials for "${record.metadata?.accountName || 'Microsoft Excel'}"!`
+            });
+          }
+          const testRes = await fetch("https://graph.microsoft.com/v1.0/me", {
+            headers: { "Authorization": `Bearer ${accessToken}` }
+          });
+          if (!testRes.ok) {
+            return res.status(testRes.status === 401 ? 401 : 502).json({
+              success: false,
+              verified: false,
+              status: testRes.status,
+              error: `Microsoft Graph Error: HTTP ${testRes.status}. Re-authorization required.`,
+              reconnectRequired: testRes.status === 401
+            });
+          }
+          const meData = await testRes.json();
+          const mail = meData.mail || meData.userPrincipalName || "Microsoft 365 Account";
+          return res.status(200).json({
+            success: true,
+            verified: true,
+            tool,
+            clientKey: record.clientKey,
+            clientName: record.clientName,
+            accessToken,
+            expiresIn,
+            userEmail: mail,
+            message: `Verified successfully with Microsoft Graph for "${mail}"!`
+          });
+        } catch (callErr) {
+          return res.status(502).json({
+            success: false,
+            verified: false,
+            error: `Failed to contact Microsoft Graph API: ${callErr.message}`,
             reconnectRequired: false
           });
         }

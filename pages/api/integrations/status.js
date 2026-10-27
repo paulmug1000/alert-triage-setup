@@ -179,7 +179,7 @@ function evaluateAutomationHealth({ frequency, isRunning, lastCommandTime, signa
         clients = clients.filter(c => assignedList.some(assigned => matchesClientName(assigned, c.clientName)));
       }
 
-      const ALL_TOOLS = ["xero", "quickbooks", "monday", "pipedrive", "clickup", "capsule", "close", "hubspot"];
+      const ALL_TOOLS = ["xero", "quickbooks", "monday", "pipedrive", "clickup", "capsule", "close", "hubspot", "googlesheet", "excel"];
 
       // Fetch configs and integration statuses for each client in exact AutoUpdates order
       const clientConfigs = await Promise.all(
@@ -199,6 +199,14 @@ function evaluateAutomationHealth({ frequency, isRunning, lastCommandTime, signa
               integrations[tool] = toolStatuses[idx] || { connected: false, tool };
             });
 
+            const crmToolClean = String(cfg.crmTool || "").toLowerCase();
+            const crmKey = crmToolClean.includes("sheet") ? "googlesheet" : crmToolClean.includes("excel") ? "excel" : crmToolClean;
+            let crmStatus = integrations[crmKey] || { connected: false, tool: cfg.crmTool };
+            if (!crmStatus.connected && cfg.crmStatus?.connected) {
+              crmStatus = cfg.crmStatus;
+              integrations[crmKey] = crmStatus;
+            }
+
             return {
               clientName: c.clientName,
               clientSheetId: c.clientSheetId,
@@ -208,7 +216,7 @@ function evaluateAutomationHealth({ frequency, isRunning, lastCommandTime, signa
               accountingTool: cfg.accountingTool || "None",
               accountingStatus: integrations[String(cfg.accountingTool || "").toLowerCase()] || { connected: false, tool: cfg.accountingTool },
               crmTool: cfg.crmTool || "None",
-              crmStatus: integrations[String(cfg.crmTool || "").toLowerCase()] || { connected: false, tool: cfg.crmTool },
+              crmStatus,
               crmDrives: cfg.crmDrives || "NA",
               setupMode: Boolean(cfg.setupMode),
               isSetupMode: Boolean(cfg.setupMode),
@@ -308,7 +316,7 @@ function evaluateAutomationHealth({ frequency, isRunning, lastCommandTime, signa
   }
 
   try {
-    const tools = ["xero", "quickbooks", "monday", "pipedrive", "clickup", "capsule", "close", "hubspot"];
+    const tools = ["xero", "quickbooks", "monday", "pipedrive", "clickup", "capsule", "close", "hubspot", "googlesheet", "excel"];
     const statuses = {};
 
     for (const tool of tools) {

@@ -10,6 +10,7 @@
 
 import { getSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, extractSheetIdFromUrl, withRetry } from "../../../services/sheetsClient.js";
+import { getIntegrationTokens } from "../../../services/vaultService.js";
 
 export default async function handler(req, res) {
   let sessionUser = await getSessionUser(req);
@@ -31,21 +32,26 @@ export default async function handler(req, res) {
 
   try {
     if (toolClean.includes("sheet")) {
-      // 1. Google Sheet source check
+      // 1. Google Sheet source check (X11: URL, X12: Tab, with fallback to legacy X14:X15)
       const kiRes = await withRetry(() =>
         sheets.spreadsheets.values.get({
           spreadsheetId: masterSheetId,
-          range: "KeyInfo!X14:X15"
+          range: "KeyInfo!X11:X15"
         })
       );
       const rows = kiRes.data.values || [];
-      const url = (rows[0] && rows[0][0]) ? String(rows[0][0]).trim() : "";
-      const tabName = (rows[1] && rows[1][0]) ? String(rows[1][0]).trim() : "";
+      const x11Url = (rows[0] && rows[0][0]) ? String(rows[0][0]).trim() : "";
+      const x12Tab = (rows[1] && rows[1][0]) ? String(rows[1][0]).trim() : "";
+      const x14Url = (rows[3] && rows[3][0]) ? String(rows[3][0]).trim() : "";
+      const x15Tab = (rows[4] && rows[4][0]) ? String(rows[4][0]).trim() : "";
+
+      const url = x11Url || x14Url;
+      const tabName = x12Tab || x15Tab;
 
       if (!url) {
         return res.status(200).json({
           success: false,
-          error: "No Google Sheet URL configured in KeyInfo (X14)."
+          error: "No Google Sheet URL configured in KeyInfo (X11)."
         });
       }
 
@@ -73,7 +79,7 @@ export default async function handler(req, res) {
         if (accessErr.code === 404 || accessErr.message?.includes("404")) {
           return res.status(200).json({
             success: false,
-            error: `Target Google Sheet not found (ID: ${targetSheetId}). Verify the URL in KeyInfo!X14.`
+            error: `Target Google Sheet not found (ID: ${targetSheetId}). Verify the URL in KeyInfo!X11.`
           });
         }
         return res.status(200).json({
@@ -128,48 +134,69 @@ export default async function handler(req, res) {
       const sheetName = (rows[5] && rows[5][0]) ? String(rows[5][0]).trim() : "";
       const rangeAddress = (rows[6] && rows[6][0]) ? String(rows[6][0]).trim() : "";
 
-      if (!tenantId || !clientId || !clientSecret || !driveId || !fileId || !sheetName || !rangeAddress) {
+      if (!driveId || !fileId || !sheetName) {
         const missing = [];
-        if (!tenantId) missing.push("Tenant ID (X33)");
-        if (!clientId) missing.push("Client ID (X34)");
-        if (!clientSecret) missing.push("Client Secret (X35)");
         if (!driveId) missing.push("Drive ID (X36)");
         if (!fileId) missing.push("File ID (X37)");
         if (!sheetName) missing.push("Worksheet Name (X38)");
-        if (!rangeAddress) missing.push("Range Address (X39)");
         return res.status(200).json({
           success: false,
           error: `Missing Excel configuration in KeyInfo: ${missing.join(", ")}`
         });
       }
 
-      // Step 1: Obtain Microsoft OAuth2 token
-      const tokenUrl = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
-      const tokenBody = new URLSearchParams({
-        client_id: clientId,
-        scope: "https://graph.microsoft.com/.default",
-        client_secret: clientSecret,
-        grant_type: "client_credentials"
-      });
-
-      const tokenRes = await fetch(tokenUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: tokenBody.toString()
-      });
-
-      const tokenData = await tokenRes.json();
-      if (!tokenRes.ok || !tokenData.access_token) {
-        return res.status(200).json({
-          success: false,
-          error: `Microsoft Azure authentication failed: ${tokenData.error_description || tokenData.error || tokenRes.statusText}`
-        });
+      // Step 1: Obtain Microsoft OAuth token (from Vault or fallback to Azure App Credentials in X33:X35)
+      let accessToken = null;
+      if (clientKey) {
+        const grant = await getIntegrationTokens(clientKey, "excel").catch(() => null);
+        if (grant && grant.tokens?.accessToken && !grant.tokens.accessToken.startsWith("manual_")) {
+          accessToken = grant.tokens.accessToken;
+        }
       }
 
-      // Step 2: Query Graph API workbook worksheet range
-      const graphUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${fileId}/workbook/worksheets/${encodeURIComponent(sheetName)}/range(address='${encodeURIComponent(rangeAddress)}')`;
+      if (!accessToken) {
+        if (!tenantId || !clientId || !clientSecret) {
+          return res.status(200).json({
+            success: false,
+            error: "No Microsoft authorization found. Please connect Excel via OAuth or populate Azure credentials in KeyInfo (X33-X35)."
+          });
+        }
+
+        const tokenUrl = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
+        const tokenBody = new URLSearchParams({
+          client_id: clientId,
+          scope: "https://graph.microsoft.com/.default",
+          client_secret: clientSecret,
+          grant_type: "client_credentials"
+        });
+
+        const tokenRes = await fetch(tokenUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: tokenBody.toString()
+        });
+
+        const tokenData = await tokenRes.json();
+        if (!tokenRes.ok || !tokenData.access_token) {
+          return res.status(200).json({
+            success: false,
+            error: `Microsoft Azure authentication failed: ${tokenData.error_description || tokenData.error || tokenRes.statusText}`
+          });
+        }
+        accessToken = tokenData.access_token;
+      }
+
+      // Step 2: Query Graph API workbook worksheet range or usedRange
+      const cleanAddress = (rangeAddress || "").trim();
+      let graphUrl;
+      if (!cleanAddress || cleanAddress.toLowerCase() === "usedrange") {
+        graphUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${fileId}/workbook/worksheets/${encodeURIComponent(sheetName)}/usedRange?$select=address,values`;
+      } else {
+        graphUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${fileId}/workbook/worksheets/${encodeURIComponent(sheetName)}/range(address='${encodeURIComponent(cleanAddress)}')`;
+      }
+
       const graphRes = await fetch(graphUrl, {
-        headers: { Authorization: `Bearer ${tokenData.access_token}` }
+        headers: { Authorization: `Bearer ${accessToken}` }
       });
       const graphData = await graphRes.json();
 

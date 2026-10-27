@@ -2,6 +2,8 @@ import React, { useState, useEffect } from "react";
 import Head from "next/head";
 import Link from "next/link";
 import { SYSTEM_VERSION, getSystemCopyright } from "../../config/version";
+import GoogleSheetLinkModal from "../integrations/GoogleSheetLinkModal";
+import ExcelLinkModal from "../integrations/ExcelLinkModal";
 
 export default function SetupHoldingGate({
   clientName,
@@ -18,6 +20,8 @@ export default function SetupHoldingGate({
 }) {
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
   const [clientDropdownOpen, setClientDropdownOpen] = useState(false);
+  const [googleSheetModalOpen, setGoogleSheetModalOpen] = useState(false);
+  const [excelModalOpen, setExcelModalOpen] = useState(false);
 
   // Close dropdowns when clicking outside or pressing Escape
   useEffect(() => {
@@ -64,7 +68,9 @@ export default function SetupHoldingGate({
       capsule: "Capsule CRM",
       hubspot: "HubSpot",
       monday: "Monday.com",
-      pipedrive: "Pipedrive"
+      pipedrive: "Pipedrive",
+      googlesheet: "Google Sheet",
+      excel: "Microsoft Excel"
     };
     return map[String(tool).toLowerCase()] || tool;
   };
@@ -79,11 +85,21 @@ export default function SetupHoldingGate({
     if (t === "pipedrive") return { bg: "#26292c", hover: "#121415" };
     if (t === "close") return { bg: "#1f3b58", hover: "#13283c" };
     if (t === "capsule") return { bg: "#1e3a8a", hover: "#172554" };
+    if (t === "googlesheet") return { bg: "#0f9d58", hover: "#0b8043" };
+    if (t === "excel") return { bg: "#0f6cbd", hover: "#0d5c9e" };
     return { bg: "#0047AB", hover: "#003b8e" };
   };
 
   const handleConnect = (tool) => {
     const provider = String(tool).toLowerCase();
+    if (provider === "googlesheet") {
+      setGoogleSheetModalOpen(true);
+      return;
+    }
+    if (provider === "excel") {
+      setExcelModalOpen(true);
+      return;
+    }
     const q = new URLSearchParams({
       clientName: clientName || "",
       clientKey: clientName || "",
@@ -782,6 +798,34 @@ export default function SetupHoldingGate({
             )}
           </div>
         </main>
+
+        {/* ── GOOGLE SHEET LINK MODAL ────────────────────────────────────── */}
+        {googleSheetModalOpen && (
+          <GoogleSheetLinkModal
+            isOpen={googleSheetModalOpen}
+            onClose={() => setGoogleSheetModalOpen(false)}
+            clientName={clientName}
+            masterSheetId={masterSheetId}
+            clientSheetId={clientSheetId}
+            onSuccess={() => {
+              window.location.reload();
+            }}
+          />
+        )}
+
+        {/* ── MICROSOFT EXCEL LINK MODAL ─────────────────────────────────── */}
+        {excelModalOpen && (
+          <ExcelLinkModal
+            isOpen={excelModalOpen}
+            onClose={() => setExcelModalOpen(false)}
+            clientName={clientName}
+            masterSheetId={masterSheetId}
+            clientSheetId={clientSheetId}
+            onSuccess={() => {
+              window.location.reload();
+            }}
+          />
+        )}
       </div>
     </>
   );

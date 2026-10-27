@@ -3135,7 +3135,7 @@ export default function ClientSettingsView({
                                 placeholder="https://docs.google.com/spreadsheets/d/..."
                                 style={{ width: "100%", padding: "8px 12px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "13px", boxSizing: "border-box" }}
                               />
-                              {renderCellRef("KeyInfo!X14")}
+                              {renderCellRef("KeyInfo!X11")}
                             </div>
                             <div>
                               <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "4px" }}>
@@ -3148,7 +3148,33 @@ export default function ClientSettingsView({
                                 placeholder="e.g. Leads or Pipeline"
                                 style={{ width: "100%", padding: "8px 12px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "13px", boxSizing: "border-box" }}
                               />
-                              {renderCellRef("KeyInfo!X15")}
+                              {renderCellRef("KeyInfo!X12")}
+                            </div>
+                            <div>
+                              <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "4px" }}>
+                                Header column row
+                              </label>
+                              <input
+                                type="text"
+                                value={settings.crm.googleSheetHeaderRow || "1"}
+                                onChange={(e) => updateSettingsField(prev => ({ ...prev, crm: { ...prev.crm, googleSheetHeaderRow: e.target.value } }))}
+                                placeholder="1"
+                                style={{ width: "100%", padding: "8px 12px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "13px", boxSizing: "border-box" }}
+                              />
+                              {renderCellRef("KeyInfo!X14")}
+                            </div>
+                            <div>
+                              <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "4px" }}>
+                                Key headers
+                              </label>
+                              <input
+                                type="text"
+                                value={settings.crm.googleSheetKeyHeaders || ""}
+                                onChange={(e) => updateSettingsField(prev => ({ ...prev, crm: { ...prev.crm, googleSheetKeyHeaders: e.target.value } }))}
+                                placeholder="Client, Job Name, Value, Start, End, Likelihood"
+                                style={{ width: "100%", padding: "8px 12px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "13px", boxSizing: "border-box" }}
+                              />
+                              {renderCellRef("KeyInfo!X13")}
                             </div>
                           </div>
                         )}

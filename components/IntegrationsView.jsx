@@ -2,11 +2,37 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import Link from "next/link";
 import Spinner from "./Spinner";
 import Skeleton, { PmaIntegrationsSkeleton } from "./Skeleton";
+import GoogleSheetLinkModal from "./integrations/GoogleSheetLinkModal";
+import ExcelLinkModal from "./integrations/ExcelLinkModal";
 
 // ============================================================================
 // CONFIGURATION & METADATA FOR CRM INTEGRATIONS
 // ============================================================================
 const CRM_TOOLS_CONFIG = {
+  googlesheet: {
+    name: "Google Sheet",
+    subtitle: "Google Drive & Sheets Ingestion",
+    color: "#0f9d58",
+    bgColor: "rgba(15, 157, 88, 0.12)",
+    icon: "GS",
+    description: "Read-only access via Google OAuth 2.0 or Master Sheet bridge. Ingests pipeline, jobs, and deal values safely into DataFromCRM.",
+    accountLabel: "Spreadsheet",
+    getAccountValue: (m) => m?.spreadsheetName || m?.spreadsheetTitle || m?.accountName,
+    idLabel: "Spreadsheet ID",
+    getIdValue: (m) => m?.spreadsheetId
+  },
+  excel: {
+    name: "Microsoft Excel",
+    subtitle: "OneDrive & SharePoint Workbook",
+    color: "#0f6cbd",
+    bgColor: "rgba(15, 108, 189, 0.12)",
+    icon: "XL",
+    description: "Read-only access via Microsoft 365 OAuth 2.0. Ingests workbook tables and ranges safely into DataFromCRM.",
+    accountLabel: "Workbook / File",
+    getAccountValue: (m) => m?.fileName || m?.workbookName || m?.accountName,
+    idLabel: "File ID / Path",
+    getIdValue: (m) => m?.fileId || m?.filePath
+  },
   clickup: {
     name: "ClickUp",
     subtitle: "Workspaces, Lists & Task Pipeline",
@@ -104,8 +130,10 @@ export function getCrmToolType(toolStr, clientIntegrations) {
   if (s.includes("hubspot")) return "hubspot";
   if (s.includes("monday")) return "monday";
   if (s.includes("pipedrive")) return "pipedrive";
-  if (!s || s === "none" || s === "excel") {
-    for (const k of ["clickup", "capsule", "close", "hubspot", "monday", "pipedrive"]) {
+  if (s.includes("sheet") || s.includes("google")) return "googlesheet";
+  if (s.includes("excel")) return "excel";
+  if (!s || s === "none") {
+    for (const k of ["googlesheet", "excel", "clickup", "capsule", "close", "hubspot", "monday", "pipedrive"]) {
       if (clientIntegrations?.[k]?.connected) return k;
     }
     return "none";
@@ -176,6 +204,8 @@ export default function IntegrationsView({
   const [selectedTenantsMap, setSelectedTenantsMap] = useState({});
   const [switchingTenantMap, setSwitchingTenantMap] = useState({});
   const [verifyingAll, setVerifyingAll] = useState(false);
+  const [googleSheetModalClient, setGoogleSheetModalClient] = useState(null);
+  const [excelModalClient, setExcelModalClient] = useState(null);
 
   const highlightedRef = useRef(null);
   const onStatusRefreshRef = useRef(onStatusRefresh);
@@ -203,9 +233,12 @@ export default function IntegrationsView({
           }
         }
         setSelectedTenantsMap((prev) => ({ ...initialTenants, ...prev }));
+        return data.allClients || [];
       }
+      return [];
     } catch (err) {
       console.error("Failed to load multi-client integrations status:", err);
+      return [];
     } finally {
       if (!isSilent) setLoading(false);
     }
@@ -232,6 +265,21 @@ export default function IntegrationsView({
             type: "success",
             message: `Successfully connected ${toolTitle} for ${clientParam || "client"}${tenant ? ` (${tenant})` : ""}!`
           });
+
+          // Automatically re-open the configuration modal for spreadsheet integrations
+          if (integration === "googlesheet" || integration === "excel") {
+            fetchAllStatus(true, true).then((clientsList) => {
+              const target = String(clientParam || "").toLowerCase().trim();
+              const matched = (clientsList || []).find((c) => String(c.clientName || "").toLowerCase().trim() === target);
+              if (matched) {
+                if (integration === "googlesheet") {
+                  setGoogleSheetModalClient(matched);
+                } else if (integration === "excel") {
+                  setExcelModalClient(matched);
+                }
+              }
+            });
+          }
         } else if (status === "error" || status === "denied") {
           setFeedback({
             type: "error",
@@ -431,6 +479,14 @@ export default function IntegrationsView({
   // CRM TOOLS ACTIONS
   // --------------------------------------------------------------------------
   const handleConnectCrm = (client, toolKey) => {
+    if (toolKey === "googlesheet") {
+      setGoogleSheetModalClient(client);
+      return;
+    }
+    if (toolKey === "excel") {
+      setExcelModalClient(client);
+      return;
+    }
     const params = new URLSearchParams({
       clientKey: client.clientName,
       clientName: client.clientName,
@@ -439,6 +495,17 @@ export default function IntegrationsView({
       redirectBack: `/pma?nav=integrations&client=${encodeURIComponent(client.clientName)}`
     });
     window.location.href = `/api/integrations/${toolKey}/connect?${params.toString()}`;
+  };
+
+  const handleConfigureCrm = (client, toolKey) => {
+    if (toolKey === "googlesheet") {
+      setGoogleSheetModalClient(client);
+      return;
+    }
+    if (toolKey === "excel") {
+      setExcelModalClient(client);
+      return;
+    }
   };
 
   const handleDisconnectCrm = async (client, toolKey) => {
@@ -546,7 +613,7 @@ export default function IntegrationsView({
           tasks.push({ client, toolKey: accTool === "qb" ? "quickbooks" : accTool, toolName: accTool === "qb" ? "QuickBooks" : (accTool.charAt(0).toUpperCase() + accTool.slice(1)) });
         }
         // CRM Tool
-        const crmTool = String(client.crmTool || "").toLowerCase();
+        const crmTool = getCrmToolType(client.crmTool, client.integrations);
         if (CRM_TOOLS_CONFIG[crmTool] && client.integrations?.[crmTool]?.connected) {
           tasks.push({ client, toolKey: crmTool, toolName: CRM_TOOLS_CONFIG[crmTool]?.name || crmTool.toUpperCase() });
         }
@@ -1175,6 +1242,7 @@ export default function IntegrationsView({
                         toolKey={crmToolType}
                         config={CRM_TOOLS_CONFIG[crmToolType]}
                         onConnect={() => handleConnectCrm(client, crmToolType)}
+                        onConfigure={() => handleConfigureCrm(client, crmToolType)}
                         onDisconnect={() => handleDisconnectCrm(client, crmToolType)}
                         actionLoading={Boolean(actionLoadingMap[`${client.clientName}_${crmToolType}_disconnect`])}
                         onTestToken={() => handleTestToken(client, crmToolType)}
@@ -1211,6 +1279,46 @@ export default function IntegrationsView({
             All credentials are encrypted with AES-256-GCM in Redis. Google Apps Script queries <code style={{ background: "#e2e8f0", padding: "2px 5px", borderRadius: "4px" }}>/api/integrations/token</code> during automated sync cycles using client-specific tokens. When any connection is authorised, automated notifications are immediately sent to all Admins and assigned Client Managers.
           </p>
         </div>
+      )}
+
+      {/* ── GOOGLE SHEET LINK MODAL ────────────────────────────────────── */}
+      {googleSheetModalClient && (
+        <GoogleSheetLinkModal
+          isOpen={Boolean(googleSheetModalClient)}
+          onClose={() => setGoogleSheetModalClient(null)}
+          client={googleSheetModalClient}
+          clientName={googleSheetModalClient.clientName}
+          masterSheetId={googleSheetModalClient.masterSheetId}
+          clientSheetId={googleSheetModalClient.clientSheetId}
+          currentConfig={googleSheetModalClient.integrations?.googlesheet}
+          onSuccess={async () => {
+            await fetchAllStatus(true, true);
+            setFeedback({
+              type: "success",
+              message: `Successfully linked Google Sheet CRM for ${googleSheetModalClient.clientName}.`
+            });
+          }}
+        />
+      )}
+
+      {/* ── MICROSOFT EXCEL LINK MODAL ─────────────────────────────────── */}
+      {excelModalClient && (
+        <ExcelLinkModal
+          isOpen={Boolean(excelModalClient)}
+          onClose={() => setExcelModalClient(null)}
+          client={excelModalClient}
+          clientName={excelModalClient.clientName}
+          masterSheetId={excelModalClient.masterSheetId}
+          clientSheetId={excelModalClient.clientSheetId}
+          currentConfig={excelModalClient.integrations?.excel}
+          onSuccess={async () => {
+            await fetchAllStatus(true, true);
+            setFeedback({
+              type: "success",
+              message: `Successfully linked Microsoft Excel CRM for ${excelModalClient.clientName}.`
+            });
+          }}
+        />
       )}
     </div>
   );
@@ -1804,6 +1912,7 @@ function CrmCard({
   toolKey,
   config,
   onConnect,
+  onConfigure,
   onDisconnect,
   actionLoading,
   onTestToken,
@@ -1858,7 +1967,7 @@ function CrmCard({
               color: toolData.reconnectRequired ? "#dc2626" : isConnected ? "#15803d" : "#64748b"
             }}
           >
-            {toolData.reconnectRequired ? "Re-auth Needed" : isConnected ? "Connected" : "Not Connected"}
+            {toolData.reconnectRequired ? "Re-auth needed" : isConnected ? "Connected" : "Not connected"}
           </span>
         </div>
 
@@ -1883,19 +1992,19 @@ function CrmCard({
             )}
             {authorizedBy && (
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "5px" }}>
-                <span style={{ color: "#64748b" }}>Authorised By:</span>
+                <span style={{ color: "#64748b" }}>Authorised by:</span>
                 <span style={{ color: "#334155" }}>{authorizedBy}</span>
               </div>
             )}
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "5px" }}>
-              <span style={{ color: "#64748b" }}>Token Status:</span>
+              <span style={{ color: "#64748b" }}>Token status:</span>
               <span style={{ fontWeight: "600", color: toolData.reconnectRequired ? "#dc2626" : "#15803d" }}>
-                {toolData.reconnectRequired ? "Re-authorisation Required" : "Connected (Auto-refreshes)"}
+                {toolData.reconnectRequired ? "Re-authorisation required" : "Connected (Auto-refreshes)"}
               </span>
             </div>
             {toolData.lastRefreshedAt && (
               <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ color: "#64748b" }}>Last Refreshed:</span>
+                <span style={{ color: "#64748b" }}>Last refreshed:</span>
                 <span style={{ color: "#334155" }}>{new Date(toolData.lastRefreshedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
               </div>
             )}
@@ -1908,6 +2017,23 @@ function CrmCard({
         <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "10px" }}>
           {isConnected && !toolData.reconnectRequired ? (
             <>
+              {(toolKey === "googlesheet" || toolKey === "excel") && onConfigure && (
+                <button
+                  onClick={onConfigure}
+                  style={{
+                    padding: "7px 12px",
+                    borderRadius: "7px",
+                    border: "1px solid #cbd5e1",
+                    background: "#ffffff",
+                    color: "#0f172a",
+                    fontSize: "12px",
+                    fontWeight: "600",
+                    cursor: "pointer"
+                  }}
+                >
+                  Configure
+                </button>
+              )}
               <button
                 onClick={onDisconnect}
                 disabled={actionLoading}
@@ -1923,7 +2049,7 @@ function CrmCard({
                   cursor: "pointer"
                 }}
               >
-                {actionLoading ? "Disconnecting..." : "Disconnect & Revoke"}
+                {actionLoading ? "Disconnecting..." : "Disconnect"}
               </button>
               <button
                 onClick={onTestToken}

@@ -119,7 +119,7 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
   const masterRanges = [
     "KeyInfo!A1:F20",      // [0] Main, Customisation, Date Adjust
     "KeyInfo!Q1:Q10",      // [1] Q4 tool, Q8 CRM, Q9 drives
-    "KeyInfo!X14:X41",     // [2] CRM connection parameters
+    "KeyInfo!X11:X41",     // [2] CRM connection parameters
     "KeyInfo!A120:B141",   // [3] KPI Colouring rules
     "KeyInfo!AT4:AT22",    // [4] Contractors manual track
     "KeyInfo!AT24:AT40",   // [5] Other pass-through manual track
@@ -184,7 +184,7 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
 
   const keyA1F20 = mVals[0]?.values || [];
   const keyQ1Q10 = mVals[1]?.values || [];
-  const keyX14X41 = mVals[2]?.values || [];
+  const keyX11X41 = mVals[2]?.values || [];
   const keyA120B141 = mVals[3]?.values || [];
   const keyATContr = mVals[4]?.values || [];
   const keyATPass = mVals[5]?.values || [];
@@ -449,21 +449,23 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
     crm: {
       toolInUse: String(keyQ1Q10[7]?.[0] || "None").trim(), // Q8
       crmDrives: String(keyQ1Q10[8]?.[0] || "Pipeline").trim(), // Q9
-      googleSheetUrl: String(keyX14X41[0]?.[0] || "").trim(),   // X14
-      googleSheetTab: String(keyX14X41[1]?.[0] || "").trim(),   // X15
-      clickUpListId: String(keyX14X41[2]?.[0] || "").trim(),    // X16
-      clickUpViewId: String(keyX14X41[3]?.[0] || "").trim(),    // X17
-      mondayBoardId: String(keyX14X41[10]?.[0] || "").trim(),   // X24
+      googleSheetUrl: String(keyX11X41[0]?.[0] || keyX11X41[3]?.[0] || "").trim(),   // X11 (fallback to legacy X14)
+      googleSheetTab: String(keyX11X41[1]?.[0] || keyX11X41[4]?.[0] || "").trim(),   // X12 (fallback to legacy X15)
+      googleSheetKeyHeaders: String(keyX11X41[2]?.[0] || "").trim(),                 // X13
+      googleSheetHeaderRow: String(keyX11X41[3]?.[0] || "1").trim(),                 // X14
+      clickUpListId: String(keyX11X41[5]?.[0] || "").trim(),    // X16
+      clickUpViewId: String(keyX11X41[6]?.[0] || "").trim(),    // X17
+      mondayBoardId: String(keyX11X41[13]?.[0] || "").trim(),   // X24
       excel: {
-        azureTenantId: String(keyX14X41[19]?.[0] || "").trim(), // X33
-        azureClientId: String(keyX14X41[20]?.[0] || "").trim(), // X34
-        azureClientSecret: String(keyX14X41[21]?.[0] || "").trim(), // X35
-        driveId: String(keyX14X41[22]?.[0] || "").trim(),       // X36
-        fileId: String(keyX14X41[23]?.[0] || "").trim(),        // X37
-        worksheetName: String(keyX14X41[24]?.[0] || "").trim(), // X38
-        range: String(keyX14X41[25]?.[0] || "").trim(),         // X39
-        columnRow: String(keyX14X41[26]?.[0] || "").trim(),     // X40
-        keyHeaders: String(keyX14X41[27]?.[0] || "").trim()     // X41
+        azureTenantId: String(keyX11X41[22]?.[0] || "").trim(), // X33
+        azureClientId: String(keyX11X41[23]?.[0] || "").trim(), // X34
+        azureClientSecret: String(keyX11X41[24]?.[0] || "").trim(), // X35
+        driveId: String(keyX11X41[25]?.[0] || "").trim(),       // X36
+        fileId: String(keyX11X41[26]?.[0] || "").trim(),        // X37
+        worksheetName: String(keyX11X41[27]?.[0] || "").trim(), // X38
+        range: String(keyX11X41[28]?.[0] || "").trim(),         // X39
+        columnRow: String(keyX11X41[29]?.[0] || "").trim(),     // X40
+        keyHeaders: String(keyX11X41[30]?.[0] || "").trim()     // X41
       },
       fieldMappings,
       availableCrmHeaders,
@@ -785,8 +787,11 @@ export async function saveClientSettings({
     }
 
     // Conditional Tool fields
-    addMasterCell("KeyInfo!X14", settings.crm.googleSheetUrl || "");
-    addMasterCell("KeyInfo!X15", settings.crm.googleSheetTab || "");
+    addMasterCell("KeyInfo!X11", settings.crm.googleSheetUrl || "");
+    addMasterCell("KeyInfo!X12", settings.crm.googleSheetTab || "");
+    addMasterCell("KeyInfo!X13", settings.crm.googleSheetKeyHeaders || "");
+    addMasterCell("KeyInfo!X14", settings.crm.googleSheetHeaderRow || "");
+    addMasterCell("KeyInfo!X15", "");
     addMasterCell("KeyInfo!X16", settings.crm.clickUpListId || "");
     addMasterCell("KeyInfo!X17", settings.crm.clickUpViewId || "");
     addMasterCell("KeyInfo!X24", settings.crm.mondayBoardId || "");

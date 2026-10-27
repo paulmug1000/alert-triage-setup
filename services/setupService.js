@@ -124,13 +124,17 @@ export const OAUTH_TOOLS = [
   "capsule",
   "hubspot",
   "monday",
-  "pipedrive"
+  "pipedrive",
+  "googlesheet",
+  "google_sheet",
+  "google sheet",
+  "excel"
 ];
 
 export function isOAuthTool(tool) {
   if (!tool) return false;
-  const clean = String(tool).trim().toLowerCase();
-  return OAUTH_TOOLS.includes(clean);
+  const clean = String(tool).trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  return OAUTH_TOOLS.some(t => t.replace(/[^a-z0-9]/g, "") === clean);
 }
 
 /**
@@ -213,12 +217,39 @@ export async function getClientSetupConfig({ clientName, masterSheetId, forceShe
   }
 
   let crmStatus = { connected: false, tool: crmTool };
+  const cleanCrm = String(crmTool || "").trim().toLowerCase();
+  const crmKey = cleanCrm.includes("sheet") ? "googlesheet" : cleanCrm.includes("excel") ? "excel" : cleanCrm;
+
   if (isOAuthTool(crmTool)) {
     crmStatus = await getIntegrationStatus({
       clientKey: clientName,
       masterSheetId,
-      tool: crmTool
+      tool: crmKey
     });
+  }
+
+  // Fallback for Google Sheet / Excel with valid sheet parameters in KeyInfo
+  if (!crmStatus?.connected && cleanCrm.includes("sheet")) {
+    const gUrl = config?.googleSheetUrl;
+    if (gUrl && gUrl.startsWith("http")) {
+      crmStatus = {
+        connected: true,
+        tool: "googlesheet",
+        status: "connected",
+        tenantName: config?.googleSheetTab || "Pipeline",
+        companyName: config?.googleSheetTab || "Pipeline"
+      };
+    }
+  } else if (!crmStatus?.connected && cleanCrm.includes("excel")) {
+    if (config?.excel?.fileId || config?.excel?.driveId) {
+      crmStatus = {
+        connected: true,
+        tool: "excel",
+        status: "connected",
+        tenantName: config?.excel?.sheetName || "Sheet1",
+        companyName: config?.excel?.sheetName || "Sheet1"
+      };
+    }
   }
 
   // Calculate required tools that require API connection
@@ -233,7 +264,7 @@ export async function getClientSetupConfig({ clientName, masterSheetId, forceShe
   }
   if (isOAuthTool(crmTool)) {
     requiredOAuthTools.push({
-      tool: crmTool.toLowerCase(),
+      tool: crmKey,
       name: crmTool,
       type: "crm",
       connected: Boolean(crmStatus.connected)
@@ -412,15 +443,26 @@ export async function getClientSetupStatusForPortal({ clientName, masterSheetId 
 
   const checkTool = async (toolName, type) => {
     if (!isOAuthTool(toolName)) return;
-    const cleanTool = toolName.toLowerCase();
-    const status = await getIntegrationStatus({
+    const cleanLower = toolName.toLowerCase();
+    const cleanTool = cleanLower.includes("sheet") ? "googlesheet" : cleanLower.includes("excel") ? "excel" : cleanLower;
+    let status = await getIntegrationStatus({
       clientKey: clientName,
       masterSheetId,
       tool: cleanTool
     });
 
-    const isConnected = Boolean(status.connected);
-    const needsReconnect = !isConnected || status.status === "reconnect_required" || Boolean(status.reconnectRequired);
+    if (!status?.connected && cleanLower.includes("sheet")) {
+      if (config?.googleSheetUrl && config.googleSheetUrl.startsWith("http")) {
+        status = { connected: true, status: "connected", tenantName: config.googleSheetTab || "Pipeline" };
+      }
+    } else if (!status?.connected && cleanLower.includes("excel")) {
+      if (config?.excel?.fileId || config?.excel?.driveId) {
+        status = { connected: true, status: "connected", tenantName: config.excel?.sheetName || "Sheet1" };
+      }
+    }
+
+    const isConnected = Boolean(status?.connected);
+    const needsReconnect = !isConnected || status?.status === "reconnect_required" || Boolean(status?.reconnectRequired);
 
     configuredTools.push({
       tool: cleanTool,
@@ -428,8 +470,8 @@ export async function getClientSetupStatusForPortal({ clientName, masterSheetId 
       type,
       connected: isConnected,
       needsReconnect,
-      status: status.status || (isConnected ? "connected" : "disconnected"),
-      tenantName: status.tenantName || status.companyName || ""
+      status: status?.status || (isConnected ? "connected" : "disconnected"),
+      tenantName: status?.tenantName || status?.companyName || ""
     });
   };
 

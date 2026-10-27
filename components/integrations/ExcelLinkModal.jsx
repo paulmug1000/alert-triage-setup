@@ -19,7 +19,9 @@ export default function ExcelLinkModal({
   const [fileId, setFileId] = useState(currentConfig?.metadata?.fileId || currentConfig?.fileId || "");
   const [sheetName, setSheetName] = useState(currentConfig?.metadata?.sheetName || currentConfig?.sheetName || "");
   const [rangeAddress, setRangeAddress] = useState(currentConfig?.metadata?.rangeAddress || currentConfig?.rangeAddress || "");
-  const [headerRowNum, setHeaderRowNum] = useState(String(currentConfig?.metadata?.headerRowNum || currentConfig?.headerRowNum || "1"));
+  const [headerRowNum, setHeaderRowNum] = useState(
+    currentConfig?.metadata?.headerRowNum ? String(currentConfig.metadata.headerRowNum) : ""
+  );
   const [clientCol, setClientCol] = useState("");
   const [jobCol, setJobCol] = useState("");
   const [valueCol, setValueCol] = useState("");
@@ -56,7 +58,7 @@ export default function ExcelLinkModal({
     setInspecting(true);
 
     const sheetToUse = overrideSheet !== undefined ? overrideSheet : sheetName;
-    const rowToUse = overrideRow !== undefined ? overrideRow : headerRowNum;
+    const rowToUse = overrideRow !== undefined ? overrideRow : (headerRowNum || undefined);
 
     try {
       const res = await fetch("/api/integrations/excel/inspect", {
@@ -374,59 +376,61 @@ export default function ExcelLinkModal({
           </div>
 
           {/* 2. Workbook Drive & File ID */}
-          <div style={{ marginBottom: "16px" }}>
-            <label style={{ display: "block", fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#64748b", marginBottom: "8px" }}>
-              2. Workbook Drive ID & File ID mapping
-            </label>
-
-          {/* Option 2: Direct Drive & File ID configuration */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", marginBottom: "12px" }}>
-            <div>
-              <label style={{ display: "block", fontSize: "11.5px", fontWeight: "600", color: "#475569", marginBottom: "3px" }}>
-                Drive ID
+          {isConnected && (
+            <div style={{ marginBottom: "16px" }}>
+              <label style={{ display: "block", fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#64748b", marginBottom: "8px" }}>
+                2. Workbook Drive ID & File ID mapping
               </label>
-              <input
-                type="text"
-                value={driveId}
-                onChange={(e) => setDriveId(e.target.value)}
-                placeholder="b!..."
-                style={{ width: "100%", padding: "7px 10px", borderRadius: "6px", border: "1px solid #cbd5e1", fontSize: "12px", boxSizing: "border-box" }}
-              />
-            </div>
-            <div>
-              <label style={{ display: "block", fontSize: "11.5px", fontWeight: "600", color: "#475569", marginBottom: "3px" }}>
-                File ID
-              </label>
-              <input
-                type="text"
-                value={fileId}
-                onChange={(e) => setFileId(e.target.value)}
-                placeholder="01..."
-                style={{ width: "100%", padding: "7px 10px", borderRadius: "6px", border: "1px solid #cbd5e1", fontSize: "12px", boxSizing: "border-box" }}
-              />
-            </div>
-          </div>
 
-            <div style={{ display: "flex", justifyContent: "flex-end" }}>
-              <button
-                type="button"
-                onClick={() => handleInspect()}
-                disabled={inspecting}
-                style={{
-                  padding: "8px 16px",
-                  borderRadius: "6px",
-                  border: "none",
-                  background: "#0f6cbd",
-                  color: "#ffffff",
-                  fontSize: "12px",
-                  fontWeight: "600",
-                  cursor: inspecting ? "wait" : "pointer"
-                }}
-              >
-                {inspecting ? "Inspecting workbook..." : "Inspect workbook & worksheets"}
-              </button>
+              {/* Direct Drive & File ID configuration */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", marginBottom: "12px" }}>
+                <div>
+                  <label style={{ display: "block", fontSize: "11.5px", fontWeight: "600", color: "#475569", marginBottom: "3px" }}>
+                    Drive ID
+                  </label>
+                  <input
+                    type="text"
+                    value={driveId}
+                    onChange={(e) => setDriveId(e.target.value)}
+                    placeholder="b!..."
+                    style={{ width: "100%", padding: "7px 10px", borderRadius: "6px", border: "1px solid #cbd5e1", fontSize: "12px", boxSizing: "border-box" }}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: "block", fontSize: "11.5px", fontWeight: "600", color: "#475569", marginBottom: "3px" }}>
+                    File ID
+                  </label>
+                  <input
+                    type="text"
+                    value={fileId}
+                    onChange={(e) => setFileId(e.target.value)}
+                    placeholder="01..."
+                    style={{ width: "100%", padding: "7px 10px", borderRadius: "6px", border: "1px solid #cbd5e1", fontSize: "12px", boxSizing: "border-box" }}
+                  />
+                </div>
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                <button
+                  type="button"
+                  onClick={() => handleInspect()}
+                  disabled={inspecting}
+                  style={{
+                    padding: "8px 16px",
+                    borderRadius: "6px",
+                    border: "none",
+                    background: "#0f6cbd",
+                    color: "#ffffff",
+                    fontSize: "12px",
+                    fontWeight: "600",
+                    cursor: inspecting ? "wait" : "pointer"
+                  }}
+                >
+                  {inspecting ? "Saving..." : "Save"}
+                </button>
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Worksheet Selection and Column Mapping */}
           {inspectionData && (

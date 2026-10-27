@@ -130,10 +130,10 @@ export async function refreshGoogleSheetTokens(refreshToken) {
 export function detectCandidateHeaderRow(rows = []) {
   if (!rows || rows.length === 0) return 1;
 
-  let bestRowIdx = 0;
-  let bestScore = -1;
+  let bestRowIdx = -1;
+  let bestScore = -100;
 
-  const keywords = /^(?:client|lead|org|company|customer|account|job|deal|opportunity|project|task|value|amount|revenue|total|fee|start|date|target|end|close|status|stage|prob|likelihood)/i;
+  const keywords = /^(?:client|lead|org|company|customer|account|job|deal|opportunity|project|task|nature|type|value|amount|revenue|total|fee|price|cost|costs|start|date|month|months|target|end|close|status|stage|prob|likelihood|owner|rep|manager)/i;
 
   rows.forEach((row, idx) => {
     if (!Array.isArray(row)) return;
@@ -141,10 +141,25 @@ export function detectCandidateHeaderRow(rows = []) {
     if (nonEmptyCells.length === 0) return;
 
     let score = 0;
+
+    // A single cell row is usually a title banner (not a column header row)
+    if (nonEmptyCells.length === 1) {
+      score -= 10;
+    } else {
+      score += nonEmptyCells.length * 2;
+    }
+
     nonEmptyCells.forEach((cell) => {
-      const clean = String(cell).toLowerCase().replace(/[^a-z0-9]/g, "");
-      if (keywords.test(clean)) score += 3;
-      else if (typeof cell === "string" && isNaN(Number(cell))) score += 1;
+      const valStr = String(cell).trim();
+      const clean = valStr.toLowerCase().replace(/[^a-z0-9]/g, "");
+      if (keywords.test(clean)) {
+        score += 8;
+      }
+      // Check if cell is purely numeric or currency (data rows contain numbers, headers do not)
+      const isNum = !isNaN(Number(valStr.replace(/[£$,€%]/g, "")));
+      if (isNum) {
+        score -= 10;
+      }
     });
 
     if (score > bestScore) {
@@ -153,7 +168,7 @@ export function detectCandidateHeaderRow(rows = []) {
     }
   });
 
-  return bestRowIdx + 1;
+  return bestRowIdx >= 0 ? bestRowIdx + 1 : 1;
 }
 
 /**
@@ -242,11 +257,11 @@ export async function inspectGoogleSpreadsheet({
 
   const targetTab = tabName || tabs[0]?.title || "Sheet1";
 
-  // Fetch sample rows (top 5 rows)
+  // Fetch sample rows (top 10 rows)
   try {
     if (accessToken) {
       const escapedTab = targetTab.replace(/'/g, "''");
-      const rangeParam = encodeURIComponent(`'${escapedTab}'!1:5`);
+      const rangeParam = encodeURIComponent(`'${escapedTab}'!1:10`);
       const sampleUrl = `https://sheets.googleapis.com/v4/spreadsheets/${targetId}/values/${rangeParam}`;
       const sRes = await fetch(sampleUrl, { headers: { Authorization: `Bearer ${accessToken}` } });
       const sJson = await sRes.json();
@@ -255,7 +270,7 @@ export async function inspectGoogleSpreadsheet({
       const sheets = await getSheetsClient();
       const sRes = await sheets.spreadsheets.values.get({
         spreadsheetId: targetId,
-        range: `'${targetTab}'!1:5`
+        range: `'${targetTab}'!1:10`
       });
       sampleData = sRes.data.values || [];
     }

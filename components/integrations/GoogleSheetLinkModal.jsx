@@ -17,7 +17,9 @@ export default function GoogleSheetLinkModal({
 
   const [url, setUrl] = useState(currentConfig?.metadata?.url || currentConfig?.url || "");
   const [selectedTab, setSelectedTab] = useState(currentConfig?.metadata?.tabName || currentConfig?.tabName || "");
-  const [headerRowNum, setHeaderRowNum] = useState(String(currentConfig?.metadata?.headerRowNum || currentConfig?.headerRowNum || "1"));
+  const [headerRowNum, setHeaderRowNum] = useState(
+    currentConfig?.metadata?.headerRowNum ? String(currentConfig.metadata.headerRowNum) : ""
+  );
   const [clientCol, setClientCol] = useState("");
   const [jobCol, setJobCol] = useState("");
   const [valueCol, setValueCol] = useState("");
@@ -54,7 +56,7 @@ export default function GoogleSheetLinkModal({
     setInspecting(true);
 
     const tabToUse = overrideTab !== undefined ? overrideTab : selectedTab;
-    const rowToUse = overrideRow !== undefined ? overrideRow : headerRowNum;
+    const rowToUse = overrideRow !== undefined ? overrideRow : (headerRowNum || undefined);
 
     try {
       const res = await fetch("/api/integrations/google-sheet/inspect", {
@@ -94,7 +96,7 @@ export default function GoogleSheetLinkModal({
   const handleTabChange = (e) => {
     const newTab = e.target.value;
     setSelectedTab(newTab);
-    handleInspect(newTab, headerRowNum);
+    handleInspect(newTab, undefined);
   };
 
   const handleHeaderRowChange = (e) => {
@@ -365,45 +367,47 @@ export default function GoogleSheetLinkModal({
           </div>
 
           {/* 2. Direct URL Link */}
-          <div style={{ marginBottom: "16px" }}>
-            <label style={{ display: "block", fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#64748b", marginBottom: "8px" }}>
-              2. Google Sheet URL & column mapping
-            </label>
-            <div style={{ display: "flex", gap: "8px" }}>
-              <input
-                type="text"
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                placeholder="https://docs.google.com/spreadsheets/d/..."
-                style={{
-                  flex: 1,
-                  padding: "9px 12px",
-                  borderRadius: "7px",
-                  border: "1px solid #cbd5e1",
-                  fontSize: "13px",
-                  boxSizing: "border-box"
-                }}
-              />
-              <button
-                type="button"
-                onClick={() => handleInspect()}
-                disabled={inspecting}
-                style={{
-                  padding: "9px 16px",
-                  borderRadius: "7px",
-                  border: "none",
-                  background: "#0f9d58",
-                  color: "#ffffff",
-                  fontSize: "12.5px",
-                  fontWeight: "600",
-                  cursor: inspecting ? "wait" : "pointer",
-                  whiteSpace: "nowrap"
-                }}
-              >
-                {inspecting ? "Inspecting..." : "Inspect sheet"}
-              </button>
+          {isConnected && (
+            <div style={{ marginBottom: "16px" }}>
+              <label style={{ display: "block", fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#64748b", marginBottom: "8px" }}>
+                2. Google Sheet URL & column mapping
+              </label>
+              <div style={{ display: "flex", gap: "8px" }}>
+                <input
+                  type="text"
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                  placeholder="https://docs.google.com/spreadsheets/d/..."
+                  style={{
+                    flex: 1,
+                    padding: "9px 12px",
+                    borderRadius: "7px",
+                    border: "1px solid #cbd5e1",
+                    fontSize: "13px",
+                    boxSizing: "border-box"
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => handleInspect()}
+                  disabled={inspecting}
+                  style={{
+                    padding: "9px 16px",
+                    borderRadius: "7px",
+                    border: "none",
+                    background: "#0f9d58",
+                    color: "#ffffff",
+                    fontSize: "12.5px",
+                    fontWeight: "600",
+                    cursor: inspecting ? "wait" : "pointer",
+                    whiteSpace: "nowrap"
+                  }}
+                >
+                  {inspecting ? "Saving..." : "Save"}
+                </button>
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Inspection Results (Tabs + Header Row + Mapping) */}
           {inspectionData && (
@@ -416,9 +420,9 @@ export default function GoogleSheetLinkModal({
                 marginBottom: "18px"
               }}
             >
-              <div style={{ fontSize: "13px", fontWeight: "700", color: "#0f172a", marginBottom: "12px" }}>
-                ✓ {inspectionData.title}
-              </div>
+              <h4 style={{ margin: "0 0 12px 0", fontSize: "13px", fontWeight: "700", color: "#0f172a" }}>
+                Choose tab
+              </h4>
 
               <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: "10px", marginBottom: "14px" }}>
                 <div>
@@ -439,7 +443,7 @@ export default function GoogleSheetLinkModal({
                   >
                     {(inspectionData.tabs || []).map((t) => (
                       <option key={t.title} value={t.title}>
-                        {t.title} ({t.rowCount} rows)
+                        {t.title}
                       </option>
                     ))}
                   </select>
@@ -548,10 +552,10 @@ export default function GoogleSheetLinkModal({
                     </select>
                   </div>
 
-                  {/* Deal value or revenue (Optional) */}
+                  {/* Deal value or revenue */}
                   <div>
                     <label style={{ display: "block", fontSize: "11px", fontWeight: "600", color: "#334155", marginBottom: "3px" }}>
-                      Deal value or revenue (optional)
+                      Deal value or revenue
                     </label>
                     <select
                       value={valueCol}
@@ -574,10 +578,10 @@ export default function GoogleSheetLinkModal({
                     </select>
                   </div>
 
-                  {/* Start date (Optional) */}
+                  {/* Start date */}
                   <div>
                     <label style={{ display: "block", fontSize: "11px", fontWeight: "600", color: "#334155", marginBottom: "3px" }}>
-                      Start date (optional)
+                      Start date
                     </label>
                     <select
                       value={startDateCol}
@@ -600,10 +604,10 @@ export default function GoogleSheetLinkModal({
                     </select>
                   </div>
 
-                  {/* End date (Optional) */}
+                  {/* End date */}
                   <div>
                     <label style={{ display: "block", fontSize: "11px", fontWeight: "600", color: "#334155", marginBottom: "3px" }}>
-                      End date (optional)
+                      End date
                     </label>
                     <select
                       value={endDateCol}
@@ -626,10 +630,10 @@ export default function GoogleSheetLinkModal({
                     </select>
                   </div>
 
-                  {/* Stage or probability (Optional) */}
+                  {/* Stage or probability */}
                   <div>
                     <label style={{ display: "block", fontSize: "11px", fontWeight: "600", color: "#334155", marginBottom: "3px" }}>
-                      Stage or probability (optional)
+                      Stage or probability
                     </label>
                     <select
                       value={statusCol}

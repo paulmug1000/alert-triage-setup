@@ -611,7 +611,7 @@ export default function GoogleSheetLinkModal({
                     Connected to {currentConfig.metadata?.userEmail || currentConfig.metadata?.accountName || currentConfig.tenantName || "Google Account"}
                   </div>
                   <div style={{ fontSize: "11px", color: "#15803d" }}>
-                    Enter your Google Sheet URL above and click "Inspect sheet" to map columns.
+                    Enter your Google Sheet URL above and click Inspect sheet to map columns.
                   </div>
                 </div>
               </div>

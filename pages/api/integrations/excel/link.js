@@ -8,8 +8,9 @@
  */
 
 import { getSessionUser } from "../../../../services/authService.js";
+import { getSheetsClient } from "../../../../services/sheetsClient.js";
 import { linkExcelToClient } from "../../../../services/excelIntegrationService.js";
-import { updateClientSetupTaskStatus } from "../../../../services/setupService.js";
+import { updateClientChecklistTask } from "../../../../services/setupService.js";
 import { saveIntegrationTokens, getIntegrationTokens } from "../../../../services/vaultService.js";
 
 export default async function handler(req, res) {
@@ -86,12 +87,13 @@ export default async function handler(req, res) {
 
     // Auto-complete Setup task p2_connect_crm
     try {
-      await updateClientSetupTaskStatus({
+      const sheets = await getSheetsClient();
+      await updateClientChecklistTask(sheets, {
         clientName: clientKey,
         taskId: "p2_connect_crm",
         isCompleted: true,
         metadata: `Excel Linked (${sheetName})`,
-        updatedBy: sessionUser.email || "System"
+        userEmail: sessionUser.email || "System"
       });
     } catch (taskErr) {
       console.warn("Note updating p2_connect_crm task for Excel:", taskErr.message);

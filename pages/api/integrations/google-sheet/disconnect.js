@@ -6,8 +6,8 @@
 
 import { getSessionUser } from "../../../../services/authService.js";
 import { getSheetsClient, withRetry } from "../../../../services/sheetsClient.js";
-import { removeIntegrationTokens } from "../../../../services/vaultService.js";
-import { updateClientSetupTaskStatus } from "../../../../services/setupService.js";
+import { deleteIntegrationTokens } from "../../../../services/vaultService.js";
+import { updateClientChecklistTask } from "../../../../services/setupService.js";
 import { redisClient } from "../../../../services/redisClient.js";
 
 export default async function handler(req, res) {
@@ -26,9 +26,10 @@ export default async function handler(req, res) {
   }
 
   try {
+    const sheets = await getSheetsClient();
+
     // 1. Clear KeyInfo!X11:X15 and reset Q8 in master sheet if available
     if (masterSheetId) {
-      const sheets = await getSheetsClient();
       await withRetry(() =>
         sheets.spreadsheets.values.batchUpdate({
           spreadsheetId: masterSheetId,
@@ -48,16 +49,16 @@ export default async function handler(req, res) {
     }
 
     // 2. Remove vault record
-    await removeIntegrationTokens(clientKey, "googlesheet");
+    await deleteIntegrationTokens({ clientKey, masterSheetId, tool: "googlesheet" });
 
     // 3. Reset task in setup checklist
     try {
-      await updateClientSetupTaskStatus({
+      await updateClientChecklistTask(sheets, {
         clientName: clientKey,
         taskId: "p2_connect_crm",
         isCompleted: false,
         metadata: "Disconnected",
-        updatedBy: sessionUser.email || "System"
+        userEmail: sessionUser.email || "System"
       });
     } catch (e) {}
 

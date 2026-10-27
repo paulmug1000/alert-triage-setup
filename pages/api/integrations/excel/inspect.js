@@ -37,9 +37,34 @@ export default async function handler(req, res) {
     let azureCredentials = null;
 
     if (clientKey) {
-      const grant = await getIntegrationTokens(clientKey, "excel");
-      if (grant && grant.tokens?.accessToken) {
-        token = grant.tokens.accessToken;
+      const grant = await getIntegrationTokens({ clientKey, tool: "excel" });
+      if (grant && grant.tokens) {
+        // If expired or expiring within 60s, refresh automatically
+        const isExpiring = grant.expiresAt && Date.now() > (grant.expiresAt - 60000);
+        if (isExpiring && grant.tokens.refreshToken) {
+          try {
+            const { refreshExcelTokens } = await import("../../../../services/excelIntegrationService.js");
+            const { updateRefreshedTokens } = await import("../../../../services/vaultService.js");
+            const refreshed = await refreshExcelTokens(grant.tokens.refreshToken);
+            await updateRefreshedTokens({
+              clientKey,
+              tool: "excel",
+              tokens: {
+                ...grant.tokens,
+                accessToken: refreshed.accessToken,
+                refreshToken: refreshed.refreshToken || grant.tokens.refreshToken,
+                expiresIn: refreshed.expiresIn,
+                expiresAt: Date.now() + (refreshed.expiresIn * 1000)
+              }
+            });
+            token = refreshed.accessToken;
+          } catch (rErr) {
+            console.warn("Could not refresh Excel token before inspect:", rErr.message);
+            token = grant.tokens.accessToken;
+          }
+        } else {
+          token = grant.tokens.accessToken;
+        }
       }
     }
 

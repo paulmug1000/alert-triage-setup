@@ -461,7 +461,21 @@ export async function saveIntegrationTokens({
  * @param {string} params.tool
  * @returns {Promise<Object|null>}
  */
-export async function getIntegrationTokens({ clientKey, masterSheetId, tool }) {
+export async function getIntegrationTokens(arg1, arg2, arg3) {
+  let clientKey = null;
+  let masterSheetId = null;
+  let tool = null;
+
+  if (typeof arg1 === "object" && arg1 !== null) {
+    clientKey = arg1.clientKey;
+    masterSheetId = arg1.masterSheetId;
+    tool = arg1.tool;
+  } else {
+    clientKey = arg1;
+    tool = arg2;
+    masterSheetId = arg3;
+  }
+
   const cleanTool = normalizeKey(tool);
   let redisKey = null;
 
@@ -905,7 +919,21 @@ export async function markIntegrationReconnectRequired({ clientKey, masterSheetI
 /**
  * Deletes integration credentials (Disconnect / Revoke).
  */
-export async function deleteIntegrationTokens({ clientKey, masterSheetId, tool }) {
+export async function deleteIntegrationTokens(arg1, arg2, arg3) {
+  let clientKey = null;
+  let masterSheetId = null;
+  let tool = null;
+
+  if (typeof arg1 === "object" && arg1 !== null) {
+    clientKey = arg1.clientKey;
+    masterSheetId = arg1.masterSheetId;
+    tool = arg1.tool;
+  } else {
+    clientKey = arg1;
+    tool = arg2;
+    masterSheetId = arg3;
+  }
+
   const cleanTool = normalizeKey(tool);
   let redisKey = null;
   let sheetKey = null;
@@ -942,3 +970,6 @@ export async function deleteIntegrationTokens({ clientKey, masterSheetId, tool }
   console.log(`🗑️ Vault: Deleted integration tokens for ${clientKey || masterSheetId} [${cleanTool}].`);
   return { success: true };
 }
+
+export const removeIntegrationTokens = deleteIntegrationTokens;
+

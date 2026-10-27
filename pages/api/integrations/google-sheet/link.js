@@ -42,9 +42,26 @@ export default async function handler(req, res) {
       keyHeaders
     });
 
-    // Check if vault record exists; if not, create connected status record
-    const existingGrant = await getIntegrationTokens(clientKey, "googlesheet");
-    if (!existingGrant) {
+    // Check if vault record exists; update metadata or create connected status record
+    const existingGrant = await getIntegrationTokens({ clientKey, tool: "googlesheet" });
+    if (existingGrant) {
+      await saveIntegrationTokens({
+        clientKey,
+        clientName: existingGrant.clientName || clientKey,
+        masterSheetId: masterSheetId || existingGrant.masterSheetId,
+        tool: "googlesheet",
+        tokens: existingGrant.tokens,
+        metadata: {
+          ...(existingGrant.metadata || {}),
+          tabName: tabName || "Sheet1",
+          url: url.trim(),
+          spreadsheetId: linkResult.spreadsheetId,
+          headerRowNum,
+          keyHeaders,
+          accountName: existingGrant.metadata?.userEmail ? `Google Account (${existingGrant.metadata.userEmail})` : `Sheet: ${tabName || "Sheet1"}`
+        }
+      });
+    } else {
       await saveIntegrationTokens({
         clientKey,
         clientName: clientKey,

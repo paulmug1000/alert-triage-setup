@@ -14,7 +14,7 @@
 
 import { getSheetsClient, extractSheetIdFromUrl, withRetry } from "./sheetsClient.js";
 import { redisClient } from "./redisClient.js";
-import { saveIntegrationTokens, getIntegrationTokens, removeIntegrationTokens } from "./vaultService.js";
+import { saveIntegrationTokens, getIntegrationTokens, deleteIntegrationTokens } from "./vaultService.js";
 
 const GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
 const GOOGLE_AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -245,7 +245,9 @@ export async function inspectGoogleSpreadsheet({
   // Fetch sample rows (top 5 rows)
   try {
     if (accessToken) {
-      const sampleUrl = `https://sheets.googleapis.com/v4/spreadsheets/${targetId}/values/'${encodeURIComponent(targetTab)}'!1:5`;
+      const escapedTab = targetTab.replace(/'/g, "''");
+      const rangeParam = encodeURIComponent(`'${escapedTab}'!1:5`);
+      const sampleUrl = `https://sheets.googleapis.com/v4/spreadsheets/${targetId}/values/${rangeParam}`;
       const sRes = await fetch(sampleUrl, { headers: { Authorization: `Bearer ${accessToken}` } });
       const sJson = await sRes.json();
       sampleData = sJson.values || [];

@@ -27,9 +27,33 @@ export default async function handler(req, res) {
     // Check if client has a stored OAuth access token in Vault
     let accessToken = null;
     if (clientKey) {
-      const grant = await getIntegrationTokens(clientKey, "googlesheet");
-      if (grant && grant.tokens?.accessToken) {
-        accessToken = grant.tokens.accessToken;
+      const grant = await getIntegrationTokens({ clientKey, tool: "googlesheet" });
+      if (grant && grant.tokens) {
+        // If expired or expiring within 60s, refresh automatically
+        const isExpiring = grant.expiresAt && Date.now() > (grant.expiresAt - 60000);
+        if (isExpiring && grant.tokens.refreshToken) {
+          try {
+            const { refreshGoogleSheetTokens } = await import("../../../../services/googleSheetService.js");
+            const { updateRefreshedTokens } = await import("../../../../services/vaultService.js");
+            const refreshed = await refreshGoogleSheetTokens(grant.tokens.refreshToken);
+            await updateRefreshedTokens({
+              clientKey,
+              tool: "googlesheet",
+              tokens: {
+                ...grant.tokens,
+                accessToken: refreshed.accessToken,
+                expiresIn: refreshed.expiresIn,
+                expiresAt: Date.now() + (refreshed.expiresIn * 1000)
+              }
+            });
+            accessToken = refreshed.accessToken;
+          } catch (rErr) {
+            console.warn("Could not refresh Google Sheet token before inspect:", rErr.message);
+            accessToken = grant.tokens.accessToken;
+          }
+        } else {
+          accessToken = grant.tokens.accessToken;
+        }
       }
     }
 

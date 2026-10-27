@@ -59,9 +59,27 @@ export default async function handler(req, res) {
       keyHeaders
     });
 
-    // Check if vault record exists; if not, create connected status record
-    const existingGrant = await getIntegrationTokens(clientKey, "excel");
-    if (!existingGrant) {
+    // Check if vault record exists; update metadata or create connected status record
+    const existingGrant = await getIntegrationTokens({ clientKey, tool: "excel" });
+    if (existingGrant) {
+      await saveIntegrationTokens({
+        clientKey,
+        clientName: existingGrant.clientName || clientKey,
+        masterSheetId: masterSheetId || existingGrant.masterSheetId,
+        tool: "excel",
+        tokens: existingGrant.tokens,
+        metadata: {
+          ...(existingGrant.metadata || {}),
+          sheetName,
+          driveId,
+          fileId,
+          rangeAddress,
+          headerRowNum,
+          keyHeaders,
+          accountName: existingGrant.metadata?.userEmail ? `Microsoft 365 (${existingGrant.metadata.userEmail})` : `Worksheet: ${sheetName}`
+        }
+      });
+    } else {
       await saveIntegrationTokens({
         clientKey,
         clientName: clientKey,

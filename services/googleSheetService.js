@@ -173,34 +173,107 @@ export function detectCandidateHeaderRow(rows = []) {
 
 /**
  * Heuristically suggests column mappings across the 6 core CRM dimensions.
+ * Uses intelligent multi-dimensional scoring supporting prefixes, modifiers (Est., Target, Projected, etc.), and common business variants.
  */
 export function suggestCrmColumnMapping(headers = []) {
   const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
 
-  const findCol = (regex, exclude = []) => {
-    return (
-      headers.find((h) => {
-        const clean = norm(h);
-        return !exclude.includes(h) && regex.test(clean);
-      }) || ""
-    );
-  };
+  function scoreHeader(h, dim) {
+    const n = norm(h);
+    if (!n) return -999;
 
-  const clientCol = findCol(/^(?:client|lead|org|company|customer|account)/i);
-  const jobCol = findCol(/^(?:job|deal|opportunity|task|title|name|project|nature)/i, [clientCol]);
-  const revCol = findCol(/^(?:value|amount|revenue|total|deal|fee|price|budget)/i, [clientCol, jobCol]);
-  const startCol = findCol(/^(?:start|month|target|live|commence|date)/i, [clientCol, jobCol, revCol]);
-  const endCol = findCol(/^(?:end|close|completion|finish|due)/i, [clientCol, jobCol, revCol, startCol]);
-  const likeCol = findCol(/^(?:status|stage|milestone|prob|likelihood|confidence)/i, [clientCol, jobCol, revCol, startCol, endCol]);
+    if (dim === "startCol") {
+      if (/(end|close|closing|finish|completion|due|expiry|expiration|deliver)/.test(n)) return -500;
+      if (/(id|url|link|email|status|stage|type|created|updated|modified)/.test(n)) return -100;
+      if (/^(startdate|startdt|commencedate|livedate|golivedate|commencementdate|launchdate|kickoffdate)$/.test(n)) return 100;
+      if (/^start$/.test(n)) return 90;
+      if (/(est|estimated|expected|target|projected|planned|forecast|anticipate|contract|work|actual).*start.*(date|dt)?/.test(n)) return 95;
+      if (/start.*(est|estimated|expected|target|projected|planned|forecast|date|dt|month|day)/.test(n)) return 90;
+      if (n.includes("start")) return 80;
+      if (n.includes("commence")) return 75;
+      if (n.includes("golive") || n.includes("launch") || n.includes("kickoff")) return 70;
+      return -50;
+    }
 
-  return {
-    clientCol: clientCol || headers[0] || "",
-    jobCol: jobCol || headers[1] || "",
-    revCol: revCol || "",
-    startCol: startCol || "",
-    endCol: endCol || "",
-    likeCol: likeCol || ""
-  };
+    if (dim === "endCol") {
+      if (/(start|commence|live|launch|kickoff|inception)/.test(n)) return -500;
+      if (/(reason|id|url|link|status|stage|type)/.test(n)) return -100;
+      if (/^(enddate|enddt|closedate|closingdate|closedt|completiondate|finishdate|duedate|deliverydate|expirydate)$/.test(n)) return 100;
+      if (/^(end|close)$/.test(n)) return 90;
+      if (/(est|estimated|expected|target|projected|planned|forecast|anticipate|contract|work|actual).*(end|close|closing|finish|completion|due|delivery|expiry).*(date|dt)?/.test(n)) return 95;
+      if (/(end|close|closing).*(est|estimated|expected|target|projected|planned|forecast|date|dt|month)/.test(n)) return 90;
+      if (/(completion|finish|due|delivery).*(date|dt)/.test(n)) return 85;
+      if (n.includes("end")) return 80;
+      if (n.includes("close") || n.includes("closing")) return 75;
+      if (/(completion|finish|due|delivery|expiry)/.test(n)) return 70;
+      return -50;
+    }
+
+    if (dim === "revCol") {
+      if (/(id|code|count|qty|quantity|rate|hours|status|stage|date|month|year|vat|tax)/.test(n)) return -60;
+      if (/^(value|amount|revenue|total|fee|fees|price|budget|arr|mrr|acv|tcv|dealvalue|jobvalue|contractvalue)$/.test(n)) return 100;
+      if (/(est|estimated|expected|forecast|projected|target|total|net|gross|fixed|deal|job|project|contract).*(value|revenue|amount|fee|fees|budget|price)/.test(n)) return 95;
+      if (/(value|revenue|amount|fee|fees|budget|price).*(est|estimated|expected|forecast|total|deal|job)/.test(n)) return 90;
+      if (/(value|revenue|amount|fee|fees|budget|price)/.test(n)) return 70;
+      return -50;
+    }
+
+    if (dim === "likeCol") {
+      if (/(id|code|date|value|amount|rev)/.test(n) && !/(stage|status|state|prob)/.test(n)) return -60;
+      if (/^(status|stage|dealstage|pipelinestage|salesstage|jobstatus|state|probability|prob|likelihood|confidence|phase|milestone)$/.test(n)) return 100;
+      if (/(deal|job|opportunity|sales|pipeline|lead).*(stage|status|state|phase)/.test(n)) return 95;
+      if (/(stage|status|probability|prob|likelihood|confidence|milestone|phase|weighting)/.test(n)) return 80;
+      if (/(%|pct|percent)/.test(n)) return 50;
+      return -50;
+    }
+
+    if (dim === "clientCol") {
+      if (/(id|code|manager|owner|tier|type|status|date|address|phone|email)/.test(n)) return -50;
+      if (/^(client|clientname|customer|customername|company|companyname|organisation|organization|account|accountname|lead|leadname|prospect|prospectname)$/.test(n)) return 100;
+      if (/^(client|customer|company|org|account|lead|prospect)/.test(n)) return 80;
+      if (/(client|customer|company|account|lead|prospect)/.test(n)) return 60;
+      return -50;
+    }
+
+    if (dim === "jobCol") {
+      if (/(client|customer|company|account|id|code|owner|type|status|stage|date|value|amount)/.test(n)) return -50;
+      if (/^(job|jobname|jobtitle|deal|dealname|dealtitle|opportunity|opportunityname|project|projectname|task|taskname|natureofwork|scope|deliverable|engagement)$/.test(n)) return 100;
+      if (/^(job|deal|opp|project|task|nature)/.test(n)) return 80;
+      if (/(job|deal|opportunity|project|deliverable|scope)/.test(n)) return 60;
+      if (/^(description|title|name)$/.test(n)) return 40;
+      return -50;
+    }
+
+    return 0;
+  }
+
+  const dimensions = ["clientCol", "jobCol", "revCol", "startCol", "endCol", "likeCol"];
+  const result = {};
+  const usedHeaders = new Set();
+
+  for (const dim of dimensions) {
+    let bestHeader = "";
+    let bestScore = 0;
+    for (const h of headers) {
+      if (usedHeaders.has(h)) continue;
+      const score = scoreHeader(h, dim);
+      if (score > bestScore) {
+        bestScore = score;
+        bestHeader = h;
+      }
+    }
+    if (bestHeader) {
+      result[dim] = bestHeader;
+      usedHeaders.add(bestHeader);
+    } else {
+      result[dim] = "";
+    }
+  }
+
+  if (!result.clientCol) result.clientCol = headers[0] || "";
+  if (!result.jobCol) result.jobCol = (headers[1] && headers[1] !== result.clientCol) ? headers[1] : (headers[0] || "");
+
+  return result;
 }
 
 /**

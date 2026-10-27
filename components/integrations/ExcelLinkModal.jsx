@@ -344,6 +344,11 @@ export default function ExcelLinkModal({
 
   const availableHeaders = inspectionData?.headers || [];
 
+  const isWaitingForInspection =
+    !isClientView &&
+    !inspectionData &&
+    (inspecting || (isConnected && isLinkSubmitted && Boolean(excelUrl?.trim()) && !error));
+
   if (!isOpen || !resolvedClientName) return null;
 
   return (
@@ -685,6 +690,44 @@ export default function ExcelLinkModal({
             </>
           )}
 
+          {/* Loading Spreadsheet Structure (PMA View) */}
+          {isWaitingForInspection && (
+            <div
+              style={{
+                background: "#f8fafc",
+                border: "1px solid #e2e8f0",
+                borderRadius: "10px",
+                padding: "28px 16px",
+                marginBottom: "18px",
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: "10px",
+                textAlign: "center"
+              }}
+            >
+              <div
+                style={{
+                  width: "28px",
+                  height: "28px",
+                  border: "3px solid #cbd5e1",
+                  borderTopColor: "#0f6cbd",
+                  borderRadius: "50%",
+                  animation: "spin 0.8s linear infinite"
+                }}
+              />
+              <div>
+                <div style={{ fontSize: "13.5px", fontWeight: "600", color: "#0f172a", marginBottom: "4px" }}>
+                  Reading spreadsheet structure...
+                </div>
+                <div style={{ fontSize: "12px", color: "#64748b", maxWidth: "400px", lineHeight: "1.4" }}>
+                  Accessing worksheets, discovering header columns, and preparing field mapping suggestions.
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Worksheet Selection and Column Mapping */}
           {!isClientView && inspectionData && (
             <div style={{ background: "#f8fafc", borderRadius: "10px", padding: "16px", border: "1px solid #e2e8f0", marginBottom: "18px" }}>
@@ -743,12 +786,12 @@ export default function ExcelLinkModal({
                         background: "#ffffff",
                         fontSize: "11px",
                         fontWeight: "600",
-                        color: "#475569",
-                        cursor: "pointer",
+                        color: inspecting ? "#94a3b8" : "#475569",
+                        cursor: inspecting ? "wait" : "pointer",
                         whiteSpace: "nowrap"
                       }}
                     >
-                      Update
+                      {inspecting ? "Reading..." : "Update"}
                     </button>
                   </div>
                 </div>

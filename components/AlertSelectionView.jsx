@@ -12,7 +12,7 @@ import { useTasks } from "../contexts/TaskContext";
 import { useTriage } from "../contexts/TriageContext";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useAuth } from "../hooks/useAuth";
-import { ADMIN_ONLY_ALERT_TYPES, stripRowInfo, parseUnreceivedExpensesDetail, parseStaleExpenseDetail, parseInfoAlertDetail, getInfoCardTitle, getProactiveCardTitle, filterAnalysisResultsForAlert, getCleanPLCategoryName, getAlertJobTarget, formatSeenTimestamp, formatLikelihood, parseRevenueMismatchDetail, parseDirectCostsMismatchDetail, toInputDateFormat } from "../utils/helpers";
+import { ADMIN_ONLY_ALERT_TYPES, stripRowInfo, parseUnreceivedExpensesDetail, parseStaleExpenseDetail, parseInfoAlertDetail, getInfoCardTitle, getProactiveCardTitle, filterAnalysisResultsForAlert, getCleanPLCategoryName, getAlertJobTarget, formatSeenTimestamp, formatLikelihood, parseRevenueMismatchDetail, parseDirectCostsMismatchDetail, toInputDateFormat, parseSheetDate, toSheetDateFormat } from "../utils/helpers";
 
 const RICH_NOACTION_FLAG_GROUP = {
   crmCopiedConfChecked: "crm",
@@ -2269,7 +2269,12 @@ export default function AlertSelectionView({
                                   const jName = m.jobName || alert.jobName || parsed.jobName;
                                   const pCode = m.projectCode || alert.projectCode || parsed.projectCode;
                                   const confRow = m.confirmedRow || alert.confirmedRow || parsed.confirmedRow;
-                                  const eDate = m.endDate || alert.endDate || parsed.endDate;
+                                  const rawEDate = m.endDate || alert.endDate || parsed.endDate;
+                                  const eDate = rawEDate ? toSheetDateFormat(rawEDate) : "";
+                                  const parsedEnd = eDate ? parseSheetDate(eDate) : null;
+                                  const todayMid = new Date();
+                                  todayMid.setHours(0, 0, 0, 0);
+                                  const endLabel = parsedEnd && parsedEnd > todayMid ? "Job ends:" : "Job ended:";
                                   const rev = m.revenue || alert.revenue || parsed.revenue;
                                   const inv = m.totalInvoiced || alert.totalInvoiced || parsed.totalInvoiced;
                                   const diff = m.diff || alert.diff || parsed.diff;
@@ -2279,7 +2284,7 @@ export default function AlertSelectionView({
                                       {clientName && <div><strong>End client:</strong> {clientName}</div>}
                                       {jName && <div><strong>Job:</strong> {jName}{pCode ? ` [${pCode}]` : ""}</div>}
                                       {confRow && <div><strong>Confirmed tab row:</strong> {confRow}</div>}
-                                      {eDate && <div><strong>Job ended:</strong> {eDate}</div>}
+                                      {eDate && <div><strong>{endLabel}</strong> {eDate}</div>}
                                       {rev && <div><strong>Revenue budget:</strong> £{parseFloat(rev).toFixed(2)}</div>}
                                       {inv && <div><strong>Total invoiced:</strong> £{parseFloat(inv).toFixed(2)}</div>}
                                       {diff && <div style={{ marginTop: "4px", fontWeight: "600", color: "#c62828" }}>Difference: £{parseFloat(diff).toFixed(2)}</div>}
@@ -2294,7 +2299,12 @@ export default function AlertSelectionView({
                                   const jName = m.jobName || alert.jobName || parsed.jobName;
                                   const pCode = m.projectCode || alert.projectCode || parsed.projectCode;
                                   const rowNum = m.confirmedRow || alert.confirmedRow || alert.sheetRow || parsed.rowNum;
-                                  const eDate = m.endDate || alert.endDate || parsed.endDate;
+                                  const rawEDate = m.endDate || alert.endDate || parsed.endDate;
+                                  const eDate = rawEDate ? toSheetDateFormat(rawEDate) : "";
+                                  const parsedEnd = eDate ? parseSheetDate(eDate) : null;
+                                  const todayMid = new Date();
+                                  todayMid.setHours(0, 0, 0, 0);
+                                  const endLabel = parsedEnd && parsedEnd > todayMid ? "Job ends:" : "Job ended:";
                                   const dCosts = m.directCosts || alert.directCosts || parsed.directCosts;
                                   const expenses = m.totalExpenses || alert.totalExpenses || parsed.totalExpenses || m.childExp || alert.childExp;
                                   const diff = m.diff || alert.diff || parsed.diff;
@@ -2309,7 +2319,7 @@ export default function AlertSelectionView({
                                       {clientName && <div><strong>End client:</strong> {clientName}</div>}
                                       {jName && <div><strong>Job:</strong> {jName}{pCode ? ` [${pCode}]` : ""}</div>}
                                       {rowNum && <div><strong>{tabName === "Pipeline" ? "Pipeline" : "Confirmed"} tab row:</strong> {rowNum}</div>}
-                                      {eDate && <div><strong>Job ended:</strong> {eDate}</div>}
+                                      {eDate && <div><strong>{endLabel}</strong> {eDate}</div>}
                                       {dCosts && <div><strong>Direct cost budget:</strong> £{parseFloat(dCosts).toFixed(2)}</div>}
                                       {expenses && <div><strong>Total expenses:</strong> £{parseFloat(expenses).toFixed(2)}</div>}
                                       {diff && <div style={{ marginTop: "4px", fontWeight: "600", color: "#c62828" }}>Difference: £{parseFloat(diff).toFixed(2)}</div>}
@@ -2839,6 +2849,7 @@ export default function AlertSelectionView({
         <JobDetailModal
           isOpen={Boolean(viewingJobTarget)}
           target={viewingJobTarget}
+          isAdmin={isAdmin}
           onClose={() => {
             setViewingJobTarget(null);
             loadProactiveAlerts();

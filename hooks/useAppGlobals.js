@@ -10,10 +10,23 @@ export function AppGlobalsProvider({ children }) {
   const [allClientsMap, setAllClientsMap] = useState(() => {
     if (typeof window !== "undefined") {
       try {
+        const isSysAdmin = Boolean(
+          !window.__PULSE_SESSION_USER__?.isReadOnly &&
+          (window.__PULSE_SESSION_USER__?.isAdmin || window.__PULSE_SESSION_USER__?.role === "Admin")
+        );
         const stored = localStorage.getItem("pulse_cached_all_clients");
         if (stored) {
           const list = JSON.parse(stored);
           if (Array.isArray(list) && list.length > 0) {
+            const hasLegacyRawId = !isSysAdmin && list.some(
+              (c) =>
+                (c?.clientSheetId && !String(c.clientSheetId).startsWith("ws_")) ||
+                (c?.masterSheetId && !String(c.masterSheetId).startsWith("ws_"))
+            );
+            if (hasLegacyRawId) {
+              localStorage.removeItem("pulse_cached_all_clients");
+              return {};
+            }
             const map = {};
             for (const c of list) {
               if (c.clientName) map[c.clientName] = c;
@@ -29,8 +42,23 @@ export function AppGlobalsProvider({ children }) {
   const [managedClient, setManagedClientState] = useState(() => {
     if (typeof window !== "undefined") {
       try {
+        const isSysAdmin = Boolean(
+          !window.__PULSE_SESSION_USER__?.isReadOnly &&
+          (window.__PULSE_SESSION_USER__?.isAdmin || window.__PULSE_SESSION_USER__?.role === "Admin")
+        );
         const stored = localStorage.getItem("pma_managed_client");
-        return stored ? JSON.parse(stored) : null;
+        if (!stored) return null;
+        const parsed = JSON.parse(stored);
+        if (
+          !isSysAdmin &&
+          parsed &&
+          ((parsed.clientSheetId && !String(parsed.clientSheetId).startsWith("ws_")) ||
+            (parsed.masterSheetId && !String(parsed.masterSheetId).startsWith("ws_")))
+        ) {
+          localStorage.removeItem("pma_managed_client");
+          return null;
+        }
+        return parsed;
       } catch { return null; }
     }
     return null;

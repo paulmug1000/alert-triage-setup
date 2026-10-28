@@ -1423,14 +1423,14 @@ export async function handleGetActivity(req, res, sheets) {
     }
 
     // 2. All Clients View
-    const isGlobalScope = Boolean(sessionUser.isAdmin || sessionUser.assignedClients === "*");
-    if (!isGlobalScope) {
+    const isGlobalScope = Boolean(sessionUser.isAdmin && (!Array.isArray(clients) || clients.length === 0));
+    if (!sessionUser.isAdmin) {
       clientsList = filterClientsForUser(clientsList, sessionUser);
     }
     const data = await fetchAllClientsActivity(sheets, clientsList, !!forceRefresh, !!includeRoutine, acId, isGlobalScope);
 
     // Filter aggregated data for non-admins to prevent cache bleeding
-    if (!sessionUser.isAdmin && sessionUser.assignedClients !== "*") {
+    if (!sessionUser.isAdmin) {
       const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
       if (data && data.allEvents) {
         data.allEvents = data.allEvents.filter(e =>

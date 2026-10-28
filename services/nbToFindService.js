@@ -319,11 +319,8 @@ export async function saveNBToFindSettings({
   }
 
   if (directCostsPercentage !== undefined) {
-    let cleanPct = String(directCostsPercentage || "").trim();
-    if (!cleanPct.endsWith("%") && !isNaN(parseFloat(cleanPct))) {
-      cleanPct = `${cleanPct}%`;
-    }
-    if (!cleanPct) cleanPct = "0%";
+    const pctNum = parseFloat(String(directCostsPercentage ?? "").replace(/%/g, "").trim());
+    const cleanPct = Number.isFinite(pctNum) ? `${Math.max(0, Math.min(100, pctNum))}%` : "0%";
     updates.push({
       range: "NBtoFind!A21",
       values: [[cleanPct]],

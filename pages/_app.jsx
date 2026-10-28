@@ -58,6 +58,7 @@ export default function App({ Component, pageProps }) {
         btn.classList.contains("pma-profile-btn") ||
         btn.classList.contains("client-views-tab") ||
         btn.classList.contains("no-click-spinner") ||
+        btn.classList.contains("triage-client-card") ||
         btn.classList.contains("refresh-btn") ||
         btn.getAttribute("title")?.toLowerCase()?.includes("refresh")
       );

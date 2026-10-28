@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from "react";
 import Spinner from "./Spinner";
 import JobMatchCard from "./JobMatchCard";
-import { isPlaceholderInvoice } from "../utils/helpers";
+import { isPlaceholderInvoice, toSheetDateFormat, getStatusPill } from "../utils/helpers";
 
 export default function ExploreJobsModal({
   isOpen,
@@ -148,9 +148,54 @@ export default function ExploreJobsModal({
 
   if (!isOpen) return null;
 
-  const itemTitle = mode === "expense"
-    ? `Expense: £${alertItem?.amount?.toFixed?.(2) || alertItem?.amount || "0"} (${alertItem?.description || alertItem?.reference || "Expense"})`
-    : `Invoice: #${alertItem?.invoiceNo || alertItem?.reference || ""} (£${alertItem?.amount?.toFixed?.(2) || alertItem?.amount || "0"})`;
+  const summary = alertItem?.summary || {};
+  const acc = alertItem?.data?.accounting || [];
+
+  const formatAmt = (val) => {
+    const n = parseFloat(String(val ?? 0).replace(/[£$€,\s]/g, ""));
+    if (isNaN(n)) return "0.00";
+    return n.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  };
+
+  const isExpense = mode === "expense";
+  const invNo = !isExpense
+    ? String(summary.invoiceNo || summary.reference || alertItem?.invoiceNo || alertItem?.reference || acc[5] || "").trim()
+    : "";
+  const expRef = isExpense
+    ? String(summary.transactionId || summary.reference || alertItem?.transactionId || alertItem?.reference || alertItem?.appId || acc[3] || "").trim()
+    : "";
+  const rawAmt = isExpense
+    ? (summary.amount ?? alertItem?.amount ?? acc[2] ?? 0)
+    : (summary.amount ?? alertItem?.amount ?? acc[3] ?? acc[2] ?? 0);
+  const vatNum = parseFloat(
+    String(
+      (isExpense ? (summary.vatAmount ?? alertItem?.vatAmount) : (summary.vatIncluded ?? alertItem?.vatIncluded ?? acc[4])) ?? 0
+    ).replace(/[£$€,\s]/g, "")
+  ) || 0;
+  const vatSuffix = vatNum > 0 ? " +VAT" : (!isExpense ? " (no VAT)" : "");
+
+  const itemClient = !isExpense
+    ? String(summary.client || alertItem?.client || alertItem?.endClientName || acc[0] || "").trim()
+    : "";
+  const itemDesc = isExpense
+    ? String(summary.description || alertItem?.description || alertItem?.vendor || acc[1] || "").trim()
+    : String(summary.job || summary.description || alertItem?.job || alertItem?.description || acc[1] || "").trim();
+  const itemCategory = isExpense
+    ? String(summary.accountName || alertItem?.accountName || acc[4] || "").trim()
+    : "";
+  const rawDate = isExpense
+    ? (summary.date || alertItem?.date || alertItem?.recDate || acc[0] || "")
+    : (summary.sentDate || alertItem?.sentDate || acc[6] || "");
+  const formattedDate = rawDate ? toSheetDateFormat(rawDate) : "";
+  const rawDueDate = !isExpense ? (acc[7] || alertItem?.dueDate || "") : "";
+  const formattedDueDate = rawDueDate ? toSheetDateFormat(rawDueDate) : "";
+  const rawPaidDate = summary.datePaid || alertItem?.datePaid || (!isExpense ? acc[8] : alertItem?.payDate) || "";
+  const formattedPaidDate = rawPaidDate ? toSheetDateFormat(rawPaidDate) : "";
+  const itemStatus = String(summary.status || alertItem?.status || (isExpense ? acc[5] : acc[9]) || "").trim();
+
+  const itemTitle = isExpense
+    ? `Expense: £${formatAmt(rawAmt)}${vatSuffix}${itemDesc ? ` — ${itemDesc}` : ""}${expRef ? ` (#${expRef})` : ""}`
+    : `Invoice: ${invNo ? `#${invNo.replace(/^#/, "")}` : "Unnumbered"} (£${formatAmt(rawAmt)}${vatSuffix})`;
 
   return (
     <div
@@ -190,13 +235,59 @@ export default function ExploreJobsModal({
           justifyContent: "space-between",
           alignItems: "center"
         }}>
-          <div>
+          <div style={{ flex: 1, minWidth: 0, paddingRight: "16px" }}>
             <h2 style={{ fontSize: "17px", fontWeight: "700", color: "#0f172a", margin: 0 }}>
-              Search & Explore All Confirmed Jobs
+              Search & explore all confirmed jobs
             </h2>
-            <div style={{ fontSize: "13px", color: "#64748b", marginTop: "3px" }}>
-              Placing <strong style={{ color: mode === "expense" ? "#059669" : "#ea580c" }}>{itemTitle}</strong>
+            <div style={{ fontSize: "13px", color: "#475569", marginTop: "4px", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+              <span>
+                Placing <strong style={{ color: isExpense ? "#059669" : "#ea580c" }}>{itemTitle}</strong>
+              </span>
+              {itemStatus && (
+                <span style={{
+                  ...getStatusPill(itemStatus),
+                  padding: "1px 8px",
+                  borderRadius: "999px",
+                  fontSize: "11px",
+                  fontWeight: "600"
+                }}>
+                  {itemStatus}
+                </span>
+              )}
             </div>
+            {(itemClient || itemDesc || itemCategory || formattedDate || formattedDueDate || formattedPaidDate) && (
+              <div style={{
+                marginTop: "6px",
+                display: "flex",
+                flexWrap: "wrap",
+                gap: "6px 16px",
+                fontSize: "12px",
+                color: "#334155",
+                background: "#ffffff",
+                border: "1px solid #e2e8f0",
+                borderRadius: "6px",
+                padding: "6px 10px"
+              }}>
+                {itemClient && (
+                  <div><strong style={{ color: "#64748b" }}>Client:</strong> {itemClient}</div>
+                )}
+                {itemDesc && (
+                  <div><strong style={{ color: "#64748b" }}>{isExpense ? "Description:" : "Description / job:"}</strong> {itemDesc}</div>
+                )}
+                {itemCategory && (
+                  <div><strong style={{ color: "#64748b" }}>Category:</strong> {itemCategory}</div>
+                )}
+                {formattedDate && (
+                  <div><strong style={{ color: "#64748b" }}>{isExpense ? "Date:" : "Sent date:"}</strong> {formattedDate}</div>
+                )}
+                {formattedDueDate && (
+                  <div><strong style={{ color: "#64748b" }}>Due date:</strong> {formattedDueDate}</div>
+                )}
+                {formattedPaidDate && (
+                  <div><strong style={{ color: "#64748b" }}>Paid date:</strong> {formattedPaidDate}</div>
+                )}
+              </div>
+            )}
           </div>
           <button
             type="button"

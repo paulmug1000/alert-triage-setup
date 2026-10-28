@@ -99,17 +99,17 @@ export function sanitizeCashAdjustmentInput(val) {
       return `'${str}`;
     }
 
-    // Strictly forbid shell pipe, semicolons, backticks
-    if (/[|;`]/.test(str)) {
+    // Strictly forbid cross-sheet references (!) or shell pipe, semicolons, backticks
+    if (/[!|;`]/.test(str)) {
       return `'${str}`;
     }
 
-    // Validate that the formula only contains safe arithmetic, cell coordinates, and safe math functions
+    // Validate that the formula only contains safe arithmetic, same-sheet cell coordinates, and safe math functions
     let stripped = str.slice(1);
     // Strip allowed function names
     stripped = stripped.replace(/\b(SUM|ROUND|ABS|MIN|MAX|AVERAGE|SUBTOTAL|IF|INT)\s*\(/gi, "(");
-    // Strip sheet references e.g. Cash! or 'Cash'! and cell coordinates (e.g. E6, $E$6, CD4, E6:E10)
-    stripped = stripped.replace(/('?[A-Za-z0-9_ ]+'?!)?\$?[A-Z]+\$?[0-9]+(:?\$?[A-Z]+\$?[0-9]+)?/gi, "");
+    // Strip same-sheet cell coordinates (e.g. E6, $E$6, CD4, E6:E10)
+    stripped = stripped.replace(/\$?[A-Z]+\$?[0-9]+(:?\$?[A-Z]+\$?[0-9]+)?/gi, "");
     // Strip numbers (integer and decimal)
     stripped = stripped.replace(/[0-9]+(\.[0-9]+)?/g, "");
     // Strip operators, parentheses, commas, whitespace
@@ -1100,7 +1100,12 @@ export async function updateCashAdjustment({
   const sheets = await getSheetsClient();
   const cleanClientSheetId = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
   const rowNum = parseInt(sheetRow, 10);
-  const cellRange = `Cash!${colLetter}${rowNum}`;
+  const ALLOWED_ADJUSTMENT_ROWS = new Set([13, 14, 15, 19, 20, 21]);
+  const cleanCol = String(colLetter).trim().toUpperCase();
+  if (!ALLOWED_ADJUSTMENT_ROWS.has(rowNum) || !/^[E-Z]$|^A[A-Z]$/.test(cleanCol)) {
+    throw new Error("Invalid adjustment row or column");
+  }
+  const cellRange = `Cash!${cleanCol}${rowNum}`;
 
   const cleanValue = typeof value === "string" ? value.trim().replace(/^['’]=/, "=") : value;
   const safeValue = sanitizeCashAdjustmentInput(cleanValue ?? "");

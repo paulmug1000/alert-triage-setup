@@ -433,7 +433,7 @@ export default function GoogleSheetLinkModal({
                 lineHeight: "1.5"
               }}
             >
-              <strong>Read-only sync:</strong> Pulse reads your pipeline data and maintains deal tracking in an internal Master Sheet bridge. Your original Google Sheet is never modified.
+              <strong>Read-only sync:</strong> Pulse reads your pipeline data and maintains deal tracking automatically. Your original Google Sheet is never modified.
             </div>
           )}
 

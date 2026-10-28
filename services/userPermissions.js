@@ -139,7 +139,7 @@ export async function getAllUsers(sheets, _ignoredAcId = DEFAULT_AC_SHEET_ID, by
         }
 
         const assignedRaw = String(row[3] || "").trim();
-        const assignedClients = assignedRaw === "*" ? "*" : assignedRaw.split(",").map(c => c.trim()).filter(Boolean);
+        const assignedClients = (role === "Admin" && assignedRaw === "*") ? "*" : assignedRaw.split(",").map(c => c.trim()).filter(Boolean && (c => c !== "*"));
         const status = String(row[4] || "").trim().toLowerCase() === "suspended" ? "Suspended" : "Active";
         const createdAt = row[5] || "";
         const lastLoginAt = row[6] || "";

@@ -723,7 +723,8 @@ export async function handleUpdateTask(req, res, sheets) {
     if (!memoryRow) return res.status(404).json({ success: false, error: "Task not found" });
 
     if (!req.isSystemAuthorized && sessionUser && !sessionUser.isAdmin) {
-      if (!memoryRow.client || !isUserAuthorizedForClient(sessionUser, memoryRow.client)) {
+      const rowClient = memoryRow.clientName || memoryRow.client;
+      if (!rowClient || !isUserAuthorizedForClient(sessionUser, rowClient)) {
         return res.status(403).json({ success: false, error: "Forbidden: Access denied to this client's task." });
       }
     }

@@ -662,29 +662,30 @@ export async function saveClientSettings({
       });
     } else if (settings.customisation.kpiColouring) {
       const k = settings.customisation.kpiColouring;
+      const s = (v) => String(sanitizeFormulaInput(String(v || "")));
       // Write full static 2D block to cleanly replace importrange without #REF! spill
       const kpiBlock = [
         ["KPI colouring rules", ""],
         ["", ""],
         ["Gross profit", ""],
-        ["Green is above:", String(k.grossProfit?.greenAbove || "")],
-        ["Orange is above / red is below", String(k.grossProfit?.orangeAbove || "")],
+        ["Green is above:", s(k.grossProfit?.greenAbove)],
+        ["Orange is above / red is below", s(k.grossProfit?.orangeAbove)],
         ["", ""],
         ["", ""],
         ["Overheads", ""],
-        ["Red is above", String(k.overheads?.redAbove || "")],
-        ["Orange is below, green is above", String(k.overheads?.greenAbove || "")],
+        ["Red is above", s(k.overheads?.redAbove)],
+        ["Orange is below, green is above", s(k.overheads?.greenAbove)],
         ["", ""],
         ["", ""],
         ["Operating profit", ""],
-        ["Green is above", String(k.operatingProfit?.greenAbove || "")],
-        ["Orange is above, red is below", String(k.operatingProfit?.orangeAbove || "")],
+        ["Green is above", s(k.operatingProfit?.greenAbove)],
+        ["Orange is above, red is below", s(k.operatingProfit?.orangeAbove)],
         ["", ""],
         ["", ""],
         ["Staff costs to income / revenue ratio", ""],
-        ["Red is above", String(k.staffCostsRatio?.redAbove || "")],
-        ["Orange is above", String(k.staffCostsRatio?.orangeAbove || "")],
-        ["Green is above, orange below", String(k.staffCostsRatio?.greenAbove || "")]
+        ["Red is above", s(k.staffCostsRatio?.redAbove)],
+        ["Orange is above", s(k.staffCostsRatio?.orangeAbove)],
+        ["Green is above, orange below", s(k.staffCostsRatio?.greenAbove)]
       ];
       masterUpdates.push({
         range: "KeyInfo!A120:B140",
@@ -710,7 +711,7 @@ export async function saveClientSettings({
           const match = details.find(d => d.name === name);
           id = match?.id || (Array.isArray(settings.accounting.bankAccountIds) ? settings.accounting.bankAccountIds[i] || "" : "");
         }
-        rows.push([name, id]);
+        rows.push([String(sanitizeFormulaInput(name)), String(sanitizeFormulaInput(String(id)))]);
       }
       masterUpdates.push({
         range: "KeyInfo!H12:I21",
@@ -729,7 +730,7 @@ export async function saveClientSettings({
           const match = details.find(d => d.name === name);
           id = match?.id || (Array.isArray(settings.accounting.nonCashBankAccountIds) ? settings.accounting.nonCashBankAccountIds[i] || "" : "");
         }
-        rows.push([name, id]);
+        rows.push([String(sanitizeFormulaInput(name)), String(sanitizeFormulaInput(String(id)))]);
       }
       masterUpdates.push({
         range: "KeyInfo!H23:I28",
@@ -769,8 +770,8 @@ export async function saveClientSettings({
 
     // CRM Field Mappings (CRMList!AB2:AN2 and CRMList!A2:M2)
     if (Array.isArray(settings.crm.fieldMappings) && settings.crm.fieldMappings.length === 13) {
-      const crmFieldsRow = settings.crm.fieldMappings.map(f => String(f.crmField || "").trim());
-      const formatRulesRow = settings.crm.fieldMappings.map(f => String(f.formatRule !== undefined ? f.formatRule : "").trim());
+      const crmFieldsRow = settings.crm.fieldMappings.map(f => String(sanitizeFormulaInput(String(f.crmField || "").trim())));
+      const formatRulesRow = settings.crm.fieldMappings.map(f => String(sanitizeFormulaInput(String(f.formatRule !== undefined ? f.formatRule : "").trim())));
       masterUpdates.push({
         range: "CRMList!AB2:AN2",
         values: [crmFieldsRow]
@@ -822,7 +823,11 @@ export async function saveClientSettings({
     for (let r = 0; r < 44; r++) {
       const item = settings.crmStatusMapping[r];
       if (item && item.status) {
-        rows.push([item.status, item.likelihood || "", item.startDateRule || ""]);
+        rows.push([
+          String(sanitizeFormulaInput(String(item.status))),
+          String(sanitizeFormulaInput(String(item.likelihood || ""))),
+          String(sanitizeFormulaInput(String(item.startDateRule || "")))
+        ]);
       } else {
         rows.push(["", "", ""]);
       }
@@ -851,7 +856,10 @@ export async function saveClientSettings({
       for (let r = 0; r < 40; r++) {
         const item = settings.jobs.productLineMappings[r];
         if (item && (item.crmProductLine || item.mappedTo)) {
-          rows.push([item.crmProductLine || "", item.mappedTo || ""]);
+          rows.push([
+            String(sanitizeFormulaInput(String(item.crmProductLine || ""))),
+            String(sanitizeFormulaInput(String(item.mappedTo || "")))
+          ]);
         } else {
           rows.push(["", ""]);
         }
@@ -866,7 +874,10 @@ export async function saveClientSettings({
       for (let r = 0; r < 44; r++) {
         const item = settings.jobs.leadSourceMappings[r];
         if (item && (item.crmSource || item.mappedTo)) {
-          rows.push([item.crmSource || "", item.mappedTo || ""]);
+          rows.push([
+            String(sanitizeFormulaInput(String(item.crmSource || ""))),
+            String(sanitizeFormulaInput(String(item.mappedTo || "")))
+          ]);
         } else {
           rows.push(["", ""]);
         }

@@ -1,5 +1,5 @@
 import { redisClient } from "./redisClient.js";
-import { getSheetsClient, extractSheetIdFromUrl } from "./sheetsClient.js";
+import { getSheetsClient, extractSheetIdFromUrl, sanitizeFormulaInput } from "./sheetsClient.js";
 import {
   readAlertMemory, updateAlertMemoryRow, updateAlertMemoryRowsBatch, appendAlertMemoryRow, appendAlertMemoryRowsBatch,
   ensureAlertMemoryTab, findMemoryRow, buildAlertFingerprint,
@@ -8,7 +8,9 @@ import {
 import { createHash } from "crypto";
 import { logPmaActivity } from "./pmaLogger.js";
 import { getSessionUser } from "./authService.js";
-import { matchesClientName } from "../utils/helpers.js";
+import { isUserAuthorizedForClient } from "./userPermissions.js";
+import { matchesClientName, ADMIN_ONLY_ALERT_TYPES, toSheetDateFormat } from "../utils/helpers.js";
+import { getAllClients } from "./workspaces.js";
 
 const PRECOMPUTED_KEY = "triage_precomputed";
 
@@ -45,11 +47,14 @@ export async function handleGetAlerts(req, res) {
     if (!sessionUser) {
       return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
     }
-    if (!sessionUser.isAdmin && sessionUser.assignedClients !== "*") {
+    if (!sessionUser.isAdmin) {
       const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
-      alerts = (alerts || []).filter(a => assignedList.some(assigned => matchesClientName(assigned, a.clientName)));
-      noActionAlerts = (noActionAlerts || []).filter(a => assignedList.some(assigned => matchesClientName(assigned, a.clientName)));
-      proactiveAlerts = (proactiveAlerts || []).filter(a => assignedList.some(assigned => matchesClientName(assigned, a.clientName)));
+      const isAllowedAlert = (a) =>
+        assignedList.some(assigned => matchesClientName(assigned, a.clientName)) &&
+        !ADMIN_ONLY_ALERT_TYPES.has(a.alertType || a.flagType || a.type);
+      alerts = (alerts || []).filter(isAllowedAlert);
+      noActionAlerts = (noActionAlerts || []).filter(isAllowedAlert);
+      proactiveAlerts = (proactiveAlerts || []).filter(isAllowedAlert);
       clientsWithFlags = (clientsWithFlags || []).filter(c => assignedList.some(assigned => matchesClientName(assigned, c.clientName)));
     }
 
@@ -63,18 +68,21 @@ export async function handleGetAlerts(req, res) {
   }
 }
 
-export function applyAlertRemovalToTriageData(data, targetIds) {
+export function applyAlertRemovalToTriageData(data, targetIds, allowedClientCheck = null) {
   if (!data) return { removedCount: 0 };
   const targetList = Array.isArray(targetIds) ? targetIds : Array.from(targetIds || []);
   const targetSet = new Set(targetList.map(String));
+  const canRemove = (item) => !allowedClientCheck || allowedClientCheck(item?.clientName);
   
   const removedAlerts = [];
   const keptAlerts = [];
   for (const a of (data.alerts || [])) {
-    const isTarget = targetSet.has(`${a.sheetName}-${a.rowNumber}`)
+    const isTarget = canRemove(a) && (
+      targetSet.has(`${a.sheetName}-${a.rowNumber}`)
       || (a.fingerprintHash && targetSet.has(a.fingerprintHash))
       || (a.id && targetSet.has(a.id))
-      || targetSet.has(`${a.flagType || a.type}-${a.sheetName}-${a.rowNumber}`);
+      || targetSet.has(`${a.flagType || a.type}-${a.sheetName}-${a.rowNumber}`)
+    );
     if (isTarget) removedAlerts.push(a);
     else keptAlerts.push(a);
   }
@@ -82,10 +90,12 @@ export function applyAlertRemovalToTriageData(data, targetIds) {
   const removedNoAction = [];
   const keptNoAction = [];
   for (const na of (data.noActionAlerts || [])) {
-    const isTarget = (na.fingerprintHash && targetSet.has(na.fingerprintHash))
+    const isTarget = canRemove(na) && (
+      (na.fingerprintHash && targetSet.has(na.fingerprintHash))
       || (na.id && targetSet.has(na.id))
       || targetSet.has(`${na.flagType}-${na.flagDetail || ""}`)
-      || targetSet.has(`${na.clientName}___${na.flagType}`);
+      || targetSet.has(`${na.clientName}___${na.flagType}`)
+    );
     if (isTarget) removedNoAction.push(na);
     else keptNoAction.push(na);
   }
@@ -93,9 +103,11 @@ export function applyAlertRemovalToTriageData(data, targetIds) {
   const removedProactive = [];
   const keptProactive = [];
   for (const pa of (data.proactiveAlerts || [])) {
-    const isTarget = (pa.alertKey && targetSet.has(pa.alertKey))
+    const isTarget = canRemove(pa) && (
+      (pa.alertKey && targetSet.has(pa.alertKey))
       || (pa.fingerprintHash && targetSet.has(pa.fingerprintHash))
-      || (pa.rowIndex != null && targetSet.has(String(pa.rowIndex)));
+      || (pa.rowIndex != null && targetSet.has(String(pa.rowIndex)))
+    );
     if (isTarget) removedProactive.push(pa);
     else keptProactive.push(pa);
   }
@@ -146,19 +158,23 @@ export async function handleRemoveAlert(req, res) {
   const { sessionId, alertId, alertIds } = req.body;
   const targetIds = Array.isArray(alertIds) ? alertIds : (alertId ? [alertId] : []);
   if (!sessionId || !targetIds.length) return res.status(400).json({ success: false, error: "Missing sessionId or alertId(s)" });
+  const sessionUser = getSessionUser(req);
+  const allowedClientCheck = (!req.isSystemAuthorized && sessionUser && !sessionUser.isAdmin)
+    ? (cName) => Boolean(cName && isUserAuthorizedForClient(sessionUser, cName))
+    : null;
   try {
     const sessionData = await redisClient.get(`triage_alerts:${sessionId}`);
     if (!sessionData) return res.status(200).json({ success: true, notFound: true });
     const parsed = JSON.parse(sessionData);
     
-    const { removedCount } = applyAlertRemovalToTriageData(parsed, targetIds);
+    const { removedCount } = applyAlertRemovalToTriageData(parsed, targetIds, allowedClientCheck);
     await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 86400 * 7 });
 
     try {
       const preRaw = await redisClient.get(PRECOMPUTED_KEY);
       if (preRaw) {
         const pre = JSON.parse(preRaw);
-        applyAlertRemovalToTriageData(pre, targetIds);
+        applyAlertRemovalToTriageData(pre, targetIds, allowedClientCheck);
         await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
       }
     } catch (e) {
@@ -417,9 +433,14 @@ export async function handleRecordDecision(req, res, sheets) {
     const timestamp = new Date().toISOString();
     const alertAmount = alert.summary?.amount || alert.data?.amount || alert.data?.revenue || "";
     const logRow = [
-      timestamp, alert.type || alert.flagType, `${alert.sheetName}-${alert.rowNumber}`,
-      alert.clientName || "", alertAmount, JSON.stringify(decision.claudeRecommendation || {}),
-      decision.action, decision.notes || "",
+      timestamp,
+      sanitizeFormulaInput(String(alert.type || alert.flagType || "")),
+      sanitizeFormulaInput(`${alert.sheetName}-${alert.rowNumber}`),
+      sanitizeFormulaInput(String(alert.clientName || "")),
+      sanitizeFormulaInput(String(alertAmount)),
+      sanitizeFormulaInput(JSON.stringify(decision.claudeRecommendation || {})),
+      sanitizeFormulaInput(String(decision.action || "")),
+      sanitizeFormulaInput(String(decision.notes || "")),
     ];
     await sheets.spreadsheets.values.append({
       spreadsheetId: automationCommanderSheetId, range: "TriageLog!A:H", valueInputOption: "USER_ENTERED",
@@ -558,12 +579,19 @@ export async function handleBulkIgnoreAlerts(req, res, sheets) {
 export async function handleAcknowledgeProactiveAlert(req, res, sheets) {
   const { alertKey, clientName, sessionId, automationCommanderSheetId: acId, alertData } = req.body;
   if (!alertKey || !acId) return res.status(400).json({ success: false, error: "Missing alertKey or automationCommanderSheetId" });
+  const sessionUser = getSessionUser(req);
+  if (!req.isSystemAuthorized && sessionUser && !sessionUser.isAdmin) {
+    if (!clientName || !isUserAuthorizedForClient(sessionUser, clientName)) {
+      return res.status(403).json({ success: false, error: "Forbidden: Access denied to this client." });
+    }
+  }
   try {
     const fingerprintHash = createHash("sha256").update(alertKey).digest("hex").substring(0, 16);
     await ensureAlertMemoryTab(sheets, acId);
     const memoryRows = await readAlertMemory(sheets, acId);
     const candidateMatches = memoryRows.filter(r => {
       if (clientName && r.clientName !== clientName) return false;
+      if (!req.isSystemAuthorized && sessionUser && !sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, r.clientName)) return false;
       if (r.fingerprintHash === fingerprintHash) return true;
       if (alertKey.startsWith("autolog_error|") || alertKey.startsWith("infinite_loop|")) {
         try {
@@ -648,11 +676,20 @@ export async function handleAcknowledgeProactiveAlert(req, res, sheets) {
 export async function handleResolveProactiveAlert(req, res, sheets) {
   const { alertKey, clientName, sessionId, resolution, automationCommanderSheetId: acId } = req.body;
   if (!alertKey || !acId) return res.status(400).json({ success: false, error: "Missing alertKey or automationCommanderSheetId" });
+  const sessionUser = getSessionUser(req);
+  if (!req.isSystemAuthorized && sessionUser && !sessionUser.isAdmin) {
+    if (!clientName || !isUserAuthorizedForClient(sessionUser, clientName)) {
+      return res.status(403).json({ success: false, error: "Forbidden: Access denied to this client." });
+    }
+  }
   try {
     const fingerprintHash = createHash("sha256").update(alertKey).digest("hex").substring(0, 16);
     await ensureAlertMemoryTab(sheets, acId);
     const memoryRows = await readAlertMemory(sheets, acId);
     const row = findMemoryRow(memoryRows, fingerprintHash);
+    if (row && !req.isSystemAuthorized && sessionUser && !sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, row.clientName)) {
+      return res.status(403).json({ success: false, error: "Forbidden: Access denied to this client's alert." });
+    }
     
     if (row) {
       let snap = row.dataSnapshot;
@@ -715,6 +752,12 @@ export async function handleResolveProactiveAlert(req, res, sheets) {
 export async function handleBulkAcknowledgeProactiveAlerts(req, res, sheets) {
   const { alertKeys, clientName, sessionId, automationCommanderSheetId: acId } = req.body;
   if (!alertKeys || !alertKeys.length || !acId) return res.status(400).json({ success: false, error: "Missing alertKeys or automationCommanderSheetId" });
+  const sessionUser = getSessionUser(req);
+  if (!req.isSystemAuthorized && sessionUser && !sessionUser.isAdmin) {
+    if (!clientName || !isUserAuthorizedForClient(sessionUser, clientName)) {
+      return res.status(403).json({ success: false, error: "Forbidden: Access denied to this client." });
+    }
+  }
   try {
     await ensureAlertMemoryTab(sheets, acId);
     const memoryRows = await readAlertMemory(sheets, acId);
@@ -727,6 +770,7 @@ export async function handleBulkAcknowledgeProactiveAlerts(req, res, sheets) {
       hashesToRemove.push(alertKey, fingerprintHash);
       const candidateMatches = memoryRows.filter(r => {
         if (clientName && r.clientName !== clientName) return false;
+        if (!req.isSystemAuthorized && sessionUser && !sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, r.clientName)) return false;
         if (r.fingerprintHash === fingerprintHash) return true;
         if (alertKey.startsWith("autolog_error|") || alertKey.startsWith("infinite_loop|")) {
           try {
@@ -811,11 +855,15 @@ export async function handleBulkAcknowledgeProactiveAlerts(req, res, sheets) {
 export async function handleUnignoreAlert(req, res, sheets) {
   const { fingerprintHash, automationCommanderSheetId } = req.body;
   if (!fingerprintHash || !automationCommanderSheetId) return res.status(400).json({ success: false, error: "Missing required fields" });
+  const sessionUser = getSessionUser(req);
   try {
     await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
     const memoryRows = await readAlertMemory(sheets, automationCommanderSheetId);
     const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
     if (!memoryRow) return res.status(404).json({ success: false, error: "Alert not found in memory" });
+    if (!req.isSystemAuthorized && (!sessionUser || (!sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, memoryRow.clientName)))) {
+      return res.status(403).json({ success: false, error: "Forbidden: Access denied to this client's alert." });
+    }
 
     if (memoryRow.cachedOptionsJSON) {
       await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, {
@@ -863,10 +911,11 @@ export async function handleGetIgnoredAlerts(req, res, sheets) {
     if (!sessionUser) {
       return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
     }
-    if (!sessionUser.isAdmin && sessionUser.assignedClients !== "*") {
+    if (!sessionUser.isAdmin) {
       const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
       ignoredAlerts = ignoredAlerts.filter(a =>
-        assignedList.some(assigned => matchesClientName(assigned, a.clientName))
+        assignedList.some(assigned => matchesClientName(assigned, a.clientName)) &&
+        !ADMIN_ONLY_ALERT_TYPES.has(a.alertType)
       );
     }
 
@@ -889,6 +938,7 @@ export async function handleGetProactiveAlerts(req, res, sheets) {
       "possibleMatchInvoiceNo","possibleMatchAmount","possibleMatchSentDate","possibleMatchConfidence","possibleMatchConfirmedRow","possibleMatchVatAmount","possibleMatchStatus","possibleMatchCase",
       "uninvoicedAmount","projectCode","draftCount","draftTotal","stableJobKey","isRetainer","tab",
       "directCosts","unreceivedAmount","placeholderCount","placeholderTotal",
+      "totalInvoiced","totalExpenses","diff","childExp","expectedForRow",
       "categoryName","cleanName","quarantineRow",
       "slotNum","invoiceRef","amount","sentDate",
       "errorSnippet","occurrenceCount","category","rawSnippet","entityKey","fieldName","transition1","transition2","conflictType","suggestion","rawLogSnippet","invoiceNo"
@@ -938,10 +988,11 @@ export async function handleGetProactiveAlerts(req, res, sheets) {
     if (!sessionUser) {
       return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
     }
-    if (!sessionUser.isAdmin && sessionUser.assignedClients !== "*") {
+    if (!sessionUser.isAdmin) {
       const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
       active = active.filter(a =>
-        assignedList.some(assigned => matchesClientName(assigned, a.clientName))
+        assignedList.some(assigned => matchesClientName(assigned, a.clientName)) &&
+        !ADMIN_ONLY_ALERT_TYPES.has(a.alertType)
       );
     }
 
@@ -951,6 +1002,71 @@ export async function handleGetProactiveAlerts(req, res, sheets) {
     }
     const clientFilter = req.body.clientName;
     const alerts = clientFilter ? active.filter(a => a.clientName === clientFilter) : active;
+
+    // Self-heal any cached revenue_mismatch / direct_costs_mismatch alerts that had serial-number endDate formatted as "1-Jan-XX"
+    const corruptedAlerts = alerts.filter(a =>
+      (a.alertType === "direct_costs_mismatch" || a.alertType === "revenue_mismatch") &&
+      /^1-Jan-\d{2}$/.test(String(a.endDate || a.metadata?.endDate || "").trim()) &&
+      !a._endDateVerified &&
+      Number(a.confirmedRow || a.metadata?.confirmedRow) > 1
+    );
+    if (corruptedAlerts.length > 0) {
+      try {
+        const allClientsData = await getAllClients(sheets, { isAdmin: true }, false, acId);
+        const clientsObj = allClientsData?.clientsObj || {};
+        const byClient = new Map();
+        for (const ca of corruptedAlerts) {
+          if (!byClient.has(ca.clientName)) byClient.set(ca.clientName, []);
+          byClient.get(ca.clientName).push(ca);
+        }
+        const memoryUpdates = [];
+        for (const [cName, cAlerts] of byClient.entries()) {
+          const cSheetId = clientsObj[cName]?.clientSheetId;
+          if (!cSheetId) continue;
+          const maxRow = Math.max(...cAlerts.map(x => Number(x.confirmedRow || x.metadata?.confirmedRow) || 2), 10) + 5;
+          const amRes = await sheets.spreadsheets.values.get({
+            spreadsheetId: cSheetId,
+            range: `Confirmed!AM1:AM${maxRow}`,
+            valueRenderOption: "UNFORMATTED_VALUE"
+          });
+          const amCol = amRes.data?.values || [];
+          for (const ca of cAlerts) {
+            let rIdx = (Number(ca.confirmedRow || ca.metadata?.confirmedRow) || 2) - 1;
+            while (rIdx > 1 && (amCol[rIdx]?.[0] === undefined || amCol[rIdx]?.[0] === "")) {
+              rIdx--;
+            }
+            const rawEnd = amCol[rIdx]?.[0];
+            if (rawEnd) {
+              const fixedEnd = toSheetDateFormat(rawEnd);
+              if (fixedEnd) {
+                ca.endDate = fixedEnd;
+                ca._endDateVerified = true;
+                if (ca.metadata) ca.metadata.endDate = fixedEnd;
+                const origMemRow = all.find(r => r.rowIndex === ca.rowIndex);
+                if (origMemRow) {
+                  try {
+                    const snap = JSON.parse(origMemRow.dataSnapshot || "{}");
+                    snap.endDate = fixedEnd;
+                    snap._endDateVerified = true;
+                    if (snap.metadata) snap.metadata.endDate = fixedEnd;
+                    memoryUpdates.push({
+                      rowIndex: origMemRow.rowIndex,
+                      updates: { ...origMemRow, dataSnapshot: JSON.stringify(snap) }
+                    });
+                  } catch (e) {}
+                }
+              }
+            }
+          }
+        }
+        if (memoryUpdates.length > 0) {
+          await updateAlertMemoryRowsBatch(sheets, acId, memoryUpdates).catch(() => {});
+        }
+      } catch (healErr) {
+        console.warn("Could not self-heal proactive alert endDate:", healErr.message);
+      }
+    }
+
     return res.status(200).json({ success: true, alerts, countsByClient });
   } catch (err) {
     console.error(`❌ Error in get_proactive_alerts:`, err);

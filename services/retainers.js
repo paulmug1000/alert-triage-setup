@@ -1,4 +1,4 @@
-import { getSheetsClient, withRetry, extractSheetIdFromUrl, colIndexToLetter } from "./sheetsClient";
+import { getSheetsClient, withRetry, extractSheetIdFromUrl, colIndexToLetter, sanitizeFormulaInput } from "./sheetsClient";
 import { getToleranceValues, checkAllGASLocks } from "./sharedHelpers";
 import { logPmaActivity } from "./pmaLogger";
 import { resolveClientNameBySheetId, getAllClients } from "./workspaces";
@@ -387,7 +387,7 @@ export async function handleChangeRetainerEndDate(req, res, sheets) {
       if (toTrim.length === 0) {
         await sheets.spreadsheets.values.update({
           spreadsheetId: sheetIdClean, range: `Confirmed!AM${parentRowNum}`,
-          valueInputOption: "USER_ENTERED", requestBody: { values: [[newEndDate]] },
+          valueInputOption: "USER_ENTERED", requestBody: { values: [[sanitizeFormulaInput(String(newEndDate || ""))]] },
         });
         return res.status(200).json({ success: true, trimmed: 0, grown: 0 });
       }
@@ -458,7 +458,7 @@ export async function handleChangeRetainerEndDate(req, res, sheets) {
 
       await sheets.spreadsheets.values.update({
         spreadsheetId: sheetIdClean, range: `Confirmed!AM${parentRowNum}`,
-        valueInputOption: "USER_ENTERED", requestBody: { values: [[newEndDate]] },
+        valueInputOption: "USER_ENTERED", requestBody: { values: [[sanitizeFormulaInput(String(newEndDate || ""))]] },
       });
 
       let tenantClient = req.body.clientName || "";
@@ -595,9 +595,9 @@ export async function handleChangeRetainerEndDate(req, res, sheets) {
       for (let m = 0; m < newRowDates.length; m++) {
         const rn = insertAfterRowNum + 1 + m;
         allWrites.push(
-          { range: `Confirmed!A${rn}`, values: [[client]] },
-          { range: `Confirmed!B${rn}`, values: [[jobName]] },
-          { range: `Confirmed!AI${rn}`, values: [[vat || ""]] },
+          { range: `Confirmed!A${rn}`, values: [[sanitizeFormulaInput(String(client || ""))]] },
+          { range: `Confirmed!B${rn}`, values: [[sanitizeFormulaInput(String(jobName || ""))]] },
+          { range: `Confirmed!AI${rn}`, values: [[sanitizeFormulaInput(String(vat || ""))]] },
           { range: `Confirmed!AP${rn}`, values: [[revenue]] },
           { range: `Confirmed!AS${rn}`, values: [[defaultDaysToPay]] },
           { range: `Confirmed!AR${rn}`, values: [[retFmtDate(newRowDates[m])]] }
@@ -605,7 +605,7 @@ export async function handleChangeRetainerEndDate(req, res, sheets) {
       }
       allWrites.push({
         range: `Confirmed!AM${parentRowNum}`,
-        values: [[newEndDate]],
+        values: [[sanitizeFormulaInput(String(newEndDate || ""))]],
       });
 
       await sheets.spreadsheets.values.batchUpdate({
@@ -823,9 +823,9 @@ export async function handleChangeRetainerStartDate(req, res, sheets) {
           { range: `Confirmed!AP${rn}`, values: [[perInvoiceAmount]] }
         );
       }
-      allUpdates.push({ range: `Confirmed!AL${parentRowNum}`, values: [[newStartDate]] });
+      allUpdates.push({ range: `Confirmed!AL${parentRowNum}`, values: [[sanitizeFormulaInput(String(newStartDate || ""))]] });
       if (newEndDate) {
-        allUpdates.push({ range: `Confirmed!AM${parentRowNum}`, values: [[newEndDate]] });
+        allUpdates.push({ range: `Confirmed!AM${parentRowNum}`, values: [[sanitizeFormulaInput(String(newEndDate || ""))]] });
       }
       if (newMonthlyAmount !== undefined && newMonthlyAmount !== null && newMonthlyAmount !== "") {
         allUpdates.push({ range: `Confirmed!AG${parentRowNum}`, values: [[revenue]] });
@@ -901,9 +901,9 @@ export async function handleChangeRetainerStartDate(req, res, sheets) {
         const rn = insertAfterRowNum + 1 + m;
         const dateIdx = currentCount + m;
         allUpdates.push(
-          { range: `Confirmed!A${rn}`, values: [[client]] },
-          { range: `Confirmed!B${rn}`, values: [[jobName]] },
-          { range: `Confirmed!AI${rn}`, values: [[vat || ""]] },
+          { range: `Confirmed!A${rn}`, values: [[sanitizeFormulaInput(String(client || ""))]] },
+          { range: `Confirmed!B${rn}`, values: [[sanitizeFormulaInput(String(jobName || ""))]] },
+          { range: `Confirmed!AI${rn}`, values: [[sanitizeFormulaInput(String(vat || ""))]] },
           { range: `Confirmed!AP${rn}`, values: [[perInvoiceAmount]] },
           { range: `Confirmed!AS${rn}`, values: [[defaultDaysToPay]] },
           { range: `Confirmed!AR${rn}`, values: [[retFmtDate(newRowDates[dateIdx])]] }
@@ -932,9 +932,9 @@ export async function handleChangeRetainerStartDate(req, res, sheets) {
           { range: `Confirmed!AP${rn}`, values: [[perInvoiceAmount]] }
         );
       }
-      allUpdates.push({ range: `Confirmed!AL${parentRowNum}`, values: [[newStartDate]] });
+      allUpdates.push({ range: `Confirmed!AL${parentRowNum}`, values: [[sanitizeFormulaInput(String(newStartDate || ""))]] });
       if (newEndDate) {
-        allUpdates.push({ range: `Confirmed!AM${parentRowNum}`, values: [[newEndDate]] });
+        allUpdates.push({ range: `Confirmed!AM${parentRowNum}`, values: [[sanitizeFormulaInput(String(newEndDate || ""))]] });
       }
       if (newMonthlyAmount !== undefined && newMonthlyAmount !== null && newMonthlyAmount !== "") {
         allUpdates.push({ range: `Confirmed!AG${parentRowNum}`, values: [[revenue]] });

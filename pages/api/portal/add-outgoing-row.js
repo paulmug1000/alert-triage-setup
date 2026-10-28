@@ -104,10 +104,8 @@ export default async function handler(req, res) {
     if (pctClean === undefined || pctClean === null || pctClean === "") {
       pctClean = isDelivery ? "100%" : "0%";
     } else {
-      pctClean = String(pctClean).trim();
-      if (!pctClean.endsWith("%") && !isNaN(Number(pctClean))) {
-        pctClean = `${pctClean}%`;
-      }
+      const pctNum = parseFloat(String(pctClean).replace(/%/g, "").trim());
+      pctClean = Number.isFinite(pctNum) ? `${Math.max(0, Math.min(100, pctNum))}%` : (isDelivery ? "100%" : "0%");
     }
 
     // Write columns A to E in Outgoings tab

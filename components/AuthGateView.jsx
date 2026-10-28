@@ -1,5 +1,19 @@
 import React, { useState, useEffect } from "react";
+import { useRouter } from "next/router";
 import Spinner from "./Spinner";
+
+function formatOauthErrorMessage(err, errEmail, provider) {
+  if (!err) return "";
+  if (err === "unauthorized") {
+    const accountLabel = provider ? `${provider} account` : "account";
+    const emailSuffix = errEmail ? ` (${errEmail})` : "";
+    return `Access Denied: The ${accountLabel}${emailSuffix} is not authorised to access Pulse. Please contact hello@pulsedashboard.co.uk with any queries.`;
+  }
+  if (err === "access_denied" || err === "consent_required") {
+    return "Sign-in was cancelled or consent was not granted. Please try again.";
+  }
+  return `Sign in failed: ${String(err).replace(/_/g, " ")}`;
+}
 
 export default function AuthGateView({
   authStep: propAuthStep,

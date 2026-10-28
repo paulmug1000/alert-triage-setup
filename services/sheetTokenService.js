@@ -39,7 +39,11 @@ function getTokenEncryptionKey() {
     process.env.JWT_SECRET?.trim() ||
     process.env.AUTH_SECRET?.trim() ||
     process.env.INTEGRATION_ENCRYPTION_KEY?.trim() ||
-    "pulse_workspace_token_fallback_key_2026";
+    process.env.PULSE_INTERNAL_SECRET?.trim() ||
+    (process.env.NODE_ENV === "production" ? "" : "pulse_workspace_token_dev_key_2026");
+  if (!secret) {
+    throw new Error("CRITICAL: Missing secret environment variable for sheetTokenService");
+  }
   return crypto.createHash("sha256").update(`ws_token_key:${secret}`).digest();
 }
 
@@ -93,7 +97,7 @@ export function unwrapSheetId(idOrToken) {
   try {
     const rawBuf = Buffer.from(trimmed.slice(TOKEN_PREFIX.length), "base64url");
     if (rawBuf.length < IV_LENGTH + TAG_LENGTH + 1) {
-      return "";
+      return "__INVALID_WS_TOKEN__";
     }
     const iv = rawBuf.subarray(0, IV_LENGTH);
     const tag = rawBuf.subarray(IV_LENGTH, IV_LENGTH + TAG_LENGTH);
@@ -105,7 +109,7 @@ export function unwrapSheetId(idOrToken) {
     const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
     return decrypted.toString("utf8");
   } catch {
-    return "";
+    return "__INVALID_WS_TOKEN__";
   }
 }
 
@@ -113,7 +117,7 @@ export function unwrapSheetId(idOrToken) {
  * Recursively unwraps any `ws_...` opaque workspace tokens (and `"default"` AC sheet aliases)
  * in-place across incoming request bodies or query objects.
  */
-export function unwrapRequestSheetIds(obj, seen = new WeakSet()) {
+export function unwrapRequestSheetIds(obj, seen = new WeakSet(), rawSheetRefs = null) {
   if (!obj || typeof obj !== "object") {
     if (typeof obj === "string") {
       const t = obj.trim();
@@ -133,7 +137,7 @@ export function unwrapRequestSheetIds(obj, seen = new WeakSet()) {
           obj[i] = unwrapSheetId(t);
         }
       } else if (val && typeof val === "object") {
-        unwrapRequestSheetIds(val, seen);
+        unwrapRequestSheetIds(val, seen, rawSheetRefs);
       }
     }
     return obj;
@@ -150,9 +154,11 @@ export function unwrapRequestSheetIds(obj, seen = new WeakSet()) {
         t === "default"
       ) {
         obj[key] = unwrapSheetId("default");
+      } else if (rawSheetRefs && SHEET_ID_KEYS.has(key) && t.length > 0 && t !== "default") {
+        rawSheetRefs.push({ target: obj, key });
       }
     } else if (val && typeof val === "object") {
-      unwrapRequestSheetIds(val, seen);
+      unwrapRequestSheetIds(val, seen, rawSheetRefs);
     }
   }
   return obj;
@@ -204,6 +210,16 @@ export function maskResponseSheetIdsForUser(data, sessionUser, seen = new WeakMa
       continue;
     }
 
+    if (key === "formula") {
+      outObj[key] = null;
+      continue;
+    }
+
+    if (key === "rawVal" && typeof val === "string" && val.trim().startsWith("=")) {
+      outObj[key] = data.numVal ?? data.v ?? "";
+      continue;
+    }
+
     if (SHEET_ID_KEYS.has(key)) {
       if (typeof val === "string" && val.trim().length > 0) {
         outObj[key] = wrapSheetId(val);
@@ -233,6 +249,7 @@ export function maskResponseSheetIdsForUser(data, sessionUser, seen = new WeakMa
 }
 
 const _resBoundaryState = new WeakMap();
+const _reqBoundaryState = new WeakMap();
 
 /**
  * Installs request-entry unwrapping and response-exit masking on Next.js `(req, res)`.
@@ -240,11 +257,26 @@ const _resBoundaryState = new WeakMap();
  */
 export function installSheetIdBoundary(req, res, sessionUser = null) {
   if (req) {
-    if (req.body && typeof req.body === "object") {
-      unwrapRequestSheetIds(req.body);
+    let reqState = _reqBoundaryState.get(req);
+    if (!reqState) {
+      const rawSheetRefs = [];
+      if (req.body && typeof req.body === "object") {
+        unwrapRequestSheetIds(req.body, new WeakSet(), rawSheetRefs);
+      }
+      if (req.query && typeof req.query === "object") {
+        unwrapRequestSheetIds(req.query, new WeakSet(), rawSheetRefs);
+      }
+      reqState = { unwrapped: true, rawSheetRefs };
+      _reqBoundaryState.set(req, reqState);
     }
-    if (req.query && typeof req.query === "object") {
-      unwrapRequestSheetIds(req.query);
+    if (sessionUser && !isSysAdminUser(sessionUser) && !req.isSystemAuthorized && reqState.rawSheetRefs.length > 0) {
+      for (const ref of reqState.rawSheetRefs) {
+        if (ref.key === "automationCommanderSheetId" || ref.key === "acSheetId") {
+          ref.target[ref.key] = unwrapSheetId("default");
+        } else {
+          ref.target[ref.key] = "__RAW_SHEET_ID_FORBIDDEN__";
+        }
+      }
     }
   }
 

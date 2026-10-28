@@ -13,7 +13,7 @@
 import { waitUntil } from "@vercel/functions";
 import { redisClient } from "../../services/redisClient";
 import { invalidatePmaClientCache } from "../../services/cacheService";
-import { getSheetsClient, withRetry } from "../../services/sheetsClient";
+import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "../../services/sheetsClient";
 import { 
   readFlagSweepLog, 
   readPrecomputeLog, 
@@ -110,7 +110,7 @@ import {
   autoReconcileClientBankTransactions
 } from "../../services/bankTransactionsService";
 import { handleClassifyPLCategory, handleUpdatePartPaidDate } from "../../services/proactiveChecks";
-import { getSessionUser } from "../../services/authService";
+import { getSessionUser, safeCompareSecret } from "../../services/authService";
 import {
   isUserAuthorizedForClient,
   updateUserDailyAlertsEmail,
@@ -303,6 +303,7 @@ export default async function handler(req, res) {
       "eom_get_bank_accounts",
       "eom_get_cash_balance_progress",
       "eom_get_pl_comp_data",
+      "eom_get_plcomp_data",
       "get_cash_cells",
       "get_cash_inbox",
       "get_cash_adjustments",
@@ -328,12 +329,14 @@ export default async function handler(req, res) {
     const PUBLIC_ACTIONS = new Set(["send_otp", "verify_otp", "get_session", "logout"]);
 
     // Background jobs allowed with verified CRON_SECRET, AGENT_TRIGGER_SECRET, or PULSE_INTERNAL_SECRET
-    const cronSecret = process.env.CRON_SECRET;
-    const isCronAuthorized = cronSecret && (
-      req.body?.secret === cronSecret ||
-      req.query?.secret === cronSecret ||
-      req.headers["x-cron-secret"] === cronSecret ||
-      req.headers.authorization === `Bearer ${cronSecret}`
+    const cronSecret = (process.env.CRON_SECRET || "").trim();
+    const isCronAuthorized = Boolean(
+      cronSecret && (
+        safeCompareSecret(String(req.body?.secret || "").trim(), cronSecret) ||
+        safeCompareSecret(String(req.query?.secret || "").trim(), cronSecret) ||
+        safeCompareSecret(String(req.headers["x-cron-secret"] || "").trim(), cronSecret) ||
+        safeCompareSecret(String(req.headers.authorization || "").trim(), `Bearer ${cronSecret}`)
+      )
     );
     const validAgentSecrets = [
       process.env.AGENT_TRIGGER_SECRET,
@@ -344,17 +347,17 @@ export default async function handler(req, res) {
       validAgentSecrets.length > 0 &&
       incomingSecret &&
       validAgentSecrets.some(s =>
-        incomingSecret === s ||
-        req.headers.authorization === `Bearer ${s}`
+        safeCompareSecret(incomingSecret, s) ||
+        safeCompareSecret(String(req.headers.authorization || "").trim(), `Bearer ${s}`)
       )
     );
     const internalSecret = (process.env.PULSE_INTERNAL_SECRET || "").trim();
     const isInternalAuthorized = Boolean(
       internalSecret && (
-        req.body?.secret === internalSecret ||
-        req.query?.secret === internalSecret ||
-        req.headers["x-internal-secret"] === internalSecret ||
-        req.headers.authorization === `Bearer ${internalSecret}`
+        safeCompareSecret(String(req.body?.secret || "").trim(), internalSecret) ||
+        safeCompareSecret(String(req.query?.secret || "").trim(), internalSecret) ||
+        safeCompareSecret(String(req.headers["x-internal-secret"] || "").trim(), internalSecret) ||
+        safeCompareSecret(String(req.headers.authorization || "").trim(), `Bearer ${internalSecret}`)
       )
     );
 
@@ -403,15 +406,20 @@ export default async function handler(req, res) {
         return res.status(403).json({ success: false, error: "Forbidden: Access restricted to Pulse Portal" });
       }
 
-      // Restrict system/admin-only actions (HIGH-02)
+      // Restrict system/admin-only actions (HIGH-02 & R2-CRIT-01 & R2-HIGH-01)
       const ADMIN_ONLY_TRIAGE_ACTIONS = new Set([
         "agent_progress",
+        "trigger_agent_run",
+        "store_precomputed",
+        "rehash_ignored_alerts",
+        "send_daily_alerts_summary",
         "eom_save_template",
         "eom_reorder_templates",
         "eom_toggle_client_excluded",
         "eom_reorder_clients",
         "eom_load_bank_accounts",
         "eom_seed_from_checklist",
+        "eom_get_default_tasks",
         "eom_save_default_task",
         "eom_delete_default_task",
         "eom_reorder_default_tasks",
@@ -420,8 +428,12 @@ export default async function handler(req, res) {
         "eom_save_reporting_config",
         "eom_test_reporting_webapp",
         "eom_run_reporting_action",
+        "eom_save_chart_ref",
+        "eom_delete_chart_ref",
         "save_claude_settings",
         "get_claude_settings",
+        "check_claude_budget",
+        "get_sweep_schedule",
         "log_claude_usage",
         "get_app_log",
         "get_flag_sweep_log",
@@ -446,11 +458,13 @@ export default async function handler(req, res) {
           b.clientSheetId, q.clientSheetId,
           b.masterSheetId, q.masterSheetId,
           b.reconSheetId, q.reconSheetId,
+          b.reconSheetUrl ? extractSheetIdFromUrl(b.reconSheetUrl) : null,
           b.cashTabSheetId, q.cashTabSheetId,
           b.payrollClientSheetId, q.payrollClientSheetId,
           b.timeMasterSheetId, q.timeMasterSheetId,
           b.sheetId, q.sheetId,
-          b.alert?.masterSheetId, b.alert?.clientSheetId
+          b.clientId, q.clientId,
+          b.alert?.masterSheetId, b.alert?.clientSheetId, b.alert?.clientId
         ].filter(Boolean);
 
         if (targetSheetIds.length > 0 || targetClientClaim) {
@@ -467,7 +481,7 @@ export default async function handler(req, res) {
               sheets,
               sessionUser,
               item.clientName || targetClientClaim,
-              [item.clientSheetId, item.masterSheetId].filter(Boolean)
+              [item.clientSheetId, item.masterSheetId, item.clientId].filter(Boolean)
             );
             if (!itemAllowed) {
               return res.status(403).json({ success: false, error: "Forbidden: Access denied to one or more client alerts in batch." });
@@ -486,17 +500,24 @@ export default async function handler(req, res) {
       }
     }
 
+    const extractSafeClientIp = () => {
+      const vercelFwd = req.headers["x-vercel-forwarded-for"];
+      if (typeof vercelFwd === "string" && vercelFwd.trim()) return vercelFwd.split(",")[0].trim();
+      const forwarded = req.headers["x-forwarded-for"];
+      if (typeof forwarded === "string" && forwarded.trim()) return forwarded.split(",")[0].trim();
+      if (Array.isArray(forwarded) && forwarded[0]) return String(forwarded[0]).trim();
+      return req.socket?.remoteAddress || "127.0.0.1";
+    };
+
     if (action === "send_otp") {
       const { email } = req.body || {};
-      const forwarded = req.headers["x-forwarded-for"];
-      const clientIp = req.headers["x-real-ip"]?.trim() || (typeof forwarded === "string" ? forwarded.split(",").pop() : forwarded?.[0])?.trim() || req.socket?.remoteAddress || "127.0.0.1";
+      const clientIp = extractSafeClientIp();
       const result = await sendOtp(email, automationCommanderSheetId, clientIp);
       return res.status(200).json(result);
 
     } else if (action === "verify_otp") {
       const { email, code } = req.body || {};
-      const forwarded = req.headers["x-forwarded-for"];
-      const clientIp = req.headers["x-real-ip"]?.trim() || (typeof forwarded === "string" ? forwarded.split(",").pop() : forwarded?.[0])?.trim() || req.socket?.remoteAddress || "127.0.0.1";
+      const clientIp = extractSafeClientIp();
       const result = await verifyOtp(email, code, automationCommanderSheetId, res, clientIp);
       return res.status(result.success ? 200 : 401).json(result);
 

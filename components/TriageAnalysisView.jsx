@@ -44,7 +44,14 @@ export default function TriageAnalysisView({
   const [isSavingPlacement, setIsSavingPlacement] = useState(false);
   const [outgoingsOptionPrompt, setOutgoingsOptionPrompt] = useState(null);
   const [isCheckingCell, setIsCheckingCell] = useState(false);
+  const [activeOptionIdx, setActiveOptionIdx] = useState(null);
   const [feedbackMessage, setFeedbackMessage] = useState("");
+
+  React.useEffect(() => {
+    if (!isAccepting && !isCheckingCell && !outgoingsOptionPrompt) {
+      setActiveOptionIdx(null);
+    }
+  }, [isAccepting, isCheckingCell, outgoingsOptionPrompt, currentClientAlertIndex]);
 
   let clientInfo = (clientsWithFlags || []).find(c => c.clientName === selectedClient?.clientName);
   if (!clientInfo?.clientSheetId && !clientInfo?.masterSheetId) {
@@ -1603,7 +1610,7 @@ export default function TriageAnalysisView({
 
                                 <button
                                   type="button"
-                                  className="triage-btn"
+                                  className="triage-btn no-click-spinner"
                                   onClick={() => {
                                     if (option.matchType === "info") {
                                       const alert2 = clientAlerts[currentClientAlertIndex];
@@ -1624,6 +1631,7 @@ export default function TriageAnalysisView({
                                         else { setScreen("alertSelection"); setCurrentClientAlertIndex(0); }
                                       } else { setScreen("alertSelection"); setCurrentClientAlertIndex(0); }
                                     } else {
+                                      setActiveOptionIdx(idx);
                                       if ((alert.type === "expense" || alert.sheetName === "DirComp") && option.matchType === "category" && option.outgoingsData) {
                                         handleOutgoingsOptionClick(option);
                                       } else {
@@ -1653,7 +1661,7 @@ export default function TriageAnalysisView({
                                     opacity: (isAccepting || isCheckingCell) ? 0.6 : 1
                                   }}
                                 >
-                                  {(isAccepting || isCheckingCell) ? (
+                                  {((isAccepting || isCheckingCell) && activeOptionIdx === idx) ? (
                                     <><Spinner color="white" />Saving ...</>
                                   ) : (
                                     actionBtnText
@@ -2537,6 +2545,7 @@ export default function TriageAnalysisView({
             isOpen={!!viewingJobTarget}
             target={viewingJobTarget}
             onClose={() => setViewingJobTarget(null)}
+            isAdmin={isAdmin}
           />
         )}
 

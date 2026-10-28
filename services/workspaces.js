@@ -169,7 +169,7 @@ export async function getAllClients(sheets, sessionUser = { isAdmin: true }, byp
   let finalClientsArray = clientsArray;
   let finalClientsObj = clientsObj;
 
-  const isAdminUser = !sessionUser || sessionUser.isAdmin || sessionUser.role === "Admin" || sessionUser.assignedClients === "*";
+  const isAdminUser = !sessionUser || sessionUser.isAdmin || sessionUser.role === "Admin";
   if (!isAdminUser) {
     const assignedList = Array.isArray(sessionUser?.assignedClients) ? sessionUser.assignedClients : [];
     finalClientsArray = clientsArray.filter(c =>
@@ -505,14 +505,14 @@ export async function handleCreateOutgoingsVendor(req, res, sheets) {
     const newRow = lastRow + 2;
     if (newRow > 110) return res.status(400).json({ success: false, error: "Contractors section is full (max row 110)" });
 
-    const pctValue = deliveryPct !== undefined && deliveryPct !== "" ? String(deliveryPct).replace(/%/g, "") : "100";
-    const pctString = `${pctValue}%`;
+    const pctNum = parseFloat(String(deliveryPct !== undefined && deliveryPct !== "" ? deliveryPct : "100").replace(/%/g, ""));
+    const pctString = `${Number.isFinite(pctNum) ? Math.max(0, Math.min(100, pctNum)) : 100}%`;
 
     await sheets.spreadsheets.values.update({
       spreadsheetId: sheetIdClean,
       range: `Outgoings!A${newRow}:E${newRow}`,
       valueInputOption: "USER_ENTERED",
-      requestBody: { values: [[sanitizeFormulaInput(vendorName), vatFlag || "Yes", invTiming || "Next", payTiming || "Next", pctString]] },
+      requestBody: { values: [[sanitizeFormulaInput(vendorName), sanitizeFormulaInput(String(vatFlag || "Yes")), sanitizeFormulaInput(String(invTiming || "Next")), sanitizeFormulaInput(String(payTiming || "Next")), pctString]] },
     });
 
     await applySheetFontFormat(sheets, sheetIdClean, "Outgoings", newRow - 1, newRow, 0, 50, "Arial", 9);
@@ -1294,8 +1294,21 @@ export async function handleUpdateJobField(req, res, sheets) {
   if (tabName !== "Confirmed" && tabName !== "Pipeline") {
     return res.status(400).json({ success: false, error: "Invalid tabName. Must be Confirmed or Pipeline." });
   }
-  if (!/^[A-Z]{1,2}\d{1,4}$/.test(String(cellRef).trim())) {
+  const cleanCellRef = String(cellRef).trim().toUpperCase();
+  if (!/^[A-Z]{1,2}\d{1,4}$/.test(cleanCellRef)) {
     return res.status(400).json({ success: false, error: "Invalid cellRef format." });
+  }
+  const parsedColLetters = cleanCellRef.replace(/[0-9]/g, "");
+  const parsedRowNum = parseInt(cleanCellRef.replace(/[^0-9]/g, ""), 10);
+  const colIdx0 = parsedColLetters.split("").reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) - 1;
+  const isProtectedFormulaCol =
+    (colIdx0 >= 5 && colIdx0 <= 29) ||
+    colIdx0 === 31 ||
+    colIdx0 === 40 ||
+    (colIdx0 >= 60 && colIdx0 <= 74) ||
+    (colIdx0 >= 96 && colIdx0 <= 106);
+  if (!Number.isFinite(parsedRowNum) || parsedRowNum < 2 || isProtectedFormulaCol) {
+    return res.status(400).json({ success: false, error: "Cannot overwrite header row or protected formula columns." });
   }
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
@@ -1421,9 +1434,21 @@ export async function handleUpdateJobFields(req, res, sheets) {
     return res.status(400).json({ success: false, error: "Invalid tabName. Must be Confirmed or Pipeline." });
   }
   for (const u of updates) {
-    const targetRef = String(u.cellRef || `${u.colLetter || ""}${u.rowNum || rowNum || ""}`).trim();
+    const targetRef = String(u.cellRef || `${u.colLetter || ""}${u.rowNum || rowNum || ""}`).trim().toUpperCase();
     if (!/^[A-Z]{1,2}\d{1,4}$/.test(targetRef)) {
       return res.status(400).json({ success: false, error: `Invalid cell reference in updates: ${targetRef}` });
+    }
+    const parsedColLetters = targetRef.replace(/[0-9]/g, "");
+    const parsedRowNum = parseInt(targetRef.replace(/[^0-9]/g, ""), 10);
+    const colIdx0 = parsedColLetters.split("").reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) - 1;
+    const isProtectedFormulaCol =
+      (colIdx0 >= 5 && colIdx0 <= 29) ||
+      colIdx0 === 31 ||
+      colIdx0 === 40 ||
+      (colIdx0 >= 60 && colIdx0 <= 74) ||
+      (colIdx0 >= 96 && colIdx0 <= 106);
+    if (!Number.isFinite(parsedRowNum) || parsedRowNum < 2 || isProtectedFormulaCol) {
+      return res.status(400).json({ success: false, error: `Cannot overwrite header row or protected formula column: ${targetRef}` });
     }
   }
   try {

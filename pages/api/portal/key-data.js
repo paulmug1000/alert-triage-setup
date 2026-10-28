@@ -80,13 +80,56 @@ export default async function handler(req, res) {
 
   const sanitizeForUser = (data) => {
     if (!isSeniorUser || !data) return data;
+    const isRestrictedCat = (cat) => {
+      const s = String(cat || "").toLowerCase();
+      return s.includes("salar") || s.includes("divid") || s.includes("payroll") || s.includes("wages");
+    };
+    const cleanTxByMonth = data.outgoings?.transactionsByMonth
+      ? Object.fromEntries(
+          Object.entries(data.outgoings.transactionsByMonth).map(([m, map]) => [
+            m,
+            map && typeof map === "object"
+              ? Object.fromEntries(Object.entries(map).filter(([cat]) => !isRestrictedCat(cat)))
+              : map,
+          ])
+        )
+      : data.outgoings?.transactionsByMonth;
+    const cleanReconMonths = data.outgoings?.reconMonths
+      ? Object.fromEntries(
+          Object.entries(data.outgoings.reconMonths).map(([m, rm]) => [
+            m,
+            rm && typeof rm === "object"
+              ? {
+                  ...rm,
+                  bankOutgoings: Array.isArray(rm.bankOutgoings)
+                    ? rm.bankOutgoings.filter((tx) => !isRestrictedCat(tx?.category || tx?.pulseCategory))
+                    : rm.bankOutgoings,
+                  unreconciledItems: Array.isArray(rm.unreconciledItems)
+                    ? rm.unreconciledItems.filter((tx) => !isRestrictedCat(tx?.category || tx?.pulseCategory))
+                    : rm.unreconciledItems,
+                }
+              : rm,
+          ])
+        )
+      : data.outgoings?.reconMonths;
     return {
       ...data,
       salaries: null,
-      outgoings: data.outgoings ? {
-        ...data.outgoings,
-        dividends: null,
-      } : data.outgoings,
+      outgoingsMeta: data.outgoingsMeta
+        ? {
+            ...data.outgoingsMeta,
+            salariesDel: [],
+            salariesNonDel: [],
+          }
+        : data.outgoingsMeta,
+      outgoings: data.outgoings
+        ? {
+            ...data.outgoings,
+            dividends: null,
+            transactionsByMonth: cleanTxByMonth,
+            reconMonths: cleanReconMonths,
+          }
+        : data.outgoings,
     };
   };
 

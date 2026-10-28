@@ -513,7 +513,7 @@ export default function SetupHoldingGate({
                   {/* If user is Admin or ClientManager, offer direct link back to Management Area (PMA) */}
                   {(user?.isAdmin || user?.role === "ClientManager") && (
                     <Link
-                      href="/PMA"
+                      href="/pma"
                       style={{
                         display: "flex",
                         alignItems: "center",

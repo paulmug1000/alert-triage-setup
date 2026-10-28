@@ -41,12 +41,13 @@ export default async function handler(req, res) {
   }
   if (!sessionUser.isAdmin && (masterSheetId || clientSheetId)) {
     const sheets = await getSheetsClient();
+    const claimName = targetName && targetName !== "advisor" ? targetName : "";
     if (masterSheetId) {
-      const sheetAuth = await verifyUserAuthorizedForSheet(sheets, sessionUser, masterSheetId);
+      const sheetAuth = await verifyUserAuthorizedForSheet(sheets, sessionUser, masterSheetId, claimName);
       if (!sheetAuth.authorized) return res.status(403).json({ error: "Access denied to this client." });
     }
     if (clientSheetId) {
-      const sheetAuth = await verifyUserAuthorizedForSheet(sheets, sessionUser, clientSheetId);
+      const sheetAuth = await verifyUserAuthorizedForSheet(sheets, sessionUser, clientSheetId, claimName);
       if (!sheetAuth.authorized) return res.status(403).json({ error: "Access denied to this client." });
     }
   }

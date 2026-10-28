@@ -45,7 +45,7 @@ export default async function handler(req, res) {
     }
     if (masterSheetId) {
       const sheets = await getSheetsClient();
-      const sheetAuth = await verifyUserAuthorizedForSheet(sheets, sessionUser, masterSheetId);
+      const sheetAuth = await verifyUserAuthorizedForSheet(sheets, sessionUser, masterSheetId, targetClient || "");
       if (!sheetAuth.authorized) {
         return res.status(403).json({ error: "Access denied to this client." });
       }

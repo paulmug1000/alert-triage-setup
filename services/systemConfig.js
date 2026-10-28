@@ -1,8 +1,8 @@
 import { waitUntil } from "@vercel/functions";
 import { redisClient } from "./redisClient.js";
-import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
-import { getSessionUser } from "./authService.js";
-import { isUserAuthorizedForClient } from "./userPermissions.js";
+import { getSheetsClient, withRetry, extractSheetIdFromUrl, isValidGoogleScriptUrl } from "./sheetsClient.js";
+import { getSessionUser, safeCompareSecret } from "./authService.js";
+import { isUserAuthorizedForClient, getCanonicalAcSheetId } from "./userPermissions.js";
 
 export const SWEEP_SCHEDULE_TAB = "SweepSchedule";
 export const SWEEP_SCHEDULE_DEFAULTS = {
@@ -306,9 +306,14 @@ export async function handleSaveSweepFrequency(req, res, sheets) {
 }
 
 export async function handleTriggerAgentRun(req, res, sheets) {
-  const { automationCommanderSheetId: acSheetId, clientName: targetClientName, types } = req.body;
+  const { clientName: targetClientName, types } = req.body;
+  const acSheetId = getCanonicalAcSheetId();
   if (!acSheetId || !targetClientName || !Array.isArray(types) || types.length === 0) {
     return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId, clientName, or types" });
+  }
+  const sessionUser = getSessionUser(req);
+  if (!req.isSystemAuthorized && (!sessionUser || (!sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, targetClientName)))) {
+    return res.status(403).json({ success: false, error: "Forbidden: Access denied to this client." });
   }
   const rawSecret = process.env.CRON_SECRET || process.env.AGENT_TRIGGER_SECRET || "";
   const agentSecret = String(rawSecret).replace(/^["']|["']$/g, '').trim();
@@ -326,8 +331,8 @@ export async function handleTriggerAgentRun(req, res, sheets) {
       return res.status(404).json({ success: false, error: `Client "${targetClientName}" not found in AutoUpdates` });
     }
     const webAppUrl = String(row[13] || "").trim(); // col N
-    if (!webAppUrl) {
-      return res.status(400).json({ success: false, error: `No Web App URL configured for "${targetClientName}" (column N) - deploy and add it first` });
+    if (!webAppUrl || !isValidGoogleScriptUrl(webAppUrl)) {
+      return res.status(400).json({ success: false, error: `No valid Google Apps Script Web App URL configured for "${targetClientName}"` });
     }
 
     const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -348,17 +353,11 @@ export async function handleTriggerAgentRun(req, res, sheets) {
       const startTime = Date.now();
       try {
         console.log(`[Agent run] Invoking Web App for ${targetClientName} (runId: ${runId})...`);
-        const pulseInternalSecret = String(process.env.PULSE_INTERNAL_SECRET || "").replace(/^["']|["']$/g, "").trim();
-        const cronSecret = String(process.env.CRON_SECRET || agentSecret).replace(/^["']|["']$/g, "").trim();
-        const vercelBypassToken = String(process.env.VERCEL_BYPASS_TOKEN || "").replace(/^["']|["']$/g, "").trim();
         const gasResp = await fetch(webAppUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             secret: agentSecret,
-            pulseInternalSecret,
-            cronSecret,
-            vercelBypassToken,
             types,
             clientName: targetClientName,
             runId
@@ -434,7 +433,7 @@ export async function handleAgentProgress(req, res) {
     process.env.CRON_SECRET
   ].filter(Boolean).map(s => String(s).replace(/^["']|["']$/g, '').trim());
 
-  if (!cleanProgressSecret || !validSecrets.includes(cleanProgressSecret)) {
+  if (!cleanProgressSecret || !validSecrets.some(s => safeCompareSecret(cleanProgressSecret, s))) {
     return res.status(200).json({ success: false, error: "Invalid secret" });
   }
   if (!progressClientName || !progressRunId) {
@@ -463,6 +462,12 @@ export async function handleGetAgentRunProgress(req, res) {
   const { clientName: pollClientName, runId: pollRunId } = req.body;
   if (!pollClientName || !pollRunId) {
     return res.status(400).json({ success: false, error: "Missing clientName or runId" });
+  }
+  const sessionUser = getSessionUser(req);
+  if (!req.isSystemAuthorized && sessionUser && !sessionUser.isAdmin) {
+    if (!isUserAuthorizedForClient(sessionUser, pollClientName)) {
+      return res.status(403).json({ success: false, error: "Forbidden: Access denied to this client." });
+    }
   }
   try {
     const progressKey = `agent_run:${pollClientName}:${pollRunId}`;
@@ -501,7 +506,7 @@ export async function handleGetActiveAgentRun(req, res) {
  * and registers any missing pulse:client_secret:<masterSheetId> keys in Redis.
  */
 export async function handleSyncAllMasterScriptSecrets(req, res, sheets) {
-  const acSheetId = req.body?.automationCommanderSheetId || process.env.DEFAULT_AC_SHEET_ID || "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
+  const acSheetId = getCanonicalAcSheetId();
   const clientFilter = req.body?.clientFilter ? String(req.body.clientFilter).trim().toLowerCase() : null;
 
   const agentSecret = String(process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "").replace(/^["']|["']$/g, "").trim();
@@ -562,13 +567,13 @@ export async function handleSyncAllMasterScriptSecrets(req, res, sheets) {
     let failedCount = 0;
 
     for (const t of targets) {
-      if (!t.webAppUrl) {
+      if (!t.webAppUrl || !isValidGoogleScriptUrl(t.webAppUrl)) {
         failedCount++;
         results.push({
           clientName: t.clientName,
           masterSheetId: t.masterSheetId,
           success: false,
-          error: "No Master WebApp URL configured in AutoUpdates (Col N) or Clients tracker (Col W)."
+          error: "No valid Google Apps Script WebApp URL configured in AutoUpdates (Col N) or Clients tracker (Col W)."
         });
         continue;
       }

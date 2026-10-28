@@ -356,11 +356,8 @@ export async function saveExpenseMetadata({
 
   const cleanCategory = sanitizeFormulaInput(category || "");
   const cleanVat = vat === "Yes" || vat === true ? "Yes" : "No";
-  let cleanDelPct = String(deliveryPct || "").trim();
-  if (!cleanDelPct.endsWith("%") && !isNaN(parseFloat(cleanDelPct))) {
-    cleanDelPct = `${cleanDelPct}%`;
-  }
-  if (!cleanDelPct) cleanDelPct = "0%";
+  const pctNum = parseFloat(String(deliveryPct ?? "").replace(/%/g, "").trim());
+  const cleanDelPct = Number.isFinite(pctNum) ? `${Math.max(0, Math.min(100, pctNum))}%` : "0%";
 
   const sheets = await getSheetsClient();
 

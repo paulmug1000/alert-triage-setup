@@ -49,6 +49,7 @@ export default function TasksView({
   const [showBulkSnoozeModal, setShowBulkSnoozeModal] = useState(false);
   const [bulkSnoozeDate, setBulkSnoozeDate] = useState("");
   const [bulkSnoozeTime, setBulkSnoozeTime] = useState("07:00");
+  const [acceptingOptionIdx, setAcceptingOptionIdx] = useState(null);
 
   useEffect(() => {
     setSelectedTaskHashes(new Set());
@@ -248,10 +249,11 @@ export default function TasksView({
     }
   };
 
-  const acceptTaskOption = async (option) => {
+  const acceptTaskOption = async (option, idx = null) => {
     if (!selectedTask?.alertDataJSON) return;
     try {
       const alertObj = JSON.parse(selectedTask.alertDataJSON);
+      setAcceptingOptionIdx(idx);
       setIsAccepting(true);
       setTaskActionError("");
       const action = option.matchType === "delete" ? "delete_job" : "accept_option";
@@ -264,7 +266,10 @@ export default function TasksView({
       if (!data.success) { setTaskActionError(`Failed: ${data.error || "Unknown error"}`); return; }
       await resolveTask(selectedTask.fingerprintHash);
     } catch (e) { setTaskActionError(e.message); }
-    finally { setIsAccepting(false); }
+    finally {
+      setIsAccepting(false);
+      setAcceptingOptionIdx(null);
+    }
   };
 
   const toggleSelectAll = () => {
@@ -1095,11 +1100,11 @@ export default function TasksView({
                 </div>
               )}
               {option.matchType !== "info" && (
-                <button className="triage-btn triage-btn-primary"
-                  onClick={() => acceptTaskOption(option)}
+                <button className="triage-btn triage-btn-primary no-click-spinner"
+                  onClick={() => acceptTaskOption(option, idx)}
                   disabled={isAccepting}
                   style={{ ...styles.decisionButton, ...styles.approveButton, width: "100%", marginTop: "4px" }}>
-                  {isAccepting ? <><Spinner />Applying...</> : `✓ Accept Option ${idx + 1}`}
+                  {(isAccepting && acceptingOptionIdx === idx) ? <><Spinner />Applying...</> : `✓ Accept Option ${idx + 1}`}
                 </button>
               )}
               {option.matchType === "info" && (

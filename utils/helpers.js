@@ -714,6 +714,25 @@ export function cleanUserFacingText(text) {
   return stripRowInfo(text);
 }
 
+/**
+ * Sanitizes any internal spreadsheet/tab/cell terminology from dynamic text before displaying to non-admin users (Rule 13).
+ */
+export function sanitizeSpreadsheetTerms(text) {
+  if (!text || typeof text !== "string") return text || "";
+  return stripRowInfo(text)
+    .replace(/\bMaster\s+Sheet\s+bridge\b/gi, "Pulse data sync")
+    .replace(/\b(?:Master|Client|Recon|Backup)\s+(?:spreadsheet|sheet|workbook)s?\b/gi, "Pulse")
+    .replace(/\b(?:Confirmed|Pipeline|Outgoings|Salaries|Performance|Dashboard|Budget|Cash)\s+(?:tab|sheet)s?\b/gi, (m) =>
+      m.replace(/\s+(?:tab|sheet)s?$/i, "")
+    )
+    .replace(/\bNBtoFind(?:\s+(?:tab|sheet))?\b/gi, "NB to Find")
+    .replace(/\b(?:KeyInfo|PLComp|InvComp|DirComp|CRMComp|TimeComp|DataFromCRM|CRMList|DataChgAlert|AutoUpdates)\b/g, "Pulse configuration")
+    .replace(/\bIMPORTRANGE\b/gi, "data link")
+    .replace(/\b(?:spreadsheet|workbook)s?\b/gi, "Pulse")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
 export const getFlagName = (flagKey) => {
   const flagNames = {
     "invoiceDashboardDiscr": "Invoice discrepancy",
@@ -1398,6 +1417,20 @@ export function getProactiveCardTitle(alert, isAdmin = true) {
  * Accepts either a pre-formatted CSV string or a 2D array of rows.
  */
 export function downloadCsv(filename, content) {
+  const sanitizeCsvCell = (raw) => {
+    const str = String(raw);
+    const trimmed = str.trimStart();
+    if (!trimmed) return str;
+    const first = trimmed[0];
+    if (first === "=" || first === "+" || first === "@" || first === "\t" || first === "\r") {
+      return `'${str}`;
+    }
+    if (first === "-" && !/^-[£$€]?[\d,]+(?:\.\d+)?%?$/.test(trimmed)) {
+      return `'${str}`;
+    }
+    return str;
+  };
+
   let csvText = "";
   if (Array.isArray(content)) {
     csvText = content
@@ -1405,7 +1438,7 @@ export function downloadCsv(filename, content) {
         (row || [])
           .map((val) => {
             if (val === null || val === undefined) return '""';
-            const str = String(val);
+            const str = sanitizeCsvCell(val);
             return `"${str.replace(/"/g, '""')}"`;
           })
           .join(",")
@@ -1455,10 +1488,25 @@ export function getCleanPLCategoryName(alertOrRaw) {
  * Parses any date format (ISO YYYY-MM-DD, d-Mmm-yy, DD/MM/YYYY, etc.) into a Date object.
  */
 export function parseSheetDate(dStr) {
-  if (!dStr) return null;
+  if (dStr === null || dStr === undefined || dStr === "") return null;
   if (dStr instanceof Date) return isNaN(dStr.getTime()) ? null : dStr;
+
+  // 0. Google Sheets / Excel numeric serial date (e.g. 46326 for 31-Oct-2026)
+  if (typeof dStr === "number" && Number.isFinite(dStr) && dStr > 20000 && dStr < 90000) {
+    const utc = new Date(Math.round((dStr - 25569) * 86400 * 1000));
+    return new Date(utc.getUTCFullYear(), utc.getUTCMonth(), utc.getUTCDate());
+  }
+
   const s = String(dStr).trim();
   if (!s || s === "-" || s === "(blank)") return null;
+
+  if (/^\d{5}(?:\.\d+)?$/.test(s)) {
+    const num = parseFloat(s);
+    if (num > 20000 && num < 90000) {
+      const utc = new Date(Math.round((num - 25569) * 86400 * 1000));
+      return new Date(utc.getUTCFullYear(), utc.getUTCMonth(), utc.getUTCDate());
+    }
+  }
 
   const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
 
@@ -1500,6 +1548,9 @@ export function parseSheetDate(dStr) {
     if (yr < 100) yr += (yr <= 69 ? 2000 : 1900);
     return new Date(yr, parseInt(slashMatch[2], 10) - 1, parseInt(slashMatch[1], 10));
   }
+
+  // Prevent pure integer strings from being parsed by V8 as a year (e.g. new Date("46326") -> 1-Jan-46326)
+  if (/^\d+$/.test(s)) return null;
 
   const d = new Date(s);
   return isNaN(d.getTime()) ? null : d;

@@ -34,7 +34,8 @@ export default function JobDetailModal({
   isOpen,
   target,
   onClose,
-  onMarkPullPending
+  onMarkPullPending,
+  isAdmin: propIsAdmin
 }) {
   const { allClientsMap } = useAppGlobals();
   const [internalClientsMap, setInternalClientsMap] = useState(null);
@@ -50,6 +51,9 @@ export default function JobDetailModal({
   const [allJobs, setAllJobs] = useState([]);
   const auth = useAuth();
   const user = auth?.user;
+  const isAdmin = propIsAdmin !== undefined
+    ? Boolean(propIsAdmin)
+    : Boolean(!user?.isReadOnly && (user?.isAdmin || user?.role === "Admin"));
   const [crmTool, setCrmTool] = useState(() => target?.crmTool || target?.client?.crmTool || null);
   const [crmDrives, setCrmDrives] = useState(() => target?.crmDrives || target?.client?.crmDrives || null);
   const [hasAccountingIntegration, setHasAccountingIntegration] = useState(() => {

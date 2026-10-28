@@ -57,8 +57,12 @@ function verifyHs256Jwt(token, secret) {
  * Avoids importing googleapis / nodemailer / sheetsClient during Next.js page compilation.
  */
 export function getSsrSessionUser(req) {
+  if (req?.url && String(req.url).includes("auth_error=")) return null;
   if (!req?.headers?.cookie) return null;
-  const secret = process.env.PMA_JWT_SECRET?.trim();
+  const secret =
+    process.env.PMA_JWT_SECRET?.trim() ||
+    process.env.AUTH_SECRET?.trim() ||
+    (process.env.NODE_ENV !== "production" ? globalThis.__PULSE_DEV_JWT_SECRET__ : null);
   if (!secret) return null;
 
   try {
@@ -69,10 +73,6 @@ export function getSsrSessionUser(req) {
     const decoded = verifyHs256Jwt(token, secret);
     if (!decoded || !decoded.email) return null;
     if (decoded.tokenType && decoded.tokenType !== "session") return null;
-
-    const assignedClients = decoded.assignedClients === "*"
-      ? "*"
-      : (Array.isArray(decoded.assignedClients) ? decoded.assignedClients : []);
 
     const role = decoded.role || "ClientUser";
     const isReadOnly = Boolean(decoded.isReadOnly || decoded.authProvider === "EmailOTP");
@@ -86,6 +86,10 @@ export function getSsrSessionUser(req) {
     const isAdmin = role === "Admin" && !isReadOnly;
     const isSenior = role === "Senior (Restricted)" || normRole.includes("senior");
     const isClientUser = role === "ClientUser";
+
+    const assignedClients = (isAdmin && decoded.assignedClients === "*")
+      ? "*"
+      : (Array.isArray(decoded.assignedClients) ? decoded.assignedClients : []);
 
     return {
       email: decoded.email,
@@ -113,7 +117,7 @@ export function canSsrUserAccessPma(user) {
 
 function isClientAllowedForUser(user, clientName) {
   if (!user || !clientName) return false;
-  if (user.isAdmin || user.role === "Admin" || user.assignedClients === "*") return true;
+  if (user.isAdmin || user.role === "Admin") return true;
   if (!Array.isArray(user.assignedClients)) return false;
   const target = String(clientName).trim().toLowerCase();
   return user.assignedClients.some(c => String(c || "").trim().toLowerCase() === target);

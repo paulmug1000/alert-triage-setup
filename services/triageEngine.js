@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import { extractSheetIdFromUrl, withRetry, getSheetsClient, getSheetId, colIndexToLetter, applySheetFontFormat } from "./sheetsClient.js";
+import { extractSheetIdFromUrl, withRetry, getSheetsClient, getSheetId, colIndexToLetter, applySheetFontFormat, sanitizeFormulaInput } from "./sheetsClient.js";
 import {
   buildAlertFingerprint, buildAlertFingerprintLegacy, ensureAlertMemoryTab, readAlertMemory,
   readHandledAlertHashes, findMemoryRow, appendAlertMemoryRow, updateAlertMemoryRow,
@@ -24,7 +24,7 @@ import {
 import { redisClient } from "./redisClient.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { logPrecomputeRun, logFlagSweepRun, logBuildOptionsRun } from "./systemLogs.js";
-import { isPlaceholderInvoice, isPlaceholderExpense, parseYearMonth, parseStaleExpenseDetail, isPipelineJobSuppressed, toSheetDateFormat, hasActiveCrmIntegration } from "../utils/helpers.js";
+import { isPlaceholderInvoice, isPlaceholderExpense, parseYearMonth, parseStaleExpenseDetail, isPipelineJobSuppressed, toSheetDateFormat, hasActiveCrmIntegration, ADMIN_ONLY_ALERT_TYPES } from "../utils/helpers.js";
 import { getSessionUser } from "./authService.js";
 import { matchesClientName, getClientManagerClientMap } from "./userPermissions.js";
 
@@ -1222,17 +1222,14 @@ export async function handleGetPrecomputed(req, res, sheets) {
     let scopedProactive = filteredProactive;
     let scopedNoAction = filteredNoAction;
 
-    if (sessionUser && !sessionUser.isAdmin && sessionUser.assignedClients !== "*") {
+    if (sessionUser && !sessionUser.isAdmin) {
       const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
-      scopedAlerts = filteredAlerts.filter(a =>
-        assignedList.some(assigned => matchesClientName(assigned, a.clientName))
-      );
-      scopedProactive = filteredProactive.filter(a =>
-        assignedList.some(assigned => matchesClientName(assigned, a.clientName))
-      );
-      scopedNoAction = filteredNoAction.filter(a =>
-        assignedList.some(assigned => matchesClientName(assigned, a.clientName))
-      );
+      const isAllowedAlert = a =>
+        assignedList.some(assigned => matchesClientName(assigned, a.clientName)) &&
+        !ADMIN_ONLY_ALERT_TYPES.has(a.alertType || a.flagType || a.type);
+      scopedAlerts = filteredAlerts.filter(isAllowedAlert);
+      scopedProactive = filteredProactive.filter(isAllowedAlert);
+      scopedNoAction = filteredNoAction.filter(isAllowedAlert);
     }
 
     if (scopedAlerts.length < data.alerts.length || scopedProactive.length < (data.proactiveAlerts || []).length || scopedNoAction.length < (data.noActionAlerts || []).length) {
@@ -2821,7 +2818,7 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
     const prodUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL
       ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
       : (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null);
-    const baseUrl = req?.body?.baseUrl || prodUrl || `${protocol}://${host}`;
+    const baseUrl = prodUrl || `${protocol}://${host}`;
 
     let built = 0, notFound = 0, errors = 0;
     let hasMore = false;
@@ -3182,7 +3179,7 @@ async function writeOutgoingsExpense(sheets, clientSheetId, outgoingsData) {
       spreadsheetId: sheetIdClean,
       range: `Outgoings!A${sheetRow}:F${sheetRow}`,
       valueInputOption: "USER_ENTERED",
-      requestBody: { values: [[categoryName, vatCharged || "No", "Next", "Next", "100%", "100%"]] },
+      requestBody: { values: [[sanitizeFormulaInput(String(categoryName || "")), sanitizeFormulaInput(String(vatCharged || "No")), "Next", "Next", "100%", "100%"]] },
     });
     await applySheetFontFormat(sheets, sheetIdClean, "Outgoings", sheetRow - 1, sheetRow, 0, 50, "Arial", 9);
     console.log(`  ✅ New vendor row written: ${categoryName}`);
@@ -7234,13 +7231,26 @@ export async function handleAcceptOption(req, res, sheets) {
           const month = MONTHS_NEW[parseInt(isoMatch[2], 10) - 1] || isoMatch[2];
           return `${isoMatch[3]}-${month}-${isoMatch[1].slice(-2)}`;
         }
-        return v;
+        return sanitizeFormulaInput(v);
       };
+
+      const isProtectedJobCol = (colLetters) => {
+        const colIdx0 = colLetters.split("").reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) - 1;
+        return (colIdx0 >= 5 && colIdx0 <= 29) || colIdx0 === 31 || colIdx0 === 40 || (colIdx0 >= 60 && colIdx0 <= 74) || (colIdx0 >= 96 && colIdx0 <= 106);
+      };
+      const safeCreateUpdates = createCellUpdates.filter(({ cell }) => {
+        const m = String(cell || "").match(/^([A-Z]{1,3})(\d+)$/);
+        if (!m) return false;
+        const rowNum = parseInt(m[2], 10);
+        if (rowNum < 2) return false;
+        if ((writeTab === "Confirmed" || writeTab === "Pipeline") && isProtectedJobCol(m[1])) return false;
+        return true;
+      });
 
       await sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: alert.clientId,
         requestBody: {
-          data: createCellUpdates.map(({ cell, value }) => ({
+          data: safeCreateUpdates.map(({ cell, value }) => ({
             range: `${writeTab}!${cell}`,
             values: [[sanitiseNew(cell, value)]],
           })),
@@ -7248,7 +7258,7 @@ export async function handleAcceptOption(req, res, sheets) {
         },
       });
 
-      console.log(`  ✅ Created new job at row ${newRow} with ${createCellUpdates.length} fields`);
+      console.log(`  ✅ Created new job at row ${newRow} with ${safeCreateUpdates.length} fields`);
 
       // Log to TriageLog
       // Log to TriageLog and update AlertMemory - failures here don't affect the user
@@ -7260,12 +7270,14 @@ export async function handleAcceptOption(req, res, sheets) {
           valueInputOption: "USER_ENTERED",
           requestBody: {
             values: [[
-              timestamp, alert.type || alert.flagType,
-              `${alert.sheetName}-${alert.rowNumber}`,
-              alert.clientName || "",
-              alert.summary?.amount || "",
-              JSON.stringify({ matchAnalysis: option.matchAnalysis }),
-              "ACCEPTED", `Created new job at row ${newRow}: ${option.title}`,
+              timestamp,
+              sanitizeFormulaInput(String(alert.type || alert.flagType || "")),
+              sanitizeFormulaInput(`${alert.sheetName}-${alert.rowNumber}`),
+              sanitizeFormulaInput(String(alert.clientName || "")),
+              sanitizeFormulaInput(String(alert.summary?.amount || "")),
+              sanitizeFormulaInput(JSON.stringify({ matchAnalysis: option.matchAnalysis })),
+              "ACCEPTED",
+              sanitizeFormulaInput(`Created new job at row ${newRow}: ${option.title}`),
             ]]
           },
         });
@@ -7486,7 +7498,7 @@ export async function handleAcceptOption(req, res, sheets) {
           const day = isoDateMatch[3];
           return `${day}-${month}-${year}`;
         }
-        return v;
+        return sanitizeFormulaInput(v);
       };
 
       // Columns that must always be stored as text, never as numbers.
@@ -7501,19 +7513,32 @@ export async function handleAcceptOption(req, res, sheets) {
           // Prefix with apostrophe to force Sheets to treat as text
           return `'${val}`;
         }
-        return val;
+        return sanitizeFormulaInput(String(val ?? ""));
       };
 
+      const isProtectedJobCol2 = (colLetters) => {
+        const colIdx0 = colLetters.split("").reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) - 1;
+        return (colIdx0 >= 5 && colIdx0 <= 29) || colIdx0 === 31 || colIdx0 === 40 || (colIdx0 >= 60 && colIdx0 <= 74) || (colIdx0 >= 96 && colIdx0 <= 106);
+      };
+      const safeCellUpdates = cellUpdates.filter(({ cell }) => {
+        const m = String(cell || "").match(/^([A-Z]{1,3})(\d+)$/);
+        if (!m) return false;
+        const rowNum = parseInt(m[2], 10);
+        if (rowNum < 2) return false;
+        if ((writeTab === "Confirmed" || writeTab === "Pipeline") && isProtectedJobCol2(m[1])) return false;
+        return true;
+      });
+
       const batchRequest = {
-        data: cellUpdates.map(({ cell, value }) => ({
+        data: safeCellUpdates.map(({ cell, value }) => ({
           range: `${writeTab}!${cell}`,
           values: [[forceText(cell, sanitiseValue(value))]],
         })),
         valueInputOption: "USER_ENTERED",
       };
 
-      console.log(`  Writing ${cellUpdates.length} cells to ${writeTab} tab of Client Sheet...`);
-      console.log(`  Cell updates: ${cellUpdates.map(u => `${u.cell}=${JSON.stringify(u.value)}`).join(", ")}`);
+      console.log(`  Writing ${safeCellUpdates.length} cells to ${writeTab} tab of Client Sheet...`);
+      console.log(`  Cell updates: ${safeCellUpdates.map(u => `${u.cell}=${JSON.stringify(u.value)}`).join(", ")}`);
       await sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: alert.clientId,
         requestBody: batchRequest,
@@ -7522,7 +7547,7 @@ export async function handleAcceptOption(req, res, sheets) {
 
       // Apply bold + italic formatting to all written cells
       const writeTabSheetId = await getSheetId(sheets, alert.clientId, writeTab);
-      const formatReqs = cellUpdates.map(({ cell }) => {
+      const formatReqs = safeCellUpdates.map(({ cell }) => {
         // Parse cell reference e.g. "B23" → row 22, col 1 (0-indexed)
         const colMatch = cell.match(/^([A-Z]+)(\d+)$/);
         if (!colMatch) return null;
@@ -7552,16 +7577,16 @@ export async function handleAcceptOption(req, res, sheets) {
 
     const logRow = [
       timestamp,
-      alert.type || alert.flagType,
-      `${alert.sheetName}-${alert.rowNumber}`,
-      alert.clientName || "",
-      alertAmount,
-      JSON.stringify({
+      sanitizeFormulaInput(String(alert.type || alert.flagType || "")),
+      sanitizeFormulaInput(`${alert.sheetName}-${alert.rowNumber}`),
+      sanitizeFormulaInput(String(alert.clientName || "")),
+      sanitizeFormulaInput(String(alertAmount)),
+      sanitizeFormulaInput(JSON.stringify({
         matchAnalysis: option.matchAnalysis,
         allocationBreakdown: option.allocationBreakdown,
-      }),
+      })),
       "ACCEPTED",
-      `Option: ${option.title}`,
+      sanitizeFormulaInput(`Option: ${option.title}`),
     ];
 
     console.log(`  Writing to TriageLog...`);

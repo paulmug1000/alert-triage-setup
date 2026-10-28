@@ -1,6 +1,6 @@
 import { createHash } from "crypto";
 import { isPlaceholderInvoice, isPlaceholderExpense, toSheetDateFormat, toInputDateFormat } from "../utils/helpers.js";
-import { withRetry, colIndexToLetter, applySheetFontFormat, getSheetGid } from "./sheetsClient.js";
+import { withRetry, colIndexToLetter, applySheetFontFormat, getSheetGid, sanitizeFormulaInput } from "./sheetsClient.js";
 import { getClientWebAppUrl, getAllClients } from "./workspaces.js";
 import { redisClient } from "./redisClient.js";
 import { ensureAlertMemoryTab, readAlertMemory, updateAlertMemoryRow, findMemoryRow } from "./alertMemory.js";
@@ -10,11 +10,19 @@ export function parseConfirmedDate_(val) {
   if (!val) return null;
   if (val instanceof Date) return isNaN(val.getTime()) ? null : val;
   
-  if (typeof val === "number") {
-    return new Date((val - 25569) * 86400 * 1000);
+  if (typeof val === "number" && Number.isFinite(val)) {
+    const utc = new Date(Math.round((val - 25569) * 86400 * 1000));
+    return new Date(utc.getUTCFullYear(), utc.getUTCMonth(), utc.getUTCDate());
   }
   
   const s = String(val).trim();
+  if (/^\d{5}(?:\.\d+)?$/.test(s)) {
+    const num = parseFloat(s);
+    if (num > 20000 && num < 90000) {
+      const utc = new Date(Math.round((num - 25569) * 86400 * 1000));
+      return new Date(utc.getUTCFullYear(), utc.getUTCMonth(), utc.getUTCDate());
+    }
+  }
   const months = { Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11 };
   const m = s.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
   if (m) {
@@ -2103,7 +2111,7 @@ export async function ensureCategoryInOutgoings_(sheets, clientSheetId, category
     "100%"
   ];
 
-  const payload = [[cleanName, ...defaults]];
+  const payload = [[sanitizeFormulaInput(String(cleanName || "")), ...defaults]];
 
   // Write header metadata (Columns A through F)
   await withRetry(() => sheets.spreadsheets.values.update({
@@ -2237,7 +2245,7 @@ export async function handleClassifyPLCategory(sheets, {
       spreadsheetId: masterSheetId,
       range: `KeyInfo!AT${targetAtRow}`,
       valueInputOption: "USER_ENTERED",
-      requestBody: { values: [[contractorEntry]] }
+      requestBody: { values: [[sanitizeFormulaInput(String(contractorEntry || ""))]] }
     }));
 
   } else if (classification === "non_delivery_expense") {
@@ -2312,7 +2320,7 @@ export async function handleClassifyPLCategory(sheets, {
       spreadsheetId: masterSheetId,
       range: `KeyInfo!BA${targetBaRow}`,
       valueInputOption: "USER_ENTERED",
-      requestBody: { values: [[cleanName]] }
+      requestBody: { values: [[sanitizeFormulaInput(String(cleanName || ""))]] }
     }));
 
     // If classified as Delivery expense (Other costs of sale), auto-provision onto Outgoings tab as CoS
@@ -2352,8 +2360,8 @@ export async function handleClassifyPLCategory(sheets, {
         values: [[
           nowStr,
           "EXPENSES",
-          `P&L Category Classified: "${cleanName}" -> ${classificationLabel}`,
-          `User ${userEmail || "admin"} classified quarantined category "${categoryName}" as ${classificationLabel}. Added to KeyInfo and cleared from PLComp quarantine. Full expense & Outgoings sync triggered.`
+          sanitizeFormulaInput(`P&L Category Classified: "${cleanName}" -> ${classificationLabel}`),
+          sanitizeFormulaInput(`User ${userEmail || "admin"} classified quarantined category "${categoryName}" as ${classificationLabel}. Added to KeyInfo and cleared from PLComp quarantine. Full expense & Outgoings sync triggered.`)
         ]]
       }
     }));

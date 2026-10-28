@@ -38,11 +38,11 @@ export default async function handler(req, res) {
   if (!sessionUser.isAdmin && (masterSheetId || clientSheetId)) {
     const sheets = await getSheetsClient();
     if (masterSheetId) {
-      const sheetAuth = await verifyUserAuthorizedForSheet(sheets, sessionUser, masterSheetId);
+      const sheetAuth = await verifyUserAuthorizedForSheet(sheets, sessionUser, masterSheetId, targetName || "");
       if (!sheetAuth.authorized) return res.status(403).json({ error: "Access denied to this client." });
     }
     if (clientSheetId) {
-      const sheetAuth = await verifyUserAuthorizedForSheet(sheets, sessionUser, clientSheetId);
+      const sheetAuth = await verifyUserAuthorizedForSheet(sheets, sessionUser, clientSheetId, targetName || "");
       if (!sheetAuth.authorized) return res.status(403).json({ error: "Access denied to this client." });
     }
   }

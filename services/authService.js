@@ -41,7 +41,10 @@ function parseCookies(cookieHeader) {
   }, {});
 }
 
-const _devEphemeralSecret = crypto.randomBytes(32).toString("hex");
+if (!globalThis.__PULSE_DEV_JWT_SECRET__) {
+  globalThis.__PULSE_DEV_JWT_SECRET__ = crypto.randomBytes(32).toString("hex");
+}
+const _devEphemeralSecret = globalThis.__PULSE_DEV_JWT_SECRET__;
 
 /**
  * Get JWT Secret from environment with fail-closed production enforcement
@@ -471,6 +474,19 @@ export async function createSessionForVerifiedEmail(email, res, provider = "OAut
   const user = await getUserByEmail(normalizedEmail, sheets, automationCommanderSheetId, true);
 
   if (!user || user.status === "Suspended") {
+    if (res && typeof res.setHeader === "function") {
+      const isProd = process.env.NODE_ENV === "production";
+      res.setHeader(
+        "Set-Cookie",
+        serializeCookie("pma_session", "", {
+          httpOnly: true,
+          secure: isProd,
+          sameSite: "lax",
+          maxAge: 0,
+          path: "/",
+        })
+      );
+    }
     const targetClient = user ? (Array.isArray(user.assignedClients) && user.assignedClients.length === 1 ? user.assignedClients[0] : "Multi-Client") : "Unregistered";
     logPulseActivity(sheets, {
       automationCommanderSheetId,
@@ -581,18 +597,24 @@ export async function createSessionForVerifiedEmail(email, res, provider = "OAut
 }
 
 /**
+ * Constant-time string comparison for secrets and nonces (R2-LOW-01).
+ */
+export function safeCompareSecret(a, b) {
+  if (!a || !b || typeof a !== "string" || typeof b !== "string") return false;
+  const bufA = Buffer.from(a, "utf8");
+  const bufB = Buffer.from(b, "utf8");
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+/**
  * Extract and verify session user from Next.js req object
  */
 export function getSessionUser(req, res = null) {
   if (!req) return null;
 
-  if (req.body && typeof req.body === "object") {
-    unwrapRequestSheetIds(req.body);
-  }
-  if (req.query && typeof req.query === "object") {
-    unwrapRequestSheetIds(req.query);
-  }
   const activeRes = res || req.res || req.socket?._httpMessage || null;
+  installSheetIdBoundary(req, activeRes);
 
   let token = null;
 
@@ -627,11 +649,6 @@ export function getSessionUser(req, res = null) {
     // Explicitly reject transient or single-purpose tokens (e.g. sso_token) from being used as session tokens
     if (decoded.tokenType && decoded.tokenType !== "session") return null;
 
-    // Secure default: if assignedClients is undefined or missing, default to empty array (never "*")
-    const assignedClients = decoded.assignedClients === "*"
-      ? "*"
-      : (Array.isArray(decoded.assignedClients) ? decoded.assignedClients : []);
-
     const role = decoded.role || "ClientUser";
     const isReadOnly = Boolean(decoded.isReadOnly || decoded.authProvider === "EmailOTP");
 
@@ -645,6 +662,11 @@ export function getSessionUser(req, res = null) {
     const isSenior = role === "Senior (Restricted)" || String(role).toLowerCase().includes("senior");
     const isClientUser = role === "ClientUser";
 
+    // Secure default: only Admin may hold wildcard "*" assignedClients
+    const assignedClients = (isAdmin && decoded.assignedClients === "*")
+      ? "*"
+      : (Array.isArray(decoded.assignedClients) ? decoded.assignedClients : []);
+
     const userObj = {
       email: decoded.email,
       name: decoded.name || decoded.email.split("@")[0],
@@ -656,9 +678,7 @@ export function getSessionUser(req, res = null) {
       isReadOnly,
       authProvider: decoded.authProvider || "OAuth"
     };
-    if (activeRes) {
-      installSheetIdBoundary(req, activeRes, userObj);
-    }
+    installSheetIdBoundary(req, activeRes, userObj);
     return userObj;
   } catch (err) {
     return null;

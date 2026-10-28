@@ -3,7 +3,7 @@ import Spinner from "./Spinner";
 import Skeleton from "./Skeleton";
 import { useEoM } from "../hooks/useEoM";
 import { useTools } from "../hooks/useTools";
-import { eomWorkMonthToTargetMonth } from "../utils/helpers";
+import { eomWorkMonthToTargetMonth, sanitizeSpreadsheetTerms } from "../utils/helpers";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useTriage } from "../contexts/TriageContext";
 import PushOutgoingsTab from "./PushOutgoingsTab";
@@ -1269,7 +1269,7 @@ export default function ToolsView({
                                 <span onClick={t.templateId ? undefined : () => { setEomEditingNameFor(t.taskId); setEomNameDraft(t.name); }}
                                   title={t.templateId ? "Shared template - edit via Manage Templates" : "Click to rename"}
                                   style={{ cursor: t.templateId ? "default" : "pointer" }}>
-                                  {t.name}
+                                  {isAdmin ? t.name : sanitizeSpreadsheetTerms(t.name)}
                                 </span>
                               )}
                               {t.templateId && <span style={{ marginLeft: "6px", fontSize: "10px", color: "#888", fontWeight: "400" }}>(shared)</span>}
@@ -1293,7 +1293,7 @@ export default function ToolsView({
                                 const targetLabel = ty ? new Date(ty, tm - 1, 1).toLocaleDateString("en-GB", { month: "short", year: "numeric" }) : "";
                                 return (
                                   <button onClick={() => handleEomMarkActual(t.taskId, c.clientName)} disabled={eomMarkActualRunning === t.taskId}
-                                    title={`Writes &quot;Actual&quot; to the ${targetLabel} column on the Performance tab`}
+                                    title={isAdmin ? `Writes "Actual" to the ${targetLabel} column on the Performance tab` : `Marks ${targetLabel} as Actual in Performance`}
                                     className="eom-task-action-btn"
                                     style={{
                                       marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px",
@@ -1305,7 +1305,7 @@ export default function ToolsView({
                               })()}
                               {t.linkedFunction === "mark_nb_exclude" && (
                                 <button onClick={() => handleOpenNbExcludeModal(t.taskId, c.clientName)}
-                                  title="Mark month(s) to NOT include new business to find on the NBtoFind tab"
+                                  title={isAdmin ? "Mark month(s) to NOT include new business to find on the NBtoFind tab" : "Mark month(s) to exclude new business to find"}
                                   className="eom-task-action-btn"
                                   style={{
                                     marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px",
@@ -1316,7 +1316,7 @@ export default function ToolsView({
                               )}
                               {t.linkedFunction === "create_backup" && (
                                 <button onClick={() => handleEomCreateBackup(t.taskId, c.clientName)} disabled={eomBackupRunning === t.taskId}
-                                  title={`Copies the Dashboard tab to the backup sheet as values only`}
+                                  title={isAdmin ? `Copies the Dashboard tab to the backup sheet as values only` : `Creates a snapshot backup of the current Dashboard`}
                                   className="eom-task-action-btn"
                                   style={{
                                     marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px",
@@ -1348,7 +1348,7 @@ export default function ToolsView({
                               )}
                               {t.linkedFunction === "alert_check" && (
                                 <span style={{ marginLeft: "8px", fontSize: "10px", color: "#888" }}>
-                                  ({(t.alertCategories || "").split(",").filter(Boolean).map(cat => ({ invoice: "InvComp", expense: "DirComp", crm: "CRMComp" }[cat])).join(", ") || "no categories set"})
+                                  ({(t.alertCategories || "").split(",").filter(Boolean).map(cat => (isAdmin ? { invoice: "InvComp", expense: "DirComp", crm: "CRMComp" }[cat] : { invoice: "Invoices", expense: "Expenses", crm: "CRM" }[cat])).join(", ") || "no categories set"})
                                 </span>
                               )}
                             </div>
@@ -1413,7 +1413,7 @@ export default function ToolsView({
             </button>
             <h3 style={{ margin: "0 0 6px", fontSize: "16px", fontWeight: "700" }}>Manage Clients</h3>
             <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#666" }}>
-              Drag to set the order clients appear in on the EoM overview. Excluded clients won&apos;t appear there at all - for clients on AutoUpdates that don&apos;t have any monthly tasks to complete.
+              Drag to set the order clients appear in on the EoM overview. Excluded clients won&apos;t appear there at all - for clients that don&apos;t have any monthly tasks to complete.
             </p>
             <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", overflow: "hidden" }}>
               {orderedClients.map((c, i) => (

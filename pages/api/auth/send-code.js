@@ -11,8 +11,13 @@ export default async function handler(req, res) {
       return res.status(400).json({ success: false, message: "Email is required" });
     }
 
+    const vercelFwd = req.headers["x-vercel-forwarded-for"];
     const forwarded = req.headers["x-forwarded-for"];
-    const clientIp = req.headers["x-real-ip"]?.trim() || (typeof forwarded === "string" ? forwarded.split(",").pop() : forwarded?.[0])?.trim() || req.socket?.remoteAddress || "127.0.0.1";
+    const clientIp =
+      (typeof vercelFwd === "string" && vercelFwd.trim() ? vercelFwd.split(",")[0].trim() : "") ||
+      (typeof forwarded === "string" && forwarded.trim() ? forwarded.split(",")[0].trim() : forwarded?.[0]?.trim()) ||
+      req.socket?.remoteAddress ||
+      "127.0.0.1";
     const result = await sendOtp(email, null, clientIp);
     return res.status(200).json(result);
   } catch (error) {

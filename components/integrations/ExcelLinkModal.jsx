@@ -452,7 +452,7 @@ export default function ExcelLinkModal({
                 lineHeight: "1.5"
               }}
             >
-              <strong>Cloud workbook sync:</strong> Pulse connects to Microsoft Excel files on SharePoint or OneDrive via Microsoft Graph API. Reconciles deal records via the Master Sheet bridge.
+              <strong>Cloud workbook sync:</strong> Pulse connects to Microsoft Excel files on SharePoint or OneDrive via Microsoft Graph API and reconciles deal records automatically.
             </div>
           )}
 

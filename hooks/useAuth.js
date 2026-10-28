@@ -1,13 +1,23 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 
 export function useAuth(initialUser = null) {
-  if (typeof window !== "undefined" && initialUser) {
-    window.__PULSE_SESSION_USER__ = initialUser;
+  const hasUrlAuthError =
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).has("auth_error");
+
+  if (typeof window !== "undefined") {
+    if (hasUrlAuthError) {
+      window.__PULSE_SESSION_USER__ = null;
+    } else if (initialUser) {
+      window.__PULSE_SESSION_USER__ = initialUser;
+    }
   }
-  const hydratedUser = initialUser || (typeof window !== "undefined" ? window.__PULSE_SESSION_USER__ || null : null);
+  const hydratedUser = hasUrlAuthError
+    ? null
+    : (initialUser || (typeof window !== "undefined" ? window.__PULSE_SESSION_USER__ || null : null));
 
   const [isAuthenticated, setIsAuthenticated] = useState(Boolean(hydratedUser));
-  const [authChecking, setAuthChecking] = useState(!hydratedUser);
+  const [authChecking, setAuthChecking] = useState(!hydratedUser && !hasUrlAuthError);
   const [user, setUser] = useState(hydratedUser);
 
   // OTP flow state
@@ -76,10 +86,10 @@ export function useAuth(initialUser = null) {
   }, []);
 
   useEffect(() => {
-    if (!hydratedUser) {
+    if (!hydratedUser && !hasUrlAuthError) {
       checkSession();
     }
-  }, [checkSession, hydratedUser]);
+  }, [checkSession, hydratedUser, hasUrlAuthError]);
 
   /**
    * Send 6-digit OTP to user email
@@ -153,12 +163,10 @@ export function useAuth(initialUser = null) {
 
       if (data.success && data.user) {
         if (typeof window !== "undefined") window.__PULSE_SESSION_USER__ = data.user;
-        if (data.token) {
-          try {
-            localStorage.setItem("pma_token", data.token);
-            localStorage.setItem("pma_user", JSON.stringify(data.user));
-          } catch {}
-        }
+        try {
+          localStorage.removeItem("pma_token");
+          localStorage.setItem("pma_user", JSON.stringify(data.user));
+        } catch {}
         setUser(data.user);
         setIsAuthenticated(true);
         return true;

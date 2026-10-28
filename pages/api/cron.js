@@ -8,6 +8,7 @@
 
 import { waitUntil } from "@vercel/functions";
 import { runBackgroundTriageRefresh } from "../../services/triageEngine";
+import { safeCompareSecret } from "../../services/authService";
 
 export const config = {
   maxDuration: 300,
@@ -27,9 +28,9 @@ export default async function handler(req, res) {
 
   const authHeader = req.headers.authorization;
   const expectedBearer = `Bearer ${cronSecret}`;
-  const providedSecret = req.body?.secret || req.query?.secret || authHeader;
+  const providedSecret = String(req.body?.secret || req.query?.secret || authHeader || "").trim();
 
-  if (!providedSecret || (providedSecret !== cronSecret && providedSecret !== expectedBearer)) {
+  if (!providedSecret || (!safeCompareSecret(providedSecret, cronSecret) && !safeCompareSecret(providedSecret, expectedBearer))) {
     console.error("❌ Cron: invalid or missing secret");
     return res.status(401).json({ error: "Unauthorised" });
   }

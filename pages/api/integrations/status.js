@@ -47,7 +47,7 @@ export default async function handler(req, res) {
       _allIntegrationsStatusCache = null;
       _allIntegrationsStatusCachedAt = 0;
       if (redisClient?.isOpen) {
-        try { await redisClient.del(cacheKey); } catch (e) {}
+        try { await redisClient.del(cacheKey); } catch (e) { }
       }
     } else {
       let cachedData = null;
@@ -63,14 +63,14 @@ export default async function handler(req, res) {
             _allIntegrationsStatusCache = null;
             _allIntegrationsStatusCachedAt = 0;
           }
-        } catch (e) {}
+        } catch (e) { }
       } else if (_allIntegrationsStatusCache && (now - _allIntegrationsStatusCachedAt < 300000)) {
         cachedData = _allIntegrationsStatusCache;
       }
 
       if (cachedData) {
         let scopedClients = cachedData.allClients || [];
-        if (!sessionUser.isAdmin && sessionUser.assignedClients !== "*") {
+        if (!sessionUser.isAdmin) {
           const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
           scopedClients = scopedClients.filter(c => assignedList.some(assigned => matchesClientName(assigned, c.clientName)));
         }
@@ -85,9 +85,9 @@ export default async function handler(req, res) {
 
         const scopedSharedXero = cachedData.sharedXero
           ? {
-              ...cachedData.sharedXero,
-              availableTenants: sessionUser.isAdmin ? (cachedData.sharedXero.availableTenants || []) : []
-            }
+            ...cachedData.sharedXero,
+            availableTenants: sessionUser.isAdmin ? (cachedData.sharedXero.availableTenants || []) : []
+          }
           : null;
 
         return res.status(200).json({
@@ -99,48 +99,48 @@ export default async function handler(req, res) {
       }
     }
 
-function evaluateAutomationHealth({ frequency, isRunning, lastCommandTime, signalFeedback, lastRunEndTime, summary }) {
-  const freq = String(frequency || "").trim();
-  const running = Boolean(isRunning);
-  const feedback = String(signalFeedback || "").trim();
-  const sum = String(summary || "").trim();
-  const lastCmd = String(lastCommandTime || "").trim();
-  const lastEnd = String(lastRunEndTime || "").trim();
+    function evaluateAutomationHealth({ frequency, isRunning, lastCommandTime, signalFeedback, lastRunEndTime, summary }) {
+      const freq = String(frequency || "").trim();
+      const running = Boolean(isRunning);
+      const feedback = String(signalFeedback || "").trim();
+      const sum = String(summary || "").trim();
+      const lastCmd = String(lastCommandTime || "").trim();
+      const lastEnd = String(lastRunEndTime || "").trim();
 
-  const isFailureFeedback = feedback.toLowerCase().includes("fail") || feedback.toLowerCase().includes("error") || feedback.startsWith("Flag:");
-  const isFailureSummary = sum.toLowerCase().includes("failure") || sum.toLowerCase().includes("error");
+      const isFailureFeedback = feedback.toLowerCase().includes("fail") || feedback.toLowerCase().includes("error") || feedback.startsWith("Flag:");
+      const isFailureSummary = sum.toLowerCase().includes("failure") || sum.toLowerCase().includes("error");
 
-  let status = "inactive";
-  let statusLabel = "Not scheduled";
+      let status = "inactive";
+      let statusLabel = "Not scheduled";
 
-  if (isFailureFeedback || isFailureSummary) {
-    status = "error";
-    statusLabel = "Attention required";
-  } else if (running) {
-    status = "running";
-    statusLabel = "Sequence running";
-  } else if (feedback.includes("OK") || (sum && !isFailureSummary) || lastEnd) {
-    status = "healthy";
-    statusLabel = "Sequences running successfully";
-  } else if (!freq || freq === "-" || freq.toLowerCase() === "none") {
-    status = "inactive";
-    statusLabel = "Not scheduled";
-  } else if (lastCmd) {
-    status = "pending";
-    statusLabel = "Signal sent (pending run)";
-  }
+      if (isFailureFeedback || isFailureSummary) {
+        status = "error";
+        statusLabel = "Attention required";
+      } else if (running) {
+        status = "running";
+        statusLabel = "Sequence running";
+      } else if (feedback.includes("OK") || (sum && !isFailureSummary) || lastEnd) {
+        status = "healthy";
+        statusLabel = "Sequences running successfully";
+      } else if (!freq || freq === "-" || freq.toLowerCase() === "none") {
+        status = "inactive";
+        statusLabel = "Not scheduled";
+      } else if (lastCmd) {
+        status = "pending";
+        statusLabel = "Signal sent (pending run)";
+      }
 
-  return {
-    status,
-    statusLabel,
-    frequency: freq || "None",
-    isRunning: running,
-    lastCommandTime: lastCmd,
-    signalFeedback: feedback,
-    lastRunEndTime: lastEnd,
-    summary: sum
-  };
-}
+      return {
+        status,
+        statusLabel,
+        frequency: freq || "None",
+        isRunning: running,
+        lastCommandTime: lastCmd,
+        signalFeedback: feedback,
+        lastRunEndTime: lastEnd,
+        summary: sum
+      };
+    }
 
     try {
       const sheets = await getSheetsClient();
@@ -185,7 +185,7 @@ function evaluateAutomationHealth({ frequency, isRunning, lastCommandTime, signa
         .filter(c => c.clientName && c.clientName.toLowerCase() !== "client" && c.clientName.toLowerCase() !== "client name" && c.masterSheetId);
 
       // Respect user permissions
-      const isGlobalScope = Boolean(sessionUser.isAdmin || sessionUser.assignedClients === "*");
+      const isGlobalScope = Boolean(sessionUser.isAdmin);
       if (!isGlobalScope) {
         const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
         clients = clients.filter(c => assignedList.some(assigned => matchesClientName(assigned, c.clientName)));
@@ -292,7 +292,7 @@ function evaluateAutomationHealth({ frequency, isRunning, lastCommandTime, signa
         if (redisClient?.isOpen) {
           try {
             await redisClient.set(cacheKey, JSON.stringify({ allClients: clientConfigs, sharedXero }), { EX: 86400 });
-          } catch (e) {}
+          } catch (e) { }
         }
         _allIntegrationsStatusCache = { allClients: clientConfigs, sharedXero };
         _allIntegrationsStatusCachedAt = now;
@@ -300,9 +300,9 @@ function evaluateAutomationHealth({ frequency, isRunning, lastCommandTime, signa
 
       const scopedSharedXero = sharedXero
         ? {
-            ...sharedXero,
-            availableTenants: sessionUser.isAdmin ? (sharedXero.availableTenants || []) : []
-          }
+          ...sharedXero,
+          availableTenants: sessionUser.isAdmin ? (sharedXero.availableTenants || []) : []
+        }
         : null;
 
       let attentionCount = 0;
@@ -336,7 +336,7 @@ function evaluateAutomationHealth({ frequency, isRunning, lastCommandTime, signa
     try {
       const sheets = await getSheetsClient();
       targetClient = await resolveClientNameBySheetId(sheets, masterSheetId);
-    } catch (_) {}
+    } catch (_) { }
   }
 
   if (!sessionUser.isAdmin) {

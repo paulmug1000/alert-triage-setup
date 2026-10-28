@@ -298,7 +298,7 @@ export default function ClientSelectionView({
                 <button
                   key={idx}
                   onClick={() => selectClient(client)}
-                  className="triage-client-card"
+                  className="triage-client-card no-click-spinner"
                   disabled={selectingClient !== null}
                   style={{
                     ...styles.optionButton,

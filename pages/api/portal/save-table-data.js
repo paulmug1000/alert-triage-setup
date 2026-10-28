@@ -84,8 +84,12 @@ export default async function handler(req, res) {
       }
       if (isSenior && canonicalSheetName === "Outgoings") {
         const rowNums = (coordPart.match(/\d+/g) || []).map((n) => parseInt(n, 10));
-        if (rowNums.some((r) => r >= 115 && r <= 122)) {
-          return res.status(403).json({ success: false, error: "Forbidden: Senior users cannot modify dividends rows" });
+        const minRow = rowNums.length ? Math.min(...rowNums) : 0;
+        const maxRow = rowNums.length ? Math.max(...rowNums) : 0;
+        const overlapsDividends = minRow <= 122 && maxRow >= 115;
+        const overlapsSalaries = minRow <= 7 && maxRow >= 6;
+        if (overlapsDividends || overlapsSalaries) {
+          return res.status(403).json({ success: false, error: "Forbidden: Senior users cannot modify salary or dividend rows" });
         }
       }
       const fullRange = `${canonicalSheetName}!${coordPart.toUpperCase()}`;

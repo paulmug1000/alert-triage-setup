@@ -4,28 +4,29 @@ import { useRouter } from "next/router";
 import { useAuth } from "../../hooks/useAuth";
 import AuthGateView from "../../components/AuthGateView";
 import PortalShell from "../../components/portal/PortalShell";
-import dynamic from "next/dynamic";
 import MonthView from "../../components/portal/MonthView";
-
-const PerformanceFYView = dynamic(() => import("../../components/portal/PerformanceFYView"), { loading: () => <Spinner /> });
-const PerformanceYTDView = dynamic(() => import("../../components/portal/PerformanceYTDView"), { loading: () => <Spinner /> });
-const PerformanceBreakdownView = dynamic(() => import("../../components/portal/PerformanceBreakdownView"), { loading: () => <Spinner /> });
-const CashflowView = dynamic(() => import("../../components/portal/CashflowView"), { loading: () => <Spinner /> });
-const CashflowBreakdownView = dynamic(() => import("../../components/portal/CashflowBreakdownView"), { loading: () => <Spinner /> });
-const PortalJobsView = dynamic(() => import("../../components/portal/PortalJobsView"), { loading: () => <Spinner /> });
-const PortalOutgoingsView = dynamic(() => import("../../components/portal/PortalOutgoingsView"), { loading: () => <Spinner /> });
-const PortalSalariesView = dynamic(() => import("../../components/portal/PortalSalariesView"), { loading: () => <Spinner /> });
-const PortalNBToFindView = dynamic(() => import("../../components/portal/PortalNBToFindView"), { loading: () => <Spinner /> });
-const BudgetView = dynamic(() => import("../../components/portal/BudgetView"), { loading: () => <Spinner /> });
-const BudgetVarianceView = dynamic(() => import("../../components/portal/BudgetVarianceView"), { loading: () => <Spinner /> });
-const ScenariosView = dynamic(() => import("../../components/portal/ScenariosView"), { loading: () => <Spinner /> });
+import PerformanceFYView from "../../components/portal/PerformanceFYView";
+import PerformanceYTDView from "../../components/portal/PerformanceYTDView";
+import PerformanceBreakdownView from "../../components/portal/PerformanceBreakdownView";
+import CashflowView from "../../components/portal/CashflowView";
+import CashflowBreakdownView from "../../components/portal/CashflowBreakdownView";
+import PortalJobsView from "../../components/portal/PortalJobsView";
+import PortalOutgoingsView from "../../components/portal/PortalOutgoingsView";
+import PortalSalariesView from "../../components/portal/PortalSalariesView";
+import PortalNBToFindView from "../../components/portal/PortalNBToFindView";
+import BudgetView from "../../components/portal/BudgetView";
+import BudgetVarianceView from "../../components/portal/BudgetVarianceView";
+import ScenariosView from "../../components/portal/ScenariosView";
+import {
+  MonthViewSkeleton
+} from "../../components/Skeleton";
 import CompanyChooser from "../../components/portal/CompanyChooser";
 import SetupHoldingGate from "../../components/portal/SetupHoldingGate";
 import Spinner from "../../components/Spinner";
 
-export default function PortalPage() {
+export default function PortalPage({ initialUser = null }) {
   const router = useRouter();
-  const auth = useAuth();
+  const auth = useAuth(initialUser);
   const { isAuthenticated, authChecking, user, logout } = auth;
 
   const [clients, setClients] = useState([]);
@@ -158,9 +159,35 @@ export default function PortalPage() {
     }
   }, []);
 
+  // Keep latest data & loading refs for background preloading without restarting timers on state updates
+  const dataStateRef = useRef({});
+  dataStateRef.current = {
+    selectedClient,
+    payload,
+    performanceData,
+    loadingPerformance,
+    keyData,
+    loadingKeyData,
+    cashflowData,
+    loadingCashflow,
+    budgetData,
+    loadingBudget,
+  };
+
+  const lastFetchedPayloadSheetIdRef = useRef(null);
   useEffect(() => {
-    if (selectedClient?.clientSheetId) {
+    const sheetId = selectedClient?.clientSheetId || null;
+    if (!sheetId) {
+      lastFetchedPayloadSheetIdRef.current = null;
+      return;
+    }
+    if (lastFetchedPayloadSheetIdRef.current !== sheetId) {
+      lastFetchedPayloadSheetIdRef.current = sheetId;
       setPayload(null);
+      setPerformanceData(null);
+      setCashflowData(null);
+      setKeyData(null);
+      setBudgetData(null);
       fetchPayload(selectedClient, false);
     }
   }, [selectedClient, fetchPayload]);
@@ -198,16 +225,11 @@ export default function PortalPage() {
   // Fetch performance data when switching to a performance view or budget view (for actuals), or home view (for at-a-glance sparklines)
   useEffect(() => {
     if (["month", "dashboard", "ytd", "perfBreakdown", "scenarios", "viewBudget", "budgetVariance"].includes(activeView) && selectedClient?.clientSheetId) {
-      if (!performanceData) {
+      if (!performanceData && !loadingPerformance) {
         fetchPerformance(selectedClient, false);
       }
     }
-  }, [activeView, selectedClient, performanceData, fetchPerformance]);
-
-  // Invalidate performance cache when selected client changes
-  useEffect(() => {
-    setPerformanceData(null);
-  }, [selectedClient]);
+  }, [activeView, selectedClient, performanceData, loadingPerformance, fetchPerformance]);
 
   const fetchCashflow = useCallback(async (client, bypassCache = false, isSilent = false) => {
     if (!client || !client.clientSheetId) return;
@@ -242,16 +264,11 @@ export default function PortalPage() {
   // Fetch cashflow data when switching to a cash view
   useEffect(() => {
     if (["cash", "cashBreakdown"].includes(activeView) && selectedClient?.clientSheetId) {
-      if (!cashflowData) {
+      if (!cashflowData && !loadingCashflow) {
         fetchCashflow(selectedClient, false);
       }
     }
-  }, [activeView, selectedClient, cashflowData, fetchCashflow]);
-
-  // Invalidate cashflow cache on client change
-  useEffect(() => {
-    setCashflowData(null);
-  }, [selectedClient]);
+  }, [activeView, selectedClient, cashflowData, loadingCashflow, fetchCashflow]);
 
   const fetchKeyData = useCallback(async (client, bypassCache = false, isSilent = false) => {
     if (!client || !client.clientSheetId) return;
@@ -289,16 +306,11 @@ export default function PortalPage() {
       ["jobs", "contractors", "expenses", "salaries", "dividends", "nbtofind", "cashBreakdown", "scenarios", "perfBreakdown"].includes(activeView) &&
       selectedClient?.clientSheetId
     ) {
-      if (!keyData) {
+      if (!keyData && !loadingKeyData) {
         fetchKeyData(selectedClient, false);
       }
     }
-  }, [activeView, selectedClient, keyData, fetchKeyData]);
-
-  // Invalidate key data cache on client change
-  useEffect(() => {
-    setKeyData(null);
-  }, [selectedClient]);
+  }, [activeView, selectedClient, keyData, loadingKeyData, fetchKeyData]);
 
   const handleRefreshPayload = () => {
     if (selectedClient) {
@@ -362,48 +374,59 @@ export default function PortalPage() {
   // Fetch budget when switching to viewBudget or budgetVariance
   useEffect(() => {
     if (["viewBudget", "budgetVariance"].includes(activeView) && selectedClient?.clientSheetId) {
-      if (!budgetData) {
+      if (!budgetData && !loadingBudget) {
         fetchBudget(selectedClient, false);
       }
     }
-  }, [activeView, selectedClient, budgetData, fetchBudget]);
+  }, [activeView, selectedClient, budgetData, loadingBudget, fetchBudget]);
 
   // For Scenarios, we ensure both performance and key data are loaded
   useEffect(() => {
     if (activeView === "scenarios" && selectedClient?.clientSheetId) {
-      if (!performanceData) fetchPerformance(selectedClient, false);
-      if (!keyData) fetchKeyData(selectedClient, false);
+      if (!performanceData && !loadingPerformance) fetchPerformance(selectedClient, false);
+      if (!keyData && !loadingKeyData) fetchKeyData(selectedClient, false);
     }
-  }, [activeView, selectedClient, performanceData, keyData, fetchPerformance, fetchKeyData]);
+  }, [activeView, selectedClient, performanceData, loadingPerformance, keyData, loadingKeyData, fetchPerformance, fetchKeyData]);
 
-  // Background preloading queue: once payload is loaded, preload remaining sections in staggered sequence
+  // Background preloading queue: once payload is loaded for the active client, preload remaining sections
+  // without cancelling timers when individual state slices update.
+  const hasPayloadLoaded = Boolean(payload);
+  const currentClientSheetId = selectedClient?.clientSheetId || null;
   useEffect(() => {
-    if (!payload || !selectedClient?.clientSheetId) return;
+    if (!hasPayloadLoaded || !currentClientSheetId) return;
 
     const t1 = setTimeout(() => {
-      if (!performanceData && !loadingPerformance) {
-        fetchPerformance(selectedClient, false);
+      const s = dataStateRef.current;
+      if (s.selectedClient?.clientSheetId !== currentClientSheetId) return;
+      if (!s.performanceData && !s.loadingPerformance) {
+        fetchPerformance(s.selectedClient, false);
       }
-    }, 250);
+    }, 50);
 
     const t2 = setTimeout(() => {
-      if (!keyData && !loadingKeyData) {
-        fetchKeyData(selectedClient, false);
+      const s = dataStateRef.current;
+      if (s.selectedClient?.clientSheetId !== currentClientSheetId) return;
+      if (!s.keyData && !s.loadingKeyData) {
+        fetchKeyData(s.selectedClient, false);
       }
-    }, 600);
+    }, 150);
 
     const t3 = setTimeout(() => {
-      if (!cashflowData && !loadingCashflow) {
-        fetchCashflow(selectedClient, false);
+      const s = dataStateRef.current;
+      if (s.selectedClient?.clientSheetId !== currentClientSheetId) return;
+      if (!s.cashflowData && !s.loadingCashflow) {
+        fetchCashflow(s.selectedClient, false);
       }
-    }, 1000);
+    }, 300);
 
     const t4 = setTimeout(() => {
-      const clientHasBudget = Boolean(payload?.clientInfo?.hasBudget ?? payload?.hasBudget);
-      if (clientHasBudget && !budgetData && !loadingBudget) {
-        fetchBudget(selectedClient, false);
+      const s = dataStateRef.current;
+      if (s.selectedClient?.clientSheetId !== currentClientSheetId) return;
+      const clientHasBudget = Boolean(s.payload?.clientInfo?.hasBudget ?? s.payload?.hasBudget);
+      if (clientHasBudget && !s.budgetData && !s.loadingBudget) {
+        fetchBudget(s.selectedClient, false);
       }
-    }, 1400);
+    }, 450);
 
     return () => {
       clearTimeout(t1);
@@ -411,12 +434,7 @@ export default function PortalPage() {
       clearTimeout(t3);
       clearTimeout(t4);
     };
-  }, [payload, selectedClient, performanceData, keyData, cashflowData, budgetData, loadingPerformance, loadingKeyData, loadingCashflow, loadingBudget, fetchPerformance, fetchKeyData, fetchCashflow, fetchBudget]);
-
-  // Invalidate budget cache on client change
-  useEffect(() => {
-    setBudgetData(null);
-  }, [selectedClient]);
+  }, [hasPayloadLoaded, currentClientSheetId, fetchPerformance, fetchKeyData, fetchCashflow, fetchBudget]);
 
   const handleRefreshBudget = () => {
     if (selectedClient) {
@@ -565,7 +583,18 @@ export default function PortalPage() {
             }
           }
 
-          setSelectedClient(initial);
+          setSelectedClient((curr) => {
+            if (
+              curr &&
+              initial &&
+              curr.clientSheetId === initial.clientSheetId &&
+              curr.setupMode === initial.setupMode &&
+              curr.masterSheetId === initial.masterSheetId
+            ) {
+              return curr;
+            }
+            return initial;
+          });
           if (initial && typeof window !== "undefined") {
             localStorage.setItem("pulse_portal_client", initial.clientName);
             localStorage.setItem("pulse_portal_active_client_obj", JSON.stringify(initial));
@@ -598,11 +627,11 @@ export default function PortalPage() {
 
     // Synchronously clear previous client's data to eliminate any stale charts/sparklines flashing
     setPayload(null);
-    setLoadingPayload(Boolean(client?.clientSheetId));
+    setLoadingPayload(false);
     setPayloadError(null);
 
     setPerformanceData(null);
-    setLoadingPerformance(Boolean(client?.clientSheetId));
+    setLoadingPerformance(false);
     setPerfError(null);
 
     setCashflowData(null);
@@ -715,8 +744,8 @@ export default function PortalPage() {
     return () => { isMounted = false; };
   }, [selectedClient?.clientName, selectedClient?.masterSheetId]);
 
-  const hasBudget = payload ? Boolean(payload.clientInfo?.hasBudget ?? payload.hasBudget) : false;
-  const hasCash = payload ? Boolean(payload.clientInfo?.hasCash ?? payload.hasCash) : false;
+  const hasBudget = payload ? Boolean(payload.clientInfo?.hasBudget ?? payload.hasBudget) : true;
+  const hasCash = payload ? Boolean(payload.clientInfo?.hasCash ?? payload.hasCash) : true;
 
   const rawSymbol =
     payload?.clientInfo?.currencySymbol ||
@@ -780,24 +809,29 @@ export default function PortalPage() {
     }
   }, [isSeniorRestricted, activeView]);
 
-  // Auth checking loading state
+  // Auth checking loading state: render PortalShell + MonthViewSkeleton immediately instead of a spinner
   if (authChecking) {
     return (
-      <div
-        style={{
-          minHeight: "100vh",
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          background: "#ffffff",
-          gap: "12px",
-          fontFamily: "'Kumbh Sans', sans-serif"
-        }}
-      >
-        <Spinner size={32} color="#0047AB" />
-        <span style={{ color: "#0047AB", fontWeight: 600, fontSize: "15px" }}>Please wait - loading</span>
-      </div>
+      <>
+        <Head>
+          <title>Pulse</title>
+        </Head>
+        <PortalShell
+          clientName={selectedClient?.clientName || ""}
+          clients={clients}
+          onSelectClient={handleSelectClient}
+          activeView={activeView}
+          onSelectView={setActiveView}
+          user={user}
+          onLogout={handleLogout}
+          hasBudget={true}
+          hasCash={true}
+          setupStatus={null}
+          onPreviewSetup={() => setIsPreviewSetup(true)}
+        >
+          <MonthViewSkeleton />
+        </PortalShell>
+      </>
     );
   }
 
@@ -827,16 +861,16 @@ export default function PortalPage() {
     );
   }
 
-  // Steady initial loading state: show 'Please wait - loading' until clients are determined.
-  // When a client user logs in (or when an admin is previewing setup mode), maintain the clean loading
-  // spinner until setup status has finished verifying. This prevents any premature rendering or flashing
-  // of the live dashboard/skeleton before the setup holding gate mounts.
+  // Only hold on the setup spinner if the selected client is explicitly flagged as in setupMode
+  // (or an admin explicitly requested ?preview=setup) and full setupStatus details are still fetching.
+  // For all normal logins, mount PortalShell + skeleton immediately!
   const isSetupCheckPending = Boolean(
     selectedClient &&
-    ((isClientUser && setupStatus === null) || (isPreviewSetup && setupStatus === null))
+    ((isClientUser && selectedClient.setupMode === true && setupStatus === null) ||
+      (isPreviewSetup && setupStatus === null))
   );
 
-  if (!clientsLoaded || isSetupCheckPending) {
+  if (isSetupCheckPending) {
     return (
       <div
         style={{
@@ -856,8 +890,35 @@ export default function PortalPage() {
     );
   }
 
+  // While the client list is still resolving on initial login (before selectedClient is set),
+  // render PortalShell + MonthViewSkeleton immediately unless the user explicitly requested the CompanyChooser (?choose=true).
+  if (!clientsLoaded && !selectedClient && router.query.choose !== "true") {
+    return (
+      <>
+        <Head>
+          <title>Pulse</title>
+        </Head>
+        <PortalShell
+          clientName=""
+          clients={[]}
+          onSelectClient={handleSelectClient}
+          activeView={activeView}
+          onSelectView={setActiveView}
+          user={user}
+          onLogout={handleLogout}
+          hasBudget={true}
+          hasCash={true}
+          setupStatus={null}
+          onPreviewSetup={() => setIsPreviewSetup(true)}
+        >
+          <MonthViewSkeleton />
+        </PortalShell>
+      </>
+    );
+  }
+
   // Chooser state: If no client selected or choose is requested, show CompanyChooser
-  if (!selectedClient) {
+  if (clientsLoaded && !selectedClient) {
     return (
       <>
         <Head>
@@ -1224,4 +1285,15 @@ function getViewTitle(key) {
     budgetVariance: "Budget variance analysis"
   };
   return titles[key] || "Client portal view";
+}
+
+import { getSsrSessionUser } from "../../services/ssrSession";
+
+export async function getServerSideProps(context) {
+  const sessionUser = getSsrSessionUser(context.req);
+  return {
+    props: {
+      initialUser: sessionUser || null,
+    },
+  };
 }

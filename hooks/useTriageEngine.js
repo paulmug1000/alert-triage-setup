@@ -52,7 +52,11 @@ export function useTriageEngine({
     return [];
   });
 
+  const prevUserEmailRef = useRef(user?.email || "");
   useEffect(() => {
+    const curEmail = user?.email || "";
+    if (prevUserEmailRef.current === curEmail) return;
+    prevUserEmailRef.current = curEmail;
     setSessionId("");
     setClientsWithFlags([]);
     setProactiveAlerts([]);
@@ -74,10 +78,40 @@ export function useTriageEngine({
   const [isIgnoring, setIsIgnoring] = useState(false);
   const [selectingClient, setSelectingClient] = useState(null);
   const [previousIgnoreReason, setPreviousIgnoreReason] = useState(null);
-  const [proactiveAlerts, setProactiveAlerts] = useState([]);
-  const [proactiveCountsByClient, setProactiveCountsByClient] = useState({});
+  const [proactiveAlerts, setProactiveAlerts] = useState(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const stored = localStorage.getItem("pulse_cached_proactive_alerts");
+        return stored ? JSON.parse(stored) : [];
+      } catch { return []; }
+    }
+    return [];
+  });
+  const [proactiveCountsByClient, setProactiveCountsByClient] = useState(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const stored = localStorage.getItem("pulse_cached_proactive_alerts");
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (Array.isArray(parsed)) {
+            const counts = {};
+            parsed.forEach(a => { if (a?.clientName) counts[a.clientName] = (counts[a.clientName] || 0) + 1; });
+            return counts;
+          }
+        }
+      } catch {}
+    }
+    return {};
+  });
   const [proactiveLoading, setProactiveLoading] = useState(false);
-  const [proactiveLoadedAt, setProactiveLoadedAt] = useState(0);
+  const [proactiveLoadedAt, setProactiveLoadedAt] = useState(() => {
+    if (typeof window !== "undefined") {
+      try {
+        return localStorage.getItem("pulse_cached_clients_with_flags") ? Date.now() : 0;
+      } catch { return 0; }
+    }
+    return 0;
+  });
 
   const [fromCache, setFromCache] = useState(false);
   const [clientNoActionAlerts, setClientNoActionAlerts] = useState([]);
@@ -141,6 +175,7 @@ export function useTriageEngine({
     setClientsWithFlags(scopedFlags);
     try {
       localStorage.setItem("pulse_cached_clients_with_flags", JSON.stringify(scopedFlags));
+      localStorage.setItem("pulse_cached_proactive_alerts", JSON.stringify(scopedProactiveAlerts));
     } catch {}
     setAcknowledgedNoAction(new Set());
     setProcessedAlerts(new Set());
@@ -266,44 +301,32 @@ export function useTriageEngine({
       setIsLoading(true);
       setError("");
 
-      // 1. Check if a background refresh is actively running (e.g. user refreshed, reloaded or woke machine)
-      try {
-        const statusResp = await fetch("/api/triage", {
+      // 1. Check refresh status and precomputed data in parallel
+      const [statusResult, preResult] = await Promise.all([
+        fetch("/api/triage", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ action: "get_refresh_status", automationCommanderSheetId }),
-        });
-        const statusData = await statusResp.json();
-        if (statusData.success && statusData.status?.status === "running") {
-          console.log("Active background refresh detected - attaching to progress...");
-          setRefreshStatus(statusData.status.progress || "Scanning clients...");
-          await pollRefreshStatus();
-          return;
-        }
-      } catch (stErr) {
-        console.warn("Could not check refresh status, proceeding with precomputed check:", stErr.message);
-      }
-
-      // 2. Check for fresh precomputed data
-      console.log("Checking for precomputed triage data...");
-      let precomputedUsed = false;
-      try {
-        const preResponse = await fetch("/api/triage", {
+        }).then(r => r.json()).catch(() => null),
+        fetch("/api/triage", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ action: "get_precomputed", automationCommanderSheetId }),
-        });
-        const preData = await preResponse.json();
+        }).then(r => r.json()).catch(() => null),
+      ]);
 
-        if (preData.success && preData.available) {
-          console.log(`✅ Using precomputed data (${preData.computedMinutesAgo} min old, ${preData.totalAlerts} alerts)`);
-          applyPrecomputedData(preData);
-          precomputedUsed = true;
-        } else {
-          console.log(`No fresh precomputed data available - running live background triage`);
-        }
-      } catch (preErr) {
-        console.log(`Precomputed check failed, falling back to background refresh: ${preErr.message}`);
+      let precomputedUsed = false;
+      if (preResult && preResult.success && preResult.available) {
+        console.log(`✅ Using precomputed data (${preResult.computedMinutesAgo} min old, ${preResult.totalAlerts} alerts)`);
+        applyPrecomputedData(preResult);
+        precomputedUsed = true;
+      }
+
+      if (statusResult && statusResult.success && statusResult.status?.status === "running") {
+        console.log("Active background refresh detected - attaching to progress...");
+        setRefreshStatus(statusResult.status.progress || "Scanning clients...");
+        await pollRefreshStatus();
+        return;
       }
 
       if (precomputedUsed) return;

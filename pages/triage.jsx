@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from "react"
 import Head from "next/head";
 import { useRouter } from "next/router";
 import Spinner from "../components/Spinner";
-import { PmaAlertsSkeleton } from "../components/Skeleton";
+import { PmaHomeSkeleton, PmaAlertsSkeleton, PmaActivitySkeleton, PmaTasksSkeleton, PmaInvoicesTableSkeleton, PmaJobsTableSkeleton, PmaOutgoingsTableSkeleton, PmaRetainersTableSkeleton, PmaSalariesSkeleton, PmaExpensesTableSkeleton, PmaNBToFindSkeleton, PmaIntegrationsSkeleton, PmaSetupOverviewSkeleton, BudgetSkeleton } from "../components/Skeleton";
 import TruncatedCode from "../components/TruncatedCode";
 import NavShell from "../components/NavShell";
 import dynamic from "next/dynamic";
@@ -16,25 +16,25 @@ import HomeView from "../components/HomeView";
 import AuthGateView from "../components/AuthGateView";
 
 // Secondary views code-split via next/dynamic to reduce PMA bundle size
-const AppLogView = dynamic(() => import("../components/AppLogView"), { loading: () => <Spinner /> });
-const ActivityView = dynamic(() => import("../components/ActivityView"), { loading: () => <Spinner /> });
-const IgnoredAlertsView = dynamic(() => import("../components/IgnoredAlertsView"), { loading: () => <Spinner /> });
-const TasksView = dynamic(() => import("../components/TasksView"), { loading: () => <Spinner /> });
+const AppLogView = dynamic(() => import("../components/AppLogView"), { loading: () => <PmaActivitySkeleton /> });
+const ActivityView = dynamic(() => import("../components/ActivityView"), { loading: () => <PmaActivitySkeleton /> });
+const IgnoredAlertsView = dynamic(() => import("../components/IgnoredAlertsView"), { loading: () => <PmaAlertsSkeleton /> });
+const TasksView = dynamic(() => import("../components/TasksView"), { loading: () => <PmaTasksSkeleton /> });
 const CreateTaskModal = dynamic(() => import("../components/CreateTaskModal"));
-const InvoicesView = dynamic(() => import("../components/InvoicesView"), { loading: () => <Spinner /> });
-const JobsView = dynamic(() => import("../components/JobsView"), { loading: () => <Spinner /> });
-const OutgoingsView = dynamic(() => import("../components/OutgoingsView"), { loading: () => <Spinner /> });
-const RetainersView = dynamic(() => import("../components/RetainersView"), { loading: () => <Spinner /> });
-const SalariesView = dynamic(() => import("../components/SalariesView"), { loading: () => <Spinner /> });
-const ExpensesView = dynamic(() => import("../components/ExpensesView"), { loading: () => <Spinner /> });
-const NBToFindView = dynamic(() => import("../components/NBToFindView"), { loading: () => <Spinner /> });
-const BudgetView = dynamic(() => import("../components/BudgetView"), { loading: () => <Spinner /> });
-const CashEditView = dynamic(() => import("../components/CashEditView"), { loading: () => <Spinner /> });
-const ToolsView = dynamic(() => import("../components/ToolsView"), { loading: () => <Spinner /> });
-const SettingsView = dynamic(() => import("../components/SettingsView"), { loading: () => <Spinner /> });
-const IntegrationsView = dynamic(() => import("../components/IntegrationsView"), { loading: () => <Spinner /> });
-const SetupView = dynamic(() => import("../components/SetupView"), { loading: () => <Spinner /> });
-const ViewsScreen = dynamic(() => import("../components/ViewsScreen"), { loading: () => <Spinner /> });
+const InvoicesView = dynamic(() => import("../components/InvoicesView"), { loading: () => <PmaInvoicesTableSkeleton /> });
+const JobsView = dynamic(() => import("../components/JobsView"), { loading: () => <PmaJobsTableSkeleton /> });
+const OutgoingsView = dynamic(() => import("../components/OutgoingsView"), { loading: () => <PmaOutgoingsTableSkeleton /> });
+const RetainersView = dynamic(() => import("../components/RetainersView"), { loading: () => <PmaRetainersTableSkeleton /> });
+const SalariesView = dynamic(() => import("../components/SalariesView"), { loading: () => <PmaSalariesSkeleton /> });
+const ExpensesView = dynamic(() => import("../components/ExpensesView"), { loading: () => <PmaExpensesTableSkeleton /> });
+const NBToFindView = dynamic(() => import("../components/NBToFindView"), { loading: () => <PmaNBToFindSkeleton /> });
+const BudgetView = dynamic(() => import("../components/BudgetView"), { loading: () => <BudgetSkeleton /> });
+const CashEditView = dynamic(() => import("../components/CashEditView"), { loading: () => <PmaOutgoingsTableSkeleton /> });
+const ToolsView = dynamic(() => import("../components/ToolsView"), { loading: () => <PmaSetupOverviewSkeleton /> });
+const SettingsView = dynamic(() => import("../components/SettingsView"), { loading: () => <PmaSetupOverviewSkeleton /> });
+const IntegrationsView = dynamic(() => import("../components/IntegrationsView"), { loading: () => <PmaIntegrationsSkeleton /> });
+const SetupView = dynamic(() => import("../components/SetupView"), { loading: () => <PmaSetupOverviewSkeleton /> });
+const ViewsScreen = dynamic(() => import("../components/ViewsScreen"), { loading: () => <PmaHomeSkeleton /> });
 import { useAuth } from "../hooks/useAuth";
 import { useOverview } from "../hooks/useOverview";
 import { TaskProvider, useTasks } from "../contexts/TaskContext";
@@ -52,11 +52,19 @@ import { useTriageEngine } from "../hooks/useTriageEngine";
 // Inject global styles into the document head
 injectGlobalStyles();
 
-export default function TriageSystem({ onBack, initialNav }) {
-  return <TriageSystemWithGlobals onBack={onBack} initialNav={initialNav} />;
+export default function TriageSystem({ onBack, initialNav, initialUser = null, initialClients = [], initialIntegrations = null }) {
+  return (
+    <TriageSystemWithGlobals
+      onBack={onBack}
+      initialNav={initialNav}
+      initialUser={initialUser}
+      initialClients={initialClients}
+      initialIntegrations={initialIntegrations}
+    />
+  );
 }
 
-function TriageSystemWithGlobals({ onBack, initialNav }) {
+function TriageSystemWithGlobals({ onBack, initialNav, initialUser = null, initialClients = [], initialIntegrations = null }) {
   const appGlobals = useAppGlobals();
   return (
     <>
@@ -64,13 +72,20 @@ function TriageSystemWithGlobals({ onBack, initialNav }) {
         <title>PMA - Pulse Management Area</title>
       </Head>
       <TaskProvider automationCommanderSheetId={appGlobals.automationCommanderSheetId} managedClient={appGlobals.managedClient}>
-        <TriageSystemContent onBack={onBack} appGlobals={appGlobals} initialNav={initialNav} />
+        <TriageSystemContent
+          onBack={onBack}
+          appGlobals={appGlobals}
+          initialNav={initialNav}
+          initialUser={initialUser}
+          initialClients={initialClients}
+          initialIntegrations={initialIntegrations}
+        />
       </TaskProvider>
     </>
   );
 }
 
-function TriageSystemContent({ onBack, appGlobals, initialNav }) {
+function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = null, initialClients = [], initialIntegrations = null }) {
   const {
     automationCommanderSheetId, assignedAppIds, setAssignedAppIds,
     assignedByClient, setAssignedByClient, addAssignedAppId,
@@ -81,17 +96,19 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
   } = appGlobals;
 
 
+  const [hasMounted, setHasMounted] = useState(false);
+  useEffect(() => { setHasMounted(true); }, []);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const auth = useAuth();
+  const auth = useAuth(initialUser);
   const {
     isAuthenticated, authChecking, user, logout
   } = auth;
   // Only Admin is an internal staff role able to see all clients (never when in read-only OTP mode)
   const isAdmin = !user?.isReadOnly && !!(user?.isAdmin || user?.role === "Admin");
   const isPulseOnly = Boolean(
-    user && (user.isReadOnly || user.role === "ClientUser" || user.role === "Senior (Restricted)" || user.isSenior || (!isAdmin && user.role !== "ClientManager"))
+    user && (user.isReadOnly || user.authProvider === "EmailOTP" || user.role === "ClientUser" || user.role === "Senior (Restricted)" || user.isSenior || (!isAdmin && user.role !== "ClientManager"))
   );
 
   // If ClientUser, Senior (Restricted), or Read-Only (OTP) lands on PMA, redirect immediately to Pulse
@@ -221,6 +238,9 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
   const currentLiveAlertCount = liveAlertCount + (proactiveAlerts || []).length;
 
   const [integrationsRawData, setIntegrationsRawData] = useState(() => {
+    if (initialIntegrations && Array.isArray(initialIntegrations.allClients) && initialIntegrations.allClients.length > 0) {
+      return initialIntegrations;
+    }
     if (typeof window !== "undefined") {
       try {
         const stored = localStorage.getItem("pulse_cached_integrations_data");
@@ -264,10 +284,16 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
   }, []);
 
   useEffect(() => {
+    if (initialIntegrations && Array.isArray(initialIntegrations.allClients) && initialIntegrations.allClients.length > 0) {
+      try {
+        localStorage.setItem("pulse_cached_integrations_data", JSON.stringify(initialIntegrations));
+      } catch {}
+      return;
+    }
     if (isAuthenticated && user?.email) {
       fetchIntegrationsStatus();
     }
-  }, [isAuthenticated, user?.email, fetchIntegrationsStatus]);
+  }, [isAuthenticated, user?.email, fetchIntegrationsStatus, initialIntegrations]);
 
   const integrationsAttentionCount = useMemo(() => {
     if (!integrationsRawData?.allClients?.length) {
@@ -386,6 +412,9 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
   const { overviewData, setOverviewData, overviewLoading, setOverviewLoading, loadOverview } = useOverview(automationCommanderSheetId);
 
   const [allOutgoingsClients, setAllOutgoingsClients] = useState(() => {
+    if (Array.isArray(initialClients) && initialClients.length > 0) {
+      return initialClients;
+    }
     if (typeof window !== "undefined") {
       try {
         const stored = localStorage.getItem("pulse_cached_all_clients");
@@ -394,7 +423,9 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
     }
     return [];
   });
-  const [allClientsLoaded, setAllClientsLoaded] = useState(false);
+  const [allClientsLoaded, setAllClientsLoaded] = useState(
+    Boolean(Array.isArray(initialClients) && initialClients.length > 0)
+  );
 
   // Single client access check: only non-admins who only have access to a single client
   const isSingleClientUser = Boolean(
@@ -476,8 +507,23 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
     }).catch(e => console.error("fireOutgoingsPull error:", e));
   };
 
-  const clientsLoadedRef = useRef(false);
+  const clientsLoadedRef = useRef(Boolean(Array.isArray(initialClients) && initialClients.length > 0));
   const clientsLoadingRef = useRef(false);
+
+  useEffect(() => {
+    if (Array.isArray(initialClients) && initialClients.length > 0) {
+      try {
+        localStorage.setItem("pulse_cached_all_clients", JSON.stringify(initialClients));
+      } catch {}
+      if (setAllClientsMap) {
+        const map = {};
+        for (const c of initialClients) {
+          if (c.clientName) map[c.clientName] = c;
+        }
+        setAllClientsMap(map);
+      }
+    }
+  }, [initialClients, setAllClientsMap]);
 
   const loadClients = useCallback((force = false) => {
     if (!force && clientsLoadedRef.current) return;
@@ -528,7 +574,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
       });
   }, [automationCommanderSheetId, setAllClientsMap, isAdmin, setManagedClient, preloadClientData]);
 
-  const prevUserEmailRef = useRef(null);
+  const prevUserEmailRef = useRef(Array.isArray(initialClients) && initialClients.length > 0 ? (user?.email || null) : null);
   useEffect(() => {
     if (isAuthenticated && user?.email) {
       if (prevUserEmailRef.current !== user.email) {
@@ -738,11 +784,28 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
   }, []);
 
   // --- AUTHENTICATION GATE ---
-  if (authChecking) {
+  if (authChecking || !hasMounted) {
+    const ssrNav = initialNav || "home";
+    const hasSsrClients = Array.isArray(initialClients) && initialClients.length > 0;
     return (
-      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#f5f5f5" }}>
-        <Spinner size={32} color="#0066cc" />
-      </div>
+      <TriageProvider value={triageEngine}>
+        <CreateTaskModal />
+        <NavShell activeNav={ssrNav} user={user} isAdmin={isAdmin} clients={initialClients}>
+          {ssrNav === "alerts" ? (
+            <PmaAlertsSkeleton />
+          ) : hasSsrClients ? (
+            <HomeView
+              clients={initialClients}
+              integrationsData={initialIntegrations?.allClients || []}
+              user={user}
+              isAdmin={isAdmin}
+              isLoadingAlerts={true}
+            />
+          ) : (
+            <PmaHomeSkeleton />
+          )}
+        </NavShell>
+      </TriageProvider>
     );
   }
 
@@ -823,6 +886,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
           isLoadingAlerts={isLoading}
           managedClient={managedClient}
           onClearManagedClient={handleClearManagedClient}
+          integrationsData={integrationsRawData?.allClients || []}
         />
       );
     }

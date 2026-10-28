@@ -7,7 +7,8 @@ import { useAppGlobals } from "../hooks/useAppGlobals";
 
 // Global styles injected once - handles :hover/:active which React inline styles can't do
 const GLOBAL_STYLES = `
-  html, body { margin: 0; padding: 0; scroll-behavior: auto; }
+  html, body { margin: 0; padding: 0; scroll-behavior: auto; font-family: 'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+  button, input, select, textarea { font-family: inherit; }
   @keyframes triage-spin { to { transform: rotate(360deg); } }
   .triage-btn { transition: filter 0.15s, transform 0.1s, background 0.15s, box-shadow 0.15s !important; }
   .triage-btn:hover:not(:disabled) { filter: brightness(0.92); box-shadow: 0 2px 6px rgba(0,0,0,0.12); }
@@ -185,16 +186,7 @@ export default function NavShell({
   const [pulseDropdownOpen, setPulseDropdownOpen] = useState(false);
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
   const [editDropdownOpen, setEditDropdownOpen] = useState(false);
-  const [portalClients, setPortalClients] = useState(() => {
-    if (clients && clients.length > 0) return clients;
-    if (typeof window !== "undefined") {
-      try {
-        const stored = localStorage.getItem("pulse_cached_all_clients");
-        if (stored) return JSON.parse(stored);
-      } catch { }
-    }
-    return [];
-  });
+  const [portalClients, setPortalClients] = useState(() => (clients && clients.length > 0 ? clients : []));
   const [clientsLoading, setClientsLoading] = useState(false);
   const [clientSearch, setClientSearch] = useState("");
   const [manageClientSearch, setManageClientSearch] = useState("");
@@ -222,7 +214,14 @@ export default function NavShell({
       setPortalClients(clients);
       return;
     }
-    if (!user) return;
+    try {
+      const stored = localStorage.getItem("pulse_cached_all_clients");
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 0) setPortalClients(parsed);
+      }
+    } catch {}
+    if (!user || onSelectManagedClient) return;
     setClientsLoading(true);
     fetch("/api/portal/clients")
       .then((r) => r.json())
@@ -360,7 +359,7 @@ export default function NavShell({
   ];
 
   return (
-    <div style={{ fontFamily: "system-ui, -apple-system, sans-serif", minHeight: "100vh", background: "#f5f5f5" }}>
+    <div style={{ fontFamily: "'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif", minHeight: "100vh", background: "#f5f5f5" }}>
       <style dangerouslySetInnerHTML={{ __html: GLOBAL_STYLES }} />
       <div className="pma-topbar">
         <a
@@ -1121,7 +1120,7 @@ export default function NavShell({
           <span>{" "}to cancel</span>
         </div>
       )}
-      <div style={{ width: "100%", maxWidth: "100%", boxSizing: "border-box" }}>{children}</div>
+      <div className="pma-main-content-wrapper" style={{ width: "100%", maxWidth: "100%", boxSizing: "border-box" }}>{children}</div>
     </div>
   );
 }

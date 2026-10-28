@@ -11,8 +11,8 @@ import {
   isCrmDrivenTab,
   getCrmDisplayName
 } from "../utils/helpers.js";
-import { isUserAuthorizedForClient, matchesClientName, sanitizeFormulaInput, getClientManagerClientMap, DEFAULT_AC_SHEET_ID, verifyUserAuthorizedForSheet } from "./userPermissions.js";
-export { DEFAULT_AC_SHEET_ID };
+import { isUserAuthorizedForClient, matchesClientName, sanitizeFormulaInput, getClientManagerClientMap, DEFAULT_AC_SHEET_ID, verifyUserAuthorizedForSheet, resolveClientNameBySheetId } from "./userPermissions.js";
+export { DEFAULT_AC_SHEET_ID, resolveClientNameBySheetId };
 import { logPmaActivity } from "./pmaLogger.js";
 import { getSessionUser } from "./authService.js";
 import { redisClient } from "./redisClient.js";
@@ -27,40 +27,6 @@ export let assignedExpensesTabVerified = false;
 
 export async function ensureAssignedExpensesTab_(sheets, spreadsheetId) {
   return;
-}
-
-const clientSheetIdToNameCache = new Map();
-
-export async function resolveClientNameBySheetId(sheets, sheetId, acId = DEFAULT_AC_SHEET_ID) {
-  if (!sheetId) return "";
-  const cleanId = extractSheetIdFromUrl(sheetId) || sheetId;
-  if (clientSheetIdToNameCache.has(cleanId)) {
-    return clientSheetIdToNameCache.get(cleanId);
-  }
-  try {
-    const resp = await withRetry(() =>
-      sheets.spreadsheets.values.get({
-        spreadsheetId: acId || DEFAULT_AC_SHEET_ID,
-        range: "AutoUpdates!A2:N500"
-      })
-    );
-    const rows = resp.data.values || [];
-    for (const r of rows) {
-      const cName = String(r[0] || "").trim();
-      const clientUrl = String(r[11] || "").trim();
-      const masterUrl = String(r[12] || "").trim();
-      const cId = extractSheetIdFromUrl(clientUrl) || clientUrl;
-      const mId = extractSheetIdFromUrl(masterUrl) || masterUrl;
-      if (cId && cName) clientSheetIdToNameCache.set(cId, cName);
-      if (mId && cName) clientSheetIdToNameCache.set(mId, cName);
-      if ((cId === cleanId || mId === cleanId) && cName) {
-        return cName;
-      }
-    }
-  } catch (err) {
-    console.warn("⚠️ Error resolving clientName by sheetId:", err.message);
-  }
-  return "";
 }
 
 export async function getClientWebAppUrl(sheets, clientName, acId = DEFAULT_AC_SHEET_ID) {
@@ -983,6 +949,9 @@ export async function handleGetInvoiceJobs(req, res, sheets) {
 export async function handleGetAllClientJobs(req, res, sheets) {
   const { clientSheetId, tabName = "All", bypassCache } = req.body;
   if (!clientSheetId) return res.status(400).json({ success: false, error: "Missing clientSheetId" });
+  if (tabName && tabName !== "All" && tabName !== "Confirmed" && tabName !== "Pipeline") {
+    return res.status(400).json({ success: false, error: "Invalid tabName. Must be All, Confirmed, or Pipeline." });
+  }
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
     const cacheKey = `pulse:pma:jobs:${sheetIdClean}:${tabName || "All"}`;
@@ -1320,6 +1289,12 @@ export async function handleUpdateJobField(req, res, sheets) {
   if (!clientSheetId || !tabName || !cellRef) {
     return res.status(400).json({ success: false, error: "Missing required fields" });
   }
+  if (tabName !== "Confirmed" && tabName !== "Pipeline") {
+    return res.status(400).json({ success: false, error: "Invalid tabName. Must be Confirmed or Pipeline." });
+  }
+  if (!/^[A-Z]{1,2}\d{1,4}$/.test(String(cellRef).trim())) {
+    return res.status(400).json({ success: false, error: "Invalid cellRef format." });
+  }
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
     const safeValue = sanitizeFormulaInput(value);
@@ -1439,6 +1414,15 @@ export async function handleUpdateJobFields(req, res, sheets) {
   const { clientSheetId, tabName, rowNum, updates, endClientName, jobName } = req.body;
   if (!clientSheetId || !tabName || !Array.isArray(updates) || updates.length === 0) {
     return res.status(400).json({ success: false, error: "Missing required fields or empty updates" });
+  }
+  if (tabName !== "Confirmed" && tabName !== "Pipeline") {
+    return res.status(400).json({ success: false, error: "Invalid tabName. Must be Confirmed or Pipeline." });
+  }
+  for (const u of updates) {
+    const targetRef = String(u.cellRef || `${u.colLetter || ""}${u.rowNum || rowNum || ""}`).trim();
+    if (!/^[A-Z]{1,2}\d{1,4}$/.test(targetRef)) {
+      return res.status(400).json({ success: false, error: `Invalid cell reference in updates: ${targetRef}` });
+    }
   }
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
@@ -3944,12 +3928,14 @@ export async function handleUpdateOutgoingNote(req, res, sheets) {
       }).catch(e => console.warn("Failed to write to Master OutgNotes:", e.message));
 
       // Trigger GAS refreshOutgoings asynchronously without blocking response
-      const cronSecret = process.env.CRON_SECRET || "triage-cron-2026-AY4K2LDMXBV8DS7";
-      fetch("https://script.google.com/macros/s/AKfycbzVvLSDtqWj3aHcn0UV9VPCybNm82sBNWynMo1-bMpvs3NzerPZXWkrpPJvVHaqDwwy/exec", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "refreshOutgoings", clientSheetId: sheetIdClean, masterSheetId: targetMasterId, secret: cronSecret }),
-      }).catch(e => console.warn("Background refreshOutgoings GAS call failed:", e.message));
+      const cronSecret = process.env.CRON_SECRET || process.env.AGENT_TRIGGER_SECRET || "";
+      if (cronSecret) {
+        fetch("https://script.google.com/macros/s/AKfycbzVvLSDtqWj3aHcn0UV9VPCybNm82sBNWynMo1-bMpvs3NzerPZXWkrpPJvVHaqDwwy/exec", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "refreshOutgoings", clientSheetId: sheetIdClean, masterSheetId: targetMasterId, secret: cronSecret }),
+        }).catch(e => console.warn("Background refreshOutgoings GAS call failed:", e.message));
+      }
     }
 
     let contractor = req.body.contractorName || "";
@@ -4000,13 +3986,20 @@ export async function handleFireOutgoingsPull(req, res, sheets) {
 
     const sessionUser = getSessionUser(req);
     if (sessionUser && !sessionUser.isAdmin) {
-      const auth = await verifyUserAuthorizedForSheet(sessionUser, pullClientIdClean || pullMasterIdClean, clientName, sheets);
-      if (!auth.authorized) {
-        return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
+      const clientAuth = await verifyUserAuthorizedForSheet(sessionUser, pullClientIdClean, clientName, sheets);
+      if (!clientAuth.authorized) {
+        return res.status(clientAuth.status || 403).json({ success: false, error: clientAuth.error || "Access denied to this client." });
+      }
+      const masterAuth = await verifyUserAuthorizedForSheet(sessionUser, pullMasterIdClean, clientAuth.clientName, sheets);
+      if (!masterAuth.authorized) {
+        return res.status(masterAuth.status || 403).json({ success: false, error: masterAuth.error || "Access denied to this master sheet." });
       }
     }
 
-    const cronSecret = process.env.CRON_SECRET || "triage-cron-2026-AY4K2LDMXBV8DS7";
+    const cronSecret = process.env.CRON_SECRET || process.env.AGENT_TRIGGER_SECRET || "";
+    if (!cronSecret) {
+      return res.status(500).json({ success: false, error: "Server CRON_SECRET is not configured." });
+    }
     const gasResp = await fetch("https://script.google.com/macros/s/AKfycbzVvLSDtqWj3aHcn0UV9VPCybNm82sBNWynMo1-bMpvs3NzerPZXWkrpPJvVHaqDwwy/exec", {
       method: "POST",
       headers: { "Content-Type": "application/json" },

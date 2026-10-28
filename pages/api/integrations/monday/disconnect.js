@@ -6,7 +6,7 @@
 
 import { deleteIntegrationTokens } from "../../../../services/vaultService.js";
 import { getSessionUser } from "../../../../services/authService.js";
-import { isUserAuthorizedForClient } from "../../../../services/userPermissions.js";
+import { isUserAuthorizedForClient, isReadOnlySession } from "../../../../services/userPermissions.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -16,6 +16,10 @@ export default async function handler(req, res) {
   const sessionUser = getSessionUser(req);
   if (!sessionUser) {
     return res.status(401).json({ error: "Active session required." });
+  }
+
+  if (isReadOnlySession(sessionUser)) {
+    return res.status(403).json({ error: "Read-only session cannot disconnect integrations." });
   }
 
   const { clientKey, clientName, masterSheetId } = req.body || {};

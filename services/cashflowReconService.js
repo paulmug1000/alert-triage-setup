@@ -862,16 +862,24 @@ export async function updateReconTransactionCategory({
 
   const sheets = await getSheetsClient();
   const cleanId = extractSheetIdFromUrl(reconSheetId) || reconSheetId;
-  const targetRange = `'${tabName}'!Q${rowNum}`;
+  const cleanTab = String(tabName || "").trim();
+  if (!/^\d{4}$/.test(cleanTab)) {
+    throw new Error("Invalid recon tabName: must be 4 digits (MMYY).");
+  }
+  const cleanRow = parseInt(rowNum, 10);
+  if (isNaN(cleanRow) || cleanRow < 3 || cleanRow > 500) {
+    throw new Error("Invalid rowNum.");
+  }
+  const targetRange = `'${cleanTab}'!Q${cleanRow}`;
 
   await withRetry(() => sheets.spreadsheets.values.update({
     spreadsheetId: cleanId,
     range: targetRange,
     valueInputOption: "USER_ENTERED",
-    requestBody: { values: [[category || ""]] }
+    requestBody: { values: [[sanitizeFormulaInput(category || "")]] }
   }));
 
-  return { success: true, tabName, rowNum, category };
+  return { success: true, tabName: cleanTab, rowNum: cleanRow, category };
 }
 
 /**
@@ -885,6 +893,11 @@ export async function syncReconBankTransactions({
   if (!reconSheetId || !tabName) {
     throw new Error("Missing reconSheetId or tabName");
   }
+  const cleanTab = String(tabName || "").trim();
+  if (!/^\d{4}$/.test(cleanTab)) {
+    throw new Error("Invalid recon tabName: must be 4 digits (MMYY).");
+  }
+  tabName = cleanTab;
 
   const sheets = await getSheetsClient();
   const cleanId = extractSheetIdFromUrl(reconSheetId) || reconSheetId;
@@ -916,8 +929,8 @@ export async function syncReconBankTransactions({
     const accountName = tx.accountName || "";
 
     // Columns: [A: Date, B: Date, C: Account Name, D: Payee, E: Particulars, F: Ref, G: '', H: '', I: Out, J: In]
-    rowsAJ.push([date, date, accountName, payee, particulars, ref, "", "", outAmt, inAmt]);
-    rowsQ.push([cat]);
+    rowsAJ.push([sanitizeFormulaInput(date), sanitizeFormulaInput(date), sanitizeFormulaInput(accountName), sanitizeFormulaInput(payee), sanitizeFormulaInput(particulars), sanitizeFormulaInput(ref), "", "", sanitizeFormulaInput(outAmt), sanitizeFormulaInput(inAmt)]);
+    rowsQ.push([sanitizeFormulaInput(cat)]);
   });
 
   await withRetry(() => sheets.spreadsheets.values.batchUpdate({
@@ -1010,6 +1023,11 @@ export async function syncReconUnreconciledItems({
   if (!reconSheetId || !tabName) {
     throw new Error("Missing reconSheetId or tabName");
   }
+  const cleanTab = String(tabName || "").trim();
+  if (!/^\d{4}$/.test(cleanTab)) {
+    throw new Error("Invalid recon tabName: must be 4 digits (MMYY).");
+  }
+  tabName = cleanTab;
 
   const sheets = await getSheetsClient();
   const cleanId = extractSheetIdFromUrl(reconSheetId) || reconSheetId;
@@ -1038,9 +1056,9 @@ export async function syncReconUnreconciledItems({
     const vat = u.vatApplies || "No";
 
     // CD:CI: [CD: '', CE: '', CF: Date, CG: Payee, CH: Particulars, CI: Amount]
-    rowsCD.push(["", "", date, payee, particulars, amt]);
+    rowsCD.push(["", "", sanitizeFormulaInput(date), sanitizeFormulaInput(payee), sanitizeFormulaInput(particulars), sanitizeFormulaInput(amt)]);
     // CM:CN: [CM: Category, CN: VAT?]
-    rowsCM.push([cat, vat]);
+    rowsCM.push([sanitizeFormulaInput(cat), sanitizeFormulaInput(vat)]);
   });
 
   await withRetry(() => sheets.spreadsheets.values.batchUpdate({
@@ -1372,6 +1390,11 @@ export async function setReconDa1Platform({
   if (!reconSheetId || !tabName || !platform) {
     throw new Error("Missing parameters for setReconDa1Platform");
   }
+  const cleanTab = String(tabName || "").trim();
+  if (!/^\d{4}$/.test(cleanTab)) {
+    throw new Error("Invalid recon tabName: must be 4 digits (MMYY).");
+  }
+  tabName = cleanTab;
   const cleanPlatform = platform.toLowerCase().includes("quick") ? "Quickbooks" : "Xero";
   const sheets = await getSheetsClient();
   await withRetry(() => sheets.spreadsheets.values.update({
@@ -1398,6 +1421,11 @@ export async function setReconMonthReadyStatus({
   if (!reconSheetId || !tabName) {
     throw new Error("Missing reconSheetId or tabName");
   }
+  const cleanTab = String(tabName || "").trim();
+  if (!/^\d{4}$/.test(cleanTab)) {
+    throw new Error("Invalid recon tabName: must be 4 digits (MMYY).");
+  }
+  tabName = cleanTab;
   const boolVal = Boolean(isComplete);
   const sheets = await getSheetsClient();
   const cleanId = extractSheetIdFromUrl(reconSheetId) || reconSheetId;
@@ -1453,6 +1481,11 @@ export async function dismissNewBankTransactions({
   if (!reconSheetId || !tabName) {
     throw new Error("Missing reconSheetId or tabName");
   }
+  const cleanTab = String(tabName || "").trim();
+  if (!/^\d{4}$/.test(cleanTab)) {
+    throw new Error("Invalid recon tabName: must be 4 digits (MMYY).");
+  }
+  tabName = cleanTab;
 
   const sheets = await getSheetsClient();
   const cleanId = extractSheetIdFromUrl(reconSheetId) || reconSheetId;

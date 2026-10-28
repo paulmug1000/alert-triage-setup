@@ -9,8 +9,6 @@ export default async function handler(req, res) {
     origin === "https://pma.pulsedashboard.co.uk" ||
     origin === "https://project-shj9n.vercel.app" ||
     origin === "http://localhost:3000" ||
-    origin === "https://script.google.com" ||
-    origin.endsWith(".googleusercontent.com") ||
     origin.endsWith(".pulsedashboard.co.uk")
   );
 
@@ -52,6 +50,10 @@ export default async function handler(req, res) {
   try {
     const secret = getJwtSecret();
     const decoded = jwt.verify(ssoToken, secret);
+
+    if (!decoded || decoded.tokenType !== "sso_token") {
+      return res.status(403).json({ valid: false, message: "Invalid SSO token type" });
+    }
 
     if (decoded.email.toLowerCase().trim() !== String(email).toLowerCase().trim()) {
       return res.status(403).json({ valid: false, message: "Email address mismatch" });

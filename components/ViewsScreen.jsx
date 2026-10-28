@@ -406,7 +406,7 @@ export default function ViewsScreen({
           : ((loadingKeyData && !keyData) || (loadingPayload && !payload));
 
   return (
-    <div style={{ padding: "20px 24px", maxWidth: "1500px", margin: "0 auto", fontFamily: "system-ui, -apple-system, sans-serif" }}>
+    <div style={{ padding: "20px 24px", maxWidth: "1500px", margin: "0 auto", fontFamily: "'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" }}>
       {/* Top Header & Client Chooser Bar */}
       <div
         style={{

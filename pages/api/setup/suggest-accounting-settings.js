@@ -10,7 +10,8 @@
  */
 
 import { getSessionUser } from "../../../services/authService.js";
-import { isUserAuthorizedForClient } from "../../../services/userPermissions.js";
+import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, canAccessPma, isReadOnlySession } from "../../../services/userPermissions.js";
+import { getSheetsClient } from "../../../services/sheetsClient.js";
 import {
   suggestAccountingSettings,
   applyAccountingSettings
@@ -22,7 +23,7 @@ export default async function handler(req, res) {
     return res.status(401).json({ success: false, error: "Active session required." });
   }
 
-  if (sessionUser.role === "ClientUser" || sessionUser.role === "Senior (Restricted)" || sessionUser.isClientUser) {
+  if (!canAccessPma(sessionUser)) {
     return res.status(403).json({ success: false, error: "Access denied: PMA configuration requires staff privileges." });
   }
 
@@ -35,6 +36,13 @@ export default async function handler(req, res) {
     if (!sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, clientName)) {
       return res.status(403).json({ success: false, error: "Access denied to this client." });
     }
+    if (!sessionUser.isAdmin && masterSheetId) {
+      const sheets = await getSheetsClient();
+      const auth = await verifyUserAuthorizedForSheet(sessionUser, masterSheetId, clientName, sheets);
+      if (!auth.authorized) {
+        return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
+      }
+    }
 
     try {
       const suggestions = await suggestAccountingSettings({ clientName, masterSheetId });
@@ -46,6 +54,9 @@ export default async function handler(req, res) {
   }
 
   if (req.method === "POST") {
+    if (isReadOnlySession(sessionUser)) {
+      return res.status(403).json({ success: false, error: "Read-only session cannot modify accounting settings." });
+    }
     const { clientName, masterSheetId, settings } = req.body || {};
     if (!clientName || !settings) {
       return res.status(400).json({ success: false, error: "Missing required clientName or settings payload." });
@@ -53,6 +64,13 @@ export default async function handler(req, res) {
 
     if (!sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, clientName)) {
       return res.status(403).json({ success: false, error: "Access denied to this client." });
+    }
+    if (!sessionUser.isAdmin && masterSheetId) {
+      const sheets = await getSheetsClient();
+      const auth = await verifyUserAuthorizedForSheet(sessionUser, masterSheetId, clientName, sheets);
+      if (!auth.authorized) {
+        return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
+      }
     }
 
     try {

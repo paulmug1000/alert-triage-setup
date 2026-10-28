@@ -1943,7 +1943,7 @@ export default function BudgetView({
                     width: "100%",
                     borderCollapse: "collapse",
                     fontSize: "12px",
-                    fontFamily: "system-ui, -apple-system, sans-serif",
+                    fontFamily: "'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
                   }}
                 >
                   <thead>
@@ -2344,7 +2344,7 @@ export default function BudgetView({
                     width: "100%",
                     borderCollapse: "collapse",
                     fontSize: "12px",
-                    fontFamily: "system-ui, -apple-system, sans-serif",
+                    fontFamily: "'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
                   }}
                 >
                   <thead>
@@ -2610,7 +2610,7 @@ export default function BudgetView({
                     width: "100%",
                     borderCollapse: "collapse",
                     fontSize: "12px",
-                    fontFamily: "system-ui, -apple-system, sans-serif",
+                    fontFamily: "'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
                   }}
                 >
                   <thead>

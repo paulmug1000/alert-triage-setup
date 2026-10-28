@@ -125,11 +125,13 @@ export default function App({ Component, pageProps }) {
           overflow-y: scroll;
           scrollbar-gutter: stable;
         }
+        html, body, button, input, select, textarea {
+          font-family: 'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
         html, body {
           margin: 0;
           padding: 0;
           background-color: #ffffff;
-          font-family: 'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
           -webkit-font-smoothing: antialiased;
           overflow-x: hidden;
         }
@@ -209,30 +211,6 @@ export default function App({ Component, pageProps }) {
           background-color: rgba(255, 255, 255, 0.35) !important;
         }
       `}</style>
-      {isRouteChanging && (
-        <div
-          style={{
-            position: "fixed",
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            background: "rgba(255, 255, 255, 0.96)",
-            zIndex: 99999,
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: "14px",
-            fontFamily: "'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
-          }}
-        >
-          <Spinner size={36} color="#0047AB" />
-          <span style={{ color: "#0047AB", fontWeight: 600, fontSize: "15px", letterSpacing: "0.2px" }}>
-            Please wait - loading
-          </span>
-        </div>
-      )}
       <AppGlobalsProvider>
         <Component {...pageProps} />
       </AppGlobalsProvider>

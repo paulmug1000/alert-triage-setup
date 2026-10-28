@@ -18,7 +18,7 @@ import { redisClient } from "./redisClient.js";
 import { fetchPmaActivity, DEFAULT_AC_SHEET_ID } from "./pmaLogger.js";
 import { fetchPulseActivity } from "./pulseLogger.js";
 import { getSessionUser } from "./authService.js";
-import { isUserAuthorizedForClient, filterClientsForUser, matchesClientName } from "./userPermissions.js";
+import { isUserAuthorizedForClient, filterClientsForUser, matchesClientName, getCanonicalAcSheetId } from "./userPermissions.js";
 
 const REDIS_ACTIVITY_PREFIX = "pulse:activity:";
 const CACHE_TTL_SECONDS = 7 * 24 * 3600; // 7 days permanent cache
@@ -1251,7 +1251,7 @@ export async function fetchClientActivity(sheets, client, includeRoutine = false
  * - Checks Redis cache first (TTL 30m)
  * - Paced batch execution (batch size: 2, 400ms delay) to avoid quota spikes
  */
-export async function fetchAllClientsActivity(sheets, clientsList, forceRefresh = false, includeRoutine = false, automationCommanderSheetId = DEFAULT_AC_SHEET_ID) {
+export async function fetchAllClientsActivity(sheets, clientsList, forceRefresh = false, includeRoutine = false, automationCommanderSheetId = DEFAULT_AC_SHEET_ID, allowGlobalCacheWrite = true) {
   if (!Array.isArray(clientsList) || clientsList.length === 0) {
     return { clients: {}, allEvents: [], cachedAt: null };
   }
@@ -1339,12 +1339,14 @@ export async function fetchAllClientsActivity(sheets, clientsList, forceRefresh 
     cachedAt: new Date().toISOString()
   };
 
-  // Cache in Redis
-  try {
-    await redisClient.set(cacheKey, JSON.stringify(payload), { EX: CACHE_TTL_SECONDS });
-    console.log(`✅ Cached activity for ${clientsList.length} clients (TTL: ${CACHE_TTL_SECONDS}s)`);
-  } catch (cacheErr) {
-    console.warn("⚠️ Redis write error in fetchAllClientsActivity:", cacheErr.message);
+  // Cache in Redis only when fetching the full global client set
+  if (allowGlobalCacheWrite) {
+    try {
+      await redisClient.set(cacheKey, JSON.stringify(payload), { EX: CACHE_TTL_SECONDS });
+      console.log(`✅ Cached activity for ${clientsList.length} clients (TTL: ${CACHE_TTL_SECONDS}s)`);
+    } catch (cacheErr) {
+      console.warn("⚠️ Redis write error in fetchAllClientsActivity:", cacheErr.message);
+    }
   }
 
   return payload;
@@ -1354,13 +1356,19 @@ export async function fetchAllClientsActivity(sheets, clientsList, forceRefresh 
  * API Route Handler for Activity feed
  */
 export async function handleGetActivity(req, res, sheets) {
-  const { automationCommanderSheetId, clientName, forceRefresh, includeRoutine, clients } = req.body;
-  const acId = automationCommanderSheetId || DEFAULT_AC_SHEET_ID;
+  const { clientName, forceRefresh, includeRoutine, clients } = req.body;
+  const acId = getCanonicalAcSheetId();
 
   try {
-    let clientsList = Array.isArray(clients) ? clients : [];
+    const isCronOrSystem = Boolean(req.isSystemAuthorized);
+    const sessionUser = getSessionUser(req) || (isCronOrSystem ? { email: "system@cron", isAdmin: true, assignedClients: "*" } : null);
+    if (!sessionUser) {
+      return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
+    }
 
-    // If client list was not supplied by caller, load it from AutoUpdates
+    let clientsList = (sessionUser.isAdmin && Array.isArray(clients)) ? clients : [];
+
+    // If client list was not supplied by caller (or caller is non-admin), load canonical list from AutoUpdates
     if (clientsList.length === 0 && acId) {
       const resp = await withRetry(() =>
         sheets.spreadsheets.values.get({
@@ -1379,12 +1387,6 @@ export async function handleGetActivity(req, res, sheets) {
         const masterSheetId = extractSheetIdFromUrl(masterSheetUrl) || String(masterSheetUrl || "").trim();
         clientsList.push({ clientName: cName, clientSheetId, masterSheetId });
       }
-    }
-
-    const isCronOrSystem = Boolean(req.isSystemAuthorized);
-    const sessionUser = getSessionUser(req) || (isCronOrSystem ? { email: "system@cron", isAdmin: true, assignedClients: "*" } : null);
-    if (!sessionUser) {
-      return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
     }
 
     // 1. Single Client or System View
@@ -1421,10 +1423,11 @@ export async function handleGetActivity(req, res, sheets) {
     }
 
     // 2. All Clients View
-    if (!sessionUser.isAdmin && sessionUser.assignedClients !== "*") {
+    const isGlobalScope = Boolean(sessionUser.isAdmin || sessionUser.assignedClients === "*");
+    if (!isGlobalScope) {
       clientsList = filterClientsForUser(clientsList, sessionUser);
     }
-    const data = await fetchAllClientsActivity(sheets, clientsList, !!forceRefresh, !!includeRoutine, acId);
+    const data = await fetchAllClientsActivity(sheets, clientsList, !!forceRefresh, !!includeRoutine, acId, isGlobalScope);
 
     // Filter aggregated data for non-admins to prevent cache bleeding
     if (!sessionUser.isAdmin && sessionUser.assignedClients !== "*") {

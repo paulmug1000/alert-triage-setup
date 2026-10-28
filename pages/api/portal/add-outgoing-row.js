@@ -1,6 +1,6 @@
 import { getSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
-import { verifyUserAuthorizedForSheet, sanitizeFormulaInput } from "../../../services/userPermissions.js";
+import { verifyUserAuthorizedForSheet, sanitizeFormulaInput, isReadOnlySession } from "../../../services/userPermissions.js";
 import { redisClient } from "../../../services/redisClient.js";
 import { memoryCache } from "../../../services/cacheService.js";
 import { logPulseActivity } from "../../../services/pulseLogger.js";
@@ -15,7 +15,7 @@ export default async function handler(req, res) {
     return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
   }
 
-  if (sessionUser.isReadOnly) {
+  if (isReadOnlySession(sessionUser)) {
     return res.status(403).json({
       success: false,
       error: "Pulse is read-only when logged in with a one-time password.",

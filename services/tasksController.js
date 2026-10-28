@@ -456,7 +456,7 @@ export async function handleGetTasks(req, res, sheets) {
     } else if (requestedFilter === "other_snoozed") {
       filtered = isAdmin ? accessibleTasks.filter(t => !checkIsMine(t) && t.isSnoozed && !t.isResolved) : [];
     } else if (requestedFilter === "resolved") {
-      filtered = accessibleTasks.filter(t => t.isResolved);
+      filtered = accessibleTasks.filter(t => t.isResolved && (isAdmin || checkIsMine(t)));
     } else {
       // "active" (default)
       filtered = accessibleTasks.filter(t => checkIsMine(t) && !t.isSnoozed && !t.isResolved);

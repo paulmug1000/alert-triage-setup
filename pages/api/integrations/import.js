@@ -27,6 +27,8 @@ import { refreshCloseTokens, getCloseAccountInfo } from "../../../services/close
 import { refreshHubSpotTokens, getHubSpotAccountInfo } from "../../../services/hubspotService.js";
 import { getSessionUser } from "../../../services/authService.js";
 import { redisClient } from "../../../services/redisClient.js";
+import { getSheetsClient, extractSheetIdFromUrl } from "../../../services/sheetsClient.js";
+import { resolveClientNameBySheetId, matchesClientName, isReadOnlySession } from "../../../services/userPermissions.js";
 
 function safeCompare(a, b) {
   if (typeof a !== "string" || typeof b !== "string") return false;
@@ -41,13 +43,14 @@ export default async function handler(req, res) {
     return res.status(405).json({ success: false, error: "Method not allowed" });
   }
 
-  const { tool = "xero", spreadsheetId, clientName, refreshToken, tenantId } = req.body;
+  const { tool = "xero", spreadsheetId: rawSpreadsheetId, clientName, refreshToken, tenantId } = req.body;
+  const spreadsheetId = rawSpreadsheetId ? (extractSheetIdFromUrl(String(rawSpreadsheetId).trim()) || String(rawSpreadsheetId).trim()) : "";
 
   if (!spreadsheetId) {
     return res.status(400).json({ success: false, error: "Missing required spreadsheetId parameter." });
   }
 
-  // 1. Verify Authentication: Ecosystem Secret, Client-Specific Secret, OR Admin Session
+  // 1. Verify Authentication: Ecosystem Secret + Client-Specific Secret, OR Non-ReadOnly Admin Session
   const authHeader = req.headers.authorization || "";
   const tokenMatch = authHeader.match(/^Bearer\s+(.+)$/i);
   const providedSecret = tokenMatch ? tokenMatch[1].trim() : (req.body?.secret || "");
@@ -56,7 +59,7 @@ export default async function handler(req, res) {
   const isMasterSecretValid = Boolean(expectedSecret && providedSecret && safeCompare(providedSecret, expectedSecret));
 
   const sessionUser = getSessionUser(req);
-  const isAdmin = Boolean(sessionUser?.isAdmin);
+  const isAdmin = Boolean(sessionUser?.isAdmin && !isReadOnlySession(sessionUser));
 
   const providedClientSecret = String(
     req.headers["x-pulse-client-secret"] ||
@@ -69,13 +72,21 @@ export default async function handler(req, res) {
   const redisSecretKey = `pulse:client_secret:${spreadsheetId}`;
 
   if (!isAuthorized) {
+    if (!redisClient?.isOpen) {
+      return res.status(503).json({ success: false, error: "Authentication store unavailable." });
+    }
     let registeredHash = null;
-    if (redisClient?.isOpen) {
-      try {
-        registeredHash = await redisClient.get(redisSecretKey);
-      } catch (redisErr) {
-        console.warn("⚠️ Integration Import: Error checking client secret in Redis:", redisErr.message);
-      }
+    try {
+      registeredHash = await redisClient.get(redisSecretKey);
+    } catch (redisErr) {
+      console.error("❌ Integration Import: Error checking client secret in Redis:", redisErr.message);
+      return res.status(503).json({ success: false, error: "Authentication store error." });
+    }
+
+    const sheets = await getSheetsClient();
+    const resolvedSheetClient = await resolveClientNameBySheetId(sheets, spreadsheetId);
+    if (clientName && resolvedSheetClient && !matchesClientName(clientName, resolvedSheetClient)) {
+      return res.status(403).json({ success: false, error: "Forbidden: Client name does not match spreadsheet ID." });
     }
 
     if (providedClientSecret) {
@@ -87,19 +98,18 @@ export default async function handler(req, res) {
           return res.status(401).json({ success: false, error: "Unauthorized: Invalid client-specific secret." });
         }
       } else {
-        if (isMasterSecretValid) {
-          if (redisClient?.isOpen) {
-            try {
-              await redisClient.set(redisSecretKey, providedHash);
-            } catch (_) {}
+        if (isMasterSecretValid && resolvedSheetClient) {
+          try {
+            await redisClient.set(redisSecretKey, providedHash);
+            isAuthorized = true;
+          } catch (regErr) {
+            return res.status(503).json({ success: false, error: "Failed to persist client secret." });
           }
-          isAuthorized = true;
         } else {
-          return res.status(401).json({ success: false, error: "Unauthorized: Valid ecosystem secret required for initial client registration." });
+          return res.status(401).json({ success: false, error: "Unauthorized: Valid ecosystem secret and registered Master Sheet required for initial client registration." });
         }
       }
     } else {
-      // Legacy fallback retired: client secret is strictly required
       console.warn(`🚨 Integration Import: Missing client-specific secret for ${spreadsheetId}.`);
       return res.status(401).json({
         success: false,

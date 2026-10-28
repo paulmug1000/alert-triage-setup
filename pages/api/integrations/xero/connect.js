@@ -11,7 +11,7 @@
 import crypto from "crypto";
 import { buildXeroAuthUrl } from "../../../../services/xeroService.js";
 import { getSheetsClient, extractSheetIdFromUrl } from "../../../../services/sheetsClient.js";
-import { DEFAULT_AC_SHEET_ID, matchesClientName, isUserAuthorizedForClient } from "../../../../services/userPermissions.js";
+import { DEFAULT_AC_SHEET_ID, matchesClientName, isUserAuthorizedForClient, isReadOnlySession } from "../../../../services/userPermissions.js";
 import { getSessionUser } from "../../../../services/authService.js";
 import { sanitizeRedirectUrl } from "../../../../utils/helpers.js";
 
@@ -23,6 +23,10 @@ export default async function handler(req, res) {
   const sessionUser = getSessionUser(req);
   if (!sessionUser) {
     return res.status(401).json({ error: "Active session required." });
+  }
+
+  if (isReadOnlySession(sessionUser)) {
+    return res.status(403).json({ error: "Read-only session cannot initiate OAuth connections." });
   }
 
   const { clientKey, clientName, masterSheetId, clientSheetId, redirectBack, mode } = req.method === "POST" ? req.body : req.query;
@@ -42,6 +46,9 @@ export default async function handler(req, res) {
   const isExplicitAdvisor = mode === "advisor" || clientKey === "advisor";
   const isClientPortal = !mode && (redirectBack?.startsWith("/pulse") || redirectBack?.startsWith("/portal"));
   const effectiveMode = isExplicitAdvisor ? "advisor" : (isClientPortal ? "dedicated" : (mode || "advisor"));
+  if ((effectiveMode === "advisor" || targetName === "advisor") && !sessionUser.isAdmin) {
+    return res.status(403).json({ error: "Only administrators can connect or modify the central Xero advisor grant." });
+  }
   const sanitizedRedirectBack = sanitizeRedirectUrl(redirectBack, isClientPortal ? "/pulse" : "/pma");
 
   try {

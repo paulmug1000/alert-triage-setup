@@ -8,7 +8,7 @@
  */
 
 import { getSessionUser } from "../../../../services/authService.js";
-import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet } from "../../../../services/userPermissions.js";
+import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, isReadOnlySession } from "../../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../../services/sheetsClient.js";
 import { linkGoogleSheetToClient } from "../../../../services/googleSheetService.js";
 import { updateClientChecklistTask } from "../../../../services/setupService.js";
@@ -22,6 +22,10 @@ export default async function handler(req, res) {
   const sessionUser = getSessionUser(req);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Unauthorized" });
+  }
+
+  if (isReadOnlySession(sessionUser)) {
+    return res.status(403).json({ success: false, error: "Read-only session cannot link spreadsheets." });
   }
 
   const { clientKey, masterSheetId, url, tabName, headerRowNum = 1, keyHeaders = "" } = req.body;

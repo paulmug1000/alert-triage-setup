@@ -636,6 +636,11 @@ export async function saveDividendsData({
   if (!clientSheetId) {
     throw new Error("clientSheetId is required.");
   }
+  const rowNum = parseInt(sheetRow, 10);
+  if (rowNum !== 118 && rowNum !== 119) {
+    throw new Error("Invalid dividends row: must be 118 or 119.");
+  }
+  sheetRow = rowNum;
 
   const sheets = await getSheetsClient();
   const data = [];
@@ -656,9 +661,10 @@ export async function saveDividendsData({
 
   if (monthlyAmounts && typeof monthlyAmounts === "object") {
     Object.entries(monthlyAmounts).forEach(([colLetter, val]) => {
-      if (colLetter && val !== undefined) {
+      const cleanCol = String(colLetter || "").trim().toUpperCase();
+      if (/^[A-Z]{1,2}$/.test(cleanCol) && val !== undefined) {
         data.push({
-          range: `Outgoings!${colLetter}${sheetRow}`,
+          range: `Outgoings!${cleanCol}${sheetRow}`,
           values: [[sanitizeFormulaInput(val)]],
         });
       }

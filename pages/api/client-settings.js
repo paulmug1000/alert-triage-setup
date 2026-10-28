@@ -28,8 +28,8 @@ export default async function handler(req, res) {
     return res.status(401).json({ success: false, error: "Active session required." });
   }
 
-  // 2. Strict Admin-only check
-  const isAdmin = Boolean(sessionUser.isAdmin || sessionUser.role === "Admin");
+  // 2. Strict Admin-only check (never allow read-only / OTP sessions)
+  const isAdmin = Boolean(sessionUser.isAdmin && !sessionUser.isReadOnly && sessionUser.authProvider !== "EmailOTP");
   if (!isAdmin) {
     return res.status(403).json({
       success: false,

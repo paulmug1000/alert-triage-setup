@@ -43,6 +43,12 @@ export default function ReportingTab({
   // Checkbox selections for batch actions
   const [selectedClients, setSelectedClients] = useState(new Set());
 
+  // Filter state: show configured decks only by default
+  const [showConfiguredOnly, setShowConfiguredOnly] = useState(true);
+
+  // Abort controller ref for in-flight batch reporting tasks
+  const abortControllerRef = useRef(null);
+
   // Action states
   const [actionInProgress, setActionInProgress] = useState(null); // 'GENERATE' | 'UPDATE' | 'EMAIL' | null
   const [clientStatuses, setClientStatuses] = useState({}); // { [clientName]: { status, message, reportUrl } }
@@ -54,6 +60,9 @@ export default function ReportingTab({
 
   const [showLogModal, setShowLogModal] = useState(false);
   const [showChartRefsModal, setShowChartRefsModal] = useState(false);
+  const [editingRef, setEditingRef] = useState(null); // { code, range, label, originalCode, isNew }
+  const [refSaving, setRefSaving] = useState(false);
+  const [refDeletingCode, setRefDeletingCode] = useState(null);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [settingsUrlInput, setSettingsUrlInput] = useState("");
   const [settingsTesting, setSettingsTesting] = useState(false);
@@ -85,6 +94,16 @@ export default function ReportingTab({
 
   const isOverridden = selectedReportMonthKey !== defaultReportMonthKey;
 
+  // Filter clients by configured deck status
+  const configuredCount = useMemo(() => {
+    return (clients || []).filter(c => c.hasDeckConfigured || c.folderUrl).length;
+  }, [clients]);
+
+  const visibleClients = useMemo(() => {
+    if (!showConfiguredOnly) return clients || [];
+    return (clients || []).filter(c => c.hasDeckConfigured || c.folderUrl);
+  }, [clients, showConfiguredOnly]);
+
   // Load reporting data
   const loadReportingData = useCallback(async () => {
     setLoading(true);
@@ -109,11 +128,8 @@ export default function ReportingTab({
       setSettingsUrlInput(data.systemWebAppUrl || "");
       setChartRefs(data.chartRefs || []);
 
-      // Auto-select clients that have decks configured by default
-      const defaultSelected = new Set(
-        (data.clients || []).filter(c => c.hasDeckConfigured).map(c => c.clientName)
-      );
-      setSelectedClients(defaultSelected);
+      // Default: do not check any clients
+      setSelectedClients(new Set());
     } catch (err) {
       console.error("Error loading reporting data:", err);
       setError(err.message);
@@ -139,13 +155,42 @@ export default function ReportingTab({
     });
   };
 
-  // Toggle select all
+  // Toggle select all (operates on visible clients)
   const toggleSelectAll = () => {
-    if (selectedClients.size === clients.length) {
-      setSelectedClients(new Set());
+    const visibleNames = visibleClients.map(c => c.clientName);
+    const allVisibleSelected = visibleNames.length > 0 && visibleNames.every(name => selectedClients.has(name));
+    if (allVisibleSelected) {
+      setSelectedClients(prev => {
+        const next = new Set(prev);
+        visibleNames.forEach(name => next.delete(name));
+        return next;
+      });
     } else {
-      setSelectedClients(new Set(clients.map(c => c.clientName)));
+      setSelectedClients(prev => {
+        const next = new Set(prev);
+        visibleNames.forEach(name => next.add(name));
+        return next;
+      });
     }
+  };
+
+  // Stop / cancel running batch action
+  const handleCancelAction = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setActionInProgress(null);
+    setStatusMsg({ type: "warning", text: "Task was stopped by user." });
+    setClientStatuses(prev => {
+      const updated = { ...prev };
+      Object.keys(updated).forEach(name => {
+        if (updated[name]?.status === "running") {
+          updated[name] = { status: "cancelled", message: "Stopped by user" };
+        }
+      });
+      return updated;
+    });
   };
 
   // Run Batch Reporting Action (GENERATE | UPDATE | EMAIL)
@@ -163,6 +208,8 @@ export default function ReportingTab({
       }
     }
 
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
     setActionInProgress(mode);
     setStatusMsg(null);
 
@@ -179,6 +226,7 @@ export default function ReportingTab({
     try {
       const resp = await fetch("/api/triage", {
         method: "POST",
+        signal: controller.signal,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "eom_run_reporting_action",
@@ -215,6 +263,10 @@ export default function ReportingTab({
       // Reload fresh state to pull new report URLs and logs
       loadReportingData();
     } catch (err) {
+      if (err.name === "AbortError" || controller.signal.aborted) {
+        console.log("Reporting action cancelled by user.");
+        return;
+      }
       console.error("Batch reporting action error:", err);
       setStatusMsg({ type: "error", text: err.message });
 
@@ -224,6 +276,9 @@ export default function ReportingTab({
       });
       setClientStatuses(errorStatuses);
     } finally {
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null;
+      }
       setActionInProgress(null);
     }
   };
@@ -334,6 +389,77 @@ export default function ReportingTab({
       setStatusMsg({ type: "success", text: "Reporting Web App URL updated." });
     } catch (err) {
       alert(`Error saving settings: ${err.message}`);
+    }
+  };
+
+  // Save (Create or Update) Chart Reference
+  const handleSaveChartRef = async () => {
+    if (!editingRef || !editingRef.code.trim() || !editingRef.range.trim()) {
+      alert("Both speaker notes code and cell range are required.");
+      return;
+    }
+    setRefSaving(true);
+    try {
+      const resp = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "eom_save_chart_ref",
+          code: editingRef.code.trim(),
+          range: editingRef.range.trim(),
+          label: editingRef.label?.trim() || "",
+          originalCode: editingRef.originalCode || null
+        })
+      });
+      const data = await resp.json();
+      if (!data.success) throw new Error(data.error || "Failed to save chart reference");
+
+      const savedRef = data.chartRef;
+      setChartRefs(prev => {
+        const lookup = editingRef.originalCode || savedRef.code;
+        const exists = prev.some(r => r.code === lookup);
+        if (exists) {
+          return prev.map(r => r.code === lookup ? savedRef : r);
+        }
+        return [...prev, savedRef];
+      });
+
+      setEditingRef(null);
+      setStatusMsg({ type: "success", text: data.message || `Reference ${savedRef.code} saved.` });
+    } catch (err) {
+      alert(`Error saving chart reference: ${err.message}`);
+    } finally {
+      setRefSaving(false);
+    }
+  };
+
+  // Delete Chart Reference
+  const handleDeleteChartRef = async (code) => {
+    if (!window.confirm(`Are you sure you want to delete reference ${code}?`)) {
+      return;
+    }
+    setRefDeletingCode(code);
+    try {
+      const resp = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "eom_delete_chart_ref",
+          code
+        })
+      });
+      const data = await resp.json();
+      if (!data.success) throw new Error(data.error || "Failed to delete chart reference");
+
+      setChartRefs(prev => prev.filter(r => r.code !== code));
+      if (editingRef?.originalCode === code || editingRef?.code === code) {
+        setEditingRef(null);
+      }
+      setStatusMsg({ type: "success", text: data.message || `Reference ${code} deleted.` });
+    } catch (err) {
+      alert(`Error deleting chart reference: ${err.message}`);
+    } finally {
+      setRefDeletingCode(null);
     }
   };
 
@@ -589,12 +715,56 @@ export default function ReportingTab({
               {actionInProgress === "EMAIL" && <Spinner size="14px" color="#334155" />}
               <span>Draft emails</span>
             </button>
+
+            {actionInProgress && (
+              <button
+                type="button"
+                onClick={handleCancelAction}
+                style={{
+                  padding: "8px 16px",
+                  background: "#dc2626",
+                  color: "#ffffff",
+                  border: "none",
+                  borderRadius: "6px",
+                  fontSize: "13px",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  boxShadow: "0 1px 2px rgba(0,0,0,0.05)"
+                }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="4" y="4" width="16" height="16" rx="2" ry="2" />
+                </svg>
+                <span>Stop task</span>
+              </button>
+            )}
           </div>
 
-          {/* Selection controls */}
-          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          {/* Filter & selection controls */}
+          <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+            <label style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "6px",
+              fontSize: "12px",
+              color: "#475569",
+              cursor: "pointer",
+              userSelect: "none"
+            }}>
+              <input
+                type="checkbox"
+                checked={showConfiguredOnly}
+                onChange={(e) => setShowConfiguredOnly(e.target.checked)}
+                style={{ cursor: "pointer" }}
+              />
+              <span>Show configured decks only ({configuredCount})</span>
+            </label>
+
             <span style={{ fontSize: "12px", color: "#64748b" }}>
-              {selectedClients.size} of {clients.length} selected
+              {selectedClients.size} of {visibleClients.length} selected
             </span>
             <button
               onClick={toggleSelectAll}
@@ -608,7 +778,7 @@ export default function ReportingTab({
                 cursor: "pointer"
               }}
             >
-              {selectedClients.size === clients.length ? "Deselect all" : "Select all"}
+              {visibleClients.length > 0 && visibleClients.every(c => selectedClients.has(c.clientName)) ? "Deselect all" : "Select all"}
             </button>
           </div>
         </div>
@@ -624,9 +794,9 @@ export default function ReportingTab({
           display: "flex",
           justifyContent: "space-between",
           alignItems: "center",
-          backgroundColor: statusMsg.type === "error" ? "#fef2f2" : "#f0fdf4",
-          border: `1px solid ${statusMsg.type === "error" ? "#fecaca" : "#bbf7d0"}`,
-          color: statusMsg.type === "error" ? "#991b1b" : "#166534"
+          backgroundColor: statusMsg.type === "error" ? "#fef2f2" : (statusMsg.type === "warning" ? "#fffbeb" : "#f0fdf4"),
+          border: `1px solid ${statusMsg.type === "error" ? "#fecaca" : (statusMsg.type === "warning" ? "#fde68a" : "#bbf7d0")}`,
+          color: statusMsg.type === "error" ? "#991b1b" : (statusMsg.type === "warning" ? "#92400e" : "#166534")
         }}>
           <div>{statusMsg.text}</div>
           <button
@@ -665,9 +835,11 @@ export default function ReportingTab({
             <Spinner size="24px" />
             <div style={{ marginTop: "10px", fontSize: "13px" }}>Loading reporting clients and configurations...</div>
           </div>
-        ) : clients.length === 0 ? (
+        ) : visibleClients.length === 0 ? (
           <div style={{ padding: "40px", textAlign: "center", color: "#64748b", fontSize: "13px" }}>
-            No clients found.
+            {showConfiguredOnly
+              ? "No clients with configured decks found. Uncheck 'Show configured decks only' to view all clients."
+              : "No clients found."}
           </div>
         ) : (
           <div style={{ overflowX: "auto" }}>
@@ -677,7 +849,7 @@ export default function ReportingTab({
                   <th style={{ padding: "12px 16px", width: "40px" }}>
                     <input
                       type="checkbox"
-                      checked={selectedClients.size === clients.length && clients.length > 0}
+                      checked={visibleClients.length > 0 && visibleClients.every(c => selectedClients.has(c.clientName))}
                       onChange={toggleSelectAll}
                       style={{ cursor: "pointer" }}
                     />
@@ -691,7 +863,7 @@ export default function ReportingTab({
                 </tr>
               </thead>
               <tbody>
-                {clients.map(client => {
+                {visibleClients.map(client => {
                   const isChecked = selectedClients.has(client.clientName);
                   const statusInfo = clientStatuses[client.clientName];
                   const latestReport = client.latestReport;
@@ -850,8 +1022,8 @@ export default function ReportingTab({
                             fontWeight: 600,
                             padding: "3px 8px",
                             borderRadius: "4px",
-                            background: statusInfo.status === "success" ? "#f0fdf4" : (statusInfo.status === "error" ? "#fef2f2" : "#f1f5f9"),
-                            color: statusInfo.status === "success" ? "#15803d" : (statusInfo.status === "error" ? "#b91c1c" : "#0284c7")
+                            background: statusInfo.status === "success" ? "#f0fdf4" : (statusInfo.status === "error" ? "#fef2f2" : (statusInfo.status === "cancelled" ? "#fffbeb" : "#f1f5f9")),
+                            color: statusInfo.status === "success" ? "#15803d" : (statusInfo.status === "error" ? "#b91c1c" : (statusInfo.status === "cancelled" ? "#b45309" : "#0284c7"))
                           }}>
                             {statusInfo.status === "running" && <Spinner size="12px" />}
                             <span>{statusInfo.message}</span>
@@ -1103,34 +1275,179 @@ export default function ReportingTab({
                   Chart &amp; table references
                 </h2>
                 <p style={{ margin: 0, fontSize: "12px", color: "#64748b" }}>
-                  Mapped slide speaker notes codes to Master Sheet cell ranges (tab: MgmtRep).
+                  Mapped slide speaker notes codes to Master Sheet cell ranges (tab: MgmtRep). Stored in Reporting Control sheet.
                 </p>
               </div>
-              <button
-                onClick={() => setShowChartRefsModal(false)}
-                style={{ background: "none", border: "none", fontSize: "18px", cursor: "pointer", color: "#64748b" }}
-              >
-                ✕
-              </button>
+              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                {!editingRef && (
+                  <button
+                    type="button"
+                    onClick={() => setEditingRef({ code: "", range: "", label: "", isNew: true })}
+                    style={{
+                      padding: "6px 12px",
+                      background: "#0066cc",
+                      color: "#ffffff",
+                      border: "none",
+                      borderRadius: "6px",
+                      fontSize: "12px",
+                      fontWeight: 600,
+                      cursor: "pointer",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "4px"
+                    }}
+                  >
+                    + Add reference
+                  </button>
+                )}
+                <button
+                  onClick={() => { setShowChartRefsModal(false); setEditingRef(null); }}
+                  style={{ background: "none", border: "none", fontSize: "18px", cursor: "pointer", color: "#64748b" }}
+                >
+                  ✕
+                </button>
+              </div>
             </div>
 
             <div style={{ padding: "16px 24px", overflowY: "auto", flex: 1 }}>
+              {editingRef && (
+                <div style={{
+                  background: "#f8fafc",
+                  border: "1px solid #cbd5e1",
+                  borderRadius: "8px",
+                  padding: "16px",
+                  marginBottom: "16px"
+                }}>
+                  <div style={{ fontSize: "13px", fontWeight: 700, color: "#0f172a", marginBottom: "12px" }}>
+                    {editingRef.isNew ? "Add new chart reference" : `Edit reference: ${editingRef.originalCode || editingRef.code}`}
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1.5fr", gap: "12px", marginBottom: "12px" }}>
+                    <div>
+                      <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "#475569", marginBottom: "4px" }}>
+                        Speaker notes code:
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="e.g. [MonthSnapshot]"
+                        value={editingRef.code}
+                        onChange={(e) => setEditingRef({ ...editingRef, code: e.target.value })}
+                        style={{ width: "100%", padding: "7px 10px", fontSize: "12px", border: "1px solid #cbd5e1", borderRadius: "6px", fontFamily: "monospace", boxSizing: "border-box" }}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "#475569", marginBottom: "4px" }}>
+                        MgmtRep cell range:
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="e.g. C31:J47"
+                        value={editingRef.range}
+                        onChange={(e) => setEditingRef({ ...editingRef, range: e.target.value })}
+                        style={{ width: "100%", padding: "7px 10px", fontSize: "12px", border: "1px solid #cbd5e1", borderRadius: "6px", fontFamily: "monospace", boxSizing: "border-box" }}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "#475569", marginBottom: "4px" }}>
+                        Description:
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Month snapshot table"
+                        value={editingRef.label}
+                        onChange={(e) => setEditingRef({ ...editingRef, label: e.target.value })}
+                        style={{ width: "100%", padding: "7px 10px", fontSize: "12px", border: "1px solid #cbd5e1", borderRadius: "6px", boxSizing: "border-box" }}
+                      />
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px" }}>
+                    <button
+                      type="button"
+                      onClick={() => setEditingRef(null)}
+                      style={{ padding: "6px 12px", background: "none", border: "1px solid #cbd5e1", borderRadius: "6px", fontSize: "12px", cursor: "pointer" }}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={refSaving}
+                      onClick={handleSaveChartRef}
+                      style={{
+                        padding: "6px 14px",
+                        background: "#0066cc",
+                        color: "#ffffff",
+                        border: "none",
+                        borderRadius: "6px",
+                        fontSize: "12px",
+                        fontWeight: 600,
+                        cursor: refSaving ? "default" : "pointer"
+                      }}
+                    >
+                      {refSaving ? "Saving..." : "Save reference"}
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "13px" }}>
                 <thead>
                   <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0", color: "#475569" }}>
                     <th style={{ padding: "8px 12px" }}>Speaker notes code</th>
                     <th style={{ padding: "8px 12px" }}>MgmtRep cell range</th>
                     <th style={{ padding: "8px 12px" }}>Description</th>
+                    <th style={{ padding: "8px 12px", width: "110px", textAlign: "right" }}>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {chartRefs.map((ref, idx) => (
-                    <tr key={idx} style={{ borderBottom: "1px solid #f1f5f9" }}>
-                      <td style={{ padding: "8px 12px", fontWeight: 600, color: "#0066cc", fontFamily: "monospace" }}>{ref.code}</td>
-                      <td style={{ padding: "8px 12px", fontFamily: "monospace" }}>{ref.range}</td>
-                      <td style={{ padding: "8px 12px", color: "#64748b" }}>{ref.label || "-"}</td>
+                  {chartRefs.length === 0 ? (
+                    <tr>
+                      <td colSpan={4} style={{ padding: "24px", textAlign: "center", color: "#94a3b8" }}>
+                        No chart references found. Click &quot;+ Add reference&quot; to create one.
+                      </td>
                     </tr>
-                  ))}
+                  ) : (
+                    chartRefs.map((ref, idx) => (
+                      <tr key={idx} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                        <td style={{ padding: "8px 12px", fontWeight: 600, color: "#0066cc", fontFamily: "monospace" }}>{ref.code}</td>
+                        <td style={{ padding: "8px 12px", fontFamily: "monospace" }}>{ref.range}</td>
+                        <td style={{ padding: "8px 12px", color: "#64748b" }}>{ref.label || "-"}</td>
+                        <td style={{ padding: "8px 12px", textAlign: "right" }}>
+                          <div style={{ display: "inline-flex", gap: "6px", justifyContent: "flex-end" }}>
+                            <button
+                              type="button"
+                              onClick={() => setEditingRef({ code: ref.code, range: ref.range, label: ref.label || "", originalCode: ref.code, isNew: false })}
+                              style={{
+                                padding: "3px 8px",
+                                background: "none",
+                                border: "1px solid #cbd5e1",
+                                borderRadius: "4px",
+                                fontSize: "11px",
+                                color: "#0369a1",
+                                cursor: "pointer"
+                              }}
+                            >
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              disabled={refDeletingCode === ref.code}
+                              onClick={() => handleDeleteChartRef(ref.code)}
+                              style={{
+                                padding: "3px 8px",
+                                background: "none",
+                                border: "1px solid #fecaca",
+                                borderRadius: "4px",
+                                fontSize: "11px",
+                                color: "#b91c1c",
+                                cursor: refDeletingCode === ref.code ? "default" : "pointer"
+                              }}
+                            >
+                              {refDeletingCode === ref.code ? "..." : "Delete"}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>

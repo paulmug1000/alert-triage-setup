@@ -9,7 +9,8 @@
  */
 
 import { getSessionUser } from "../../../services/authService.js";
-import { isUserAuthorizedForClient } from "../../../services/userPermissions.js";
+import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet } from "../../../services/userPermissions.js";
+import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { getClientSetupStatusForPortal } from "../../../services/setupService.js";
 
 export default async function handler(req, res) {
@@ -30,6 +31,17 @@ export default async function handler(req, res) {
   // Ensure user is authorized for this client
   if (!sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, clientName)) {
     return res.status(403).json({ success: false, error: "Access denied to this client." });
+  }
+  if (!sessionUser.isAdmin && masterSheetId) {
+    try {
+      const sheets = await getSheetsClient();
+      const auth = await verifyUserAuthorizedForSheet(sessionUser, masterSheetId, clientName, sheets);
+      if (!auth.authorized) {
+        return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
+      }
+    } catch (_) {
+      return res.status(403).json({ success: false, error: "Access denied to this client." });
+    }
   }
 
   try {

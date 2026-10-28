@@ -2,7 +2,7 @@ import { getSheetsClient, withRetry, colLetterToNum, colIndexToLetter, getSheetG
 import { resolveClientNameBySheetId } from "./workspaces.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { getSessionUser } from "./authService.js";
-import { isUserAuthorizedForClient, sanitizeFormulaInput } from "./userPermissions.js";
+import { isUserAuthorizedForClient, sanitizeFormulaInput, verifyUserAuthorizedForSheet, isReadOnlySession } from "./userPermissions.js";
 import { memoryCache } from "./cacheService.js";
 import { redisClient } from "./redisClient.js";
 
@@ -380,20 +380,27 @@ export async function handleUpdateViewCell(req, res, sheets) {
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
   }
+  if (isReadOnlySession(sessionUser)) {
+    return res.status(403).json({ success: false, error: "Forbidden: Read-only sessions cannot modify view cells." });
+  }
 
   if ((!clientSheetId && !masterSheetId) || !sheetRow || !colLetter) {
     return res.status(400).json({ success: false, error: "Missing required fields" });
   }
 
   let resolvedClient = req.body.clientName || "";
-  if (!resolvedClient) {
+  if (!sessionUser.isAdmin) {
+    for (const sid of [clientSheetId, masterSheetId].filter(Boolean)) {
+      const auth = await verifyUserAuthorizedForSheet(sessionUser, sid, resolvedClient, sheets);
+      if (!auth.authorized) {
+        return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client" });
+      }
+      resolvedClient = auth.clientName || resolvedClient;
+    }
+  } else if (!resolvedClient) {
     try {
-      resolvedClient = await resolveClientNameBySheetId(sheets, extractSheetIdFromUrl(clientSheetId) || clientSheetId, req.body.automationCommanderSheetId);
+      resolvedClient = await resolveClientNameBySheetId(sheets, extractSheetIdFromUrl(clientSheetId || masterSheetId) || clientSheetId || masterSheetId);
     } catch (e) {}
-  }
-
-  if (!sessionUser.isAdmin && (!resolvedClient || !isUserAuthorizedForClient(sessionUser, resolvedClient))) {
-    return res.status(403).json({ success: false, error: "Access denied to this client" });
   }
 
   const rowNum = parseInt(sheetRow, 10);
@@ -665,20 +672,27 @@ export async function handleSpreadViewRow(req, res, sheets) {
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
   }
+  if (isReadOnlySession(sessionUser)) {
+    return res.status(403).json({ success: false, error: "Forbidden: Read-only sessions cannot modify budget rows." });
+  }
 
   if ((!clientSheetId && !masterSheetId) || !sheetRow || !startColLetter || !endColLetter || !Array.isArray(values)) {
     return res.status(400).json({ success: false, error: "Missing required fields for spread" });
   }
 
   let resolvedClient = req.body.clientName || "";
-  if (!resolvedClient) {
+  if (!sessionUser.isAdmin) {
+    for (const sid of [clientSheetId, masterSheetId].filter(Boolean)) {
+      const auth = await verifyUserAuthorizedForSheet(sessionUser, sid, resolvedClient, sheets);
+      if (!auth.authorized) {
+        return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client" });
+      }
+      resolvedClient = auth.clientName || resolvedClient;
+    }
+  } else if (!resolvedClient) {
     try {
-      resolvedClient = await resolveClientNameBySheetId(sheets, extractSheetIdFromUrl(clientSheetId) || clientSheetId, req.body.automationCommanderSheetId);
+      resolvedClient = await resolveClientNameBySheetId(sheets, extractSheetIdFromUrl(clientSheetId || masterSheetId) || clientSheetId || masterSheetId);
     } catch (e) {}
-  }
-
-  if (!sessionUser.isAdmin && (!resolvedClient || !isUserAuthorizedForClient(sessionUser, resolvedClient))) {
-    return res.status(403).json({ success: false, error: "Access denied to this client" });
   }
 
   const rowNum = parseInt(sheetRow, 10);
@@ -770,11 +784,28 @@ export async function handleSpreadViewRow(req, res, sheets) {
 export async function handleUpdateCellNote(req, res, sheets) {
   const { clientSheetId, masterSheetId, tab = "Budget", sheetRow, colLetter, colIdx, note = "", clientName } = req.body;
 
+  const sessionUser = getSessionUser(req);
+  if (!sessionUser) {
+    return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
+  }
+  if (isReadOnlySession(sessionUser)) {
+    return res.status(403).json({ success: false, error: "Forbidden: Read-only sessions cannot modify cell notes." });
+  }
+
   if (!clientSheetId && !masterSheetId) {
     return res.status(400).json({ success: false, error: "Missing sheet ID" });
   }
   if (!sheetRow) {
     return res.status(400).json({ success: false, error: "Missing sheetRow" });
+  }
+
+  if (!sessionUser.isAdmin) {
+    for (const sid of [clientSheetId, masterSheetId].filter(Boolean)) {
+      const auth = await verifyUserAuthorizedForSheet(sessionUser, sid, clientName, sheets);
+      if (!auth.authorized) {
+        return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client" });
+      }
+    }
   }
 
   const rowNum = parseInt(sheetRow, 10);
@@ -795,6 +826,9 @@ export async function handleUpdateCellNote(req, res, sheets) {
   if (targetTabNormalized.includes("budget")) {
     targetTab = "Budget";
     targetSpreadsheetId = masterSheetId || clientSheetId;
+  } else if (targetTabNormalized.includes("outgnotes")) {
+    targetTab = "OutgNotes";
+    targetSpreadsheetId = masterSheetId || clientSheetId;
   } else if (targetTabNormalized.includes("outgoings")) {
     targetTab = "Outgoings";
     targetSpreadsheetId = clientSheetId;
@@ -803,7 +837,7 @@ export async function handleUpdateCellNote(req, res, sheets) {
     targetSpreadsheetId = clientSheetId;
   } else if (targetTabNormalized.includes("salaries")) {
     targetTab = "Salaries";
-    targetSpreadsheetId = masterSheetId;
+    targetSpreadsheetId = masterSheetId || clientSheetId;
   } else if (targetTabNormalized.includes("confirmed")) {
     targetTab = "Confirmed";
     targetSpreadsheetId = clientSheetId;
@@ -811,8 +845,7 @@ export async function handleUpdateCellNote(req, res, sheets) {
     targetTab = "Pipeline";
     targetSpreadsheetId = clientSheetId;
   } else {
-    targetTab = tab;
-    targetSpreadsheetId = clientSheetId || masterSheetId;
+    return res.status(400).json({ success: false, error: `Unsupported tab for cell notes: ${tab}` });
   }
 
   try {

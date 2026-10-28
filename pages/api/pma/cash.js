@@ -1,7 +1,7 @@
 import { getSessionUser } from "../../../services/authService.js";
 import { fetchCashData, saveCashBatch, saveCashCellNote } from "../../../services/cashEditService.js";
 import { getClients } from "../../../services/workspaces.js";
-import { verifyUserAuthorizedForSheet } from "../../../services/userPermissions.js";
+import { verifyUserAuthorizedForSheet, canAccessPma, isReadOnlySession, getCanonicalAcSheetId } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 
 export default async function handler(req, res) {
@@ -11,14 +11,7 @@ export default async function handler(req, res) {
     return res.status(401).json({ success: false, error: "Active session required." });
   }
 
-  // Enforce PMA access roles (Admins, ClientManagers)
-  const isPulseOnly =
-    sessionUser.role === "ClientUser" ||
-    sessionUser.role === "Senior (Restricted)" ||
-    Boolean(sessionUser.isSenior) ||
-    (!sessionUser.isAdmin && sessionUser.role !== "ClientManager");
-
-  if (isPulseOnly) {
+  if (!canAccessPma(sessionUser)) {
     return res.status(403).json({ success: false, error: "Forbidden: Access restricted to Pulse Portal" });
   }
 
@@ -66,6 +59,9 @@ export default async function handler(req, res) {
 
   // 3. POST: Save Changes (Batch of cells or Note)
   if (req.method === "POST") {
+    if (isReadOnlySession(sessionUser)) {
+      return res.status(403).json({ success: false, error: "Read-only session cannot modify cash data." });
+    }
     let {
       action,
       clientName,
@@ -76,8 +72,8 @@ export default async function handler(req, res) {
       colIdx,
       colLetter,
       note,
-      automationCommanderSheetId,
     } = req.body || {};
+    const automationCommanderSheetId = getCanonicalAcSheetId();
 
     if (!clientSheetId && clientName) {
       try {

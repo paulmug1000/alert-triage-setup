@@ -5,7 +5,7 @@
  */
 
 import { getSessionUser } from "../../../../services/authService.js";
-import { isUserAuthorizedForClient } from "../../../../services/userPermissions.js";
+import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, isReadOnlySession } from "../../../../services/userPermissions.js";
 import { getSheetsClient, withRetry } from "../../../../services/sheetsClient.js";
 import { deleteIntegrationTokens, invalidateIntegrationsCache } from "../../../../services/vaultService.js";
 import { updateClientChecklistTask } from "../../../../services/setupService.js";
@@ -21,6 +21,10 @@ export default async function handler(req, res) {
     return res.status(401).json({ success: false, error: "Unauthorized" });
   }
 
+  if (isReadOnlySession(sessionUser)) {
+    return res.status(403).json({ success: false, error: "Read-only session cannot disconnect integrations." });
+  }
+
   const { clientKey, masterSheetId } = req.body;
   if (!clientKey) {
     return res.status(400).json({ success: false, error: "Missing clientKey parameter" });
@@ -32,6 +36,12 @@ export default async function handler(req, res) {
 
   try {
     const sheets = await getSheetsClient();
+    if (!sessionUser.isAdmin && masterSheetId) {
+      const auth = await verifyUserAuthorizedForSheet(sessionUser, masterSheetId, clientKey, sheets);
+      if (!auth.authorized) {
+        return res.status(auth.status || 403).json({ success: false, error: auth.error });
+      }
+    }
 
     // 1. Clear KeyInfo!X33:X41 in master sheet if available
     if (masterSheetId) {

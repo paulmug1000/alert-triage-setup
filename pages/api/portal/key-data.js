@@ -1,6 +1,6 @@
 import { getSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "../../../services/sheetsClient.js";
-import { verifyUserAuthorizedForSheet } from "../../../services/userPermissions.js";
+import { verifyUserAuthorizedForSheet, resolveMasterSheetIdByClientName } from "../../../services/userPermissions.js";
 import { redisClient } from "../../../services/redisClient.js";
 import { memoryCache } from "../../../services/cacheService.js";
 import { parseMoney, formatMoney } from "../../../services/deepDiveHelper.js";
@@ -231,21 +231,14 @@ export default async function handler(req, res) {
     const contractorSource = String(contractorSourceRows[0]?.[0] || "Cell Values").trim();
     const isNotesMode = contractorSource.toLowerCase().includes("notes");
     const masterUrl = String(masterUrlRows[0]?.[0] || "").trim();
-    let masterSheetId = extractSheetIdFromUrl(masterUrl);
+    let masterSheetId = await resolveMasterSheetIdByClientName(sheets, auth.clientName || clientName);
     if (!masterSheetId) {
-      try {
-        const allClients = await getClients();
-        const cleanClientSheetId = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
-        const found = allClients.find(
-          (c) =>
-            (c.clientSheetId && (extractSheetIdFromUrl(c.clientSheetId) || c.clientSheetId) === cleanClientSheetId) ||
-            (clientName && c.clientName?.toLowerCase().trim() === clientName.toLowerCase().trim())
-        );
-        if (found?.masterSheetId) {
-          masterSheetId = extractSheetIdFromUrl(found.masterSheetId) || found.masterSheetId;
+      const candidateMasterId = extractSheetIdFromUrl(masterUrl);
+      if (candidateMasterId) {
+        const masterAuth = await verifyUserAuthorizedForSheet(sessionUser, candidateMasterId, auth.clientName || clientName, sheets);
+        if (masterAuth.authorized) {
+          masterSheetId = candidateMasterId;
         }
-      } catch (clientErr) {
-        console.warn("⚠️ Failed to look up masterSheetId in getClients:", clientErr.message);
       }
     }
 

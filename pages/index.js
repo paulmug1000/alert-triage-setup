@@ -26,7 +26,19 @@ export default function Index() {
   );
 }
 
-export async function getServerSideProps() {
+import { getSsrSessionUser, canSsrUserAccessPma } from "../services/ssrSession";
+
+export async function getServerSideProps(context) {
+  const user = getSsrSessionUser(context.req);
+  if (user && !canSsrUserAccessPma(user)) {
+    return {
+      redirect: {
+        destination: "/pulse",
+        permanent: false,
+      },
+    };
+  }
+
   return {
     redirect: {
       destination: "/pma",

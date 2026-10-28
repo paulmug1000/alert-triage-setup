@@ -7,6 +7,7 @@
  */
 
 import { getSessionUser } from "../../../services/authService.js";
+import { canAccessPma } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { getAllClientsSetupOverview } from "../../../services/setupService.js";
 
@@ -16,7 +17,7 @@ export default async function handler(req, res) {
     return res.status(401).json({ success: false, error: "Active session required." });
   }
 
-  if (sessionUser.role === "ClientUser" || sessionUser.role === "Senior (Restricted)" || sessionUser.isClientUser) {
+  if (!canAccessPma(sessionUser)) {
     return res.status(403).json({ success: false, error: "Access denied: PMA configuration requires staff privileges." });
   }
 

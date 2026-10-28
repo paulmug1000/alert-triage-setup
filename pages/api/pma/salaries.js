@@ -6,7 +6,7 @@ import {
   saveDividendsData,
 } from "../../../services/salariesService.js";
 import { getClients } from "../../../services/workspaces.js";
-import { verifyUserAuthorizedForSheet } from "../../../services/userPermissions.js";
+import { verifyUserAuthorizedForSheet, canAccessPma, isReadOnlySession } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 
 export default async function handler(req, res) {
@@ -16,14 +16,7 @@ export default async function handler(req, res) {
     return res.status(401).json({ success: false, error: "Active session required." });
   }
 
-  // Enforce PMA access roles (Admins, ClientManagers)
-  const isPulseOnly =
-    sessionUser.role === "ClientUser" ||
-    sessionUser.role === "Senior (Restricted)" ||
-    Boolean(sessionUser.isSenior) ||
-    (!sessionUser.isAdmin && sessionUser.role !== "ClientManager");
-
-  if (isPulseOnly) {
+  if (!canAccessPma(sessionUser)) {
     return res.status(403).json({ success: false, error: "Forbidden: Access restricted to Pulse Portal" });
   }
 
@@ -55,9 +48,13 @@ export default async function handler(req, res) {
 
     if (!sessionUser.isAdmin) {
       const sheets = await getSheetsClient();
-      const auth = await verifyUserAuthorizedForSheet(sessionUser, masterSheetId || clientSheetId, clientName, sheets);
-      if (!auth.authorized) {
-        return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
+      const masterAuth = await verifyUserAuthorizedForSheet(sessionUser, masterSheetId, clientName, sheets);
+      if (!masterAuth.authorized) {
+        return res.status(masterAuth.status || 403).json({ success: false, error: masterAuth.error || "Access denied to this client." });
+      }
+      const clientAuth = await verifyUserAuthorizedForSheet(sessionUser, clientSheetId, clientName, sheets);
+      if (!clientAuth.authorized) {
+        return res.status(clientAuth.status || 403).json({ success: false, error: clientAuth.error || "Access denied to this client." });
       }
     }
 
@@ -78,6 +75,9 @@ export default async function handler(req, res) {
 
   // 3. POST Request: Save modifications
   if (req.method === "POST") {
+    if (isReadOnlySession(sessionUser)) {
+      return res.status(403).json({ success: false, error: "Read-only session cannot modify salaries." });
+    }
     const { action, clientName, masterSheetId, clientSheetId } = req.body || {};
 
     if (!masterSheetId && !clientSheetId) {
@@ -89,9 +89,17 @@ export default async function handler(req, res) {
 
     if (!sessionUser.isAdmin) {
       const sheets = await getSheetsClient();
-      const auth = await verifyUserAuthorizedForSheet(sessionUser, masterSheetId || clientSheetId, clientName, sheets);
-      if (!auth.authorized) {
-        return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
+      if (masterSheetId) {
+        const masterAuth = await verifyUserAuthorizedForSheet(sessionUser, masterSheetId, clientName, sheets);
+        if (!masterAuth.authorized) {
+          return res.status(masterAuth.status || 403).json({ success: false, error: masterAuth.error || "Access denied to this client." });
+        }
+      }
+      if (clientSheetId) {
+        const clientAuth = await verifyUserAuthorizedForSheet(sessionUser, clientSheetId, clientName, sheets);
+        if (!clientAuth.authorized) {
+          return res.status(clientAuth.status || 403).json({ success: false, error: clientAuth.error || "Access denied to this client." });
+        }
       }
     }
 

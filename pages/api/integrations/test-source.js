@@ -11,12 +11,16 @@
 import { getSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, extractSheetIdFromUrl, withRetry } from "../../../services/sheetsClient.js";
 import { getIntegrationTokens } from "../../../services/vaultService.js";
-import { verifyUserAuthorizedForSheet } from "../../../services/userPermissions.js";
+import { verifyUserAuthorizedForSheet, isReadOnlySession } from "../../../services/userPermissions.js";
 
 export default async function handler(req, res) {
   const sessionUser = getSessionUser(req);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Active session required." });
+  }
+
+  if (isReadOnlySession(sessionUser)) {
+    return res.status(403).json({ success: false, error: "Read-only session cannot test integration sources." });
   }
 
   const { clientKey, masterSheetId, tool = "", category = "crm" } = req.method === "POST" ? req.body : req.query;

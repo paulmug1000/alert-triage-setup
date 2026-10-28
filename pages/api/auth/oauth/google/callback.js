@@ -23,7 +23,7 @@ function renderPopupResponse(res, { email, provider, ssoToken, error }) {
   <title>Pulse Sign-In</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #0f172a; color: #f8fafc; }
+    body { font-family: 'Kumbh Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #0f172a; color: #f8fafc; }
     .card { background: #1e293b; padding: 32px; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); text-align: center; max-width: 360px; }
   </style>
 </head>
@@ -38,7 +38,7 @@ function renderPopupResponse(res, { email, provider, ssoToken, error }) {
       try {
         if (document.referrer) {
           var ref = new URL(document.referrer).origin;
-          if (ref === 'https://script.google.com' || ref.endsWith('.googleusercontent.com') || ref.endsWith('.pulsedashboard.co.uk') || ref === window.location.origin) {
+          if (ref.endsWith('.pulsedashboard.co.uk') || ref === window.location.origin) {
             targetOrigin = ref;
           }
         }
@@ -57,7 +57,7 @@ function renderPopupResponse(res, { email, provider, ssoToken, error }) {
   <title>Pulse Sign-In</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #0f172a; color: #f8fafc; }
+    body { font-family: 'Kumbh Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #0f172a; color: #f8fafc; }
     .card { background: #1e293b; padding: 32px; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); text-align: center; max-width: 360px; }
     .spinner { width: 36px; height: 36px; border: 3px solid rgba(255,255,255,0.1); border-top-color: #3b82f6; border-radius: 50%; animation: spin 1s infinite linear; margin: 0 auto 16px; }
     @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
@@ -76,7 +76,7 @@ function renderPopupResponse(res, { email, provider, ssoToken, error }) {
         try {
           if (document.referrer) {
             var ref = new URL(document.referrer).origin;
-            if (ref === 'https://script.google.com' || ref.endsWith('.googleusercontent.com') || ref.endsWith('.pulsedashboard.co.uk') || ref === window.location.origin) {
+            if (ref.endsWith('.pulsedashboard.co.uk') || ref === window.location.origin) {
               targetOrigin = ref;
             }
           }
@@ -108,9 +108,9 @@ export default async function handler(req, res) {
       if (parsed.mode === "popup") isPopup = true;
       if (parsed.nonce) stateNonce = parsed.nonce;
     }
-  } catch (e) {}
+  } catch (e) { }
 
-  // Verify CSRF state nonce & PKCE code verifier
+  // Verify CSRF state nonce & PKCE code verifier (fail-closed)
   const cookies = parseCookies(req.headers.cookie);
   const cookieNonce = cookies.pma_oauth_nonce;
   const codeVerifier = cookies.pma_oauth_verifier;
@@ -121,21 +121,21 @@ export default async function handler(req, res) {
     `pma_oauth_verifier=; Path=/api/auth/oauth; HttpOnly; Max-Age=0${isProd ? "; Secure" : ""}`
   ]);
 
-  if (stateNonce && cookieNonce && stateNonce !== cookieNonce) {
-    console.warn("⚠️ Google OAuth state mismatch (potential CSRF attempt)");
-    if (isPopup) {
-      return renderPopupResponse(res, { error: "state_mismatch" });
-    }
-    res.redirect("/?auth_error=state_mismatch");
-    return;
-  }
-
   if (error) {
     console.warn("⚠️ Google OAuth error:", error);
     if (isPopup) {
       return renderPopupResponse(res, { error: String(error) });
     }
-    res.redirect(`/?auth_error=${encodeURIComponent(error)}`);
+    res.redirect(`/pma?auth_error=${encodeURIComponent(error)}`);
+    return;
+  }
+
+  if (!stateNonce || !cookieNonce || stateNonce !== cookieNonce || !codeVerifier) {
+    console.warn("⚠️ Google OAuth state or PKCE verifier mismatch/missing (potential CSRF attempt)");
+    if (isPopup) {
+      return renderPopupResponse(res, { error: "state_mismatch" });
+    }
+    res.redirect("/pma?auth_error=state_mismatch");
     return;
   }
 
@@ -143,7 +143,7 @@ export default async function handler(req, res) {
     if (isPopup) {
       return renderPopupResponse(res, { error: "missing_code" });
     }
-    res.redirect("/?auth_error=missing_code");
+    res.redirect("/pma?auth_error=missing_code");
     return;
   }
 
@@ -155,7 +155,7 @@ export default async function handler(req, res) {
     if (isPopup) {
       return renderPopupResponse(res, { error: "server_configuration_error" });
     }
-    res.redirect("/?auth_error=server_configuration_error");
+    res.redirect("/pma?auth_error=server_configuration_error");
     return;
   }
 
@@ -174,11 +174,9 @@ export default async function handler(req, res) {
       client_id: clientId,
       client_secret: clientSecret,
       redirect_uri: redirectUri,
-      grant_type: "authorization_code"
+      grant_type: "authorization_code",
+      code_verifier: codeVerifier
     };
-    if (codeVerifier) {
-      tokenPayload.code_verifier = codeVerifier;
-    }
 
     const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
       method: "POST",
@@ -192,7 +190,7 @@ export default async function handler(req, res) {
       if (isPopup) {
         return renderPopupResponse(res, { error: tokenData.error_description || "Token exchange failed" });
       }
-      res.redirect(`/?auth_error=${encodeURIComponent(tokenData.error_description || "Token exchange failed")}`);
+      res.redirect(`/pma?auth_error=${encodeURIComponent(tokenData.error_description || "Token exchange failed")}`);
       return;
     }
 
@@ -202,12 +200,12 @@ export default async function handler(req, res) {
     });
 
     const userData = await userRes.json();
-    if (!userRes.ok || !userData.email) {
-      console.error("❌ Failed to fetch Google userinfo:", userData);
+    if (!userRes.ok || !userData.email || userData.email_verified !== true) {
+      console.error("❌ Failed to fetch verified Google userinfo:", userData);
       if (isPopup) {
         return renderPopupResponse(res, { error: "failed_to_fetch_user_profile" });
       }
-      res.redirect("/?auth_error=failed_to_fetch_user_profile");
+      res.redirect("/pma?auth_error=failed_to_fetch_user_profile");
       return;
     }
 
@@ -227,12 +225,12 @@ export default async function handler(req, res) {
 
     // 3. Verify user authorization in Users sheet and mint session cookie for PMA
     const forwarded = req.headers["x-forwarded-for"];
-    const clientIp = (typeof forwarded === "string" ? forwarded.split(",")[0] : forwarded?.[0])?.trim() || req.socket?.remoteAddress || "127.0.0.1";
+    const clientIp = req.headers["x-real-ip"]?.trim() || (typeof forwarded === "string" ? forwarded.split(",").pop() : forwarded?.[0])?.trim() || req.socket?.remoteAddress || "127.0.0.1";
     const result = await createSessionForVerifiedEmail(email, res, "Google", undefined, clientIp);
 
     if (!result.success) {
       console.warn(`⛔ Access denied for Google user ${email}:`, result.message);
-      res.redirect(`/?auth_error=unauthorized&email=${encodeURIComponent(email)}&provider=Google`);
+      res.redirect(`/pma?auth_error=unauthorized&email=${encodeURIComponent(email)}&provider=Google`);
       return;
     }
 
@@ -240,24 +238,24 @@ export default async function handler(req, res) {
 
     // If user is ClientUser or Senior (Restricted), take them directly to Pulse Portal (never PMA)
     const userRole = String(result.user?.role || "").trim();
-    const isPulseOnly = userRole === "ClientUser" || 
-                        userRole === "Senior (Restricted)" || 
-                        Boolean(result.user?.isSenior) ||
-                        (!result.user?.isAdmin && userRole !== "ClientManager");
+    const isPulseOnly = userRole === "ClientUser" ||
+      userRole === "Senior (Restricted)" ||
+      Boolean(result.user?.isSenior) ||
+      (!result.user?.isAdmin && userRole !== "ClientManager");
 
     if (isPulseOnly) {
       res.redirect("/pulse");
       return;
     }
 
-    res.redirect("/");
+    res.redirect("/pma");
     return;
   } catch (err) {
     console.error("❌ Google OAuth callback exception:", err);
     if (isPopup) {
       return renderPopupResponse(res, { error: err.message || "An unexpected error occurred" });
     }
-    res.redirect(`/?auth_error=${encodeURIComponent(err.message || "An unexpected error occurred during Google sign in")}`);
+    res.redirect(`/pma?auth_error=${encodeURIComponent(err.message || "An unexpected error occurred during Google sign in")}`);
     return;
   }
 }

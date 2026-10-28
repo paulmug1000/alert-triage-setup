@@ -33,6 +33,16 @@ import { refreshGoogleSheetTokens } from "../../../services/googleSheetService.j
 import { refreshExcelTokens } from "../../../services/excelIntegrationService.js";
 import { getSessionUser } from "../../../services/authService.js";
 import { redisClient } from "../../../services/redisClient.js";
+import { getSheetsClient, extractSheetIdFromUrl } from "../../../services/sheetsClient.js";
+import {
+  resolveClientNameBySheetId,
+  resolveMasterSheetIdByClientName,
+  verifyUserAuthorizedForSheet,
+  isUserAuthorizedForClient,
+  matchesClientName,
+  canAccessPma,
+  isReadOnlySession
+} from "../../../services/userPermissions.js";
 
 function safeCompare(a, b) {
   if (typeof a !== "string" || typeof b !== "string") return false;
@@ -103,14 +113,16 @@ export default async function handler(req, res) {
 
   // 1. Parse Target Integration & Client Identifier
   const tool = String(req.query.tool || req.body?.tool || "xero").trim().toLowerCase();
-  const spreadsheetId = req.query.spreadsheetId || req.query.sheetId || req.body?.spreadsheetId || req.body?.sheetId || "";
-  const clientKey = req.query.clientKey || req.query.clientName || req.body?.clientKey || req.body?.clientName || "";
+  const rawSpreadsheetId = req.query.spreadsheetId || req.query.sheetId || req.body?.spreadsheetId || req.body?.sheetId || "";
+  const spreadsheetId = rawSpreadsheetId ? (extractSheetIdFromUrl(String(rawSpreadsheetId).trim()) || String(rawSpreadsheetId).trim()) : "";
+  const clientKey = String(req.query.clientKey || req.query.clientName || req.body?.clientKey || req.body?.clientName || "").trim();
+  const shouldVerify = req.query.verify === "true" || req.query.test === "true" || req.body?.verify === true;
 
   if (!spreadsheetId && !clientKey) {
     return res.status(400).json({ success: false, error: "Missing spreadsheetId or clientKey parameter." });
   }
 
-  // 2. Verify Authentication: Ecosystem Secret, Client-Specific Secret, OR Admin Session
+  // 2. Verify Authentication: Client-Specific Secret (Master Sheet) OR Authorized PMA Session (verify=true only)
   const authHeader = req.headers.authorization || "";
   const tokenMatch = authHeader.match(/^Bearer\s+(.+)$/i);
   const providedSecret = tokenMatch ? tokenMatch[1].trim() : (req.query.secret || req.body?.secret || "");
@@ -119,7 +131,6 @@ export default async function handler(req, res) {
   const isMasterSecretValid = Boolean(expectedSecret && providedSecret && safeCompare(providedSecret, expectedSecret));
 
   const sessionUser = getSessionUser(req);
-  const isAdmin = Boolean(sessionUser?.isAdmin);
 
   // Client-specific secret sent in custom header (or body fallback)
   const providedClientSecret = String(
@@ -129,54 +140,90 @@ export default async function handler(req, res) {
     ""
   ).trim();
 
-  let isAuthorized = isAdmin;
-  const targetIdentifier = spreadsheetId || clientKey;
-  const redisSecretKey = `pulse:client_secret:${targetIdentifier}`;
+  let isAuthorized = false;
+  let isBrowserSessionCall = false;
+  let canonicalSpreadsheetId = spreadsheetId;
 
-  if (!isAuthorized) {
-    let registeredHash = null;
-    if (redisClient?.isOpen) {
-      try {
-        registeredHash = await redisClient.get(redisSecretKey);
-      } catch (redisErr) {
-        console.warn("⚠️ Token Broker: Error checking client secret in Redis:", redisErr.message);
+  if (providedClientSecret) {
+    const sheets = await getSheetsClient();
+    if (canonicalSpreadsheetId) {
+      const resolvedSheetClient = await resolveClientNameBySheetId(sheets, canonicalSpreadsheetId);
+      if (clientKey && resolvedSheetClient && !matchesClientName(clientKey, resolvedSheetClient)) {
+        console.warn(`🚨 Token Broker: Mismatched clientKey ("${clientKey}") and spreadsheetId ("${canonicalSpreadsheetId}" -> "${resolvedSheetClient}").`);
+        return res.status(403).json({ success: false, error: "Forbidden: Client identifier does not match spreadsheet ID." });
       }
+    } else if (clientKey) {
+      canonicalSpreadsheetId = await resolveMasterSheetIdByClientName(sheets, clientKey);
     }
 
-    if (providedClientSecret) {
-      const providedHash = crypto.createHash("sha256").update(providedClientSecret).digest("hex");
-      if (registeredHash) {
-        if (safeCompare(providedHash, registeredHash)) {
-          isAuthorized = true;
-        } else {
-          console.warn(`🚨 Token Broker: Invalid client-specific secret presented for ${targetIdentifier}.`);
-          return res.status(401).json({ success: false, error: "Unauthorized: Invalid client-specific secret." });
-        }
+    if (!canonicalSpreadsheetId) {
+      return res.status(400).json({ success: false, error: "Could not resolve canonical Master Sheet ID for token request." });
+    }
+
+    const redisSecretKey = `pulse:client_secret:${canonicalSpreadsheetId}`;
+    if (!redisClient?.isOpen) {
+      return res.status(503).json({ success: false, error: "Authentication store unavailable." });
+    }
+
+    let registeredHash = null;
+    try {
+      registeredHash = await redisClient.get(redisSecretKey);
+    } catch (redisErr) {
+      console.error("❌ Token Broker: Error checking client secret in Redis:", redisErr.message);
+      return res.status(503).json({ success: false, error: "Authentication store error." });
+    }
+
+    const providedHash = crypto.createHash("sha256").update(providedClientSecret).digest("hex");
+    if (registeredHash) {
+      if (safeCompare(providedHash, registeredHash)) {
+        isAuthorized = true;
       } else {
-        // Auto-registration handshake: requires valid ecosystem master secret to bind
-        if (isMasterSecretValid) {
-          if (redisClient?.isOpen) {
-            try {
-              await redisClient.set(redisSecretKey, providedHash);
-              console.log(`✅ Token Broker: Registered new client-specific secret for ${targetIdentifier}`);
-            } catch (regErr) {
-              console.warn("⚠️ Token Broker: Failed to persist client secret in Redis:", regErr.message);
-            }
-          }
-          isAuthorized = true;
-        } else {
-          console.warn(`🚨 Token Broker: Unauthorized attempt to register client secret for ${targetIdentifier}.`);
-          return res.status(401).json({ success: false, error: "Unauthorized: Valid ecosystem secret required for initial client registration." });
-        }
+        console.warn(`🚨 Token Broker: Invalid client-specific secret presented for ${canonicalSpreadsheetId}.`);
+        return res.status(401).json({ success: false, error: "Unauthorized: Invalid client-specific secret." });
       }
     } else {
-      // Legacy fallback retired: client secret is strictly required
-      console.warn(`🚨 Token Broker: Missing client-specific secret for ${targetIdentifier}.`);
-      return res.status(401).json({
-        success: false,
-        error: "Unauthorized: Client-specific secret (X-Pulse-Client-Secret) is required."
-      });
+      // Initial TOFU registration: requires valid ecosystem master secret AND verified Master Sheet in AutoUpdates
+      const registeredClientName = await resolveClientNameBySheetId(sheets, canonicalSpreadsheetId);
+      if (isMasterSecretValid && registeredClientName) {
+        try {
+          await redisClient.set(redisSecretKey, providedHash);
+          console.log(`✅ Token Broker: Registered new client-specific secret for ${canonicalSpreadsheetId} (${registeredClientName})`);
+          isAuthorized = true;
+        } catch (regErr) {
+          console.error("❌ Token Broker: Failed to persist client secret in Redis:", regErr.message);
+          return res.status(503).json({ success: false, error: "Failed to persist client registration." });
+        }
+      } else {
+        console.warn(`🚨 Token Broker: Unauthorized attempt to register client secret for ${canonicalSpreadsheetId}.`);
+        return res.status(401).json({ success: false, error: "Unauthorized: Valid ecosystem secret and registered Master Sheet required for initial client registration." });
+      }
     }
+  } else if (sessionUser) {
+    if (isReadOnlySession(sessionUser) || !canAccessPma(sessionUser)) {
+      return res.status(403).json({ success: false, error: "Forbidden: Active PMA staff session required." });
+    }
+    if (!shouldVerify) {
+      return res.status(403).json({ success: false, error: "Forbidden: Browser sessions may only invoke live connection verification (verify=true)." });
+    }
+    if (!sessionUser.isAdmin) {
+      const sheets = await getSheetsClient();
+      if (canonicalSpreadsheetId) {
+        const sheetAuth = await verifyUserAuthorizedForSheet(sessionUser, canonicalSpreadsheetId, clientKey, sheets);
+        if (!sheetAuth.authorized) {
+          return res.status(sheetAuth.status || 403).json({ success: false, error: sheetAuth.error });
+        }
+      } else if (!clientKey || !isUserAuthorizedForClient(sessionUser, clientKey)) {
+        return res.status(403).json({ success: false, error: "Forbidden: Not authorized for this client." });
+      }
+    }
+    isAuthorized = true;
+    isBrowserSessionCall = true;
+  } else {
+    console.warn(`🚨 Token Broker: Missing client-specific secret for ${spreadsheetId || clientKey}.`);
+    return res.status(401).json({
+      success: false,
+      error: "Unauthorized: Client-specific secret (X-Pulse-Client-Secret) is required."
+    });
   }
 
   if (!isAuthorized) {
@@ -184,11 +231,23 @@ export default async function handler(req, res) {
     return res.status(401).json({ success: false, error: "Unauthorized: Invalid internal secret or admin session required." });
   }
 
+  // Strip raw accessToken from responses when called by a browser session (verify=true)
+  if (isBrowserSessionCall) {
+    const origJson = res.json.bind(res);
+    res.json = (body) => {
+      if (body && typeof body === "object" && "accessToken" in body) {
+        const { accessToken: _redacted, ...rest } = body;
+        return origJson(rest);
+      }
+      return origJson(body);
+    };
+  }
+
   try {
-    // 3. Fetch from Vault
+    // 3. Fetch from Vault using verified canonical identifiers
     const record = await getIntegrationTokens({
       clientKey,
-      masterSheetId: spreadsheetId,
+      masterSheetId: canonicalSpreadsheetId || spreadsheetId,
       tool
     });
 
@@ -199,8 +258,6 @@ export default async function handler(req, res) {
         reconnectRequired: true
       });
     }
-
-    const shouldVerify = req.query.verify === "true" || req.query.test === "true" || req.body?.verify === true;
 
     if (record.reconnectRequired && !shouldVerify) {
       return res.status(401).json({

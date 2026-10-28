@@ -8,7 +8,7 @@
  */
 
 import { getSessionUser } from "../../../services/authService.js";
-import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet } from "../../../services/userPermissions.js";
+import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, canAccessPma, isReadOnlySession } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { getMasterKeyInfoSettings, saveMasterKeyInfoSettings } from "../../../services/setupService.js";
 
@@ -18,7 +18,7 @@ export default async function handler(req, res) {
     return res.status(401).json({ success: false, error: "Active session required." });
   }
 
-  if (sessionUser.role === "ClientUser" || sessionUser.role === "Senior (Restricted)" || sessionUser.isClientUser) {
+  if (!canAccessPma(sessionUser)) {
     return res.status(403).json({ success: false, error: "Access denied." });
   }
 
@@ -47,6 +47,9 @@ export default async function handler(req, res) {
   }
 
   if (req.method === "POST") {
+    if (isReadOnlySession(sessionUser)) {
+      return res.status(403).json({ success: false, error: "Read-only session cannot modify KeyInfo." });
+    }
     const { masterSheetId, clientName, settings } = req.body || {};
     if (!masterSheetId || !settings) {
       return res.status(400).json({ success: false, error: "Missing masterSheetId or settings." });

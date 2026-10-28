@@ -283,6 +283,7 @@ export async function updateSharedXeroGrantTokens(tokens) {
     idToken: tokens.idToken || existingBundle.idToken
   };
 
+  const wasConnected = record.status === "connected" && !record.reconnectRequired;
   const now = Date.now();
   const expiresInMs = (tokens.expiresIn || 1800) * 1000;
   record.expiresAt = tokens.expiresAt || (now + expiresInMs);
@@ -293,7 +294,9 @@ export async function updateSharedXeroGrantTokens(tokens) {
   record.reconnectRequired = false;
 
   await redisClient.set(SHARED_XERO_KEY, JSON.stringify(record));
-  await invalidateIntegrationsCache();
+  if (!wasConnected) {
+    await invalidateIntegrationsCache();
+  }
   console.log(`🔄 Vault: Central Shared Xero grant refreshed. Fresh for ${Math.round(expiresInMs / 60000)}m.`);
   return record;
 }
@@ -648,6 +651,7 @@ export async function updateRefreshedTokens({ clientKey, tool, tokens, newTenant
     await updateSharedXeroGrantTokens(tokens);
   }
 
+  const wasConnected = record.status === "connected" && !record.reconnectRequired && (!newTenantId || record.tenantId === newTenantId);
   const now = Date.now();
   const expiresInMs = (tokens.expiresIn || 1800) * 1000;
   record.expiresAt = tokens.expiresAt || (now + expiresInMs);
@@ -678,7 +682,9 @@ export async function updateRefreshedTokens({ clientKey, tool, tokens, newTenant
   }
 
   await redisClient.set(redisKey, JSON.stringify(record));
-  await invalidateIntegrationsCache();
+  if (!wasConnected) {
+    await invalidateIntegrationsCache();
+  }
   console.log(`🔄 Vault: Refreshed tokens persisted for ${cleanClient} [${cleanTool}]. Dedicated: ${!record.isSharedGrant}, Expires in ${Math.round(expiresInMs / 60000)}m.`);
   return record;
 }

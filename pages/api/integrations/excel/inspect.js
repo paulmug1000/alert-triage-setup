@@ -8,7 +8,7 @@
  */
 
 import { getSessionUser } from "../../../../services/authService.js";
-import { isUserAuthorizedForClient } from "../../../../services/userPermissions.js";
+import { isUserAuthorizedForClient, isReadOnlySession } from "../../../../services/userPermissions.js";
 import { inspectExcelWorkbook } from "../../../../services/excelIntegrationService.js";
 import { getIntegrationTokens } from "../../../../services/vaultService.js";
 
@@ -16,6 +16,10 @@ export default async function handler(req, res) {
   const sessionUser = getSessionUser(req);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Unauthorized" });
+  }
+
+  if (isReadOnlySession(sessionUser)) {
+    return res.status(403).json({ success: false, error: "Read-only session cannot inspect external workbooks." });
   }
 
   const {
@@ -30,7 +34,7 @@ export default async function handler(req, res) {
     headerRowNum
   } = req.method === "POST" ? req.body : req.query;
 
-  if (!sessionUser.isAdmin && clientKey && !isUserAuthorizedForClient(sessionUser, clientKey)) {
+  if (!sessionUser.isAdmin && (!clientKey || !isUserAuthorizedForClient(sessionUser, clientKey))) {
     return res.status(403).json({ success: false, error: "Access denied to this client." });
   }
 

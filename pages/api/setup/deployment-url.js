@@ -8,7 +8,7 @@
  */
 
 import { getSessionUser } from "../../../services/authService.js";
-import { isUserAuthorizedForClient } from "../../../services/userPermissions.js";
+import { isUserAuthorizedForClient, isReadOnlySession } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { saveDeploymentUrl } from "../../../services/setupService.js";
 
@@ -22,8 +22,8 @@ export default async function handler(req, res) {
     return res.status(401).json({ success: false, error: "Active session required." });
   }
 
-  if (sessionUser.role === "ClientUser" || sessionUser.role === "Senior (Restricted)" || sessionUser.isClientUser) {
-    return res.status(403).json({ success: false, error: "Access denied." });
+  if (!sessionUser.isAdmin || isReadOnlySession(sessionUser)) {
+    return res.status(403).json({ success: false, error: "Access denied: Admin privileges required." });
   }
 
   const { clientName, masterSheetId, deploymentUrl } = req.body || {};

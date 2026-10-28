@@ -6,14 +6,18 @@ export const DEFAULT_AC_SHEET_ID = "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M
 const REDIS_USERS_KEY = "pma:users:list";
 const REDIS_USERS_TTL_SECS = 300; // 5 minutes cache
 
+export function getCanonicalAcSheetId() {
+  return process.env.AUTOMATION_COMMANDER_SHEET_ID || DEFAULT_AC_SHEET_ID;
+}
+
 let usersTabVerified = false;
 
 /**
  * Ensure the "Users" tab exists on Automation Commander spreadsheet.
  * If not present, creates it with proper schema and seeds an initial Admin user.
  */
-export async function ensureUsersTab(sheets, automationCommanderSheetId = DEFAULT_AC_SHEET_ID) {
-  const acId = automationCommanderSheetId || DEFAULT_AC_SHEET_ID;
+export async function ensureUsersTab(sheets) {
+  const acId = getCanonicalAcSheetId();
   if (usersTabVerified) return;
 
   try {
@@ -67,8 +71,8 @@ let _usersCachedAt = 0;
 /**
  * Get all users from the Users sheet (cached in Redis for 5 minutes and in-memory for 60 seconds)
  */
-export async function getAllUsers(sheets, automationCommanderSheetId = DEFAULT_AC_SHEET_ID, bypassCache = false) {
-  const acId = automationCommanderSheetId || DEFAULT_AC_SHEET_ID;
+export async function getAllUsers(sheets, _ignoredAcId = DEFAULT_AC_SHEET_ID, bypassCache = false) {
+  const acId = getCanonicalAcSheetId();
   const now = Date.now();
 
   if (!bypassCache && _usersMemoryCache && (now - _usersCachedAt < 60000)) {
@@ -90,7 +94,7 @@ export async function getAllUsers(sheets, automationCommanderSheetId = DEFAULT_A
     }
   }
 
-  await ensureUsersTab(sheets, acId);
+  await ensureUsersTab(sheets);
 
   try {
     const resp = await withRetry(() => sheets.spreadsheets.values.get({
@@ -158,19 +162,19 @@ export async function getAllUsers(sheets, automationCommanderSheetId = DEFAULT_A
 /**
  * Find user by email
  */
-export async function getUserByEmail(email, sheets, automationCommanderSheetId = DEFAULT_AC_SHEET_ID, bypassCache = false) {
+export async function getUserByEmail(email, sheets, _ignoredAcId = DEFAULT_AC_SHEET_ID, bypassCache = false) {
   if (!email) return null;
   const normalizedEmail = String(email).toLowerCase().trim();
-  const users = await getAllUsers(sheets, automationCommanderSheetId, bypassCache);
+  const users = await getAllUsers(sheets, getCanonicalAcSheetId(), bypassCache);
   return users.find(u => u.email === normalizedEmail) || null;
 }
 
 /**
  * Update Last Login At timestamp for a user in the spreadsheet and bust Redis cache
  */
-export async function updateUserLastLogin(email, sheets, automationCommanderSheetId = DEFAULT_AC_SHEET_ID) {
+export async function updateUserLastLogin(email, sheets, _ignoredAcId = DEFAULT_AC_SHEET_ID) {
   try {
-    const acId = automationCommanderSheetId || DEFAULT_AC_SHEET_ID;
+    const acId = getCanonicalAcSheetId();
     const user = await getUserByEmail(email, sheets, acId, true);
     if (!user || !user.rowIndex) return;
 
@@ -196,9 +200,9 @@ export async function updateUserLastLogin(email, sheets, automationCommanderShee
 /**
  * Update Daily Alerts Email preference ("Yes" | "No") for a user in the spreadsheet and bust Redis cache
  */
-export async function updateUserDailyAlertsEmail(email, dailyAlertsEmail, sheets, automationCommanderSheetId = DEFAULT_AC_SHEET_ID) {
+export async function updateUserDailyAlertsEmail(email, dailyAlertsEmail, sheets, _ignoredAcId = DEFAULT_AC_SHEET_ID) {
   try {
-    const acId = automationCommanderSheetId || DEFAULT_AC_SHEET_ID;
+    const acId = getCanonicalAcSheetId();
     const user = await getUserByEmail(email, sheets, acId, true);
     if (!user || !user.rowIndex) {
       throw new Error(`User not found: ${email}`);
@@ -240,35 +244,49 @@ export function matchesClientName(assignedIdentifier, actualClientName) {
 }
 
 const clientSheetIdToNameCache = new Map();
+const clientNameToMasterIdCache = new Map();
+
+function normalizeClientKeyForLookup(str) {
+  return String(str || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
+}
+
+async function refreshAutoUpdatesSheetMappings(sheets) {
+  const acId = getCanonicalAcSheetId();
+  const resp = await withRetry(() =>
+    sheets.spreadsheets.values.get({
+      spreadsheetId: acId,
+      range: "AutoUpdates!A2:N500"
+    })
+  );
+  const rows = resp.data.values || [];
+  for (const r of rows) {
+    const cName = String(r[0] || "").trim();
+    const clientUrl = String(r[11] || "").trim();
+    const masterUrl = String(r[12] || "").trim();
+    const cId = extractSheetIdFromUrl(clientUrl) || clientUrl;
+    const mId = extractSheetIdFromUrl(masterUrl) || masterUrl;
+    if (cId && cName) clientSheetIdToNameCache.set(cId, cName);
+    if (mId && cName) {
+      clientSheetIdToNameCache.set(mId, cName);
+      clientNameToMasterIdCache.set(cName.toLowerCase(), mId);
+      clientNameToMasterIdCache.set(normalizeClientKeyForLookup(cName), mId);
+    }
+  }
+}
 
 /**
  * Resolves a clientName from a clientSheetId or masterSheetId using AutoUpdates mapping
  */
-export async function resolveClientNameBySheetId(sheets, sheetId, acId = DEFAULT_AC_SHEET_ID) {
+export async function resolveClientNameBySheetId(sheets, sheetId, _ignoredAcId = DEFAULT_AC_SHEET_ID) {
   if (!sheetId) return "";
   const cleanId = extractSheetIdFromUrl(sheetId) || sheetId;
   if (clientSheetIdToNameCache.has(cleanId)) {
     return clientSheetIdToNameCache.get(cleanId);
   }
   try {
-    const resp = await withRetry(() =>
-      sheets.spreadsheets.values.get({
-        spreadsheetId: acId || DEFAULT_AC_SHEET_ID,
-        range: "AutoUpdates!A2:N500"
-      })
-    );
-    const rows = resp.data.values || [];
-    for (const r of rows) {
-      const cName = String(r[0] || "").trim();
-      const clientUrl = String(r[11] || "").trim();
-      const masterUrl = String(r[12] || "").trim();
-      const cId = extractSheetIdFromUrl(clientUrl) || clientUrl;
-      const mId = extractSheetIdFromUrl(masterUrl) || masterUrl;
-      if (cId && cName) clientSheetIdToNameCache.set(cId, cName);
-      if (mId && cName) clientSheetIdToNameCache.set(mId, cName);
-      if ((cId === cleanId || mId === cleanId) && cName) {
-        return cName;
-      }
+    await refreshAutoUpdatesSheetMappings(sheets);
+    if (clientSheetIdToNameCache.has(cleanId)) {
+      return clientSheetIdToNameCache.get(cleanId);
     }
   } catch (err) {
     console.warn("⚠️ Error resolving clientName by sheetId:", err.message);
@@ -277,56 +295,66 @@ export async function resolveClientNameBySheetId(sheets, sheetId, acId = DEFAULT
 }
 
 /**
+ * Resolves the canonical masterSheetId for a clientName or normalized clientKey from AutoUpdates
+ */
+export async function resolveMasterSheetIdByClientName(sheets, clientNameOrKey) {
+  if (!clientNameOrKey) return "";
+  const rawLower = String(clientNameOrKey).trim().toLowerCase();
+  const normKey = normalizeClientKeyForLookup(clientNameOrKey);
+  if (clientNameToMasterIdCache.has(rawLower)) return clientNameToMasterIdCache.get(rawLower);
+  if (clientNameToMasterIdCache.has(normKey)) return clientNameToMasterIdCache.get(normKey);
+  try {
+    await refreshAutoUpdatesSheetMappings(sheets);
+    if (clientNameToMasterIdCache.has(rawLower)) return clientNameToMasterIdCache.get(rawLower);
+    if (clientNameToMasterIdCache.has(normKey)) return clientNameToMasterIdCache.get(normKey);
+  } catch (err) {
+    console.warn("⚠️ Error resolving masterSheetId by clientName:", err.message);
+  }
+  return "";
+}
+
+/**
  * Universal Fail-Closed Authorization Guard for spreadsheet operations.
  * Binds sheetId to verified tenant identity and enforces role/client permissions.
  */
-export async function verifyUserAuthorizedForSheet(sessionUser, sheetId, clientNameClaim, sheets, acId = DEFAULT_AC_SHEET_ID) {
+export async function verifyUserAuthorizedForSheet(sessionUser, sheetId, clientNameClaim, sheets, _ignoredAcId = DEFAULT_AC_SHEET_ID) {
   if (!sessionUser) {
     return { authorized: false, status: 401, error: "Unauthorized: Active session required" };
   }
-  if (sessionUser.isAdmin) {
+  if (sessionUser.isAdmin && !sessionUser.isReadOnly && sessionUser.authProvider !== "EmailOTP") {
     return { authorized: true, clientName: clientNameClaim || "Admin" };
   }
   if (!sheetId) {
     return { authorized: false, status: 400, error: "Missing sheet ID" };
   }
 
-  // 1. Resolve registered tenant name from spreadsheet ID
-  let resolvedClient = await resolveClientNameBySheetId(sheets, sheetId, acId);
-
-  // 2. Fallback check to KeyInfo!B1 if sheet is not yet indexed in AutoUpdates
-  if (!resolvedClient) {
-    try {
-      const cleanId = extractSheetIdFromUrl(sheetId) || sheetId;
-      const b1Resp = await withRetry(() =>
-        sheets.spreadsheets.values.get({
-          spreadsheetId: cleanId,
-          range: "KeyInfo!B1"
-        })
-      );
-      resolvedClient = String(b1Resp.data.values?.[0]?.[0] || "").trim();
-      if (resolvedClient) {
-        clientSheetIdToNameCache.set(cleanId, resolvedClient);
-      }
-    } catch (e) { }
-  }
+  // 1. Resolve registered tenant name strictly from canonical AutoUpdates registry
+  const resolvedClient = await resolveClientNameBySheetId(sheets, sheetId);
 
   if (!resolvedClient) {
     return { authorized: false, status: 403, error: "Forbidden: Unrecognized or unmapped client spreadsheet" };
   }
 
-  // 3. Ensure clientName claim (if supplied) matches the actual sheet
+  // 2. Ensure clientName claim (if supplied) matches the actual sheet
   if (clientNameClaim && !matchesClientName(clientNameClaim, resolvedClient)) {
     return { authorized: false, status: 403, error: "Forbidden: Client identifier mismatch for requested spreadsheet" };
   }
 
-  // 4. Verify user assignment for this client
+  // 3. Verify user assignment for this client
   const isAuthorized = isUserAuthorizedForClient(sessionUser, resolvedClient);
   if (!isAuthorized) {
     return { authorized: false, status: 403, error: "Forbidden: Not authorized for this client" };
   }
 
   return { authorized: true, clientName: resolvedClient };
+}
+
+/**
+ * Check if a session is read-only (e.g. EmailOTP session)
+ */
+export function isReadOnlySession(user) {
+  if (!user) return true;
+  return Boolean(user.isReadOnly || user.authProvider === "EmailOTP");
 }
 
 /**
@@ -339,10 +367,11 @@ export function isPulseOnlyRole(role) {
 }
 
 /**
- * Check if a user is strictly restricted to the Pulse Portal (ClientUser or Senior (Restricted))
+ * Check if a user is strictly restricted to the Pulse Portal (ClientUser, Senior (Restricted), or EmailOTP read-only)
  */
 export function isPulseOnlyUser(user) {
   if (!user) return false;
+  if (isReadOnlySession(user)) return true;
   if (user.isAdmin || user.role === "Admin") return false;
   if (user.role === "ClientManager") return false;
   return isPulseOnlyRole(user.role) || Boolean(user.isSenior) || Boolean(user.isClientUser);
@@ -353,6 +382,7 @@ export function isPulseOnlyUser(user) {
  */
 export function canAccessPma(user) {
   if (!user) return false;
+  if (isReadOnlySession(user)) return false;
   if (user.isAdmin || user.role === "Admin") return true;
   if (user.role === "ClientManager") return true;
   return false;
@@ -363,8 +393,8 @@ export function canAccessPma(user) {
  */
 export function isUserAuthorizedForClient(user, clientName) {
   if (!user) return false;
-  // Only Admin is an internal staff role able to see all clients
-  if (user.role === "Admin" || user.isAdmin) return true;
+  // Only non-read-only Admin is an internal staff role able to see all clients
+  if ((user.role === "Admin" || user.isAdmin) && !isReadOnlySession(user)) return true;
   if (!clientName) return false;
 
   const assignedList = Array.isArray(user.assignedClients) ? user.assignedClients : [];
@@ -378,8 +408,8 @@ export function isUserAuthorizedForClient(user, clientName) {
 export function filterClientsForUser(allClients, user) {
   if (!allClients || !Array.isArray(allClients)) return [];
   if (!user) return [];
-  // Only Admin is an internal staff role able to see all clients
-  if (user.role === "Admin" || user.isAdmin) return allClients;
+  // Only non-read-only Admin is an internal staff role able to see all clients
+  if ((user.role === "Admin" || user.isAdmin) && !isReadOnlySession(user)) return allClients;
 
   const assignedList = Array.isArray(user.assignedClients) ? user.assignedClients : [];
   return allClients.filter(c => {
@@ -390,7 +420,7 @@ export function filterClientsForUser(allClients, user) {
 
 /**
  * Sanitize user inputs to prevent CSV / Spreadsheet formula injection (CWE-1236).
- * Neutralizes strings starting with =, +, -, @ by prefixing with a single quote ',
+ * Neutralizes strings starting with =, +, -, @, ', \t, \r by prefixing with a single quote ',
  * unless the string is a valid finite numeric value.
  */
 export function sanitizeFormulaInput(val) {
@@ -399,8 +429,8 @@ export function sanitizeFormulaInput(val) {
   if (!trimmed) return val;
   // If it's a valid finite number, it is safe (e.g. "-500", "+25.5")
   if (!isNaN(Number(trimmed))) return val;
-  // If it starts with formula trigger characters, neutralize it
-  if (/^[=+\-@]/.test(trimmed)) {
+  // If it starts with formula trigger characters or a leading single quote that Google Sheets strips on USER_ENTERED, neutralize it
+  if (/^['=+\-@\t\r]/.test(trimmed) || /^[\t\r ]/.test(val)) {
     return `'${val}`;
   }
   return val;
@@ -409,9 +439,9 @@ export function sanitizeFormulaInput(val) {
 /**
  * Return an object that can check whether a client has at least one active ClientManager assigned.
  */
-export async function getClientManagerClientMap(sheets, automationCommanderSheetId = DEFAULT_AC_SHEET_ID) {
+export async function getClientManagerClientMap(sheets, _ignoredAcId = DEFAULT_AC_SHEET_ID) {
   try {
-    const users = await getAllUsers(sheets, automationCommanderSheetId);
+    const users = await getAllUsers(sheets, getCanonicalAcSheetId());
     const clientManagers = (users || []).filter(u => u.role === "ClientManager" && u.status === "Active");
     const assignedList = [];
     clientManagers.forEach(u => {

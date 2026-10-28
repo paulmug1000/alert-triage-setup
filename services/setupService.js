@@ -73,7 +73,7 @@ export const SETUP_TASKS_CATALOG = [
   { id: "p1_duplicate_templates", phaseId: "phase_1", title: "Duplicate client, master & recon templates", autoCompletable: true },
   { id: "p1_bookmarks", phaseId: "phase_1", title: "Create bookmarks for all three new sheets" },
   { id: "p1_importrange_auth", phaseId: "phase_1", title: "Authorise IMPORTRANGE connections (Master, Client, Recon)" },
-  { id: "p1_agent_secret", phaseId: "phase_1", title: "Add global variable to master sheet: AGENT_TRIGGER_SECRET / ^V0#8pSKx)y9xq}|" },
+  { id: "p1_agent_secret", phaseId: "phase_1", title: "Add global variable to master sheet: AGENT_TRIGGER_SECRET" },
   { id: "p1_gas_deployment", phaseId: "phase_1", title: "Deploy Master sheet GAS and copy deployment URL to KeyInfo!X29" },
   { id: "p1_rename_gas", phaseId: "phase_1", title: "Rename GAS file names" },
   { id: "p1_script_ids", phaseId: "phase_1", title: "Copy GAS script IDs into Client Version Tracker doc" },
@@ -1477,6 +1477,30 @@ export async function saveDeploymentUrl(sheets, { clientName, masterSheetId, dep
     metadata: deploymentUrl,
     userEmail
   });
+
+  // 4. Automatically push ScriptProperties secrets to the newly deployed Master WebApp
+  try {
+    const agentSecret = String(process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "").replace(/^["']|["']$/g, "").trim();
+    const pulseInternalSecret = String(process.env.PULSE_INTERNAL_SECRET || "").replace(/^["']|["']$/g, "").trim();
+    const cronSecret = String(process.env.CRON_SECRET || agentSecret).replace(/^["']|["']$/g, "").trim();
+    const vercelBypassToken = String(process.env.VERCEL_BYPASS_TOKEN || "").replace(/^["']|["']$/g, "").trim();
+    if (agentSecret && pulseInternalSecret) {
+      await fetch(trimmedUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "sync_script_secrets",
+          secret: agentSecret,
+          pulseInternalSecret,
+          cronSecret,
+          vercelBypassToken,
+          clientName
+        })
+      });
+    }
+  } catch (syncErr) {
+    console.warn(`[saveDeploymentUrl] Optional sync_script_secrets note for ${clientName}:`, syncErr.message);
+  }
 
   logPmaActivity({
     action: "setup_deployment_url_saved",

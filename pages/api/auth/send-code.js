@@ -6,14 +6,14 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { email, automationCommanderSheetId } = req.body || {};
+    const { email } = req.body || {};
     if (!email) {
       return res.status(400).json({ success: false, message: "Email is required" });
     }
 
     const forwarded = req.headers["x-forwarded-for"];
-    const clientIp = (typeof forwarded === "string" ? forwarded.split(",")[0] : forwarded?.[0])?.trim() || req.socket?.remoteAddress || "127.0.0.1";
-    const result = await sendOtp(email, automationCommanderSheetId, clientIp);
+    const clientIp = req.headers["x-real-ip"]?.trim() || (typeof forwarded === "string" ? forwarded.split(",").pop() : forwarded?.[0])?.trim() || req.socket?.remoteAddress || "127.0.0.1";
+    const result = await sendOtp(email, null, clientIp);
     return res.status(200).json(result);
   } catch (error) {
     console.error("❌ /api/auth/send-code error:", error);

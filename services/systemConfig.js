@@ -1,6 +1,6 @@
 import { waitUntil } from "@vercel/functions";
-import { redisClient } from "./redisClient";
-import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "./sheetsClient";
+import { redisClient } from "./redisClient.js";
+import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
 
 export const SWEEP_SCHEDULE_TAB = "SweepSchedule";
 export const SWEEP_SCHEDULE_DEFAULTS = {
@@ -346,10 +346,21 @@ export async function handleTriggerAgentRun(req, res, sheets) {
       const startTime = Date.now();
       try {
         console.log(`[Agent run] Invoking Web App for ${targetClientName} (runId: ${runId})...`);
+        const pulseInternalSecret = String(process.env.PULSE_INTERNAL_SECRET || "").replace(/^["']|["']$/g, "").trim();
+        const cronSecret = String(process.env.CRON_SECRET || agentSecret).replace(/^["']|["']$/g, "").trim();
+        const vercelBypassToken = String(process.env.VERCEL_BYPASS_TOKEN || "").replace(/^["']|["']$/g, "").trim();
         const gasResp = await fetch(webAppUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ secret: agentSecret, types, clientName: targetClientName, runId }),
+          body: JSON.stringify({
+            secret: agentSecret,
+            pulseInternalSecret,
+            cronSecret,
+            vercelBypassToken,
+            types,
+            clientName: targetClientName,
+            runId
+          }),
         });
         const gasData = await gasResp.json().catch(() => null);
         if (gasData && gasData.success === false) {
@@ -418,12 +429,10 @@ export async function handleAgentProgress(req, res) {
   const cleanProgressSecret = String(progressSecret || "").replace(/^["']|["']$/g, '').trim();
   const validSecrets = [
     process.env.AGENT_TRIGGER_SECRET,
-    process.env.CRON_SECRET,
-    "triage-cron-2026-AY4K2LDMXBV8DS7",
-    "^V0#8pSKx)y9xq}|"
+    process.env.CRON_SECRET
   ].filter(Boolean).map(s => String(s).replace(/^["']|["']$/g, '').trim());
 
-  if (!validSecrets.includes(cleanProgressSecret)) {
+  if (!cleanProgressSecret || !validSecrets.includes(cleanProgressSecret)) {
     return res.status(200).json({ success: false, error: "Invalid secret" });
   }
   if (!progressClientName || !progressRunId) {
@@ -474,6 +483,155 @@ export async function handleGetActiveAgentRun(req, res) {
     return res.status(200).json({ success: true, activeRun });
   } catch (err) {
     console.error("❌ get_active_agent_run error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+/**
+ * One-off / Admin helper: Pushes AGENT_TRIGGER_SECRET, PULSE_INTERNAL_SECRET, CRON_SECRET,
+ * and VERCEL_BYPASS_TOKEN into ScriptProperties for all client Master Sheets via their WebApp doPost,
+ * and registers any missing pulse:client_secret:<masterSheetId> keys in Redis.
+ */
+export async function handleSyncAllMasterScriptSecrets(req, res, sheets) {
+  const acSheetId = req.body?.automationCommanderSheetId || process.env.DEFAULT_AC_SHEET_ID || "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
+  const clientFilter = req.body?.clientFilter ? String(req.body.clientFilter).trim().toLowerCase() : null;
+
+  const agentSecret = String(process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "").replace(/^["']|["']$/g, "").trim();
+  const pulseInternalSecret = String(process.env.PULSE_INTERNAL_SECRET || "").replace(/^["']|["']$/g, "").trim();
+  const cronSecret = String(process.env.CRON_SECRET || agentSecret).replace(/^["']|["']$/g, "").trim();
+  const vercelBypassToken = String(process.env.VERCEL_BYPASS_TOKEN || "").replace(/^["']|["']$/g, "").trim();
+
+  if (!agentSecret || !pulseInternalSecret) {
+    return res.status(500).json({
+      success: false,
+      error: "AGENT_TRIGGER_SECRET and PULSE_INTERNAL_SECRET must be configured in server environment variables."
+    });
+  }
+
+  try {
+    const extractId = (val) => {
+      if (!val) return "";
+      const m = String(val).match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+      return m ? m[1] : String(val).trim();
+    };
+
+    // 1. Read AutoUpdates (Col A = clientName, Col D = masterSheetUrl/Id, Col N = webAppUrl)
+    const auResp = await sheets.spreadsheets.values.get({
+      spreadsheetId: acSheetId,
+      range: "AutoUpdates!A2:N500"
+    });
+    const auRows = auResp.data.values || [];
+
+    // 2. Also read Clients tracker sheet (Col A = clientName, Col W = deploymentUrl) as fallback for webAppUrl
+    const trackerUrlByClient = new Map();
+    try {
+      const trackerResp = await sheets.spreadsheets.values.get({
+        spreadsheetId: "1tx4rRD55-W53-B9Z_kMAJjXMf0nrIE9CCczYXFR84co",
+        range: "Clients!A3:W50"
+      });
+      for (const r of (trackerResp.data.values || [])) {
+        const cName = String(r[0] || "").trim().toLowerCase();
+        const depUrl = String(r[22] || "").trim();
+        if (cName && depUrl) trackerUrlByClient.set(cName, depUrl);
+      }
+    } catch (e) {
+      console.warn("[sync_all_master_script_secrets] Could not read fallback tracker sheet:", e.message);
+    }
+
+    const targets = [];
+    for (const r of auRows) {
+      const clientName = String(r[0] || "").trim();
+      if (!clientName || clientName.toLowerCase() === "client") continue;
+      if (clientFilter && !clientName.toLowerCase().includes(clientFilter)) continue;
+
+      const masterSheetId = extractId(r[12] || r[3]);
+      const webAppUrl = String(r[13] || "").trim() || trackerUrlByClient.get(clientName.toLowerCase()) || "";
+      targets.push({ clientName, masterSheetId, webAppUrl });
+    }
+
+    const results = [];
+    let syncedCount = 0;
+    let failedCount = 0;
+
+    for (const t of targets) {
+      if (!t.webAppUrl) {
+        failedCount++;
+        results.push({
+          clientName: t.clientName,
+          masterSheetId: t.masterSheetId,
+          success: false,
+          error: "No Master WebApp URL configured in AutoUpdates (Col N) or Clients tracker (Col W)."
+        });
+        continue;
+      }
+
+      try {
+        const resp = await fetch(t.webAppUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "sync_script_secrets",
+            secret: agentSecret,
+            pulseInternalSecret,
+            cronSecret,
+            vercelBypassToken,
+            clientName: t.clientName
+          })
+        });
+
+        const rawText = await resp.text();
+        let data = null;
+        try { data = JSON.parse(rawText); } catch {}
+
+        if (data && data.success) {
+          let clientSecretStatus = "already_registered";
+          if (t.masterSheetId && redisClient?.isOpen) {
+            const redisKey = `pulse:client_secret:${t.masterSheetId}`;
+            const existing = await redisClient.get(redisKey);
+            if (!existing && data.pulseClientSecret) {
+              await redisClient.set(redisKey, String(data.pulseClientSecret).trim());
+              clientSecretStatus = "newly_registered";
+            } else if (!existing) {
+              clientSecretStatus = "missing_from_gas_response";
+            }
+          }
+          syncedCount++;
+          results.push({
+            clientName: t.clientName,
+            masterSheetId: t.masterSheetId,
+            success: true,
+            configuredKeys: data.configuredKeys || [],
+            clientSecretStatus
+          });
+        } else {
+          failedCount++;
+          results.push({
+            clientName: t.clientName,
+            masterSheetId: t.masterSheetId,
+            success: false,
+            error: data?.error || `Unexpected response (HTTP ${resp.status}): ${rawText.slice(0, 180)}`
+          });
+        }
+      } catch (err) {
+        failedCount++;
+        results.push({
+          clientName: t.clientName,
+          masterSheetId: t.masterSheetId,
+          success: false,
+          error: err.message
+        });
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      total: targets.length,
+      syncedCount,
+      failedCount,
+      results
+    });
+  } catch (err) {
+    console.error("❌ sync_all_master_script_secrets error:", err);
     return res.status(500).json({ success: false, error: err.message });
   }
 }

@@ -12,7 +12,7 @@
 
 import { getSheetsClient, withRetry, getSheetGid, colLetterToNum } from "./sheetsClient.js";
 import { logPmaActivity } from "./pmaLogger.js";
-import { sanitizeFormulaInput } from "./userPermissions.js";
+import { sanitizeCashAdjustmentInput } from "./cashflowReconService.js";
 import { memoryCache } from "./cacheService.js";
 import { redisClient } from "./redisClient.js";
 
@@ -287,7 +287,7 @@ export async function saveCashBatch({
       continue;
     }
 
-    const cleanVal = sanitizeFormulaInput(String(up.value ?? "").trim());
+    const cleanVal = sanitizeCashAdjustmentInput(String(up.value ?? "").trim());
     validValueUpdates.push({
       range: `Cash!${colLetter}${rowNum}`,
       values: [[cleanVal]],

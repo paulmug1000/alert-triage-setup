@@ -10,7 +10,7 @@
  */
 
 import { getSessionUser } from "../../../services/authService.js";
-import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet } from "../../../services/userPermissions.js";
+import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, canAccessPma, isReadOnlySession } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { getClientSetupConfig, saveClientSetupConfig } from "../../../services/setupService.js";
 
@@ -20,8 +20,7 @@ export default async function handler(req, res) {
     return res.status(401).json({ success: false, error: "Active session required." });
   }
 
-  // Block ClientUser and Senior (Restricted) from accessing internal PMA setup configuration
-  if (sessionUser.role === "ClientUser" || sessionUser.role === "Senior (Restricted)" || sessionUser.isClientUser) {
+  if (!canAccessPma(sessionUser)) {
     return res.status(403).json({ success: false, error: "Access denied: PMA configuration requires staff privileges." });
   }
 
@@ -58,6 +57,9 @@ export default async function handler(req, res) {
   }
 
   if (req.method === "POST") {
+    if (isReadOnlySession(sessionUser)) {
+      return res.status(403).json({ success: false, error: "Read-only session cannot modify setup configuration." });
+    }
     const {
       clientName,
       masterSheetId,

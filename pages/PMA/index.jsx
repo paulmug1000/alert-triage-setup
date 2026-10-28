@@ -1,7 +1,8 @@
 import Head from "next/head";
 import TriageSystem from "../triage";
+import { getSsrSessionUser, canSsrUserAccessPma, getSsrInitialPmaData } from "../../services/ssrSession";
 
-export default function PMAPage() {
+export default function PMAPage({ initialUser = null, initialClients = [], initialIntegrations = null }) {
   return (
     <>
       <Head>
@@ -15,13 +16,32 @@ export default function PMAPage() {
         <meta name="twitter:title" content="Pulse" />
         <meta name="twitter:description" content="The agency finance dashboard" />
       </Head>
-      <TriageSystem onBack={() => { }} />
+      <TriageSystem
+        onBack={() => { }}
+        initialUser={initialUser}
+        initialClients={initialClients}
+        initialIntegrations={initialIntegrations}
+      />
     </>
   );
 }
 
-export async function getServerSideProps() {
+export async function getServerSideProps(context) {
+  const sessionUser = getSsrSessionUser(context.req);
+  if (sessionUser && !canSsrUserAccessPma(sessionUser)) {
+    return {
+      redirect: {
+        destination: "/pulse",
+        permanent: false,
+      },
+    };
+  }
+  const { initialClients, initialIntegrations } = await getSsrInitialPmaData(sessionUser);
   return {
-    props: {},
+    props: {
+      initialUser: sessionUser || null,
+      initialClients: initialClients || [],
+      initialIntegrations: initialIntegrations || null,
+    },
   };
 }

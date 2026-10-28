@@ -15,7 +15,7 @@ export const GLOBAL_STYLES = `
 `;
 
 export const styles = {
-  container: { maxWidth: "1080px", margin: "0 auto", padding: "24px 16px", fontFamily: "system-ui, -apple-system, sans-serif" },
+  container: { maxWidth: "1080px", margin: "0 auto", padding: "24px 16px", fontFamily: "'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" },
   header: { marginBottom: "24px", textAlign: "left" },
   title: { fontSize: "24px", fontWeight: "700", color: "#0F172A", margin: "0 0 6px 0" },
   subtitle: { fontSize: "14px", color: "#64748B", margin: "0" },

@@ -3,7 +3,7 @@ import nodemailer from "nodemailer";
 import jwt from "jsonwebtoken";
 import { redisClient } from "./redisClient.js";
 import { getSheetsClient } from "./sheetsClient.js";
-import { getUserByEmail, updateUserLastLogin } from "./userPermissions.js";
+import { getUserByEmail, updateUserLastLogin, getCanonicalAcSheetId } from "./userPermissions.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { logPulseActivity } from "./pulseLogger.js";
 
@@ -62,10 +62,19 @@ export function isBlockedOtpRole(role) {
   return r === "admin" || r === "clientmanager" || r === "client manager";
 }
 
+function safeCompareCode(a, b) {
+  if (typeof a !== "string" || typeof b !== "string") return false;
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
 /**
  * Send an OTP verification code to the given email address
  */
-export async function sendOtp(email, automationCommanderSheetId, clientIp) {
+export async function sendOtp(email, _ignoredAcId, clientIp) {
+  const automationCommanderSheetId = getCanonicalAcSheetId();
   const normalizedEmail = String(email || "").toLowerCase().trim();
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -171,10 +180,12 @@ export async function sendOtp(email, automationCommanderSheetId, clientIp) {
     console.log(`📧 Generated OTP code for ${normalizedEmail}`);
   }
 
-  // Store OTP in Redis
+  // Store OTP in Redis (reset atomic attempts key alongside fresh OTP)
   const otpKey = `pma_otp:${normalizedEmail}`;
+  const attemptsKey = `pma_otp_attempts:${normalizedEmail}`;
   try {
     await redisClient.set(otpKey, JSON.stringify({ code, attempts: 0 }), { EX: OTP_EXPIRY_SECS });
+    await redisClient.del(attemptsKey);
     await redisClient.set(cooldownKey, "1", { EX: COOLDOWN_SECS });
   } catch (e) {
     console.error("❌ Redis OTP storage error:", e.message);
@@ -204,7 +215,7 @@ export async function sendOtp(email, automationCommanderSheetId, clientIp) {
   const textBody = `Hello,\n\nYour secure verification code for Pulse is: ${code}\n\nThis code will expire in 10 minutes. If you did not request this code, please ignore this email.\n\nBest regards,\nThe Pulse Team\n\n---\nThrive Organisational Consulting Ltd\nThis is an automated security message. Please do not reply.`;
 
   const htmlBody = `
-    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; color: #333333;">
+    <div style="font-family: 'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; color: #333333;">
       <h2 style="color: #0047AB; border-bottom: 2px solid #f3f4f6; padding-bottom: 10px; margin-top: 0;">Pulse Secure Access</h2>
       <p style="font-size: 16px; line-height: 1.5;">Hello,</p>
       <p style="font-size: 16px; line-height: 1.5;">Your secure verification code to access Pulse is:</p>
@@ -246,8 +257,9 @@ export async function sendOtp(email, automationCommanderSheetId, clientIp) {
       return { success: true, message: `Verification code sent to ${normalizedEmail}.` };
     } catch (sendErr) {
       console.error(`❌ Gmail SMTP sending failed:`, sendErr.message);
-      // In dev mode or until App Password is saved, print to console so login is possible
-      console.log(`🔑 [PMA OTP CODE FOR DEV]: ${code}`);
+      if (process.env.NODE_ENV !== "production") {
+        console.log(`🔑 [PMA OTP CODE FOR DEV]: ${code}`);
+      }
       return {
         success: true,
         message: `Verification code generated. (SMTP Notice: ${sendErr.message})`,
@@ -273,7 +285,8 @@ export async function sendOtp(email, automationCommanderSheetId, clientIp) {
 /**
  * Verify OTP code and issue session token & cookie
  */
-export async function verifyOtp(email, code, automationCommanderSheetId, res, clientIp = "-") {
+export async function verifyOtp(email, code, _ignoredAcId, res, clientIp = "-") {
+  const automationCommanderSheetId = getCanonicalAcSheetId();
   const normalizedEmail = String(email || "").toLowerCase().trim();
   const enteredCode = String(code || "").trim();
 
@@ -282,6 +295,7 @@ export async function verifyOtp(email, code, automationCommanderSheetId, res, cl
   }
 
   const otpKey = `pma_otp:${normalizedEmail}`;
+  const attemptsKey = `pma_otp_attempts:${normalizedEmail}`;
   let cachedData = null;
   try {
     const raw = await redisClient.get(otpKey);
@@ -309,37 +323,45 @@ export async function verifyOtp(email, code, automationCommanderSheetId, res, cl
     };
   }
 
-  const currentAttempts = parseInt(cachedData.attempts || 0, 10);
-  if (currentAttempts >= 4) {
-    // 5th failed attempt purges code
-    try { await redisClient.del(otpKey); } catch { }
-    getSheetsClient().then(sheets => {
-      logPulseActivity(sheets, {
-        automationCommanderSheetId,
-        clientName: "System",
-        category: "AUTH",
-        action: "AUTH_LOCKED",
-        summary: `Account locked for ${normalizedEmail} (Exceeded 5 failed attempts)`,
-        details: { email: normalizedEmail, reason: "Max attempts exceeded", ip: clientIp },
-        user: normalizedEmail
-      });
-    }).catch(() => {});
+  if (!safeCompareCode(String(cachedData.code || ""), enteredCode)) {
+    let newAttempts = (parseInt(cachedData.attempts || 0, 10) || 0) + 1;
+    try {
+      newAttempts = await redisClient.incr(attemptsKey);
+      if (newAttempts === 1) {
+        await redisClient.expire(attemptsKey, OTP_EXPIRY_SECS);
+      }
+    } catch { }
 
-    return {
-      success: false,
-      message: "Too many failed attempts. Please request a new verification code."
-    };
-  }
+    if (newAttempts >= 5) {
+      try {
+        await redisClient.del(otpKey);
+        await redisClient.del(attemptsKey);
+      } catch { }
+      getSheetsClient().then(sheets => {
+        logPulseActivity(sheets, {
+          automationCommanderSheetId,
+          clientName: "System",
+          category: "AUTH",
+          action: "AUTH_LOCKED",
+          summary: `Account locked for ${normalizedEmail} (Exceeded 5 failed attempts)`,
+          details: { email: normalizedEmail, reason: "Max attempts exceeded", ip: clientIp },
+          user: normalizedEmail
+        });
+      }).catch(() => {});
 
-  if (String(cachedData.code) !== enteredCode) {
-    const newAttempts = currentAttempts + 1;
+      return {
+        success: false,
+        message: "Too many failed attempts. Please request a new verification code."
+      };
+    }
+
     cachedData.attempts = newAttempts;
-    const ttl = await redisClient.ttl(otpKey);
+    const ttl = await redisClient.ttl(otpKey).catch(() => 300);
     try {
       await redisClient.set(otpKey, JSON.stringify(cachedData), { EX: ttl > 0 ? ttl : 300 });
     } catch { }
 
-    const remaining = 5 - newAttempts;
+    const remaining = Math.max(0, 5 - newAttempts);
     getSheetsClient().then(sheets => {
       logPulseActivity(sheets, {
         automationCommanderSheetId,
@@ -358,8 +380,11 @@ export async function verifyOtp(email, code, automationCommanderSheetId, res, cl
     };
   }
 
-  // Code matches! Destroy OTP from Redis
-  try { await redisClient.del(otpKey); } catch { }
+  // Code matches! Destroy OTP and attempt counter from Redis
+  try {
+    await redisClient.del(otpKey);
+    await redisClient.del(attemptsKey);
+  } catch { }
 
   return await createSessionForVerifiedEmail(normalizedEmail, res, "EmailOTP", automationCommanderSheetId, clientIp);
 }
@@ -367,7 +392,8 @@ export async function verifyOtp(email, code, automationCommanderSheetId, res, cl
 /**
  * Create a session for an already verified email (via OAuth or OTP)
  */
-export async function createSessionForVerifiedEmail(email, res, provider = "OAuth", automationCommanderSheetId, clientIp = "-") {
+export async function createSessionForVerifiedEmail(email, res, provider = "OAuth", _ignoredAcId, clientIp = "-") {
+  const automationCommanderSheetId = getCanonicalAcSheetId();
   const normalizedEmail = String(email || "").toLowerCase().trim();
   if (!normalizedEmail) {
     return { success: false, message: "Email is required" };
@@ -376,7 +402,7 @@ export async function createSessionForVerifiedEmail(email, res, provider = "OAut
   // Invalidate Redis user cache so fresh spreadsheet permissions are always loaded
   try { await redisClient.del("pma:users:list"); } catch { }
 
-  // Fetch full user record directly from spreadsheet
+  // Fetch full user record directly from canonical spreadsheet
   const sheets = await getSheetsClient();
   const user = await getUserByEmail(normalizedEmail, sheets, automationCommanderSheetId, true);
 
@@ -471,10 +497,9 @@ export async function createSessionForVerifiedEmail(email, res, provider = "OAut
   return {
     success: true,
     message: "Login successful",
-    token,
     user: {
       ...payload,
-      isAdmin: user.role === "Admin",
+      isAdmin: user.role === "Admin" && !isReadOnly,
       isSenior: user.role === "Senior (Restricted)" || String(user.role || "").toLowerCase().includes("senior"),
       isClientUser: user.role === "ClientUser",
       isReadOnly,
@@ -528,16 +553,17 @@ export function getSessionUser(req) {
       : (Array.isArray(decoded.assignedClients) ? decoded.assignedClients : []);
 
     const role = decoded.role || "ClientUser";
-    // Only Admin is an internal staff role able to see all clients
-    const isAdmin = role === "Admin";
-    const isSenior = role === "Senior (Restricted)" || String(role).toLowerCase().includes("senior");
-    const isClientUser = role === "ClientUser";
     const isReadOnly = Boolean(decoded.isReadOnly || decoded.authProvider === "EmailOTP");
 
-    // Admins and Client Managers are strictly forbidden from having OTP sessions
-    if (decoded.authProvider === "EmailOTP" && (isAdmin || isBlockedOtpRole(role))) {
+    // Admins and Client Managers are strictly forbidden from having OTP / read-only sessions
+    if ((decoded.authProvider === "EmailOTP" || isReadOnly) && (role === "Admin" || isBlockedOtpRole(role))) {
       return null;
     }
+
+    // Only non-read-only Admin is an internal staff role able to see all clients
+    const isAdmin = role === "Admin" && !isReadOnly;
+    const isSenior = role === "Senior (Restricted)" || String(role).toLowerCase().includes("senior");
+    const isClientUser = role === "ClientUser";
 
     return {
       email: decoded.email,

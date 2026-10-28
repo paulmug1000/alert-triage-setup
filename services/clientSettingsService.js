@@ -17,6 +17,7 @@
 
 import { getSheetsClient, withRetry } from "./sheetsClient.js";
 import { redisClient } from "./redisClient.js";
+import { sanitizeFormulaInput } from "./userPermissions.js";
 
 const REDIS_SETTINGS_PREFIX = "pulse:client_settings:";
 const REDIS_SETTINGS_TTL = 1800; // 30 minutes cache
@@ -106,6 +107,9 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
       const cached = await redisClient.get(redisKey);
       if (cached) {
         const parsed = JSON.parse(cached);
+        if (parsed?.crm?.excel?.azureClientSecret) {
+          parsed.crm.excel.azureClientSecret = "••••••••";
+        }
         return { ...parsed, fromCache: true };
       }
     } catch (err) {
@@ -459,7 +463,7 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
       excel: {
         azureTenantId: String(keyX11X41[22]?.[0] || "").trim(), // X33
         azureClientId: String(keyX11X41[23]?.[0] || "").trim(), // X34
-        azureClientSecret: String(keyX11X41[24]?.[0] || "").trim(), // X35
+        azureClientSecret: String(keyX11X41[24]?.[0] || "").trim() ? "••••••••" : "", // X35 (masked)
         driveId: String(keyX11X41[25]?.[0] || "").trim(),       // X36
         fileId: String(keyX11X41[26]?.[0] || "").trim(),        // X37
         worksheetName: String(keyX11X41[27]?.[0] || "").trim(), // X38
@@ -600,12 +604,12 @@ export async function saveClientSettings({
   // Helper for single cell update
   const addMasterCell = (range, val) => {
     if (val !== undefined && val !== null) {
-      masterUpdates.push({ range, values: [[String(val)]] });
+      masterUpdates.push({ range, values: [[String(sanitizeFormulaInput(String(val)))]] });
     }
   };
   const addClientCell = (range, val) => {
     if (val !== undefined && val !== null && clientSheetId) {
-      clientUpdates.push({ range, values: [[String(val)]] });
+      clientUpdates.push({ range, values: [[String(sanitizeFormulaInput(String(val)))]] });
     }
   };
 
@@ -614,7 +618,7 @@ export async function saveClientSettings({
     const totalRows = endRow - startRow + 1;
     const values = [];
     for (let i = 0; i < totalRows; i++) {
-      values.push([items[i] !== undefined ? String(items[i]) : ""]);
+      values.push([items[i] !== undefined ? String(sanitizeFormulaInput(String(items[i]))) : ""]);
     }
     masterUpdates.push({
       range: `KeyInfo!${startColLetter}${startRow}:${startColLetter}${endRow}`,
@@ -800,7 +804,9 @@ export async function saveClientSettings({
       const ex = settings.crm.excel;
       addMasterCell("KeyInfo!X33", ex.azureTenantId || "");
       addMasterCell("KeyInfo!X34", ex.azureClientId || "");
-      addMasterCell("KeyInfo!X35", ex.azureClientSecret || "");
+      if (ex.azureClientSecret !== "••••••••") {
+        addMasterCell("KeyInfo!X35", ex.azureClientSecret || "");
+      }
       addMasterCell("KeyInfo!X36", ex.driveId || "");
       addMasterCell("KeyInfo!X37", ex.fileId || "");
       addMasterCell("KeyInfo!X38", ex.worksheetName || "");
@@ -981,6 +987,15 @@ export async function saveClientSettings({
     ...settings,
     lastSyncedAt: new Date().toISOString()
   };
+  if (updatedSettings?.crm?.excel?.azureClientSecret) {
+    updatedSettings.crm = {
+      ...updatedSettings.crm,
+      excel: {
+        ...updatedSettings.crm.excel,
+        azureClientSecret: "••••••••"
+      }
+    };
+  }
 
   if (redisClient?.isOpen) {
     try {

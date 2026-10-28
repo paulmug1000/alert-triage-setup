@@ -1,9 +1,14 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 
-export function useAuth() {
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [authChecking, setAuthChecking] = useState(true);
-  const [user, setUser] = useState(null);
+export function useAuth(initialUser = null) {
+  if (typeof window !== "undefined" && initialUser) {
+    window.__PULSE_SESSION_USER__ = initialUser;
+  }
+  const hydratedUser = initialUser || (typeof window !== "undefined" ? window.__PULSE_SESSION_USER__ || null : null);
+
+  const [isAuthenticated, setIsAuthenticated] = useState(Boolean(hydratedUser));
+  const [authChecking, setAuthChecking] = useState(!hydratedUser);
+  const [user, setUser] = useState(hydratedUser);
 
   // OTP flow state
   const [authStep, setAuthStep] = useState("email"); // "email" | "code"
@@ -34,6 +39,7 @@ export function useAuth() {
       if (res.ok) {
         const data = await res.json();
         if (data.authenticated && data.user) {
+          if (typeof window !== "undefined") window.__PULSE_SESSION_USER__ = data.user;
           setUser(data.user);
           setIsAuthenticated(true);
           setAuthChecking(false);
@@ -50,6 +56,7 @@ export function useAuth() {
       if (triageRes.ok) {
         const triageData = await triageRes.json();
         if (triageData.authenticated && triageData.user) {
+          if (typeof window !== "undefined") window.__PULSE_SESSION_USER__ = triageData.user;
           setUser(triageData.user);
           setIsAuthenticated(true);
           setAuthChecking(false);
@@ -69,8 +76,10 @@ export function useAuth() {
   }, []);
 
   useEffect(() => {
-    checkSession();
-  }, [checkSession]);
+    if (!hydratedUser) {
+      checkSession();
+    }
+  }, [checkSession, hydratedUser]);
 
   /**
    * Send 6-digit OTP to user email
@@ -143,6 +152,7 @@ export function useAuth() {
       const data = await res.json();
 
       if (data.success && data.user) {
+        if (typeof window !== "undefined") window.__PULSE_SESSION_USER__ = data.user;
         if (data.token) {
           try {
             localStorage.setItem("pma_token", data.token);
@@ -177,11 +187,11 @@ export function useAuth() {
       await fetch("/api/auth/logout", { method: "POST" });
     } catch {}
     try {
+      if (typeof window !== "undefined") window.__PULSE_SESSION_USER__ = null;
       localStorage.removeItem("pma_token");
       localStorage.removeItem("pma_user");
       localStorage.removeItem("pulse_access_token");
       localStorage.removeItem("pma_managed_client");
-      localStorage.removeItem("pulse_cached_all_clients");
     } catch {}
     setIsAuthenticated(false);
     setUser(null);

@@ -12,7 +12,7 @@
 
 import { getIntegrationStatus, getSharedXeroGrant, INTEGRATIONS_STATUS_CACHE_KEY } from "../../../services/vaultService.js";
 import { getSheetsClient, extractSheetIdFromUrl } from "../../../services/sheetsClient.js";
-import { DEFAULT_AC_SHEET_ID, matchesClientName, isUserAuthorizedForClient, resolveClientNameBySheetId } from "../../../services/userPermissions.js";
+import { DEFAULT_AC_SHEET_ID, matchesClientName, isUserAuthorizedForClient, resolveClientNameBySheetId, canAccessPma } from "../../../services/userPermissions.js";
 import { getClientSetupConfig, revalidateClientsSetupInBackground } from "../../../services/setupService.js";
 import { getSessionUser } from "../../../services/authService.js";
 import { redisClient } from "../../../services/redisClient.js";
@@ -35,6 +35,9 @@ export default async function handler(req, res) {
 
   // Mode 1: All Clients Status (for the new Multi-Client Integrations page)
   if (all === "true" || all === "1") {
+    if (!canAccessPma(sessionUser)) {
+      return res.status(403).json({ error: "Access denied: PMA privileges required." });
+    }
 
     const now = Date.now();
     const cacheKey = INTEGRATIONS_STATUS_CACHE_KEY;
@@ -79,10 +82,17 @@ export default async function handler(req, res) {
         }
         if (cachedData.sharedXero?.reconnectRequired) attentionCount++;
 
+        const scopedSharedXero = cachedData.sharedXero
+          ? {
+              ...cachedData.sharedXero,
+              availableTenants: sessionUser.isAdmin ? (cachedData.sharedXero.availableTenants || []) : []
+            }
+          : null;
+
         return res.status(200).json({
           success: true,
           allClients: scopedClients,
-          sharedXero: cachedData.sharedXero,
+          sharedXero: scopedSharedXero,
           attentionCount
         });
       }
@@ -174,7 +184,8 @@ function evaluateAutomationHealth({ frequency, isRunning, lastCommandTime, signa
         .filter(c => c.clientName && c.clientName.toLowerCase() !== "client" && c.clientName.toLowerCase() !== "client name" && c.masterSheetId);
 
       // Respect user permissions
-      if (!sessionUser.isAdmin && sessionUser.assignedClients !== "*") {
+      const isGlobalScope = Boolean(sessionUser.isAdmin || sessionUser.assignedClients === "*");
+      if (!isGlobalScope) {
         const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
         clients = clients.filter(c => assignedList.some(assigned => matchesClientName(assigned, c.clientName)));
       }
@@ -276,13 +287,22 @@ function evaluateAutomationHealth({ frequency, isRunning, lastCommandTime, signa
         revalidateClientsSetupInBackground(clients);
       }
 
-      if (redisClient?.isOpen) {
-        try {
-          await redisClient.set(cacheKey, JSON.stringify({ allClients: clientConfigs, sharedXero }), { EX: 3600 });
-        } catch (e) {}
+      if (isGlobalScope) {
+        if (redisClient?.isOpen) {
+          try {
+            await redisClient.set(cacheKey, JSON.stringify({ allClients: clientConfigs, sharedXero }), { EX: 86400 });
+          } catch (e) {}
+        }
+        _allIntegrationsStatusCache = { allClients: clientConfigs, sharedXero };
+        _allIntegrationsStatusCachedAt = now;
       }
-      _allIntegrationsStatusCache = { allClients: clientConfigs, sharedXero };
-      _allIntegrationsStatusCachedAt = now;
+
+      const scopedSharedXero = sharedXero
+        ? {
+            ...sharedXero,
+            availableTenants: sessionUser.isAdmin ? (sharedXero.availableTenants || []) : []
+          }
+        : null;
 
       let attentionCount = 0;
       for (const c of clientConfigs) {
@@ -296,7 +316,7 @@ function evaluateAutomationHealth({ frequency, isRunning, lastCommandTime, signa
       return res.status(200).json({
         success: true,
         allClients: clientConfigs,
-        sharedXero,
+        sharedXero: scopedSharedXero,
         attentionCount
       });
     } catch (err) {
@@ -343,7 +363,7 @@ function evaluateAutomationHealth({ frequency, isRunning, lastCommandTime, signa
       status: sharedXeroRaw.status,
       reconnectRequired: sharedXeroRaw.status === "reconnect_required",
       expiresAt: sharedXeroRaw.expiresAt,
-      availableTenants: sharedXeroRaw.availableTenants || [],
+      availableTenants: sessionUser.isAdmin ? (sharedXeroRaw.availableTenants || []) : [],
       tenantCount: (sharedXeroRaw.availableTenants || []).length,
       lastRefreshedAt: sharedXeroRaw.lastRefreshedAt,
       updatedAt: sharedXeroRaw.updatedAt

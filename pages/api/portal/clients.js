@@ -1,7 +1,8 @@
 import { getSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
-import { DEFAULT_AC_SHEET_ID, matchesClientName } from "../../../services/userPermissions.js";
+import { getCanonicalAcSheetId, matchesClientName, isPulseOnlyUser } from "../../../services/userPermissions.js";
 import { memoryCache } from "../../../services/cacheService.js";
+import { redisClient } from "../../../services/redisClient.js";
 
 function extractSheetIdFromUrl(url) {
   if (!url) return "";
@@ -22,11 +23,20 @@ export default async function handler(req, res) {
   }
 
   try {
-    const acId = req.query.automationCommanderSheetId || req.body?.automationCommanderSheetId || DEFAULT_AC_SHEET_ID;
+    const acId = getCanonicalAcSheetId();
     const bypassCache = req.query.bypassCache === "true" || req.body?.bypassCache === true;
     const cacheKey = `pulse:portal:allClients:${acId}`;
 
     let allClients = !bypassCache ? memoryCache.get(cacheKey) : null;
+    if (!allClients && !bypassCache && redisClient?.isOpen) {
+      try {
+        const rawCached = await redisClient.get(cacheKey);
+        if (rawCached) {
+          allClients = JSON.parse(rawCached);
+          memoryCache.set(cacheKey, allClients, 300);
+        }
+      } catch (_) {}
+    }
 
     if (!allClients) {
       const sheets = await getSheetsClient();
@@ -61,6 +71,9 @@ export default async function handler(req, res) {
       }
 
       memoryCache.set(cacheKey, allClients, 300); // Cache in memory for 5 minutes
+      if (redisClient?.isOpen) {
+        redisClient.set(cacheKey, JSON.stringify(allClients), { EX: 300 }).catch(() => {});
+      }
     }
 
     // Role-based scoping:
@@ -76,6 +89,33 @@ export default async function handler(req, res) {
 
     authorizedClients.sort((a, b) => a.clientName.localeCompare(b.clientName));
 
+    // Attach lightweight setupMode boolean from Redis so the Portal never blocks on a separate /api/setup/status spinner
+    let setupModes = [];
+    if (redisClient?.isOpen && authorizedClients.length > 0) {
+      try {
+        const keys = authorizedClients.map(
+          (c) => `pulse:setup:${String(c.clientName || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_")}`
+        );
+        const rawList = await redisClient.mGet(keys);
+        setupModes = rawList.map((raw) => {
+          if (!raw) return false;
+          try {
+            return Boolean(JSON.parse(raw)?.setupMode);
+          } catch {
+            return false;
+          }
+        });
+      } catch (_) {}
+    }
+
+    const hideMasterId = isPulseOnlyUser(sessionUser);
+    const safeClients = authorizedClients.map((c, idx) => {
+      const setupMode = Boolean(setupModes[idx]);
+      return hideMasterId
+        ? { clientName: c.clientName, clientSheetId: c.clientSheetId, setupMode }
+        : { ...c, setupMode };
+    });
+
     return res.status(200).json({
       success: true,
       user: {
@@ -84,7 +124,7 @@ export default async function handler(req, res) {
         role: sessionUser.role,
         isAdmin: sessionUser.isAdmin,
       },
-      clients: authorizedClients,
+      clients: safeClients,
     });
   } catch (err) {
     console.error("❌ /api/portal/clients error:", err);

@@ -11,13 +11,14 @@ export default function PortalShell({
   user,
   onLogout,
   hasBudget = true,
-  hasCash = false,
+  hasCash = true,
   setupStatus = null,
   onPreviewSetup = null,
   children
 }) {
   const [openDropdown, setOpenDropdown] = useState(null); // 'perf' | 'cash' | 'keyData' | 'analysis' | 'user' | 'client' | null
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [navigatingToPma, setNavigatingToPma] = useState(false);
 
   const isSeniorRestricted = Boolean(
     user?.isSenior ||
@@ -168,8 +169,8 @@ export default function PortalShell({
             gap: "1rem"
           }}
         >
-          {/* Left Brand & Client Name (Stacked: Logo on top, Client Name underneath) */}
-          <div style={{ display: "flex", flexDirection: "column", gap: "2px", alignItems: "flex-start", minWidth: 0 }}>
+          {/* Left Brand & Client Name (Stacked: Logo on top, Client Name underneath with reserved fixed height and equal flex basis to prevent layout jump) */}
+          <div style={{ flex: "1 1 0%", display: "flex", flexDirection: "column", gap: "2px", alignItems: "flex-start", minWidth: 0 }}>
             <a
               href={getPortalViewHref("month")}
               onClick={(e) => handleLinkClick(e, "month")}
@@ -196,40 +197,56 @@ export default function PortalShell({
               />
             </a>
 
-            {clientName && (
-              clients.length > 1 ? (
-                <div className="portal-nav-dropdown" style={{ position: "relative" }}>
+            <div style={{ height: "20px", minHeight: "20px", display: "flex", alignItems: "center" }}>
+              {clientName ? (
+                <div
+                  className="portal-nav-dropdown"
+                  style={{
+                    position: "relative",
+                    display: "flex",
+                    alignItems: "center",
+                    height: "20px",
+                    animation: "portalFadeIn 0.22s ease-out"
+                  }}
+                >
                   <button
                     type="button"
-                    onClick={() => toggleDropdown("client")}
+                    disabled={clients.length <= 1}
+                    onClick={() => {
+                      if (clients.length > 1) toggleDropdown("client");
+                    }}
                     style={{
-                      background: openDropdown === "client" ? "rgba(255, 255, 255, 0.1)" : "transparent",
-                      border: "1px solid rgba(255, 255, 255, 0.28)",
+                      background: openDropdown === "client" && clients.length > 1 ? "rgba(255, 255, 255, 0.1)" : "transparent",
+                      border: clients.length > 1 ? "1px solid rgba(255, 255, 255, 0.28)" : "1px solid transparent",
                       borderRadius: "4px",
-                      padding: "1px 5px",
+                      padding: clients.length > 1 ? "0 5px" : "0 2px",
+                      height: "20px",
+                      boxSizing: "border-box",
                       color: "#ffffff",
                       fontSize: "0.85rem",
                       fontWeight: 400,
                       letterSpacing: "0.2px",
                       lineHeight: "1.1",
-                      cursor: "pointer",
+                      cursor: clients.length > 1 ? "pointer" : "default",
                       display: "inline-flex",
                       alignItems: "center",
-                      gap: "4px",
+                      gap: clients.length > 1 ? "4px" : "0px",
                       fontFamily: "inherit",
-                      transition: "background 0.15s, border-color 0.15s"
+                      transition: "background 0.18s ease, border-color 0.22s ease, padding 0.22s ease, gap 0.22s ease"
                     }}
                     onMouseEnter={(e) => {
-                      e.currentTarget.style.background = "rgba(255, 255, 255, 0.12)";
-                      e.currentTarget.style.borderColor = "rgba(255, 255, 255, 0.45)";
+                      if (clients.length > 1) {
+                        e.currentTarget.style.background = "rgba(255, 255, 255, 0.12)";
+                        e.currentTarget.style.borderColor = "rgba(255, 255, 255, 0.45)";
+                      }
                     }}
                     onMouseLeave={(e) => {
-                      if (openDropdown !== "client") {
+                      if (clients.length > 1 && openDropdown !== "client") {
                         e.currentTarget.style.background = "transparent";
                         e.currentTarget.style.borderColor = "rgba(255, 255, 255, 0.28)";
                       }
                     }}
-                    title="Switch client"
+                    title={clients.length > 1 ? "Switch client" : undefined}
                   >
                     <span
                       className="portal-client-title"
@@ -243,10 +260,22 @@ export default function PortalShell({
                     >
                       {clientName}
                     </span>
-                    <span style={{ fontSize: "9px", opacity: 0.75, lineHeight: 1, userSelect: "none" }}>▾</span>
+                    <span
+                      style={{
+                        fontSize: "9px",
+                        opacity: clients.length > 1 ? 0.75 : 0,
+                        maxWidth: clients.length > 1 ? "12px" : "0px",
+                        overflow: "hidden",
+                        lineHeight: 1,
+                        userSelect: "none",
+                        transition: "opacity 0.22s ease, max-width 0.22s ease"
+                      }}
+                    >
+                      ▾
+                    </span>
                   </button>
 
-                  {openDropdown === "client" && (
+                  {openDropdown === "client" && clients.length > 1 && (
                     <div
                       style={{
                         ...dropdownMenuStyle,
@@ -296,22 +325,8 @@ export default function PortalShell({
                     </div>
                   )}
                 </div>
-              ) : (
-                <span
-                  className="portal-client-title"
-                  style={{
-                    color: "#ffffff",
-                    fontSize: "0.85rem",
-                    fontWeight: 400,
-                    letterSpacing: "0.2px",
-                    lineHeight: "1.1",
-                    paddingLeft: "2px"
-                  }}
-                >
-                  {clientName}
-                </span>
-              )
-            )}
+              ) : null}
+            </div>
           </div>
 
           {/* Desktop Navigation Tabs */}
@@ -396,51 +411,66 @@ export default function PortalShell({
               )}
             </div>
 
-            {/* 3. Cash Dropdown */}
-            {hasCash && (
-              <div className="portal-nav-dropdown" style={{ position: "relative" }}>
-                <button
-                  type="button"
-                  onClick={() => toggleDropdown("cash")}
-                  style={{
-                    padding: "0.5rem 0.95rem",
-                    borderRadius: "6px",
-                    border: "none",
-                    cursor: "pointer",
-                    fontSize: "15px",
-                    fontWeight: isViewInGroup(["cash", "cashBreakdown"]) ? 700 : 500,
-                    background: isViewInGroup(["cash", "cashBreakdown"]) ? "#ffffff" : "transparent",
-                    color: isViewInGroup(["cash", "cashBreakdown"]) ? "#0047AB" : "#ffffff",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "6px",
-                    transition: "all 0.15s ease"
-                  }}
-                >
-                  <span>Cash</span>
-                  <span style={{ fontSize: "11px", opacity: 0.8 }}>▾</span>
-                </button>
+            {/* 3. Cash Dropdown (present by default; smoothly fades and collapses if client does not have Cash enabled) */}
+            <div
+              className="portal-nav-dropdown"
+              style={{
+                position: "relative",
+                maxWidth: hasCash ? "100px" : "0px",
+                opacity: hasCash ? 1 : 0,
+                marginRight: hasCash ? "0px" : "-0.4rem",
+                transform: hasCash ? "scale(1)" : "scale(0.95)",
+                overflow: openDropdown === "cash" && hasCash ? "visible" : "hidden",
+                pointerEvents: hasCash ? "auto" : "none",
+                transition: "max-width 0.22s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.18s ease, margin-right 0.22s cubic-bezier(0.4, 0, 0.2, 1), transform 0.18s ease"
+              }}
+              aria-hidden={!hasCash}
+            >
+              <button
+                type="button"
+                tabIndex={hasCash ? 0 : -1}
+                onClick={() => {
+                  if (hasCash) toggleDropdown("cash");
+                }}
+                style={{
+                  padding: "0.5rem 0.95rem",
+                  borderRadius: "6px",
+                  border: "none",
+                  cursor: "pointer",
+                  fontSize: "15px",
+                  fontWeight: isViewInGroup(["cash", "cashBreakdown"]) ? 700 : 500,
+                  background: isViewInGroup(["cash", "cashBreakdown"]) ? "#ffffff" : "transparent",
+                  color: isViewInGroup(["cash", "cashBreakdown"]) ? "#0047AB" : "#ffffff",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  whiteSpace: "nowrap",
+                  transition: "all 0.15s ease"
+                }}
+              >
+                <span>Cash</span>
+                <span style={{ fontSize: "11px", opacity: 0.8 }}>▾</span>
+              </button>
 
-                {openDropdown === "cash" && (
-                  <div style={dropdownMenuStyle}>
-                    <a
-                      href={getPortalViewHref("cash")}
-                      onClick={(e) => handleLinkClick(e, "cash")}
-                      style={dropdownItemStyle(activeView === "cash")}
-                    >
-                      Cashflow forecast
-                    </a>
-                    <a
-                      href={getPortalViewHref("cashBreakdown")}
-                      onClick={(e) => handleLinkClick(e, "cashBreakdown")}
-                      style={dropdownItemStyle(activeView === "cashBreakdown")}
-                    >
-                      Breakdowns
-                    </a>
-                  </div>
-                )}
-              </div>
-            )}
+              {openDropdown === "cash" && hasCash && (
+                <div style={dropdownMenuStyle}>
+                  <a
+                    href={getPortalViewHref("cash")}
+                    onClick={(e) => handleLinkClick(e, "cash")}
+                    style={dropdownItemStyle(activeView === "cash")}
+                  >
+                    Cashflow forecast
+                  </a>
+                  <a
+                    href={getPortalViewHref("cashBreakdown")}
+                    onClick={(e) => handleLinkClick(e, "cashBreakdown")}
+                    style={dropdownItemStyle(activeView === "cashBreakdown")}
+                  >
+                    Breakdowns
+                  </a>
+                </div>
+              )}
+            </div>
 
             {/* 4. Key Data Dropdown */}
             <div className="portal-nav-dropdown" style={{ position: "relative" }}>
@@ -587,7 +617,7 @@ export default function PortalShell({
           </nav>
 
           {/* Right Header Utilities: User Account & Mobile Toggle */}
-          <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+          <div style={{ flex: "1 1 0%", display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "0.75rem" }}>
 
             {/* Read-Only Badge if logged in with OTP */}
             {user?.isReadOnly && (
@@ -788,21 +818,42 @@ export default function PortalShell({
                   {(user?.isAdmin || user?.role === "ClientManager") && (
                     <Link
                       href="/pma"
+                      onClick={() => setNavigatingToPma(true)}
                       style={{
                         display: "flex",
                         alignItems: "center",
                         gap: "8px",
                         padding: "0.65rem 1rem",
                         color: "#0047AB",
+                        background: navigatingToPma ? "rgba(0, 71, 171, 0.08)" : "transparent",
                         textDecoration: "none",
                         fontSize: "14px",
                         fontWeight: 600,
-                        borderBottom: "1px solid #e2e8f0"
+                        borderBottom: "1px solid #e2e8f0",
+                        pointerEvents: navigatingToPma ? "none" : "auto",
+                        transition: "background 0.15s ease"
                       }}
                       onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(0, 71, 171, 0.08)"; }}
-                      onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+                      onMouseLeave={(e) => {
+                        if (!navigatingToPma) e.currentTarget.style.background = "transparent";
+                      }}
                     >
-                      <span>←</span>
+                      {navigatingToPma ? (
+                        <svg
+                          width="14"
+                          height="14"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="#0047AB"
+                          strokeWidth="2.6"
+                          strokeLinecap="round"
+                          style={{ animation: "portalSpin 0.7s linear infinite", flexShrink: 0 }}
+                        >
+                          <path d="M12 2a10 10 0 0 1 10 10" />
+                        </svg>
+                      ) : (
+                        <span>←</span>
+                      )}
                       <span>Pulse Management Area</span>
                     </Link>
                   )}
@@ -998,6 +1049,35 @@ export default function PortalShell({
 
       {/* Responsive Styles Injection */}
       <style jsx global>{`
+        @keyframes portalFadeIn {
+          from {
+            opacity: 0;
+            transform: translateY(-1px);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
+        @keyframes portalContentFadeIn {
+          from {
+            opacity: 0;
+          }
+          to {
+            opacity: 1;
+          }
+        }
+        .portal-main-content-wrapper > *:not([data-pulse-skeleton="true"]) {
+          animation: portalContentFadeIn 0.22s ease-out;
+        }
+        @keyframes portalSpin {
+          from {
+            transform: rotate(0deg);
+          }
+          to {
+            transform: rotate(360deg);
+          }
+        }
         @media (max-width: 900px) {
           .portal-desktop-nav {
             display: none !important;

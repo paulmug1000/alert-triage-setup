@@ -2077,6 +2077,28 @@ export async function handleEomApplyDefaultTasks(req, res, sheets) {
 export const REPORTING_CONTROL_SHEET_ID = "1uAJS6ZWn0o-GPU9Ea3DIVU9nzQoRnXrMfmBcQYHNJ_s";
 export const CLIENT_VERSION_TRACKER_SHEET_ID = "1tx4rRD55-W53-B9Z_kMAJjXMf0nrIE9CCczYXFR84co";
 
+function parseHeaderToMonthKey_(headerStr) {
+  if (!headerStr) return "";
+  const s = String(headerStr).trim();
+  if (/^\d{4}-\d{2}$/.test(s)) return s;
+  const months = { jan: "01", feb: "02", mar: "03", apr: "04", may: "05", jun: "06", jul: "07", aug: "08", sep: "09", oct: "10", nov: "11", dec: "12" };
+  const match = s.match(/^([a-zA-Z]+)[\s-]*(\d{2,4})$/);
+  if (match) {
+    const m = months[match[1].toLowerCase().slice(0, 3)];
+    let y = match[2];
+    if (y.length === 2) y = "20" + y;
+    if (m && y) return `${y}-${m}`;
+  }
+  return s;
+}
+
+function resolveAcSheetId_(providedId) {
+  if (providedId && String(providedId).trim() !== REPORTING_CONTROL_SHEET_ID) {
+    return String(providedId).trim();
+  }
+  return process.env.AUTOMATION_COMMANDER_SHEET_ID || DEFAULT_AC_SHEET_ID;
+}
+
 export const DEFAULT_CHART_REFS = [
   { code: "[MonthSnapshot]", range: "C31:J47", label: "Month Snapshot" },
   { code: "[BusinessPerformance]", range: "U106:AA137", label: "Business Performance" },
@@ -2104,12 +2126,13 @@ export const DEFAULT_CHART_REFS = [
 ];
 
 /**
- * Ensures EomReportingConfig and ReportsLog tabs exist in Automation Commander
+ * Ensures EomReportingConfig and ChartRefs tabs exist in Reporting Control spreadsheet
  */
-export async function ensureEomReportingTabs_(sheets, spreadsheetId) {
+export async function ensureEomReportingTabs_(sheets, spreadsheetId = REPORTING_CONTROL_SHEET_ID) {
+  const targetId = REPORTING_CONTROL_SHEET_ID;
   try {
     const meta = await withRetry(() => sheets.spreadsheets.get({
-      spreadsheetId,
+      spreadsheetId: targetId,
       fields: "sheets.properties.title"
     }));
     const existingTitles = new Set(meta.data.sheets?.map(s => s.properties?.title) || []);
@@ -2120,18 +2143,7 @@ export async function ensureEomReportingTabs_(sheets, spreadsheetId) {
         addSheet: {
           properties: {
             title: "EomReportingConfig",
-            gridProperties: { rowCount: 200, columnCount: 10, frozenRowCount: 1 }
-          }
-        }
-      });
-    }
-
-    if (!existingTitles.has("ReportsLog")) {
-      requests.push({
-        addSheet: {
-          properties: {
-            title: "ReportsLog",
-            gridProperties: { rowCount: 1000, columnCount: 10, frozenRowCount: 1 }
+            gridProperties: { rowCount: 100, columnCount: 10, frozenRowCount: 1 }
           }
         }
       });
@@ -2139,65 +2151,18 @@ export async function ensureEomReportingTabs_(sheets, spreadsheetId) {
 
     if (requests.length > 0) {
       await withRetry(() => sheets.spreadsheets.batchUpdate({
-        spreadsheetId,
+        spreadsheetId: targetId,
         requestBody: { requests }
       }));
     }
 
-    // Set headers if new
     if (!existingTitles.has("EomReportingConfig")) {
       await withRetry(() => sheets.spreadsheets.values.update({
-        spreadsheetId,
+        spreadsheetId: targetId,
         range: "EomReportingConfig!A1:G1",
         valueInputOption: "RAW",
         requestBody: {
           values: [["ClientName", "EmailTo", "EmailSubj", "EmailBody", "FolderUrl", "WebAppUrl", "UpdatedAt"]]
-        }
-      }));
-
-      // Seed initial data from Reporting Control spreadsheet if accessible
-      try {
-        const seedResp = await withRetry(() => sheets.spreadsheets.values.get({
-          spreadsheetId: REPORTING_CONTROL_SHEET_ID,
-          range: "RepControl!A6:BQ50",
-          valueRenderOption: "FORMATTED_VALUE"
-        }));
-        const seedRows = seedResp.data.values || [];
-        const seedAppends = [];
-        const now = new Date().toISOString();
-
-        seedRows.forEach(r => {
-          const clientName = String(r[0] || "").trim();
-          if (!clientName) return;
-          const folderUrl = String(r[32] || "").trim(); // Col AG
-          const emailTo = String(r[66] || "").trim();   // Col BO
-          const emailSubj = String(r[67] || "").trim(); // Col BP
-          const emailBody = String(r[68] || "").trim(); // Col BQ
-          if (folderUrl || emailTo || emailSubj || emailBody) {
-            seedAppends.push([clientName, emailTo, emailSubj, emailBody, folderUrl, "", now]);
-          }
-        });
-
-        if (seedAppends.length > 0) {
-          await withRetry(() => sheets.spreadsheets.values.append({
-            spreadsheetId,
-            range: "EomReportingConfig!A:G",
-            valueInputOption: "RAW",
-            requestBody: { values: seedAppends }
-          }));
-        }
-      } catch (seedErr) {
-        console.warn("[ensureEomReportingTabs_] Note on seed:", seedErr.message);
-      }
-    }
-
-    if (!existingTitles.has("ReportsLog")) {
-      await withRetry(() => sheets.spreadsheets.values.update({
-        spreadsheetId,
-        range: "ReportsLog!A1:E1",
-        valueInputOption: "RAW",
-        requestBody: {
-          values: [["ClientName", "Month", "ReportUrl", "ReportName", "CreatedAt"]]
         }
       }));
     }
@@ -2207,7 +2172,8 @@ export async function ensureEomReportingTabs_(sheets, spreadsheetId) {
 }
 
 /**
- * Loads all reporting control clients, configuration, and latest presentations
+ * Loads all reporting control clients, configuration, chart references, and latest presentations
+ * All stored directly in Reporting Control spreadsheet (REPORTING_CONTROL_SHEET_ID)
  */
 export async function handleEomGetReportingData(req, res, sheets) {
   const sessionUser = getSessionUser(req);
@@ -2215,18 +2181,18 @@ export async function handleEomGetReportingData(req, res, sheets) {
     return res.status(403).json({ success: false, error: "Admin access required." });
   }
 
-  const { automationCommanderSheetId, eomMonthKey, reportMonthKey } = req.body;
-  const acId = automationCommanderSheetId || process.env.AUTOMATION_COMMANDER_SHEET_ID || DEFAULT_AC_SHEET_ID;
+  const { eomMonthKey, reportMonthKey } = req.body;
+  const rcId = REPORTING_CONTROL_SHEET_ID;
   const targetReportMonth = reportMonthKey || eomMonthKey;
 
   try {
-    await ensureEomReportingTabs_(sheets, acId);
+    await ensureEomReportingTabs_(sheets, rcId);
 
-    // Fetch clients from getAllClients
-    const clientsData = await getAllClients(sheets, { isAdmin: true }, false, acId);
+    // 1. Fetch clients from getAllClients
+    const clientsData = await getAllClients(sheets, { isAdmin: true }, false);
     const clientsArray = clientsData.clientsArray || [];
 
-    // Fetch folder URLs from Client Version Tracker (Col 53: Mgmt Reports folder)
+    // 2. Fetch folder URLs from Client Version Tracker (Col 53: Mgmt Reports folder)
     const trackerFolders = {};
     try {
       const trackerResp = await withRetry(() => sheets.spreadsheets.values.get({
@@ -2243,9 +2209,9 @@ export async function handleEomGetReportingData(req, res, sheets) {
       console.warn("Tracker folders fetch note:", tErr.message);
     }
 
-    // Fetch EomReportingConfig
+    // 3. Fetch EomReportingConfig from Reporting Control spreadsheet
     const configResp = await withRetry(() => sheets.spreadsheets.values.get({
-      spreadsheetId: acId,
+      spreadsheetId: rcId,
       range: "EomReportingConfig!A2:G500",
       valueRenderOption: "FORMATTED_VALUE"
     }));
@@ -2267,33 +2233,59 @@ export async function handleEomGetReportingData(req, res, sheets) {
       };
     });
 
-    // Fetch ReportsLog
-    const logResp = await withRetry(() => sheets.spreadsheets.values.get({
-      spreadsheetId: acId,
-      range: "ReportsLog!A2:E5000",
+    // 4. Fetch ChartRefs from Reporting Control spreadsheet
+    const chartRefsResp = await withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: rcId,
+      range: "ChartRefs!A1:C100",
       valueRenderOption: "FORMATTED_VALUE"
     }));
-    const logsByClient = {};
-    (logResp.data.values || []).forEach(r => {
-      const cName = String(r[0] || "").trim();
-      const mKey = String(r[1] || "").trim();
-      const repUrl = String(r[2] || "").trim();
-      const repName = String(r[3] || "").trim();
-      const createdAt = r[4] || "";
-      if (!cName || !repUrl) return;
-      if (!logsByClient[cName]) logsByClient[cName] = [];
-      logsByClient[cName].push({ month: mKey, reportUrl: repUrl, reportName: repName, createdAt });
+    const chartRefs = [];
+    (chartRefsResp.data.values || []).forEach(r => {
+      const code = String(r[0] || "").trim();
+      const range = String(r[1] || "").trim();
+      const label = String(r[2] || "").trim();
+      if (!code || code === "Chart code" || code === "Speaker notes code") return;
+      chartRefs.push({ code, range, label: label || code.replace(/^\[|\]$/g, "") });
     });
 
-    // Match clients and construct payload
+    // 5. Fetch ReportsLog matrix from Reporting Control spreadsheet
+    const logResp = await withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: rcId,
+      range: "ReportsLog!A1:Z100",
+      valueRenderOption: "FORMATTED_VALUE"
+    }));
+    const logRows = logResp.data.values || [];
+    const headerRow = logRows[0] || [];
+    const colMonthKeys = headerRow.map((h, i) => i === 0 ? "" : parseHeaderToMonthKey_(h));
+
+    const logsByClient = {};
+    for (let r = 1; r < logRows.length; r++) {
+      const row = logRows[r];
+      const cName = String(row[0] || "").trim();
+      if (!cName) continue;
+      logsByClient[cName] = [];
+      for (let c = 1; c < row.length; c++) {
+        const url = String(row[c] || "").trim();
+        const mKey = colMonthKeys[c];
+        if (url && mKey) {
+          logsByClient[cName].push({
+            month: mKey,
+            reportUrl: url,
+            reportName: `${cName} Management Report (${headerRow[c] || mKey})`,
+            createdAt: ""
+          });
+        }
+      }
+    }
+
+    // 6. Match clients and construct payload
     const clients = clientsArray.map(c => {
       const name = c.clientName;
       const conf = configMap[name] || {};
       const folderUrl = conf.folderUrl || trackerFolders[name] || "";
-      const history = logsByClient[name] || [];
-      // Latest report for target report month or most recent fallback
+      const history = logsByClient[name] || logsByClient[c.clientName] || [];
       const monthReport = history.find(h => h.month === targetReportMonth) || null;
-      const latestReport = monthReport || history[history.length - 1] || null;
+      const latestReport = monthReport || history[0] || null;
 
       return {
         clientName: name,
@@ -2316,7 +2308,7 @@ export async function handleEomGetReportingData(req, res, sheets) {
       success: true,
       clients,
       systemWebAppUrl,
-      chartRefs: DEFAULT_CHART_REFS
+      chartRefs: chartRefs.length > 0 ? chartRefs : DEFAULT_CHART_REFS
     });
   } catch (err) {
     console.error("❌ handleEomGetReportingData error:", err);
@@ -2325,7 +2317,7 @@ export async function handleEomGetReportingData(req, res, sheets) {
 }
 
 /**
- * Saves reporting email template, folder, or system web app URL
+ * Saves reporting email template, folder, or system web app URL to Reporting Control spreadsheet
  */
 export async function handleEomSaveReportingConfig(req, res, sheets) {
   const sessionUser = getSessionUser(req);
@@ -2333,17 +2325,17 @@ export async function handleEomSaveReportingConfig(req, res, sheets) {
     return res.status(403).json({ success: false, error: "Admin access required." });
   }
 
-  const { automationCommanderSheetId, clientName, emailTo, emailSubj, emailBody, folderUrl, webAppUrl } = req.body;
-  const acId = automationCommanderSheetId || process.env.AUTOMATION_COMMANDER_SHEET_ID || DEFAULT_AC_SHEET_ID;
+  const { clientName, emailTo, emailSubj, emailBody, folderUrl, webAppUrl } = req.body;
+  const rcId = REPORTING_CONTROL_SHEET_ID;
 
   if (!clientName) {
     return res.status(400).json({ success: false, error: "Missing clientName" });
   }
 
   try {
-    await ensureEomReportingTabs_(sheets, acId);
+    await ensureEomReportingTabs_(sheets, rcId);
     const resp = await withRetry(() => sheets.spreadsheets.values.get({
-      spreadsheetId: acId,
+      spreadsheetId: rcId,
       range: "EomReportingConfig!A2:G500"
     }));
     const rows = resp.data.values || [];
@@ -2362,7 +2354,7 @@ export async function handleEomSaveReportingConfig(req, res, sheets) {
 
     if (existingIdx === -1) {
       await withRetry(() => sheets.spreadsheets.values.append({
-        spreadsheetId: acId,
+        spreadsheetId: rcId,
         range: "EomReportingConfig!A:G",
         valueInputOption: "RAW",
         requestBody: { values: [rowData] }
@@ -2370,7 +2362,7 @@ export async function handleEomSaveReportingConfig(req, res, sheets) {
     } else {
       const sheetRow = existingIdx + 2;
       await withRetry(() => sheets.spreadsheets.values.update({
-        spreadsheetId: acId,
+        spreadsheetId: rcId,
         range: `EomReportingConfig!A${sheetRow}:G${sheetRow}`,
         valueInputOption: "RAW",
         requestBody: { values: [rowData] }
@@ -2380,6 +2372,126 @@ export async function handleEomSaveReportingConfig(req, res, sheets) {
     return res.status(200).json({ success: true, clientName });
   } catch (err) {
     console.error("❌ handleEomSaveReportingConfig error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+/**
+ * Saves (creates or updates) a chart and table reference in ChartRefs tab on Reporting Control sheet
+ */
+export async function handleEomSaveChartRef(req, res, sheets) {
+  const sessionUser = getSessionUser(req);
+  if (!sessionUser?.isAdmin) {
+    return res.status(403).json({ success: false, error: "Admin access required." });
+  }
+
+  const { code, range, label, originalCode } = req.body;
+  if (!code || !range) {
+    return res.status(400).json({ success: false, error: "Both code and range are required." });
+  }
+
+  const rawCode = String(code).trim();
+  const cleanCode = rawCode.startsWith("[") && rawCode.endsWith("]") ? rawCode : `[${rawCode.replace(/^\[+|\]+$/g, "")}]`;
+  const cleanRange = String(range).trim();
+  const cleanLabel = String(label || "").trim();
+  const rcId = REPORTING_CONTROL_SHEET_ID;
+
+  try {
+    const resp = await withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: rcId,
+      range: "ChartRefs!A1:C100"
+    }));
+    const rows = resp.data.values || [];
+    const lookupCode = originalCode || cleanCode;
+    const existingIdx = rows.findIndex((r, i) => i > 0 && String(r[0] || "").trim() === lookupCode);
+
+    if (existingIdx !== -1) {
+      const sheetRow = existingIdx + 1;
+      await withRetry(() => sheets.spreadsheets.values.update({
+        spreadsheetId: rcId,
+        range: `ChartRefs!A${sheetRow}:C${sheetRow}`,
+        valueInputOption: "RAW",
+        requestBody: { values: [[cleanCode, cleanRange, cleanLabel]] }
+      }));
+    } else {
+      await withRetry(() => sheets.spreadsheets.values.append({
+        spreadsheetId: rcId,
+        range: "ChartRefs!A:C",
+        valueInputOption: "RAW",
+        requestBody: { values: [[cleanCode, cleanRange, cleanLabel]] }
+      }));
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: `Reference ${cleanCode} saved successfully.`,
+      chartRef: { code: cleanCode, range: cleanRange, label: cleanLabel }
+    });
+  } catch (err) {
+    console.error("❌ handleEomSaveChartRef error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+/**
+ * Deletes a chart and table reference from ChartRefs tab on Reporting Control sheet
+ */
+export async function handleEomDeleteChartRef(req, res, sheets) {
+  const sessionUser = getSessionUser(req);
+  if (!sessionUser?.isAdmin) {
+    return res.status(403).json({ success: false, error: "Admin access required." });
+  }
+
+  const { code } = req.body;
+  if (!code) {
+    return res.status(400).json({ success: false, error: "Missing code to delete." });
+  }
+
+  const rcId = REPORTING_CONTROL_SHEET_ID;
+
+  try {
+    const meta = await sheets.spreadsheets.get({
+      spreadsheetId: rcId,
+      fields: "sheets.properties"
+    });
+    const sheetObj = meta.data.sheets.find(s => s.properties.title === "ChartRefs");
+    if (!sheetObj) {
+      return res.status(404).json({ success: false, error: "ChartRefs sheet not found." });
+    }
+    const sheetId = sheetObj.properties.sheetId;
+
+    const resp = await withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: rcId,
+      range: "ChartRefs!A1:C100"
+    }));
+    const rows = resp.data.values || [];
+    const targetIdx = rows.findIndex((r, i) => i > 0 && String(r[0] || "").trim() === code);
+
+    if (targetIdx === -1) {
+      return res.status(404).json({ success: false, error: `Reference ${code} not found.` });
+    }
+
+    await withRetry(() => sheets.spreadsheets.batchUpdate({
+      spreadsheetId: rcId,
+      requestBody: {
+        requests: [
+          {
+            deleteDimension: {
+              range: {
+                sheetId: sheetId,
+                dimension: "ROWS",
+                startIndex: targetIdx,
+                endIndex: targetIdx + 1
+              }
+            }
+          }
+        ]
+      }
+    }));
+
+    return res.status(200).json({ success: true, message: `Reference ${code} deleted successfully.` });
+  } catch (err) {
+    console.error("❌ handleEomDeleteChartRef error:", err);
     return res.status(500).json({ success: false, error: err.message });
   }
 }
@@ -2473,7 +2585,7 @@ export async function handleEomRunReportingAction(req, res, sheets) {
     automationCommanderSheetId
   } = req.body;
 
-  const acId = automationCommanderSheetId || process.env.AUTOMATION_COMMANDER_SHEET_ID || DEFAULT_AC_SHEET_ID;
+  const acId = resolveAcSheetId_(automationCommanderSheetId);
 
   if (!mode || !["GENERATE", "UPDATE", "EMAIL"].includes(mode)) {
     return res.status(400).json({ success: false, error: "Invalid action mode. Expected GENERATE, UPDATE, or EMAIL." });
@@ -2540,11 +2652,33 @@ export async function handleEomRunReportingAction(req, res, sheets) {
       });
     }
 
-    // 4. Dispatch to GAS Reporting Web App
+    // 4. Fetch active chartMap from ChartRefs tab in Reporting Control sheet
+    let chartMap = null;
+    try {
+      const crResp = await withRetry(() => sheets.spreadsheets.values.get({
+        spreadsheetId: REPORTING_CONTROL_SHEET_ID,
+        range: "ChartRefs!A1:B100",
+        valueRenderOption: "FORMATTED_VALUE"
+      }));
+      const mapObj = {};
+      (crResp.data.values || []).forEach(r => {
+        const code = String(r[0] || "").trim();
+        const rng = String(r[1] || "").trim();
+        if (code && rng && code !== "Chart code" && code !== "Speaker notes code") {
+          mapObj[code] = rng;
+        }
+      });
+      if (Object.keys(mapObj).length > 0) chartMap = mapObj;
+    } catch (crErr) {
+      console.warn("Could not read ChartRefs for job payload:", crErr.message);
+    }
+
+    // 5. Dispatch to GAS Reporting Web App
     const gasPayload = {
       secret,
       action: mode,
       targetMonth: effectiveReportMonth,
+      chartMap: chartMap || undefined,
       clients: clients.map(c => ({
         clientName: c.clientName,
         masterSheetUrl: c.masterSheetUrl || (c.masterSheetId ? `https://docs.google.com/spreadsheets/d/${c.masterSheetId}/edit` : ""),
@@ -2627,6 +2761,7 @@ export async function handleEomRunReportingAction(req, res, sheets) {
       details: { mode, reportMonthKey: effectiveReportMonth, eomMonthKey: effectiveWorkMonth, clients: clients.map(c => c.clientName), clientResults }
     }).catch(e => console.error("PMA log failed:", e));
 
+    if (res.writableEnded || req.closed) return;
     return res.status(200).json({
       success: true,
       message: mode === "GENERATE"

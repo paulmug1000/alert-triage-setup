@@ -1,6 +1,6 @@
 import { getSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
-import { verifyUserAuthorizedForSheet, sanitizeFormulaInput } from "../../../services/userPermissions.js";
+import { verifyUserAuthorizedForSheet, sanitizeFormulaInput, isReadOnlySession } from "../../../services/userPermissions.js";
 import { redisClient } from "../../../services/redisClient.js";
 import { memoryCache } from "../../../services/cacheService.js";
 import { logPulseActivity } from "../../../services/pulseLogger.js";
@@ -15,7 +15,7 @@ export default async function handler(req, res) {
     return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
   }
 
-  if (sessionUser.isReadOnly) {
+  if (isReadOnlySession(sessionUser)) {
     return res.status(403).json({
       success: false,
       error: "Pulse is read-only when logged in with a one-time password.",
@@ -28,6 +28,20 @@ export default async function handler(req, res) {
     return res.status(400).json({
       success: false,
       error: "clientSheetId, sheetName, and non-empty updates array are required",
+    });
+  }
+
+  const ALLOWED_SHEETS = {
+    outgoings: "Outgoings",
+    salaries: "Salaries",
+    nbtofind: "NBtoFind",
+    "nb to find": "NBtoFind",
+  };
+  const canonicalSheetName = ALLOWED_SHEETS[String(sheetName || "").trim().toLowerCase()];
+  if (!canonicalSheetName) {
+    return res.status(400).json({
+      success: false,
+      error: "Invalid sheetName. Allowed tabs: Outgoings, Salaries, NBtoFind.",
     });
   }
 
@@ -54,19 +68,33 @@ export default async function handler(req, res) {
       return sanitizeFormulaInput(v);
     }
 
-    // Prepare batch update data with formula injection neutralization
-    const data = updates.map((u) => {
-      // u: { range: "Salaries!A3:I3" or cell coordinate "C5", values: [["..."]] or [val] }
-      let fullRange = u.range;
-      if (!fullRange.includes("!")) {
-        fullRange = `${sheetName}!${fullRange}`;
+    // Prepare batch update data with formula injection neutralization and strict cell range validation
+    const data = [];
+    for (const u of updates) {
+      const rawCoord = String(u.range || "").trim();
+      const coordPart = rawCoord.includes("!") ? rawCoord.split("!").pop().trim() : rawCoord;
+      if (rawCoord.includes("!")) {
+        const prefixTab = rawCoord.split("!")[0].replace(/^'|'$/g, "").trim().toLowerCase();
+        if (ALLOWED_SHEETS[prefixTab] !== canonicalSheetName) {
+          return res.status(400).json({ success: false, error: "Cross-sheet range override is not permitted." });
+        }
       }
+      if (!/^[A-Z]{1,2}\d{1,4}(:[A-Z]{1,2}\d{1,4})?$/i.test(coordPart)) {
+        return res.status(400).json({ success: false, error: `Invalid cell coordinate: ${coordPart}` });
+      }
+      if (isSenior && canonicalSheetName === "Outgoings") {
+        const rowNums = (coordPart.match(/\d+/g) || []).map((n) => parseInt(n, 10));
+        if (rowNums.some((r) => r >= 115 && r <= 122)) {
+          return res.status(403).json({ success: false, error: "Forbidden: Senior users cannot modify dividends rows" });
+        }
+      }
+      const fullRange = `${canonicalSheetName}!${coordPart.toUpperCase()}`;
       const rawValues = Array.isArray(u.values) ? u.values : [[u.value]];
-      return {
+      data.push({
         range: fullRange,
-        values: rawValues.map(row => (Array.isArray(row) ? row.map(sanitizeCell) : [sanitizeCell(row)])),
-      };
-    });
+        values: rawValues.map((row) => (Array.isArray(row) ? row.map(sanitizeCell) : [sanitizeCell(row)])),
+      });
+    }
 
     await withRetry(() =>
       sheets.spreadsheets.values.batchUpdate({

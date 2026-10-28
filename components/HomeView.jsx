@@ -69,41 +69,50 @@ export default function HomeView({
   onSelectClientAlerts,
   isLoadingAlerts = false,
   managedClient,
-  onClearManagedClient
+  onClearManagedClient,
+  integrationsData: propIntegrationsData = null
 }) {
   const [searchTerm, setSearchTerm] = useState("");
-  const [integrationsData, setIntegrationsData] = useState([]);
-  const [integrationsLoading, setIntegrationsLoading] = useState(true);
+  const [localIntegrationsData, setLocalIntegrationsData] = useState([]);
+  const integrationsData = (Array.isArray(propIntegrationsData) && propIntegrationsData.length > 0)
+    ? propIntegrationsData
+    : localIntegrationsData;
+  const [integrationsLoading, setIntegrationsLoading] = useState(
+    !(Array.isArray(propIntegrationsData) && propIntegrationsData.length > 0)
+  );
 
-  // Optimistic cached alert count from previous session
-  const [cachedTotalAlerts, setCachedTotalAlerts] = useState(() => {
-    if (typeof window !== "undefined") {
-      try {
-        const stored = localStorage.getItem("pulse_cached_total_alerts");
-        return stored != null ? Number(stored) : null;
-      } catch { return null; }
-    }
-    return null;
-  });
+  // Optimistic cached alert count from previous session (hydrated in useEffect for SSR safety)
+  const [cachedTotalAlerts, setCachedTotalAlerts] = useState(null);
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem("pulse_cached_total_alerts");
+      if (stored != null) setCachedTotalAlerts(Number(stored));
+    } catch {}
+  }, []);
 
   // Filter clients to those the current user has access to
+  const effectiveClients = (clients && clients.length > 0) ? clients : integrationsData;
   const authorizedClients = useMemo(() => {
-    let list = (clients || []).filter((c) => isUserAuthorizedForClient(user, c.clientName));
+    let list = (effectiveClients || []).filter((c) => isUserAuthorizedForClient(user, c.clientName));
     if (managedClient?.clientName) {
       list = list.filter((c) => c.clientName?.toLowerCase() === managedClient.clientName.toLowerCase());
     }
     return list;
-  }, [clients, user, managedClient]);
+  }, [effectiveClients, user, managedClient]);
 
-  // Fetch integration and setup statuses for all clients
+  // Fetch integration and setup statuses only if not already provided by parent TriageSystem
   useEffect(() => {
+    if (Array.isArray(propIntegrationsData)) {
+      if (propIntegrationsData.length > 0) setIntegrationsLoading(false);
+      return;
+    }
     let isMounted = true;
     setIntegrationsLoading(true);
     fetch("/api/integrations/status?all=true")
       .then((res) => res.json())
       .then((data) => {
         if (isMounted && data.success && Array.isArray(data.allClients)) {
-          setIntegrationsData(data.allClients);
+          setLocalIntegrationsData(data.allClients);
         }
       })
       .catch((err) => {
@@ -116,7 +125,7 @@ export default function HomeView({
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [propIntegrationsData]);
 
   // Map integrations data by client name
   const clientIntegrationsMap = useMemo(() => {
@@ -227,7 +236,7 @@ export default function HomeView({
     );
   }, [authorizedClients, searchTerm]);
 
-  if (clients.length === 0 && !managedClient) {
+  if (effectiveClients.length === 0 && !managedClient) {
     return <PmaHomeSkeleton />;
   }
 

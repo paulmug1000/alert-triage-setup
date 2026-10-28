@@ -15,6 +15,7 @@
 import { getSheetsClient, extractSheetIdFromUrl, withRetry } from "./sheetsClient.js";
 import { redisClient } from "./redisClient.js";
 import { saveIntegrationTokens, getIntegrationTokens, deleteIntegrationTokens } from "./vaultService.js";
+import { DEFAULT_AC_SHEET_ID, resolveClientNameBySheetId, matchesClientName } from "./userPermissions.js";
 
 const GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
 const GOOGLE_AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -285,11 +286,23 @@ export async function inspectGoogleSpreadsheet({
   sheetId = null,
   accessToken = null,
   tabName = null,
-  headerRowNum = null
+  headerRowNum = null,
+  clientKey = null,
+  isAdmin = false
 }) {
   const targetId = sheetId || (url ? extractSheetIdFromUrl(url) : null);
   if (!targetId) {
     throw new Error("Invalid or missing Google Sheet URL / ID");
+  }
+  if (targetId === DEFAULT_AC_SHEET_ID) {
+    throw new Error("Cannot inspect internal Automation Commander spreadsheet.");
+  }
+  if (!accessToken) {
+    const sheets = await getSheetsClient();
+    const ownerClient = await resolveClientNameBySheetId(sheets, targetId);
+    if (ownerClient && !isAdmin && (!clientKey || !matchesClientName(ownerClient, clientKey))) {
+      throw new Error("Access denied: target spreadsheet belongs to another tenant.");
+    }
   }
 
   let metadata = null;

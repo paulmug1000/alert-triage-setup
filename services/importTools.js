@@ -4,7 +4,7 @@ import { anthropic } from "./claudeClient";
 import { logClaudeUsage_ } from "./systemConfig";
 import { monthStrToEomKey_, eomTargetMonthToWorkMonth_, autoCompleteLinkedEomTask_ } from "./eomTools";
 import { getSessionUser } from "./authService";
-import { isUserAuthorizedForClient, resolveClientNameBySheetId } from "./userPermissions";
+import { isUserAuthorizedForClient, resolveClientNameBySheetId, verifyUserAuthorizedForSheet, isReadOnlySession } from "./userPermissions";
 
 const CLIENT_NAME_NOISE_WORDS_ = new Set([
   "ltd","limited","plc","inc","llc","llp","the","and","&",
@@ -456,6 +456,8 @@ async function writeTimeDataToSheet_(sheets, masterSheetId, extractedData, targe
 export async function handleUploadPayrollChunk(req, res) {
   const { uploadId, chunkData, isFirstChunk } = req.body;
   if (!uploadId || chunkData === undefined) return res.status(400).json({ success: false, error: "Missing uploadId or chunkData" });
+  if (!/^[a-zA-Z0-9_-]{4,80}$/.test(String(uploadId))) return res.status(400).json({ success: false, error: "Invalid uploadId format" });
+  if (String(chunkData).length > 15 * 1024 * 1024) return res.status(413).json({ success: false, error: "Upload chunk exceeds maximum size" });
   try {
     const key = `payroll_upload:${uploadId}`;
     if (isFirstChunk) {
@@ -486,7 +488,7 @@ export async function handleIdentifyPayrollClient(req, res, sheets) {
     const clientResp = await sheets.spreadsheets.values.get({ spreadsheetId: idAcId, range: "AutoUpdates!A2:N500" });
     const allClients = (clientResp.data.values || []).map(r => ({
       clientName: String(r[0] || "").trim(), clientSheetId: extractSheetIdFromUrl(r[11]) || String(r[11]).trim()
-    })).filter(c => c.clientName && c.clientSheetId && c.clientName.toLowerCase() !== "client");
+    })).filter(c => c.clientName && c.clientSheetId && c.clientName.toLowerCase() !== "client" && (() => { const u = getSessionUser(req); return u && (u.isAdmin || isUserAuthorizedForClient(u, c.clientName)); })());
 
     if (fileName) {
       const fnMatch = findClientByNameMatch_(fileName, allClients);
@@ -547,7 +549,7 @@ export async function handleIdentifyTimeClient(req, res, sheets) {
     const clientResp = await sheets.spreadsheets.values.get({ spreadsheetId: idAcId, range: "AutoUpdates!A2:N500" });
     const allClients = (clientResp.data.values || []).map(r => ({
       clientName: String(r[0] || "").trim(), masterSheetId: extractSheetIdFromUrl(r[12]) || String(r[12]).trim()
-    })).filter(c => c.clientName && c.masterSheetId && c.clientName.toLowerCase() !== "client");
+    })).filter(c => c.clientName && c.masterSheetId && c.clientName.toLowerCase() !== "client" && (() => { const u = getSessionUser(req); return u && (u.isAdmin || isUserAuthorizedForClient(u, c.clientName)); })());
 
     if (fileName) {
       const fnMatch = findClientByNameMatch_(fileName, allClients);
@@ -605,7 +607,7 @@ export async function handleProcessPayrollDocument(req, res, sheets) {
       targetClient = await resolveClientNameBySheetId(sheets, payrollClientSheetId, automationCommanderSheetId);
     } catch (_) {}
   }
-  if (!sessionUser.isAdmin && (!targetClient || !isUserAuthorizedForClient(sessionUser, targetClient))) {
+  if (!sessionUser.isAdmin && (!(await verifyUserAuthorizedForSheet(sessionUser, payrollClientSheetId, payrollClientName, sheets)).authorized)) {
     return res.status(403).json({ success: false, error: "Access denied to this client" });
   }
   let fileData;
@@ -725,13 +727,13 @@ export async function handleProcessTimeDocument(req, res, sheets) {
   const sessionUser = getSessionUser(req);
   if (!sessionUser) return res.status(401).json({ success: false, error: "Unauthorized" });
 
-  let targetClient = timeClientName || "";
+  const payrollClientSheetId = timeMasterSheetId; const payrollClientName = timeClientName; let targetClient = timeClientName || "";
   if (!targetClient && timeMasterSheetId) {
     try {
       targetClient = await resolveClientNameBySheetId(sheets, timeMasterSheetId, automationCommanderSheetId);
     } catch (_) {}
   }
-  if (!sessionUser.isAdmin && (!targetClient || !isUserAuthorizedForClient(sessionUser, targetClient))) {
+  if (!sessionUser.isAdmin && (!(await verifyUserAuthorizedForSheet(sessionUser, payrollClientSheetId, payrollClientName, sheets)).authorized)) {
     return res.status(403).json({ success: false, error: "Access denied to this client" });
   }
   let fileData;

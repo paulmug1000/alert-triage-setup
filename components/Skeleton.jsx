@@ -26,6 +26,18 @@ export function SkeletonGlobalStyles() {
       .pulse-skeleton.pulse-skeleton-dark {
         background-color: rgba(255, 255, 255, 0.35) !important;
       }
+      @keyframes pulseContentFadeIn {
+        from {
+          opacity: 0;
+        }
+        to {
+          opacity: 1;
+        }
+      }
+      .portal-main-content-wrapper > *:not([data-pulse-skeleton="true"]),
+      .pma-main-content-wrapper > *:not([data-pulse-skeleton="true"]) {
+        animation: pulseContentFadeIn 0.22s ease-out;
+      }
     `}</style>
   );
 }
@@ -183,6 +195,7 @@ export function SkeletonTable({
 export function MonthViewSkeleton() {
   return (
     <div
+      data-pulse-skeleton="true"
       className="home-view-container"
       style={{
         width: "100%",
@@ -518,7 +531,7 @@ export function MonthViewSkeleton() {
  */
 export function CashflowSkeleton() {
   return (
-    <div style={{ width: "100%", maxWidth: "1440px", margin: "0 auto", padding: "0 12px 3rem" }}>
+    <div data-pulse-skeleton="true" style={{ width: "100%", maxWidth: "1440px", margin: "0 auto", padding: "0 12px 3rem" }}>
       {/* Top Action Bar */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", padding: "0 4px" }}>
         <Skeleton width="180px" height="24px" />
@@ -590,7 +603,7 @@ export function CashflowSkeleton() {
  */
 export function BudgetSkeleton() {
   return (
-    <div style={{ width: "100%", maxWidth: "1440px", margin: "0 auto", padding: "0 12px 3rem" }}>
+    <div data-pulse-skeleton="true" style={{ width: "100%", maxWidth: "1440px", margin: "0 auto", padding: "0 12px 3rem" }}>
       {/* Top Action Bar */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", padding: "0 4px" }}>
         <Skeleton width="160px" height="24px" />
@@ -622,7 +635,7 @@ export function BudgetSkeleton() {
  */
 export function PerformanceSkeleton({ isYtd = false }) {
   return (
-    <div style={{ width: "100%", maxWidth: "1440px", margin: "0 auto", padding: "0 12px 3rem" }}>
+    <div data-pulse-skeleton="true" style={{ width: "100%", maxWidth: "1440px", margin: "0 auto", padding: "0 12px 3rem" }}>
       {/* Top Action Bar */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", padding: "0 4px" }}>
         <Skeleton width="200px" height="24px" />
@@ -663,7 +676,7 @@ export function PerformanceSkeleton({ isYtd = false }) {
  */
 export function BreakdownViewSkeleton({ isCashflow = false }) {
   return (
-    <div style={{ width: "100%", maxWidth: "1440px", margin: "0 auto", padding: "0 12px 3rem" }}>
+    <div data-pulse-skeleton="true" style={{ width: "100%", maxWidth: "1440px", margin: "0 auto", padding: "0 12px 3rem" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "18px", padding: "0 4px" }}>
         <Skeleton width="220px" height="24px" />
         <div style={{ display: "flex", gap: "8px" }}>
@@ -682,7 +695,7 @@ export function BreakdownViewSkeleton({ isCashflow = false }) {
  */
 export function PortalTableSkeleton({ title = "Loading...", columns = 6 }) {
   return (
-    <div style={{ width: "100%", maxWidth: "1440px", margin: "0 auto", padding: "0 12px 3rem" }}>
+    <div data-pulse-skeleton="true" style={{ width: "100%", maxWidth: "1440px", margin: "0 auto", padding: "0 12px 3rem" }}>
       {/* Title & Filter Bar */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", padding: "0 4px" }}>
         <Skeleton width="180px" height="24px" />
@@ -735,7 +748,7 @@ export function DeepDiveSkeleton({ rows = 4 }) {
  */
 export function PmaHomeSkeleton() {
   return (
-    <div style={{ maxWidth: "1080px", margin: "0 auto", padding: "24px 16px", fontFamily: "'Kumbh Sans', system-ui, -apple-system, sans-serif" }}>
+    <div data-pulse-skeleton="true" style={{ maxWidth: "1080px", margin: "0 auto", padding: "24px 16px", fontFamily: "'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" }}>
       {/* Page header */}
       <div style={{ marginBottom: "24px" }}>
         <h1 style={{ margin: 0, fontSize: "24px", fontWeight: "700", color: "#0F172A" }}>
@@ -903,7 +916,7 @@ export function PmaHomeSkeleton() {
  */
 export function PmaAlertsSkeleton() {
   return (
-    <div style={{ maxWidth: "1080px", margin: "0 auto", padding: "24px 16px", fontFamily: "'Kumbh Sans', system-ui, -apple-system, sans-serif" }}>
+    <div data-pulse-skeleton="true" style={{ maxWidth: "1080px", margin: "0 auto", padding: "24px 16px", fontFamily: "'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" }}>
       {/* Header */}
       <div style={{ marginBottom: "24px" }}>
         <h1 style={{ fontSize: "24px", fontWeight: "700", color: "#0F172A", margin: "0 0 6px 0" }}>

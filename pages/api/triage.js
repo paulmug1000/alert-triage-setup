@@ -30,7 +30,8 @@ import {
   handleGetClaudeSettings, handleSaveClaudeSettings, handleCheckClaudeBudget,
   handleLogClaudeUsage, handleGetAppLog, handleTriggerProactiveChecks,
   handleGetSweepSchedule, handleSaveSweepFrequency, handleTriggerAgentRun,
-  handleAgentProgress, handleGetAgentRunProgress, handleGetActiveAgentRun
+  handleAgentProgress, handleGetAgentRunProgress, handleGetActiveAgentRun,
+  handleSyncAllMasterScriptSecrets
 } from "../../services/systemConfig";
 import {
   handleGetAllClients, handleGetAssignedExpenses, handleMarkExpenseAssigned,
@@ -59,7 +60,7 @@ import {
   handleEomGetDefaultTasks, handleEomSaveDefaultTask, handleEomDeleteDefaultTask,
   handleEomReorderDefaultTasks, handleEomSeedDefaultTasksFromTemplates, handleEomApplyDefaultTasks,
   handleEomGetReportingData, handleEomSaveReportingConfig, handleEomRunReportingAction,
-  handleEomTestReportingWebApp
+  handleEomTestReportingWebApp, handleEomSaveChartRef, handleEomDeleteChartRef
 } from "../../services/eomTools";
 import {
   handleUploadPayrollChunk, handleIdentifyPayrollClient, handleIdentifyTimeClient,
@@ -108,14 +109,26 @@ import {
 } from "../../services/bankTransactionsService";
 import { handleClassifyPLCategory, handleUpdatePartPaidDate } from "../../services/proactiveChecks";
 import { getSessionUser } from "../../services/authService";
-import { isUserAuthorizedForClient, updateUserDailyAlertsEmail, getUserByEmail, resolveClientNameBySheetId, verifyUserAuthorizedForSheet } from "../../services/userPermissions";
+import {
+  isUserAuthorizedForClient,
+  updateUserDailyAlertsEmail,
+  getUserByEmail,
+  resolveClientNameBySheetId,
+  verifyUserAuthorizedForSheet,
+  getCanonicalAcSheetId,
+  isReadOnlySession,
+  canAccessPma
+} from "../../services/userPermissions";
 import { matchesClientName } from "../../utils/helpers";
 
 async function checkTriageClientAuth(sheets, sessionUser, clientNameClaim, sheetIds = []) {
-  if (sessionUser?.isAdmin) return true;
+  if (sessionUser?.isAdmin && !isReadOnlySession(sessionUser)) return true;
   if (!sessionUser) return false;
 
-  const validSheetIds = (Array.isArray(sheetIds) ? sheetIds : [sheetIds]).filter(Boolean);
+  const validSheetIds = (Array.isArray(sheetIds) ? sheetIds : [sheetIds])
+    .map(s => (typeof s === "string" ? s.trim() : ""))
+    .filter(Boolean);
+
   if (validSheetIds.length > 0) {
     for (const sid of validSheetIds) {
       try {
@@ -192,7 +205,13 @@ export default async function handler(req, res) {
   try {
     // Handle both POST (req.body) and GET (req.query) requests
     const action = req.method === "GET" ? req.query.action : req.body.action;
-    const automationCommanderSheetId = req.body?.automationCommanderSheetId || req.query?.automationCommanderSheetId;
+    const automationCommanderSheetId = getCanonicalAcSheetId();
+    if (req.body && typeof req.body === "object") {
+      req.body.automationCommanderSheetId = automationCommanderSheetId;
+    }
+    if (req.query && typeof req.query === "object") {
+      req.query.automationCommanderSheetId = automationCommanderSheetId;
+    }
 
     // Intercept successful mutation responses to automatically bust corresponding PMA L1/L2 caches
     const PMA_MUTATION_SCOPES = {
@@ -356,28 +375,93 @@ export default async function handler(req, res) {
         return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
       }
 
-      // Block ClientUser and Senior (Restricted) from accessing internal PMA actions
-      const isPulseOnly = sessionUser.role === "ClientUser" || 
-                          sessionUser.role === "Senior (Restricted)" || 
-                          Boolean(sessionUser.isSenior) ||
-                          (!sessionUser.isAdmin && sessionUser.role !== "ClientManager");
+      // Enforce strict read-only lock across all state-mutating actions for EmailOTP / read-only sessions
+      if (isReadOnlySession(sessionUser) && !READ_ONLY_ACTIONS.has(action)) {
+        return res.status(403).json({
+          success: false,
+          error: "Forbidden: Read-only sessions cannot perform modifications."
+        });
+      }
+
+      // Block ClientUser, Senior (Restricted), and any EmailOTP / read-only session from accessing internal PMA actions
+      const isPulseOnly = !canAccessPma(sessionUser) ||
+                          isReadOnlySession(sessionUser) ||
+                          sessionUser.role === "ClientUser" ||
+                          sessionUser.role === "Senior (Restricted)" ||
+                          Boolean(sessionUser.isSenior);
 
       const ALLOWED_CLIENT_ACTIONS = new Set(["get_session", "logout", "get_user_preferences", "update_user_preference"]);
       if (isPulseOnly && !ALLOWED_CLIENT_ACTIONS.has(action)) {
         return res.status(403).json({ success: false, error: "Forbidden: Access restricted to Pulse Portal" });
+      }
+
+      // Restrict system/admin-only actions
+      const ADMIN_ONLY_TRIAGE_ACTIONS = new Set([
+        "agent_progress",
+        "eom_save_template",
+        "eom_toggle_client_excluded",
+        "eom_reorder_clients",
+        "eom_save_reporting_config",
+        "eom_test_reporting_webapp",
+        "eom_run_reporting_action",
+        "bust_cache"
+      ]);
+      if (ADMIN_ONLY_TRIAGE_ACTIONS.has(action) && !sessionUser.isAdmin) {
+        return res.status(403).json({ success: false, error: "Forbidden: Admin privileges required for this action." });
+      }
+
+      // Universal Multi-Tenant Pre-Dispatch Guard for non-admin sessions
+      if (!sessionUser.isAdmin) {
+        const b = req.body || {};
+        const q = req.query || {};
+        const targetClientClaim = b.clientName || q.clientName || b.alert?.clientName || "";
+        const targetSheetIds = [
+          b.clientSheetId, q.clientSheetId,
+          b.masterSheetId, q.masterSheetId,
+          b.reconSheetId, q.reconSheetId,
+          b.cashTabSheetId, q.cashTabSheetId,
+          b.payrollClientSheetId, q.payrollClientSheetId,
+          b.timeMasterSheetId, q.timeMasterSheetId,
+          b.sheetId, q.sheetId,
+          b.alert?.masterSheetId, b.alert?.clientSheetId
+        ].filter(Boolean);
+
+        if (targetSheetIds.length > 0 || targetClientClaim) {
+          const isTenantAllowed = await checkTriageClientAuth(sheets, sessionUser, targetClientClaim, targetSheetIds);
+          if (!isTenantAllowed) {
+            return res.status(403).json({ success: false, error: "Forbidden: Access denied to this client or spreadsheet." });
+          }
+        }
+
+        if (Array.isArray(b.alerts) && b.alerts.length > 0) {
+          for (const item of b.alerts) {
+            if (!item) continue;
+            const itemAllowed = await checkTriageClientAuth(
+              sheets,
+              sessionUser,
+              item.clientName || targetClientClaim,
+              [item.clientSheetId, item.masterSheetId].filter(Boolean)
+            );
+            if (!itemAllowed) {
+              return res.status(403).json({ success: false, error: "Forbidden: Access denied to one or more client alerts in batch." });
+            }
+          }
+        }
       }
     }
 
     if (action === "send_otp") {
       const { email } = req.body || {};
       const forwarded = req.headers["x-forwarded-for"];
-      const clientIp = (typeof forwarded === "string" ? forwarded.split(",")[0] : forwarded?.[0])?.trim() || req.socket?.remoteAddress || "127.0.0.1";
+      const clientIp = req.headers["x-real-ip"]?.trim() || (typeof forwarded === "string" ? forwarded.split(",").pop() : forwarded?.[0])?.trim() || req.socket?.remoteAddress || "127.0.0.1";
       const result = await sendOtp(email, automationCommanderSheetId, clientIp);
       return res.status(200).json(result);
 
     } else if (action === "verify_otp") {
       const { email, code } = req.body || {};
-      const result = await verifyOtp(email, code, automationCommanderSheetId, res);
+      const forwarded = req.headers["x-forwarded-for"];
+      const clientIp = req.headers["x-real-ip"]?.trim() || (typeof forwarded === "string" ? forwarded.split(",").pop() : forwarded?.[0])?.trim() || req.socket?.remoteAddress || "127.0.0.1";
+      const result = await verifyOtp(email, code, automationCommanderSheetId, res, clientIp);
       return res.status(result.success ? 200 : 401).json(result);
 
     } else if (action === "get_session") {
@@ -393,6 +477,12 @@ export default async function handler(req, res) {
       }
       const users = await getAllUsers(sheets, automationCommanderSheetId);
       return res.status(200).json({ success: true, users });
+
+    } else if (action === "sync_all_master_script_secrets") {
+      if (!isInternalAuthorized && (!sessionUser || !sessionUser.isAdmin)) {
+        return res.status(403).json({ success: false, error: "Forbidden: Admin access required." });
+      }
+      return await handleSyncAllMasterScriptSecrets(req, res, sheets);
 
     } else if (action === "get_user_preferences") {
       if (!sessionUser || !sessionUser.email) {
@@ -1151,6 +1241,10 @@ export default async function handler(req, res) {
       return await handleEomRunReportingAction(req, res, sheets);
     } else if (action === "eom_test_reporting_webapp") {
       return await handleEomTestReportingWebApp(req, res);
+    } else if (action === "eom_save_chart_ref") {
+      return await handleEomSaveChartRef(req, res, sheets);
+    } else if (action === "eom_delete_chart_ref") {
+      return await handleEomDeleteChartRef(req, res, sheets);
 
     } else if (action === "get_flag_sweep_log") {
       const runs = await readFlagSweepLog(sheets, req.body.automationCommanderSheetId);

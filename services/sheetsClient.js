@@ -1,4 +1,40 @@
 import { google } from "googleapis";
+import { unwrapSheetId } from "./sheetTokenService.js";
+
+const _wrappedSheetsClients = new WeakSet();
+
+function wrapGoogleSheetsClient_(sheets) {
+  if (!sheets || !sheets.spreadsheets || _wrappedSheetsClients.has(sheets)) return sheets;
+  _wrappedSheetsClients.add(sheets);
+
+  const sp = sheets.spreadsheets;
+  for (const method of ["get", "batchUpdate"]) {
+    if (typeof sp[method] === "function") {
+      const orig = sp[method].bind(sp);
+      sp[method] = (params, ...rest) => {
+        if (params && typeof params.spreadsheetId === "string") {
+          params = { ...params, spreadsheetId: unwrapSheetId(params.spreadsheetId) };
+        }
+        return orig(params, ...rest);
+      };
+    }
+  }
+
+  if (sp.values) {
+    for (const method of ["get", "update", "append", "batchGet", "batchUpdate", "clear", "batchClear"]) {
+      if (typeof sp.values[method] === "function") {
+        const orig = sp.values[method].bind(sp.values);
+        sp.values[method] = (params, ...rest) => {
+          if (params && typeof params.spreadsheetId === "string") {
+            params = { ...params, spreadsheetId: unwrapSheetId(params.spreadsheetId) };
+          }
+          return orig(params, ...rest);
+        };
+      }
+    }
+  }
+  return sheets;
+}
 
 export function getGoogleAuth() {
   let privateKey = process.env.SERVICE_ACCOUNT_PRIVATE_KEY || "";
@@ -29,7 +65,7 @@ export function getGoogleAuth() {
 
 export async function getSheetsClient() {
   const auth = getGoogleAuth();
-  return google.sheets({ version: "v4", auth });
+  return wrapGoogleSheetsClient_(google.sheets({ version: "v4", auth }));
 }
 
 export async function getDriveClient() {
@@ -66,16 +102,21 @@ export async function withRetry(operation, maxRetries = 5) {
 }
 
 export async function ensureFreshData(sheets, spreadsheetId, sheetName) {
+  const resolvedId = unwrapSheetId(spreadsheetId);
   await new Promise((resolve) => setTimeout(resolve, 500));
   try {
-    await sheets.spreadsheets.values.get({ spreadsheetId, range: `${sheetName}!A1` });
+    await sheets.spreadsheets.values.get({ spreadsheetId: resolvedId, range: `${sheetName}!A1` });
   } catch (e) {}
   await new Promise((resolve) => setTimeout(resolve, 500));
 }
 
 export function extractSheetIdFromUrl(url) {
   if (!url) return null;
-  const match = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+  const s = String(url).trim();
+  if (s.startsWith("ws_") || s === "default") {
+    return unwrapSheetId(s) || null;
+  }
+  const match = s.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/) || s.match(/\/d\/([a-zA-Z0-9-_]+)/);
   return match ? match[1] : null;
 }
 
@@ -98,20 +139,21 @@ const _sheetGidCache = new Map();
 const SHEET_GID_CACHE_TTL = 15 * 60 * 1000; // 15 minutes
 
 export async function getSheetGid(sheets, spreadsheetId, sheetName) {
-  const cacheKey = `${spreadsheetId}::${sheetName}`;
+  const resolvedId = unwrapSheetId(spreadsheetId);
+  const cacheKey = `${resolvedId}::${sheetName}`;
   const cached = _sheetGidCache.get(cacheKey);
   if (cached && (Date.now() - cached.timestamp < SHEET_GID_CACHE_TTL)) {
     return cached.gid;
   }
 
-  const meta = await withRetry(() => sheets.spreadsheets.get({ spreadsheetId, fields: "sheets.properties" }));
+  const meta = await withRetry(() => sheets.spreadsheets.get({ spreadsheetId: resolvedId, fields: "sheets.properties" }));
   const sheet = meta.data.sheets?.find(s => s.properties.title === sheetName);
   if (!sheet) throw new Error(`Sheet "${sheetName}" not found`);
 
   // Cache all sheet tabs returned in this call for future lookups
   for (const s of meta.data.sheets || []) {
     if (s.properties?.title && s.properties?.sheetId !== undefined) {
-      _sheetGidCache.set(`${spreadsheetId}::${s.properties.title}`, {
+      _sheetGidCache.set(`${resolvedId}::${s.properties.title}`, {
         gid: s.properties.sheetId,
         timestamp: Date.now()
       });

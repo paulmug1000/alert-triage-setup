@@ -107,7 +107,7 @@ export default function ClientSelectionView({
         if (flagKey === "invoiceDashboardDiscr") count = Math.max(0, count - validAssignedInv);
         clientTotal += count;
       } else {
-        clientTotal += (count > 0 ? count : 1);
+        clientTotal += (count > 0 ? count : 0);
       }
     });
     return total + clientTotal;

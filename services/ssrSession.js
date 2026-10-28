@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import { redisClient } from "./redisClient.js";
+import { maskResponseSheetIdsForUser } from "./sheetTokenService.js";
 
 const DEFAULT_AC_SHEET_ID = process.env.AUTOMATION_COMMANDER_SHEET_ID || "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
 const ALL_CLIENTS_CACHE_KEY = `pulse:all_clients:${DEFAULT_AC_SHEET_ID}`;
@@ -191,8 +192,11 @@ export async function getSsrInitialPmaData(sessionUser) {
       }
     : null;
 
-  return {
-    initialClients: scopedClients,
-    initialIntegrations
-  };
+  return maskResponseSheetIdsForUser(
+    {
+      initialClients: scopedClients,
+      initialIntegrations
+    },
+    sessionUser
+  );
 }

@@ -1,5 +1,22 @@
 import { withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
 import { redisClient } from "./redisClient.js";
+import {
+  wrapSheetId,
+  unwrapSheetId,
+  unwrapRequestSheetIds,
+  maskResponseSheetIdsForUser,
+  installSheetIdBoundary,
+  isSysAdminUser,
+} from "./sheetTokenService.js";
+
+export {
+  wrapSheetId,
+  unwrapSheetId,
+  unwrapRequestSheetIds,
+  maskResponseSheetIdsForUser,
+  installSheetIdBoundary,
+  isSysAdminUser,
+};
 
 export const USERS_TAB = "Users";
 export const DEFAULT_AC_SHEET_ID = "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
@@ -245,6 +262,7 @@ export function matchesClientName(assignedIdentifier, actualClientName) {
 
 const clientSheetIdToNameCache = new Map();
 const clientNameToMasterIdCache = new Map();
+const clientNameToClientIdCache = new Map();
 
 function normalizeClientKeyForLookup(str) {
   return String(str || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
@@ -265,7 +283,11 @@ async function refreshAutoUpdatesSheetMappings(sheets) {
     const masterUrl = String(r[12] || "").trim();
     const cId = extractSheetIdFromUrl(clientUrl) || clientUrl;
     const mId = extractSheetIdFromUrl(masterUrl) || masterUrl;
-    if (cId && cName) clientSheetIdToNameCache.set(cId, cName);
+    if (cId && cName) {
+      clientSheetIdToNameCache.set(cId, cName);
+      clientNameToClientIdCache.set(cName.toLowerCase(), cId);
+      clientNameToClientIdCache.set(normalizeClientKeyForLookup(cName), cId);
+    }
     if (mId && cName) {
       clientSheetIdToNameCache.set(mId, cName);
       clientNameToMasterIdCache.set(cName.toLowerCase(), mId);
@@ -279,7 +301,9 @@ async function refreshAutoUpdatesSheetMappings(sheets) {
  */
 export async function resolveClientNameBySheetId(sheets, sheetId, _ignoredAcId = DEFAULT_AC_SHEET_ID) {
   if (!sheetId) return "";
-  const cleanId = extractSheetIdFromUrl(sheetId) || sheetId;
+  const unwrapped = unwrapSheetId(sheetId);
+  if (!unwrapped) return "";
+  const cleanId = extractSheetIdFromUrl(unwrapped) || unwrapped;
   if (clientSheetIdToNameCache.has(cleanId)) {
     return clientSheetIdToNameCache.get(cleanId);
   }
@@ -290,6 +314,25 @@ export async function resolveClientNameBySheetId(sheets, sheetId, _ignoredAcId =
     }
   } catch (err) {
     console.warn("⚠️ Error resolving clientName by sheetId:", err.message);
+  }
+  return "";
+}
+
+/**
+ * Resolves the canonical clientSheetId for a clientName or normalized clientKey from AutoUpdates
+ */
+export async function resolveClientSheetIdByClientName(sheets, clientNameOrKey) {
+  if (!clientNameOrKey) return "";
+  const rawLower = String(clientNameOrKey).trim().toLowerCase();
+  const normKey = normalizeClientKeyForLookup(clientNameOrKey);
+  if (clientNameToClientIdCache.has(rawLower)) return clientNameToClientIdCache.get(rawLower);
+  if (clientNameToClientIdCache.has(normKey)) return clientNameToClientIdCache.get(normKey);
+  try {
+    await refreshAutoUpdatesSheetMappings(sheets);
+    if (clientNameToClientIdCache.has(rawLower)) return clientNameToClientIdCache.get(rawLower);
+    if (clientNameToClientIdCache.has(normKey)) return clientNameToClientIdCache.get(normKey);
+  } catch (err) {
+    console.warn("⚠️ Error resolving clientSheetId by clientName:", err.message);
   }
   return "";
 }
@@ -336,6 +379,12 @@ export async function verifyUserAuthorizedForSheet(arg1, arg2, arg3, arg4, _igno
   }
   if (sessionUser.isAdmin && !sessionUser.isReadOnly && sessionUser.authProvider !== "EmailOTP") {
     return { authorized: true, clientName: clientNameClaim || "Admin" };
+  }
+  sheetId = unwrapSheetId(sheetId);
+  if (!sheetId && clientNameClaim && sheets) {
+    sheetId =
+      (await resolveClientSheetIdByClientName(sheets, clientNameClaim)) ||
+      (await resolveMasterSheetIdByClientName(sheets, clientNameClaim));
   }
   if (!sheetId) {
     return { authorized: false, status: 400, error: "Missing sheet ID" };

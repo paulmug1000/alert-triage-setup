@@ -748,7 +748,7 @@ export function DeepDiveSkeleton({ rows = 4 }) {
  */
 export function PmaHomeSkeleton() {
   return (
-    <div data-pulse-skeleton="true" className="pma-page-container" style={{ width: "100%", maxWidth: "100%", margin: "0 auto", padding: "20px 32px 60px", boxSizing: "border-box", fontFamily: "'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" }}>
+    <div data-pulse-skeleton="true" className="pma-page-container" style={{ width: "100%", maxWidth: "1440px", margin: "0 auto", padding: "24px 32px 60px", boxSizing: "border-box", fontFamily: "'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" }}>
       {/* Page header */}
       <div style={{ background: "#ffffff", padding: "16px 20px", borderRadius: "10px", border: "1px solid #e2e8f0", boxShadow: "0 1px 3px rgba(15, 23, 42, 0.04)", marginBottom: "20px" }}>
         <h1 style={{ margin: 0, fontSize: "20px", fontWeight: "700", color: "#0F172A" }}>
@@ -916,7 +916,7 @@ export function PmaHomeSkeleton() {
  */
 export function PmaAlertsSkeleton() {
   return (
-    <div data-pulse-skeleton="true" className="pma-page-container" style={{ width: "100%", maxWidth: "100%", margin: "0 auto", padding: "20px 32px 60px", boxSizing: "border-box", fontFamily: "'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" }}>
+    <div data-pulse-skeleton="true" className="pma-page-container" style={{ width: "100%", maxWidth: "1440px", margin: "0 auto", padding: "24px 32px 60px", boxSizing: "border-box", fontFamily: "'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" }}>
       {/* Header */}
       <div style={{ background: "#ffffff", padding: "16px 20px", borderRadius: "10px", border: "1px solid #e2e8f0", boxShadow: "0 1px 3px rgba(15, 23, 42, 0.04)", marginBottom: "20px" }}>
         <h1 style={{ fontSize: "20px", fontWeight: "700", color: "#0F172A", margin: "0 0 6px 0" }}>
@@ -1612,7 +1612,7 @@ export function PmaSetupDetailSkeleton() {
  */
 export function PmaIntegrationsSkeleton() {
   return (
-    <div className="pma-page-container" style={{ width: "100%", maxWidth: "100%", padding: "20px 32px 60px", margin: "0 auto", boxSizing: "border-box" }}>
+    <div className="pma-page-container" style={{ width: "100%", maxWidth: "1440px", padding: "24px 32px 60px", margin: "0 auto", boxSizing: "border-box" }}>
       {/* Top Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px", flexWrap: "wrap", gap: "12px", background: "#ffffff", padding: "16px 20px", borderRadius: "10px", border: "1px solid #e2e8f0", boxShadow: "0 1px 3px rgba(15, 23, 42, 0.04)" }}>
         <Skeleton width="240px" height="24px" />
@@ -1695,7 +1695,7 @@ export function PmaIntegrationsSkeleton() {
  */
 export function PmaActivitySkeleton() {
   return (
-    <div className="pma-page-container" style={{ width: "100%", maxWidth: "100%", margin: "0 auto", padding: "20px 32px 60px", boxSizing: "border-box" }}>
+    <div className="pma-page-container" style={{ width: "100%", maxWidth: "1440px", margin: "0 auto", padding: "24px 32px 60px", boxSizing: "border-box" }}>
       {/* Header */}
       <div style={{ marginBottom: "20px", background: "#ffffff", padding: "16px 20px", borderRadius: "10px", border: "1px solid #e2e8f0", boxShadow: "0 1px 3px rgba(15, 23, 42, 0.04)" }}>
         <Skeleton width="180px" height="24px" style={{ marginBottom: "6px" }} />
@@ -1917,5 +1917,194 @@ export function PmaNBToFindSkeleton() {
     </div>
   );
 }
+
+/**
+ * Full-page PMA shell + skeleton used when transitioning immediately from Pulse (/pulse) to PMA (/pma).
+ */
+export function PmaTransitionSkeleton({ user = null, targetNav = "home", clientName = "" }) {
+  const navItems = [
+    { key: "home", label: "Home" },
+    { key: "alerts", label: "Alerts" },
+    { key: "tasks", label: "Tasks" },
+    { key: "edit", label: "Edit", isDropdown: true },
+    { key: "views", label: "Views", isDropdown: true },
+    { key: "tools", label: "EoM" },
+    { key: "integrations", label: "Integrations" },
+    { key: "setup", label: "Setup" },
+    { key: "activity", label: "Activity" },
+    { key: "settings", label: "Settings" },
+  ];
+
+  const userInitial = (user?.name || user?.email || "U").charAt(0).toUpperCase();
+
+  return (
+    <div
+      data-pulse-skeleton="true"
+      style={{
+        fontFamily: "'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+        minHeight: "100vh",
+        background: "#f8fafc",
+      }}
+    >
+      {/* Top Bar (#A2C4C9) matching NavShell */}
+      <div
+        style={{
+          background: "#A2C4C9",
+          borderBottom: "1px solid #8ab0b6",
+          color: "#0047AB",
+          padding: "10px max(32px, calc((100% - 1440px) / 2 + 32px))",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: "12px",
+          boxSizing: "border-box",
+          position: "relative",
+          zIndex: 101,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", minWidth: 0, flexShrink: 0 }}>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/pulselogo-pma.png"
+            alt="Pulse"
+            style={{ height: "30px", width: "auto", display: "block", flexShrink: 0 }}
+          />
+          <span
+            style={{
+              fontSize: "20.5px",
+              fontWeight: 700,
+              color: "#0047AB",
+              letterSpacing: "-0.2px",
+              lineHeight: 1.3,
+              whiteSpace: "nowrap",
+              position: "relative",
+              top: "1.5px",
+            }}
+          >
+            Management Area
+          </span>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", marginLeft: "auto" }}>
+          <div
+            style={{
+              background: targetNav === "setup" && clientName ? "#ffffff" : "rgba(255, 255, 255, 0.72)",
+              border: targetNav === "setup" && clientName ? "1.5px solid #0047AB" : "1px solid rgba(0, 71, 171, 0.28)",
+              borderRadius: "6px",
+              color: "#0047AB",
+              fontSize: "13px",
+              fontWeight: 600,
+              padding: "5px 12px",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "6px",
+              boxShadow: "0 1px 2px rgba(0, 71, 171, 0.12)",
+            }}
+          >
+            <span>Manage:{targetNav === "setup" && clientName ? ` ${clientName}` : ""}</span>
+            <span style={{ fontSize: "10px", opacity: 0.85, lineHeight: 1 }}>▼</span>
+          </div>
+
+          <div
+            style={{
+              background: "#0047AB",
+              border: "1px solid #0047AB",
+              borderRadius: "6px",
+              color: "#ffffff",
+              fontSize: "13px",
+              fontWeight: 600,
+              padding: "5px 12px",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "6px",
+              boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+            }}
+          >
+            <span>Pulse</span>
+            <span style={{ fontSize: "10px", opacity: 0.85, lineHeight: 1 }}>▼</span>
+          </div>
+
+          <div
+            style={{
+              width: "32px",
+              height: "32px",
+              borderRadius: "50%",
+              background: "#0047AB",
+              color: "#ffffff",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontSize: "14px",
+              fontWeight: 700,
+              border: "2px solid rgba(255, 255, 255, 0.7)",
+              boxShadow: "0 1px 3px rgba(0,0,0,0.15)",
+            }}
+          >
+            {userInitial}
+          </div>
+        </div>
+      </div>
+
+      {/* Secondary Navigation Bar matching NavShell */}
+      <div
+        style={{
+          background: "#ffffff",
+          borderBottom: "1px solid #e2e8f0",
+          padding: "0 max(18px, calc((100% - 1440px) / 2 + 18px))",
+          display: "flex",
+          alignItems: "stretch",
+          position: "relative",
+          zIndex: 100,
+          overflowX: "auto",
+          boxSizing: "border-box",
+        }}
+      >
+        {navItems.map((item) => {
+          const isActive = item.key === targetNav;
+          return (
+            <div
+              key={item.key}
+              style={{
+                padding: "11px 14px",
+                fontSize: "13px",
+                fontWeight: isActive ? 600 : 500,
+                color: isActive ? "#0047AB" : "#475569",
+                borderBottom: isActive ? "2px solid #0047AB" : "2px solid transparent",
+                display: "flex",
+                alignItems: "center",
+                gap: "5px",
+                whiteSpace: "nowrap",
+              }}
+            >
+              <span>{item.label}</span>
+              {item.isDropdown && (
+                <span style={{ fontSize: "10px", opacity: 0.8, lineHeight: 1 }}>▼</span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Main Content Area Skeleton */}
+      {targetNav === "setup" ? (
+        <div
+          className="pma-page-container"
+          style={{
+            width: "100%",
+            maxWidth: "1440px",
+            margin: "0 auto",
+            padding: "24px 32px 60px",
+            boxSizing: "border-box",
+          }}
+        >
+          <PmaSetupDetailSkeleton />
+        </div>
+      ) : (
+        <PmaHomeSkeleton />
+      )}
+    </div>
+  );
+}
+
 
 

@@ -4,6 +4,7 @@ import jwt from "jsonwebtoken";
 import { redisClient } from "./redisClient.js";
 import { getSheetsClient } from "./sheetsClient.js";
 import { getUserByEmail, updateUserLastLogin, getCanonicalAcSheetId } from "./userPermissions.js";
+import { unwrapRequestSheetIds, installSheetIdBoundary } from "./sheetTokenService.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { logPulseActivity } from "./pulseLogger.js";
 
@@ -63,9 +64,11 @@ export function getJwtSecret() {
  * Create an HMAC-SHA256 signed OAuth state token (CRIT-02 remediation)
  */
 export function createSignedOAuthState(payload) {
+  const cleanPayload = payload && typeof payload === "object" ? { ...payload } : {};
+  unwrapRequestSheetIds(cleanPayload);
   const enriched = {
-    ...payload,
-    ts: payload?.ts || Date.now(),
+    ...cleanPayload,
+    ts: cleanPayload?.ts || Date.now(),
   };
   const data = Buffer.from(JSON.stringify(enriched)).toString("base64url");
   const sig = crypto
@@ -580,8 +583,16 @@ export async function createSessionForVerifiedEmail(email, res, provider = "OAut
 /**
  * Extract and verify session user from Next.js req object
  */
-export function getSessionUser(req) {
+export function getSessionUser(req, res = null) {
   if (!req) return null;
+
+  if (req.body && typeof req.body === "object") {
+    unwrapRequestSheetIds(req.body);
+  }
+  if (req.query && typeof req.query === "object") {
+    unwrapRequestSheetIds(req.query);
+  }
+  const activeRes = res || req.res || req.socket?._httpMessage || null;
 
   let token = null;
 
@@ -634,7 +645,7 @@ export function getSessionUser(req) {
     const isSenior = role === "Senior (Restricted)" || String(role).toLowerCase().includes("senior");
     const isClientUser = role === "ClientUser";
 
-    return {
+    const userObj = {
       email: decoded.email,
       name: decoded.name || decoded.email.split("@")[0],
       role,
@@ -645,6 +656,10 @@ export function getSessionUser(req) {
       isReadOnly,
       authProvider: decoded.authProvider || "OAuth"
     };
+    if (activeRes) {
+      installSheetIdBoundary(req, activeRes, userObj);
+    }
+    return userObj;
   } catch (err) {
     return null;
   }

@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
-import { ALERT_CATEGORY_FLAGS, EXPENSE_SUPPRESSIBLE, isUserAuthorizedForClient, isPipelineJobSuppressed } from "../utils/helpers";
+import { ALERT_CATEGORY_FLAGS, EXPENSE_SUPPRESSIBLE, isUserAuthorizedForClient, isPipelineJobSuppressed, ADMIN_ONLY_FLAG_KEYS, ADMIN_ONLY_PROACTIVE_TYPES } from "../utils/helpers";
 
 export function useTriageEngine({
   automationCommanderSheetId,
@@ -37,9 +37,11 @@ export function useTriageEngine({
   }, [user]);
 
   const scopeProactive = useCallback((alerts) => {
-    // Only Admin is an internal staff role able to see all clients
+    // Only Admin is an internal staff role able to see all clients and admin-only proactive types
     if (!user || user.isAdmin || user.role === "Admin") return alerts || [];
-    return (alerts || []).filter(a => isUserAuthorizedForClient(user, a.clientName));
+    return (alerts || []).filter(
+      a => isUserAuthorizedForClient(user, a.clientName) && !ADMIN_ONLY_PROACTIVE_TYPES.has(a.alertType)
+    );
   }, [user]);
 
   const [clientsWithFlags, setClientsWithFlags] = useState(() => {
@@ -261,8 +263,6 @@ export function useTriageEngine({
       setRefreshStatus("Initializing background refresh...");
       setError("");
       setAcceptError("");
-      setProactiveLoadedAt(0);
-      setProactiveAlerts([]);
 
       const triggerResp = await fetch("/api/triage", {
         method: "POST",
@@ -844,6 +844,7 @@ export function useTriageEngine({
   }, [clientAlerts, isAssigned, selectedClient]);
 
   const liveAlertCount = useMemo(() => {
+    const isAdmin = Boolean(user?.isAdmin || user?.role === "Admin");
     const ACTIONABLE_FLAG_KEYS_SET = new Set([
       "invoiceDashboardDiscr", "expenseDashboardDiscr",
       "crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr",
@@ -852,6 +853,7 @@ export function useTriageEngine({
     const INVOICE_TYPES = new Set(["invoiceDashboardDiscr"]);
 
     return clientsWithFlags.reduce((total, c) => {
+      if (!isUserAuthorizedForClient(user, c.clientName)) return total;
       const isIdMatch = (id) => isAssigned(id, c.clientName);
       const expenseIds = c.activeExpenseIds || [];
       const invoiceIds = c.activeInvoiceIds || [];
@@ -861,7 +863,7 @@ export function useTriageEngine({
       let clientTotal = 0;
 
       Object.entries(c.flags || {}).forEach(([flagKey, isSet]) => {
-        if (!isSet) return;
+        if (!isSet || (!isAdmin && ADMIN_ONLY_FLAG_KEYS.has(flagKey))) return;
         
         let count = c.alertCounts?.[flagKey] || 0;
 
@@ -880,7 +882,7 @@ export function useTriageEngine({
 
       return total + clientTotal;
     }, 0);
-  }, [clientsWithFlags, isAssigned]);
+  }, [clientsWithFlags, isAssigned, user]);
 
   const computeAlertCheckCount = (clientName, categoriesStr) => {
     const client = (clientsWithFlags || []).find(c => c.clientName === clientName);
@@ -967,7 +969,7 @@ export function useTriageEngine({
     const clientSheetId = clientInfo.clientSheetId || selectedClient?.clientSheetId || na.clientSheetId || na.clientId;
     const masterSheetId = clientInfo.masterSheetId || selectedClient?.masterSheetId || na.masterSheetId || na.clientId;
     const targetLine = na.flagDetail || na.detail || na.alertSummary;
-    const acId = automationCommanderSheetId || "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
+    const acId = automationCommanderSheetId || "default";
 
     try {
       const resp = await fetch("/api/triage", {

@@ -68,6 +68,7 @@ export default function HomeView({
   onGoToIntegrations,
   onSelectClientAlerts,
   isLoadingAlerts = false,
+  triageComplete = false,
   managedClient,
   onClearManagedClient,
   integrationsData: propIntegrationsData = null
@@ -182,7 +183,7 @@ export default function HomeView({
           if (flagKey === "invoiceDashboardDiscr") count = Math.max(0, count - validAssignedInv);
           clientTotal += count;
         } else {
-          clientTotal += count > 0 ? count : 1;
+          clientTotal += count > 0 ? count : 0;
         }
       });
       counts[c.clientName] = (counts[c.clientName] || 0) + clientTotal;
@@ -210,13 +211,14 @@ export default function HomeView({
 
   // Sync latest confirmed alert count to localStorage (only when not in managedClient mode)
   useEffect(() => {
-    if (!managedClient && !isLoadingAlerts && totalAlertsCount != null) {
+    if (!managedClient && triageComplete && !isLoadingAlerts && totalAlertsCount != null) {
       setCachedTotalAlerts(totalAlertsCount);
       try {
         localStorage.setItem("pulse_cached_total_alerts", String(totalAlertsCount));
+        localStorage.setItem("pulse_cached_alert_badge", String(totalAlertsCount));
       } catch { }
     }
-  }, [isLoadingAlerts, totalAlertsCount, managedClient]);
+  }, [triageComplete, isLoadingAlerts, totalAlertsCount, managedClient]);
 
   // Clients that are not yet fully set up
   const clientsPendingSetup = useMemo(() => {
@@ -317,11 +319,11 @@ export default function HomeView({
                 </div>
               ) : (
                 <>
-                  <span style={{ fontSize: "36px", fontWeight: "800", color: (((!managedClient && isLoadingAlerts && cachedTotalAlerts !== null ? cachedTotalAlerts : totalAlertsCount) > 0)) ? "#DC2626" : "#0F172A", lineHeight: 1 }}>
-                    {!managedClient && isLoadingAlerts && cachedTotalAlerts !== null ? cachedTotalAlerts : totalAlertsCount}
+                  <span style={{ fontSize: "36px", fontWeight: "800", color: (((!managedClient && !triageComplete && cachedTotalAlerts !== null ? cachedTotalAlerts : totalAlertsCount) > 0)) ? "#DC2626" : "#0F172A", lineHeight: 1 }}>
+                    {!managedClient && !triageComplete && cachedTotalAlerts !== null ? cachedTotalAlerts : totalAlertsCount}
                   </span>
                   <span style={{ fontSize: "14px", color: "#64748B", fontWeight: "500", display: "inline-flex", alignItems: "center", gap: "6px" }}>
-                    total {(!managedClient && isLoadingAlerts && cachedTotalAlerts !== null ? cachedTotalAlerts : totalAlertsCount) === 1 ? "alert" : "alerts"}
+                    total {(!managedClient && !triageComplete && cachedTotalAlerts !== null ? cachedTotalAlerts : totalAlertsCount) === 1 ? "alert" : "alerts"}
                     {!managedClient && isLoadingAlerts && cachedTotalAlerts !== null && (
                       <span style={{ fontSize: "12px", color: "#94A3B8" }}>(syncing...)</span>
                     )}

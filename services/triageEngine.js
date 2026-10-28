@@ -1489,6 +1489,8 @@ export async function handleStorePrecomputed(req, res, sheets) {
 
           const liveMeta = clientNameToMeta.get(row.clientName) || {};
 
+          if (row.fingerprintHash) oldPathFingerprints.add(row.fingerprintHash);
+
           newAlertsFromMemory.push({
             ...alertObj,
             fingerprintHash: row.fingerprintHash,
@@ -1516,8 +1518,10 @@ export async function handleStorePrecomputed(req, res, sheets) {
             });
           }
         } else if (String(row.category).toLowerCase() === "info" || row.category === "proactive") {
+          if (row.fingerprintHash && oldPathFingerprints.has(row.fingerprintHash)) continue;
           if (!Object.prototype.hasOwnProperty.call(AUTOLOG_TYPE_PATTERNS, row.alertType)) {
             if (row.category === "proactive") {
+              if (row.fingerprintHash) oldPathFingerprints.add(row.fingerprintHash);
               let alertObj = {};
               try { alertObj = JSON.parse(row.dataSnapshot || "{}"); } catch (e) { alertObj = {}; }
               const metaFields = ["jobName", "endClientName", "confirmedRow", "revenue", "startDate", "endDate",
@@ -1559,6 +1563,8 @@ export async function handleStorePrecomputed(req, res, sheets) {
           if (row.cachedOptionsJSON) {
             try { analysisResult = JSON.parse(row.cachedOptionsJSON); } catch (e) { analysisResult = null; }
           }
+          if (row.fingerprintHash) oldPathFingerprints.add(row.fingerprintHash);
+          oldPathNoActionKeys.add(`${clientMeta.masterSheetId}|||${row.alertType}`);
           newNoActionFromMemory.push({
             clientId: clientMeta.masterSheetId,
             clientSheetId: clientMeta.clientSheetId,
@@ -2460,7 +2466,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
             });
 
             // Priority: Handled (accepted/ignored/task/pending_automation) > Active (cached) > Inactive (auto_resolved/superseded/task_resolved)
-            // Tie-break: highest rowIndex (most recent entry in sheet)
+            // Tie-break: if both are active ("cached"), prefer the row that already has cachedOptionsJSON and earliest firstSeen
             const statusPriority = (s) => {
               if (s === "accepted" || s === "ignored" || s === "task" || s === "pending_automation") return 3;
               if (s === "cached") return 2;
@@ -2469,13 +2475,24 @@ export async function handleRunFlagSweep(req, res, sheets) {
             candidateMatches.sort((a, b) => {
               const pd = statusPriority(b.status) - statusPriority(a.status);
               if (pd !== 0) return pd;
+              if (a.status === "cached" && b.status === "cached") {
+                const aHasOpts = a.cachedOptionsJSON ? 1 : 0;
+                const bHasOpts = b.cachedOptionsJSON ? 1 : 0;
+                if (bHasOpts !== aHasOpts) return bHasOpts - aHasOpts;
+                const aFirst = a.firstSeen ? new Date(a.firstSeen).getTime() : Infinity;
+                const bFirst = b.firstSeen ? new Date(b.firstSeen).getTime() : Infinity;
+                if (Number.isFinite(aFirst) && Number.isFinite(bFirst) && aFirst !== bFirst) {
+                  return aFirst - bFirst;
+                }
+              }
               return (b.rowIndex || 0) - (a.rowIndex || 0);
             });
 
             let exRow = candidateMatches[0] || null;
+            const detectedAtIso = new Date().toISOString();
 
-            // If there are duplicate rows and the winning row is handled, suppress any duplicate cached/pending rows so they don't appear in PMA or revive
-            if (candidateMatches.length > 1 && exRow && (exRow.status === "accepted" || exRow.status === "ignored" || exRow.status === "task")) {
+            // If there are duplicate rows and the winning row is handled or active, suppress any duplicate cached/pending rows so they don't appear in PMA or revive
+            if (candidateMatches.length > 1 && exRow && (exRow.status === "accepted" || exRow.status === "ignored" || exRow.status === "task" || exRow.status === "cached" || exRow.status === "pending_automation")) {
               for (const dup of candidateMatches.slice(1)) {
                 if (dup.status === "cached" || dup.status === "pending_automation") {
                   try {
@@ -2491,7 +2508,6 @@ export async function handleRunFlagSweep(req, res, sheets) {
               }
             }
 
-            const detectedAtIso = new Date().toISOString();
             const { _fingerprint, _legacyFingerprint, ...alertForSnapshot } = alert;
             alertForSnapshot.detectedAt = detectedAtIso;
 
@@ -2704,8 +2720,8 @@ export async function handleRunFlagSweep(req, res, sheets) {
               category: item.category || "discrepancy",
               dataSnapshot: JSON.stringify(alertForSnapshot),
             };
-            await appendAlertMemoryRow(sheets, acIdSweep, newRow);
-            memoryRows.push(newRow);
+            const appendedRow = await appendAlertMemoryRow(sheets, acIdSweep, newRow);
+            memoryRows.push(appendedRow || newRow);
 
             flagsRaised++;
             if (status === "pending_automation") {

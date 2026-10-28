@@ -12,7 +12,7 @@
 
 import { getIntegrationStatus, getSharedXeroGrant, INTEGRATIONS_STATUS_CACHE_KEY } from "../../../services/vaultService.js";
 import { getSheetsClient, extractSheetIdFromUrl } from "../../../services/sheetsClient.js";
-import { DEFAULT_AC_SHEET_ID, matchesClientName, isUserAuthorizedForClient, resolveClientNameBySheetId, canAccessPma } from "../../../services/userPermissions.js";
+import { DEFAULT_AC_SHEET_ID, matchesClientName, isUserAuthorizedForClient, resolveClientNameBySheetId, canAccessPma, installSheetIdBoundary } from "../../../services/userPermissions.js";
 import { getClientSetupConfig, revalidateClientsSetupInBackground } from "../../../services/setupService.js";
 import { getSessionUser } from "../../../services/authService.js";
 import { redisClient } from "../../../services/redisClient.js";
@@ -25,10 +25,11 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const sessionUser = getSessionUser(req);
+  const sessionUser = getSessionUser(req, res);
   if (!sessionUser) {
     return res.status(401).json({ error: "Active session required." });
   }
+  installSheetIdBoundary(req, res, sessionUser);
 
   const { all, clientKey, clientName, masterSheetId, refresh, force } = req.query;
   const forceRefresh = refresh === "true" || force === "true";

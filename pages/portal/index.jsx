@@ -473,26 +473,44 @@ export default function PortalPage({ initialUser = null }) {
   useEffect(() => {
     if (typeof window === "undefined" || !isAuthenticated) return;
     try {
-      if (router.query.choose === "true") return;
       const urlParams = new URLSearchParams(window.location.search);
-      // If an explicit client or choose is specified in the URL, do NOT restore older cached client
-      if (router.query.client || urlParams.get("client") || urlParams.get("choose") === "true") {
-        return;
-      }
+      if (router.query.choose === "true" || urlParams.get("choose") === "true") return;
+      const queryClient =
+        (typeof router.query.client === "string" && router.query.client) ||
+        urlParams.get("client") ||
+        "";
       const savedObj = localStorage.getItem("pulse_portal_active_client_obj");
       if (savedObj) {
         const parsed = JSON.parse(savedObj);
         if (parsed?.clientSheetId) {
-          setSelectedClient((curr) => {
-            if (!curr || curr.clientSheetId !== parsed.clientSheetId) {
-              return parsed;
-            }
-            return curr;
-          });
+          // Verify the logged-in user is permitted to access this cached client
+          const isAuthorizedForCached = Boolean(
+            user?.isAdmin ||
+            user?.assignedClients === "*" ||
+            (Array.isArray(user?.assignedClients) &&
+              user.assignedClients.some(
+                (a) => String(a || "").trim().toLowerCase() === String(parsed.clientName || "").trim().toLowerCase()
+              ))
+          );
+          if (!isAuthorizedForCached) return;
+
+          // Restore immediately if no explicit ?client= is in URL, OR if cached client matches ?client=
+          const matchesQuery =
+            !queryClient ||
+            String(parsed.clientName || "").trim().toLowerCase() === String(queryClient).trim().toLowerCase();
+          if (matchesQuery) {
+            activeClientSheetIdRef.current = parsed.clientSheetId;
+            setSelectedClient((curr) => {
+              if (!curr || curr.clientSheetId !== parsed.clientSheetId) {
+                return parsed;
+              }
+              return curr;
+            });
+          }
         }
       }
     } catch (e) {}
-  }, [isAuthenticated, router.query.choose, router.query.client]);
+  }, [isAuthenticated, user, router.query.choose, router.query.client]);
 
   const logWorkspaceAccess = useCallback((client) => {
     if (!client || !client.clientName) return;
@@ -817,7 +835,7 @@ export default function PortalPage({ initialUser = null }) {
           <title>Pulse</title>
         </Head>
         <PortalShell
-          clientName={selectedClient?.clientName || ""}
+          clientName={selectedClient?.clientName || (typeof router.query.client === "string" ? router.query.client : "")}
           clients={clients}
           onSelectClient={handleSelectClient}
           activeView={activeView}
@@ -872,21 +890,26 @@ export default function PortalPage({ initialUser = null }) {
 
   if (isSetupCheckPending) {
     return (
-      <div
-        style={{
-          minHeight: "100vh",
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          background: "#ffffff",
-          gap: "12px",
-          fontFamily: "'Kumbh Sans', sans-serif"
-        }}
-      >
-        <Spinner size={32} color="#0047AB" />
-        <span style={{ color: "#0047AB", fontWeight: 600, fontSize: "15px" }}>Please wait - loading</span>
-      </div>
+      <>
+        <Head>
+          <title>{selectedClient?.clientName ? `Pulse - ${selectedClient.clientName}` : "Pulse"}</title>
+        </Head>
+        <PortalShell
+          clientName={selectedClient?.clientName || ""}
+          clients={clients}
+          onSelectClient={handleSelectClient}
+          activeView={activeView}
+          onSelectView={setActiveView}
+          user={user}
+          onLogout={handleLogout}
+          hasBudget={true}
+          hasCash={true}
+          setupStatus={null}
+          onPreviewSetup={() => setIsPreviewSetup(true)}
+        >
+          <MonthViewSkeleton />
+        </PortalShell>
+      </>
     );
   }
 
@@ -899,7 +922,7 @@ export default function PortalPage({ initialUser = null }) {
           <title>Pulse</title>
         </Head>
         <PortalShell
-          clientName=""
+          clientName={typeof router.query.client === "string" ? router.query.client : ""}
           clients={[]}
           onSelectClient={handleSelectClient}
           activeView={activeView}

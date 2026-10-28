@@ -1,6 +1,6 @@
 import { getSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
-import { getCanonicalAcSheetId, matchesClientName, isPulseOnlyUser } from "../../../services/userPermissions.js";
+import { getCanonicalAcSheetId, matchesClientName, isPulseOnlyUser, installSheetIdBoundary } from "../../../services/userPermissions.js";
 import { memoryCache } from "../../../services/cacheService.js";
 import { redisClient } from "../../../services/redisClient.js";
 
@@ -17,10 +17,11 @@ export default async function handler(req, res) {
     return res.status(405).json({ success: false, error: "Method not allowed" });
   }
 
-  const sessionUser = getSessionUser(req);
+  const sessionUser = getSessionUser(req, res);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
   }
+  installSheetIdBoundary(req, res, sessionUser);
 
   try {
     const acId = getCanonicalAcSheetId();

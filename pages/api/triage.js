@@ -119,7 +119,9 @@ import {
   verifyUserAuthorizedForSheet,
   getCanonicalAcSheetId,
   isReadOnlySession,
-  canAccessPma
+  canAccessPma,
+  unwrapRequestSheetIds,
+  installSheetIdBoundary
 } from "../../services/userPermissions";
 import { matchesClientName, sanitizeSpreadsheetTerms } from "../../utils/helpers";
 
@@ -205,6 +207,8 @@ export default async function handler(req, res) {
   }
 
   try {
+    unwrapRequestSheetIds(req.body);
+    unwrapRequestSheetIds(req.query);
     // Handle both POST (req.body) and GET (req.query) requests
     const action = req.method === "GET" ? req.query.action : req.body.action;
     const automationCommanderSheetId = getCanonicalAcSheetId();
@@ -317,7 +321,8 @@ export default async function handler(req, res) {
 
     console.log(`\n📍 API Request: method=${req.method}, action=${action}, bodyKeys=${Object.keys(req.body || {}).join(",")}, bodySize=${JSON.stringify(req.body || {}).length}`);
 
-    const sessionUser = getSessionUser(req);
+    const sessionUser = getSessionUser(req, res);
+    installSheetIdBoundary(req, res, sessionUser);
 
     // Public endpoints that do not require an active user session
     const PUBLIC_ACTIONS = new Set(["send_otp", "verify_otp", "get_session", "logout"]);
@@ -1306,7 +1311,8 @@ export default async function handler(req, res) {
     }
   } catch (error) {
     console.error("Triage API error:", error);
-    const sessionUser = getSessionUser(req);
+    const sessionUser = getSessionUser(req, res);
+    installSheetIdBoundary(req, res, sessionUser);
     const safeMsg = sessionUser?.isAdmin ? error.message : sanitizeSpreadsheetTerms(error.message || "Internal server error");
     res.status(500).json({
       success: false,

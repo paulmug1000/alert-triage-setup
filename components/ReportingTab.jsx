@@ -25,7 +25,7 @@ function formatMonthKey(monthKey) {
   return new Date(y, m - 1, 1).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
 }
 
-const HARDCODED_REPORTING_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbzHt00OpXWt8ztCDLC81bnYYUAlbQlAUG6o4fcfH8r5aFGL83j-l39Sd-v4pzJcCSZD/exec";
+const HARDCODED_REPORTING_WEBAPP_URL = "";
 
 export default function ReportingTab({
   automationCommanderSheetId = "",

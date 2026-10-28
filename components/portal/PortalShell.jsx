@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from "react";
 import Link from "next/link";
+import { useRouter } from "next/router";
 import { SYSTEM_VERSION, getSystemCopyright } from "../../config/version";
+import { PmaTransitionSkeleton } from "../Skeleton";
 
 export default function PortalShell({
   clientName,
@@ -16,6 +18,7 @@ export default function PortalShell({
   onPreviewSetup = null,
   children
 }) {
+  const router = useRouter();
   const [openDropdown, setOpenDropdown] = useState(null); // 'perf' | 'cash' | 'keyData' | 'analysis' | 'user' | 'client' | null
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [navigatingToPma, setNavigatingToPma] = useState(false);
@@ -25,6 +28,29 @@ export default function PortalShell({
     user?.role === "Senior (Restricted)" ||
     String(user?.role || "").toLowerCase().includes("senior")
   );
+
+  // Prefetch /pma route bundle for staff users so Pulse -> PMA transitions mount rapidly
+  useEffect(() => {
+    if (user?.isAdmin || user?.role === "ClientManager") {
+      try {
+        router.prefetch("/pma");
+      } catch {}
+    }
+  }, [router, user?.isAdmin, user?.role]);
+
+  const handleNavigateToPma = (e, targetNav = "home", href = "/pma") => {
+    if (e && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) {
+      e.preventDefault();
+      setOpenDropdown(null);
+      setMobileMenuOpen(false);
+      setNavigatingToPma(targetNav);
+      router.push(href).catch(() => {
+        setNavigatingToPma(false);
+      });
+    } else {
+      setNavigatingToPma(targetNav);
+    }
+  };
 
   // Close dropdowns when clicking outside or pressing Escape
   useEffect(() => {
@@ -73,6 +99,16 @@ export default function PortalShell({
   };
 
   const isViewInGroup = (views) => views.includes(activeView);
+
+  if (navigatingToPma) {
+    return (
+      <PmaTransitionSkeleton
+        user={user}
+        targetNav={navigatingToPma === "setup" ? "setup" : "home"}
+        clientName={clientName}
+      />
+    );
+  }
 
   return (
     <div
@@ -126,7 +162,8 @@ export default function PortalShell({
               </button>
             )}
             <Link
-              href={`/triage?nav=setup&client=${encodeURIComponent(clientName || "")}`}
+              href={`/pma?nav=setup&client=${encodeURIComponent(clientName || "")}`}
+              onClick={(e) => handleNavigateToPma(e, "setup", `/pma?nav=setup&client=${encodeURIComponent(clientName || "")}`)}
               style={{
                 background: "#023f98",
                 border: "none",
@@ -818,7 +855,7 @@ export default function PortalShell({
                   {(user?.isAdmin || user?.role === "ClientManager") && (
                     <Link
                       href="/pma"
-                      onClick={() => setNavigatingToPma(true)}
+                      onClick={(e) => handleNavigateToPma(e, "home", "/pma")}
                       style={{
                         display: "flex",
                         alignItems: "center",

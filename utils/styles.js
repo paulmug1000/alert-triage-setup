@@ -14,9 +14,9 @@ export const GLOBAL_STYLES = `
   .pulse-nav-item:hover { color: #0047AB !important; }
   .pma-page-container {
     width: 100%;
-    max-width: 100%;
-    margin: 0 auto;
-    padding: 20px 32px 60px;
+    max-width: 1440px !important;
+    margin: 0 auto !important;
+    padding: 24px 32px 60px;
     box-sizing: border-box;
     font-family: 'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   }
@@ -28,7 +28,7 @@ export const GLOBAL_STYLES = `
 `;
 
 export const styles = {
-  container: { width: "100%", maxWidth: "100%", margin: "0 auto", padding: "20px 32px 60px", boxSizing: "border-box", fontFamily: "'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" },
+  container: { width: "100%", maxWidth: "1440px", margin: "0 auto", padding: "24px 32px 60px", boxSizing: "border-box", fontFamily: "'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" },
   header: { marginBottom: "20px", textAlign: "left", background: "#ffffff", padding: "16px 20px", borderRadius: "10px", border: "1px solid #e2e8f0", boxShadow: "0 1px 3px rgba(15, 23, 42, 0.04)" },
   title: { fontSize: "20px", fontWeight: "700", color: "#0f172a", margin: "0 0 4px 0" },
   subtitle: { fontSize: "13px", color: "#64748b", margin: "0" },

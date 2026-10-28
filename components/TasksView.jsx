@@ -221,7 +221,7 @@ export default function TasksView({
     try {
       const alertObj = JSON.parse(task.alertDataJSON || "{}");
       const clientInfo = (allClientsMap && (allClientsMap[task.clientName] || Object.values(allClientsMap).find(c => c.clientName?.toLowerCase() === task.clientName?.toLowerCase()))) || {};
-      const acId = automationCommanderSheetId || "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
+      const acId = automationCommanderSheetId || "default";
       const res = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

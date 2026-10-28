@@ -192,6 +192,8 @@ export function useAuth(initialUser = null) {
       localStorage.removeItem("pma_user");
       localStorage.removeItem("pulse_access_token");
       localStorage.removeItem("pma_managed_client");
+      localStorage.removeItem("pulse_portal_client");
+      localStorage.removeItem("pulse_portal_active_client_obj");
     } catch {}
     setIsAuthenticated(false);
     setUser(null);

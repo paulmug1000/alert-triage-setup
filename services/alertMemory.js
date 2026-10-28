@@ -187,7 +187,7 @@ export async function readHandledAlertHashes(sheets, automationCommanderSheetId,
 export async function readAlertMemory(sheets, automationCommanderSheetId) {
   const now = Date.now();
   if (_alertMemoryMemoryCache && (now - _alertMemoryCachedAt < 60000)) {
-    return _alertMemoryMemoryCache;
+    return [..._alertMemoryMemoryCache];
   }
 
   const cacheKey = `pulse:alert_memory:${automationCommanderSheetId}`;
@@ -199,7 +199,7 @@ export async function readAlertMemory(sheets, automationCommanderSheetId) {
         const parsed = JSON.parse(cached);
         _alertMemoryMemoryCache = parsed;
         _alertMemoryCachedAt = now;
-        return parsed;
+        return [...parsed];
       } else {
         console.log(`[AlertMemory Cache MISS] Redis key ${cacheKey} is null/empty`);
       }
@@ -247,7 +247,7 @@ export async function readAlertMemory(sheets, automationCommanderSheetId) {
 
   _alertMemoryMemoryCache = parsed;
   _alertMemoryCachedAt = now;
-  return parsed;
+  return [...parsed];
 }
 
 export function getHandledFingerprintHashes_(memoryRows) {
@@ -498,6 +498,23 @@ export async function updateAlertMemoryCacheInPlace(automationCommanderSheetId, 
   }
 }
 
+function parseAppendedStartRow_(updatedRange, cache) {
+  if (typeof updatedRange === "string") {
+    const match = updatedRange.match(/![A-Z]+(\d+)/i);
+    if (match && match[1]) {
+      const parsedRow = parseInt(match[1], 10);
+      if (Number.isFinite(parsedRow) && parsedRow >= 2) {
+        return parsedRow;
+      }
+    }
+  }
+  if (Array.isArray(cache) && cache.length > 0) {
+    const maxRow = cache.reduce((max, r) => Math.max(max, Number(r?.rowIndex) || 0), 1);
+    return Math.max(maxRow + 1, cache.length + 2);
+  }
+  return 2;
+}
+
 export async function appendAlertMemoryRow(sheets, automationCommanderSheetId, payload) {
   let {
     fingerprintHash, alertType, clientName, alertSummary,
@@ -510,6 +527,11 @@ export async function appendAlertMemoryRow(sheets, automationCommanderSheetId, p
   if (alertType === "crm") alertType = "crmPipeAppDiscr";
 
   const now = new Date().toISOString();
+  const firstSeen = payload.firstSeen || now;
+  const lastSeen = payload.lastSeen || now;
+  const lastRechecked = payload.lastRechecked || now;
+  const normalizedCategory = category || "discrepancy";
+
   const response = await withRetry(() => sheets.spreadsheets.values.append({
     spreadsheetId: automationCommanderSheetId,
     range: `${ALERT_MEMORY_TAB}!A:L`,
@@ -517,25 +539,68 @@ export async function appendAlertMemoryRow(sheets, automationCommanderSheetId, p
     requestBody: {
       values: [[
         fingerprintHash, alertType, clientName, alertSummary,
-        cachedOptionsJSON, status, ignoreReason || "", payload.firstSeen || now, now,
-        now, 
+        cachedOptionsJSON, status, ignoreReason || "", firstSeen, lastSeen,
+        lastRechecked, 
         dataSnapshot || "",
-        category || "discrepancy",
+        normalizedCategory,
       ]],
     },
   }));
-  console.log(`  📝 DEBUG: Appended alert ${fingerprintHash} to ${response.data.updates.updatedRange} with status "${status}"`);
+  const updatedRange = response.data?.updates?.updatedRange || "";
+  console.log(`  📝 DEBUG: Appended alert ${fingerprintHash} to ${updatedRange || ALERT_MEMORY_TAB} with status "${status}"`);
   await updateHandledAlertHash(automationCommanderSheetId, fingerprintHash, status);
+  let constructedRow = null;
   await updateAlertMemoryCacheInPlace(automationCommanderSheetId, (cache) => {
-    const nextRowIndex = cache.length + 2;
-    cache.push({ ...payload, rowIndex: nextRowIndex });
+    const actualRowIndex = parseAppendedStartRow_(updatedRange, cache);
+    constructedRow = {
+      ...payload,
+      rowIndex: actualRowIndex,
+      fingerprintHash: fingerprintHash || "",
+      alertType: alertType || "",
+      clientName: clientName || "",
+      alertSummary: alertSummary || "",
+      cachedOptionsJSON: cachedOptionsJSON || "",
+      status: status || "cached",
+      ignoreReason: ignoreReason || "",
+      firstSeen,
+      lastSeen,
+      lastRechecked,
+      dataSnapshot: dataSnapshot || "",
+      category: normalizedCategory,
+    };
+    const existingIdx = cache.findIndex(r => r.rowIndex === actualRowIndex);
+    if (existingIdx !== -1) {
+      cache[existingIdx] = constructedRow;
+    } else {
+      cache.push(constructedRow);
+    }
   });
+  if (!constructedRow) {
+    const fallbackRowIndex = parseAppendedStartRow_(updatedRange, null);
+    constructedRow = {
+      ...payload,
+      rowIndex: fallbackRowIndex,
+      fingerprintHash: fingerprintHash || "",
+      alertType: alertType || "",
+      clientName: clientName || "",
+      alertSummary: alertSummary || "",
+      cachedOptionsJSON: cachedOptionsJSON || "",
+      status: status || "cached",
+      ignoreReason: ignoreReason || "",
+      firstSeen,
+      lastSeen,
+      lastRechecked,
+      dataSnapshot: dataSnapshot || "",
+      category: normalizedCategory,
+    };
+  }
+  return constructedRow;
 }
 
 export async function appendAlertMemoryRowsBatch(sheets, automationCommanderSheetId, items) {
-  if (!items || items.length === 0) return;
+  if (!items || items.length === 0) return [];
   const now = new Date().toISOString();
-  const rows = items.map(payload => {
+  const normalizedItems = items.map(payload => {
     let {
       fingerprintHash, alertType, clientName, alertSummary,
       cachedOptionsJSON, status, ignoreReason, dataSnapshot, category,
@@ -546,13 +611,35 @@ export async function appendAlertMemoryRowsBatch(sheets, automationCommanderShee
     if (alertType === "expense") alertType = "expenseDashboardDiscr";
     if (alertType === "crm") alertType = "crmPipeAppDiscr";
 
-    return [
-      fingerprintHash, alertType, clientName, alertSummary,
-      cachedOptionsJSON, status, ignoreReason || "", payload.firstSeen || now, now,
-      now, 
-      dataSnapshot || "",
-      category || "discrepancy",
-    ];
+    const firstSeen = payload.firstSeen || now;
+    const lastSeen = payload.lastSeen || now;
+    const lastRechecked = payload.lastRechecked || now;
+    const normalizedCategory = category || "discrepancy";
+
+    return {
+      rowValues: [
+        fingerprintHash, alertType, clientName, alertSummary,
+        cachedOptionsJSON, status, ignoreReason || "", firstSeen, lastSeen,
+        lastRechecked, 
+        dataSnapshot || "",
+        normalizedCategory,
+      ],
+      rowObj: {
+        ...payload,
+        fingerprintHash: fingerprintHash || "",
+        alertType: alertType || "",
+        clientName: clientName || "",
+        alertSummary: alertSummary || "",
+        cachedOptionsJSON: cachedOptionsJSON || "",
+        status: status || "cached",
+        ignoreReason: ignoreReason || "",
+        firstSeen,
+        lastSeen,
+        lastRechecked,
+        dataSnapshot: dataSnapshot || "",
+        category: normalizedCategory,
+      },
+    };
   });
 
   const response = await withRetry(() => sheets.spreadsheets.values.append({
@@ -560,10 +647,11 @@ export async function appendAlertMemoryRowsBatch(sheets, automationCommanderShee
     range: `${ALERT_MEMORY_TAB}!A:L`,
     valueInputOption: "RAW",
     requestBody: {
-      values: rows,
+      values: normalizedItems.map(x => x.rowValues),
     },
   }));
-  console.log(`  📝 DEBUG: Batch appended ${items.length} alerts to ${response.data?.updates?.updatedRange || ALERT_MEMORY_TAB}`);
+  const updatedRange = response.data?.updates?.updatedRange || "";
+  console.log(`  📝 DEBUG: Batch appended ${items.length} alerts to ${updatedRange || ALERT_MEMORY_TAB}`);
 
   const statusByHash = {};
   for (const item of items) {
@@ -572,17 +660,29 @@ export async function appendAlertMemoryRowsBatch(sheets, automationCommanderShee
     }
   }
   await updateHandledAlertHashesBatch(automationCommanderSheetId, statusByHash);
+  let constructedRows = [];
   await updateAlertMemoryCacheInPlace(automationCommanderSheetId, (cache) => {
-    let nextRowIndex = cache.length + 2;
-    for (const item of items) {
-      cache.push({ ...item, rowIndex: nextRowIndex++ });
-    }
+    let nextRowIndex = parseAppendedStartRow_(updatedRange, cache);
+    constructedRows = normalizedItems.map(({ rowObj }) => {
+      const rIdx = nextRowIndex++;
+      const fullRow = { ...rowObj, rowIndex: rIdx };
+      const existingIdx = cache.findIndex(r => r.rowIndex === rIdx);
+      if (existingIdx !== -1) {
+        cache[existingIdx] = fullRow;
+      } else {
+        cache.push(fullRow);
+      }
+      return fullRow;
+    });
   });
+  return constructedRows;
 }
 
 export async function updateAlertMemoryRow(sheets, automationCommanderSheetId, rowIndex, updates) {
   const compressedOptions = compressOptionsJSON_(updates.cachedOptionsJSON);
   const now = new Date().toISOString();
+  const firstSeenVal = updates.firstSeen || now;
+  const lastRecheckedVal = updates.lastRechecked || now;
   const values = [
     updates.fingerprintHash,
     updates.alertType,
@@ -591,9 +691,9 @@ export async function updateAlertMemoryRow(sheets, automationCommanderSheetId, r
     compressedOptions,
     updates.status,    
     updates.ignoreReason || "",
-    updates.firstSeen || now,
+    firstSeenVal,
     now, 
-    updates.lastRechecked || now,
+    lastRecheckedVal,
     updates.dataSnapshot || "",
   ];
   await withRetry(() => sheets.spreadsheets.values.update({
@@ -606,9 +706,20 @@ export async function updateAlertMemoryRow(sheets, automationCommanderSheetId, r
     await updateHandledAlertHash(automationCommanderSheetId, updates.fingerprintHash, updates.status);
   }
   await updateAlertMemoryCacheInPlace(automationCommanderSheetId, (cache) => {
-    const idx = cache.findIndex(r => r.rowIndex === rowIndex || (updates.fingerprintHash && r.fingerprintHash === updates.fingerprintHash));
+    let idx = cache.findIndex(r => r.rowIndex === rowIndex);
+    if (idx === -1 && updates.fingerprintHash) {
+      idx = cache.findIndex(r => r.fingerprintHash === updates.fingerprintHash);
+    }
     if (idx !== -1) {
-      cache[idx] = { ...cache[idx], ...updates, rowIndex };
+      cache[idx] = {
+        ...cache[idx],
+        ...updates,
+        cachedOptionsJSON: compressedOptions !== undefined ? compressedOptions : cache[idx].cachedOptionsJSON,
+        firstSeen: updates.firstSeen || cache[idx].firstSeen || firstSeenVal,
+        lastSeen: now,
+        lastRechecked: lastRecheckedVal,
+        rowIndex,
+      };
     }
   });
 }
@@ -653,9 +764,21 @@ export async function updateAlertMemoryRowsBatch(sheets, automationCommanderShee
   await updateHandledAlertHashesBatch(automationCommanderSheetId, statusByHash);
   await updateAlertMemoryCacheInPlace(automationCommanderSheetId, (cache) => {
     for (const item of updateItems) {
-      const idx = cache.findIndex(r => r.rowIndex === item.rowIndex || (item.updates?.fingerprintHash && r.fingerprintHash === item.updates.fingerprintHash));
+      let idx = cache.findIndex(r => r.rowIndex === item.rowIndex);
+      if (idx === -1 && item.updates?.fingerprintHash) {
+        idx = cache.findIndex(r => r.fingerprintHash === item.updates.fingerprintHash);
+      }
       if (idx !== -1) {
-        cache[idx] = { ...cache[idx], ...item.updates, rowIndex: item.rowIndex };
+        const compressedOpts = compressOptionsJSON_(item.updates?.cachedOptionsJSON);
+        cache[idx] = {
+          ...cache[idx],
+          ...item.updates,
+          cachedOptionsJSON: compressedOpts !== undefined ? compressedOpts : cache[idx].cachedOptionsJSON,
+          firstSeen: item.updates?.firstSeen || cache[idx].firstSeen || now,
+          lastSeen: now,
+          lastRechecked: item.updates?.lastRechecked || now,
+          rowIndex: item.rowIndex,
+        };
       }
     }
   });
@@ -741,6 +864,65 @@ export async function compactAlertMemory(sheets, automationCommanderSheetId, opt
       prunedCount++;
     }
   }
+
+  // Deduplicate rows that share the exact same fingerprintHash + clientName + alertType
+  const statusRank = (s) => {
+    if (s === "accepted" || s === "ignored" || s === "task") return 3;
+    if (s === "cached" || s === "pending_automation") return 2;
+    return 1;
+  };
+  const dedupedByKey = new Map();
+  const dedupedKept = [];
+  for (const row of kept) {
+    if (!row.fingerprintHash) {
+      dedupedKept.push(row);
+      continue;
+    }
+    const key = `${row.fingerprintHash}:::${row.clientName}:::${row.alertType}`;
+    if (!dedupedByKey.has(key)) {
+      dedupedByKey.set(key, row);
+      dedupedKept.push(row);
+      continue;
+    }
+    prunedCount++;
+    const existing = dedupedByKey.get(key);
+    const exRank = statusRank(existing.status);
+    const newRank = statusRank(row.status);
+    let winner = existing;
+    let loser = row;
+    if (
+      newRank > exRank ||
+      (newRank === exRank && !existing.ignoreReason && row.ignoreReason) ||
+      (newRank === exRank && !existing.cachedOptionsJSON && row.cachedOptionsJSON)
+    ) {
+      winner = { ...row };
+      loser = existing;
+    } else {
+      winner = { ...existing };
+    }
+    const exFirst = existing.firstSeen ? new Date(existing.firstSeen).getTime() : Infinity;
+    const newFirst = row.firstSeen ? new Date(row.firstSeen).getTime() : Infinity;
+    if (Number.isFinite(newFirst) && newFirst < exFirst) {
+      winner.firstSeen = row.firstSeen;
+    } else if (Number.isFinite(exFirst)) {
+      winner.firstSeen = existing.firstSeen;
+    }
+    const exLast = existing.lastSeen ? new Date(existing.lastSeen).getTime() : 0;
+    const newLast = row.lastSeen ? new Date(row.lastSeen).getTime() : 0;
+    winner.lastSeen = newLast > exLast ? row.lastSeen : existing.lastSeen;
+    const exRecheck = existing.lastRechecked ? new Date(existing.lastRechecked).getTime() : 0;
+    const newRecheck = row.lastRechecked ? new Date(row.lastRechecked).getTime() : 0;
+    winner.lastRechecked = newRecheck > exRecheck ? row.lastRechecked : existing.lastRechecked;
+    if (!winner.ignoreReason && loser.ignoreReason) winner.ignoreReason = loser.ignoreReason;
+    if (winner.status === "cached" && !winner.cachedOptionsJSON && loser.cachedOptionsJSON) {
+      winner.cachedOptionsJSON = loser.cachedOptionsJSON;
+    }
+    const idxInKept = dedupedKept.indexOf(existing);
+    if (idxInKept !== -1) dedupedKept[idxInKept] = winner;
+    dedupedByKey.set(key, winner);
+  }
+  kept.length = 0;
+  kept.push(...dedupedKept);
 
   console.log(`[compactAlertMemory] Evaluated ${existingRows.length} rows: keeping ${kept.length}, pruning ${prunedCount}, cleared options from ${optionsClearedCount} inactive rows.`);
 

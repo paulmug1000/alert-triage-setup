@@ -3,7 +3,7 @@ import React, { createContext, useContext, useState, useEffect, useRef, useCallb
 const AppGlobalsContext = createContext(null);
 
 export function AppGlobalsProvider({ children }) {
-  const AUTOMATION_COMMANDER_SHEET_ID = "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
+  const AUTOMATION_COMMANDER_SHEET_ID = "default";
   const [automationCommanderSheetId] = useState(AUTOMATION_COMMANDER_SHEET_ID);
   
   const outgoingsPullPendingRef = useRef(null);

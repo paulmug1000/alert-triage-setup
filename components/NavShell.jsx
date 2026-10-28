@@ -3,6 +3,8 @@ import Link from "next/link";
 import { useRouter } from "next/router";
 import { SYSTEM_VERSION, getSystemCopyright } from "../config/version";
 import Spinner from "./Spinner";
+import PortalShell from "./portal/PortalShell";
+import { MonthViewSkeleton } from "./Skeleton";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 
 // Global styles injected once - handles :hover/:active which React inline styles can't do
@@ -35,9 +37,9 @@ const GLOBAL_STYLES = `
   .pulse-nav-item:hover { color: #0047AB !important; }
   .pma-page-container {
     width: 100%;
-    max-width: 100%;
-    margin: 0 auto;
-    padding: 20px 32px 60px;
+    max-width: 1440px !important;
+    margin: 0 auto !important;
+    padding: 24px 32px 60px;
     box-sizing: border-box;
     font-family: 'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   }
@@ -52,7 +54,7 @@ const GLOBAL_STYLES = `
     background: #A2C4C9;
     border-bottom: 1px solid #8ab0b6;
     color: #0047AB;
-    padding: 10px 32px;
+    padding: 10px max(32px, calc((100% - 1440px) / 2 + 32px));
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -231,6 +233,7 @@ export default function NavShell({
   homeAlertCount, taskCount, integrationsCount, user, onLogout, clients = [],
   managedClient, onSelectManagedClient, onClearManagedClient,
   isSingleClientUser: propIsSingleClientUser, singleClient: propSingleClient,
+  onBeforeNavigateToPulse,
   children
 }) {
   const router = useRouter();
@@ -266,6 +269,13 @@ export default function NavShell({
     window.addEventListener("resize", check);
     return () => window.removeEventListener("resize", check);
   }, []);
+
+  // Prefetch /pulse route bundle so PMA -> Pulse transitions mount rapidly
+  useEffect(() => {
+    try {
+      router.prefetch("/pulse");
+    } catch { }
+  }, [router]);
 
   // Fetch authorized portal clients if not already provided
   useEffect(() => {
@@ -336,15 +346,22 @@ export default function NavShell({
 
   const handleSelectPulseClient = (client) => {
     if (!client || navigatingPulseClient) return;
-    setNavigatingPulseClient(client.clientName || "Pulse");
-    if (typeof window !== "undefined") {
-      localStorage.setItem("pulse_portal_client", client.clientName);
-      localStorage.setItem("pulse_portal_active_client_obj", JSON.stringify(client));
-    }
-    router.push(`/pulse?client=${encodeURIComponent(client.clientName)}`).finally(() => {
-      setNavigatingPulseClient(null);
+    const proceed = () => {
       setPulseDropdownOpen(false);
-    });
+      setNavigatingPulseClient(client.clientName || "Pulse");
+      if (typeof window !== "undefined") {
+        localStorage.setItem("pulse_portal_client", client.clientName);
+        localStorage.setItem("pulse_portal_active_client_obj", JSON.stringify(client));
+      }
+      router.push(`/pulse?client=${encodeURIComponent(client.clientName)}`).catch(() => {
+        setNavigatingPulseClient(null);
+      });
+    };
+    if (typeof onBeforeNavigateToPulse === "function") {
+      onBeforeNavigateToPulse(proceed);
+    } else {
+      proceed();
+    }
   };
 
   const filteredClients = portalClients.filter((c) =>
@@ -458,6 +475,25 @@ export default function NavShell({
   const isEditSubActive = Boolean(editGroupItem?.children?.some((c) => isChildActive(c)));
   const viewsGroupItem = allNavItems.find((n) => n.key === "views");
   const isViewsSubActive = activeNav === "views";
+
+  if (navigatingPulseClient) {
+    return (
+      <PortalShell
+        clientName={navigatingPulseClient === "Pulse" ? "" : navigatingPulseClient}
+        clients={portalClients}
+        onSelectClient={() => { }}
+        activeView="month"
+        onSelectView={() => { }}
+        user={user}
+        onLogout={onLogout}
+        hasBudget={true}
+        hasCash={true}
+        setupStatus={null}
+      >
+        <MonthViewSkeleton />
+      </PortalShell>
+    );
+  }
 
   return (
     <div style={{ fontFamily: "'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif", minHeight: "100vh", background: "#f8fafc" }}>
@@ -967,12 +1003,13 @@ export default function NavShell({
       <div className="pma-navbar" style={{
         background: "#ffffff",
         borderBottom: "1px solid #e2e8f0",
-        padding: isMobile ? "0 12px" : "0 18px",
+        padding: isMobile ? "0 12px" : "0 max(18px, calc((100% - 1440px) / 2 + 18px))",
         display: "flex",
         alignItems: "stretch",
         position: "relative",
         zIndex: 100,
         overflow: "visible",
+        boxSizing: "border-box",
       }}>
         {!isMobile && allNavItems.map((item) => {
           if (item.isDropdown) {
@@ -1283,7 +1320,7 @@ export default function NavShell({
           style={{
             background: "#f1f5f9",
             borderBottom: "1px solid #e2e8f0",
-            padding: isMobile ? "7px 16px" : "7px 32px",
+            padding: isMobile ? "7px 16px" : "7px max(32px, calc((100% - 1440px) / 2 + 32px))",
             display: "flex",
             alignItems: "center",
             gap: "6px",
@@ -1348,7 +1385,7 @@ export default function NavShell({
           style={{
             background: "#f1f5f9",
             borderBottom: "1px solid #e2e8f0",
-            padding: isMobile ? "7px 16px" : "7px 32px",
+            padding: isMobile ? "7px 16px" : "7px max(32px, calc((100% - 1440px) / 2 + 32px))",
             display: "flex",
             alignItems: "center",
             gap: "6px",

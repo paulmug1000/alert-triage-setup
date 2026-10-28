@@ -2,9 +2,10 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from "react"
 import Head from "next/head";
 import { useRouter } from "next/router";
 import Spinner from "../components/Spinner";
-import { PmaHomeSkeleton, PmaAlertsSkeleton, PmaActivitySkeleton, PmaTasksSkeleton, PmaInvoicesTableSkeleton, PmaJobsTableSkeleton, PmaOutgoingsTableSkeleton, PmaRetainersTableSkeleton, PmaSalariesSkeleton, PmaExpensesTableSkeleton, PmaNBToFindSkeleton, PmaIntegrationsSkeleton, PmaSetupOverviewSkeleton, BudgetSkeleton } from "../components/Skeleton";
+import { MonthViewSkeleton, PmaHomeSkeleton, PmaAlertsSkeleton, PmaActivitySkeleton, PmaTasksSkeleton, PmaInvoicesTableSkeleton, PmaJobsTableSkeleton, PmaOutgoingsTableSkeleton, PmaRetainersTableSkeleton, PmaSalariesSkeleton, PmaExpensesTableSkeleton, PmaNBToFindSkeleton, PmaIntegrationsSkeleton, PmaSetupOverviewSkeleton, BudgetSkeleton } from "../components/Skeleton";
 import TruncatedCode from "../components/TruncatedCode";
 import NavShell from "../components/NavShell";
+import PortalShell from "../components/portal/PortalShell";
 import dynamic from "next/dynamic";
 import { calculateIntegrationsAttentionCount } from "../utils/integrationsBadge";
 
@@ -44,7 +45,10 @@ import { styles, injectGlobalStyles } from "../utils/styles";
 import {
   getAlertSummary,
   PROACTIVE_TYPE_LABELS,
-  getFlagName
+  getFlagName,
+  ADMIN_ONLY_FLAG_KEYS,
+  ADMIN_ONLY_PROACTIVE_TYPES,
+  isUserAuthorizedForClient
 } from "../utils/helpers";
 import { AppGlobalsProvider, useAppGlobals } from "../hooks/useAppGlobals";
 import { useTriageEngine } from "../hooks/useTriageEngine";
@@ -100,6 +104,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
   useEffect(() => { setHasMounted(true); }, []);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
+  const router = useRouter();
 
   const auth = useAuth(initialUser);
   const {
@@ -114,9 +119,13 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
   // If ClientUser, Senior (Restricted), or Read-Only (OTP) lands on PMA, redirect immediately to Pulse
   useEffect(() => {
     if (!authChecking && isAuthenticated && (isPulseOnly || user?.isReadOnly)) {
-      window.location.href = "/pulse";
+      if (router?.replace) {
+        router.replace("/pulse");
+      } else {
+        window.location.href = "/pulse";
+      }
     }
-  }, [authChecking, isAuthenticated, isPulseOnly, user?.isReadOnly]);
+  }, [authChecking, isAuthenticated, isPulseOnly, user?.isReadOnly, router]);
 
   const [screen, setScreen] = useState("initial");
   useEffect(() => { window.scrollTo(0, 0); }, [screen]);
@@ -160,7 +169,6 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
     }
     return "";
   });
-  const router = useRouter();
   const lastHandledAsPathRef = useRef(typeof window !== "undefined" ? window.location.pathname + window.location.search : "");
 
   // Watch router query changes for client-side Link navigations (e.g. <Link href="/pma?nav=settings...">)
@@ -290,7 +298,13 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
     return 0;
   });
 
-  const currentLiveAlertCount = liveAlertCount + (proactiveAlerts || []).length;
+  const authorizedProactiveCount = useMemo(() => {
+    return (proactiveAlerts || []).filter(
+      a => isUserAuthorizedForClient(user, a.clientName) && (isAdmin || !ADMIN_ONLY_PROACTIVE_TYPES.has(a.alertType))
+    ).length;
+  }, [proactiveAlerts, user, isAdmin]);
+
+  const currentLiveAlertCount = liveAlertCount + authorizedProactiveCount;
 
   const [integrationsRawData, setIntegrationsRawData] = useState(() => {
     if (initialIntegrations && Array.isArray(initialIntegrations.allClients) && initialIntegrations.allClients.length > 0) {
@@ -405,7 +419,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
       const validAssignedInv = invoiceIds.filter(isIdMatch).length;
 
       Object.entries(client.flags || {}).forEach(([flagKey, isSet]) => {
-        if (!isSet) return;
+        if (!isSet || (!isAdmin && ADMIN_ONLY_FLAG_KEYS.has(flagKey))) return;
         let count = client.alertCounts?.[flagKey] || 0;
         if (ACTIONABLE_FLAG_KEYS_SET.has(flagKey)) {
           if (EXPENSE_TYPES.has(flagKey)) count = Math.max(0, count - validAssignedExp);
@@ -418,17 +432,18 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
     }
 
     const proactiveCount = (proactiveAlerts || []).filter(
-      a => (a.clientName || "").toLowerCase() === targetName
+      a => (a.clientName || "").toLowerCase() === targetName && (isAdmin || !ADMIN_ONLY_PROACTIVE_TYPES.has(a.alertType))
     ).length;
 
     return flagCount + proactiveCount;
-  }, [managedClient, triageEngine.clientsWithFlags, assignedByClient, assignedAppIds, proactiveAlerts]);
+  }, [managedClient, triageEngine.clientsWithFlags, assignedByClient, assignedAppIds, proactiveAlerts, isAdmin]);
 
   useEffect(() => {
     if (triageEngine.triageComplete && !managedClient) {
       setCachedAlertCount(currentLiveAlertCount);
       try {
         localStorage.setItem("pulse_cached_alert_badge", String(currentLiveAlertCount));
+        localStorage.setItem("pulse_cached_total_alerts", String(currentLiveAlertCount));
       } catch {}
     }
   }, [triageEngine.triageComplete, currentLiveAlertCount, managedClient]);
@@ -589,7 +604,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
     if (!force && clientsLoadedRef.current) return;
     if (clientsLoadingRef.current) return;
     clientsLoadingRef.current = true;
-    const acId = automationCommanderSheetId || "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
+    const acId = automationCommanderSheetId || "default";
     fetch("/api/triage", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -758,6 +773,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
   // Rule: Canonical URL for PMA is ALWAYS /pma (never bare root /)
   useEffect(() => {
     if (typeof window === "undefined") return;
+    if (!isAuthenticated || authChecking || isPulseOnly || user?.isReadOnly) return;
     let target = "/pma";
     if (activeNav === "alerts") {
       target = "/pma/alerts";
@@ -896,26 +912,28 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
     );
   }
 
-  // ClientUser and Senior (Restricted) must never see or interact with PMA
+  // ClientUser and Senior (Restricted) must never see or interact with PMA;
+  // immediately render the Pulse shell + MonthViewSkeleton while router.replace("/pulse") completes.
   if (isPulseOnly) {
+    const singleAssignedName =
+      Array.isArray(user?.assignedClients) && user.assignedClients.length === 1 && user.assignedClients[0] !== "*"
+        ? user.assignedClients[0]
+        : "";
     return (
-      <div
-        style={{
-          minHeight: "100vh",
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          background: "#ffffff",
-          gap: "16px",
-          fontFamily: "'Kumbh Sans', -apple-system, BlinkMacSystemFont, sans-serif"
-        }}
+      <PortalShell
+        clientName={singleAssignedName}
+        clients={[]}
+        onSelectClient={() => {}}
+        activeView="month"
+        onSelectView={() => {}}
+        user={user}
+        onLogout={logout}
+        hasBudget={true}
+        hasCash={true}
+        setupStatus={null}
       >
-        <Spinner size={36} color="#0047AB" />
-        <span style={{ color: "#0047AB", fontWeight: 600, fontSize: "16px" }}>
-          Redirecting to Pulse...
-        </span>
-      </div>
+        <MonthViewSkeleton />
+      </PortalShell>
     );
   }
 
@@ -951,6 +969,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
             if (match) triageEngine.selectClient(match);
           }}
           isLoadingAlerts={isLoading}
+          triageComplete={triageEngine.triageComplete}
           managedClient={managedClient}
           onClearManagedClient={handleClearManagedClient}
           integrationsData={integrationsRawData?.allClients || []}
@@ -1366,6 +1385,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
         singleClient={singleClient}
         onSelectManagedClient={(c) => navigateWithGuard(() => setManagedClient(c))}
         onClearManagedClient={() => navigateWithGuard(() => handleClearManagedClient())}
+        onBeforeNavigateToPulse={(proceed) => navigateWithGuard(() => { fireOutgoingsPullIfPending(); proceed(); })}
       >
         {renderActiveView()}
         {alertAssignOverlay && (

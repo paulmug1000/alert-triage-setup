@@ -86,8 +86,8 @@ export default function OutgoingsNewVendorModal({ newVendorData = {}, outgoingsC
         </div>
         <p style={{ fontSize: "11px", color: "#999", margin: "12px 0 0" }}>
           {exp
-            ? "A new vendor will be added to the Contractors section of the Outgoings tab. You can then place the expense in the correct month cell."
-            : "A new vendor will be added to the Contractors section of the Outgoings tab."}
+            ? "A new vendor will be added to the Contractors section of Outgoings. You can then allocate the expense to the appropriate month."
+            : "A new vendor will be added to the Contractors section of Outgoings."}
         </p>
         <div style={{ display: "flex", gap: "8px", marginTop: "16px", justifyContent: "flex-end" }}>
           <button onClick={onClose}

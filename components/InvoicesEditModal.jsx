@@ -652,7 +652,7 @@ export default function InvoicesEditModal({
                             )}
                           </span>
                           <span style={{ fontSize: "10px", color: "#64748b" }}>
-                            {s.slotNum ? `Slot ${s.slotNum}` : `Row ${s.rowNum}`}
+                            {isAdmin ? (s.slotNum ? `Slot ${s.slotNum}` : `Row ${s.rowNum}`) : (s.slotNum ? `Entry ${s.slotNum}` : "")}
                           </span>
                         </div>
                       );
@@ -675,9 +675,9 @@ export default function InvoicesEditModal({
                         £{partPaidOverview.balanceAmount.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </strong>
                       {partPaidOverview.isCurrentBalance ? (
-                        <span style={{ color: "#0284c7", fontWeight: 600 }}> (this slot)</span>
+                        <span style={{ color: "#0284c7", fontWeight: 600 }}>{isAdmin ? " (this slot)" : " (this entry)"}</span>
                       ) : (
-                        <span style={{ color: "#64748b" }}> (other slot)</span>
+                        <span style={{ color: "#64748b" }}>{isAdmin ? " (other slot)" : " (other entry)"}</span>
                       )}
                     </div>
                   </div>

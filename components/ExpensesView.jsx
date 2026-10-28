@@ -22,9 +22,11 @@ export default function ExpensesView({
   managedClient,
   onClearManagedClient,
   initialClient,
+  onSelectClient,
 }) {
   const { user } = useAuth();
   const isAdmin = Boolean(user?.isAdmin || user?.role === "Admin" || user?.role === "ClientManager");
+  const isSysAdmin = Boolean(user?.isAdmin || user?.role === "Admin");
   const { getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId } = useAppGlobals();
 
   // Client State (synchronous initial selection from managedClient or initialClient to eliminate flash)
@@ -106,6 +108,7 @@ export default function ExpensesView({
     } else {
       setSelectedClient(null);
       setExpensesData(null);
+      onSelectClient?.(null);
       if (typeof window !== "undefined") {
         sessionStorage.removeItem("pma_expenses_client");
       }
@@ -578,7 +581,7 @@ export default function ExpensesView({
   };
 
   return (
-    <div style={{ maxWidth: "1600px", margin: "0 auto", padding: "16px 24px 60px" }}>
+    <div className="pma-page-container" style={{ width: "100%", maxWidth: "100%", margin: "0 auto", padding: "20px 32px 60px", boxSizing: "border-box" }}>
       {/* ── TOP TOOLBAR / HEADER ── */}
       <div
         style={{
@@ -639,14 +642,10 @@ export default function ExpensesView({
                 </span>
               )}
             </h1>
-            {selectedClient ? (
+            {selectedClient && (
               <div style={{ margin: "3px 0 0", fontSize: "14px", fontWeight: 600, color: "#0047AB" }}>
                 {selectedClient.clientName}
               </div>
-            ) : (
-              <p style={{ margin: "4px 0 0", fontSize: "13px", color: "#64748b" }}>
-                Select a client to view and edit expenses
-              </p>
             )}
           </div>
         </div>
@@ -746,10 +745,13 @@ export default function ExpensesView({
       </div>
 
       {/* ── CLIENT SELECTOR SCREEN (WHEN NO CLIENT SELECTED) ── */}
-      {!selectedClient && !managedClient && !initialClient && (
+      {!selectedClient && !managedClient && (
         <EditClientSelector
           clients={allOutgoingsClients}
-          onSelectClient={(c) => setSelectedClient(c)}
+          onSelectClient={(c) => {
+            setSelectedClient(c);
+            onSelectClient?.(c);
+          }}
           loading={loading}
           title="Select a client to view and edit expenses:"
         />
@@ -980,7 +982,7 @@ export default function ExpensesView({
                               <span>Delivery Expenses ({deliveryExpenses.length})</span>
                             </div>
                             <span style={{ fontSize: "11px", fontWeight: 500, color: "#15803d" }}>
-                              (Column E = 100% · Drag rows or use arrow button to move)
+                              {isSysAdmin ? "(Column E = 100% · Drag rows or use arrow button to move)" : "(Drag items or use arrow button to move)"}
                             </span>
                           </div>
                         </td>
@@ -1031,7 +1033,7 @@ export default function ExpensesView({
                               <span>Non-delivery expenses ({nonDeliveryExpenses.length})</span>
                             </div>
                             <span style={{ fontSize: "11px", fontWeight: 500, color: "#64748b" }}>
-                              (Column E = 0% · Drag rows or use arrow button to move)
+                              {isSysAdmin ? "(Column E = 0% · Drag rows or use arrow button to move)" : "(Drag items or use arrow button to move)"}
                             </span>
                           </div>
                         </td>
@@ -1236,7 +1238,7 @@ export default function ExpensesView({
               Edit Amount: {editingCell.category}
             </h3>
             <p style={{ margin: "0 0 14px", fontSize: "12px", color: "#64748b" }}>
-              Month: <strong>{editingCell.label}</strong> (Row {editingCell.sheetRow}, Col {editingCell.colLetter})
+              Month: <strong>{editingCell.label}</strong>{isSysAdmin ? ` (Row ${editingCell.sheetRow}, Col ${editingCell.colLetter})` : ""}
             </p>
             <div style={{ marginBottom: "16px" }}>
               <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "#334155", marginBottom: "4px" }}>
@@ -1264,7 +1266,7 @@ export default function ExpensesView({
             </div>
             <div style={{ marginBottom: "16px" }}>
               <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "#334155", marginBottom: "4px" }}>
-                Cell note
+                {isSysAdmin ? "Cell note" : "Note"}
               </label>
               <textarea
                 value={cellNoteValue}
@@ -1348,11 +1350,13 @@ export default function ExpensesView({
             }}
           >
             <h3 style={{ margin: "0 0 12px", fontSize: "16px", fontWeight: 700, color: "#1e293b" }}>
-              Rename Expense Category
+              Rename expense category
             </h3>
-            <p style={{ margin: "0 0 14px", fontSize: "12px", color: "#64748b" }}>
-              Row {editingCategory.sheetRow} in Outgoings tab
-            </p>
+            {isSysAdmin && (
+              <p style={{ margin: "0 0 14px", fontSize: "12px", color: "#64748b" }}>
+                Row {editingCategory.sheetRow} in Outgoings tab
+              </p>
+            )}
             <div style={{ marginBottom: "16px" }}>
               <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "#334155", marginBottom: "4px" }}>
                 Category Name

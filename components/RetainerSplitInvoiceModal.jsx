@@ -3,7 +3,8 @@ import Spinner from "./Spinner";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 
 export default function RetainerSplitInvoiceModal({ alertMeta, alertKey, automationCommanderSheetId, clientSheetId, masterSheetId, clientName, onClose, onResolved }) {
-  const { allClientsMap } = useAppGlobals();
+  const { allClientsMap, user } = useAppGlobals();
+  const isAdmin = Boolean(user?.isAdmin || user?.role === "Admin");
   const effectiveClientName = clientName || alertMeta?.clientName || "";
   const resolvedClientSheetId = clientSheetId
     || alertMeta?.clientSheetId
@@ -22,7 +23,7 @@ export default function RetainerSplitInvoiceModal({ alertMeta, alertKey, automat
   React.useEffect(() => {
     let cancelled = false;
     if (!resolvedClientSheetId) {
-      setError("Could not find the client's spreadsheet ID. Please ensure the client sheet is configured.");
+      setError(isAdmin ? "Could not find the client's spreadsheet ID. Please ensure the client sheet is configured." : "Could not find client configuration in Pulse.");
       setLoading(false);
       return;
     }
@@ -55,7 +56,7 @@ export default function RetainerSplitInvoiceModal({ alertMeta, alertKey, automat
       }
     })();
     return () => { cancelled = true; };
-  }, [alertMeta, resolvedClientSheetId, resolvedMasterSheetId, effectiveClientName]);
+  }, [alertMeta, resolvedClientSheetId, resolvedMasterSheetId, effectiveClientName, isAdmin]);
 
   const close = () => { if (!applying) onClose(); };
 
@@ -126,12 +127,12 @@ export default function RetainerSplitInvoiceModal({ alertMeta, alertKey, automat
             <div style={{ fontSize: "13px", color: "#333", marginBottom: "16px" }}>
               <div><strong>Job:</strong> {alertMeta.jobName}</div>
               <div style={{ marginTop: "8px", padding: "10px", background: "#ecfeff", border: "1px solid #a5f3fc", borderRadius: "6px" }}>
-                The retainer&apos;s <strong>{preview.missingRowPeriodLabel}</strong> invoice (row {preview.missingRowNum}) will be recorded at the standard <strong>£{preview.standardMonthlyAmount.toFixed(2)}</strong>, using invoice #{preview.altInvoiceNo} sent {preview.altSentDate}.
+                The retainer&apos;s <strong>{preview.missingRowPeriodLabel}</strong> invoice{isAdmin ? ` (row ${preview.missingRowNum})` : ""} will be recorded at the standard <strong>£{preview.standardMonthlyAmount.toFixed(2)}</strong>, using invoice #{preview.altInvoiceNo} sent {preview.altSentDate}.
               </div>
               <div style={{ marginTop: "8px", padding: "10px", background: preview.difference >= 0 ? "#f5f3ff" : "#fff7ed", border: `1px solid ${preview.difference >= 0 ? "#ddd6fe" : "#fed7aa"}`, borderRadius: "6px" }}>
                 The invoice was actually for <strong>£{preview.altAmount.toFixed(2)}</strong> - a difference of <strong>{preview.difference >= 0 ? "+" : ""}£{preview.difference.toFixed(2)}</strong>.{" "}
                 {preview.existingJobInfo ? (
-                  <>This will be applied to the existing job on row <strong>{preview.existingJobInfo.confirmedRow}</strong> ({preview.existingJobInfo.jobName}), which will be renamed to <strong>&quot;{preview.extraJobName}&quot;</strong> and its revenue set to {preview.difference >= 0 ? "" : "-"}£{Math.abs(preview.difference).toFixed(2)}.</>
+                  <>This will be applied to the existing job{isAdmin ? <> on row <strong>{preview.existingJobInfo.confirmedRow}</strong></> : ""} ({preview.existingJobInfo.jobName}), which will be renamed to <strong>&quot;{preview.extraJobName}&quot;</strong> and its revenue set to {preview.difference >= 0 ? "" : "-"}£{Math.abs(preview.difference).toFixed(2)}.</>
                 ) : (
                   <>A new standalone job called <strong>&quot;{preview.extraJobName}&quot;</strong> will be created, with revenue {preview.difference >= 0 ? "" : "-"}£{Math.abs(preview.difference).toFixed(2)}.</>
                 )}

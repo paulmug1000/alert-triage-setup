@@ -97,7 +97,7 @@ export default function RetainersEditModal({ job, clientName, clientSheetId, mas
       setError("Cannot delete retainer: Job has real invoices.");
       return;
     }
-    const ok = window.confirm(`Are you sure you want to delete this retainer ("${job.jobName}")?\n\nThis will permanently clear all rows for this retainer from the Confirmed sheet.`);
+    const ok = window.confirm(`Are you sure you want to delete this retainer ("${job.jobName}")?\n\nThis will permanently remove all monthly entries for this retainer from Confirmed jobs.`);
     if (!ok) return;
 
     setError("");
@@ -177,7 +177,7 @@ export default function RetainersEditModal({ job, clientName, clientSheetId, mas
       }
 
       if (startChanged) {
-        setSavingMessage("Updating start date and adjusting rows...");
+        setSavingMessage("Updating start date and adjusting billing periods...");
         const res = await fetch("/api/triage", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -198,7 +198,7 @@ export default function RetainersEditModal({ job, clientName, clientSheetId, mas
       }
 
       if (endChanged) {
-        setSavingMessage("Updating end date - this can take a little while if rows need to be added or removed...");
+        setSavingMessage("Updating end date - this can take a little while if billing periods need to be added or removed...");
         const res = await fetch("/api/triage", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -385,7 +385,7 @@ export default function RetainersEditModal({ job, clientName, clientSheetId, mas
                     gap: "6px",
                     transition: "all 0.15s ease"
                   }}
-                  title="Delete this retainer and clear its rows (only available when there are no real invoices)"
+                  title="Delete this retainer (only available when there are no real invoices)"
                 >
                   {deleting ? <><Spinner size={12} color="#dc2626" /> Deleting...</> : "🗑️ Delete retainer"}
                 </button>

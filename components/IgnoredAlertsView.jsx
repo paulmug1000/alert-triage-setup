@@ -13,7 +13,7 @@ export default function IgnoredAlertsView({ styles }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   return (
-    <div style={styles.container}>
+    <div className="pma-page-container" style={styles.container}>
       <div style={styles.header}>
         <h1 style={styles.title}>Ignored Alerts</h1>
         <p style={styles.subtitle}>Alerts permanently excluded from triage</p>

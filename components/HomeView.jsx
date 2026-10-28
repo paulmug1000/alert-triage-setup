@@ -87,7 +87,7 @@ export default function HomeView({
     try {
       const stored = localStorage.getItem("pulse_cached_total_alerts");
       if (stored != null) setCachedTotalAlerts(Number(stored));
-    } catch {}
+    } catch { }
   }, []);
 
   // Filter clients to those the current user has access to
@@ -241,12 +241,33 @@ export default function HomeView({
   }
 
   return (
-    <div style={{ maxWidth: "1080px", margin: "0 auto", padding: "24px 16px", fontFamily: "'Kumbh Sans', system-ui, -apple-system, sans-serif" }}>
+    <div className="pma-page-container" style={{ width: "100%", maxWidth: "100%", margin: "0 auto", padding: "20px 32px 60px", boxSizing: "border-box", fontFamily: "'Kumbh Sans', system-ui, -apple-system, sans-serif" }}>
       {/* Page Header */}
-      <div style={{ marginBottom: "24px" }}>
-        <h1 style={{ margin: 0, fontSize: "24px", fontWeight: "700", color: "#0F172A" }}>
-          Home
-        </h1>
+      <div
+        style={{
+          marginBottom: "20px",
+          background: "#FFFFFF",
+          padding: "16px 20px",
+          borderRadius: "10px",
+          border: "1px solid #E2E8F0",
+          boxShadow: "0 1px 3px rgba(15, 23, 42, 0.04)",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          flexWrap: "wrap",
+          gap: "12px"
+        }}
+      >
+        <div>
+          <h1 style={{ margin: "0 0 4px 0", fontSize: "20px", fontWeight: "700", color: "#0F172A" }}>
+            Home{managedClient ? ` — ${managedClient.clientName}` : ""}
+          </h1>
+          <p style={{ margin: 0, fontSize: "13px", color: "#64748B" }}>
+            {managedClient
+              ? `Overview of alerts, tasks, and integrations for ${managedClient.clientName}`
+              : "Overview of alerts, tasks, setup status and integrations"}
+          </p>
+        </div>
       </div>
 
       {/* Top Summary Cards Grid */}
@@ -485,7 +506,7 @@ export default function HomeView({
               display: "inline-block"
             }}
           >
-            Manage setup tab →
+            Manage client setup →
           </a>
         </div>
 
@@ -556,7 +577,7 @@ export default function HomeView({
                       </span>
                       {isSetupMode && (
                         <span style={{ background: "#FEF3C7", color: "#B45309", border: "1px solid #FCD34D", padding: "1px 6px", borderRadius: "4px", fontSize: "10px", fontWeight: "700" }}>
-                          🛠️ Setup Mode
+                          🛠️ Setup mode
                         </span>
                       )}
                     </div>
@@ -704,7 +725,7 @@ export default function HomeView({
                               border: "1px solid #FCD34D",
                             }}
                           >
-                            🛠️ Setup Mode
+                            🛠️ Setup mode
                           </span>
                         ) : (
                           <span

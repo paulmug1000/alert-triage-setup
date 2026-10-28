@@ -96,7 +96,8 @@ export default function OutgoingsView({
   isAdmin: propIsAdmin = false,
   managedClient,
   onClearManagedClient,
-  initialClient
+  initialClient,
+  onSelectClient
 }) {
   const auth = useAuth();
   const isAdmin = propIsAdmin || (!auth.user?.isReadOnly && !!(auth.user?.isAdmin || auth.user?.role === "Admin"));
@@ -382,8 +383,8 @@ export default function OutgoingsView({
     const toPlace = explicitExpenses
       ? (Array.isArray(explicitExpenses) ? explicitExpenses : [explicitExpenses])
       : (selectedInboxAppIds.size > 0
-          ? outgoingsInbox.filter(e => selectedInboxAppIds.has(e.appId))
-          : (outgoingsPlacingRef.current ? [outgoingsPlacingRef.current] : []));
+        ? outgoingsInbox.filter(e => selectedInboxAppIds.has(e.appId))
+        : (outgoingsPlacingRef.current ? [outgoingsPlacingRef.current] : []));
 
     if (toPlace.length === 0) return;
 
@@ -568,6 +569,7 @@ export default function OutgoingsView({
         <JobDetailModal
           isOpen={!!selectedJobForDetail}
           target={selectedJobForDetail}
+          isAdmin={isAdmin}
           onClose={() => setSelectedJobForDetail(null)}
           onMarkPullPending={(masterId) => (outgoingsPullPendingRef.current = masterId)}
         />
@@ -677,7 +679,7 @@ export default function OutgoingsView({
             <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(92vw, 480px)", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
               <h3 style={{ margin: "0 0 12px", fontSize: "15px", fontWeight: "700" }}>Placeholder / Unrecon gap exists</h3>
               <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#555" }}>
-                This cell already contains a placeholder / gap of <strong>£{totalManual.toFixed(2)}</strong>.<br />
+                This month already contains a placeholder / gap of <strong>£{totalManual.toFixed(2)}</strong>.<br />
                 You are placing <strong>{expenseList.length}</strong> expense{expenseList.length > 1 ? "s" : ""} totaling <strong>£{totalExpenseAmount.toFixed(2)}</strong>.<br /><br />
                 Would you like to replace it, keep both, or use up part of the estimate?
               </p>
@@ -720,8 +722,8 @@ export default function OutgoingsView({
               <span>Total: <strong>£{totalAmt.toLocaleString("en-GB", { minimumFractionDigits: 2 })}</strong></span>
               <span style={{ opacity: 0.9 }}>
                 {vendorsSubTab === "contractors"
-                  ? "· Click a contractor cell to place all selected items into that single slot"
-                  : "· Click an expense slot to place each item sequentially starting from that slot"}
+                  ? "· Click a contractor month to allocate all selected items"
+                  : "· Click an expense entry to allocate each item sequentially"}
               </span>
             </div>
             <button onClick={clearInboxSelection}
@@ -732,7 +734,7 @@ export default function OutgoingsView({
         );
       })()}
 
-      <div style={{ maxWidth: "1600px", margin: "0 auto", padding: "16px 24px 60px" }}>
+      <div className="pma-page-container" style={{ width: "100%", maxWidth: "100%", margin: "0 auto", padding: "20px 32px 60px", boxSizing: "border-box" }}>
         <div
           style={{
             display: "flex",
@@ -760,6 +762,7 @@ export default function OutgoingsView({
                     setOutgoingsClient(null);
                     setOutgoingsInbox([]);
                     clearInboxSelection();
+                    onSelectClient?.(null);
                   }
                 }}
                 style={{
@@ -796,14 +799,10 @@ export default function OutgoingsView({
               <h1 style={{ margin: 0, fontSize: "20px", fontWeight: 700, color: "#1e293b", display: "flex", alignItems: "center", gap: "8px" }}>
                 <span>Contractors</span>
               </h1>
-              {outgoingsClient ? (
+              {outgoingsClient && (
                 <div style={{ margin: "3px 0 0", fontSize: "14px", fontWeight: 600, color: "#0047AB" }}>
                   {outgoingsClient.clientName}
                 </div>
-              ) : (
-                <p style={{ margin: "4px 0 0", fontSize: "13px", color: "#64748b" }}>
-                  Select a client to view contractor expenses
-                </p>
               )}
             </div>
           </div>
@@ -851,7 +850,10 @@ export default function OutgoingsView({
         {noClient && (
           <EditClientSelector
             clients={allClients}
-            onSelectClient={(c) => loadOutgoings(c)}
+            onSelectClient={(c) => {
+              onSelectClient?.(c);
+              loadOutgoings(c);
+            }}
             loading={outgoingsLoading}
             title="Select a client to view contractor expenses:"
             renderExtra={(c) => {
@@ -953,7 +955,7 @@ export default function OutgoingsView({
                         </div>
                         {vendorsSubTab === "contractors" && (
                           <button onClick={e => { e.stopPropagation(); setOutgoingsNewVendor({ exp }); }}
-                            title="Create new vendor row for this expense"
+                            title="Create new vendor for this expense"
                             style={{ fontSize: "9.5px", padding: "1px 6px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "3px", cursor: "pointer", color: "#555", whiteSpace: "nowrap" }}>
                             + New vendor
                           </button>
@@ -1401,7 +1403,7 @@ export default function OutgoingsView({
                     <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "12px", minWidth: "1200px" }}>
                       <thead>
                         <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0", color: "#475569", fontSize: "11px", fontWeight: "600", textTransform: "uppercase", letterSpacing: "0.03em" }}>
-                          
+
                           <th style={{ padding: "10px 12px", width: "160px", textAlign: "left" }}>Client</th>
                           <th style={{ padding: "10px 12px", width: "200px", textAlign: "left" }}>Job name</th>
                           <th style={{ padding: "10px 10px", width: "80px", textAlign: "left" }}>Code</th>

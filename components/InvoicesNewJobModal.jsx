@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect } from "react";
 import { stripCurrency, parseSheetDate, toSheetDateFormat, calculatePaymentDate } from "../utils/helpers";
+import { useAuth } from "../hooks/useAuth";
 import DateInput from "./DateInput";
 
 export default function InvoicesNewJobModal({
@@ -9,6 +10,8 @@ export default function InvoicesNewJobModal({
   onSuccess,
   onMarkPullPending
 }) {
+  const auth = useAuth?.() || {};
+  const isAdmin = Boolean(auth.user?.isAdmin || auth.user?.role === "Admin");
   const { inv } = newJobData;
 
   const defaultDaysFallback = typeof invoicesClient?.defaultDaysToPay === "number" && !isNaN(invoicesClient.defaultDaysToPay)
@@ -154,37 +157,37 @@ export default function InvoicesNewJobModal({
 
         <div style={{ display: "grid", gap: "12px" }}>
           <div>
-            <label style={labelStyle}>Client (col A)</label>
+            <label style={labelStyle}>Client{isAdmin ? " (col A)" : ""}</label>
             <input style={{ ...inputStyle, background: "#f5f5f5", color: "#888" }} value={inv.client || ""} disabled />
           </div>
           <div>
-            <label style={labelStyle}>Job name (col B) *</label>
+            <label style={labelStyle}>Job name{isAdmin ? " (col B)" : ""} *</label>
             <input style={inputStyle} value={jobName} onChange={e => setJobName(e.target.value)} autoFocus />
           </div>
           <div>
-            <label style={labelStyle}>Project code (col C)</label>
+            <label style={labelStyle}>Project code{isAdmin ? " (col C)" : ""}</label>
             <input style={inputStyle} value={projectCode} onChange={e => setProjectCode(e.target.value)} />
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
             <div>
-              <label style={labelStyle}>Revenue (£, col AG)</label>
+              <label style={labelStyle}>Revenue (£{isAdmin ? ", col AG" : ""})</label>
               <input style={inputStyle} type="number" step="0.01" value={revenue} onChange={e => setRevenue(e.target.value)} />
             </div>
             <div>
-              <label style={labelStyle}>Direct costs (£, col AH)</label>
+              <label style={labelStyle}>Direct costs (£{isAdmin ? ", col AH" : ""})</label>
               <input style={inputStyle} type="number" step="0.01" value={directCosts} onChange={e => setDirectCosts(e.target.value)} />
             </div>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
             <div>
-              <label style={labelStyle}>VAT? (col AI)</label>
+              <label style={labelStyle}>VAT?{isAdmin ? " (col AI)" : ""}</label>
               <select style={inputStyle} value={vatYesNo} onChange={e => setVatYesNo(e.target.value)}>
                 <option value="No">No</option>
                 <option value="Yes">Yes</option>
               </select>
             </div>
             <div>
-              <label style={labelStyle}>Type (col AJ)</label>
+              <label style={labelStyle}>Type{isAdmin ? " (col AJ)" : ""}</label>
               <select style={inputStyle} value={projectType} onChange={e => setProjectType(e.target.value)}>
                 <option value="Project">Project</option>
                 <option value="Retainer">Retainer</option>
@@ -193,16 +196,16 @@ export default function InvoicesNewJobModal({
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
             <div>
-              <label style={labelStyle}>Start date (col AL)</label>
+              <label style={labelStyle}>Start date{isAdmin ? " (col AL)" : ""}</label>
               <DateInput style={inputStyle} value={startDate} onChange={e => setStartDate(e.target.value)} />
             </div>
             <div>
-              <label style={labelStyle}>End date (col AM)</label>
+              <label style={labelStyle}>End date{isAdmin ? " (col AM)" : ""}</label>
               <DateInput style={inputStyle} value={endDate} onChange={e => setEndDate(e.target.value)} min={startDate || undefined} />
             </div>
           </div>
           <div>
-            <label style={labelStyle}>Days to pay (col AS)</label>
+            <label style={labelStyle}>Days to pay{isAdmin ? " (col AS)" : ""}</label>
             <input
               style={inputStyle}
               type="number"
@@ -222,7 +225,9 @@ export default function InvoicesNewJobModal({
 
         {error && <div style={{ fontSize: "12px", color: "#d32f2f", background: "#fff5f5", padding: "8px", borderRadius: "4px", marginTop: "12px" }}>{error}</div>}
         <p style={{ fontSize: "11px", color: "#999", margin: "12px 0 0" }}>
-          A new job will be added to Pulse confirmed jobs, and this invoice will be written into slot 1.
+          {isAdmin
+            ? "A new job will be added to Pulse confirmed jobs, and this invoice will be written into slot 1."
+            : "A new job will be added to Pulse confirmed jobs, and this invoice will be attached to it."}
         </p>
         <div style={{ display: "flex", gap: "8px", marginTop: "16px", justifyContent: "flex-end" }}>
           <button onClick={close} disabled={saving}

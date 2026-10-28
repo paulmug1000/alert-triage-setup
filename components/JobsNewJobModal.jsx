@@ -3,6 +3,7 @@ import Spinner from "./Spinner";
 import SplitMonthCard from "./SplitMonthCard";
 import { formatSplitString } from "../services/splitHelper";
 import DateInput from "./DateInput";
+import { useAuth } from "../hooks/useAuth";
 import {
   INVOICE_STATUS_OPTIONS,
   EXPENSE_STATUS_OPTIONS,
@@ -20,6 +21,8 @@ export default function JobsNewJobModal({
   onClose,
   onSuccess
 }) {
+  const auth = useAuth?.() || {};
+  const isAdmin = Boolean(auth.user?.isAdmin || auth.user?.role === "Admin");
   // Format today's date as YYYY-MM-DD for native HTML date inputs
   const todayISO = useMemo(() => {
     const d = new Date();
@@ -937,7 +940,7 @@ export default function JobsNewJobModal({
                             gap: "6px"
                           }}
                         >
-                          <span>Slot {slotNum}</span>
+                          <span>{isAdmin ? `Slot ${slotNum}` : `Invoice ${slotNum}`}</span>
                           {isConfigured && (
                             <span style={{ fontSize: "11px", opacity: 0.9 }}>
                               {inv.amount ? `£${inv.amount}` : "✓"}
@@ -1043,9 +1046,9 @@ export default function JobsNewJobModal({
                             fontSize: "12px",
                             cursor: "pointer"
                           }}
-                          title="Clear this invoice slot"
+                          title="Clear this invoice entry"
                         >
-                          Clear Slot
+                          {isAdmin ? "Clear Slot" : "Clear"}
                         </button>
                       </div>
                     </div>
@@ -1129,7 +1132,7 @@ export default function JobsNewJobModal({
                             gap: "6px"
                           }}
                         >
-                          <span>Slot {slotNum}</span>
+                          <span>{isAdmin ? `Slot ${slotNum}` : `Expense ${slotNum}`}</span>
                           {isConfigured && (
                             <span style={{ fontSize: "11px", opacity: 0.9 }}>
                               {exp.amount ? `£${exp.amount}` : "✓"}
@@ -1236,9 +1239,9 @@ export default function JobsNewJobModal({
                             fontSize: "12px",
                             cursor: "pointer"
                           }}
-                          title="Clear this expense slot"
+                          title="Clear this expense entry"
                         >
-                          Clear Slot
+                          {isAdmin ? "Clear Slot" : "Clear"}
                         </button>
                       </div>
                     </div>

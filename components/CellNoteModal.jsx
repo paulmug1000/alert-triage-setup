@@ -7,7 +7,7 @@ import Spinner from "./Spinner";
  */
 export default function CellNoteModal({
   isOpen,
-  title = "Cell note",
+  title = "Note",
   subtitle = "",
   initialNote = "",
   onSave,
@@ -145,7 +145,7 @@ export default function CellNoteModal({
             rows={5}
             value={noteValue}
             onChange={(e) => setNoteValue(e.target.value)}
-            placeholder="Type your note here (mirrored in Google Sheet cell note)..."
+            placeholder="Type your note here..."
             disabled={saving}
             style={{
               width: "100%",

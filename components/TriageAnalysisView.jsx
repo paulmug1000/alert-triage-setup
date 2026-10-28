@@ -519,7 +519,7 @@ export default function TriageAnalysisView({
   const spreadsheetItems = isInvoiceType ? (alert?.spreadsheetItems || []) : [];
 
   return (
-    <div style={styles.container}>
+    <div className="pma-page-container" style={styles.container}>
       <div style={styles.header}>
         <h1 style={styles.title}>Alerts</h1>
         <p style={styles.subtitle}>{selectedClient?.clientName} - Alert {progress} of {clientAlerts.length}</p>
@@ -670,7 +670,7 @@ export default function TriageAnalysisView({
                   const flags = alert.data?.flags || [];
                   const isMissing = String(flags[0] || "").trim() === "1";
                   if (isMissing) return "Invoice in accounting system, missing from Pulse";
-                  const invFlagNames2 = [null, "Client mismatch", "Amount mismatch", "Sent date mismatch", "Duplicate invoice in sheet", "Pay date mismatch", "Status mismatch"];
+                  const invFlagNames2 = [null, "Client mismatch", "Amount mismatch", "Sent date mismatch", isAdmin ? "Duplicate invoice in sheet" : "Duplicate invoice in Pulse", "Pay date mismatch", "Status mismatch"];
                   const active = flags.map((v, i) => String(v || "").trim() === "1" && invFlagNames2[i] ? invFlagNames2[i] : null).filter(Boolean);
                   return active.length > 0 ? `Field mismatch: ${active.join(", ").toLowerCase()}` : "Invoice discrepancy";
                 })()
@@ -782,7 +782,7 @@ export default function TriageAnalysisView({
                   { name: "Client mismatch", line: `Client in accounting: ${acc[0] || "(blank)"}. Client in Pulse: ${conf[1] || "(blank)"}.` },
                   { name: "Amount mismatch", line: `Gross amount in accounting: ${fmtMoney(acc[2])}. Gross amount in Pulse: ${fmtMoney(pulseGross != null ? pulseGross : conf[2])}. Net excl VAT in accounting: ${fmtMoney(acc[3])}, VAT: ${fmtMoney(acc[4])}. Net excl VAT in Pulse: ${fmtMoney(pulseNet)}, VAT: ${fmtMoney(pulseVat)}.` },
                   { name: "Sent date mismatch", line: `Sent date in accounting: ${acc[6] || "(blank)"}. Sent date in Pulse: ${conf[3] || "(blank)"}.` },
-                  { name: "Duplicate invoice in sheet", line: `Duplicate invoice number: Invoice #${alert.summary?.invoiceNo || acc[5] || conf[0]} appears in multiple rows in the spreadsheet (${spreadsheetItems.length > 0 ? spreadsheetItems.length : 2} entries).` },
+                  { name: "Duplicate invoice in sheet", line: `Duplicate invoice number: Invoice #${alert.summary?.invoiceNo || acc[5] || conf[0]} appears in multiple ${isAdmin ? "rows in the spreadsheet" : "entries in Pulse"} (${spreadsheetItems.length > 0 ? spreadsheetItems.length : 2} entries).` },
                   { name: "Pay date mismatch", line: `Pay date in accounting: ${acc[8] || "(blank)"}. Pay date in Pulse: ${conf[4] || "(blank)"}.` },
                   { name: "Status mismatch", line: `Status in accounting: ${acc[9] || "(blank)"}. Status in Pulse: ${conf[5] || "(blank)"}.` },
                 ];
@@ -805,19 +805,19 @@ export default function TriageAnalysisView({
             color: "#92400e"
           }}>
             <div style={{ fontWeight: "700", fontSize: "14px", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-              <span>⚠️ Duplicate Invoice in Spreadsheet Notice</span>
+              <span>⚠️ {isAdmin ? "Duplicate Invoice in Spreadsheet Notice" : "Duplicate invoice in Pulse notice"}</span>
               <span style={{ background: "#d97706", color: "white", padding: "2px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700" }}>
-                {spreadsheetItems.length > 0 ? `${spreadsheetItems.length} SPREADSHEET ITEMS` : "DUPLICATE INVOICE NO"}
+                {spreadsheetItems.length > 0 ? `${spreadsheetItems.length} ${isAdmin ? "SPREADSHEET ITEMS" : "PULSE ENTRIES"}` : "DUPLICATE INVOICE NO"}
               </span>
               {alert.summary?.invoiceNo && <span style={{ fontSize: "13px", color: "#78350f" }}>Invoice #{alert.summary.invoiceNo}</span>}
             </div>
             <div style={{ fontSize: "13px", marginTop: "6px", lineHeight: "1.5" }}>
               {spreadsheetItems.length > 0 ? (
-                <>This invoice number appears in <strong>{spreadsheetItems.length} distinct items/jobs in the spreadsheet</strong>, but only <strong>once in accounting</strong>{isAdmin ? ` (InvComp Row ${alert.rowNumber})` : ""}.</>
+                <>This invoice number appears in <strong>{spreadsheetItems.length} distinct {isAdmin ? "items/jobs in the spreadsheet" : "entries/jobs in Pulse"}</strong>, but only <strong>once in accounting</strong>{isAdmin ? ` (InvComp Row ${alert.rowNumber})` : ""}.</>
               ) : otherDuplicateAlerts.length > 0 ? (
                 <>Invoice <strong>#{alert.summary?.invoiceNo}</strong> also appears in <strong>{otherDuplicateAlerts.length}</strong> other entry/entries in this triage batch{isAdmin ? ` (InvComp Row${otherDuplicateAlerts.length > 1 ? "s" : ""}: ${otherDuplicateAlerts.map(a => a.rowNumber).join(", ")})` : ""}.</>
               ) : (
-                <>{isAdmin ? `This invoice number is flagged as having multiple entries in the spreadsheet (InvComp Column W, Row ${alert.rowNumber}).` : "This invoice number is flagged as having multiple entries in the spreadsheet."}</>
+                <>{isAdmin ? `This invoice number is flagged as having multiple entries in the spreadsheet (InvComp Column W, Row ${alert.rowNumber}).` : "This invoice number is flagged as having multiple entries in Pulse."}</>
               )}
             </div>
 
@@ -825,13 +825,13 @@ export default function TriageAnalysisView({
             {spreadsheetItems.length > 0 && (
               <div style={{ marginTop: "12px", background: "white", border: "1px solid #fcd34d", borderRadius: "6px", overflow: "hidden" }}>
                 <div style={{ background: "#fef3c7", padding: "6px 10px", fontWeight: "700", fontSize: "12px", color: "#92400e", borderBottom: "1px solid #fde68a" }}>
-                  📊 Spreadsheet Breakdown ({spreadsheetItems.length} items for Invoice #{alert.summary?.invoiceNo})
+                  📊 {isAdmin ? "Spreadsheet Breakdown" : "Pulse breakdown"} ({spreadsheetItems.length} items for Invoice #{alert.summary?.invoiceNo})
                 </div>
                 <div style={{ overflowX: "auto" }}>
                   <table style={{ width: "100%", fontSize: "12px", borderCollapse: "collapse", textAlign: "left" }}>
                     <thead>
                       <tr style={{ background: "#fffdf5", borderBottom: "1px solid #fde68a", fontSize: "11px", color: "#78350f" }}>
-                        <th style={{ padding: "6px 8px" }}>Spreadsheet Job / Item</th>
+                        <th style={{ padding: "6px 8px" }}>{isAdmin ? "Spreadsheet Job / Item" : "Pulse job / item"}</th>
                         <th style={{ padding: "6px 8px", textAlign: "right" }}>Excl VAT</th>
                         <th style={{ padding: "6px 8px", textAlign: "right" }}>VAT</th>
                         <th style={{ padding: "6px 8px", textAlign: "right" }}>Gross</th>
@@ -860,7 +860,7 @@ export default function TriageAnalysisView({
                     </tbody>
                     <tfoot>
                       <tr style={{ background: "#fff7ed", fontWeight: "700", borderTop: "1.5px solid #fed7aa", color: "#9a3412" }}>
-                        <td style={{ padding: "6px 8px" }}>Spreadsheet Total ({spreadsheetItems.length} items):</td>
+                        <td style={{ padding: "6px 8px" }}>{isAdmin ? "Spreadsheet Total" : "Pulse total"} ({spreadsheetItems.length} items):</td>
                         <td style={{ padding: "6px 8px", textAlign: "right" }}>
                           £{spreadsheetItems.reduce((s, it) => s + it.netAmount, 0).toFixed(2)}
                         </td>
@@ -892,7 +892,7 @@ export default function TriageAnalysisView({
             )}
 
             <div style={{ fontSize: "12px", marginTop: "8px", color: "#b45309" }}>
-              Review all spreadsheet entries against accounting before resolving this discrepancy.
+              Review all {isAdmin ? "spreadsheet" : "Pulse"} entries against accounting before resolving this discrepancy.
             </div>
           </div>
         )}
@@ -1437,9 +1437,9 @@ export default function TriageAnalysisView({
                             let singleExplanation = option.explanation;
                             if (!singleExplanation) {
                               if (isDeleteAction) {
-                                singleExplanation = `Remove "${cleanUserFacingText(targetJobName || "this job")}" and all associated child entries from the ${optTab} tab. Please verify that no real invoices or expenses are linked before accepting.`;
+                                singleExplanation = `Remove "${cleanUserFacingText(targetJobName || "this job")}" and all associated child entries from ${isAdmin ? `the ${optTab} tab` : `${optTab} jobs`}. Please verify that no real invoices or expenses are linked before accepting.`;
                               } else if (isIgnoreAction) {
-                                singleExplanation = `Mark this discrepancy as ignored to prevent it recurring. "${cleanUserFacingText(targetJobName || "this job")}" will remain in the ${optTab} tab with no changes made to Pulse or CRM.`;
+                                singleExplanation = `Mark this discrepancy as ignored to prevent it recurring. "${cleanUserFacingText(targetJobName || "this job")}" will remain in ${isAdmin ? `the ${optTab} tab` : `${optTab} jobs`} with no changes made to Pulse or CRM.`;
                               } else if (option.matchAnalysis?.reasonForChoice) {
                                 singleExplanation = option.matchAnalysis.reasonForChoice;
                               } else if (option.recommendedActions && option.recommendedActions.length > 0) {
@@ -1448,9 +1448,11 @@ export default function TriageAnalysisView({
                             }
 
                             if (option.vatUpdate) {
-                              const vatText = option.vatUpdate.cells
-                                ? `Update VAT setting in cells ${option.vatUpdate.cells.join(", ")} from "${option.vatUpdate.currentValue}" to "${option.vatUpdate.newValue}".`
-                                : `Update VAT setting in cell ${option.vatUpdate.cell} from "${option.vatUpdate.currentValue}" to "${option.vatUpdate.newValue}".`;
+                              const vatText = isAdmin
+                                ? (option.vatUpdate.cells
+                                  ? `Update VAT setting in cells ${option.vatUpdate.cells.join(", ")} from "${option.vatUpdate.currentValue}" to "${option.vatUpdate.newValue}".`
+                                  : `Update VAT setting in cell ${option.vatUpdate.cell} from "${option.vatUpdate.currentValue}" to "${option.vatUpdate.newValue}".`)
+                                : `Update VAT setting from "${option.vatUpdate.currentValue}" to "${option.vatUpdate.newValue}".`;
                               singleExplanation = singleExplanation ? `${singleExplanation} • ${vatText}` : vatText;
                             }
 
@@ -1569,7 +1571,7 @@ export default function TriageAnalysisView({
                                           gap: "4px",
                                           whiteSpace: "nowrap"
                                         }}
-                                        title="View Outgoings expense details"
+                                        title="View overhead expense details"
                                       >
                                         🔍 View expense
                                       </button>
@@ -1711,7 +1713,7 @@ export default function TriageAnalysisView({
                                         <strong style={{ color: "#1d4ed8", fontSize: "14px" }}>Create new job</strong>
                                       </div>
                                       <p style={{ fontSize: "12px", color: "#4b5563", margin: "4px 0 12px 0", lineHeight: "1.4" }}>
-                                        Add a new job row to the Confirmed tab and assign this invoice directly to it.
+                                        {isAdmin ? "Add a new job row to the Confirmed tab and assign this invoice directly to it." : "Create a new confirmed job and assign this invoice directly to it."}
                                       </p>
                                     </div>
                                     <button
@@ -1747,7 +1749,7 @@ export default function TriageAnalysisView({
                                         <strong style={{ color: "#047857", fontSize: "14px" }}>Place against contractor</strong>
                                       </div>
                                       <p style={{ fontSize: "12px", color: "#4b5563", margin: "4px 0 12px 0", lineHeight: "1.4" }}>
-                                        Place on the Outgoings sheet if this is an agency contractor rather than a direct job cost.
+                                        {isAdmin ? "Place on the Outgoings sheet if this is an agency contractor rather than a direct job cost." : "Allocate to Outgoings if this is an agency contractor rather than a direct job cost."}
                                       </p>
                                     </div>
                                     <button
@@ -1769,7 +1771,7 @@ export default function TriageAnalysisView({
                                         gap: "6px"
                                       }}
                                     >
-                                      👷 Select contractor on outgoings
+                                      👷 Select contractor
                                     </button>
                                   </div>
                                 )}
@@ -2168,7 +2170,7 @@ export default function TriageAnalysisView({
                   Placeholder / unrecon gap exists
                 </h3>
                 <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#475569", lineHeight: "1.5" }}>
-                  This cell already contains a placeholder / gap of <strong>£{totalManual.toFixed(2)}</strong>.<br />
+                  This month already contains a placeholder / gap of <strong>£{totalManual.toFixed(2)}</strong>.<br />
                   You are placing 1 expense totaling <strong>£{expAmount.toFixed(2)}</strong> against <strong>{contractorName}</strong> ({monthLabel}).<br /><br />
                   Would you like to replace it, keep both, or use up part of the estimate?
                 </p>
@@ -2448,7 +2450,7 @@ export default function TriageAnalysisView({
                       <div style={{ fontWeight: "500", color: "#334155" }}>{confirmJobModal.projectCode || "Auto-assigned"}</div>
                     </div>
                     <div>
-                      <span style={{ color: "#64748b", fontSize: "12px" }}>Job Type / Tab:</span>
+                      <span style={{ color: "#64748b", fontSize: "12px" }}>{isAdmin ? "Job Type / Tab:" : "Job type:"}</span>
                       <div style={{ display: "inline-block", background: "#f1f5f9", padding: "2px 8px", borderRadius: "4px", fontWeight: "600", color: "#334155" }}>
                         {confirmJobModal.projectRetainer} ({confirmJobModal.tabName})
                       </div>

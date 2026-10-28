@@ -15,10 +15,10 @@ const TABS = [
   { id: "cashflow", label: "Cashflow forecast" },
   { id: "contractors", label: "Contractors" },
   { id: "expenses", label: "Expenses" },
-  { id: "budgetOverview", label: "Budget overview" },
   { id: "salaries", label: "Salaries" },
   { id: "dividends", label: "Dividends" },
   { id: "nbToFind", label: "New business to find" },
+  { id: "budgetOverview", label: "Budget overview" },
 ];
 
 export default function ViewsScreen({
@@ -26,19 +26,30 @@ export default function ViewsScreen({
   styles,
   isAdmin: propIsAdmin,
   managedClient,
-  onClearManagedClient
+  onClearManagedClient,
+  activeTab: propActiveTab,
+  onSelectTab,
+  initialClient,
+  onSelectClient,
 }) {
   const { user } = useAuth();
   const isAdmin = propIsAdmin !== undefined ? propIsAdmin : !!(user?.isAdmin || user?.role === "Admin");
   const { getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId } = useAppGlobals();
 
   const [selectedClient, setSelectedClient] = useState(() => {
-    if (managedClient) {
-      return (allClients || []).find((c) => c.clientName?.toLowerCase() === managedClient.clientName?.toLowerCase()) || managedClient;
+    const target = managedClient || initialClient;
+    if (target) {
+      return (allClients || []).find((c) => c.clientName?.toLowerCase() === target.clientName?.toLowerCase()) || target;
     }
     return null;
   });
-  const [activeTab, setActiveTab] = useState("fyPerformance");
+  const [internalActiveTab, setInternalActiveTab] = useState("fyPerformance");
+  const activeTab = propActiveTab || internalActiveTab;
+  const setActiveTab = (tabId) => {
+    setInternalActiveTab(tabId);
+    onSelectTab?.(tabId);
+  };
+  const activeTabLabel = TABS.find((t) => t.id === activeTab)?.label || "Client views";
 
   // Data Caches by clientSheetId
   const [payloadCache, setPayloadCache] = useState({});
@@ -46,6 +57,13 @@ export default function ViewsScreen({
   const [cashCache, setCashCache] = useState({});
   const [keyDataCache, setKeyDataCache] = useState({});
   const [budgetCache, setBudgetCache] = useState({});
+  const cacheRef = useRef({
+    payload: {},
+    perf: {},
+    cash: {},
+    keyData: {},
+    budget: {},
+  });
 
   // Loading States
   const [loadingPayload, setLoadingPayload] = useState(false);
@@ -53,6 +71,7 @@ export default function ViewsScreen({
   const [loadingCash, setLoadingCash] = useState(false);
   const [loadingKeyData, setLoadingKeyData] = useState(false);
   const [loadingBudget, setLoadingBudget] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   // Error States
   const [payloadError, setPayloadError] = useState(null);
@@ -61,19 +80,21 @@ export default function ViewsScreen({
   const [keyDataError, setKeyDataError] = useState(null);
   const [budgetError, setBudgetError] = useState(null);
 
-  // Auto-select managedClient when active
+  // Auto-select managedClient or initialClient when active
   useEffect(() => {
-    if (managedClient) {
-      const match = (allClients || []).find((c) => c.clientName?.toLowerCase() === managedClient.clientName?.toLowerCase()) || managedClient;
+    const target = managedClient || initialClient;
+    if (target) {
+      const match = (allClients || []).find((c) => c.clientName?.toLowerCase() === target.clientName?.toLowerCase()) || target;
       setSelectedClient(match);
     }
-  }, [managedClient, allClients]);
+  }, [managedClient, initialClient, allClients]);
 
   const handleBackToClients = () => {
     if (managedClient && onClearManagedClient) {
       onClearManagedClient();
     } else {
       setSelectedClient(null);
+      onSelectClient?.(null);
       if (typeof window !== "undefined") {
         sessionStorage.removeItem("pma_views_client");
       }
@@ -82,6 +103,7 @@ export default function ViewsScreen({
 
   const handleSelectClient = (client) => {
     setSelectedClient(client);
+    onSelectClient?.(client);
     if (client && typeof window !== "undefined") {
       sessionStorage.setItem("pma_views_client", client.clientName);
     }
@@ -93,9 +115,10 @@ export default function ViewsScreen({
     const cid = client.clientSheetId;
     const cleanId = cleanSheetId ? cleanSheetId(cid) : String(cid).replace(/.*\/d\/([a-zA-Z0-9-_]+).*/, "$1");
 
-    const cached = !bypassCache ? (payloadCache[cid] || getCachedClientData(cid, "portal_payload")?.data) : null;
+    const cached = !bypassCache ? (cacheRef.current.payload[cid] || getCachedClientData(cid, "portal_payload")?.data) : null;
     if (cached) {
-      setPayloadCache((prev) => ({ ...prev, [cid]: cached }));
+      cacheRef.current.payload[cid] = cached;
+      setPayloadCache((prev) => (prev[cid] === cached ? prev : { ...prev, [cid]: cached }));
       setLoadingPayload(false);
       return cached;
     }
@@ -107,11 +130,12 @@ export default function ViewsScreen({
           await inFlight;
           const fresh = getCachedClientData(cid, "portal_payload")?.data;
           if (fresh) {
-            setPayloadCache((prev) => ({ ...prev, [cid]: fresh }));
+            cacheRef.current.payload[cid] = fresh;
+            setPayloadCache((prev) => (prev[cid] === fresh ? prev : { ...prev, [cid]: fresh }));
             setLoadingPayload(false);
             return fresh;
           }
-        } catch {}
+        } catch { }
       }
     }
 
@@ -122,6 +146,7 @@ export default function ViewsScreen({
       const res = await fetch(url);
       const data = await res.json();
       if (data.success && data.payload) {
+        cacheRef.current.payload[cid] = data.payload;
         setCachedClientData(cid, "portal_payload", data.payload);
         setPayloadCache((prev) => ({ ...prev, [cid]: data.payload }));
         return data.payload;
@@ -132,16 +157,17 @@ export default function ViewsScreen({
     } finally {
       setLoadingPayload(false);
     }
-  }, [payloadCache, getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId]);
+  }, [getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId]);
 
   const fetchPerformance = useCallback(async (client, bypassCache = false) => {
     if (!client?.clientSheetId) return;
     const cid = client.clientSheetId;
     const cleanId = cleanSheetId ? cleanSheetId(cid) : String(cid).replace(/.*\/d\/([a-zA-Z0-9-_]+).*/, "$1");
 
-    const cached = !bypassCache ? (perfCache[cid] || getCachedClientData(cid, "portal_perf")?.data) : null;
+    const cached = !bypassCache ? (cacheRef.current.perf[cid] || getCachedClientData(cid, "portal_perf")?.data) : null;
     if (cached) {
-      setPerfCache((prev) => ({ ...prev, [cid]: cached }));
+      cacheRef.current.perf[cid] = cached;
+      setPerfCache((prev) => (prev[cid] === cached ? prev : { ...prev, [cid]: cached }));
       setLoadingPerf(false);
       return cached;
     }
@@ -153,11 +179,12 @@ export default function ViewsScreen({
           await inFlight;
           const fresh = getCachedClientData(cid, "portal_perf")?.data;
           if (fresh) {
-            setPerfCache((prev) => ({ ...prev, [cid]: fresh }));
+            cacheRef.current.perf[cid] = fresh;
+            setPerfCache((prev) => (prev[cid] === fresh ? prev : { ...prev, [cid]: fresh }));
             setLoadingPerf(false);
             return fresh;
           }
-        } catch {}
+        } catch { }
       }
     }
 
@@ -168,6 +195,7 @@ export default function ViewsScreen({
       const res = await fetch(url);
       const data = await res.json();
       if (data.success && data.data) {
+        cacheRef.current.perf[cid] = data.data;
         setCachedClientData(cid, "portal_perf", data.data);
         setPerfCache((prev) => ({ ...prev, [cid]: data.data }));
         return data.data;
@@ -180,16 +208,17 @@ export default function ViewsScreen({
     } finally {
       setLoadingPerf(false);
     }
-  }, [perfCache, getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId]);
+  }, [getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId]);
 
   const fetchCashflow = useCallback(async (client, bypassCache = false) => {
     if (!client?.clientSheetId) return;
     const cid = client.clientSheetId;
     const cleanId = cleanSheetId ? cleanSheetId(cid) : String(cid).replace(/.*\/d\/([a-zA-Z0-9-_]+).*/, "$1");
 
-    const cached = !bypassCache ? (cashCache[cid] || getCachedClientData(cid, "portal_cash")?.data) : null;
+    const cached = !bypassCache ? (cacheRef.current.cash[cid] || getCachedClientData(cid, "portal_cash")?.data) : null;
     if (cached) {
-      setCashCache((prev) => ({ ...prev, [cid]: cached }));
+      cacheRef.current.cash[cid] = cached;
+      setCashCache((prev) => (prev[cid] === cached ? prev : { ...prev, [cid]: cached }));
       setLoadingCash(false);
       return cached;
     }
@@ -201,11 +230,12 @@ export default function ViewsScreen({
           await inFlight;
           const fresh = getCachedClientData(cid, "portal_cash")?.data;
           if (fresh) {
-            setCashCache((prev) => ({ ...prev, [cid]: fresh }));
+            cacheRef.current.cash[cid] = fresh;
+            setCashCache((prev) => (prev[cid] === fresh ? prev : { ...prev, [cid]: fresh }));
             setLoadingCash(false);
             return fresh;
           }
-        } catch {}
+        } catch { }
       }
     }
 
@@ -216,6 +246,7 @@ export default function ViewsScreen({
       const res = await fetch(url);
       const data = await res.json();
       if (data.success && data.data) {
+        cacheRef.current.cash[cid] = data.data;
         setCachedClientData(cid, "portal_cash", data.data);
         setCashCache((prev) => ({ ...prev, [cid]: data.data }));
         return data.data;
@@ -228,16 +259,17 @@ export default function ViewsScreen({
     } finally {
       setLoadingCash(false);
     }
-  }, [cashCache, getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId]);
+  }, [getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId]);
 
   const fetchKeyData = useCallback(async (client, bypassCache = false) => {
     if (!client?.clientSheetId) return;
     const cid = client.clientSheetId;
     const cleanId = cleanSheetId ? cleanSheetId(cid) : String(cid).replace(/.*\/d\/([a-zA-Z0-9-_]+).*/, "$1");
 
-    const cached = !bypassCache ? (keyDataCache[cid] || getCachedClientData(cid, "portal_key_data")?.data) : null;
+    const cached = !bypassCache ? (cacheRef.current.keyData[cid] || getCachedClientData(cid, "portal_key_data")?.data) : null;
     if (cached) {
-      setKeyDataCache((prev) => ({ ...prev, [cid]: cached }));
+      cacheRef.current.keyData[cid] = cached;
+      setKeyDataCache((prev) => (prev[cid] === cached ? prev : { ...prev, [cid]: cached }));
       setLoadingKeyData(false);
       return cached;
     }
@@ -249,11 +281,12 @@ export default function ViewsScreen({
           await inFlight;
           const fresh = getCachedClientData(cid, "portal_key_data")?.data;
           if (fresh) {
-            setKeyDataCache((prev) => ({ ...prev, [cid]: fresh }));
+            cacheRef.current.keyData[cid] = fresh;
+            setKeyDataCache((prev) => (prev[cid] === fresh ? prev : { ...prev, [cid]: fresh }));
             setLoadingKeyData(false);
             return fresh;
           }
-        } catch {}
+        } catch { }
       }
     }
 
@@ -264,6 +297,7 @@ export default function ViewsScreen({
       const res = await fetch(url);
       const data = await res.json();
       if (data.success && data.data) {
+        cacheRef.current.keyData[cid] = data.data;
         setCachedClientData(cid, "portal_key_data", data.data);
         setKeyDataCache((prev) => ({ ...prev, [cid]: data.data }));
         return data.data;
@@ -276,16 +310,17 @@ export default function ViewsScreen({
     } finally {
       setLoadingKeyData(false);
     }
-  }, [keyDataCache, getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId]);
+  }, [getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId]);
 
   const fetchBudget = useCallback(async (client, bypassCache = false) => {
     if (!client?.clientSheetId) return;
     const cid = client.clientSheetId;
     const cleanId = cleanSheetId ? cleanSheetId(cid) : String(cid).replace(/.*\/d\/([a-zA-Z0-9-_]+).*/, "$1");
 
-    const cached = !bypassCache ? (budgetCache[cid] || getCachedClientData(cid, "portal_budget")?.data) : null;
+    const cached = !bypassCache ? (cacheRef.current.budget[cid] || getCachedClientData(cid, "portal_budget")?.data) : null;
     if (cached) {
-      setBudgetCache((prev) => ({ ...prev, [cid]: cached }));
+      cacheRef.current.budget[cid] = cached;
+      setBudgetCache((prev) => (prev[cid] === cached ? prev : { ...prev, [cid]: cached }));
       setLoadingBudget(false);
       return cached;
     }
@@ -297,11 +332,12 @@ export default function ViewsScreen({
           await inFlight;
           const fresh = getCachedClientData(cid, "portal_budget")?.data;
           if (fresh) {
-            setBudgetCache((prev) => ({ ...prev, [cid]: fresh }));
+            cacheRef.current.budget[cid] = fresh;
+            setBudgetCache((prev) => (prev[cid] === fresh ? prev : { ...prev, [cid]: fresh }));
             setLoadingBudget(false);
             return fresh;
           }
-        } catch {}
+        } catch { }
       }
     }
 
@@ -312,6 +348,7 @@ export default function ViewsScreen({
       const res = await fetch(url);
       const data = await res.json();
       if (data.success && data.data) {
+        cacheRef.current.budget[cid] = data.data;
         setCachedClientData(cid, "portal_budget", data.data);
         setBudgetCache((prev) => ({ ...prev, [cid]: data.data }));
         return data.data;
@@ -324,7 +361,7 @@ export default function ViewsScreen({
     } finally {
       setLoadingBudget(false);
     }
-  }, [budgetCache, getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId]);
+  }, [getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId]);
 
   // Load needed data based on active tab and selected client
   useEffect(() => {
@@ -350,26 +387,31 @@ export default function ViewsScreen({
     }
   }, [selectedClient, activeTab, fetchPayload, fetchPerformance, fetchCashflow, fetchKeyData, fetchBudget]);
 
-  const handleRefreshCurrentView = () => {
+  const handleRefreshCurrentView = useCallback(async (tabOverride) => {
     if (!selectedClient) return;
-    fetchPayload(selectedClient, true);
-
-    if (activeTab === "fyPerformance") {
-      fetchPerformance(selectedClient, true);
-      fetchKeyData(selectedClient, true);
-    } else if (activeTab === "cashflow") {
-      fetchCashflow(selectedClient, true);
-      fetchKeyData(selectedClient, true);
-    } else if (activeTab === "budgetOverview") {
-      fetchBudget(selectedClient, true);
-      fetchPerformance(selectedClient, true);
-      fetchKeyData(selectedClient, true);
-    } else if (
-      ["contractors", "expenses", "salaries", "dividends", "nbToFind"].includes(activeTab)
-    ) {
-      fetchKeyData(selectedClient, true);
+    const tab = typeof tabOverride === "string" ? tabOverride : activeTab;
+    setIsRefreshing(true);
+    const minSpin = new Promise((r) => setTimeout(r, 600));
+    try {
+      const tasks = [minSpin, fetchPayload(selectedClient, true)];
+      if (tab === "fyPerformance") {
+        tasks.push(fetchPerformance(selectedClient, true), fetchKeyData(selectedClient, true));
+      } else if (tab === "cashflow") {
+        tasks.push(fetchCashflow(selectedClient, true), fetchKeyData(selectedClient, true));
+      } else if (tab === "budgetOverview") {
+        tasks.push(
+          fetchBudget(selectedClient, true),
+          fetchPerformance(selectedClient, true),
+          fetchKeyData(selectedClient, true)
+        );
+      } else if (["contractors", "expenses", "salaries", "dividends", "nbToFind"].includes(tab)) {
+        tasks.push(fetchKeyData(selectedClient, true));
+      }
+      await Promise.all(tasks);
+    } finally {
+      setIsRefreshing(false);
     }
-  };
+  }, [selectedClient, activeTab, fetchPayload, fetchPerformance, fetchCashflow, fetchKeyData, fetchBudget]);
 
   const cid = selectedClient?.clientSheetId;
   const payload = cid ? (payloadCache[cid] || getCachedClientData(cid, "portal_payload")?.data) : null;
@@ -406,7 +448,7 @@ export default function ViewsScreen({
           : ((loadingKeyData && !keyData) || (loadingPayload && !payload));
 
   return (
-    <div style={{ padding: "20px 24px", maxWidth: "1500px", margin: "0 auto", fontFamily: "'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" }}>
+    <div className="pma-page-container" style={{ width: "100%", maxWidth: "100%", margin: "0 auto", padding: "20px 32px 60px", boxSizing: "border-box", fontFamily: "'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" }}>
       {/* Top Header & Client Chooser Bar */}
       <div
         style={{
@@ -460,26 +502,23 @@ export default function ViewsScreen({
           )}
           <div>
             <h1 style={{ margin: 0, fontSize: "20px", fontWeight: 700, color: "#1e293b", display: "flex", alignItems: "center", gap: "8px" }}>
-              <span>Client views</span>
+              <span>{activeTabLabel}</span>
             </h1>
-            {selectedClient ? (
+            {selectedClient && (
               <div style={{ margin: "3px 0 0", fontSize: "14px", fontWeight: 600, color: "#0047AB" }}>
                 {selectedClient.clientName}
               </div>
-            ) : (
-              <p style={{ margin: "4px 0 0", fontSize: "13px", color: "#64748b" }}>
-                Select a client to view their dashboard
-              </p>
             )}
           </div>
         </div>
 
         {/* Right Actions */}
-        {selectedClient && (
+        {selectedClient && isAdmin && (selectedClient.clientSheetId || selectedClient.masterSheetId) && (
           <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-            <button
-              onClick={handleRefreshCurrentView}
-              disabled={isCurrentViewLoading}
+            <a
+              href={`https://docs.google.com/spreadsheets/d/${activeTab === "budgetOverview" && selectedClient.masterSheetId ? selectedClient.masterSheetId : selectedClient.clientSheetId}/edit`}
+              target="_blank"
+              rel="noreferrer"
               className="triage-btn"
               style={{
                 display: "inline-flex",
@@ -488,59 +527,17 @@ export default function ViewsScreen({
                 padding: "8px 14px",
                 fontSize: "13px",
                 fontWeight: "600",
-                color: "#0284c7",
-                background: "#e0f2fe",
-                border: "1px solid #bae6fd",
+                color: "#15803d",
+                background: "#dcfce7",
+                border: "1px solid #bbf7d0",
                 borderRadius: "8px",
-                cursor: isCurrentViewLoading ? "not-allowed" : "pointer",
+                textDecoration: "none",
               }}
-              title="Pull fresh live data from Google Sheet"
+              title={activeTab === "budgetOverview" ? "Open Master Sheet in Google Sheets" : "Open Client Sheet in Google Sheets"}
             >
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                style={{
-                  animation: isCurrentViewLoading ? "spin 1s linear infinite" : "none",
-                }}
-              >
-                <path d="M23 4v6h-6" />
-                <path d="M1 20v-6h6" />
-                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
-              </svg>
-              <span>{isCurrentViewLoading ? "Refreshing..." : "Refresh live data"}</span>
-            </button>
-
-            {isAdmin && (selectedClient.clientSheetId || selectedClient.masterSheetId) && (
-              <a
-                href={`https://docs.google.com/spreadsheets/d/${activeTab === "budgetOverview" && selectedClient.masterSheetId ? selectedClient.masterSheetId : selectedClient.clientSheetId}/edit`}
-                target="_blank"
-                rel="noreferrer"
-                className="triage-btn"
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: "6px",
-                  padding: "8px 14px",
-                  fontSize: "13px",
-                  fontWeight: "600",
-                  color: "#15803d",
-                  background: "#dcfce7",
-                  border: "1px solid #bbf7d0",
-                  borderRadius: "8px",
-                  textDecoration: "none",
-                }}
-                title={activeTab === "budgetOverview" ? "Open Master Sheet in Google Sheets" : "Open Client Sheet in Google Sheets"}
-              >
-                <span>📊</span>
-                <span>Open in Sheets</span>
-              </a>
-            )}
+              <span>📊</span>
+              <span>Open in Sheets</span>
+            </a>
           </div>
         )}
       </div>
@@ -557,81 +554,8 @@ export default function ViewsScreen({
       {/* Main Container Area */}
       {selectedClient && (
         <div style={{ background: "#ffffff", borderRadius: "12px", border: "1px solid #e2e8f0", boxShadow: "0 2px 8px rgba(0,0,0,0.04)", overflow: "hidden" }}>
-          {/* Tabs Navigation Bar */}
-          <div
-            style={{
-              display: "flex",
-              alignItems: "flex-end",
-              background: "#f8fafc",
-              borderBottom: "1px solid #e2e8f0",
-              padding: "0 12px",
-              overflowX: "auto",
-              scrollbarWidth: "none",
-            }}
-            className="client-views-tabs"
-          >
-            {TABS.map((tab) => {
-              const isActive = activeTab === tab.id;
-              return (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`no-click-spinner client-views-tab ${isActive ? "active" : ""}`}
-                  style={{
-                    position: "relative",
-                    zIndex: isActive ? 2 : 1,
-                    background: isActive ? "#ffffff" : "transparent",
-                    borderTop: isActive ? "3px solid #0066cc" : "3px solid transparent",
-                    borderLeft: isActive ? "1px solid #e2e8f0" : "1px solid transparent",
-                    borderRight: isActive ? "1px solid #e2e8f0" : "1px solid transparent",
-                    borderBottom: isActive ? "1px solid #ffffff" : "1px solid transparent",
-                    color: isActive ? "#0066cc" : "#64748b",
-                    fontSize: "13.5px",
-                    padding: "12px 18px",
-                    cursor: "pointer",
-                    marginBottom: "-1px",
-                    borderRadius: "8px 8px 0 0",
-                    whiteSpace: "nowrap",
-                    outline: "none",
-                    transform: "none",
-                    boxShadow: isActive ? "0 1px 0 0 #ffffff" : "none",
-                    transition: "color 0.15s ease",
-                  }}
-                >
-                  <span style={{ fontWeight: isActive ? "700" : "500" }}>{tab.label}</span>
-                  <span
-                    aria-hidden="true"
-                    style={{
-                      display: "block",
-                      fontWeight: "700",
-                      height: 0,
-                      visibility: "hidden",
-                      overflow: "hidden",
-                      userSelect: "none",
-                      pointerEvents: "none",
-                    }}
-                  >
-                    {tab.label}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-
-          <style jsx>{`
-            .client-views-tab {
-              transform: none !important;
-              filter: none !important;
-            }
-            .client-views-tab:hover:not(.active) {
-              color: #0f172a !important;
-              background-color: rgba(0, 0, 0, 0.02) !important;
-            }
-          `}</style>
-
           {/* View Content Display */}
-          <div style={{ padding: "20px" }}>
+          <div className="pma-views-content-inner" style={{ padding: "20px" }}>
             {activeTab === "fyPerformance" && (
               <PerformanceFYView
                 key={selectedClient.clientSheetId || "fyPerformance"}
@@ -640,9 +564,9 @@ export default function ViewsScreen({
                 keyData={keyData}
                 currencySymbol={currencySymbol}
                 thousandsSeparator={thousandsSeparator}
-                isLoading={loadingPerf}
+                isLoading={loadingPerf || loadingKeyData || isRefreshing}
                 error={perfError}
-                onRefresh={() => fetchPerformance(selectedClient, true)}
+                onRefresh={() => handleRefreshCurrentView("fyPerformance")}
                 isSenior={false}
               />
             )}
@@ -655,9 +579,9 @@ export default function ViewsScreen({
                 keyData={keyData}
                 currencySymbol={currencySymbol}
                 thousandsSeparator={thousandsSeparator}
-                isLoading={loadingCash}
+                isLoading={loadingCash || loadingKeyData || isRefreshing}
                 error={cashError}
-                onRefresh={() => fetchCashflow(selectedClient, true)}
+                onRefresh={() => handleRefreshCurrentView("cashflow")}
                 isSenior={false}
               />
             )}
@@ -671,9 +595,9 @@ export default function ViewsScreen({
                 data={keyData}
                 currencySymbol={currencySymbol}
                 thousandsSeparator={thousandsSeparator}
-                isLoading={loadingKeyData}
+                isLoading={loadingKeyData || isRefreshing}
                 error={keyDataError}
-                onRefresh={() => fetchKeyData(selectedClient, true)}
+                onRefresh={() => handleRefreshCurrentView("contractors")}
                 isReadOnly={false}
               />
             )}
@@ -687,9 +611,9 @@ export default function ViewsScreen({
                 data={keyData}
                 currencySymbol={currencySymbol}
                 thousandsSeparator={thousandsSeparator}
-                isLoading={loadingKeyData}
+                isLoading={loadingKeyData || isRefreshing}
                 error={keyDataError}
-                onRefresh={() => fetchKeyData(selectedClient, true)}
+                onRefresh={() => handleRefreshCurrentView("expenses")}
                 isReadOnly={false}
               />
             )}
@@ -703,12 +627,9 @@ export default function ViewsScreen({
                 keyData={keyData}
                 currencySymbol={currencySymbol}
                 thousandsSeparator={thousandsSeparator}
-                isLoading={loadingBudget || loadingPerf}
+                isLoading={loadingBudget || loadingPerf || loadingKeyData || isRefreshing}
                 error={budgetError || perfError}
-                onRefresh={() => {
-                  fetchBudget(selectedClient, true);
-                  fetchPerformance(selectedClient, true);
-                }}
+                onRefresh={() => handleRefreshCurrentView("budgetOverview")}
               />
             )}
 
@@ -720,9 +641,9 @@ export default function ViewsScreen({
                 data={keyData}
                 currencySymbol={currencySymbol}
                 thousandsSeparator={thousandsSeparator}
-                isLoading={loadingKeyData}
+                isLoading={loadingKeyData || isRefreshing}
                 error={keyDataError}
-                onRefresh={() => fetchKeyData(selectedClient, true)}
+                onRefresh={() => handleRefreshCurrentView("salaries")}
                 isReadOnly={false}
               />
             )}
@@ -736,9 +657,9 @@ export default function ViewsScreen({
                 data={keyData}
                 currencySymbol={currencySymbol}
                 thousandsSeparator={thousandsSeparator}
-                isLoading={loadingKeyData}
+                isLoading={loadingKeyData || isRefreshing}
                 error={keyDataError}
-                onRefresh={() => fetchKeyData(selectedClient, true)}
+                onRefresh={() => handleRefreshCurrentView("dividends")}
                 isReadOnly={false}
               />
             )}
@@ -751,9 +672,9 @@ export default function ViewsScreen({
                 data={keyData}
                 currencySymbol={currencySymbol}
                 thousandsSeparator={thousandsSeparator}
-                isLoading={loadingKeyData}
+                isLoading={loadingKeyData || isRefreshing}
                 error={keyDataError}
-                onRefresh={() => fetchKeyData(selectedClient, true)}
+                onRefresh={() => handleRefreshCurrentView("nbToFind")}
                 isReadOnly={false}
               />
             )}

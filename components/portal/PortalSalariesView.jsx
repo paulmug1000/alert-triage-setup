@@ -348,7 +348,7 @@ export default function PortalSalariesView({
           if (!isDelPctValid(delVal)) {
             const empName = edits[0] || emp.cells[0] || "Employee";
             setIsSaving(false);
-            setSaveError(`Delivery % must be between 0 and 100 for ${empName} (Row ${emp.sheetRow}).`);
+            setSaveError(`Delivery % must be between 0 and 100 for ${empName}.`);
             return;
           }
         }

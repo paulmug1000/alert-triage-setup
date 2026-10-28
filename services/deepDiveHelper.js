@@ -2107,12 +2107,15 @@ export function buildDeepDiveData({
           }
         }
         const allocs = e.allocations?.[foundY] || e.monthlyAllocations || [];
-        amt += parseMoney(allocs[foundC] || 0);
+        const monthAllocAmt = parseMoney(allocs[foundC] || 0);
+        amt += monthAllocAmt;
 
         // Extract transactions for this month matching category name
         const mList = txnsByMonth[foundY]?.[foundC] || [];
+        let matchedInMonth = false;
         mList.forEach((t) => {
           if (normCategory(t.c) === eNorm) {
+            matchedInMonth = true;
             categoryTxns.push({
               date: t.d || "",
               supplier: t.s || "",
@@ -2126,6 +2129,24 @@ export function buildDeepDiveData({
             });
           }
         });
+
+        // Synthesize a transaction entry for depreciation expenses if no actual one exists
+        const isMonthReconciled =
+          Boolean(keyData.outgoings?.reconciledMonths?.[foundY]?.[foundC]) || mList.length > 0;
+        if (!matchedInMonth && eNorm.includes("depreciation") && isMonthReconciled && Math.abs(monthAllocAmt) >= 0.01) {
+          const lastDayOfMonth = new Date(currDate.getFullYear(), currDate.getMonth() + 1, 0);
+          categoryTxns.push({
+            date: DeepDiveEngine.formatShortDate(lastDayOfMonth),
+            supplier: "Depreciation (from P&L)",
+            ref: "P&L",
+            net: monthAllocAmt,
+            vat: 0,
+            gross: monthAllocAmt,
+            amount: monthAllocAmt,
+            datePaid: "",
+            isUnreconciled: false,
+          });
+        }
       }
 
       return {
@@ -2515,6 +2536,93 @@ export function buildDeepDiveData({
     period: periodLabel,
     total: cellValue,
     items: [],
+    sections: null,
+  };
+}
+
+export function buildExpenseCategoryDeepDiveData({
+  categoryName,
+  periodLabel,
+  monthIndex,
+  yearIndex = 2,
+  cellValue,
+  outgoingsData,
+}) {
+  const parsedCellVal = parseMoney(cellValue);
+  if (!outgoingsData || !categoryName) {
+    return {
+      title: categoryName || "Expense breakdown",
+      period: periodLabel,
+      total: parsedCellVal,
+      items: [],
+      sections: null,
+    };
+  }
+
+  const normCategory = (s) => String(s || "").replace(/^\d+\s*[-–]\s*/, "").trim().toLowerCase();
+  const targetNorm = normCategory(categoryName);
+  const mList = outgoingsData.transactionsByMonth?.[yearIndex]?.[monthIndex] || [];
+
+  const items = [];
+  mList.forEach((t) => {
+    if (normCategory(t.c) === targetNorm) {
+      const netVal = t.n !== undefined ? Number(t.n) || 0 : (Number(t.g) || 0);
+      items.push({
+        isTransaction: true,
+        date: t.d || "",
+        supplier: t.s || "",
+        ref: t.r || "",
+        net: netVal,
+        vat: Number(t.v) || 0,
+        gross: Number(t.g) || 0,
+        amount: netVal,
+        datePaid: t.p || "",
+        isUnreconciled: Boolean(t.u),
+      });
+    }
+  });
+
+  if (items.length === 0 && targetNorm.includes("depreciation") && Math.abs(parsedCellVal) >= 0.01) {
+    const hdrLabel = periodLabel || outgoingsData.headers?.[yearIndex]?.[monthIndex] || "";
+    const hd = DeepDiveEngine.parseHeaderDate(hdrLabel);
+    const monthEndStr = hd
+      ? DeepDiveEngine.formatShortDate(new Date(hd.getFullYear(), hd.getMonth() + 1, 0))
+      : hdrLabel || "—";
+    items.push({
+      isTransaction: true,
+      date: monthEndStr,
+      supplier: "Depreciation (from P&L)",
+      ref: "P&L",
+      net: parsedCellVal,
+      vat: 0,
+      gross: parsedCellVal,
+      amount: parsedCellVal,
+      datePaid: "",
+      isUnreconciled: false,
+    });
+  }
+
+  const txnsSum = Math.round(items.reduce((s, i) => s + (Number(i.amount) || 0), 0) * 100) / 100;
+  let totalToDisplay = parsedCellVal;
+
+  if (items.length > 0) {
+    const diff = Math.round((parsedCellVal - txnsSum) * 100) / 100;
+    if (Math.abs(diff) <= 1) {
+      totalToDisplay = txnsSum;
+    } else if (Math.abs(diff) > 1) {
+      items.push({
+        name: "Rounding adjustment",
+        amount: diff,
+      });
+      totalToDisplay = parsedCellVal;
+    }
+  }
+
+  return {
+    title: categoryName,
+    period: periodLabel,
+    total: totalToDisplay,
+    items,
     sections: null,
   };
 }

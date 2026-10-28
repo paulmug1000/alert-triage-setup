@@ -3,7 +3,7 @@ import { getAllUsers } from "./userPermissions.js";
 import { readAlertMemory, ensureAlertMemoryTab } from "./alertMemory.js";
 import { redisClient } from "./redisClient.js";
 const PRECOMPUTED_KEY = "triage_precomputed";
-import { matchesClientName } from "../utils/helpers.js";
+import { matchesClientName, stripRowInfo } from "../utils/helpers.js";
 import { logPmaActivity } from "./pmaLogger.js";
 
 /**
@@ -108,7 +108,7 @@ function buildDigestHtml({ user, formattedDate, totalAlerts, clientSummaries, ap
           You are receiving this summary because you have notifications enabled in the Pulse Management Area.
         </p>
         <p style="margin:0 0 6px 0;">
-          To stop receiving this email, set <strong>Daily Alerts Email</strong> to <strong>No</strong> in the <strong>Users</strong> tab.
+          To stop receiving this email, update your notification preferences in <strong>PMA &gt; Settings</strong>.
         </p>
         <p style="margin:0;">
           &copy; ${new Date().getFullYear()} Thrive Organisational Consulting Ltd. Automated message &mdash; please do not reply.
@@ -248,7 +248,8 @@ export async function sendDailyAlertsSummary(sheets, automationCommanderSheetId)
       else if (type.includes("task") || alert.status === "task") cm.taskCount++;
       else cm.proactiveCount++;
 
-      const summaryText = alert.summary || alert.alertSummary || (typeof alert.dataSnapshot === "string" ? alert.dataSnapshot.slice(0, 100) : "");
+      const rawSummaryText = alert.summary || alert.alertSummary || (typeof alert.dataSnapshot === "string" ? alert.dataSnapshot.slice(0, 100) : "");
+      const summaryText = user.role === "Admin" ? rawSummaryText : stripRowInfo(rawSummaryText);
       if (summaryText) cm.alerts.push({ summary: summaryText });
     }
 
@@ -265,8 +266,8 @@ export async function sendDailyAlertsSummary(sheets, automationCommanderSheetId)
       `Here is your Pulse Management Area daily summary for ${formattedDate}:\n` +
       `Total active alerts: ${userAlerts.length} across ${clientSummaries.length} clients.\n\n` +
       clientSummaries.map(cs => `• ${cs.clientName}: ${cs.totalClientAlerts} alert(s)`).join("\n") +
-      `\n\nOpen Pulse Management Area: ${appUrl}\n\n` +
-      `To opt out of daily summaries, set 'Daily Alerts Email' to 'No' in the Users tab.`;
+      `\n\nOpen Pulse Management Area: ${appUrl}/pma\n\n` +
+      `To opt out of daily summaries, update your notification preferences in PMA > Settings.`;
 
     if (transporter) {
       try {

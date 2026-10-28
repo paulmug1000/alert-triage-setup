@@ -827,6 +827,8 @@ export default function JobsView({
   styles = {},
   managedClient,
   onClearManagedClient,
+  initialClient,
+  onSelectClient,
   isAdmin: propIsAdmin
 }) {
   const auth = useAuth();
@@ -848,10 +850,11 @@ export default function JobsView({
     crmTool,
     crmDrives,
     loadJobsData
-  } = useJobs(managedClient);
+  } = useJobs(managedClient || initialClient);
 
+  const prevInitialClientRef = useRef(null);
   const prevManagedClientRef = useRef(null);
-  // Auto-select managedClient when in manage mode, or clear when manage mode cancelled
+  // Auto-select managedClient when in manage mode, or initialClient when passed, or clear when manage mode cancelled
   useEffect(() => {
     if (managedClient) {
       const currentName = managedClient.clientName?.toLowerCase();
@@ -865,6 +868,13 @@ export default function JobsView({
           loadJobsData(clientObj, "All");
         }
       }
+    } else if (initialClient && (initialClient !== prevInitialClientRef.current || (!jobsClient?.clientSheetId && initialClient.clientSheetId))) {
+      prevInitialClientRef.current = initialClient;
+      const clientObj = (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === initialClient.clientName?.toLowerCase()) || initialClient;
+      setJobsClient(clientObj);
+      if (clientObj?.clientSheetId) {
+        loadJobsData(clientObj, "All");
+      }
     } else if (prevManagedClientRef.current) {
       prevManagedClientRef.current = null;
       setJobsClient(null);
@@ -873,7 +883,7 @@ export default function JobsView({
       recentlyDeletedJobKeysRef.current.clear();
       recentlyDeletedJobRowsRef.current.clear();
     }
-  }, [managedClient, allOutgoingsClients, jobsClient?.clientSheetId]);
+  }, [managedClient, initialClient, allOutgoingsClients, jobsClient?.clientSheetId]);
 
   // Mode: "modern" (default, user-friendly combined view) or "legacy" (spreadsheet view for admins)
   const [viewMode, setViewMode] = useState("modern");
@@ -939,7 +949,7 @@ export default function JobsView({
     setCellNoteModalConfig({
       isOpen: true,
       title: "Job note",
-      subtitle: `${job.client || parentRow.client || ""} · ${job.jobName || parentRow.jobName || ""} (${tabName} Row ${parentRow.rowNum})`,
+      subtitle: `${job.client || parentRow.client || ""} · ${job.jobName || parentRow.jobName || ""}${isAdmin ? ` (${tabName} Row ${parentRow.rowNum})` : ""}`,
       initialNote: currentNote,
       tabName,
       sheetRow: parentRow.rowNum,
@@ -974,7 +984,7 @@ export default function JobsView({
     setCellNoteModalConfig({
       isOpen: true,
       title: type === "invoice" ? `Invoice note (${invRefDisplay})` : `Direct cost note (${item.label})`,
-      subtitle: `${job?.client || ""} · ${job?.jobName || ""} (${tabName} Row ${rowNum})`,
+      subtitle: `${job?.client || ""} · ${job?.jobName || ""}${isAdmin ? ` (${tabName} Row ${rowNum})` : ""}`,
       initialNote: currentNote,
       tabName,
       sheetRow: rowNum,
@@ -2416,16 +2426,18 @@ export default function JobsView({
                   <span style={{ color: "#7f1d1d", fontWeight: "600", display: "inline-block", width: "70px" }}>Client:</span>
                   <strong style={{ color: "#1e293b" }}>{deletingJob.client || "—"}</strong>
                 </div>
-                <div style={{ marginBottom: "6px" }}>
-                  <span style={{ color: "#7f1d1d", fontWeight: "600", display: "inline-block", width: "70px" }}>Tab:</span>
+                <div style={{ marginBottom: isAdmin ? "6px" : 0 }}>
+                  <span style={{ color: "#7f1d1d", fontWeight: "600", display: "inline-block", width: "70px" }}>{isAdmin ? "Tab:" : "Section:"}</span>
                   <span style={{ fontWeight: "600", color: "#0f172a" }}>{deletingJob.tabName || (filterType === "pipeline" ? "Pipeline" : "Confirmed")}</span>
                 </div>
-                <div>
-                  <span style={{ color: "#7f1d1d", fontWeight: "600", display: "inline-block", width: "70px" }}>Rows:</span>
-                  <span style={{ color: "#475569" }}>
-                    {deletingJob.rows?.map(r => `Row ${r.rowNum}`).join(", ") || `Row ${deletingJob.rows?.[0]?.rowNum || "—"}`}
-                  </span>
-                </div>
+                {isAdmin && (
+                  <div>
+                    <span style={{ color: "#7f1d1d", fontWeight: "600", display: "inline-block", width: "70px" }}>Rows:</span>
+                    <span style={{ color: "#475569" }}>
+                      {deletingJob.rows?.map(r => `Row ${r.rowNum}`).join(", ") || `Row ${deletingJob.rows?.[0]?.rowNum || "—"}`}
+                    </span>
+                  </div>
+                )}
               </div>
 
               {deletingJobRealInvoices.length > 0 && (
@@ -2447,7 +2459,9 @@ export default function JobsView({
               )}
 
               <div style={{ fontSize: "12px", color: "#64748b", lineHeight: "1.45", marginBottom: "20px" }}>
-                ⚠️ The job will be removed entirely from the sheet by clearing the relevant cells on the row (preserving all formula columns, formatting, and surrounding structure). This action cannot be undone.
+                {isAdmin
+                  ? "⚠️ The job will be removed entirely from the sheet by clearing the relevant cells on the row (preserving all formula columns, formatting, and surrounding structure). This action cannot be undone."
+                  : "⚠️ This job and its associated entries will be permanently removed from Pulse. This action cannot be undone."}
               </div>
 
               <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", flexWrap: "wrap" }}>
@@ -2691,7 +2705,7 @@ export default function JobsView({
         />
       )}
 
-      <div style={{ maxWidth: "1600px", margin: "0 auto", padding: "16px 24px 60px" }}>
+      <div className="pma-page-container" style={{ width: "100%", maxWidth: "100%", margin: "0 auto", padding: "20px 32px 60px", boxSizing: "border-box" }}>
         {/* Top Header Card */}
         <div
           style={{
@@ -2721,6 +2735,7 @@ export default function JobsView({
                     setDraftEdits({});
                     recentlyDeletedJobKeysRef.current.clear();
                     recentlyDeletedJobRowsRef.current.clear();
+                    onSelectClient?.(null);
                   }
                 }}
                 style={{
@@ -2762,14 +2777,10 @@ export default function JobsView({
                   </span>
                 )}
               </h1>
-              {jobsClient ? (
+              {jobsClient && (
                 <div style={{ margin: "3px 0 0", fontSize: "14px", fontWeight: 600, color: "#0047AB" }}>
                   {jobsClient.clientName}
                 </div>
-              ) : (
-                <p style={{ margin: "4px 0 0", fontSize: "13px", color: "#64748b" }}>
-                  Select a client to view and manage jobs
-                </p>
               )}
             </div>
           </div>
@@ -2840,6 +2851,7 @@ export default function JobsView({
             clients={allOutgoingsClients || []}
             onSelectClient={(c) => {
               setJobsClient(c);
+              onSelectClient?.(c);
               loadJobsData(c, "All");
             }}
             loading={jobsLoading}
@@ -3166,7 +3178,7 @@ export default function JobsView({
                     <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                       <span>⚠️</span>
                       <span>
-                        You have unsaved changes across <strong>{dirtyCount} {dirtyCount === 1 ? "job" : "jobs"}</strong>. Click &ldquo;Save&rdquo; on any modified row to commit changes to the spreadsheet.
+                        You have unsaved changes across <strong>{dirtyCount} {dirtyCount === 1 ? "job" : "jobs"}</strong>. Click &ldquo;Save&rdquo; on any modified job to save changes to Pulse.
                       </span>
                     </div>
                   </div>
@@ -4160,7 +4172,7 @@ export default function JobsView({
                                                             slot,
                                                             jobClient: item.row.client || parentRow.client || job.client,
                                                             jobName: item.row.jobName || parentRow.jobName || job.jobName,
-                                                            slotLabel: slot.ref ? `#${slot.ref}` : (isPlaceholder ? "Placeholder" : `Slot ${item.slotNum}`),
+                                                            slotLabel: slot.ref ? `#${slot.ref}` : (isPlaceholder ? "Placeholder" : (isAdmin ? `Slot ${item.slotNum}` : `Invoice ${item.slotNum}`)),
                                                             tabName: item.row.tabName || parentRow.tabName || job.tabName || (filterType === "pipeline" ? "Pipeline" : "Confirmed"),
                                                             job,
                                                           });
@@ -4183,7 +4195,7 @@ export default function JobsView({
                                                         title={
                                                           hasAccountingIntegration && !isPlaceholder && slot.ref && String(slot.ref).trim() !== ""
                                                             ? "Synced from accounting software. Click to view or edit days to pay."
-                                                            : "Click to edit invoice slot"
+                                                            : "Click to edit invoice"
                                                         }
                                                         onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#60a5fa"; e.currentTarget.style.background = "#eff6ff"; }}
                                                         onMouseLeave={(e) => { e.currentTarget.style.borderColor = isInvoiceMatched ? "#fde047" : "#e2e8f0"; e.currentTarget.style.background = isInvoiceMatched ? "#fefce8" : "#ffffff"; }}
@@ -4219,7 +4231,7 @@ export default function JobsView({
                                                               size="sm"
                                                               note={slot.note || ""}
                                                               onClick={() => openSlotNoteModal({ item, type: "invoice", job })}
-                                                              title={slot.note ? `Invoice note: ${slot.note}` : "Add note to invoice slot"}
+                                                              title={slot.note ? `Invoice note: ${slot.note}` : "Add note to invoice"}
                                                             />
 
                                                             {isRetainer && item.row && (
@@ -4713,7 +4725,7 @@ export default function JobsView({
                                               }}
                                               onMouseEnter={(e) => { e.currentTarget.style.background = "#e0f2fe"; }}
                                               onMouseLeave={(e) => { e.currentTarget.style.background = "#f0f7ff"; }}
-                                              title="Sets likelihood to 100% and puts Yes into 'Copied to confirmed tab' column"
+                                              title={isAdmin ? "Sets likelihood to 100% and puts Yes into 'Copied to confirmed tab' column" : "Marks pipeline opportunity as won (100% likelihood) and promotes to Confirmed jobs"}
                                             >
                                               {markingAlreadyConfirmedKeys.has(jobKey) ? <Spinner size={12} color="#0369a1" /> : null}
                                               <span>{markingAlreadyConfirmedKeys.has(jobKey) ? "Marking..." : "Mark job as already confirmed"}</span>

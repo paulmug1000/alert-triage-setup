@@ -3,7 +3,7 @@ import Spinner from "./Spinner";
 import { useTasks } from "../contexts/TaskContext";
 import { useTriage } from "../contexts/TriageContext";
 import { useAppGlobals } from "../hooks/useAppGlobals";
-import { getAlertSummary, getFlagName } from "../utils/helpers";
+import { getAlertSummary, getFlagName, stripRowInfo } from "../utils/helpers";
 import { styles } from "../utils/styles";
 
 export default function CreateTaskModal() {
@@ -23,7 +23,9 @@ export default function CreateTaskModal() {
     setCurrentClientAlertIndex
   } = useTriage();
 
-  const { automationCommanderSheetId } = useAppGlobals();
+  const { automationCommanderSheetId, user } = useAppGlobals();
+  const isAdmin = Boolean(user?.isAdmin || user?.role === "Admin");
+  const cleanText = (txt) => (isAdmin ? txt : stripRowInfo(txt));
 
   if (!showTaskModal) return null;
 
@@ -271,10 +273,10 @@ export default function CreateTaskModal() {
           <div style={{ fontSize: "13px", color: "#555", marginBottom: "12px", padding: "8px 10px", background: "#f5f5f5", borderRadius: "4px" }}>
             <strong>{taskModalAlert.clientName}</strong>
             {taskModalIsProactive
-              ? ` · ${taskModalAlert.heading || taskModalAlert.alertType || "Proactive alert"}`
+              ? ` · ${cleanText(taskModalAlert.heading || taskModalAlert.alertType || "Proactive alert")}`
               : isInfo
-              ? ` · ${taskModalAlert.flagDetail ? `${getFlagName(taskModalAlert.flagType)}: ${taskModalAlert.flagDetail}` : (getFlagName(taskModalAlert.flagType) || taskModalAlert.flagType)}`
-              : ` · ${getAlertSummary(taskModalAlert)}`}
+              ? ` · ${taskModalAlert.flagDetail ? `${getFlagName(taskModalAlert.flagType)}: ${cleanText(taskModalAlert.flagDetail)}` : (getFlagName(taskModalAlert.flagType) || taskModalAlert.flagType)}`
+              : ` · ${cleanText(getAlertSummary(taskModalAlert))}`}
           </div>
         )}
         <textarea value={taskModalNote} onChange={e => setTaskModalNote(e.target.value)}

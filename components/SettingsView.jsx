@@ -247,14 +247,28 @@ export default function SettingsView({
   const rows = settingsData?.recentRows || [];
 
   return (
-    <div style={{ padding: "20px", maxWidth: effectiveIsAdmin && settingsMode === "client" ? "1440px" : effectiveIsAdmin ? "1240px" : "800px", margin: "0 auto", boxSizing: "border-box", width: "100%" }}>
-      {/* Top Application Version & Copyright Header */}
-      <div style={{ fontSize: "11px", fontStyle: "italic", color: "#666", marginBottom: "16px" }}>
-        Pulse v{SYSTEM_VERSION} - {getSystemCopyright()}
-      </div>
-
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px", flexWrap: "wrap", gap: "12px" }}>
-        <h2 style={{ margin: 0, fontSize: "20px", fontWeight: "700" }}>Settings</h2>
+    <div className="pma-page-container" style={{ padding: "20px 32px 60px", width: "100%", maxWidth: "100%", margin: "0 auto", boxSizing: "border-box" }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: "20px",
+          flexWrap: "wrap",
+          gap: "12px",
+          background: "#ffffff",
+          padding: "16px 20px",
+          borderRadius: "10px",
+          border: "1px solid #e2e8f0",
+          boxShadow: "0 1px 3px rgba(15, 23, 42, 0.04)",
+        }}
+      >
+        <div>
+          <h1 style={{ margin: "0 0 4px 0", fontSize: "20px", fontWeight: "700", color: "#0f172a" }}>Settings</h1>
+          <div style={{ fontSize: "12.5px", color: "#64748b" }}>
+            Pulse v{SYSTEM_VERSION} — {getSystemCopyright()}
+          </div>
+        </div>
 
         {effectiveIsAdmin && (
           <div style={{ display: "inline-flex", background: "#f1f5f9", padding: "3px", borderRadius: "8px", border: "1px solid #cbd5e1" }}>
@@ -266,7 +280,7 @@ export default function SettingsView({
                 borderRadius: "6px",
                 border: "none",
                 background: settingsMode === "system" ? "#ffffff" : "transparent",
-                color: settingsMode === "system" ? "#0066cc" : "#64748b",
+                color: settingsMode === "system" ? "#0047AB" : "#64748b",
                 fontWeight: settingsMode === "system" ? "700" : "500",
                 fontSize: "13px",
                 cursor: "pointer",
@@ -274,7 +288,7 @@ export default function SettingsView({
                 transition: "all 0.15s ease"
               }}
             >
-              🏢 PMA System Settings
+              PMA system settings
             </button>
             <button
               type="button"
@@ -284,7 +298,7 @@ export default function SettingsView({
                 borderRadius: "6px",
                 border: "none",
                 background: settingsMode === "client" ? "#ffffff" : "transparent",
-                color: settingsMode === "client" ? "#0066cc" : "#64748b",
+                color: settingsMode === "client" ? "#0047AB" : "#64748b",
                 fontWeight: settingsMode === "client" ? "700" : "500",
                 fontSize: "13px",
                 cursor: "pointer",
@@ -292,7 +306,7 @@ export default function SettingsView({
                 transition: "all 0.15s ease"
               }}
             >
-              ⚙️ Client Settings {managedClient ? `(${managedClient.clientName})` : ""}
+              Client settings {managedClient ? `(${managedClient.clientName})` : ""}
             </button>
           </div>
         )}

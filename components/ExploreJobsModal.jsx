@@ -280,7 +280,7 @@ export default function ExploreJobsModal({
             <div style={{ padding: "40px", textAlign: "center", color: "#64748b", background: "#ffffff", borderRadius: "8px", border: "1px solid #e2e8f0" }}>
               <div style={{ fontSize: "15px", fontWeight: "600", color: "#334155" }}>No matching jobs found</div>
               <div style={{ fontSize: "13px", marginTop: "4px" }}>
-                {searchQuery ? `No jobs match "${searchQuery}". Try a different keyword.` : "No confirmed jobs found in this sheet."}
+                {searchQuery ? `No jobs match "${searchQuery}". Try a different keyword.` : "No confirmed jobs found for this client."}
               </div>
             </div>
           )}

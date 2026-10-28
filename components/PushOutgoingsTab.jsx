@@ -12,7 +12,8 @@ export default function PushOutgoingsTab({
   eomAllTasks = [],
   styles = {},
   managedClient,
-  onClearManagedClient
+  onClearManagedClient,
+  isAdmin = false
 }) {
   const [selectedClient, setSelectedClient] = useState(initialClient || managedClient?.clientName || "");
   const [plData, setPlData] = useState(null);
@@ -76,7 +77,7 @@ export default function PushOutgoingsTab({
       });
       const data = await resp.json();
       if (!data.success) {
-        throw new Error(data.error || "Failed to load PLComp data");
+        throw new Error(data.error || (isAdmin ? "Failed to load PLComp data" : "Failed to load P&L data"));
       }
       setPlData(data);
 
@@ -100,7 +101,7 @@ export default function PushOutgoingsTab({
     } finally {
       setLoading(false);
     }
-  }, [automationCommanderSheetId, selectedClient]);
+  }, [automationCommanderSheetId, selectedClient, isAdmin]);
 
   useEffect(() => {
     if (selectedClient) {
@@ -227,7 +228,9 @@ export default function PushOutgoingsTab({
 
       let successText = `✓ Outgoings successfully pushed (${includeUnreconciled ? "including unreconciled items" : "not including unreconciled items"}) for ${selectedCols.length} month${selectedCols.length !== 1 ? "s" : ""}.`;
       if (data.markedTaskDone) {
-        successText += ` Task "Use PLComp..." automatically marked Done for ${data.targetMonthLabel || "the current month"}!`;
+        successText += isAdmin
+          ? ` Task "Use PLComp..." automatically marked Done for ${data.targetMonthLabel || "the current month"}!`
+          : ` Push outgoings task automatically marked Done for ${data.targetMonthLabel || "the current month"}!`;
         if (onTaskMarkedDone) {
           // Find task id for this client
           const clientTask = (eomAllTasks || []).find(t =>
@@ -345,7 +348,7 @@ export default function PushOutgoingsTab({
                 gap: "5px"
               }}>
                 <span>🕒</span>
-                <span>P&amp;L last updated: <strong>{plData?.lastUpdated || "-"}</strong> (cell C1)</span>
+                <span>P&amp;L last updated: <strong>{plData?.lastUpdated || "-"}</strong>{isAdmin ? " (cell C1)" : ""}</span>
               </div>
 
               {/* Mode Toggle: Including vs Not including unreconciled items */}
@@ -361,7 +364,7 @@ export default function PushOutgoingsTab({
                 <button
                   type="button"
                   onClick={() => setIncludeUnreconciled(true)}
-                  title="Pull actuals including unreconciled items from PLComp columns T-Y and run pushOutgoingsWithPLAddsToClientSheet"
+                  title={isAdmin ? "Pull actuals including unreconciled items from PLComp columns T-Y and run pushOutgoingsWithPLAddsToClientSheet" : "Include unreconciled items when pushing P&L actuals"}
                   style={{
                     padding: "5px 11px",
                     fontSize: "12px",
@@ -380,7 +383,7 @@ export default function PushOutgoingsTab({
                 <button
                   type="button"
                   onClick={() => setIncludeUnreconciled(false)}
-                  title="Pull standard actuals from PLComp columns F-K and run pushOutgoingsToClientSheet"
+                  title={isAdmin ? "Pull standard actuals from PLComp columns F-K and run pushOutgoingsToClientSheet" : "Push reconciled P&L actuals only"}
                   style={{
                     padding: "5px 11px",
                     fontSize: "12px",
@@ -404,7 +407,7 @@ export default function PushOutgoingsTab({
               <button
                 onClick={handlePullFreshPl}
                 disabled={pullingPl || pushingOutgoings || loading}
-                title="Runs the PullPLBasedOn GAS function on the client's master sheet"
+                title={isAdmin ? "Runs the PullPLBasedOn GAS function on the client's master sheet" : "Pull latest P&L figures from the accounting software"}
                 style={{
                   display: "inline-flex",
                   alignItems: "center",
@@ -428,9 +431,11 @@ export default function PushOutgoingsTab({
               <button
                 onClick={handlePushOutgoings}
                 disabled={pushingOutgoings || pullingPl || loading || selectedColCount === 0}
-                title={includeUnreconciled
-                  ? "Saves selected checkboxes to PLComp!T87:Y87 and runs pushOutgoingsWithPLAddsToClientSheet"
-                  : "Saves selected checkboxes to PLComp!F87:K87 and runs pushOutgoingsToClientSheet"
+                title={isAdmin
+                  ? (includeUnreconciled
+                    ? "Saves selected checkboxes to PLComp!T87:Y87 and runs pushOutgoingsWithPLAddsToClientSheet"
+                    : "Saves selected checkboxes to PLComp!F87:K87 and runs pushOutgoingsToClientSheet")
+                  : "Pushes the selected months' P&L figures to Outgoings"
                 }
                 style={{
                   display: "inline-flex",
@@ -503,10 +508,10 @@ export default function PushOutgoingsTab({
         }}>
           <Spinner size={32} color="#0284c7" />
           <div style={{ marginTop: "14px", fontSize: "14px", fontWeight: "600", color: "#475569" }}>
-            Loading PLComp data for {selectedClient}...
+            {isAdmin ? `Loading PLComp data for ${selectedClient}...` : `Loading P&L data for ${selectedClient}...`}
           </div>
           <div style={{ fontSize: "12px", color: "#94a3b8", marginTop: "4px" }}>
-            Reading C1, F1:J1, and expense sections from master spreadsheet
+            {isAdmin ? "Reading C1, F1:J1, and expense sections from master spreadsheet" : "Retrieving latest P&L expense sections"}
           </div>
         </div>
       ) : error ? (
@@ -520,7 +525,7 @@ export default function PushOutgoingsTab({
         }}>
           <div style={{ fontSize: "28px", color: "#dc2626", marginBottom: "8px" }}>⚠️</div>
           <h4 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: "700", color: "#991b1b" }}>
-            Failed to Load PLComp
+            {isAdmin ? "Failed to Load PLComp" : "Failed to load P&L data"}
           </h4>
           <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#b91c1c" }}>{error}</p>
           <button
@@ -550,10 +555,12 @@ export default function PushOutgoingsTab({
         }}>
           <div style={{ fontSize: "28px", marginBottom: "8px" }}>ℹ️</div>
           <h4 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: "700", color: "#1e293b" }}>
-            No Expense Sections Found in PLComp
+            {isAdmin ? "No Expense Sections Found in PLComp" : "No expense sections found"}
           </h4>
           <p style={{ margin: 0, fontSize: "13px", color: "#64748b" }}>
-            No labeled accounts were found under Costs of sale, Overheads, or Non-operating sections on {selectedClient}&apos;s PLComp sheet.
+            {isAdmin
+              ? `No labeled accounts were found under Costs of sale, Overheads, or Non-operating sections on ${selectedClient}'s PLComp sheet.`
+              : `No labeled accounts were found under Costs of sale, Overheads, or Non-operating sections for ${selectedClient}.`}
           </p>
         </div>
       ) : (
@@ -577,7 +584,7 @@ export default function PushOutgoingsTab({
           }}>
             <div style={{ color: "#64748b" }}>
               Showing <strong>{activeData.sections.reduce((acc, s) => acc + s.rows.length, 0)}</strong> accounts across <strong>{activeData.sections.length}</strong> sections
-              {" • "}<span style={{ color: includeUnreconciled ? "#0369a1" : "#475569", fontWeight: "600" }}>{includeUnreconciled ? "Including unreconciled items (cols T–Y)" : "Not including unreconciled items (cols F–K)"}</span>
+              {" • "}<span style={{ color: includeUnreconciled ? "#0369a1" : "#475569", fontWeight: "600" }}>{includeUnreconciled ? `Including unreconciled items${isAdmin ? " (cols T–Y)" : ""}` : `Not including unreconciled items${isAdmin ? " (cols F–K)" : ""}`}</span>
             </div>
             <div style={{ display: "flex", gap: "10px" }}>
               <button
@@ -677,9 +684,11 @@ export default function PushOutgoingsTab({
                       }}>
                         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end" }}>
                           <span>{m.header}</span>
-                          <span style={{ fontSize: "10px", fontWeight: "500", color: "#94a3b8" }}>
-                            Col {m.colLetter}
-                          </span>
+                          {isAdmin && (
+                            <span style={{ fontSize: "10px", fontWeight: "500", color: "#94a3b8" }}>
+                              Col {m.colLetter}
+                            </span>
+                          )}
                         </div>
                       </th>
                     );
@@ -781,14 +790,14 @@ export default function PushOutgoingsTab({
             gap: "12px"
           }}>
             <div style={{ fontSize: "12px", color: "#64748b" }}>
-              Selected <strong>{selectedColCount} of {(activeData.months || []).length}</strong> months to push to client sheet Outgoings ({includeUnreconciled ? "including unreconciled items" : "not including unreconciled items"}).
+              Selected <strong>{selectedColCount} of {(activeData.months || []).length}</strong> months to push to {isAdmin ? "client sheet Outgoings" : "Outgoings"} ({includeUnreconciled ? "including unreconciled items" : "not including unreconciled items"}).
             </div>
 
             <div style={{ display: "flex", gap: "10px" }}>
               <button
                 onClick={handlePullFreshPl}
                 disabled={pullingPl || pushingOutgoings || loading}
-                title="Runs the PullPLBasedOn GAS function on the client's master sheet"
+                title={isAdmin ? "Runs the PullPLBasedOn GAS function on the client's master sheet" : "Pull latest P&L figures from the accounting software"}
                 style={{
                   padding: "7px 14px",
                   background: "#ffffff",
@@ -806,9 +815,11 @@ export default function PushOutgoingsTab({
               <button
                 onClick={handlePushOutgoings}
                 disabled={pushingOutgoings || pullingPl || loading || selectedColCount === 0}
-                title={includeUnreconciled
-                  ? "Saves selected checkboxes to PLComp!T87:Y87 and runs pushOutgoingsWithPLAddsToClientSheet"
-                  : "Saves selected checkboxes to PLComp!F87:K87 and runs pushOutgoingsToClientSheet"
+                title={isAdmin
+                  ? (includeUnreconciled
+                    ? "Saves selected checkboxes to PLComp!T87:Y87 and runs pushOutgoingsWithPLAddsToClientSheet"
+                    : "Saves selected checkboxes to PLComp!F87:K87 and runs pushOutgoingsToClientSheet")
+                  : "Pushes the selected months' P&L figures to Outgoings"
                 }
                 style={{
                   padding: "7px 16px",

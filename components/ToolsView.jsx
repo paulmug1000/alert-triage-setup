@@ -467,7 +467,7 @@ export default function ToolsView({
   const handleOpenNbExcludeModal = (taskId, targetClientName = eomDetailClient) => {
     const client = (allOutgoingsClients || []).find(c => c.clientName === targetClientName);
     if (!client) {
-      setEomClientTasksError(`Client sheet not found for ${targetClientName}`);
+      setEomClientTasksError(isAdmin ? `Client sheet not found for ${targetClientName}` : `Client configuration not found for ${targetClientName}`);
       return;
     }
     setEomNbExcludeError("");
@@ -915,7 +915,7 @@ export default function ToolsView({
   };
 
   return (
-    <div style={{ padding: "20px 24px", width: "100%", maxWidth: "100%", boxSizing: "border-box" }}>
+    <div className="pma-page-container" style={{ padding: "20px 32px 60px", width: "100%", maxWidth: "100%", margin: "0 auto", boxSizing: "border-box" }}>
       {eomEditingNotelet && (() => {
         const [y, m] = eomMonthKey.split("-").map(Number);
         const monthLabel = new Date(y, m - 1, 1).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
@@ -959,7 +959,30 @@ export default function ToolsView({
         </div>
       )}
 
-      <h2 style={{ margin: "0 0 14px", fontSize: "20px", fontWeight: "700" }}>EoM</h2>
+      <div
+        style={{
+          marginBottom: "20px",
+          background: "#ffffff",
+          padding: "16px 20px",
+          borderRadius: "10px",
+          border: "1px solid #e2e8f0",
+          boxShadow: "0 1px 3px rgba(15, 23, 42, 0.04)",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          flexWrap: "wrap",
+          gap: "12px"
+        }}
+      >
+        <div>
+          <h1 style={{ margin: "0 0 4px 0", fontSize: "20px", fontWeight: "700", color: "#0f172a" }}>
+            EoM{managedClient ? ` — ${managedClient.clientName}` : ""}
+          </h1>
+          <p style={{ margin: 0, fontSize: "13px", color: "#64748b" }}>
+            End-of-month checklists, payroll imports, cashflow reconcilations etc
+          </p>
+        </div>
+      </div>
 
       {!managedClient && (
         <div className="eom-subview-tabs">
@@ -1987,7 +2010,7 @@ export default function ToolsView({
                         const targetLabel = ty ? new Date(ty, tm - 1, 1).toLocaleDateString("en-GB", { month: "short", year: "numeric" }) : "";
                         return (
                           <button onClick={() => handleEomMarkActual(t.taskId)} disabled={eomMarkActualRunning === t.taskId}
-                            title={`Writes &quot;Actual&quot; to the ${targetLabel} column on the Performance tab`}
+                            title={isAdmin ? `Writes "Actual" to the ${targetLabel} column on the Performance tab` : `Marks ${targetLabel} as Actual in Performance`}
                             className="eom-task-action-btn"
                             style={{
                               marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px",
@@ -1999,7 +2022,7 @@ export default function ToolsView({
                       })()}
                       {t.linkedFunction === "mark_nb_exclude" && (
                         <button onClick={() => handleOpenNbExcludeModal(t.taskId, eomDetailClient)}
-                          title="Mark month(s) to NOT include new business to find on the NBtoFind tab"
+                          title={isAdmin ? "Mark month(s) to NOT include new business to find on the NBtoFind tab" : "Mark month(s) to exclude new business to find"}
                           className="eom-task-action-btn"
                           style={{
                             marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px",
@@ -2010,7 +2033,7 @@ export default function ToolsView({
                       )}
                       {t.linkedFunction === "create_backup" && (
                         <button onClick={() => handleEomCreateBackup(t.taskId)} disabled={eomBackupRunning === t.taskId}
-                          title={`Copies the Dashboard tab to the backup sheet as values only`}
+                          title={isAdmin ? `Copies the Dashboard tab to the backup sheet as values only` : "Creates a snapshot backup of the client dashboard"}
                           className="eom-task-action-btn"
                           style={{
                             marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px",
@@ -2042,7 +2065,7 @@ export default function ToolsView({
                       )}
                       {t.linkedFunction === "alert_check" && (
                         <span style={{ marginLeft: "8px", fontSize: "10px", color: "#888" }}>
-                          ({(t.alertCategories || "").split(",").filter(Boolean).map(c => ({ invoice: "InvComp", expense: "DirComp", crm: "CRMComp" }[c])).join(", ") || "no categories set"})
+                          ({(t.alertCategories || "").split(",").filter(Boolean).map(c => (isAdmin ? { invoice: "InvComp", expense: "DirComp", crm: "CRMComp" } : { invoice: "Invoices", expense: "Direct costs", crm: "CRM" })[c]).join(", ") || "no categories set"})
                         </span>
                       )}
                     </div>
@@ -2285,7 +2308,7 @@ export default function ToolsView({
                   {f.processStatus === "complete" && f.result && (
                     <div>
                       <div style={{ fontSize: "13px", color: "#166534", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", padding: "6px 10px", marginBottom: "12px" }}>
-                        ✓ {f.client} - updated {f.result.updateCount} row{f.result.updateCount !== 1 ? "s" : ""} in column {f.result.startCol} for {f.result.targetMonthStr}
+                        ✓ {f.client} - updated {f.result.updateCount} {isAdmin ? `row${f.result.updateCount !== 1 ? "s" : ""} in column ${f.result.startCol}` : `record${f.result.updateCount !== 1 ? "s" : ""}`} for {f.result.targetMonthStr}
                       </div>
 
                       {f.result.importedEmployees && f.result.importedEmployees.length > 0 && (
@@ -2346,7 +2369,7 @@ export default function ToolsView({
                                 )}
                               </tr>
                               <tr style={{ background: "#f1f5f9", fontWeight: 700 }}>
-                                <td style={{ padding: "8px 10px", color: "#334155" }}>Sheet Total (Row 55)</td>
+                                <td style={{ padding: "8px 10px", color: "#334155" }}>{isAdmin ? "Sheet Total (Row 55)" : "Pulse total"}</td>
                                 {f.result.columnsSummary ? (
                                   f.result.columnsSummary.map(col => (
                                     <td key={col.key} style={{ padding: "8px 10px", textAlign: "right", color: "#334155", fontFamily: "monospace" }}>
@@ -2358,7 +2381,7 @@ export default function ToolsView({
                                 )}
                               </tr>
                               <tr style={{ background: "#f8fafc", borderTop: "1px solid #e2e8f0", fontWeight: 700 }}>
-                                <td style={{ padding: "8px 10px", color: "#475569" }}>Difference vs Sheet</td>
+                                <td style={{ padding: "8px 10px", color: "#475569" }}>{isAdmin ? "Difference vs Sheet" : "Difference vs Pulse"}</td>
                                 {f.result.columnsSummary ? (
                                   f.result.columnsSummary.map(col => {
                                     const diffVal = Math.round((col.importedTotal - col.sheetTotal) * 100) / 100;
@@ -2416,7 +2439,7 @@ export default function ToolsView({
 
                       {f.result.newStarters?.length > 0 && (
                         <div style={{ marginBottom: "8px" }}>
-                          <div style={{ fontSize: "12px", fontWeight: "700", color: "#dc2626", marginBottom: "4px" }}>🔴 In document, not in sheet:</div>
+                          <div style={{ fontSize: "12px", fontWeight: "700", color: "#dc2626", marginBottom: "4px" }}>🔴 {isAdmin ? "In document, not in sheet:" : "In document, not in Pulse:"}</div>
                           {f.result.newStarters.map((n, i) => <div key={i} style={{ fontSize: "12px", color: "#555" }}>{n}</div>)}
                         </div>
                       )}
@@ -2562,12 +2585,12 @@ export default function ToolsView({
                   {f.processStatus === "complete" && f.result && (
                     <div>
                       <div style={{ fontSize: "13px", color: "#166534", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", padding: "6px 10px", marginBottom: "12px" }}>
-                        ✓ {f.client} - updated {f.result.updateCount} row{f.result.updateCount !== 1 ? "s" : ""} in column {f.result.startCol} for {f.result.targetMonthStr}
+                        ✓ {f.client} - updated {f.result.updateCount} {isAdmin ? `row${f.result.updateCount !== 1 ? "s" : ""} in column ${f.result.startCol}` : `record${f.result.updateCount !== 1 ? "s" : ""}`} for {f.result.targetMonthStr}
                       </div>
 
                       {f.result.newStarters?.length > 0 && (
                         <div style={{ marginBottom: "8px" }}>
-                          <div style={{ fontSize: "12px", fontWeight: "700", color: "#dc2626", marginBottom: "4px" }}>🔴 In document, not in sheet:</div>
+                          <div style={{ fontSize: "12px", fontWeight: "700", color: "#dc2626", marginBottom: "4px" }}>🔴 {isAdmin ? "In document, not in sheet:" : "In document, not in Pulse:"}</div>
                           {f.result.newStarters.map((n, i) => <div key={i} style={{ fontSize: "12px", color: "#555" }}>{n}</div>)}
                         </div>
                       )}
@@ -2741,6 +2764,7 @@ export default function ToolsView({
           styles={styles}
           managedClient={managedClient}
           onClearManagedClient={onClearManagedClient}
+          isAdmin={isAdmin}
         />
       )}
 
@@ -2901,7 +2925,11 @@ export default function ToolsView({
 
               <div style={{ padding: "20px" }}>
                 <p style={{ margin: "0 0 16px 0", fontSize: "13px", color: "#4b5563" }}>
-                  Select which months to mark on the <strong>NBtoFind</strong> tab for <strong>{eomNbExcludeModal.clientName}</strong> (writes &quot;No&quot; into row 25):
+                  {isAdmin ? (
+                    <>Select which months to mark on the <strong>NBtoFind</strong> tab for <strong>{eomNbExcludeModal.clientName}</strong> (writes &quot;No&quot; into row 25):</>
+                  ) : (
+                    <>Select which months to exclude new business to find for <strong>{eomNbExcludeModal.clientName}</strong>:</>
+                  )}
                 </p>
 
                 <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
@@ -2926,7 +2954,7 @@ export default function ToolsView({
                         Target month only ({targetLabel})
                       </div>
                       <div style={{ fontSize: "12px", color: "#6b7280", marginTop: "2px" }}>
-                        Writes &quot;No&quot; into the {targetLabel} column (row 25)
+                        {isAdmin ? `Writes "No" into the ${targetLabel} column (row 25)` : `Excludes new business to find for ${targetLabel}`}
                       </div>
                     </div>
                   </label>
@@ -2952,7 +2980,7 @@ export default function ToolsView({
                         Both target month and current month ({targetLabel} &amp; {currentLabel})
                       </div>
                       <div style={{ fontSize: "12px", color: "#6b7280", marginTop: "2px" }}>
-                        Writes &quot;No&quot; into both the {targetLabel} and {currentLabel} columns (row 25)
+                        {isAdmin ? `Writes "No" into both the ${targetLabel} and ${currentLabel} columns (row 25)` : `Excludes new business to find for both ${targetLabel} and ${currentLabel}`}
                       </div>
                     </div>
                   </label>

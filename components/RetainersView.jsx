@@ -12,7 +12,9 @@ export default function RetainersView({
   styles,
   isAdmin: propIsAdmin,
   managedClient,
-  onClearManagedClient
+  onClearManagedClient,
+  initialClient,
+  onSelectClient
 }) {
   const auth = useAuth();
   const isAdmin = propIsAdmin !== undefined ? propIsAdmin : (!auth.user?.isReadOnly && !!(auth.user?.isAdmin || auth.user?.role === "Admin"));
@@ -25,14 +27,15 @@ export default function RetainersView({
     tidyResult, setTidyResult,
     handleTidyRetainers,
     loadRetainersJobs
-  } = useRetainers(managedClient);
+  } = useRetainers(managedClient || initialClient);
 
   const [showCreateRetainerModal, setShowCreateRetainerModal] = useState(false);
   const [retainersEditJob, setRetainersEditJob] = useState(null);
   const [expandedRetainerJobs, setExpandedRetainerJobs] = useState(new Set());
 
+  const prevInitialClientRef = useRef(null);
   const prevManagedClientRef = useRef(null);
-  // Auto-select managedClient when in manage mode, or clear when manage mode cancelled
+  // Auto-select managedClient when in manage mode, or initialClient when passed, or clear when manage mode cancelled
   useEffect(() => {
     if (managedClient) {
       const currentName = managedClient.clientName?.toLowerCase();
@@ -46,17 +49,24 @@ export default function RetainersView({
           loadRetainersJobs(clientObj);
         }
       }
+    } else if (initialClient && (initialClient !== prevInitialClientRef.current || (!retainersClient?.clientSheetId && initialClient.clientSheetId))) {
+      prevInitialClientRef.current = initialClient;
+      const clientObj = (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === initialClient.clientName?.toLowerCase()) || initialClient;
+      setRetainersClient(clientObj);
+      if (clientObj?.clientSheetId) {
+        loadRetainersJobs(clientObj);
+      }
     } else if (prevManagedClientRef.current) {
       prevManagedClientRef.current = null;
       setRetainersClient(null);
       setRetainersJobs(null);
     }
-  }, [managedClient, allOutgoingsClients, retainersClient?.clientSheetId]);
+  }, [managedClient, initialClient, allOutgoingsClients, retainersClient?.clientSheetId]);
 
   const noRetClient = !retainersClient && !managedClient;
 
   return (
-    <div style={{ maxWidth: "1600px", margin: "0 auto", padding: "16px 24px 60px" }}>
+    <div className="pma-page-container" style={{ width: "100%", maxWidth: "100%", margin: "0 auto", padding: "20px 32px 60px", boxSizing: "border-box" }}>
       {showTidyConfirm && (
         <div style={styles.modalOverlay} onClick={e => { if (e.target === e.currentTarget) setShowTidyConfirm(false); }}>
           <div style={styles.modalCard}>
@@ -144,6 +154,7 @@ export default function RetainersView({
                 } else {
                   setRetainersClient(null);
                   setRetainersJobs(null);
+                  onSelectClient?.(null);
                 }
               }}
               style={{
@@ -180,14 +191,10 @@ export default function RetainersView({
             <h1 style={{ margin: 0, fontSize: "20px", fontWeight: 700, color: "#1e293b", display: "flex", alignItems: "center", gap: "8px" }}>
               <span>Retainers</span>
             </h1>
-            {retainersClient ? (
+            {retainersClient && (
               <div style={{ margin: "3px 0 0", fontSize: "14px", fontWeight: 600, color: "#0047AB" }}>
                 {retainersClient.clientName}
               </div>
-            ) : (
-              <p style={{ margin: "4px 0 0", fontSize: "13px", color: "#64748b" }}>
-                Select a client to manage their retainer jobs
-              </p>
             )}
           </div>
         </div>
@@ -222,6 +229,7 @@ export default function RetainersView({
           clients={allOutgoingsClients || []}
           onSelectClient={(c) => {
             setRetainersClient(c);
+            onSelectClient?.(c);
             loadRetainersJobs(c);
           }}
           loading={retainersJobsLoading}
@@ -242,7 +250,7 @@ export default function RetainersView({
               <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "12px", minWidth: "1100px", tableLayout: "fixed" }}>
                 <colgroup>
                   <col style={{ width: "24px" }} />
-                  <col style={{ width: "50px" }} />
+                  {isAdmin && <col style={{ width: "50px" }} />}
                   <col style={{ width: "130px" }} />
                   <col style={{ width: "160px" }} />
                   <col style={{ width: "90px" }} />
@@ -254,7 +262,10 @@ export default function RetainersView({
                 </colgroup>
                 <thead>
                   <tr style={{ background: "#f5f6fa" }}>
-                    {["", "Row", "Client", "Job name", "Monthly £", "Start", "End", "InvSlot1", "InvSlot2", "InvSlot3"].map(h => (
+                    {(isAdmin
+                      ? ["", "Row", "Client", "Job name", "Monthly £", "Start", "End", "InvSlot1", "InvSlot2", "InvSlot3"]
+                      : ["", "Client", "Job name", "Monthly £", "Start", "End", "Invoice 1", "Invoice 2", "Invoice 3"]
+                    ).map(h => (
                       <th key={h} style={{ padding: "8px 10px", textAlign: "left", borderBottom: "2px solid #ddd", whiteSpace: "nowrap" }}>{h}</th>
                     ))}
                   </tr>
@@ -274,12 +285,12 @@ export default function RetainersView({
                                 return next;
                               })}
                               style={{ cursor: "pointer", color: "#7c3aed", fontSize: "11px", userSelect: "none" }}
-                              title={isExpanded ? "Collapse" : `Show ${job.rows.length - 1} more row(s)`}>
+                              title={isExpanded ? "Collapse" : `Show ${job.rows.length - 1} more ${isAdmin ? "row(s)" : "period(s)"}`}>
                               {isExpanded ? "▼" : "▶"}
                             </span>
                           )}
                         </td>
-                        <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", color: "#888" }}>{jr.rowNum}</td>
+                        {isAdmin && <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", color: "#888" }}>{jr.rowNum}</td>}
                         <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{rIdx === 0 ? job.client : ""}</td>
                         <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", fontWeight: rIdx === 0 ? "600" : "normal" }}>
                           {rIdx === 0 ? (

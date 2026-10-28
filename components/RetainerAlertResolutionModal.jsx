@@ -3,7 +3,8 @@ import Spinner from "./Spinner";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 
 export default function RetainerAlertResolutionModal({ resolutionType, alertMeta, alertKey, automationCommanderSheetId, clientSheetId, masterSheetId, clientName, onClose, onResolved }) {
-  const { allClientsMap } = useAppGlobals();
+  const { allClientsMap, user } = useAppGlobals();
+  const isAdmin = Boolean(user?.isAdmin || user?.role === "Admin");
   const effectiveClientName = clientName || alertMeta?.clientName || "";
   const resolvedClientSheetId = clientSheetId
     || alertMeta?.clientSheetId
@@ -22,7 +23,7 @@ export default function RetainerAlertResolutionModal({ resolutionType, alertMeta
   React.useEffect(() => {
     let cancelled = false;
     if (!resolvedClientSheetId) {
-      setError("Could not find the client's spreadsheet ID. Please ensure the client sheet is configured.");
+      setError(isAdmin ? "Could not find the client's spreadsheet ID. Please ensure the client sheet is configured." : "Could not find client configuration in Pulse.");
       setLoading(false);
       return;
     }
@@ -53,7 +54,7 @@ export default function RetainerAlertResolutionModal({ resolutionType, alertMeta
       }
     })();
     return () => { cancelled = true; };
-  }, [alertMeta, resolvedClientSheetId, resolvedMasterSheetId, effectiveClientName, resolutionType]);
+  }, [alertMeta, resolvedClientSheetId, resolvedMasterSheetId, effectiveClientName, resolutionType, isAdmin]);
 
   const close = () => { if (!applying) onClose(); };
 
@@ -145,7 +146,7 @@ export default function RetainerAlertResolutionModal({ resolutionType, alertMeta
                 <>
                   <div style={{ marginTop: "8px" }}>Last invoice was sent on <strong>{preview.lastInvoiceSentDate}</strong>, covering <strong>{preview.coveredPeriodLabel}</strong>.</div>
                   <div style={{ marginTop: "8px", padding: "10px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "6px" }}>
-                    The retainer&apos;s end date will be set to <strong>{preview.computedEndDateLabel}</strong>. Any future invoice rows beyond this date will be removed (only if they contain no real invoice or expense data - otherwise this will be blocked).
+                    The retainer&apos;s end date will be set to <strong>{preview.computedEndDateLabel}</strong>. Any future billing periods beyond this date will be removed (only if they contain no real invoice or expense data - otherwise this will be blocked).
                   </div>
                 </>
               ) : (
@@ -156,7 +157,7 @@ export default function RetainerAlertResolutionModal({ resolutionType, alertMeta
                   </div>
                   {preview.sourceRowInfo && (
                     <div style={{ marginTop: "8px", padding: "10px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "6px" }}>
-                      This invoice is currently attached to a different job on row <strong>{preview.sourceRowInfo.confirmedRow}</strong> ({preview.sourceRowInfo.client} - {preview.sourceRowInfo.jobName}). <strong>That job&apos;s data will be permanently cleared</strong> - {preview.sourceRowInfo.totalRowsToClear > 1 ? `all ${preview.sourceRowInfo.totalRowsToClear} of its rows (the parent row plus ${preview.sourceRowInfo.totalRowsToClear - 1} child row${preview.sourceRowInfo.totalRowsToClear - 1 === 1 ? "" : "s"})` : "its one row"} - (client, job, revenue, dates, and all invoice/expense slots) since it&apos;s being relocated onto this retainer.
+                      This invoice is currently attached to a different job{isAdmin ? <> on row <strong>{preview.sourceRowInfo.confirmedRow}</strong></> : ""} ({preview.sourceRowInfo.client} - {preview.sourceRowInfo.jobName}). <strong>That job&apos;s data will be permanently cleared</strong>{isAdmin ? <> - {preview.sourceRowInfo.totalRowsToClear > 1 ? `all ${preview.sourceRowInfo.totalRowsToClear} of its rows (the parent row plus ${preview.sourceRowInfo.totalRowsToClear - 1} child row${preview.sourceRowInfo.totalRowsToClear - 1 === 1 ? "" : "s"})` : "its one row"} -</> : ""} (client, job, revenue, dates, and all attached invoices/expenses) since it&apos;s being relocated onto this retainer.
                     </div>
                   )}
                 </>

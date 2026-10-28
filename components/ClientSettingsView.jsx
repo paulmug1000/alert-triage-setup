@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/router";
 import Spinner from "./Spinner";
+import EditClientSelector from "./EditClientSelector";
 
 const SECTIONS = [
   { id: "main", label: "Main", icon: "🏢", adminOnly: true },
@@ -1003,6 +1004,7 @@ export default function ClientSettingsView({
         setPlError("");
         setLastSyncedAt(null);
         setSelectedClientName(nextClient);
+        onSelectClient?.(nextClient);
       });
       setModalSaveError("");
       setShowUnsavedModal(true);
@@ -1028,6 +1030,7 @@ export default function ClientSettingsView({
     onSelectClient?.(nextClient);
   }, [isDirty, selectedClientName, onSelectClient]);
 
+  const prevInitialClientNameRef = useRef(initialClientName);
   // Keep selectedClientName synced with managedClient or initialClientName
   useEffect(() => {
     if (managedClient?.clientName && managedClient.clientName !== selectedClientName) {
@@ -1037,13 +1040,16 @@ export default function ClientSettingsView({
       setErrorMsg("");
       setLastSyncedAt(null);
       setSelectedClientName(managedClient.clientName);
-    } else if (initialClientName && initialClientName !== selectedClientName && !managedClient) {
-      setSettings(null);
-      setIsDirty(false);
-      setSaveSuccessMsg("");
-      setErrorMsg("");
-      setLastSyncedAt(null);
-      setSelectedClientName(initialClientName);
+    } else if (initialClientName !== prevInitialClientNameRef.current) {
+      prevInitialClientNameRef.current = initialClientName;
+      if (initialClientName && initialClientName !== selectedClientName && !managedClient) {
+        setSettings(null);
+        setIsDirty(false);
+        setSaveSuccessMsg("");
+        setErrorMsg("");
+        setLastSyncedAt(null);
+        setSelectedClientName(initialClientName);
+      }
     }
   }, [managedClient, initialClientName, selectedClientName]);
 
@@ -2304,178 +2310,192 @@ export default function ClientSettingsView({
 
   return (
     <div style={{ marginTop: "10px", width: "100%", maxWidth: "100%", boxSizing: "border-box", minWidth: 0 }}>
-      {/* ── TOP CONTROL BAR ─────────────────────────────────────────────────── */}
-      <div style={{
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "center",
-        flexWrap: "wrap",
-        gap: "12px",
-        background: "#FFFFFF",
-        border: "1px solid #E2E8F0",
-        borderRadius: "10px",
-        padding: "12px 18px",
-        marginBottom: "16px",
-        boxShadow: "0 1px 2px rgba(0,0,0,0.03)"
-      }}>
-        {/* Left: Client selector */}
-        <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
-          <label style={{ fontSize: "13px", fontWeight: "600", color: "#334155" }}>
-            Client:
-          </label>
-          {managedClient ? (
-            <div style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
-              <span style={{ fontSize: "13px", fontWeight: "700", color: "#0F172A", background: "#F1F5F9", padding: "4px 10px", borderRadius: "6px" }}>
-                🏢 {managedClient.clientName}
+      {/* ── TOP CONTROL BAR (shown when a client is selected) ──────────────── */}
+      {(selectedClientName || managedClient) && (
+        <div style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          flexWrap: "wrap",
+          gap: "12px",
+          background: "#FFFFFF",
+          border: "1px solid #E2E8F0",
+          borderRadius: "10px",
+          padding: "12px 18px",
+          marginBottom: "16px",
+          boxShadow: "0 1px 2px rgba(0,0,0,0.03)"
+        }}>
+          {/* Left: Back button + Active Client Name */}
+          <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+            {!managedClient && (allClients || []).length > 1 && (
+              <button
+                type="button"
+                onClick={() => handleClientChange("")}
+                disabled={loading || saving}
+                style={{
+                  background: "#ffffff",
+                  border: "1px solid #cbd5e1",
+                  borderRadius: "6px",
+                  cursor: (loading || saving) ? "not-allowed" : "pointer",
+                  padding: "6px 12px",
+                  fontSize: "16px",
+                  color: "#475569",
+                  lineHeight: 1,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  transition: "all 0.15s ease",
+                  boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+                }}
+                onMouseEnter={(e) => {
+                  if (!loading && !saving) {
+                    e.currentTarget.style.backgroundColor = "#f1f5f9";
+                    e.currentTarget.style.borderColor = "#94a3b8";
+                    e.currentTarget.style.color = "#0f172a";
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  if (!loading && !saving) {
+                    e.currentTarget.style.backgroundColor = "#ffffff";
+                    e.currentTarget.style.borderColor = "#cbd5e1";
+                    e.currentTarget.style.color = "#475569";
+                  }
+                }}
+                title="Back to client list"
+              >
+                ←
+              </button>
+            )}
+            <div style={{ display: "inline-flex", alignItems: "center", gap: "8px" }}>
+              <span style={{ fontSize: "15px", fontWeight: "700", color: "#0047AB" }}>
+                {managedClient ? managedClient.clientName : selectedClientName}
               </span>
-              <span style={{ fontSize: "11px", color: "#64748B", fontStyle: "italic" }}>
-                (managed client mode)
-              </span>
+              {managedClient && (
+                <span style={{ fontSize: "11px", color: "#64748B", fontStyle: "italic" }}>
+                  (managed client mode)
+                </span>
+              )}
             </div>
-          ) : (
-            <select
-              value={selectedClientName}
-              onChange={(e) => handleClientChange(e.target.value)}
-              disabled={loading || saving}
-              style={{
-                padding: "6px 12px",
-                borderRadius: "6px",
-                border: "1px solid #CBD5E1",
-                fontSize: "13px",
-                background: "#FFFFFF",
-                fontWeight: "600",
-                color: selectedClientName ? "#0F172A" : "#64748B",
-                cursor: (loading || saving) ? "wait" : "pointer",
-                minWidth: "240px"
-              }}
-            >
-              <option value="">-- Please select a client --</option>
-              {allClients.map(c => (
-                <option key={c.clientName} value={c.clientName}>
-                  {c.clientName}
-                </option>
-              ))}
-            </select>
-          )}
 
-          {settings && lastSyncedAt && !loading && (
-            <span style={{ fontSize: "11px", color: "#64748B", marginLeft: "6px" }}>
-              {fromCache ? "⚡ Loaded from cache" : "☁️ Loaded from database"}
-              {" · "}
-              {new Date(lastSyncedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
-            </span>
-          )}
-          {loading && (
-            <span style={{ fontSize: "11px", color: "#0066CC", marginLeft: "6px", display: "inline-flex", alignItems: "center", gap: "5px" }}>
-              <Spinner size={10} color="#0066CC" /> Loading...
-            </span>
-          )}
-        </div>
+            {settings && lastSyncedAt && !loading && (
+              <span style={{ fontSize: "11px", color: "#64748B", marginLeft: "6px" }}>
+                {fromCache ? "Loaded from cache" : "Loaded from database"}
+                {" · "}
+                {new Date(lastSyncedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+              </span>
+            )}
+            {loading && (
+              <span style={{ fontSize: "11px", color: "#0066CC", marginLeft: "6px", display: "inline-flex", alignItems: "center", gap: "5px" }}>
+                <Spinner size={10} color="#0066CC" /> Loading...
+              </span>
+            )}
+          </div>
 
-        {/* Right: Actions */}
-        <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
-          {effectiveIsAdmin && (
-            <label style={{ display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#64748B", cursor: "pointer", userSelect: "none" }}>
-              <input
-                type="checkbox"
-                checked={showCellRefs}
-                onChange={(e) => setShowCellRefs(e.target.checked)}
-              />
-              Show cell refs
-            </label>
-          )}
+          {/* Right: Actions */}
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+            {effectiveIsAdmin && (
+              <label style={{ display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#64748B", cursor: "pointer", userSelect: "none" }}>
+                <input
+                  type="checkbox"
+                  checked={showCellRefs}
+                  onChange={(e) => setShowCellRefs(e.target.checked)}
+                />
+                Show cell refs
+              </label>
+            )}
 
-          {isDirty && (
-            <span style={{ fontSize: "12px", color: "#B45309", background: "#FEF3F2", padding: "4px 10px", borderRadius: "12px", fontWeight: "600", display: "inline-flex", alignItems: "center", gap: "4px" }}>
-              ● Unsaved changes
-            </span>
-          )}
+            {isDirty && (
+              <span style={{ fontSize: "12px", color: "#B45309", background: "#FEF3F2", padding: "4px 10px", borderRadius: "12px", fontWeight: "600", display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                ● Unsaved changes
+              </span>
+            )}
 
-          <button
-            type="button"
-            onClick={() => fetchSettings(true)}
-            disabled={!selectedClientName || loading || saving}
-            title={selectedClientName ? "Bypass cache and reload fresh data directly from Google Sheets" : "Select a client first"}
-            style={{
-              padding: "7px 12px",
-              fontSize: "12px",
-              fontWeight: "600",
-              color: selectedClientName ? "#334155" : "#94A3B8",
-              background: "#F1F5F9",
-              border: "1px solid #CBD5E1",
-              borderRadius: "6px",
-              cursor: (!selectedClientName || loading || saving) ? "not-allowed" : "pointer",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "5px",
-              opacity: selectedClientName ? 1 : 0.6
-            }}
-          >
-            {loading ? <Spinner size={12} color="#0066CC" /> : "↻"} Reload sheets
-          </button>
-
-          {isDirty && (
             <button
               type="button"
-              onClick={handleCancelChanges}
-              disabled={loading || saving}
-              title="Undo all unsaved modifications and revert to last saved state"
+              onClick={() => fetchSettings(true)}
+              disabled={!selectedClientName || loading || saving}
+              title={selectedClientName ? "Bypass cache and reload fresh data directly from Google Sheets" : "Select a client first"}
               style={{
-                padding: "7px 14px",
-                fontSize: "13px",
+                padding: "7px 12px",
+                fontSize: "12px",
                 fontWeight: "600",
-                color: "#64748B",
-                background: "#F8FAFC",
+                color: selectedClientName ? "#334155" : "#94A3B8",
+                background: "#F1F5F9",
                 border: "1px solid #CBD5E1",
                 borderRadius: "6px",
-                cursor: (loading || saving) ? "not-allowed" : "pointer",
+                cursor: (!selectedClientName || loading || saving) ? "not-allowed" : "pointer",
                 display: "inline-flex",
                 alignItems: "center",
                 gap: "5px",
-                transition: "all 0.15s ease"
-              }}
-              onMouseEnter={(e) => {
-                if (!loading && !saving) {
-                  e.currentTarget.style.color = "#0F172A";
-                  e.currentTarget.style.background = "#F1F5F9";
-                }
-              }}
-              onMouseLeave={(e) => {
-                if (!loading && !saving) {
-                  e.currentTarget.style.color = "#64748B";
-                  e.currentTarget.style.background = "#F8FAFC";
-                }
+                opacity: selectedClientName ? 1 : 0.6
               }}
             >
-              Cancel changes
+              {loading ? <Spinner size={12} color="#0066CC" /> : "↻"} Reload sheets
             </button>
-          )}
 
-          <button
-            type="button"
-            onClick={() => handleSave()}
-            disabled={!selectedClientName || !isDirty || saving || loading}
-            style={{
-              padding: "7px 18px",
-              fontSize: "13px",
-              fontWeight: "600",
-              color: "#FFFFFF",
-              background: (selectedClientName && isDirty) ? "#0066CC" : "#94A3B8",
-              border: "none",
-              borderRadius: "6px",
-              cursor: (!selectedClientName || !isDirty || saving || loading) ? "default" : "pointer",
-              boxShadow: (selectedClientName && isDirty) ? "0 1px 2px rgba(0,0,0,0.1)" : "none",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "6px",
-              transition: "all 0.15s ease",
-              opacity: (selectedClientName && isDirty) ? 1 : 0.7
-            }}
-          >
-            {saving ? <><Spinner size={12} color="#FFFFFF" /> Saving...</> : "Save changes"}
-          </button>
+            {isDirty && (
+              <button
+                type="button"
+                onClick={handleCancelChanges}
+                disabled={loading || saving}
+                title="Undo all unsaved modifications and revert to last saved state"
+                style={{
+                  padding: "7px 14px",
+                  fontSize: "13px",
+                  fontWeight: "600",
+                  color: "#64748B",
+                  background: "#F8FAFC",
+                  border: "1px solid #CBD5E1",
+                  borderRadius: "6px",
+                  cursor: (loading || saving) ? "not-allowed" : "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "5px",
+                  transition: "all 0.15s ease"
+                }}
+                onMouseEnter={(e) => {
+                  if (!loading && !saving) {
+                    e.currentTarget.style.color = "#0F172A";
+                    e.currentTarget.style.background = "#F1F5F9";
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  if (!loading && !saving) {
+                    e.currentTarget.style.color = "#64748B";
+                    e.currentTarget.style.background = "#F8FAFC";
+                  }
+                }}
+              >
+                Cancel changes
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={() => handleSave()}
+              disabled={!selectedClientName || !isDirty || saving || loading}
+              style={{
+                padding: "7px 18px",
+                fontSize: "13px",
+                fontWeight: "600",
+                color: "#FFFFFF",
+                background: (selectedClientName && isDirty) ? "#0066CC" : "#94A3B8",
+                border: "none",
+                borderRadius: "6px",
+                cursor: (!selectedClientName || !isDirty || saving || loading) ? "default" : "pointer",
+                boxShadow: (selectedClientName && isDirty) ? "0 1px 2px rgba(0,0,0,0.1)" : "none",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "6px",
+                transition: "all 0.15s ease",
+                opacity: (selectedClientName && isDirty) ? 1 : 0.7
+              }}
+            >
+              {saving ? <><Spinner size={12} color="#FFFFFF" /> Saving...</> : "Save changes"}
+            </button>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* ── UNSAVED CHANGES MODAL ────────────────────────────────────────── */}
       {showUnsavedModal && (
@@ -2619,25 +2639,14 @@ export default function ClientSettingsView({
         </div>
       )}
 
-      {/* Empty State when no client has been chosen yet */}
-      {!selectedClientName && !loading && (
-        <div style={{
-          padding: "70px 24px",
-          background: "#FFFFFF",
-          borderRadius: "10px",
-          border: "1px solid #E2E8F0",
-          textAlign: "center",
-          boxShadow: "0 1px 3px rgba(0,0,0,0.02)",
-          margin: "10px 0"
-        }}>
-          <div style={{ fontSize: "42px", marginBottom: "14px" }}>🏢</div>
-          <div style={{ fontSize: "17px", fontWeight: "700", color: "#0F172A", marginBottom: "8px" }}>
-            Select a Client to View Settings
-          </div>
-          <div style={{ fontSize: "13px", color: "#64748B", maxWidth: "480px", margin: "0 auto", lineHeight: "1.6" }}>
-            Please choose a client from the dropdown menu above to inspect and configure accounting parameters, invoice formatting, CRM integrations, and tolerances.
-          </div>
-        </div>
+      {/* Client Selection Screen when no client has been chosen yet */}
+      {!selectedClientName && !managedClient && !loading && (
+        <EditClientSelector
+          clients={allClients || []}
+          onSelectClient={(c) => handleClientChange(c.clientName)}
+          loading={loading}
+          title="Select a client to view and manage settings:"
+        />
       )}
 
       {/* Loading state when switching client or on initial load */}

@@ -190,14 +190,35 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
   }, [router?.isReady, router?.asPath]);
   const [invoicesInitialClient, setInvoicesInitialClient] = useState(null);
   const [outgoingsInitialClient, setOutgoingsInitialClient] = useState(null);
+  const [editStickyClient, setEditStickyClient] = useState(null);
+  const [viewsStickyClient, setViewsStickyClient] = useState(null);
+  const [activeViewTab, setActiveViewTab] = useState("fyPerformance");
+
+  const EDIT_NAV_KEYS = useMemo(
+    () => new Set(["jobs", "outgoings", "invoices", "retainers", "salaries", "expenses", "nbtofind", "budget", "cash"]),
+    []
+  );
+
+  useEffect(() => {
+    if (!EDIT_NAV_KEYS.has(activeNav)) {
+      setEditStickyClient(null);
+      setInvoicesInitialClient(null);
+      setOutgoingsInitialClient(null);
+    }
+    if (activeNav !== "views") {
+      setViewsStickyClient(null);
+    }
+  }, [activeNav, EDIT_NAV_KEYS]);
 
   const handleNavInvoicesForClient = (client) => {
     setInvoicesInitialClient(client);
+    setEditStickyClient(client);
     setActiveNav("invoices");
   };
 
   const handleNavOutgoingsForClient = (client) => {
     setOutgoingsInitialClient(client);
+    setEditStickyClient(client);
     setActiveNav("outgoings");
   };
 
@@ -685,7 +706,14 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
   const handleNavNBToFind = () => navigateWithGuard(() => { setActiveNav("nbtofind"); loadClients(); });
   const handleNavBudget = () => navigateWithGuard(() => { setActiveNav("budget"); loadClients(); });
   const handleNavCash = () => navigateWithGuard(() => { setActiveNav("cash"); loadClients(); });
-  const handleNavViews = () => navigateWithGuard(() => { setActiveNav("views"); loadClients(); });
+  const handleNavViews = (tabId = "fyPerformance") => navigateWithGuard(() => {
+    fireOutgoingsPullIfPending();
+    if (typeof tabId === "string" && tabId) {
+      setActiveViewTab(tabId);
+    }
+    setActiveNav("views");
+    loadClients();
+  });
 
   // Synchronize browser URL with activeNav so direct bookmarking works naturally
   // Rule: Canonical URL for PMA is ALWAYS /pma (never bare root /)
@@ -997,7 +1025,11 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
           isAdmin={isAdmin}
           managedClient={managedClient}
           onClearManagedClient={handleClearManagedClient}
-          initialClient={outgoingsInitialClient}
+          initialClient={outgoingsInitialClient || editStickyClient}
+          onSelectClient={(c) => {
+            setEditStickyClient(c);
+            if (!c) setOutgoingsInitialClient(null);
+          }}
         />
       );
     }
@@ -1011,7 +1043,11 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
           isAdmin={isAdmin}
           managedClient={managedClient}
           onClearManagedClient={handleClearManagedClient}
-          initialClient={invoicesInitialClient}
+          initialClient={invoicesInitialClient || editStickyClient}
+          onSelectClient={(c) => {
+            setEditStickyClient(c);
+            if (!c) setInvoicesInitialClient(null);
+          }}
         />
       );
     }
@@ -1026,6 +1062,8 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
           isAdmin={isAdmin}
           managedClient={managedClient}
           onClearManagedClient={handleClearManagedClient}
+          initialClient={editStickyClient}
+          onSelectClient={setEditStickyClient}
         />
       );
     }
@@ -1038,6 +1076,8 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
           styles={styles}
           managedClient={managedClient}
           onClearManagedClient={handleClearManagedClient}
+          initialClient={editStickyClient}
+          onSelectClient={setEditStickyClient}
         />
       );
     }
@@ -1050,6 +1090,8 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
           styles={styles}
           managedClient={managedClient}
           onClearManagedClient={handleClearManagedClient}
+          initialClient={editStickyClient}
+          onSelectClient={setEditStickyClient}
         />
       );
     }
@@ -1062,6 +1104,8 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
           styles={styles}
           managedClient={managedClient}
           onClearManagedClient={handleClearManagedClient}
+          initialClient={editStickyClient}
+          onSelectClient={setEditStickyClient}
         />
       );
     }
@@ -1074,6 +1118,8 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
           styles={styles}
           managedClient={managedClient}
           onClearManagedClient={handleClearManagedClient}
+          initialClient={editStickyClient}
+          onSelectClient={setEditStickyClient}
         />
       );
     }
@@ -1086,6 +1132,8 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
           styles={styles}
           managedClient={managedClient}
           onClearManagedClient={handleClearManagedClient}
+          initialClient={editStickyClient}
+          onSelectClient={setEditStickyClient}
         />
       );
     }
@@ -1114,6 +1162,8 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
           styles={styles}
           managedClient={managedClient}
           onClearManagedClient={handleClearManagedClient}
+          initialClient={editStickyClient}
+          onSelectClient={setEditStickyClient}
           isAdmin={isAdmin}
         />
       );
@@ -1178,6 +1228,10 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
           isAdmin={isAdmin}
           managedClient={managedClient}
           onClearManagedClient={handleClearManagedClient}
+          activeTab={activeViewTab}
+          onSelectTab={setActiveViewTab}
+          initialClient={viewsStickyClient}
+          onSelectClient={setViewsStickyClient}
         />
       );
     }
@@ -1239,6 +1293,8 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
       <CreateTaskModal />
       <NavShell
         activeNav={activeNav}
+        activeViewTab={activeViewTab}
+        onSelectViewTab={handleNavViews}
         onHome={handleNavHome}
         onAlerts={handleNavAlerts}
         onOverview={handleNavOverview}

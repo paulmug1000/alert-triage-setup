@@ -304,7 +304,7 @@ export default function SetupView({
         setConfig(data.config);
         setFeedback({
           type: "success",
-          message: "Setup configuration saved and synced to Master Sheet KeyInfo successfully."
+          message: isUserAdmin ? "Setup configuration saved and synced to Master Sheet KeyInfo successfully." : "Setup configuration saved successfully."
         });
       } else {
         throw new Error(data.error || "Failed to save configuration");
@@ -356,15 +356,29 @@ export default function SetupView({
     });
 
     return (
-      <div style={{ maxWidth: "1140px", margin: "0 auto", padding: "24px 16px" }}>
+      <div className="pma-page-container" style={{ width: "100%", maxWidth: "100%", margin: "0 auto", padding: "20px 32px 60px", boxSizing: "border-box" }}>
         {/* Top Header */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "20px", flexWrap: "wrap", gap: "12px" }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            marginBottom: "20px",
+            flexWrap: "wrap",
+            gap: "12px",
+            background: "#ffffff",
+            padding: "16px 20px",
+            borderRadius: "10px",
+            border: "1px solid #e2e8f0",
+            boxShadow: "0 1px 3px rgba(15, 23, 42, 0.04)",
+          }}
+        >
           <div>
-            <h1 style={{ margin: "0 0 6px 0", fontSize: "24px", fontWeight: "700", color: "#0F172A", display: "flex", alignItems: "center", gap: "10px" }}>
-              <span>Setup & client connections</span>
+            <h1 style={{ margin: "0 0 4px 0", fontSize: "20px", fontWeight: "700", color: "#0F172A", display: "flex", alignItems: "center", gap: "10px" }}>
+              <span>Setup</span>
             </h1>
-            <p style={{ margin: 0, color: "#64748B", fontSize: "14px" }}>
-              Monitor client setup statuses, tool connections, and onboarding lifecycles.
+            <p style={{ margin: 0, color: "#64748B", fontSize: "13px" }}>
+              Manage client setup and onboarding
             </p>
           </div>
 
@@ -648,9 +662,23 @@ export default function SetupView({
   // VIEW 2: SINGLE CLIENT SETUP VIEW
   // ============================================================================
   return (
-    <div style={{ maxWidth: "1080px", margin: "0 auto", padding: "24px 16px" }}>
+    <div className="pma-page-container" style={{ width: "100%", maxWidth: "100%", margin: "0 auto", padding: "20px 32px 60px", boxSizing: "border-box" }}>
       {/* Top Header */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "20px", flexWrap: "wrap", gap: "12px" }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: "20px",
+          flexWrap: "wrap",
+          gap: "12px",
+          background: "#ffffff",
+          padding: "16px 20px",
+          borderRadius: "10px",
+          border: "1px solid #e2e8f0",
+          boxShadow: "0 1px 3px rgba(15, 23, 42, 0.04)",
+        }}
+      >
         <div>
           {!managedClient && (allOutgoingsClients || []).length > 1 && (
             <button
@@ -662,19 +690,19 @@ export default function SetupView({
                 gap: "6px",
                 background: "transparent",
                 border: "none",
-                color: "#023f98",
+                color: "#0047AB",
                 fontWeight: "700",
                 fontSize: "13px",
                 cursor: "pointer",
                 padding: 0,
-                marginBottom: "8px"
+                marginBottom: "6px"
               }}
             >
               <span>← All clients overview</span>
             </button>
           )}
 
-          <h1 style={{ margin: "0 0 6px 0", fontSize: "24px", fontWeight: "700", color: "#0F172A", display: "flex", alignItems: "center", gap: "10px" }}>
+          <h1 style={{ margin: "0 0 4px 0", fontSize: "20px", fontWeight: "700", color: "#0F172A", display: "flex", alignItems: "center", gap: "10px" }}>
             <span>{selectedClient ? selectedClient.clientName : selectedClientName}</span>
             <span
               style={{
@@ -689,10 +717,10 @@ export default function SetupView({
               {setupMode ? "● SETUP MODE" : "✓ LIVE"}
             </span>
           </h1>
-          <p style={{ margin: 0, color: "#64748B", fontSize: "14px" }}>
+          <p style={{ margin: 0, color: "#64748B", fontSize: "13px" }}>
             {setupMode
               ? "Follow the phased checklist below to onboard this client and connect tools."
-              : "Control client setup mode, configure tool integrations, and edit budget/outgoings spreadsheets."}
+              : (isUserAdmin ? "Control client setup mode, configure tool integrations, and edit budget/outgoings spreadsheets." : "Control client setup mode, configure tool integrations, and edit client budgets.")}
           </p>
         </div>
 
@@ -1017,7 +1045,7 @@ export default function SetupView({
                 <div style={{ background: "#FFFFFF", borderRadius: "12px", border: "1px solid #E2E8F0", padding: "20px", boxShadow: "0 1px 3px rgba(0,0,0,0.04)" }}>
                   <div style={{ marginBottom: "16px" }}>
                     <h2 style={{ margin: "0 0 4px 0", fontSize: "16px", fontWeight: "700", color: "#0F172A" }}>
-                      1. Integrated tools (Master sheet KeyInfo sync)
+                      1. Integrated tools{isUserAdmin ? " (Master sheet KeyInfo sync)" : ""}
                     </h2>
                     <p style={{ margin: 0, fontSize: "13px", color: "#64748B" }}>
                       Select which platforms this client uses.
@@ -1074,7 +1102,9 @@ export default function SetupView({
                             {config?.crmStatus?.connected ? "● Connected" : "○ Needs connection"}
                           </span>
                         ) : (
-                          <span style={{ fontSize: "11px", color: "#64748B" }}>Spreadsheet source</span>
+                          <span style={{ fontSize: "11px", color: "#64748B" }}>
+                            {["google sheet", "excel"].includes(crmTool.toLowerCase()) ? "File source" : ""}
+                          </span>
                         )}
                       </div>
                       <select
@@ -1155,7 +1185,7 @@ export default function SetupView({
                       3. Budget editor
                     </h2>
                     <p style={{ margin: 0, fontSize: "13px", color: "#64748B" }}>
-                      Direct spreadsheet table editing for client financial budget model (also available under the Edit menu).
+                      Edit the client financial budget model (also available under the Edit menu).
                     </p>
                   </div>
 
@@ -1208,7 +1238,7 @@ export default function SetupView({
                         📋 Onboarding checklist history & setup tasks
                       </h3>
                       <p style={{ margin: 0, fontSize: "12px", color: "#64748B", textAlign: "left" }}>
-                        View completed onboarding items, recorded Script IDs, and Master KeyInfo settings.
+                        {isUserAdmin ? "View completed onboarding items, recorded Script IDs, and Master KeyInfo settings." : "View completed onboarding items and financial setup settings."}
                       </p>
                     </div>
                     <span style={{ fontSize: "13px", fontWeight: "600", color: "#023f98" }}>

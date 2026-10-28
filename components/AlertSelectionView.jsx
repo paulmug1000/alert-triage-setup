@@ -1307,7 +1307,7 @@ export default function AlertSelectionView({
   }, [totalVisibleAlertsCount, isLoading, selectingClient, handlePostClear, resolvedNoActionFlags]);
 
   return (
-    <div style={styles.container}>
+    <div className="pma-page-container" style={styles.container}>
       <div style={styles.header}>
         <h1 style={styles.title}>{selectedClient.clientName}</h1>
         <p style={styles.subtitle}>{totalVisibleAlertsCount} alert(s)</p>

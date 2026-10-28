@@ -111,7 +111,13 @@ export default function EditClientSelector({
           )}
 
           {/* Client List */}
-          <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
+              gap: "10px",
+            }}
+          >
             {filteredClients.map((c) => {
               const extra = renderExtra ? renderExtra(c) : null;
               return (
@@ -121,10 +127,10 @@ export default function EditClientSelector({
                   onClick={() => onSelectClient(c)}
                   style={{
                     textAlign: "left",
-                    padding: "12px 18px",
+                    padding: "13px 16px",
                     fontSize: "14px",
                     fontWeight: 600,
-                    color: "#1e293b",
+                    color: "#0f172a",
                     background: "#ffffff",
                     border: "1px solid #e2e8f0",
                     borderRadius: "8px",
@@ -132,26 +138,31 @@ export default function EditClientSelector({
                     display: "flex",
                     justifyContent: "space-between",
                     alignItems: "center",
+                    gap: "8px",
                     transition: "all 0.15s ease",
-                    boxShadow: "0 1px 2px rgba(0, 0, 0, 0.02)",
+                    boxShadow: "0 1px 2px rgba(15, 23, 42, 0.03)",
                   }}
                   onMouseEnter={(e) => {
-                    e.currentTarget.style.backgroundColor = "#f8fafc";
-                    e.currentTarget.style.borderColor = "#94a3b8";
-                    e.currentTarget.style.transform = "translateX(2px)";
+                    e.currentTarget.style.backgroundColor = "#f0f7ff";
+                    e.currentTarget.style.borderColor = "#0047AB";
+                    e.currentTarget.style.color = "#0047AB";
+                    e.currentTarget.style.transform = "translateY(-1px)";
                     preloadClientData?.(c);
                   }}
                   onMouseLeave={(e) => {
                     e.currentTarget.style.backgroundColor = "#ffffff";
                     e.currentTarget.style.borderColor = "#e2e8f0";
+                    e.currentTarget.style.color = "#0f172a";
                     e.currentTarget.style.transform = "none";
                   }}
                 >
-                  <span>{c.clientName || c.name}</span>
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {c.clientName || c.name}
+                  </span>
                   {extra ? (
-                    <div>{extra}</div>
+                    <div style={{ flexShrink: 0 }}>{extra}</div>
                   ) : (
-                    <span style={{ color: "#94a3b8", fontSize: "16px", lineHeight: 1 }}>
+                    <span style={{ color: "#94a3b8", fontSize: "15px", lineHeight: 1, flexShrink: 0 }}>
                       →
                     </span>
                   )}

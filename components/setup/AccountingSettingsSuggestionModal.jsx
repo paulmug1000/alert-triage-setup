@@ -16,7 +16,8 @@ export default function AccountingSettingsSuggestionModal({
   masterSheetId,
   isOpen,
   onClose,
-  onApplied
+  onApplied,
+  isAdmin = false
 }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -254,7 +255,7 @@ export default function AccountingSettingsSuggestionModal({
                 {/* Tracker Start Date */}
                 <div style={{ gridColumn: "1 / -1" }}>
                   <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#1E293B", marginBottom: "4px" }}>
-                    Pulse tracker start date (KeyInfo!B2)
+                    Pulse tracker start date{isAdmin ? " (KeyInfo!B2)" : ""}
                   </label>
                   <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
                     <input
@@ -279,7 +280,7 @@ export default function AccountingSettingsSuggestionModal({
                 {/* VAT Quarters */}
                 <div style={{ gridColumn: "1 / -1" }}>
                   <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#1E293B", marginBottom: "4px" }}>
-                    VAT quarters (KeyInfo!B6)
+                    VAT quarters{isAdmin ? " (KeyInfo!B6)" : ""}
                   </label>
                   <select
                     value={vatQuarters}
@@ -303,7 +304,7 @@ export default function AccountingSettingsSuggestionModal({
                 {/* VAT Payment Scheme */}
                 <div>
                   <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#1E293B", marginBottom: "4px" }}>
-                    VAT payment scheme (KeyInfo!B8)
+                    VAT payment scheme{isAdmin ? " (KeyInfo!B8)" : ""}
                   </label>
                   <select
                     value={vatScheme}
@@ -327,7 +328,7 @@ export default function AccountingSettingsSuggestionModal({
                 {/* VAT Rate */}
                 <div>
                   <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#1E293B", marginBottom: "4px" }}>
-                    VAT rate (KeyInfo!B9)
+                    VAT rate{isAdmin ? " (KeyInfo!B9)" : ""}
                   </label>
                   <input
                     type="text"
@@ -346,7 +347,7 @@ export default function AccountingSettingsSuggestionModal({
                 {/* PAYE Cycle */}
                 <div>
                   <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#1E293B", marginBottom: "4px" }}>
-                    PAYE cycle (KeyInfo!B12)
+                    PAYE cycle{isAdmin ? " (KeyInfo!B12)" : ""}
                   </label>
                   <select
                     value={payeCycle}
@@ -370,7 +371,7 @@ export default function AccountingSettingsSuggestionModal({
                 {/* Primary Currency */}
                 <div>
                   <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#1E293B", marginBottom: "4px" }}>
-                    Primary currency (KeyInfo!B17)
+                    Primary currency{isAdmin ? " (KeyInfo!B17)" : ""}
                   </label>
                   <select
                     value={primaryCurrency}
@@ -442,7 +443,7 @@ export default function AccountingSettingsSuggestionModal({
             }}
           >
             {saving && <Spinner size={14} color="#FFFFFF" />}
-            <span>{saving ? "Applying settings..." : "Apply settings to master sheet"}</span>
+            <span>{saving ? "Applying settings..." : (isAdmin ? "Apply settings to master sheet" : "Apply settings")}</span>
           </button>
         </div>
       </div>

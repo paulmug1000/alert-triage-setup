@@ -15,7 +15,7 @@ const CRM_TOOLS_CONFIG = {
     color: "#0f9d58",
     bgColor: "rgba(15, 157, 88, 0.12)",
     icon: "GS",
-    description: "Read-only access via Google OAuth 2.0 or Master Sheet bridge. Ingests pipeline, jobs, and deal values safely into DataFromCRM.",
+    description: "Read-only access via Google OAuth 2.0 or Pulse sync. Ingests pipeline, jobs, and deal values safely into Pulse.",
     accountLabel: "Spreadsheet",
     getAccountValue: (m) => m?.spreadsheetName || m?.spreadsheetTitle || m?.accountName,
     idLabel: "Spreadsheet ID",
@@ -27,7 +27,7 @@ const CRM_TOOLS_CONFIG = {
     color: "#0f6cbd",
     bgColor: "rgba(15, 108, 189, 0.12)",
     icon: "XL",
-    description: "Read-only access via Microsoft 365 OAuth 2.0. Ingests workbook tables and ranges safely into DataFromCRM.",
+    description: "Read-only access via Microsoft 365 OAuth 2.0. Ingests workbook tables and ranges safely into Pulse.",
     accountLabel: "Workbook / File",
     getAccountValue: (m) => m?.fileName || m?.workbookName || m?.accountName,
     idLabel: "File ID / Path",
@@ -39,7 +39,7 @@ const CRM_TOOLS_CONFIG = {
     color: "#7b68ee",
     bgColor: "rgba(123, 104, 238, 0.12)",
     icon: "CU",
-    description: "Connects ClickUp workspaces via OAuth 2.0. Synchronizes tasks, custom fields, and pipelines into DataFromCRM.",
+    description: "Connects ClickUp workspaces via OAuth 2.0. Synchronizes tasks, custom fields, and pipelines into Pulse.",
     accountLabel: "Workspace / Team",
     getAccountValue: (m) => m?.teamName || m?.companyName,
     idLabel: "Team ID",
@@ -51,7 +51,7 @@ const CRM_TOOLS_CONFIG = {
     color: "#1a4c6e",
     bgColor: "rgba(26, 76, 110, 0.12)",
     icon: "C",
-    description: "Connects Capsule CRM via OAuth 2.0. Ingests opportunities, milestones, and expected values into DataFromCRM.",
+    description: "Connects Capsule CRM via OAuth 2.0. Ingests opportunities, milestones, and expected values into Pulse.",
     accountLabel: "Site Name",
     getAccountValue: (m) => m?.siteName || m?.tenantName,
     idLabel: "Site URL",
@@ -63,7 +63,7 @@ const CRM_TOOLS_CONFIG = {
     color: "#2563eb",
     bgColor: "rgba(37, 99, 235, 0.12)",
     icon: "CL",
-    description: "Connects Close CRM via OAuth 2.0 or API key. Pulls active opportunities, deal stages, and values into DataFromCRM.",
+    description: "Connects Close CRM via OAuth 2.0 or API key. Pulls active opportunities, deal stages, and values into Pulse.",
     accountLabel: "Organization",
     getAccountValue: (m) => m?.organizationName || m?.tenantName,
     idLabel: "Org ID",
@@ -75,7 +75,7 @@ const CRM_TOOLS_CONFIG = {
     color: "#ff7a59",
     bgColor: "rgba(255, 122, 89, 0.12)",
     icon: "H",
-    description: "Connects HubSpot CRM via OAuth 2.0. Ingests deal amounts, pipelines, and stages into DataFromCRM.",
+    description: "Connects HubSpot CRM via OAuth 2.0. Ingests deal amounts, pipelines, and stages into Pulse.",
     accountLabel: "Portal / Account",
     getAccountValue: (m) => m?.accountName || m?.tenantName,
     idLabel: "Portal ID",
@@ -87,7 +87,7 @@ const CRM_TOOLS_CONFIG = {
     color: "#6161ff",
     bgColor: "rgba(97, 97, 255, 0.12)",
     icon: "M",
-    description: "Connects Monday.com accounts via OAuth 2.0. Ingests board data and CRM pipelines directly into DataFromCRM.",
+    description: "Connects Monday.com accounts via OAuth 2.0. Ingests board data and CRM pipelines directly into Pulse.",
     accountLabel: "Account / Workspace",
     getAccountValue: (m) => m?.accountName || m?.tenantName,
     idLabel: "Account ID",
@@ -99,7 +99,7 @@ const CRM_TOOLS_CONFIG = {
     color: "#00c261",
     bgColor: "rgba(0, 194, 97, 0.12)",
     icon: "P",
-    description: "Connects Pipedrive CRM via OAuth 2.0. Synchronizes deal values, custom fields, and pipelines into DataFromCRM.",
+    description: "Connects Pipedrive CRM via OAuth 2.0. Synchronizes deal values, custom fields, and pipelines into Pulse.",
     accountLabel: "Company",
     getAccountValue: (m) => m?.companyName || m?.tenantName,
     idLabel: "Company ID",
@@ -729,13 +729,30 @@ export default function IntegrationsView({
   }
 
   return (
-    <div style={{ padding: "20px 24px", maxWidth: "1380px", margin: "0 auto" }}>
+    <div className="pma-page-container" style={{ width: "100%", maxWidth: "100%", margin: "0 auto", padding: "20px 32px 60px", boxSizing: "border-box" }}>
       {/* ── TOP HEADER ──────────────────────────────────────────────────────── */}
-      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "20px", flexWrap: "wrap", gap: "16px" }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          marginBottom: "20px",
+          flexWrap: "wrap",
+          gap: "16px",
+          background: "#ffffff",
+          padding: "16px 20px",
+          borderRadius: "10px",
+          border: "1px solid #e2e8f0",
+          boxShadow: "0 1px 3px rgba(15, 23, 42, 0.04)",
+        }}
+      >
         <div>
-          <h1 style={{ fontSize: "23px", fontWeight: "700", color: "#0f172a", margin: 0, display: "flex", alignItems: "center", gap: "10px" }}>
-            <span>Third-party integrations</span>
+          <h1 style={{ fontSize: "20px", fontWeight: "700", color: "#0f172a", margin: "0 0 4px 0", display: "flex", alignItems: "center", gap: "10px" }}>
+            <span>Integrations</span>
           </h1>
+          <p style={{ margin: 0, fontSize: "13px", color: "#64748b" }}>
+            Manage connections with third-party accounting and CRM tools
+          </p>
         </div>
 
         {/* Global Action & Refresh */}
@@ -764,7 +781,7 @@ export default function IntegrationsView({
           </button>
           <button
             onClick={() => fetchAllStatus(false, true)}
-            title="Refresh all client integrations (force live sync from Google Sheets)"
+            title={isAdmin ? "Refresh all client integrations (force live sync from Google Sheets)" : "Refresh all client integrations"}
             disabled={loading || verifyingAll}
             style={{
               display: "flex",
@@ -972,7 +989,7 @@ export default function IntegrationsView({
             <span style={{ fontSize: "15px" }}>🔍</span>
             <input
               type="text"
-              placeholder="Search clients by name, accounting tool, CRM, or sheet ID..."
+              placeholder={isAdmin ? "Search clients by name, accounting tool, CRM, or sheet ID..." : "Search clients by name, accounting tool, or CRM..."}
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               style={{
@@ -1124,7 +1141,7 @@ export default function IntegrationsView({
                         </span>
                       )}
 
-                      {client.masterSheetId && (
+                      {isAdmin && client.masterSheetId && (
                         <span
                           title={`Master Sheet ID: ${client.masterSheetId}`}
                           style={{
@@ -2481,7 +2498,7 @@ function EmptyToolCard({
             {status === "healthy"
               ? `Automated ${category.toLowerCase()} sequences are running successfully on cadence and ingesting data.`
               : status === "running"
-                ? `An automated ${category.toLowerCase()} sequence is currently executing on the client Master Sheet.`
+                ? `An automated ${category.toLowerCase()} sequence is currently executing${isAdmin ? " on the client Master Sheet" : ""}.`
                 : status === "error"
                   ? `Automated sequence requires attention: ${health?.summary || health?.signalFeedback || "Latest run failed"}`
                   : `This client uses ${toolTitle} as their ${category.toLowerCase()} data source without an active automation schedule.`}
@@ -2644,7 +2661,7 @@ function EmptyToolCard({
                 No {category} Tool Configured
               </h3>
               <span style={{ fontSize: "11.5px", color: "#94a3b8" }}>
-                KeyInfo is set to &quot;{displayVal}&quot;
+                {isAdmin ? `KeyInfo is set to "${displayVal}"` : `Currently set to "${displayVal}"`}
               </span>
             </div>
           </div>
@@ -2663,7 +2680,7 @@ function EmptyToolCard({
         </div>
 
         <p style={{ fontSize: "12px", color: "#64748b", lineHeight: "1.45", margin: "0 0 14px 0" }}>
-          This client does not currently have an automated {category.toLowerCase()} connection configured in their spreadsheet settings.
+          This client does not currently have an automated {category.toLowerCase()} connection {isAdmin ? "configured in their spreadsheet settings." : "configured in Pulse."}
         </p>
       </div>
 

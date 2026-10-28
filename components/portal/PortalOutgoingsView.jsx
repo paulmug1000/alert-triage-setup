@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo } from "react";
 import Spinner from "../Spinner";
 import { PortalTableSkeleton } from "../Skeleton";
-import { formatMoney, parseMoney } from "../../services/deepDiveHelper";
+import DeepDivePopover from "./DeepDivePopover";
+import { formatMoney, parseMoney, buildExpenseCategoryDeepDiveData } from "../../services/deepDiveHelper";
 import { downloadCsv, isPlaceholderExpense } from "../../utils/helpers";
 import AddContractorModal from "./AddContractorModal";
 import AddExpenseModal from "./AddExpenseModal";
@@ -59,6 +60,7 @@ export default function PortalOutgoingsView({
     });
   };
   const [isEditing, setIsEditing] = useState(false);
+  const [activePopover, setActivePopover] = useState(null);
   const [editValues, setEditValues] = useState({}); // { [rowNumber]: string[] (12 months) }
   const [editDeliveryPcts, setEditDeliveryPcts] = useState({}); // { [rowNumber]: string } (for Dividends)
   const [optimisticDeliveryPcts, setOptimisticDeliveryPcts] = useState({});
@@ -77,6 +79,41 @@ export default function PortalOutgoingsView({
     setOptimisticDeliveryPcts({});
     setLocalNewItems([]);
   }, [outgoingsData]);
+
+  // Keep open popover updated when outgoingsData refreshes
+  useEffect(() => {
+    if (activePopover?.isOpen && activePopover._clickParams && outgoingsData) {
+      const p = activePopover._clickParams;
+      const ddData = buildExpenseCategoryDeepDiveData({
+        categoryName: p.categoryName,
+        periodLabel: p.periodLabel,
+        monthIndex: p.mIdx,
+        yearIndex: p.selectedYear,
+        cellValue: p.val,
+        outgoingsData,
+      });
+      setActivePopover((prev) =>
+        prev
+          ? {
+              ...prev,
+              title: ddData.title,
+              period: ddData.period,
+              total: ddData.total,
+              items: ddData.items || [],
+              sections: null,
+              isLoading: false,
+            }
+          : null
+      );
+    }
+  }, [outgoingsData]);
+
+  // Close popover when entering edit mode, changing financial year, or switching category
+  useEffect(() => {
+    if (isEditing || category !== "expenses") {
+      setActivePopover(null);
+    }
+  }, [isEditing, selectedYear, category]);
 
   useEffect(() => {
     if (outgoingsData?.currentYear) {
@@ -852,19 +889,70 @@ export default function PortalOutgoingsView({
                           );
                         }
 
+                        const isClickable = Boolean(
+                          category === "expenses" &&
+                          !isEditing &&
+                          isCellLocked &&
+                          val &&
+                          val !== "—" &&
+                          val !== "" &&
+                          Math.abs(parseMoney(val, thousandsSeparator)) >= 0.001
+                        );
+
                         return (
                           <td
                             key={mIdx}
+                            onClick={(e) => {
+                              if (!isClickable) return;
+                              const rect = e.currentTarget.getBoundingClientRect();
+                              const ddData = buildExpenseCategoryDeepDiveData({
+                                categoryName: item.name,
+                                periodLabel: mLabel,
+                                monthIndex: mIdx,
+                                yearIndex: selectedYear,
+                                cellValue: val,
+                                outgoingsData,
+                              });
+                              setActivePopover({
+                                isOpen: true,
+                                targetRect: rect,
+                                title: ddData.title,
+                                period: ddData.period,
+                                total: ddData.total,
+                                items: ddData.items || [],
+                                sections: null,
+                                isLoading: Boolean(isLoading),
+                                _clickParams: {
+                                  categoryName: item.name,
+                                  periodLabel: mLabel,
+                                  mIdx,
+                                  selectedYear,
+                                  val,
+                                  rect,
+                                },
+                              });
+                            }}
+                            onMouseEnter={(e) => {
+                              if (isClickable) e.currentTarget.style.filter = "brightness(0.92)";
+                            }}
+                            onMouseLeave={(e) => {
+                              if (isClickable) e.currentTarget.style.filter = "none";
+                            }}
                             style={{
                               padding: "4px 4px",
                               textAlign: "right",
                               fontSize: "11px",
                               background: isCellLocked ? "#f8fafc" : "transparent",
                               color: isCellLocked ? "#64748b" : "#0f172a",
-                              cursor: isCellLocked ? "not-allowed" : "default",
+                              cursor: isEditing && isCellLocked ? "not-allowed" : isClickable ? "pointer" : "default",
+                              textDecoration: isClickable ? "underline dashed #94a3b8 1px" : "none",
+                              textUnderlineOffset: "2px",
                               verticalAlign: "top",
+                              whiteSpace: "nowrap",
+                              fontVariantNumeric: "tabular-nums",
+                              transition: "background-color 0.15s ease",
                             }}
-                            title={isCellLocked ? lockTooltip : undefined}
+                            title={isEditing && isCellLocked ? lockTooltip : undefined}
                           >
                             {isEditing && !isCellLocked ? (
                               <input
@@ -972,6 +1060,23 @@ export default function PortalOutgoingsView({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "1rem", width: "100%", fontFamily: "'Kumbh Sans', sans-serif" }}>
+      {/* Deep Dive Popover for Expenses (only when not in edit mode) */}
+      {category === "expenses" && !isEditing && (
+        <DeepDivePopover
+          isOpen={Boolean(activePopover?.isOpen)}
+          targetRect={activePopover?.targetRect}
+          title={activePopover?.title}
+          period={activePopover?.period}
+          total={activePopover?.total}
+          items={activePopover?.items || []}
+          sections={activePopover?.sections}
+          currencySymbol={currencySymbol}
+          thousandsSeparator={thousandsSeparator}
+          onClose={() => setActivePopover(null)}
+          isLoading={Boolean(isLoading || activePopover?.isLoading)}
+        />
+      )}
+
       {/* Action Bar */}
       <div
         style={{

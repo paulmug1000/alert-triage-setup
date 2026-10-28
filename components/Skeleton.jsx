@@ -748,10 +748,10 @@ export function DeepDiveSkeleton({ rows = 4 }) {
  */
 export function PmaHomeSkeleton() {
   return (
-    <div data-pulse-skeleton="true" style={{ maxWidth: "1080px", margin: "0 auto", padding: "24px 16px", fontFamily: "'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" }}>
+    <div data-pulse-skeleton="true" className="pma-page-container" style={{ width: "100%", maxWidth: "100%", margin: "0 auto", padding: "20px 32px 60px", boxSizing: "border-box", fontFamily: "'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" }}>
       {/* Page header */}
-      <div style={{ marginBottom: "24px" }}>
-        <h1 style={{ margin: 0, fontSize: "24px", fontWeight: "700", color: "#0F172A" }}>
+      <div style={{ background: "#ffffff", padding: "16px 20px", borderRadius: "10px", border: "1px solid #e2e8f0", boxShadow: "0 1px 3px rgba(15, 23, 42, 0.04)", marginBottom: "20px" }}>
+        <h1 style={{ margin: 0, fontSize: "20px", fontWeight: "700", color: "#0F172A" }}>
           Home
         </h1>
       </div>
@@ -916,10 +916,10 @@ export function PmaHomeSkeleton() {
  */
 export function PmaAlertsSkeleton() {
   return (
-    <div data-pulse-skeleton="true" style={{ maxWidth: "1080px", margin: "0 auto", padding: "24px 16px", fontFamily: "'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" }}>
+    <div data-pulse-skeleton="true" className="pma-page-container" style={{ width: "100%", maxWidth: "100%", margin: "0 auto", padding: "20px 32px 60px", boxSizing: "border-box", fontFamily: "'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" }}>
       {/* Header */}
-      <div style={{ marginBottom: "24px" }}>
-        <h1 style={{ fontSize: "24px", fontWeight: "700", color: "#0F172A", margin: "0 0 6px 0" }}>
+      <div style={{ background: "#ffffff", padding: "16px 20px", borderRadius: "10px", border: "1px solid #e2e8f0", boxShadow: "0 1px 3px rgba(15, 23, 42, 0.04)", marginBottom: "20px" }}>
+        <h1 style={{ fontSize: "20px", fontWeight: "700", color: "#0F172A", margin: "0 0 6px 0" }}>
           Alerts
         </h1>
         <Skeleton width="280px" height="14px" />
@@ -927,11 +927,6 @@ export function PmaAlertsSkeleton() {
 
       {/* Main alerts card */}
       <div style={{ background: "#FFFFFF", border: "1px solid #E2E8F0", borderRadius: "8px", padding: "24px", boxShadow: "0 1px 3px rgba(0,0,0,0.04)" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
-          <Skeleton width="80px" height="15px" />
-          <Skeleton width="140px" height="13px" />
-        </div>
-
         {/* Client alert cards silhouette */}
         <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
           {[
@@ -998,20 +993,20 @@ export function EditClientSelectorSkeleton({ count = 6 }) {
       </div>
 
       {/* Client List */}
-      <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "10px" }}>
         {Array.from({ length: count }).map((_, i) => (
           <div
             key={i}
             style={{
-              padding: "12px 18px",
+              padding: "12px 16px",
               border: "1px solid #e2e8f0",
-              borderRadius: "6px",
+              borderRadius: "8px",
               background: "#ffffff",
               display: "flex",
               justifyContent: "space-between",
               alignItems: "center",
               boxSizing: "border-box",
-              minHeight: "44px",
+              minHeight: "48px",
             }}
           >
             <Skeleton width={`${120 + ((i * 37) % 110)}px`} height="15px" />
@@ -1617,9 +1612,9 @@ export function PmaSetupDetailSkeleton() {
  */
 export function PmaIntegrationsSkeleton() {
   return (
-    <div style={{ padding: "20px 24px", maxWidth: "1380px", margin: "0 auto" }}>
+    <div className="pma-page-container" style={{ width: "100%", maxWidth: "100%", padding: "20px 32px 60px", margin: "0 auto", boxSizing: "border-box" }}>
       {/* Top Header */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px", flexWrap: "wrap", gap: "12px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px", flexWrap: "wrap", gap: "12px", background: "#ffffff", padding: "16px 20px", borderRadius: "10px", border: "1px solid #e2e8f0", boxShadow: "0 1px 3px rgba(15, 23, 42, 0.04)" }}>
         <Skeleton width="240px" height="24px" />
         <Skeleton width="130px" height="36px" borderRadius="6px" />
       </div>
@@ -1700,9 +1695,9 @@ export function PmaIntegrationsSkeleton() {
  */
 export function PmaActivitySkeleton() {
   return (
-    <div style={{ maxWidth: "1080px", margin: "0 auto", padding: "24px 16px" }}>
+    <div className="pma-page-container" style={{ width: "100%", maxWidth: "100%", margin: "0 auto", padding: "20px 32px 60px", boxSizing: "border-box" }}>
       {/* Header */}
-      <div style={{ marginBottom: "20px" }}>
+      <div style={{ marginBottom: "20px", background: "#ffffff", padding: "16px 20px", borderRadius: "10px", border: "1px solid #e2e8f0", boxShadow: "0 1px 3px rgba(15, 23, 42, 0.04)" }}>
         <Skeleton width="180px" height="24px" style={{ marginBottom: "6px" }} />
         <Skeleton width="300px" height="14px" />
       </div>

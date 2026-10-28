@@ -132,9 +132,11 @@ export default function BudgetView({
   managedClient,
   onClearManagedClient,
   initialClient,
+  onSelectClient,
 }) {
   const { user } = useAuth();
   const isAdmin = Boolean(user?.isAdmin || user?.role === "Admin" || user?.role === "ClientManager");
+  const isSysAdmin = Boolean(user?.isAdmin || user?.role === "Admin");
   const { getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId } = useAppGlobals();
 
   // Client State (synchronous initial selection from managedClient or initialClient to eliminate flash)
@@ -295,6 +297,7 @@ export default function BudgetView({
     } else {
       setSelectedClient(null);
       setBudgetData(null);
+      onSelectClient?.(null);
       if (typeof window !== "undefined") {
         sessionStorage.removeItem("pma_budget_client");
       }
@@ -359,7 +362,7 @@ export default function BudgetView({
 
       const data = await res.json();
       if (!res.ok || !data.success) {
-        throw new Error(data.error || "Failed to load budget data from Master Sheet");
+        throw new Error(data.error || "Failed to load budget data");
       }
       setBudgetData(data);
       if (data.defaultFyIndex !== undefined) {
@@ -820,11 +823,11 @@ export default function BudgetView({
       if (data.updatedMatrix) {
         setBudgetData((prev) => (prev ? { ...prev, matrix: data.updatedMatrix } : prev));
       }
-      setSaveSuccessMsg(`Updated Row ${sheetRow} (${colLetter})`);
+      setSaveSuccessMsg(isSysAdmin ? `Updated Row ${sheetRow} (${colLetter})` : "Budget updated");
       setTimeout(() => setSaveSuccessMsg(""), 3000);
     } catch (err) {
       console.error("update_view_cell error:", err);
-      setError(err.message || "Failed to update cell");
+      setError(err.message || "Failed to update value");
       fetchBudgetData(selectedClient, true);
     }
   };
@@ -834,11 +837,15 @@ export default function BudgetView({
   // ───────────────────────────────────────────────────────────────────────────
   const handleOpenNoteModal = (sheetRow, colIdx, title, subtitle = "") => {
     const currentNote = matrix[sheetRow - 1]?.[colIdx]?.note || "";
+    const cleanTitle = !isSysAdmin && title ? title.replace(/^Cell note:\s*/i, "Note: ") : (title || (isSysAdmin ? "Cell note" : "Note"));
+    const cleanSubtitle = isSysAdmin
+      ? (subtitle || `Budget row ${sheetRow}, column ${colIndexToLetter(colIdx + 1)}`)
+      : (subtitle || "").replace(/\s*\(?Row\s+\d+,\s*Col\s+[A-Z]+\)?/gi, "").trim();
     setNoteModalData({
       sheetRow,
       colIdx,
-      title: title || "Cell note",
-      subtitle: subtitle || `Budget row ${sheetRow}, column ${colIndexToLetter(colIdx + 1)}`,
+      title: cleanTitle,
+      subtitle: cleanSubtitle,
       initialNote: currentNote,
     });
   };
@@ -881,14 +888,14 @@ export default function BudgetView({
 
       const data = await res.json();
       if (!res.ok || !data.success) {
-        throw new Error(data?.error || "Failed to update cell note");
+        throw new Error(data?.error || "Failed to update note");
       }
 
-      setSaveSuccessMsg(`Updated note on Row ${sheetRow}`);
+      setSaveSuccessMsg(isSysAdmin ? `Updated note on Row ${sheetRow}` : "Note updated");
       setTimeout(() => setSaveSuccessMsg(""), 3000);
     } catch (err) {
       console.error("update_cell_note error:", err);
-      setError(err.message || "Failed to update cell note");
+      setError(err.message || "Failed to update note");
       fetchBudgetData(selectedClient, true);
       throw err;
     }
@@ -1137,10 +1144,12 @@ export default function BudgetView({
 
   return (
     <div
+      className="pma-page-container"
       style={{
-        maxWidth: "1600px",
+        width: "100%",
+        maxWidth: "100%",
         margin: "0 auto",
-        padding: "16px 24px 60px",
+        padding: "20px 32px 60px",
         boxSizing: "border-box",
         fontFamily: "'Kumbh Sans', sans-serif",
       }}
@@ -1240,14 +1249,10 @@ export default function BudgetView({
                 </>
               )}
             </h1>
-            {selectedClient ? (
+            {selectedClient && (
               <div style={{ margin: "3px 0 0", fontSize: "14px", fontWeight: 600, color: "#0047AB" }}>
                 {selectedClient.clientName}
               </div>
-            ) : (
-              <p style={{ margin: "4px 0 0", fontSize: "13px", color: "#64748b" }}>
-                Select a client to view and edit budget
-              </p>
             )}
           </div>
         </div>
@@ -1324,7 +1329,7 @@ export default function BudgetView({
               type="button"
               onClick={() => selectedClient && fetchBudgetData(selectedClient, true)}
               disabled={loading}
-              title="Refresh budget data from master sheet"
+              title={isSysAdmin ? "Refresh budget data from master sheet" : "Refresh budget data"}
               style={{
                 padding: "6px 12px",
                 background: "#f8fafc",
@@ -1365,7 +1370,7 @@ export default function BudgetView({
             </button>
 
             {/* Admin: Open in Sheets */}
-            {isAdmin && targetSheetId && (
+            {isSysAdmin && targetSheetId && (
               <a
                 href={`https://docs.google.com/spreadsheets/d/${targetSheetId}/edit#gid=0`}
                 target="_blank"
@@ -1394,10 +1399,13 @@ export default function BudgetView({
       </div>
 
       {/* ── CLIENT SELECTOR SCREEN (WHEN NO CLIENT SELECTED) ── */}
-      {!selectedClient && !managedClient && !initialClient && (
+      {!selectedClient && !managedClient && (
         <EditClientSelector
           clients={allOutgoingsClients}
-          onSelectClient={(c) => setSelectedClient(c)}
+          onSelectClient={(c) => {
+            setSelectedClient(c);
+            onSelectClient?.(c);
+          }}
           loading={loading}
           title="Select a client to view and edit budget:"
         />
@@ -1893,9 +1901,11 @@ export default function BudgetView({
                 >
                   {activeEmployeeCount} active
                 </span>
-                <span style={{ fontSize: "12px", color: "#64748b" }}>
-                  · Master Sheet Budget rows 58–112 (cols A–E drive monthly costs) + dividends
-                </span>
+                {isSysAdmin && (
+                  <span style={{ fontSize: "12px", color: "#64748b" }}>
+                    · Master Sheet Budget rows 58–112 (cols A–E drive monthly costs) + dividends
+                  </span>
+                )}
               </div>
 
               <div
@@ -1948,7 +1958,7 @@ export default function BudgetView({
                 >
                   <thead>
                     <tr style={{ background: "#312e81", color: "#ffffff" }}>
-                      <th style={{ padding: "8px 6px", width: "42px", textAlign: "center" }}>Row</th>
+                      {isSysAdmin && <th style={{ padding: "8px 6px", width: "42px", textAlign: "center" }}>Row</th>}
                       <th style={{ padding: "8px 10px", textAlign: "left", minWidth: "220px" }}>Name</th>
                       <th style={{ padding: "8px 8px", textAlign: "right", minWidth: "110px" }}>
                         Equiv salary
@@ -2000,9 +2010,11 @@ export default function BudgetView({
                             background: hasContent ? "#ffffff" : "#fafafa",
                           }}
                         >
-                          <td style={{ padding: "5px 4px", textAlign: "center", color: "#94a3b8", background: "#f8fafc" }}>
-                            {sheetRow}
-                          </td>
+                          {isSysAdmin && (
+                            <td style={{ padding: "5px 4px", textAlign: "center", color: "#94a3b8", background: "#f8fafc" }}>
+                              {sheetRow}
+                            </td>
+                          )}
 
                           {/* Col A: Name */}
                           <EditableGridCell
@@ -2110,9 +2122,11 @@ export default function BudgetView({
                     {/* ── Dividends Row (Row 119) ── */}
                     {matrix[118] && (
                       <tr style={{ background: "#fefce8", borderTop: "2px solid #fef08a", fontWeight: 600 }}>
-                        <td style={{ padding: "6px 4px", textAlign: "center", color: "#854d0e", background: "#fef9c3" }}>
-                          119
-                        </td>
+                        {isSysAdmin && (
+                          <td style={{ padding: "6px 4px", textAlign: "center", color: "#854d0e", background: "#fef9c3" }}>
+                            119
+                          </td>
+                        )}
                         <td style={{ padding: "6px 10px", color: "#854d0e" }}>
                           <span>{matrix[118][0]?.v || "Div in lieu of salary"}</span>
                           <span
@@ -2244,7 +2258,7 @@ export default function BudgetView({
                   }}
                   onClick={(e) => e.stopPropagation()}
                 >
-                  <span style={{ fontWeight: 600, color: "#7e22ce" }}>Making up CoS target (B142):</span>
+                  <span style={{ fontWeight: 600, color: "#7e22ce" }}>Making up CoS target{isSysAdmin ? " (B142)" : ""}:</span>
                   {isEditingCosTarget ? (
                     <div style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
                       <input
@@ -2349,7 +2363,7 @@ export default function BudgetView({
                 >
                   <thead>
                     <tr style={{ background: "#0e7490", color: "#ffffff" }}>
-                      <th style={{ padding: "8px 6px", width: "42px", textAlign: "center" }}>Row</th>
+                      {isSysAdmin && <th style={{ padding: "8px 6px", width: "42px", textAlign: "center" }}>Row</th>}
                       <th style={{ padding: "8px 10px", textAlign: "left", minWidth: "240px" }}>Contractor name</th>
                       <th style={{ padding: "8px 6px", textAlign: "center", width: "70px" }}>Del %</th>
                       {fyCols.map((cIdx) => (
@@ -2391,9 +2405,11 @@ export default function BudgetView({
                             background: hasContent ? "#ffffff" : "#fafafa",
                           }}
                         >
-                          <td style={{ padding: "5px 4px", textAlign: "center", color: "#94a3b8", background: "#f8fafc" }}>
-                            {sheetRow}
-                          </td>
+                          {isSysAdmin && (
+                            <td style={{ padding: "5px 4px", textAlign: "center", color: "#94a3b8", background: "#f8fafc" }}>
+                              {sheetRow}
+                            </td>
+                          )}
 
                           {/* Contractor Name */}
                           <EditableGridCell
@@ -2467,9 +2483,11 @@ export default function BudgetView({
                     {/* ── Making up CoS Row (Row 142) ── */}
                     {matrix[141] && (
                       <tr style={{ background: "#faf5ff", borderTop: "2px solid #e9d5ff", fontWeight: 600 }}>
-                        <td style={{ padding: "6px 4px", textAlign: "center", color: "#7e22ce", background: "#f3e8ff" }}>
-                          142
-                        </td>
+                        {isSysAdmin && (
+                          <td style={{ padding: "6px 4px", textAlign: "center", color: "#7e22ce", background: "#f3e8ff" }}>
+                            142
+                          </td>
+                        )}
                         <td style={{ padding: "6px 10px", color: "#7e22ce" }}>
                           <span>{matrix[141][0]?.v || "Making up CoS"}</span>
                           <span
@@ -2482,7 +2500,7 @@ export default function BudgetView({
                               marginLeft: "8px",
                             }}
                           >
-                            Formula top-up
+                            {isSysAdmin ? "Formula top-up" : "Target top-up"}
                           </span>
                         </td>
 
@@ -2560,9 +2578,11 @@ export default function BudgetView({
                 >
                   {activeExpenseCount} active
                 </span>
-                <span style={{ fontSize: "12px", color: "#64748b" }}>
-                  · Master Sheet Budget rows 149–251 (filtered to active lines by default)
-                </span>
+                {isSysAdmin && (
+                  <span style={{ fontSize: "12px", color: "#64748b" }}>
+                    · Master Sheet Budget rows 149–251 (filtered to active lines by default)
+                  </span>
+                )}
               </div>
 
               <div
@@ -2615,7 +2635,7 @@ export default function BudgetView({
                 >
                   <thead>
                     <tr style={{ background: "#334155", color: "#ffffff" }}>
-                      <th style={{ padding: "8px 6px", width: "42px", textAlign: "center" }}>Row</th>
+                      {isSysAdmin && <th style={{ padding: "8px 6px", width: "42px", textAlign: "center" }}>Row</th>}
                       <th style={{ padding: "8px 10px", textAlign: "left", minWidth: "260px" }}>Expense category</th>
                       <th style={{ padding: "8px 6px", textAlign: "center", width: "70px" }}>Del %</th>
                       {fyCols.map((cIdx) => (
@@ -2657,9 +2677,11 @@ export default function BudgetView({
                             background: hasContent ? "#ffffff" : "#fafafa",
                           }}
                         >
-                          <td style={{ padding: "5px 4px", textAlign: "center", color: "#94a3b8", background: "#f8fafc" }}>
-                            {sheetRow}
-                          </td>
+                          {isSysAdmin && (
+                            <td style={{ padding: "5px 4px", textAlign: "center", color: "#94a3b8", background: "#f8fafc" }}>
+                              {sheetRow}
+                            </td>
+                          )}
 
                           {/* Expense Name */}
                           <EditableGridCell
@@ -2906,7 +2928,7 @@ export default function BudgetView({
       {/* Cell Note Modal */}
       <CellNoteModal
         isOpen={Boolean(noteModalData)}
-        title={noteModalData?.title || "Cell note"}
+        title={noteModalData?.title || (isSysAdmin ? "Cell note" : "Note")}
         subtitle={noteModalData?.subtitle || ""}
         initialNote={noteModalData?.initialNote || ""}
         onSave={handleSaveCellNote}

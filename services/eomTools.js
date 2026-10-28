@@ -656,10 +656,10 @@ export async function handleEomSaveCashBalance(req, res, sheets) {
     for (let i = 0; i < headers.length; i++) {
       if (headers[i] && isDateMatchJs_(headers[i], monthLabel)) { targetColIdx0 = i; break; }
     }
-    if (targetColIdx0 === -1) return res.status(400).json({ success: false, error: `Could not find a column for ${monthLabel} on the Cash tab.` });
+    if (targetColIdx0 === -1) return res.status(400).json({ success: false, error: `Could not find period ${monthLabel} in Cashflow.` });
     const colAValues = colAResp.data.values || [];
     const targetRowIdx = colAValues.findIndex(r => String(r[0] || "").trim().toLowerCase() === "actual closing balance");
-    if (targetRowIdx === -1) return res.status(400).json({ success: false, error: `Could not find a row labelled "Actual closing balance" on the Cash tab.` });
+    if (targetRowIdx === -1) return res.status(400).json({ success: false, error: `Could not find the "Actual closing balance" line in Cashflow.` });
     const targetColLetter = columnIndexToLetter_(targetColIdx0 + 1);
     const targetRow = targetRowIdx + 1;
     const formula = "=" + numericAmounts.join("+");
@@ -694,12 +694,12 @@ export async function handleEomCreateDashboardBackup(req, res, sheets) {
     const clientResp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "AutoUpdates!A2:E500" }));
     const clientRows = clientResp.data.values || [];
     const row = clientRows.find(r => String(r[0] || "").trim() === backupClientName);
-    if (!row || !row[4]) return res.status(400).json({ success: false, error: "No backup sheet URL found in AutoUpdates column E for this client." });
+    if (!row || !row[4]) return res.status(400).json({ success: false, error: "No backup destination is configured for this client." });
     const backupSheetId = extractSheetIdFromUrl(row[4]) || String(row[4]).trim();
 
     const sourceMeta = await withRetry(() => sheets.spreadsheets.get({ spreadsheetId: clientSheetId, fields: "sheets.properties" }));
     const sourceSheet = sourceMeta.data.sheets.find(s => s.properties.title === "Dashboard");
-    if (!sourceSheet) return res.status(400).json({ success: false, error: "Source client sheet does not have a 'Dashboard' tab." });
+    if (!sourceSheet) return res.status(400).json({ success: false, error: "Client dashboard configuration not found." });
     const sourceSheetId = sourceSheet.properties.sheetId;
 
     const now = new Date();
@@ -771,7 +771,7 @@ export async function handleEomMarkMonthActual(req, res, sheets) {
     for (let i = 0; i < headers.length; i++) {
       if (headers[i] && isDateMatchJs_(headers[i], monthLabel)) { targetColIdx0 = i; break; }
     }
-    if (targetColIdx0 === -1) return res.status(400).json({ success: false, error: `Could not find a column for ${monthLabel} on the Performance tab.` });
+    if (targetColIdx0 === -1) return res.status(400).json({ success: false, error: `Could not find period ${monthLabel} in Performance.` });
     const targetColLetter = columnIndexToLetter_(targetColIdx0 + 1);
 
     await sheets.spreadsheets.values.update({
@@ -2567,8 +2567,125 @@ export async function handleEomTestReportingWebApp(req, res) {
   }
 }
 
+function colIdxToLetter_(idx) {
+  let letter = "";
+  let n = idx;
+  while (n >= 0) {
+    letter = String.fromCharCode((n % 26) + 65) + letter;
+    n = Math.floor(n / 26) - 1;
+  }
+  return letter;
+}
+
+function formatMonthKeyShort_(monthKey) {
+  if (!monthKey || !/^\d{4}-\d{2}$/.test(monthKey)) return monthKey || "";
+  const [y, m] = monthKey.split("-").map(Number);
+  const shortMonths = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const mStr = shortMonths[m - 1] || "Jan";
+  const yStr = String(y).slice(-2);
+  return `${mStr} ${yStr}`;
+}
+
 /**
- * Executes a reporting action (GENERATE, UPDATE, EMAIL) across target clients
+ * Updates the ReportsLog matrix on the Reporting Control spreadsheet
+ */
+async function updateReportsLogMatrix_(sheets, rcId, clientName, reportUrl, effectiveReportMonth) {
+  if (!clientName || !reportUrl || !effectiveReportMonth) return;
+  try {
+    const logResp = await withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: rcId,
+      range: "ReportsLog!A1:Z100",
+      valueRenderOption: "FORMATTED_VALUE"
+    }));
+    const logRows = logResp.data.values || [];
+    const headerRow = logRows[0] || ["Client"];
+
+    let targetColIdx = -1;
+    for (let c = 1; c < headerRow.length; c++) {
+      if (parseHeaderToMonthKey_(headerRow[c]) === effectiveReportMonth) {
+        targetColIdx = c;
+        break;
+      }
+    }
+
+    const shortHeader = formatMonthKeyShort_(effectiveReportMonth);
+
+    if (targetColIdx === -1) {
+      if (headerRow.length > 1 && headerRow[1]) {
+        const meta = await sheets.spreadsheets.get({
+          spreadsheetId: rcId,
+          fields: "sheets.properties"
+        });
+        const logSheetObj = meta.data.sheets?.find(s => s.properties?.title === "ReportsLog");
+        if (logSheetObj) {
+          await withRetry(() => sheets.spreadsheets.batchUpdate({
+            spreadsheetId: rcId,
+            requestBody: {
+              requests: [{
+                insertDimension: {
+                  range: {
+                    sheetId: logSheetObj.properties.sheetId,
+                    dimension: "COLUMNS",
+                    startIndex: 1,
+                    endIndex: 2
+                  },
+                  inheritFromBefore: false
+                }
+              }]
+            }
+          }));
+        }
+      }
+      targetColIdx = 1;
+      await withRetry(() => sheets.spreadsheets.values.update({
+        spreadsheetId: rcId,
+        range: "ReportsLog!B1",
+        valueInputOption: "RAW",
+        requestBody: { values: [[shortHeader]] }
+      }));
+    }
+
+    let clientRowIdx = -1;
+    for (let r = 1; r < logRows.length; r++) {
+      if (String(logRows[r]?.[0] || "").trim().toLowerCase() === clientName.trim().toLowerCase()) {
+        clientRowIdx = r;
+        break;
+      }
+    }
+
+    const colLetter = colIdxToLetter_(targetColIdx);
+    if (clientRowIdx !== -1) {
+      const sheetRow = clientRowIdx + 1;
+      await withRetry(() => sheets.spreadsheets.values.update({
+        spreadsheetId: rcId,
+        range: `ReportsLog!${colLetter}${sheetRow}`,
+        valueInputOption: "RAW",
+        requestBody: { values: [[reportUrl]] }
+      }));
+    } else {
+      const sheetRow = Math.max(logRows.length + 1, 2);
+      await withRetry(() => sheets.spreadsheets.values.update({
+        spreadsheetId: rcId,
+        range: `ReportsLog!A${sheetRow}`,
+        valueInputOption: "RAW",
+        requestBody: { values: [[clientName]] }
+      }));
+      await withRetry(() => sheets.spreadsheets.values.update({
+        spreadsheetId: rcId,
+        range: `ReportsLog!${colLetter}${sheetRow}`,
+        valueInputOption: "RAW",
+        requestBody: { values: [[reportUrl]] }
+      }));
+    }
+  } catch (err) {
+    console.warn(`[updateReportsLogMatrix_] Note for ${clientName}:`, err.message);
+  }
+}
+
+/**
+ * Executes a reporting action (GENERATE, UPDATE, EMAIL) across target clients.
+ * Supports multi-stage execution via `step` ("PREPARE_MASTER" | "SLIDES_BATCH" | "FINALIZE")
+ * so the frontend can display detailed step-by-step progress and avoid long request timeouts.
  */
 export async function handleEomRunReportingAction(req, res, sheets) {
   const sessionUser = getSessionUser(req);
@@ -2578,11 +2695,15 @@ export async function handleEomRunReportingAction(req, res, sheets) {
 
   const {
     mode, // "GENERATE" | "UPDATE" | "EMAIL"
+    step, // Optional: "PREPARE_MASTER" | "SLIDES_BATCH" | "FINALIZE"
     clients = [],
     eomMonthKey,
     reportMonthKey,
     webAppUrlOverride,
-    automationCommanderSheetId
+    automationCommanderSheetId,
+    chartMapOverride,
+    batchIndex = 0,
+    clientResults: incomingClientResults
   } = req.body;
 
   const acId = resolveAcSheetId_(automationCommanderSheetId);
@@ -2610,8 +2731,130 @@ export async function handleEomRunReportingAction(req, res, sheets) {
     }
     const targetDateFormatted = rawTargetDate.toISOString().slice(0, 10);
 
-    // 2. Phase 1: Update Master Sheet MgmtRep!B1 date natively if GENERATE or UPDATE
-    if (mode === "GENERATE" || mode === "UPDATE") {
+    // ── STAGE 1: PREPARE_MASTER ────────────────────────────────────────────────
+    if (step === "PREPARE_MASTER") {
+      for (const c of clients) {
+        if (c.masterSheetId) {
+          try {
+            await withRetry(() => sheets.spreadsheets.values.update({
+              spreadsheetId: c.masterSheetId,
+              range: "MgmtRep!B1",
+              valueInputOption: "USER_ENTERED",
+              requestBody: { values: [[targetDateFormatted]] }
+            }));
+          } catch (mErr) {
+            console.warn(`Master MgmtRep date update note for ${c.clientName}:`, mErr.message);
+          }
+        }
+      }
+
+      let chartRefsList = [...DEFAULT_CHART_REFS];
+      try {
+        const crResp = await withRetry(() => sheets.spreadsheets.values.get({
+          spreadsheetId: REPORTING_CONTROL_SHEET_ID,
+          range: "ChartRefs!A1:C100",
+          valueRenderOption: "FORMATTED_VALUE"
+        }));
+        const parsed = [];
+        (crResp.data.values || []).forEach(r => {
+          const code = String(r[0] || "").trim();
+          const rng = String(r[1] || "").trim();
+          const lbl = String(r[2] || "").trim();
+          if (code && rng && code !== "Chart code" && code !== "Speaker notes code") {
+            parsed.push({ code, range: rng, label: lbl || code.replace(/^\[|\]$/g, "") });
+          }
+        });
+        if (parsed.length > 0) chartRefsList = parsed;
+      } catch (crErr) {
+        console.warn("Could not read ChartRefs in PREPARE_MASTER:", crErr.message);
+      }
+
+      let activeChartRefs = chartRefsList;
+      const primaryClient = clients[0];
+      if (primaryClient?.masterSheetId && chartRefsList.length > 0) {
+        try {
+          const batchRanges = chartRefsList.map(ref =>
+            ref.range.includes("!") ? ref.range : `MgmtRep!${ref.range}`
+          );
+          const batchResp = await withRetry(() => sheets.spreadsheets.values.batchGet({
+            spreadsheetId: primaryClient.masterSheetId,
+            ranges: batchRanges,
+            valueRenderOption: "FORMATTED_VALUE"
+          }));
+          const valueRanges = batchResp.data.valueRanges || [];
+          const filtered = [];
+          chartRefsList.forEach((ref, idx) => {
+            const rows = valueRanges[idx]?.values || [];
+            const hasContent = rows.some(row => Array.isArray(row) && row.some(cell => String(cell || "").trim() !== ""));
+            if (hasContent) {
+              filtered.push({
+                ...ref,
+                rowCount: rows.length,
+                colCount: rows[0]?.length || 0
+              });
+            }
+          });
+          if (filtered.length > 0) {
+            activeChartRefs = filtered;
+          }
+        } catch (bgErr) {
+          console.warn(`Batch range check note for ${primaryClient.clientName}:`, bgErr.message);
+        }
+      }
+
+      return res.status(200).json({
+        success: true,
+        step: "PREPARE_MASTER",
+        targetDateFormatted,
+        totalRefsCount: chartRefsList.length,
+        activeChartRefs
+      });
+    }
+
+    // ── STAGE 3: FINALIZE ──────────────────────────────────────────────────────
+    if (step === "FINALIZE") {
+      const resultsToProcess = Array.isArray(incomingClientResults) ? incomingClientResults : [];
+      let tasksCompletedCount = 0;
+
+      for (const resItem of resultsToProcess) {
+        const cName = resItem.clientName;
+        if (resItem.success) {
+          if ((mode === "GENERATE" || mode === "UPDATE") && resItem.reportUrl) {
+            await updateReportsLogMatrix_(sheets, REPORTING_CONTROL_SHEET_ID, cName, resItem.reportUrl, effectiveReportMonth);
+            try {
+              const done = await autoCompleteTaskByKeyword_(sheets, acId, cName, effectiveWorkMonth, "monthly management report");
+              if (done) tasksCompletedCount++;
+            } catch (tErr) {
+              console.warn(`Task auto-completion note for ${cName}:`, tErr.message);
+            }
+          } else if (mode === "EMAIL") {
+            try {
+              const done = await autoCompleteTaskByKeyword_(sheets, acId, cName, effectiveWorkMonth, "data request email");
+              if (done) tasksCompletedCount++;
+            } catch (tErr) {
+              console.warn(`Task auto-completion note for ${cName}:`, tErr.message);
+            }
+          }
+        }
+      }
+
+      logPmaActivity(sheets, {
+        automationCommanderSheetId: acId,
+        category: "REPORTING",
+        action: mode === "GENERATE" ? "Generated Management Reports" : (mode === "UPDATE" ? "Updated Management Decks" : "Drafted End of Month Emails"),
+        summary: `${mode === "GENERATE" ? "Generated reports" : (mode === "UPDATE" ? "Updated decks" : "Drafted emails")} for ${clients.map(c => c.clientName).join(", ")} (Report: ${effectiveReportMonth}, Cycle: ${effectiveWorkMonth})`,
+        details: { mode, reportMonthKey: effectiveReportMonth, eomMonthKey: effectiveWorkMonth, clients: clients.map(c => c.clientName), clientResults: resultsToProcess }
+      }).catch(e => console.error("PMA log failed:", e));
+
+      return res.status(200).json({
+        success: true,
+        step: "FINALIZE",
+        tasksCompletedCount
+      });
+    }
+
+    // ── STAGE 2 (SLIDES_BATCH) OR FULL LEGACY FLOW ─────────────────────────────
+    if (!step && (mode === "GENERATE" || mode === "UPDATE")) {
       for (const c of clients) {
         if (c.masterSheetId) {
           try {
@@ -2652,33 +2895,41 @@ export async function handleEomRunReportingAction(req, res, sheets) {
       });
     }
 
-    // 4. Fetch active chartMap from ChartRefs tab in Reporting Control sheet
-    let chartMap = null;
-    try {
-      const crResp = await withRetry(() => sheets.spreadsheets.values.get({
-        spreadsheetId: REPORTING_CONTROL_SHEET_ID,
-        range: "ChartRefs!A1:B100",
-        valueRenderOption: "FORMATTED_VALUE"
-      }));
-      const mapObj = {};
-      (crResp.data.values || []).forEach(r => {
-        const code = String(r[0] || "").trim();
-        const rng = String(r[1] || "").trim();
-        if (code && rng && code !== "Chart code" && code !== "Speaker notes code") {
-          mapObj[code] = rng;
-        }
-      });
-      if (Object.keys(mapObj).length > 0) chartMap = mapObj;
-    } catch (crErr) {
-      console.warn("Could not read ChartRefs for job payload:", crErr.message);
+    // 4. Resolve chartMap (use chartMapOverride if provided for chunked batch, else read ChartRefs)
+    let chartMap = chartMapOverride && typeof chartMapOverride === "object" ? chartMapOverride : null;
+    if (!chartMap && (mode === "GENERATE" || mode === "UPDATE")) {
+      try {
+        const crResp = await withRetry(() => sheets.spreadsheets.values.get({
+          spreadsheetId: REPORTING_CONTROL_SHEET_ID,
+          range: "ChartRefs!A1:B100",
+          valueRenderOption: "FORMATTED_VALUE"
+        }));
+        const mapObj = {};
+        (crResp.data.values || []).forEach(r => {
+          const code = String(r[0] || "").trim();
+          const rng = String(r[1] || "").trim();
+          if (code && rng && code !== "Chart code" && code !== "Speaker notes code") {
+            mapObj[code] = rng;
+          }
+        });
+        if (Object.keys(mapObj).length > 0) chartMap = mapObj;
+      } catch (crErr) {
+        console.warn("Could not read ChartRefs for job payload:", crErr.message);
+      }
     }
 
-    // 5. Dispatch to GAS Reporting Web App
+    // If this is batchIndex > 0 of a GENERATE job, the deck was already created in batchIndex 0, so use UPDATE
+    const effectiveGasAction = (step === "SLIDES_BATCH" && mode === "GENERATE" && batchIndex > 0)
+      ? "UPDATE"
+      : mode;
+
     const gasPayload = {
       secret,
-      action: mode,
+      action: effectiveGasAction,
       targetMonth: effectiveReportMonth,
       chartMap: chartMap || undefined,
+      skipMasterUpdate: step === "SLIDES_BATCH" && batchIndex > 0,
+      skipChartRefresh: step === "SLIDES_BATCH" && batchIndex > 0,
       clients: clients.map(c => ({
         clientName: c.clientName,
         masterSheetUrl: c.masterSheetUrl || (c.masterSheetId ? `https://docs.google.com/spreadsheets/d/${c.masterSheetId}/edit` : ""),
@@ -2711,44 +2962,35 @@ export async function handleEomRunReportingAction(req, res, sheets) {
       return res.status(200).json({ success: false, error: gasData.error || "Reporting action failed", results: gasData.results || [] });
     }
 
-    // 5. Phase 3: Post-processing (ReportsLog & EoM task auto-completion)
     const clientResults = gasData.results || [];
-    const logAppends = [];
-    const nowIso = new Date().toISOString();
 
+    if (step === "SLIDES_BATCH") {
+      return res.status(200).json({
+        success: true,
+        step: "SLIDES_BATCH",
+        batchIndex,
+        results: clientResults
+      });
+    }
+
+    // 5. Phase 3: Post-processing (ReportsLog matrix & EoM task auto-completion)
     for (const resItem of clientResults) {
       const cName = resItem.clientName;
       if (resItem.success) {
         if ((mode === "GENERATE" || mode === "UPDATE") && resItem.reportUrl) {
-          logAppends.push([cName, effectiveReportMonth, resItem.reportUrl, resItem.reportName || "", nowIso]);
-
-          // Auto-complete task "Create and send monthly management report" in EoM
+          await updateReportsLogMatrix_(sheets, REPORTING_CONTROL_SHEET_ID, cName, resItem.reportUrl, effectiveReportMonth);
           try {
             await autoCompleteTaskByKeyword_(sheets, acId, cName, effectiveWorkMonth, "monthly management report");
           } catch (tErr) {
             console.warn(`Task auto-completion note for ${cName}:`, tErr.message);
           }
         } else if (mode === "EMAIL") {
-          // Auto-complete task "Send end of month data request email" in EoM
           try {
             await autoCompleteTaskByKeyword_(sheets, acId, cName, effectiveWorkMonth, "data request email");
           } catch (tErr) {
             console.warn(`Task auto-completion note for ${cName}:`, tErr.message);
           }
         }
-      }
-    }
-
-    if (logAppends.length > 0) {
-      try {
-        await withRetry(() => sheets.spreadsheets.values.append({
-          spreadsheetId: acId,
-          range: "ReportsLog!A:E",
-          valueInputOption: "RAW",
-          requestBody: { values: logAppends }
-        }));
-      } catch (logErr) {
-        console.warn("ReportsLog append error:", logErr.message);
       }
     }
 

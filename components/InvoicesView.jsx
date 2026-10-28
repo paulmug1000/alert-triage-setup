@@ -107,7 +107,8 @@ export default function InvoicesView({
   isAdmin: propIsAdmin,
   managedClient,
   onClearManagedClient,
-  initialClient
+  initialClient,
+  onSelectClient
 }) {
   const auth = useAuth();
   const isAdmin = propIsAdmin !== undefined ? propIsAdmin : (!auth.user?.isReadOnly && !!(auth.user?.isAdmin || auth.user?.role === "Admin"));
@@ -570,12 +571,12 @@ export default function InvoicesView({
                   sl.slotNum !== slotNum
                     ? sl
                     : {
-                        ...sl,
-                        amount: inv.amount || 0,
-                        ref: inv.invoiceNo || "",
-                        sentDate: inv.sentDate || "",
-                        status: inv.status || "Sent",
-                      }
+                      ...sl,
+                      amount: inv.amount || 0,
+                      ref: inv.invoiceNo || "",
+                      sentDate: inv.sentDate || "",
+                      status: inv.status || "Sent",
+                    }
                 ),
               };
             });
@@ -636,11 +637,11 @@ export default function InvoicesView({
               <button onClick={() => setClientMismatchPrompt(null)} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}>×</button>
             </div>
             <p style={{ fontSize: "13px", color: "#555", lineHeight: "1.5", marginTop: 0, marginBottom: "14px" }}>
-              The client name on the invoice differs from the client name on the sheet for <strong>{clientMismatchPrompt.job.jobName}</strong>:
+              The client name on the invoice differs from the client name {isAdmin ? "on the sheet" : "in Pulse"} for <strong>{clientMismatchPrompt.job.jobName}</strong>:
             </p>
             <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "6px", padding: "12px", marginBottom: "14px", fontSize: "13px" }}>
               <div style={{ marginBottom: "6px" }}>
-                <span style={{ color: "#64748b", fontWeight: "600", display: "inline-block", width: "70px" }}>Sheet:</span>
+                <span style={{ color: "#64748b", fontWeight: "600", display: "inline-block", width: "70px" }}>{isAdmin ? "Sheet:" : "Pulse:"}</span>
                 <strong style={{ color: "#334155" }}>{clientMismatchPrompt.sheetClientName}</strong>
               </div>
               <div>
@@ -651,7 +652,7 @@ export default function InvoicesView({
             <div style={{ fontSize: "12px", color: "#64748b", marginBottom: "14px" }}>
               {isAdmin
                 ? "Updating will change the client name across all rows for this job in the Confirmed sheet."
-                : "Updating will change the client name for this job in the Confirmed sheet."}
+                : "Updating will change the client name for this job in Confirmed jobs."}
             </div>
 
             <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "6px", padding: "12px", marginBottom: "16px" }}>
@@ -667,7 +668,7 @@ export default function InvoicesView({
               {updateJobNameChecked && (
                 <div style={{ marginTop: "8px" }}>
                   <div style={{ fontSize: "11px", color: "#64748b", marginBottom: "4px" }}>
-                    Current sheet name: <strong>{clientMismatchPrompt.job.jobName}</strong>
+                    Current {isAdmin ? "sheet" : "job"} name: <strong>{clientMismatchPrompt.job.jobName}</strong>
                     {clientMismatchPrompt.inv.job && clientMismatchPrompt.inv.job !== clientMismatchPrompt.job.jobName && (
                       <span> · Invoice suggests: <strong>{clientMismatchPrompt.inv.job}</strong></span>
                     )}
@@ -696,7 +697,7 @@ export default function InvoicesView({
                 onClick={() => executePlacement(clientMismatchPrompt, true, updateJobNameChecked, newJobNameInput)}
                 style={{ background: "#2563eb", color: "white", border: "none", padding: "10px 14px", borderRadius: "6px", fontWeight: "600", fontSize: "13px", cursor: "pointer" }}
               >
-                ✓ Update sheet to &ldquo;{clientMismatchPrompt.invoiceClientName}&rdquo;
+                ✓ Update {isAdmin ? "sheet" : "Pulse"} to &ldquo;{clientMismatchPrompt.invoiceClientName}&rdquo;
               </button>
               <button className="triage-btn"
                 onClick={() => executePlacement(clientMismatchPrompt, false, updateJobNameChecked, newJobNameInput)}
@@ -922,6 +923,7 @@ export default function InvoicesView({
         <JobDetailModal
           isOpen={!!selectedJobForDetail}
           target={selectedJobForDetail}
+          isAdmin={isAdmin}
           onClose={() => setSelectedJobForDetail(null)}
           onMarkPullPending={(masterId) => (outgoingsPullPendingRef.current = masterId)}
         />
@@ -1034,7 +1036,7 @@ export default function InvoicesView({
           </div>
         </div>
       )}
-      <div style={{ maxWidth: "1600px", margin: "0 auto", padding: "16px 24px 60px" }}>
+      <div className="pma-page-container" style={{ width: "100%", maxWidth: "100%", margin: "0 auto", padding: "20px 32px 60px", boxSizing: "border-box" }}>
         <div
           style={{
             display: "flex",
@@ -1061,6 +1063,7 @@ export default function InvoicesView({
                     setInvoicesClient(null);
                     setInvoicesInbox([]);
                     setInvoicesJobs(null);
+                    onSelectClient?.(null);
                   }
                 }}
                 style={{
@@ -1097,14 +1100,10 @@ export default function InvoicesView({
               <h1 style={{ margin: 0, fontSize: "20px", fontWeight: 700, color: "#1e293b", display: "flex", alignItems: "center", gap: "8px" }}>
                 <span>Invoices</span>
               </h1>
-              {invoicesClient ? (
+              {invoicesClient && (
                 <div style={{ margin: "3px 0 0", fontSize: "14px", fontWeight: 600, color: "#0047AB" }}>
                   {invoicesClient.clientName}
                 </div>
-              ) : (
-                <p style={{ margin: "4px 0 0", fontSize: "13px", color: "#64748b" }}>
-                  Select a client to view and edit invoices
-                </p>
               )}
             </div>
           </div>
@@ -1141,7 +1140,7 @@ export default function InvoicesView({
                   loadInvoicesJobs(invoicesClient, invoicesShowAll);
                 }}
                 style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 12px" }}
-                title="Refresh jobs and invoices from live sheets"
+                title={isAdmin ? "Refresh jobs and invoices from live sheets" : "Refresh jobs and invoices"}
               >
                 ↻ Refresh
               </button>
@@ -1154,6 +1153,7 @@ export default function InvoicesView({
             clients={allOutgoingsClients || []}
             onSelectClient={(c) => {
               setInvoicesClient(c);
+              onSelectClient?.(c);
               loadInvoicesInbox(c);
               loadInvoicesJobs(c, false);
               setInvoicesShowAll(false);
@@ -1621,8 +1621,8 @@ export default function InvoicesView({
                                         {(() => {
                                           const rawRowInvoices = (isRetainer && isRetainerExpanded)
                                             ? (jr.invoiceSlots || [])
-                                                .filter(s => (s.ref && String(s.ref).trim() !== "") || (s.amount && parseFloat(String(s.amount).replace(/[£$€,\s]/g, "")) > 0))
-                                                .map(s => ({ ...s, rowNum: jr.rowNum, slotNum: s.slotNum, client: job.client, jobName: job.jobName, isRetainer: true }))
+                                              .filter(s => (s.ref && String(s.ref).trim() !== "") || (s.amount && parseFloat(String(s.amount).replace(/[£$€,\s]/g, "")) > 0))
+                                              .map(s => ({ ...s, rowNum: jr.rowNum, slotNum: s.slotNum, client: job.client, jobName: job.jobName, isRetainer: true }))
                                             : getJobInvoiceItems(job, false);
                                           const displayInvoiceItems = groupSlotItemsForDisplay(rawRowInvoices, "invoice");
 

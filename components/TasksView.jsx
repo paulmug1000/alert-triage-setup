@@ -4,7 +4,7 @@ import Skeleton, { PmaTasksSkeleton } from "./Skeleton";
 import TruncatedCode from "./TruncatedCode";
 import { useTasks } from "../contexts/TaskContext";
 import { useAuth } from "../hooks/useAuth";
-import { filterAnalysisResultsForAlert } from "../utils/helpers";
+import { filterAnalysisResultsForAlert, stripRowInfo } from "../utils/helpers";
 
 export default function TasksView({
   styles,
@@ -98,7 +98,7 @@ export default function TasksView({
           setTaskDetailOptions(opts);
           return;
         }
-      } catch (e) {}
+      } catch (e) { }
     }
 
     if (task.alertDataJSON) {
@@ -410,31 +410,31 @@ export default function TasksView({
   if (!selectedTask) {
     const filterTabs = isAdmin
       ? [
-          { key: "active", label: "My active", count: navTaskCount },
-          { key: "snoozed", label: "My snoozed", count: snoozedTaskCount },
-          { key: "other_active", label: "Other active", count: otherActiveTaskCount },
-          { key: "other_snoozed", label: "Other snoozed", count: otherSnoozedTaskCount },
-          { key: "resolved", label: "Completed" },
-        ]
+        { key: "active", label: "My active", count: navTaskCount },
+        { key: "snoozed", label: "My snoozed", count: snoozedTaskCount },
+        { key: "other_active", label: "Other active", count: otherActiveTaskCount },
+        { key: "other_snoozed", label: "Other snoozed", count: otherSnoozedTaskCount },
+        { key: "resolved", label: "Completed" },
+      ]
       : [
-          { key: "active", label: "Active", count: navTaskCount },
-          { key: "snoozed", label: "Snoozed", count: snoozedTaskCount },
-          { key: "resolved", label: "Completed" },
-        ];
+        { key: "active", label: "Active", count: navTaskCount },
+        { key: "snoozed", label: "Snoozed", count: snoozedTaskCount },
+        { key: "resolved", label: "Completed" },
+      ];
 
     const isSnoozedTab = tasksFilter === "snoozed" || tasksFilter === "other_snoozed";
     const isResolvedTab = tasksFilter === "resolved";
 
     return (
-      <div style={styles.container}>
+      <div className="pma-page-container" style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Tasks</h1>
-          <p style={styles.subtitle}>Alerts deferred for follow-up</p>
+          <p style={styles.subtitle}>Alerts that have been deferred for follow-up</p>
         </div>
 
         {taskActionError && <div style={styles.errorBanner}>{taskActionError}</div>}
 
-        <div style={{ display: "flex", gap: "0", borderBottom: "1px solid #e0e0e0", marginBottom: "20px", flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ display: "flex", gap: "0", borderBottom: "1px solid #e2e8f0", marginBottom: "20px", flexWrap: "wrap", alignItems: "center" }}>
           {filterTabs.map(tab => (
             <a
               key={tab.key}
@@ -449,9 +449,9 @@ export default function TasksView({
               }}
               style={{
                 background: "none", border: "none", cursor: "pointer", padding: "10px 18px",
-                fontSize: "14px", fontWeight: tasksFilter === tab.key ? "600" : "400",
-                color: tasksFilter === tab.key ? "#0066cc" : "#555",
-                borderBottom: tasksFilter === tab.key ? "2px solid #0066cc" : "2px solid transparent",
+                fontSize: "14px", fontWeight: tasksFilter === tab.key ? "600" : "500",
+                color: tasksFilter === tab.key ? "#0047AB" : "#64748b",
+                borderBottom: tasksFilter === tab.key ? "2px solid #0047AB" : "2px solid transparent",
                 borderRadius: "0", display: "flex", alignItems: "center", gap: "6px",
                 textDecoration: "none", boxSizing: "border-box"
               }}
@@ -607,119 +607,119 @@ export default function TasksView({
                 {managedClient
                   ? `No ${tasksFilter} tasks for ${managedClient.clientName}`
                   : tasksFilter === "active"
-                  ? (isAdmin ? "No active tasks created by you" : "No active tasks")
-                  : tasksFilter === "snoozed"
-                  ? (isAdmin ? "No snoozed tasks created by you" : "No snoozed tasks")
-                  : tasksFilter === "other_active"
-                  ? "No other active tasks from team members"
-                  : tasksFilter === "other_snoozed"
-                  ? "No other snoozed tasks from team members"
-                  : "No completed tasks"}
+                    ? (isAdmin ? "No active tasks created by you" : "No active tasks")
+                    : tasksFilter === "snoozed"
+                      ? (isAdmin ? "No snoozed tasks created by you" : "No snoozed tasks")
+                      : tasksFilter === "other_active"
+                        ? "No other active tasks from team members"
+                        : tasksFilter === "other_snoozed"
+                          ? "No other snoozed tasks from team members"
+                          : "No completed tasks"}
               </div>
             );
           }
           return (
             <div>
               {visibleTasks.map(task => {
-              const isSelected = selectedTaskHashes.has(task.fingerprintHash);
-              return (
-                <div key={task.fingerprintHash}
-                  className="triage-client-card"
-                  onClick={() => {
-                    if (isBulkMode) {
-                      toggleSelectTask(task.fingerprintHash);
-                    } else {
-                      openTask(task);
-                    }
-                  }}
-                  style={{
-                    ...styles.card,
-                    cursor: "pointer",
-                    marginBottom: "12px",
-                    padding: "16px 20px",
-                    borderWidth: isSelected ? "2px" : "1px",
-                    borderColor: isSelected ? "#6366f1" : undefined,
-                    backgroundColor: isSelected ? "#f8f9ff" : undefined,
-                    transition: "border-color 0.15s, background-color 0.15s",
-                  }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px" }}>
-                    {isBulkMode && (
-                      <div
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          toggleSelectTask(task.fingerprintHash);
-                        }}
-                        style={{ paddingTop: "2px", marginRight: "6px", display: "flex", alignItems: "center" }}>
-                        <input
-                          type="checkbox"
-                          checked={isSelected}
-                          onChange={() => toggleSelectTask(task.fingerprintHash)}
-                          style={{ width: "18px", height: "18px", cursor: "pointer", accentColor: "#4f46e5" }}
-                        />
-                      </div>
-                    )}
-                    <div style={{ flex: 1 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
-                        <span style={{ fontSize: "13px", fontWeight: "700", color: "#1a1a1a" }}>{task.clientName}</span>
-                        <span style={{ fontSize: "11px", background: "#f0f4ff", color: "#0066cc", padding: "2px 8px", borderRadius: "10px", fontWeight: "600" }}>
-                          {formatAlertType(task.alertType)}
-                        </span>
-                        {task.isAdminOnly && clientHasManager(task.clientName) && (
-                          <span style={{
-                            fontSize: "10px",
-                            fontWeight: "700",
-                            background: "#f1f5f9",
-                            border: "1px solid #cbd5e1",
-                            color: "#64748b",
-                            borderRadius: "10px",
-                            padding: "1px 6px",
-                            letterSpacing: "0.2px"
-                          }} title="Created from an Admin-only alert">
-                            Admin
+                const isSelected = selectedTaskHashes.has(task.fingerprintHash);
+                return (
+                  <div key={task.fingerprintHash}
+                    className="triage-client-card"
+                    onClick={() => {
+                      if (isBulkMode) {
+                        toggleSelectTask(task.fingerprintHash);
+                      } else {
+                        openTask(task);
+                      }
+                    }}
+                    style={{
+                      ...styles.card,
+                      cursor: "pointer",
+                      marginBottom: "12px",
+                      padding: "16px 20px",
+                      borderWidth: isSelected ? "2px" : "1px",
+                      borderColor: isSelected ? "#6366f1" : undefined,
+                      backgroundColor: isSelected ? "#f8f9ff" : undefined,
+                      transition: "border-color 0.15s, background-color 0.15s",
+                    }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px" }}>
+                      {isBulkMode && (
+                        <div
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleSelectTask(task.fingerprintHash);
+                          }}
+                          style={{ paddingTop: "2px", marginRight: "6px", display: "flex", alignItems: "center" }}>
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => toggleSelectTask(task.fingerprintHash)}
+                            style={{ width: "18px", height: "18px", cursor: "pointer", accentColor: "#4f46e5" }}
+                          />
+                        </div>
+                      )}
+                      <div style={{ flex: 1 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
+                          <span style={{ fontSize: "13px", fontWeight: "700", color: "#1a1a1a" }}>{task.clientName}</span>
+                          <span style={{ fontSize: "11px", background: "#f0f4ff", color: "#0066cc", padding: "2px 8px", borderRadius: "10px", fontWeight: "600" }}>
+                            {formatAlertType(task.alertType)}
                           </span>
-                        )}
-                        {task.isProactive && (
-                          <span style={{ fontSize: "11px", background: "#fff3e0", color: "#e65100", padding: "2px 8px", borderRadius: "10px", fontWeight: "600" }}>Proactive</span>
-                        )}
-                      </div>
-                      <div style={{ fontSize: "13px", color: "#555", marginBottom: "6px" }}>{task.alertSummary}</div>
-                      
-                      <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#475569", marginBottom: "4px" }}>
-                        <span style={{ fontSize: "12px" }}>👤</span>
-                        <span>Created by: <strong style={{ color: "#334155" }}>{task.createdByName || task.createdByEmail || "System / Unassigned"}</strong></span>
-                      </div>
+                          {task.isAdminOnly && clientHasManager(task.clientName) && (
+                            <span style={{
+                              fontSize: "10px",
+                              fontWeight: "700",
+                              background: "#f1f5f9",
+                              border: "1px solid #cbd5e1",
+                              color: "#64748b",
+                              borderRadius: "10px",
+                              padding: "1px 6px",
+                              letterSpacing: "0.2px"
+                            }} title="Created from an Admin-only alert">
+                              Admin
+                            </span>
+                          )}
+                          {task.isProactive && (
+                            <span style={{ fontSize: "11px", background: "#fff3e0", color: "#e65100", padding: "2px 8px", borderRadius: "10px", fontWeight: "600" }}>Proactive</span>
+                          )}
+                        </div>
+                        <div style={{ fontSize: "13px", color: "#555", marginBottom: "6px" }}>{task.alertSummary}</div>
 
-                      {task.taskNote && (
-                        <div style={{ fontSize: "12px", color: "#7c3aed", fontStyle: "italic", marginBottom: "2px" }}>📋 {task.taskNote}</div>
-                      )}
-                      {task.furtherNotes?.length > 0 && (
-                        <div style={{ fontSize: "11px", color: "#888", marginTop: "2px" }}>
-                          {task.furtherNotes.length} note{task.furtherNotes.length > 1 ? "s" : ""} · Last: {new Date(task.furtherNotes[task.furtherNotes.length - 1].timestamp).toLocaleDateString("en-GB")}
+                        <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#475569", marginBottom: "4px" }}>
+                          <span style={{ fontSize: "12px" }}>👤</span>
+                          <span>Created by: <strong style={{ color: "#334155" }}>{task.createdByName || task.createdByEmail || "System / Unassigned"}</strong></span>
                         </div>
-                      )}
-                    </div>
-                    <div style={{ textAlign: "right", flexShrink: 0 }}>
-                      <div style={{ fontSize: "11px", color: "#aaa" }}>
-                        {task.taskCreatedAt ? new Date(task.taskCreatedAt).toLocaleDateString("en-GB") : "-"}
+
+                        {task.taskNote && (
+                          <div style={{ fontSize: "12px", color: "#7c3aed", fontStyle: "italic", marginBottom: "2px" }}>📋 {task.taskNote}</div>
+                        )}
+                        {task.furtherNotes?.length > 0 && (
+                          <div style={{ fontSize: "11px", color: "#888", marginTop: "2px" }}>
+                            {task.furtherNotes.length} note{task.furtherNotes.length > 1 ? "s" : ""} · Last: {new Date(task.furtherNotes[task.furtherNotes.length - 1].timestamp).toLocaleDateString("en-GB")}
+                          </div>
+                        )}
                       </div>
-                      {task.isSnoozed && (
-                        <div style={{ fontSize: "11px", color: "#d97706", marginTop: "2px" }}>
-                          Snoozed → {new Date(task.snoozedUntil).toLocaleDateString("en-GB")}
+                      <div style={{ textAlign: "right", flexShrink: 0 }}>
+                        <div style={{ fontSize: "11px", color: "#aaa" }}>
+                          {task.taskCreatedAt ? new Date(task.taskCreatedAt).toLocaleDateString("en-GB") : "-"}
                         </div>
-                      )}
-                      {task.isResolved && task.resolvedAt && (
-                        <div style={{ fontSize: "11px", color: "#2e7d32", marginTop: "2px" }}>
-                          Resolved {new Date(task.resolvedAt).toLocaleDateString("en-GB")}
-                        </div>
-                      )}
+                        {task.isSnoozed && (
+                          <div style={{ fontSize: "11px", color: "#d97706", marginTop: "2px" }}>
+                            Snoozed → {new Date(task.snoozedUntil).toLocaleDateString("en-GB")}
+                          </div>
+                        )}
+                        {task.isResolved && task.resolvedAt && (
+                          <div style={{ fontSize: "11px", color: "#2e7d32", marginTop: "2px" }}>
+                            Resolved {new Date(task.resolvedAt).toLocaleDateString("en-GB")}
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
-        );
-      })()}
+                );
+              })}
+            </div>
+          );
+        })()}
 
         {/* Bulk Snooze Modal */}
         {showBulkSnoozeModal && (
@@ -858,14 +858,14 @@ export default function TasksView({
     );
   }
 
-  const taskAlert = (() => { try { return JSON.parse(selectedTask.alertDataJSON || "{}"); } catch(e) { return {}; } })();
+  const taskAlert = (() => { try { return JSON.parse(selectedTask.alertDataJSON || "{}"); } catch (e) { return {}; } })();
   const today = new Date();
   const todayStr = today.toISOString().split("T")[0];
 
   return (
-    <div style={styles.container}>
+    <div className="pma-page-container" style={styles.container}>
       <button className="triage-btn" onClick={() => setSelectedTask(null)} style={{ ...styles.buttonSecondary, marginBottom: "16px" }}>
-        ← Back to Tasks
+        ← Back to tasks
       </button>
 
       {taskActionError && <div style={styles.errorBanner}>{taskActionError}</div>}
@@ -896,7 +896,7 @@ export default function TasksView({
                 <span style={{ fontSize: "11px", background: "#fff3e0", color: "#e65100", padding: "2px 8px", borderRadius: "10px", fontWeight: "600" }}>Proactive</span>
               )}
             </div>
-            <div style={{ fontSize: "13px", color: "#555", marginBottom: "6px" }}>{selectedTask.alertSummary}</div>
+            <div style={{ fontSize: "13px", color: "#555", marginBottom: "6px" }}>{isAdmin ? selectedTask.alertSummary : stripRowInfo(selectedTask.alertSummary)}</div>
             <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "14px", fontSize: "12px", color: "#64748b", marginTop: "4px" }}>
               <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
                 <span>👤</span>
@@ -979,15 +979,15 @@ export default function TasksView({
           {taskAlert.summary.client && <div style={{ fontSize: "13px" }}><strong>Client:</strong> {taskAlert.summary.client}</div>}
           {taskAlert.summary.sentDate && <div style={{ fontSize: "13px" }}><strong>Sent:</strong> {taskAlert.summary.sentDate}</div>}
           {taskAlert.summary.status && <div style={{ fontSize: "13px" }}><strong>Status:</strong> {taskAlert.summary.status}</div>}
-          {taskAlert.heading && <div style={{ fontSize: "13px" }}><strong>Alert:</strong> {taskAlert.heading}</div>}
-          {taskAlert.detail && <div style={{ fontSize: "13px", marginTop: "4px", color: "#555" }}>{taskAlert.detail}</div>}
+          {taskAlert.heading && <div style={{ fontSize: "13px" }}><strong>Alert:</strong> {isAdmin ? taskAlert.heading : stripRowInfo(taskAlert.heading)}</div>}
+          {taskAlert.detail && <div style={{ fontSize: "13px", marginTop: "4px", color: "#555" }}>{isAdmin ? taskAlert.detail : stripRowInfo(taskAlert.detail)}</div>}
         </div>
       )}
       {!taskAlert.summary && taskAlert.heading && (
         <div style={{ ...styles.alertSummary, marginBottom: "16px" }}>
           <div style={{ fontWeight: "700", fontSize: "13px", marginBottom: "8px", color: "#b45309" }}>ALERT DETAILS</div>
-          <div style={{ fontSize: "13px", fontWeight: "600", marginBottom: "4px" }}>{taskAlert.heading}</div>
-          {taskAlert.detail && <div style={{ fontSize: "13px", color: "#555", marginTop: "4px" }}>{taskAlert.detail}</div>}
+          <div style={{ fontSize: "13px", fontWeight: "600", marginBottom: "4px" }}>{isAdmin ? taskAlert.heading : stripRowInfo(taskAlert.heading)}</div>
+          {taskAlert.detail && <div style={{ fontSize: "13px", color: "#555", marginTop: "4px" }}>{isAdmin ? taskAlert.detail : stripRowInfo(taskAlert.detail)}</div>}
         </div>
       )}
 
@@ -999,7 +999,7 @@ export default function TasksView({
               {taskDetailAnalyzing ? <><Spinner size={12} />Analysing...</> : "↻ Re-run Analysis"}
             </button>
           </div>
-          
+
           {selectedTask.analysisResult ? (() => {
             const rawAnalysis = selectedTask.analysisResult;
             const taskDetail = selectedTask.alertSummary || "";
@@ -1022,14 +1022,15 @@ export default function TasksView({
                     border: `1px solid ${r.status === "ok" ? "#c8e6c9" : r.status === "issue" ? "#ffccbc" : "#e0e0e0"}`,
                     background: r.status === "ok" ? "#f9fef9" : r.status === "issue" ? "#fff8f6" : "#fafafa",
                   }}>
-                    {r.message && <div style={{ fontSize: "12px", color: "#333", fontWeight: "600", marginBottom: "4px" }}>{r.message}</div>}
+                    {r.message && <div style={{ fontSize: "12px", color: "#333", fontWeight: "600", marginBottom: "4px" }}>{isAdmin ? r.message : stripRowInfo(r.message)}</div>}
                     {(r.checks || []).map((chk, ci) => (
                       <div key={ci} style={{ fontSize: "12px", color: chk.ok ? "#2e7d32" : "#c62828", marginTop: "2px" }}>
                         {(() => {
                           const parts = [];
                           const re = /\(([^)]{17,})\)/g;
                           let last = 0, m;
-                          const msg = chk.message || "";
+                          const rawMsg = chk.message || "";
+                          const msg = isAdmin ? rawMsg : stripRowInfo(rawMsg);
                           while ((m = re.exec(msg)) !== null) {
                             if (m.index > last) parts.push(msg.slice(last, m.index));
                             parts.push(<TruncatedCode key={m.index} code={m[1]} />);
@@ -1045,61 +1046,64 @@ export default function TasksView({
               </div>
             );
           })() : (
-            <div style={{ fontSize: "13px", color: "#666" }}>Click to verify if the underlying issue has been resolved in the live sheet.</div>
+            <div style={{ fontSize: "13px", color: "#666" }}>{isAdmin ? "Click to verify if the underlying issue has been resolved in the live sheet." : "Click to verify if the underlying issue has been resolved in Pulse."}</div>
           )}
         </div>
       )}
 
       {!selectedTask.isProactive && (
-      <div style={{ ...styles.card, marginBottom: "16px" }}>
-        <div style={{ fontSize: "15px", fontWeight: "700", color: "#1a1a1a", marginBottom: "12px" }}>Potential Actions</div>
-        {taskDetailAnalyzing && (
-          <div style={{ textAlign: "center", padding: "20px", color: "#666" }}><Spinner size={18} color="#0066cc" /> Re-analysing alert...</div>
-        )}
-        {!taskDetailAnalyzing && taskDetailOptions.length === 0 && (
-          <div style={{ color: "#888", fontSize: "13px" }}>No options available - the alert may have been resolved already.</div>
-        )}
-        {taskDetailOptions.map((option, idx) => (
-          <div key={idx} style={{ ...styles.optionCard, marginBottom: "12px" }}>
-            <div style={styles.optionTitle}>Option {idx + 1}: {option.title}</div>
-            {option.matchType !== "info" && option.explanation && (
-              <div style={{ padding: "8px 10px", background: "#fff8e1", borderLeft: "3px solid #f59e0b", fontSize: "13px", marginBottom: "8px", borderRadius: "0 4px 4px 0" }}>
-                {option.explanation}
-              </div>
-            )}
-            {option.facts && (
-              <ul style={{ margin: "0 0 8px 0", paddingLeft: "18px", fontSize: "13px", color: "#333" }}>
-                {option.facts.jobType && <li><strong>Type:</strong> {option.facts.jobType}</li>}
-                {option.facts.totalRevenue && <li><strong>Revenue:</strong> £{option.facts.totalRevenue?.toLocaleString?.() || option.facts.totalRevenue}</li>}
-                {option.facts.invoiceMatchStatus && <li><strong>{option.facts.invoiceMatchStatus}</strong></li>}
-              </ul>
-            )}
-            {option.recommendedActions?.length > 0 && (
-              <div style={{ fontSize: "13px", marginBottom: "8px" }}>
-                <strong>Actions:</strong>
-                {option.recommendedActions.map((a, i) => (
-                  <div key={i} style={{ marginTop: "3px" }}>{i === 0 ? <strong style={{ color: "#059669" }}>✓ {a}</strong> : `• ${a}`}</div>
-                ))}
-              </div>
-            )}
-            {option.matchType !== "info" && (
-              <button className="triage-btn triage-btn-primary"
-                onClick={() => acceptTaskOption(option)}
-                disabled={isAccepting}
-                style={{ ...styles.decisionButton, ...styles.approveButton, width: "100%", marginTop: "4px" }}>
-                {isAccepting ? <><Spinner />Applying...</> : `✓ Accept Option ${idx + 1}`}
-              </button>
-            )}
-            {option.matchType === "info" && (
-              <button className="triage-btn triage-btn-primary"
-                onClick={() => resolveTask(selectedTask.fingerprintHash)}
-                style={{ ...styles.decisionButton, ...styles.approveButton, width: "100%", marginTop: "4px" }}>
-                ✓ Mark as Resolved
-              </button>
-            )}
-          </div>
-        ))}
-      </div>
+        <div style={{ ...styles.card, marginBottom: "16px" }}>
+          <div style={{ fontSize: "15px", fontWeight: "700", color: "#1a1a1a", marginBottom: "12px" }}>Potential Actions</div>
+          {taskDetailAnalyzing && (
+            <div style={{ textAlign: "center", padding: "20px", color: "#666" }}><Spinner size={18} color="#0066cc" /> Re-analysing alert...</div>
+          )}
+          {!taskDetailAnalyzing && taskDetailOptions.length === 0 && (
+            <div style={{ color: "#888", fontSize: "13px" }}>No options available - the alert may have been resolved already.</div>
+          )}
+          {taskDetailOptions.map((option, idx) => (
+            <div key={idx} style={{ ...styles.optionCard, marginBottom: "12px" }}>
+              <div style={styles.optionTitle}>Option {idx + 1}: {isAdmin ? option.title : stripRowInfo(option.title)}</div>
+              {option.matchType !== "info" && option.explanation && (
+                <div style={{ padding: "8px 10px", background: "#fff8e1", borderLeft: "3px solid #f59e0b", fontSize: "13px", marginBottom: "8px", borderRadius: "0 4px 4px 0" }}>
+                  {isAdmin ? option.explanation : stripRowInfo(option.explanation)}
+                </div>
+              )}
+              {option.facts && (
+                <ul style={{ margin: "0 0 8px 0", paddingLeft: "18px", fontSize: "13px", color: "#333" }}>
+                  {option.facts.jobType && <li><strong>Type:</strong> {option.facts.jobType}</li>}
+                  {option.facts.totalRevenue && <li><strong>Revenue:</strong> £{option.facts.totalRevenue?.toLocaleString?.() || option.facts.totalRevenue}</li>}
+                  {option.facts.invoiceMatchStatus && <li><strong>{option.facts.invoiceMatchStatus}</strong></li>}
+                </ul>
+              )}
+              {option.recommendedActions?.length > 0 && (
+                <div style={{ fontSize: "13px", marginBottom: "8px" }}>
+                  <strong>Actions:</strong>
+                  {option.recommendedActions.map((a, i) => {
+                    const cleanAction = isAdmin ? a : stripRowInfo(a);
+                    return (
+                      <div key={i} style={{ marginTop: "3px" }}>{i === 0 ? <strong style={{ color: "#059669" }}>✓ {cleanAction}</strong> : `• ${cleanAction}`}</div>
+                    );
+                  })}
+                </div>
+              )}
+              {option.matchType !== "info" && (
+                <button className="triage-btn triage-btn-primary"
+                  onClick={() => acceptTaskOption(option)}
+                  disabled={isAccepting}
+                  style={{ ...styles.decisionButton, ...styles.approveButton, width: "100%", marginTop: "4px" }}>
+                  {isAccepting ? <><Spinner />Applying...</> : `✓ Accept Option ${idx + 1}`}
+                </button>
+              )}
+              {option.matchType === "info" && (
+                <button className="triage-btn triage-btn-primary"
+                  onClick={() => resolveTask(selectedTask.fingerprintHash)}
+                  style={{ ...styles.decisionButton, ...styles.approveButton, width: "100%", marginTop: "4px" }}>
+                  ✓ Mark as Resolved
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
       )}
 
       <div style={{ ...styles.card, marginBottom: "16px" }}>

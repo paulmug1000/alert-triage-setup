@@ -18,7 +18,8 @@ export default function CategoryMappingSuggestionModal({
   masterSheetId,
   isOpen,
   onClose,
-  onApplied
+  onApplied,
+  isAdmin = false
 }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -52,7 +53,7 @@ export default function CategoryMappingSuggestionModal({
       .then(result => {
         if (!isMounted) return;
         if (result.success) {
-          setSourceOrigin(result.sourceOrigin || "Master sheet P&L");
+          setSourceOrigin(result.sourceOrigin || (isAdmin ? "Master sheet P&L" : "P&L"));
           if (result.suggested) {
             setMappings({
               cosStaffCosts: result.suggested.cosStaffCosts || [],
@@ -81,7 +82,7 @@ export default function CategoryMappingSuggestionModal({
     return () => {
       isMounted = false;
     };
-  }, [isOpen, clientName, masterSheetId]);
+  }, [isOpen, clientName, masterSheetId, isAdmin]);
 
   if (!isOpen) return null;
 
@@ -198,7 +199,9 @@ export default function CategoryMappingSuggestionModal({
               Auto-suggest category mapping rules
             </h3>
             <p style={{ margin: "3px 0 0", fontSize: "12px", color: "#64748B" }}>
-              Classifying P&L categories from {sourceOrigin} into Master Sheet KeyInfo!BA2:BA180
+              {isAdmin
+                ? `Classifying P&L categories from ${sourceOrigin} into Master Sheet KeyInfo!BA2:BA180`
+                : "Classifying P&L categories from connected accounting data"}
             </p>
           </div>
           <button
@@ -270,9 +273,11 @@ export default function CategoryMappingSuggestionModal({
                       <div style={{ fontSize: "13px", fontWeight: isSelected ? "700" : "500", color: isSelected ? "#0F172A" : "#475569" }}>
                         {sec.label}
                       </div>
-                      <div style={{ fontSize: "10px", color: "#94A3B8" }}>
-                        {sec.range}
-                      </div>
+                      {isAdmin && (
+                        <div style={{ fontSize: "10px", color: "#94A3B8" }}>
+                          {sec.range}
+                        </div>
+                      )}
                     </div>
                     <span
                       style={{
@@ -338,7 +343,7 @@ export default function CategoryMappingSuggestionModal({
               {/* Over capacity warning */}
               {activeSection.max < 999 && currentList.length > activeSection.max && (
                 <div style={{ padding: "8px 12px", borderRadius: "6px", background: "#FFFBEB", border: "1px solid #FDE68A", color: "#92400E", fontSize: "11px", marginBottom: "10px" }}>
-                  ⚠️ Section holds {currentList.length} items, but Master Sheet range {activeSection.range} allows a maximum of {activeSection.max}. Please move excess categories to General Overheads or Ignore.
+                  ⚠️ Section holds {currentList.length} items, but {isAdmin ? `Master Sheet range ${activeSection.range}` : "this section"} allows a maximum of {activeSection.max}. Please move excess categories to General Overheads or Ignore.
                 </div>
               )}
 
@@ -459,7 +464,7 @@ export default function CategoryMappingSuggestionModal({
               }}
             >
               {saving && <Spinner size={14} color="#FFFFFF" />}
-              <span>{saving ? "Applying mappings..." : "Apply category mappings to master sheet"}</span>
+              <span>{saving ? "Applying mappings..." : (isAdmin ? "Apply category mappings to master sheet" : "Apply category mappings")}</span>
             </button>
           </div>
         </div>

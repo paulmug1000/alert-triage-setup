@@ -1253,6 +1253,8 @@ export default async function handler(req, res) {
             const tabName = `${String(d.getFullYear()).slice(-2)}${String(d.getMonth() + 1).padStart(2, "0")}`;
             if (reconMonths[tabName]) {
               reconciledMonths[yr][mIdx] = Boolean(reconMonths[tabName].isReconciled);
+            } else if (Array.isArray(transactionsByMonth[yr]?.[mIdx]) && transactionsByMonth[yr][mIdx].length > 0) {
+              reconciledMonths[yr][mIdx] = true;
             }
           }
         }

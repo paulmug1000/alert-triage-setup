@@ -653,24 +653,30 @@ export const ADMIN_ONLY_ALERT_TYPES = new Set([
 export function stripRowInfo(text) {
   if (!text || typeof text !== "string") return text;
   return text
-    // Strip parenthesized combined row/slot references: (Row 362, slot 1), (slot 1, Row 362), (Sheet Row 362, Slot 1)
-    .replace(/\s*\(\s*(?:Confirmed|Pipeline)?\s*(?:sheet\s+)?rows?\s+\d+,\s*slots?\s+\d+\s*\)/gi, "")
-    .replace(/\s*\(\s*slots?\s+\d+,\s*(?:Confirmed|Pipeline)?\s*(?:sheet\s+)?rows?\s+\d+\s*\)/gi, "")
-    // Strip standalone parenthesized slot or row: (slot 1), (Row 362), (Confirmed row 14)
+    // Strip parenthesized combined row/slot/cell references: (Row 362, slot 1), (slot 1, Row 362), (Sheet Row 362, Slot 1), (Row 14, Cell D14)
+    .replace(/\s*\(\s*(?:Confirmed|Pipeline|Outgoings)?\s*(?:sheet\s+|tab\s+)?rows?\s+\d+(?:\s*[-–—]\s*\d+)?(?:,\s*(?:slots?\s+\d+|cells?\s+[A-Z]{1,3}\d+|cols?\s+[A-Z]{1,3}))?\s*\)/gi, "")
+    .replace(/\s*\(\s*slots?\s+\d+,\s*(?:Confirmed|Pipeline|Outgoings)?\s*(?:sheet\s+|tab\s+)?rows?\s+\d+\s*\)/gi, "")
+    // Strip parenthesized row with description: (Row 42 — Hosting) -> (Hosting)
+    .replace(/\(\s*(?:Confirmed|Pipeline|Outgoings)?\s*(?:sheet\s+|tab\s+)?rows?\s+\d+\s*[-–—:]\s*/gi, "(")
+    // Strip standalone parenthesized slot, row, or cell: (slot 1), (Row 362), (Confirmed row 14), (Cell D14)
     .replace(/\s*\(\s*slots?\s+\d+\s*\)/gi, "")
-    .replace(/\s*\(\s*(?:Confirmed|Pipeline)?\s*(?:sheet\s+)?rows?\s+\d+\s*\)/gi, "")
+    .replace(/\s*\(\s*cells?\s+[A-Z]{1,3}\d+\s*\)/gi, "")
+    .replace(/\s*\(\s*(?:Confirmed|Pipeline|Outgoings)?\s*(?:sheet\s+|tab\s+)?rows?\s+\d+(?:\s*[-–—]\s*\d+)?\s*\)/gi, "")
     .replace(/\(\s*(?:sheet\s+)?rows?\s+\d+,\s*/gi, "(")
-    .replace(/\(\s*(?:Confirmed|Pipeline)?\s*(?:sheet\s+)?rows?\s+\d+,\s*/gi, "(")
-    // Strip inline Row / Slot references: "slot 1", "slot 2", "Row 362,"
-    .replace(/\b(?:Confirmed|Pipeline)?\s*(?:Sheet\s+)?Row\s+\d+,\s*/gi, "")
-    .replace(/\b(Confirmed|Pipeline)\s+(?:sheet\s+)?rows?\s+\d+\b/gi, "$1")
+    .replace(/\(\s*(?:Confirmed|Pipeline|Outgoings)?\s*(?:sheet\s+|tab\s+)?rows?\s+\d+,\s*/gi, "(")
+    // Strip inline Row / Slot / Cell references: "slot 1", "slot 2", "Row 362,", "Cell D14"
+    .replace(/\b(?:Confirmed|Pipeline|Outgoings)?\s*(?:Sheet\s+|Tab\s+)?Row\s+\d+,\s*/gi, "")
+    .replace(/\b(Confirmed|Pipeline|Outgoings)\s+(?:sheet\s+|tab\s+)?rows?\s+\d+\b/gi, "$1")
     .replace(/\bchild\s+rows?\s+\d+\b/gi, "child entry")
     .replace(/\bchild\s+rows?\b/gi, "child entries")
     .replace(/\bparent\s+rows?\b/gi, "parent job")
     .replace(/\s*-\s*(?:sheet\s+)?rows?\s+\d+:\s*/gi, ": ")
     .replace(/\b(?:sheet\s+)?rows?\s+\d+:\s*/gi, "")
-    .replace(/\b(?:in|into|on)\s+slots?\s+\d+\b/gi, "")
-    .replace(/\b(?:in|into|on)\s+(?:sheet\s+)?rows?\s+\d+\b/gi, "")
+    .replace(/\b(?:in|into|on|at)\s+cells?\s+[A-Z]{1,3}\d+(?:\s*,\s*[A-Z]{1,3}\d+)*\b/gi, "")
+    .replace(/,\s*cells?\s+[A-Z]{1,3}\d+\b/gi, "")
+    .replace(/\bcells?\s+[A-Z]{1,3}\d+\b/gi, "")
+    .replace(/\b(?:in|into|on|at)\s+slots?\s+\d+\b/gi, "")
+    .replace(/\b(?:in|into|on|at)\s+(?:sheet\s+)?rows?\s+\d+\b/gi, "")
     .replace(/\bslots?\s+\d+\b/gi, "")
     .replace(/\bslot\s+amount\b/gi, "expected amount")
     .replace(/\bslots\b/gi, "entries")
@@ -678,6 +684,20 @@ export function stripRowInfo(text) {
     .replace(/\bnew\s+row\b/gi, "new entry")
     .replace(/\bempty\s+slots?\b/gi, "unbilled entries")
     .replace(/Mismatched rows:/gi, "Mismatched entries:")
+    // Replace internal tab / sheet terminology with Pulse domain terms
+    .replace(/\bConfirmed\s+(?:tab|sheet)\b/gi, "Confirmed jobs")
+    .replace(/\bPipeline\s+(?:tab|sheet)\b/gi, "Pipeline jobs")
+    .replace(/\bOutgoings\s+(?:tab|sheet)\b/gi, "Outgoings")
+    .replace(/\bBudget\s+(?:tab|sheet)\b/gi, "Budget")
+    .replace(/\bNBtoFind\s+(?:tab|sheet)\b/gi, "NB to Find")
+    .replace(/\bPerformance\s+(?:tab|sheet)\b/gi, "Performance")
+    .replace(/\bDashboard\s+(?:tab|sheet)\b/gi, "Dashboard")
+    .replace(/\bCash\s+(?:tab|sheet)\b/gi, "Cashflow")
+    .replace(/\b(?:in|on)\s+the\s+(?:live\s+)?(?:client\s+|master\s+)?(?:spreadsheet|sheet)\b/gi, "in Pulse")
+    .replace(/\bfrom\s+the\s+(?:live\s+)?(?:client\s+|master\s+)?(?:spreadsheet|sheet)\b/gi, "from Pulse")
+    .replace(/\b(?:in|on)\s+(?:the\s+)?sheet\b/gi, "in Pulse")
+    .replace(/\b(?:client|master)\s+(?:spreadsheet|sheet)\b/gi, "Pulse")
+    .replace(/\bspreadsheet\b/gi, "Pulse")
     // Clean up trailing/dangling prepositions or punctuation: e.g. "Place in Job - Name - " -> "Place in Job - Name"
     .replace(/\s*-\s*-\s*/g, " - ")
     .replace(/\s*,\s*,/g, ",")
@@ -1140,7 +1160,7 @@ export function parseInfoAlertDetail(flagType, detail = "") {
         pipelineRow: tab === "Pipeline" ? rowNum : null,
         client: m[4] ? m[4].trim() : "",
         job: m[5] ? m[5].trim() : "",
-        highlight: `Added ${m[2]} future monthly billing row${parseInt(m[2], 10) > 1 ? "s" : ""} for retainer contract.`
+        highlight: `Added ${m[2]} future monthly billing period${parseInt(m[2], 10) > 1 ? "s" : ""} for retainer contract.`
       };
     }
     const mOld = clean.match(/(?:Row\s*(\d+),\s*)?([^,]+),\s*([^:]+):\s*Added\s+(\d+)\s+invoice rows/i);
@@ -1152,7 +1172,7 @@ export function parseInfoAlertDetail(flagType, detail = "") {
         confirmedRow: rowNum,
         client: mOld[2] ? mOld[2].trim() : "",
         job: mOld[3] ? mOld[3].trim() : "",
-        highlight: `Added ${mOld[4]} future monthly billing row${parseInt(mOld[4], 10) > 1 ? "s" : ""} for retainer contract.`
+        highlight: `Added ${mOld[4]} future monthly billing period${parseInt(mOld[4], 10) > 1 ? "s" : ""} for retainer contract.`
       };
     }
   }
@@ -1170,7 +1190,7 @@ export function parseInfoAlertDetail(flagType, detail = "") {
         pipelineRow: tab === "Pipeline" ? rowNum : null,
         client: m[4] ? m[4].trim() : "",
         job: m[5] ? m[5].trim() : "",
-        highlight: `Trimmed ${m[2]} excess child row${parseInt(m[2], 10) > 1 ? "s" : ""} after retainer contract end date.`
+        highlight: `Trimmed ${m[2]} excess billing period${parseInt(m[2], 10) > 1 ? "s" : ""} after retainer contract end date.`
       };
     }
   }
@@ -1188,7 +1208,7 @@ export function parseInfoAlertDetail(flagType, detail = "") {
         confirmedRow: m[5] ? parseInt(m[5], 10) : null,
         highlight: clean.includes("Converted")
           ? "Converted Pipeline job to Confirmed Retainer."
-          : "Pipeline project copied to Confirmed tab (Copied box checked)."
+          : "Pipeline project promoted to Confirmed jobs (Copied box checked)."
       };
     }
   }
@@ -1232,7 +1252,7 @@ export function parseInfoAlertDetail(flagType, detail = "") {
         month: m[2] ? m[2].trim() : null,
         contractor: m[3] ? m[3].trim() : "",
         amount: m[4] ? `£${m[4].trim()}` : null,
-        highlight: "New expense row created in spreadsheet."
+        highlight: "New expense entry created in Pulse."
       };
     }
   }

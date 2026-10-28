@@ -6,7 +6,8 @@ export default function CrmMappingSuggestionModal({
   masterSheetId,
   isOpen,
   onClose,
-  onApplied
+  onApplied,
+  isAdmin = false
 }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -163,7 +164,7 @@ export default function CrmMappingSuggestionModal({
               Auto-suggest CRM field mappings and rules
             </h3>
             <p style={{ margin: "3px 0 0", fontSize: "12px", color: "#64748B" }}>
-              Inspecting {totalRecordsAnalysed} records from DataFromCRM to map 13 Pulse fields and transformation rules
+              Inspecting {totalRecordsAnalysed} records {isAdmin ? "from DataFromCRM " : ""}to map 13 Pulse fields and transformation rules
             </p>
           </div>
           <button
@@ -232,7 +233,7 @@ export default function CrmMappingSuggestionModal({
                     Detected CRM tool: {detectedCrmTool}
                   </span>
                   <div style={{ color: "#64748B", marginTop: "2px" }}>
-                    Analysed {totalRecordsAnalysed} deals across {availableHeaders.length} available columns in DataFromCRM.
+                    Analysed {totalRecordsAnalysed} deals across {availableHeaders.length} available columns{isAdmin ? " in DataFromCRM" : ""}.
                   </div>
                 </div>
                 <div style={{ fontSize: "11px", fontWeight: "700", color: "#0284C7", background: "#E0F2FE", padding: "4px 8px", borderRadius: "6px" }}>
@@ -243,7 +244,7 @@ export default function CrmMappingSuggestionModal({
               {/* 13 Pulse Fields Table */}
               <div style={{ marginBottom: "20px" }}>
                 <h4 style={{ margin: "0 0 10px", fontSize: "14px", fontWeight: "700", color: "#0F172A" }}>
-                  13 Pulse fields mapping (CRMList!AB2:AN2 & A2:M2)
+                  13 Pulse fields mapping{isAdmin ? " (CRMList!AB2:AN2 & A2:M2)" : ""}
                 </h4>
                 <div style={{ border: "1px solid #E2E8F0", borderRadius: "8px", overflow: "hidden" }}>
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
@@ -314,7 +315,7 @@ export default function CrmMappingSuggestionModal({
               {/* Confirmed Job Definitions */}
               <div style={{ background: "#F8FAFC", borderRadius: "10px", border: "1px solid #E2E8F0", padding: "16px" }}>
                 <h4 style={{ margin: "0 0 4px", fontSize: "14px", fontWeight: "700", color: "#0F172A" }}>
-                  Confirmed job definition (CRMList!DD2:DH2) & pipeline exclusions (EE2)
+                  Confirmed job definition{isAdmin ? " (CRMList!DD2:DH2)" : ""} & pipeline exclusions{isAdmin ? " (EE2)" : ""}
                 </h4>
                 <p style={{ margin: "0 0 14px", fontSize: "12px", color: "#64748B" }}>
                   Defines when a CRM opportunity is considered confirmed vs pipeline, and which dead/lost statuses to exclude.
@@ -323,7 +324,7 @@ export default function CrmMappingSuggestionModal({
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "14px" }}>
                   <div>
                     <label style={{ display: "block", fontSize: "11px", fontWeight: "700", color: "#475569", marginBottom: "4px" }}>
-                      Confirmed likelihood (DD2)
+                      Confirmed likelihood{isAdmin ? " (DD2)" : ""}
                     </label>
                     <input
                       type="text"
@@ -336,7 +337,7 @@ export default function CrmMappingSuggestionModal({
 
                   <div>
                     <label style={{ display: "block", fontSize: "11px", fontWeight: "700", color: "#475569", marginBottom: "4px" }}>
-                      Confirmed status (DF2)
+                      Confirmed status{isAdmin ? " (DF2)" : ""}
                     </label>
                     {uniqueStatusOptions.length > 0 ? (
                       <select
@@ -364,7 +365,7 @@ export default function CrmMappingSuggestionModal({
 
                   <div>
                     <label style={{ display: "block", fontSize: "11px", fontWeight: "700", color: "#475569", marginBottom: "4px" }}>
-                      Operator (DH2)
+                      Operator{isAdmin ? " (DH2)" : ""}
                     </label>
                     <select
                       value={confirmedOperator}
@@ -378,7 +379,7 @@ export default function CrmMappingSuggestionModal({
 
                   <div style={{ gridColumn: "1 / -1" }}>
                     <label style={{ display: "block", fontSize: "11px", fontWeight: "700", color: "#475569", marginBottom: "4px" }}>
-                      Pipeline excluded statuses (EE2, comma-separated)
+                      Pipeline excluded statuses ({isAdmin ? "EE2, " : ""}comma-separated)
                     </label>
                     <input
                       type="text"
@@ -441,7 +442,7 @@ export default function CrmMappingSuggestionModal({
             }}
           >
             {saving && <Spinner size={14} color="#FFFFFF" />}
-            <span>{saving ? "Applying mappings..." : "Apply CRM mappings to master sheet"}</span>
+            <span>{saving ? "Applying mappings..." : (isAdmin ? "Apply CRM mappings to master sheet" : "Apply CRM mappings")}</span>
           </button>
         </div>
       </div>

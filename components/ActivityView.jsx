@@ -261,18 +261,18 @@ export default function ActivityView({
     const isPma = ev.source === "PMA" || ev.source === "pma";
 
     // Invoices segmentation (handles both new structured keys and legacy cached events)
-    const accountingInvoices = details.accountingInvoices || 
+    const accountingInvoices = details.accountingInvoices ||
       (Array.isArray(details.invoices) ? details.invoices.filter(inv => !inv.sheet && !inv.slot && !inv.row) : []);
-    const matchedInvoices = details.matchedInvoices || 
+    const matchedInvoices = details.matchedInvoices ||
       (Array.isArray(details.invoices) ? details.invoices.filter(inv => inv.sheet || inv.slot || inv.row) : []);
     const invoiceGaps = Array.isArray(details.invoiceGaps) ? details.invoiceGaps : [];
 
     // Expenses segmentation (handles both new structured keys and legacy cached events)
-    const accountingExpenses = details.accountingExpenses || 
+    const accountingExpenses = details.accountingExpenses ||
       (Array.isArray(details.expenses) ? details.expenses.filter(e => !e.sheet) : []);
-    const matchedExpenses = details.matchedExpenses || 
+    const matchedExpenses = details.matchedExpenses ||
       (Array.isArray(details.expenses) ? details.expenses.filter(e => e.sheet && !e.statusType?.includes("manual") && !e.action?.toLowerCase().includes("manual")) : []);
-    const manualAdjustments = details.manualAdjustments || 
+    const manualAdjustments = details.manualAdjustments ||
       (Array.isArray(details.expenses) ? details.expenses.filter(e => e.sheet && (e.statusType?.includes("manual") || e.action?.toLowerCase().includes("manual") || e.action === "Date Moved")) : []);
 
     const hasAccountingInvoices = accountingInvoices.length > 0;
@@ -319,16 +319,20 @@ export default function ActivityView({
               </span>
             </div>
             {/* Key-Value Attribute Cards */}
-            {details && Object.keys(details).filter(k => !["raw", "pmaAction", "pmaUser", "pmaTimestamp", "changes"].includes(k)).length > 0 && (
-              <div style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-                gap: "8px",
-                marginTop: "6px"
-              }}>
-                {Object.entries(details)
-                  .filter(([k]) => !["raw", "pmaAction", "pmaUser", "pmaTimestamp", "changes"].includes(k))
-                  .map(([k, v], i) => (
+            {(() => {
+              const hiddenKeys = effectiveIsAdmin
+                ? ["raw", "pmaAction", "pmaUser", "pmaTimestamp", "changes"]
+                : ["raw", "pmaAction", "pmaUser", "pmaTimestamp", "changes", "sheetRow", "colLetter", "tabName", "clientSheetId", "masterSheetId", "cellCoord", "rowNum", "slotNum", "targetCol", "targetRow", "formula", "parentRowNum", "confirmedRow", "pipelineRow", "outgoingsRow"];
+              const entries = details ? Object.entries(details).filter(([k]) => !hiddenKeys.includes(k)) : [];
+              if (entries.length === 0) return null;
+              return (
+                <div style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+                  gap: "8px",
+                  marginTop: "6px"
+                }}>
+                  {entries.map(([k, v], i) => (
                     <div key={i} style={{
                       background: "#ffffff",
                       border: "1px solid #e2e8f0",
@@ -343,8 +347,9 @@ export default function ActivityView({
                       </div>
                     </div>
                   ))}
-              </div>
-            )}
+                </div>
+              );
+            })()}
           </div>
         )}
         {/* INVOICE GAPS (Clean Bullet Cards) */}
@@ -381,7 +386,7 @@ export default function ActivityView({
                       }}>
                         {gap.invoiceType || "Invoice"}
                       </span>
-                      {gap.slot && (
+                      {effectiveIsAdmin && gap.slot && (
                         <span style={{
                           padding: "1px 6px",
                           borderRadius: "3px",
@@ -576,7 +581,7 @@ export default function ActivityView({
                                 fontSize: "10.5px",
                                 fontWeight: "600"
                               }}>
-                                {inv.sheet || "Confirmed"}{inv.slot ? ` • ${inv.slot}` : ""}{inv.row ? ` (Row ${inv.row})` : ""}
+                                {inv.sheet || "Confirmed"}{effectiveIsAdmin && inv.slot ? ` • ${inv.slot}` : ""}{effectiveIsAdmin && inv.row ? ` (Row ${inv.row})` : ""}
                               </span>
                             )}
                             {inv.amount && inv.amount !== "-" && (
@@ -766,7 +771,7 @@ export default function ActivityView({
                                 fontSize: "10.5px",
                                 fontWeight: "600"
                               }}>
-                                {exp.sheet}{exp.slot ? ` • ${exp.slot}` : ""}{exp.row && !String(exp.row).includes("-") ? ` (Row ${exp.row})` : ""}
+                                {exp.sheet}{effectiveIsAdmin && exp.slot ? ` • ${exp.slot}` : ""}{effectiveIsAdmin && exp.row && !String(exp.row).includes("-") ? ` (Row ${exp.row})` : ""}
                               </span>
                             )}
                             {exp.amount && exp.amount !== "-" && (
@@ -849,7 +854,7 @@ export default function ActivityView({
                               fontSize: "10.5px",
                               fontWeight: "600"
                             }}>
-                              {exp.sheet || "Outgoings"}{exp.slot ? ` • ${exp.slot}` : ""}{exp.row && !String(exp.row).includes("-") ? ` (Row ${exp.row})` : ""}
+                              {exp.sheet || "Outgoings"}{effectiveIsAdmin && exp.slot ? ` • ${exp.slot}` : ""}{effectiveIsAdmin && exp.row && !String(exp.row).includes("-") ? ` (Row ${exp.row})` : ""}
                             </span>
                             {exp.amount && exp.amount !== "-" && (
                               <span style={{
@@ -922,7 +927,7 @@ export default function ActivityView({
                     fontSize: "10.5px",
                     fontWeight: "600"
                   }}>
-                    Confirmed (Row {cj.row})
+                    Confirmed{effectiveIsAdmin && cj.row ? ` (Row ${cj.row})` : ""}
                   </span>
                 </div>
               ))}
@@ -1054,7 +1059,7 @@ export default function ActivityView({
         )}
 
         {/* RAW LOG ACCORDION */}
-        {ev.rawDetails && (
+        {effectiveIsAdmin && ev.rawDetails && (
           <details style={{ marginTop: "6px", cursor: "pointer" }}>
             <summary style={{ color: "#64748b", fontSize: "11px", fontWeight: "600" }}>Raw Log Detail</summary>
             <pre style={{
@@ -1165,7 +1170,7 @@ export default function ActivityView({
   });
 
   return (
-    <div style={{ padding: "20px 24px", maxWidth: "1400px", margin: "0 auto" }}>
+    <div className="pma-page-container" style={{ width: "100%", maxWidth: "100%", margin: "0 auto", padding: "20px 32px 60px", boxSizing: "border-box" }}>
       {/* ── HEADER ─────────────────────────────────────────────────────────── */}
       <div style={{
         display: "flex",
@@ -1183,7 +1188,7 @@ export default function ActivityView({
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
             <h2 style={{ fontSize: "22px", fontWeight: "700", color: "#0f172a", margin: 0 }}>
-              Activity Feed
+              Activity
             </h2>
             <span style={{
               background: "#e2e8f0",
@@ -1197,7 +1202,7 @@ export default function ActivityView({
             </span>
           </div>
           <div style={{ fontSize: "12.5px", color: "#64748b", marginTop: "4px" }}>
-            Real-time unified timeline of automated runs, invoice syncs, and client user actions.
+            Timeline of all activity including accounting and CRM syncs plus user actions
             {lastRefreshStr && <span style={{ marginLeft: "6px" }}>• Last synced {lastRefreshStr}</span>}
             {isRefreshing && (
               <span style={{
@@ -1208,7 +1213,7 @@ export default function ActivityView({
                 alignItems: "center",
                 gap: "5px"
               }}>
-                <Spinner size={11} color="#0284c7" /> Checking Google Sheets for updates...
+                <Spinner size={11} color="#0284c7" /> {effectiveIsAdmin ? "Checking Google Sheets for updates..." : "Checking for updates..."}
               </span>
             )}
           </div>

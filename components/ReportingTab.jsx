@@ -51,7 +51,9 @@ export default function ReportingTab({
 
   // Action states
   const [actionInProgress, setActionInProgress] = useState(null); // 'GENERATE' | 'UPDATE' | 'EMAIL' | null
-  const [clientStatuses, setClientStatuses] = useState({}); // { [clientName]: { status, message, reportUrl } }
+  const [clientStatuses, setClientStatuses] = useState({}); // { [clientName]: { status, message, subDetail, percent, reportUrl } }
+  const [runProgress, setRunProgress] = useState(null);
+  const activeStageRefsRef = useRef({ stageIdx: 0, refs: [], stageStartMs: 0, basePercent: 0, maxPercent: 0, clientName: "" });
 
   // Modals state
   const [emailModalClient, setEmailModalClient] = useState(null);
@@ -182,18 +184,90 @@ export default function ReportingTab({
     }
     setActionInProgress(null);
     setStatusMsg({ type: "warning", text: "Task was stopped by user." });
+    setRunProgress(prev => prev ? {
+      ...prev,
+      isRunning: false,
+      subStepLabel: "Task stopped by user.",
+      stages: prev.stages.map(s => s.status === "running" ? { ...s, status: "cancelled" } : s),
+      logs: [...(prev.logs || []), { time: new Date().toLocaleTimeString("en-GB"), text: "Task stopped by user.", type: "warning" }]
+    } : null);
     setClientStatuses(prev => {
       const updated = { ...prev };
       Object.keys(updated).forEach(name => {
-        if (updated[name]?.status === "running") {
-          updated[name] = { status: "cancelled", message: "Stopped by user" };
+        if (updated[name]?.status === "running" || updated[name]?.status === "queued") {
+          updated[name] = { status: "cancelled", message: "Stopped by user", subDetail: "" };
         }
       });
       return updated;
     });
   };
 
-  // Run Batch Reporting Action (GENERATE | UPDATE | EMAIL)
+  // Live timer & sub-step progress interpolator while an action is running
+  useEffect(() => {
+    if (!actionInProgress) return;
+    const interval = setInterval(() => {
+      const now = Date.now();
+      const stageMeta = activeStageRefsRef.current;
+
+      setRunProgress(prev => {
+        if (!prev || !prev.isRunning) return prev;
+        const elapsedSec = Math.max(0, Math.floor((now - prev.startedAt) / 1000));
+        let nextPercent = prev.overallPercent;
+        let nextSubStep = prev.subStepLabel;
+
+        if (stageMeta && (stageMeta.stageIdx === 1 || stageMeta.stageIdx === 2) && stageMeta.refs?.length > 0) {
+          const stageElapsedSec = Math.max(0, (now - stageMeta.stageStartMs) / 1000);
+          // Estimate ~34s per slides batch pass
+          const ratio = Math.min(0.94, stageElapsedSec / 34);
+          nextPercent = Math.round(stageMeta.basePercent + (stageMeta.maxPercent - stageMeta.basePercent) * ratio);
+
+          if (stageMeta.stageIdx === 1 && stageElapsedSec < 5) {
+            nextSubStep = prev.mode === "GENERATE"
+              ? `Creating ${reportMonthLabel} presentation from template & refreshing linked Google Sheets charts...`
+              : `Opening ${reportMonthLabel} presentation in Google Slides & refreshing linked charts...`;
+          } else {
+            const effectiveRefElapsed = stageMeta.stageIdx === 1 ? Math.max(0, stageElapsedSec - 5) : stageElapsedSec;
+            const refIdx = Math.min(
+              stageMeta.refs.length - 1,
+              Math.floor((effectiveRefElapsed / 26) * stageMeta.refs.length)
+            );
+            const activeRef = stageMeta.refs[refIdx];
+            if (activeRef) {
+              const dimText = activeRef.rowCount && activeRef.colCount ? ` (${activeRef.rowCount}×${activeRef.colCount})` : "";
+              nextSubStep = `Updating slide table ${refIdx + 1} of ${stageMeta.refs.length} in batch: ${activeRef.code} — ${activeRef.label || activeRef.range}${dimText}`;
+            }
+          }
+        }
+
+        if (stageMeta?.clientName) {
+          setClientStatuses(cs => {
+            const curr = cs[stageMeta.clientName];
+            if (!curr || curr.status !== "running") return cs;
+            return {
+              ...cs,
+              [stageMeta.clientName]: {
+                ...curr,
+                percent: nextPercent,
+                subDetail: nextSubStep,
+                elapsedSec
+              }
+            };
+          });
+        }
+
+        return {
+          ...prev,
+          elapsedSec,
+          overallPercent: nextPercent,
+          subStepLabel: nextSubStep
+        };
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [actionInProgress, reportMonthLabel]);
+
+  // Run Batch Reporting Action (GENERATE | UPDATE | EMAIL) with detailed step-by-step progress
   const handleRunBatchAction = async (mode) => {
     if (!selectedClients || selectedClients.size === 0) {
       setStatusMsg({ type: "error", text: "Please select at least one client to process." });
@@ -213,55 +287,493 @@ export default function ReportingTab({
     setActionInProgress(mode);
     setStatusMsg(null);
 
+    const runStartedAt = Date.now();
+    const nowTime = () => new Date().toLocaleTimeString("en-GB");
+
+    const buildInitialStages = (forMode) => {
+      if (forMode === "EMAIL") {
+        return [
+          { id: "draft", title: "Drafting Gmail message", detail: "Creating email draft with client template and signature", status: "pending" },
+          { id: "finalize", title: "Finalising & logging", detail: "Updating EoM checklist task and activity log", status: "pending" }
+        ];
+      }
+      return [
+        {
+          id: "prepare",
+          title: "Step 1: Master sheet preparation",
+          detail: `Setting MgmtRep!B1 to ${reportMonthLabel} and verifying populated table ranges`,
+          status: "pending"
+        },
+        {
+          id: "batch1",
+          title: forMode === "GENERATE"
+            ? "Step 2: Create presentation, refresh charts & sync core tables"
+            : "Step 2: Refresh linked charts & sync core performance tables",
+          detail: "Refreshing linked Google Sheets charts and updating snapshot, performance & overhead tables",
+          status: "pending"
+        },
+        {
+          id: "batch2",
+          title: "Step 3: Sync financial forecasts, cashflow & pipeline tables",
+          detail: "Updating YTD, FY forecast, targets, cashflow, bookings, pipeline & utilisation tables",
+          status: "pending"
+        },
+        {
+          id: "finalize",
+          title: "Step 4: Finalising & logging",
+          detail: "Recording presentation link in ReportsLog and completing EoM checklist task",
+          status: "pending"
+        }
+      ];
+    };
+
     // Set initial client statuses
-    const newStatuses = { ...clientStatuses };
-    targetClients.forEach(c => {
-      newStatuses[c.clientName] = {
-        status: "running",
-        message: mode === "GENERATE" ? "Generating report..." : (mode === "UPDATE" ? "Updating deck..." : "Drafting email...")
+    const initialStatuses = { ...clientStatuses };
+    targetClients.forEach((c, idx) => {
+      initialStatuses[c.clientName] = {
+        status: idx === 0 ? "running" : "queued",
+        message: idx === 0 ? "Starting..." : "Queued",
+        subDetail: idx === 0 ? "Preparing master sheet..." : `Waiting (${idx + 1} of ${targetClients.length})`,
+        percent: idx === 0 ? 5 : 0,
+        elapsedSec: 0
       };
     });
-    setClientStatuses(newStatuses);
+    setClientStatuses(initialStatuses);
+
+    setRunProgress({
+      isRunning: true,
+      mode,
+      totalClients: targetClients.length,
+      currentClientIdx: 0,
+      currentClientName: targetClients[0].clientName,
+      overallPercent: 5,
+      subStepLabel: `Initialising ${mode === "GENERATE" ? "report generation" : (mode === "UPDATE" ? "deck update" : "email drafting")} for ${targetClients[0].clientName}...`,
+      startedAt: runStartedAt,
+      elapsedSec: 0,
+      stages: buildInitialStages(mode),
+      logs: [
+        {
+          time: nowTime(),
+          text: `Started ${mode === "GENERATE" ? "Generate new reports" : (mode === "UPDATE" ? "Update existing decks" : "Draft emails")} for ${targetClients.length} client(s) (Report covers: ${reportMonthLabel}).`,
+          type: "info"
+        }
+      ]
+    });
+
+    const appendLog = (text, type = "info") => {
+      setRunProgress(prev => prev ? {
+        ...prev,
+        logs: [...(prev.logs || []), { time: nowTime(), text, type }]
+      } : prev);
+    };
+
+    let successCount = 0;
+    let failCount = 0;
 
     try {
-      const resp = await fetch("/api/triage", {
-        method: "POST",
-        signal: controller.signal,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "eom_run_reporting_action",
-          mode,
-          clients: targetClients,
-          eomMonthKey,
-          reportMonthKey: selectedReportMonthKey,
-          webAppUrlOverride: systemWebAppUrl,
-          automationCommanderSheetId
-        })
-      });
-      const data = await resp.json();
+      for (let cIdx = 0; cIdx < targetClients.length; cIdx++) {
+        if (controller.signal.aborted) break;
+        const client = targetClients[cIdx];
+        const clientStartMs = Date.now();
+        const stages = buildInitialStages(mode);
 
-      if (!data.success) {
-        throw new Error(data.error || "Action execution failed");
+        // Helper to update stage status
+        const updateStage = (stageIdx, status, detailOverride, overallPct, subStep) => {
+          setRunProgress(prev => {
+            if (!prev) return prev;
+            const nextStages = prev.stages.map((s, idx) => {
+              if (idx < stageIdx && s.status !== "done") return { ...s, status: "done" };
+              if (idx === stageIdx) return { ...s, status, detail: detailOverride || s.detail };
+              return s;
+            });
+            return {
+              ...prev,
+              currentClientIdx: cIdx,
+              currentClientName: client.clientName,
+              overallPercent: overallPct !== undefined ? overallPct : prev.overallPercent,
+              subStepLabel: subStep || prev.subStepLabel,
+              stages: nextStages
+            };
+          });
+        };
+
+        setRunProgress(prev => prev ? {
+          ...prev,
+          currentClientIdx: cIdx,
+          currentClientName: client.clientName,
+          stages
+        } : prev);
+
+        try {
+          if (mode === "EMAIL") {
+            activeStageRefsRef.current = { stageIdx: 0, refs: [], stageStartMs: Date.now(), basePercent: 20, maxPercent: 80, clientName: client.clientName };
+            updateStage(0, "running", `Drafting email to ${client.emailTo || "recipient"}...`, 35, `${client.clientName}: Creating Gmail draft...`);
+            setClientStatuses(prev => ({
+              ...prev,
+              [client.clientName]: {
+                status: "running",
+                message: "Step 1/2: Drafting email",
+                subDetail: `Creating draft to ${client.emailTo || "recipient"}...`,
+                percent: 35
+              }
+            }));
+            appendLog(`${client.clientName}: Creating Gmail draft (${client.emailSubj || "End of month queries"})...`);
+
+            const resp = await fetch("/api/triage", {
+              method: "POST",
+              signal: controller.signal,
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                action: "eom_run_reporting_action",
+                mode: "EMAIL",
+                clients: [client],
+                eomMonthKey,
+                reportMonthKey: selectedReportMonthKey,
+                webAppUrlOverride: systemWebAppUrl,
+                automationCommanderSheetId
+              })
+            });
+            const data = await resp.json();
+            if (!data.success) throw new Error(data.error || "Failed to draft email");
+            const cRes = data.results?.[0];
+            if (cRes && !cRes.success) throw new Error(cRes.error || "Failed to draft email");
+
+            updateStage(0, "done", "Gmail draft created", 100, `${client.clientName}: Email draft created.`);
+            updateStage(1, "done", "EoM checklist updated", 100, `${client.clientName}: Completed.`);
+
+            const clientDur = Math.max(1, Math.round((Date.now() - clientStartMs) / 1000));
+            setClientStatuses(prev => ({
+              ...prev,
+              [client.clientName]: {
+                status: "success",
+                message: `Draft created (${clientDur}s)`,
+                subDetail: `Recipient: ${client.emailTo}`,
+                percent: 100
+              }
+            }));
+            appendLog(`${client.clientName}: Gmail draft created successfully (${clientDur}s).`, "success");
+            successCount++;
+            continue;
+          }
+
+          // ── STAGE 1: PREPARE_MASTER ────────────────────────────────────────────
+          activeStageRefsRef.current = { stageIdx: 0, refs: [], stageStartMs: Date.now(), basePercent: 5, maxPercent: 15, clientName: client.clientName };
+          updateStage(
+            0,
+            "running",
+            `Setting MgmtRep!B1 to ${reportMonthLabel} & scanning active table ranges...`,
+            10,
+            `${client.clientName}: Updating Master Sheet MgmtRep!B1 to ${reportMonthLabel}...`
+          );
+          setClientStatuses(prev => ({
+            ...prev,
+            [client.clientName]: {
+              status: "running",
+              message: "Step 1/4: Master sheet",
+              subDetail: `Setting MgmtRep!B1 to ${reportMonthLabel}...`,
+              percent: 10
+            }
+          }));
+          appendLog(`${client.clientName}: Setting Master Sheet MgmtRep!B1 to ${reportMonthLabel} and verifying table ranges...`);
+
+          const prepResp = await fetch("/api/triage", {
+            method: "POST",
+            signal: controller.signal,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "eom_run_reporting_action",
+              step: "PREPARE_MASTER",
+              mode,
+              clients: [client],
+              eomMonthKey,
+              reportMonthKey: selectedReportMonthKey,
+              webAppUrlOverride: systemWebAppUrl,
+              automationCommanderSheetId
+            })
+          });
+          const prepData = await prepResp.json();
+          if (!prepData.success) throw new Error(prepData.error || "Master sheet preparation failed");
+
+          const activeRefs = Array.isArray(prepData.activeChartRefs) && prepData.activeChartRefs.length > 0
+            ? prepData.activeChartRefs
+            : (chartRefs.length > 0 ? chartRefs : []);
+
+          updateStage(
+            0,
+            "done",
+            `MgmtRep!B1 set to ${prepData.targetDateFormatted} (${activeRefs.length} populated table ranges ready)`,
+            15,
+            `${client.clientName}: Master sheet updated (${activeRefs.length} active table ranges).`
+          );
+          appendLog(`${client.clientName}: Master sheet updated (${prepData.targetDateFormatted}). Found ${activeRefs.length} populated table ranges.`);
+
+          // Split activeRefs into 2 balanced batches so each GAS Web App pass completes in ~28-35s
+          const midIdx = Math.ceil(activeRefs.length / 2);
+          const batch1Refs = activeRefs.slice(0, midIdx);
+          const batch2Refs = activeRefs.slice(midIdx);
+
+          const batch1Map = {};
+          batch1Refs.forEach(r => { batch1Map[r.code] = r.range; });
+          const batch2Map = {};
+          batch2Refs.forEach(r => { batch2Map[r.code] = r.range; });
+
+          // ── STAGE 2: SLIDES_BATCH 1 (Charts + Core Performance Tables) ─────────
+          activeStageRefsRef.current = {
+            stageIdx: 1,
+            refs: batch1Refs,
+            stageStartMs: Date.now(),
+            basePercent: 16,
+            maxPercent: 54,
+            clientName: client.clientName
+          };
+          const batch1CodesPreview = batch1Refs.map(r => r.code).join(", ");
+          updateStage(
+            1,
+            "running",
+            `Refreshing linked Google Sheets charts & syncing ${batch1Refs.length} tables (${batch1CodesPreview})`,
+            18,
+            mode === "GENERATE"
+              ? `${client.clientName}: Creating ${reportMonthLabel} presentation from template & refreshing charts...`
+              : `${client.clientName}: Opening ${reportMonthLabel} presentation & refreshing linked charts...`
+          );
+          setClientStatuses(prev => ({
+            ...prev,
+            [client.clientName]: {
+              status: "running",
+              message: "Step 2/4: Charts & core tables",
+              subDetail: `Refreshing charts & syncing ${batch1Refs.length} core tables...`,
+              percent: 18
+            }
+          }));
+          appendLog(`${client.clientName}: ${mode === "GENERATE" ? "Creating new deck from template, refreshing" : "Refreshing"} linked charts & syncing ${batch1Refs.length} core tables (${batch1Refs.map(r => r.code).slice(0, 5).join(", ")}${batch1Refs.length > 5 ? "..." : ""})...`);
+
+          const batch1StartMs = Date.now();
+          const batch1Resp = await fetch("/api/triage", {
+            method: "POST",
+            signal: controller.signal,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "eom_run_reporting_action",
+              step: "SLIDES_BATCH",
+              batchIndex: 0,
+              chartMapOverride: batch1Map,
+              mode,
+              clients: [client],
+              eomMonthKey,
+              reportMonthKey: selectedReportMonthKey,
+              webAppUrlOverride: systemWebAppUrl,
+              automationCommanderSheetId
+            })
+          });
+          const batch1Data = await batch1Resp.json();
+          if (!batch1Data.success) throw new Error(batch1Data.error || "Failed during slides batch 1");
+          const batch1ClientRes = batch1Data.results?.[0];
+          if (!batch1ClientRes || !batch1ClientRes.success) {
+            throw new Error(batch1ClientRes?.error || "Failed during slides batch 1");
+          }
+
+          const batch1Sec = Math.max(1, Math.round((Date.now() - batch1StartMs) / 1000));
+          const updatedInBatch1 = Array.isArray(batch1ClientRes.tablesUpdated) && batch1ClientRes.tablesUpdated.length > 0
+            ? batch1ClientRes.tablesUpdated.map(t => `${t.code} (slide ${t.slideNumber})`).join(", ")
+            : `${batch1Refs.length} core table ranges checked`;
+
+          updateStage(
+            1,
+            "done",
+            `Charts refreshed & core tables synced in ${batch1Sec}s (${updatedInBatch1})`,
+            55,
+            `${client.clientName}: Core tables synced (${batch1Sec}s).`
+          );
+          appendLog(`${client.clientName}: Linked charts refreshed & core tables synced in ${batch1Sec}s (${batch1ClientRes.reportName || "deck"}).`);
+
+          let finalClientRes = batch1ClientRes;
+
+          // ── STAGE 3: SLIDES_BATCH 2 (Forecasts, Cashflow, Bookings, Pipeline & Util) ──
+          if (batch2Refs.length > 0) {
+            activeStageRefsRef.current = {
+              stageIdx: 2,
+              refs: batch2Refs,
+              stageStartMs: Date.now(),
+              basePercent: 56,
+              maxPercent: 90,
+              clientName: client.clientName
+            };
+            const batch2CodesPreview = batch2Refs.map(r => r.code).join(", ");
+            updateStage(
+              2,
+              "running",
+              `Syncing ${batch2Refs.length} forecast, cashflow & pipeline tables (${batch2CodesPreview})`,
+              58,
+              `${client.clientName}: Syncing ${batch2Refs[0]?.code || "forecast"} table...`
+            );
+            setClientStatuses(prev => ({
+              ...prev,
+              [client.clientName]: {
+                status: "running",
+                message: "Step 3/4: Forecast & cashflow tables",
+                subDetail: `Syncing ${batch2Refs.length} remaining tables...`,
+                percent: 58,
+                reportUrl: batch1ClientRes.reportUrl || null
+              }
+            }));
+            appendLog(`${client.clientName}: Syncing ${batch2Refs.length} forecast, cashflow, pipeline & utilisation tables (${batch2Refs.map(r => r.code).slice(0, 5).join(", ")}${batch2Refs.length > 5 ? "..." : ""})...`);
+
+            const batch2StartMs = Date.now();
+            const batch2Resp = await fetch("/api/triage", {
+              method: "POST",
+              signal: controller.signal,
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                action: "eom_run_reporting_action",
+                step: "SLIDES_BATCH",
+                batchIndex: 1,
+                chartMapOverride: batch2Map,
+                mode,
+                clients: [client],
+                eomMonthKey,
+                reportMonthKey: selectedReportMonthKey,
+                webAppUrlOverride: systemWebAppUrl,
+                automationCommanderSheetId
+              })
+            });
+            const batch2Data = await batch2Resp.json();
+            if (!batch2Data.success) throw new Error(batch2Data.error || "Failed during slides batch 2");
+            const batch2ClientRes = batch2Data.results?.[0];
+            if (!batch2ClientRes || !batch2ClientRes.success) {
+              throw new Error(batch2ClientRes?.error || "Failed during slides batch 2");
+            }
+
+            finalClientRes = batch2ClientRes;
+            const batch2Sec = Math.max(1, Math.round((Date.now() - batch2StartMs) / 1000));
+            const updatedInBatch2 = Array.isArray(batch2ClientRes.tablesUpdated) && batch2ClientRes.tablesUpdated.length > 0
+              ? batch2ClientRes.tablesUpdated.map(t => `${t.code} (slide ${t.slideNumber})`).join(", ")
+              : `${batch2Refs.length} forecast/cashflow table ranges checked`;
+
+            updateStage(
+              2,
+              "done",
+              `Forecast, cashflow & utilisation tables synced in ${batch2Sec}s (${updatedInBatch2})`,
+              92,
+              `${client.clientName}: All slide tables synced (${batch2Sec}s).`
+            );
+            appendLog(`${client.clientName}: Forecast, cashflow & utilisation tables synced in ${batch2Sec}s.`);
+          } else {
+            updateStage(2, "done", "No additional table batch needed", 92);
+          }
+
+          // ── STAGE 4: FINALIZE (ReportsLog & EoM Checklist) ─────────────────────
+          activeStageRefsRef.current = { stageIdx: 3, refs: [], stageStartMs: Date.now(), basePercent: 92, maxPercent: 99, clientName: client.clientName };
+          updateStage(
+            3,
+            "running",
+            "Recording presentation link in ReportsLog & updating EoM checklist task...",
+            95,
+            `${client.clientName}: Saving deck link to ReportsLog & updating EoM checklist...`
+          );
+          setClientStatuses(prev => ({
+            ...prev,
+            [client.clientName]: {
+              status: "running",
+              message: "Step 4/4: Finalising & logging",
+              subDetail: "Updating ReportsLog & EoM checklist...",
+              percent: 95,
+              reportUrl: finalClientRes.reportUrl || null
+            }
+          }));
+
+          await fetch("/api/triage", {
+            method: "POST",
+            signal: controller.signal,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "eom_run_reporting_action",
+              step: "FINALIZE",
+              mode,
+              clients: [client],
+              clientResults: [finalClientRes],
+              eomMonthKey,
+              reportMonthKey: selectedReportMonthKey,
+              automationCommanderSheetId
+            })
+          });
+
+          const totalClientSec = Math.max(1, Math.round((Date.now() - clientStartMs) / 1000));
+          updateStage(
+            3,
+            "done",
+            `Logged to ReportsLog & completed EoM task (total time: ${totalClientSec}s)`,
+            100,
+            `${client.clientName}: ${mode === "GENERATE" ? "Report generated" : "Deck updated"} successfully (${totalClientSec}s).`
+          );
+
+          setClientStatuses(prev => ({
+            ...prev,
+            [client.clientName]: {
+              status: "success",
+              message: mode === "GENERATE" ? `Report generated (${totalClientSec}s)` : `Deck updated (${totalClientSec}s)`,
+              subDetail: finalClientRes.reportName || reportMonthLabel,
+              percent: 100,
+              reportUrl: finalClientRes.reportUrl || null
+            }
+          }));
+
+          appendLog(`${client.clientName}: ${mode === "GENERATE" ? "Report generated" : "Deck updated"} successfully in ${totalClientSec}s (${finalClientRes.reportName || "presentation"}).`, "success");
+          successCount++;
+        } catch (clientErr) {
+          if (clientErr.name === "AbortError" || controller.signal.aborted) {
+            throw clientErr;
+          }
+          console.error(`Error processing ${client.clientName}:`, clientErr);
+          failCount++;
+          setRunProgress(prev => prev ? {
+            ...prev,
+            stages: prev.stages.map(s => s.status === "running" ? { ...s, status: "error", detail: clientErr.message } : s),
+            subStepLabel: `${client.clientName}: Error — ${clientErr.message}`
+          } : prev);
+          setClientStatuses(prev => ({
+            ...prev,
+            [client.clientName]: {
+              status: "error",
+              message: "Error",
+              subDetail: clientErr.message,
+              percent: 0
+            }
+          }));
+          appendLog(`${client.clientName}: Error — ${clientErr.message}`, "error");
+        }
       }
 
-      // Update per-client statuses from results
-      const finalStatuses = { ...newStatuses };
-      (data.results || []).forEach(res => {
-        finalStatuses[res.clientName] = {
-          status: res.success ? "success" : "error",
-          message: res.message || res.error || (res.success ? "Completed" : "Failed"),
-          reportUrl: res.reportUrl || null
-        };
-      });
-      setClientStatuses(finalStatuses);
+      if (!controller.signal.aborted) {
+        const totalSec = Math.max(1, Math.round((Date.now() - runStartedAt) / 1000));
+        setRunProgress(prev => prev ? {
+          ...prev,
+          isRunning: false,
+          overallPercent: 100,
+          elapsedSec: totalSec,
+          subStepLabel: failCount === 0
+            ? `Completed ${successCount} client(s) in ${totalSec}s.`
+            : `Completed with ${successCount} succeeded and ${failCount} failed (${totalSec}s).`
+        } : null);
 
-      setStatusMsg({
-        type: "success",
-        text: data.message || `Action ${mode} completed successfully.`
-      });
+        if (failCount === 0) {
+          setStatusMsg({
+            type: "success",
+            text: mode === "GENERATE"
+              ? `Successfully generated ${successCount} report(s) in ${totalSec}s.`
+              : (mode === "UPDATE"
+                ? `Successfully updated ${successCount} deck(s) in ${totalSec}s.`
+                : `Successfully drafted ${successCount} email(s) in Gmail.`)
+          });
+        } else {
+          setStatusMsg({
+            type: "error",
+            text: `Finished with ${successCount} succeeded and ${failCount} failed. Check the progress log below for details.`
+          });
+        }
 
-      // Reload fresh state to pull new report URLs and logs
-      loadReportingData();
+        // Reload fresh state to pull new report URLs and logs
+        loadReportingData();
+      }
     } catch (err) {
       if (err.name === "AbortError" || controller.signal.aborted) {
         console.log("Reporting action cancelled by user.");
@@ -269,16 +781,12 @@ export default function ReportingTab({
       }
       console.error("Batch reporting action error:", err);
       setStatusMsg({ type: "error", text: err.message });
-
-      const errorStatuses = { ...newStatuses };
-      targetClients.forEach(c => {
-        errorStatuses[c.clientName] = { status: "error", message: err.message };
-      });
-      setClientStatuses(errorStatuses);
+      setRunProgress(prev => prev ? { ...prev, isRunning: false, subStepLabel: `Error: ${err.message}` } : null);
     } finally {
       if (abortControllerRef.current === controller) {
         abortControllerRef.current = null;
       }
+      activeStageRefsRef.current = { stageIdx: 0, refs: [], stageStartMs: 0, basePercent: 0, maxPercent: 0, clientName: "" };
       setActionInProgress(null);
     }
   };
@@ -584,7 +1092,7 @@ export default function ReportingTab({
               )}
             </div>
             <p style={{ margin: 0, fontSize: "13px", color: "#64748b" }}>
-              Automated Google Slides management reporting decks and month-end email drafting.
+              Managing monthly reporting presentation decks plus month-end email drafting.
             </p>
           </div>
 
@@ -671,7 +1179,7 @@ export default function ReportingTab({
               }}
             >
               {actionInProgress === "GENERATE" && <Spinner size="14px" color="#ffffff" />}
-              <span>Generate new reports</span>
+              <span>Create report(s)</span>
             </button>
 
             <button
@@ -692,7 +1200,7 @@ export default function ReportingTab({
               }}
             >
               {actionInProgress === "UPDATE" && <Spinner size="14px" color="#0369a1" />}
-              <span>Update existing decks</span>
+              <span>Update report(s)</span>
             </button>
 
             <button
@@ -819,6 +1327,174 @@ export default function ReportingTab({
           color: "#991b1b"
         }}>
           {error}
+        </div>
+      )}
+
+      {/* ── DETAILED EXECUTION PROGRESS PANEL ──────────────────────────────────── */}
+      {runProgress && (
+        <div style={{
+          background: "#ffffff",
+          border: "1px solid #cbd5e1",
+          borderRadius: "10px",
+          padding: "18px 20px",
+          marginBottom: "18px",
+          boxShadow: "0 2px 6px rgba(15, 23, 42, 0.06)"
+        }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "12px", marginBottom: "10px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+              {runProgress.isRunning && <Spinner size="16px" color="#0284c7" />}
+              <span style={{ fontSize: "14px", fontWeight: 700, color: "#0f172a" }}>
+                {runProgress.mode === "GENERATE"
+                  ? "Generating new management reports"
+                  : (runProgress.mode === "UPDATE" ? "Updating existing decks" : "Drafting end of month emails")}
+              </span>
+              <span style={{
+                fontSize: "11px",
+                fontWeight: 600,
+                padding: "2px 8px",
+                borderRadius: "999px",
+                background: "#f1f5f9",
+                color: "#334155"
+              }}>
+                Client {runProgress.currentClientIdx + 1} of {runProgress.totalClients}: {runProgress.currentClientName}
+              </span>
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+              <span style={{ fontSize: "12px", fontWeight: 600, color: "#475569", fontFamily: "monospace" }}>
+                Elapsed: {Math.floor((runProgress.elapsedSec || 0) / 60)}:{String((runProgress.elapsedSec || 0) % 60).padStart(2, "0")}
+              </span>
+              <span style={{ fontSize: "13px", fontWeight: 700, color: "#0284c7" }}>
+                {runProgress.overallPercent || 0}%
+              </span>
+              {!runProgress.isRunning && (
+                <button
+                  type="button"
+                  onClick={() => setRunProgress(null)}
+                  style={{
+                    background: "none",
+                    border: "1px solid #cbd5e1",
+                    borderRadius: "4px",
+                    padding: "2px 8px",
+                    fontSize: "11px",
+                    color: "#64748b",
+                    cursor: "pointer"
+                  }}
+                >
+                  Dismiss
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Progress Bar */}
+          <div style={{
+            width: "100%",
+            height: "8px",
+            background: "#f1f5f9",
+            borderRadius: "999px",
+            overflow: "hidden",
+            marginBottom: "10px"
+          }}>
+            <div style={{
+              width: `${Math.min(100, Math.max(0, runProgress.overallPercent || 0))}%`,
+              height: "100%",
+              background: runProgress.isRunning ? "linear-gradient(90deg, #0284c7, #2563eb)" : "#16a34a",
+              transition: "width 0.4s ease"
+            }} />
+          </div>
+
+          {/* Live Sub-step Ticker */}
+          <div style={{
+            fontSize: "12px",
+            color: "#0369a1",
+            fontWeight: 600,
+            background: "#f0f9ff",
+            border: "1px solid #bae6fd",
+            borderRadius: "6px",
+            padding: "7px 12px",
+            marginBottom: "14px",
+            display: "flex",
+            alignItems: "center",
+            gap: "8px"
+          }}>
+            <span style={{ display: "inline-block", width: "6px", height: "6px", borderRadius: "50%", background: runProgress.isRunning ? "#0284c7" : "#16a34a", flexShrink: 0 }} />
+            <span>{runProgress.subStepLabel}</span>
+          </div>
+
+          {/* Step-by-step Stages Grid */}
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+            gap: "10px",
+            marginBottom: "12px"
+          }}>
+            {(runProgress.stages || []).map((st, idx) => {
+              const isDone = st.status === "done";
+              const isRunning = st.status === "running";
+              const isErr = st.status === "error";
+              return (
+                <div
+                  key={st.id || idx}
+                  style={{
+                    padding: "10px 12px",
+                    borderRadius: "8px",
+                    border: `1px solid ${isRunning ? "#38bdf8" : (isDone ? "#bbf7d0" : (isErr ? "#fecaca" : "#e2e8f0"))}`,
+                    background: isRunning ? "#f0f9ff" : (isDone ? "#f0fdf4" : (isErr ? "#fef2f2" : "#f8fafc"))
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
+                    {isRunning ? (
+                      <Spinner size="12px" color="#0284c7" />
+                    ) : isDone ? (
+                      <span style={{ color: "#16a34a", fontWeight: 700, fontSize: "13px" }}>✓</span>
+                    ) : isErr ? (
+                      <span style={{ color: "#dc2626", fontWeight: 700, fontSize: "13px" }}>✕</span>
+                    ) : (
+                      <span style={{ color: "#94a3b8", fontSize: "12px" }}>○</span>
+                    )}
+                    <span style={{
+                      fontSize: "12px",
+                      fontWeight: 700,
+                      color: isRunning ? "#0369a1" : (isDone ? "#15803d" : (isErr ? "#b91c1c" : "#475569"))
+                    }}>
+                      {st.title}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: "11px", color: "#64748b", lineHeight: 1.35 }}>
+                    {st.detail}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Compact Live Activity Feed */}
+          {runProgress.logs && runProgress.logs.length > 0 && (
+            <div style={{
+              maxHeight: "110px",
+              overflowY: "auto",
+              background: "#0f172a",
+              color: "#e2e8f0",
+              borderRadius: "6px",
+              padding: "8px 12px",
+              fontFamily: "monospace",
+              fontSize: "11px",
+              lineHeight: 1.5
+            }}>
+              {runProgress.logs.map((logItem, lIdx) => (
+                <div
+                  key={lIdx}
+                  style={{
+                    color: logItem.type === "error" ? "#fca5a5" : (logItem.type === "success" ? "#86efac" : (logItem.type === "warning" ? "#fde047" : "#cbd5e1"))
+                  }}
+                >
+                  <span style={{ color: "#64748b", marginRight: "8px" }}>[{logItem.time}]</span>
+                  <span>{logItem.text}</span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -1012,21 +1688,37 @@ export default function ReportingTab({
                       </td>
 
                       {/* Execution Status */}
-                      <td style={{ padding: "12px 16px" }}>
+                      <td style={{ padding: "12px 16px", minWidth: "220px" }}>
                         {statusInfo ? (
-                          <div style={{
-                            display: "inline-flex",
-                            alignItems: "center",
-                            gap: "5px",
-                            fontSize: "12px",
-                            fontWeight: 600,
-                            padding: "3px 8px",
-                            borderRadius: "4px",
-                            background: statusInfo.status === "success" ? "#f0fdf4" : (statusInfo.status === "error" ? "#fef2f2" : (statusInfo.status === "cancelled" ? "#fffbeb" : "#f1f5f9")),
-                            color: statusInfo.status === "success" ? "#15803d" : (statusInfo.status === "error" ? "#b91c1c" : (statusInfo.status === "cancelled" ? "#b45309" : "#0284c7"))
-                          }}>
-                            {statusInfo.status === "running" && <Spinner size="12px" />}
-                            <span>{statusInfo.message}</span>
+                          <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                            <div style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "5px",
+                              fontSize: "12px",
+                              fontWeight: 600,
+                              padding: "3px 8px",
+                              borderRadius: "4px",
+                              width: "fit-content",
+                              background: statusInfo.status === "success" ? "#f0fdf4" : (statusInfo.status === "error" ? "#fef2f2" : (statusInfo.status === "cancelled" ? "#fffbeb" : "#f1f5f9")),
+                              color: statusInfo.status === "success" ? "#15803d" : (statusInfo.status === "error" ? "#b91c1c" : (statusInfo.status === "cancelled" ? "#b45309" : "#0284c7"))
+                            }}>
+                              {statusInfo.status === "running" && <Spinner size="12px" />}
+                              <span>{statusInfo.message}</span>
+                              {statusInfo.status === "running" && typeof statusInfo.percent === "number" && (
+                                <span style={{ marginLeft: "4px", fontWeight: 700 }}>({statusInfo.percent}%)</span>
+                              )}
+                            </div>
+                            {statusInfo.status === "running" && typeof statusInfo.percent === "number" && (
+                              <div style={{ width: "100%", maxWidth: "220px", height: "4px", background: "#e2e8f0", borderRadius: "999px", overflow: "hidden" }}>
+                                <div style={{ width: `${Math.min(100, Math.max(0, statusInfo.percent))}%`, height: "100%", background: "#0284c7", transition: "width 0.4s ease" }} />
+                              </div>
+                            )}
+                            {statusInfo.subDetail && (
+                              <div style={{ fontSize: "11px", color: statusInfo.status === "error" ? "#b91c1c" : "#64748b", maxWidth: "260px", lineHeight: 1.3 }}>
+                                {statusInfo.subDetail}
+                              </div>
+                            )}
                           </div>
                         ) : (
                           <span style={{ color: "#94a3b8", fontSize: "12px" }}>Ready</span>

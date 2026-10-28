@@ -399,7 +399,7 @@ export default function NonAdminAlertListView({
                       gap: "2px",
                       marginTop: "2px",
                     }}>
-                      {parsed.tab && <div><strong>Tab:</strong> {parsed.tab}{parsed.slot ? ` (Slot ${parsed.slot})` : ""}</div>}
+                      {parsed.tab && <div><strong>Section:</strong> {parsed.tab}</div>}
                       {parsed.month && <div><strong>Month:</strong> {parsed.month}</div>}
                       {parsed.client && <div><strong>End client:</strong> {parsed.client}</div>}
                       {parsed.contractor && <div><strong>{parsed.tab === "Outgoings" ? "Vendor:" : "Contractor:"}</strong> {parsed.contractor}</div>}
@@ -510,7 +510,7 @@ export default function NonAdminAlertListView({
                               className="triage-btn"
                               onClick={() => onViewJob(jobTarget)}
                               style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#0284c7", borderColor: "#bae6fd" }}
-                              title={jobTarget.isOutgoings ? "View Outgoings expense details" : "View and edit job details in pop-up"}
+                              title={jobTarget.isOutgoings ? "View overhead expense details" : "View and edit job details in pop-up"}
                             >
                               {jobTarget.isOutgoings ? "View expense" : "View job"}
                             </button>
@@ -603,7 +603,7 @@ export default function NonAdminAlertListView({
                               </div>
                             )}
                             <div><strong>{m.possibleMatchCase === "draft" ? "DRAFT invoice found:" : "Invoice found:"}</strong> #{m.possibleMatchInvoiceNo} for £{parseFloat(m.possibleMatchAmount || 0).toFixed(2)}, sent {m.possibleMatchSentDate}</div>
-                            <div>{m.possibleMatchConfirmedRow ? <>Already attached to Confirmed tab</> : <>Not yet attached to any job in the Confirmed tab</>}</div>
+                            <div>{m.possibleMatchConfirmedRow ? <>Already attached to a confirmed job</> : <>Not yet attached to any confirmed job</>}</div>
                             {m.possibleMatchCase === "changed" && <div style={{ marginTop: "4px" }}>This may mean the retainer value has changed.</div>}
                             {m.possibleMatchCase === "matches" && <div style={{ marginTop: "4px" }}>Matches the expected retainer amount.</div>}
                             {m.possibleMatchCase === "draft" && <div style={{ marginTop: "4px" }}>It likely just needs sending.</div>}
@@ -721,7 +721,7 @@ export default function NonAdminAlertListView({
                       return (
                         <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                           {contractor && <div><strong>Contractor:</strong> {contractor}</div>}
-                          <div><strong>Location:</strong> Outgoings tab{month ? ` (${month})` : ""}{cellCoord ? `, Cell ${cellCoord}` : ""}</div>
+                          <div><strong>Location:</strong> Outgoings{month ? ` (${month})` : ""}</div>
                           {appId && <div><strong>App ID:</strong> {appId}</div>}
                           {amount && <div><strong>Amount:</strong> £{parseFloat(amount).toFixed(2)}</div>}
                           {recDate && <div><strong>Received date:</strong> {recDate} {weeksAgo ? <span style={{ color: "#b45309", fontWeight: "600" }}>({weeksAgo} weeks ago - overdue)</span> : null}</div>}
@@ -867,7 +867,7 @@ export default function NonAdminAlertListView({
                         <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                           {tabName && tabName !== "Confirmed" && (
                             <span style={{ display: "inline-block", marginBottom: "4px", padding: "2px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "600", background: "#f0f9ff", color: "#0369a1", border: "1px solid #bae6fd", width: "fit-content" }}>
-                              {tabName} tab
+                              {tabName}
                             </span>
                           )}
                           {clientName && <div><strong>End client:</strong> {clientName}</div>}
@@ -884,13 +884,13 @@ export default function NonAdminAlertListView({
                       const md = alert.metadata || {};
                       return (
                         <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
-                          <div style={{ fontWeight: "600", color: "#c62828", marginBottom: "4px" }}>Job exists in both tabs but Pipeline is not closed out</div>
-                          <div style={{ marginBottom: "2px" }}><strong>Confirmed tab</strong></div>
+                          <div style={{ fontWeight: "600", color: "#c62828", marginBottom: "4px" }}>Job exists in both Confirmed and Pipeline but Pipeline is not closed out</div>
+                          <div style={{ marginBottom: "2px" }}><strong>Confirmed jobs</strong></div>
                           {md.endClientName && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Client: {md.endClientName}</div>}
                           {md.jobName && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Job: {md.jobName}</div>}
                           {md.projectCode && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Project code: {md.projectCode}</div>}
                           {md.jobType && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Job type: {md.jobType}</div>}
-                          <div style={{ marginBottom: "2px", marginTop: "4px" }}><strong>Pipeline tab</strong></div>
+                          <div style={{ marginBottom: "2px", marginTop: "4px" }}><strong>Pipeline jobs</strong></div>
                           <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Likelihood: <strong>{md.likelihood ? (parseFloat(md.likelihood) * 100).toFixed(0) + "%" : "(blank)"}</strong></div>
                           <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>&quot;Copied to confirmed?&quot;: <strong>{md.copiedToConf || "(blank)"}</strong></div>
                           <div style={{ marginTop: "4px", color: "#0369a1", fontStyle: "italic" }}>Expected fix: set Pipeline likelihood to 0% or mark &quot;Copied to confirmed?&quot; as Yes.</div>
@@ -902,11 +902,10 @@ export default function NonAdminAlertListView({
                       const md = alert.metadata || {};
                       return (
                         <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
-                          <div style={{ fontWeight: "600", color: "#c62828", marginBottom: "4px" }}>Retainer contract shrunk - excess child row could not be removed automatically</div>
+                          <div style={{ fontWeight: "600", color: "#c62828", marginBottom: "4px" }}>Retainer contract shrunk - excess billing period could not be removed automatically</div>
                           {md.clientJobStr && <div style={{ marginBottom: "2px" }}><strong>Job:</strong> {md.clientJobStr}</div>}
-                          {md.childRowNum && <div style={{ marginBottom: "2px" }}><strong>Blocked child row:</strong> {md.childRowNum}</div>}
                           {md.timestamp && <div style={{ marginBottom: "4px" }}><strong>First detected:</strong> {String(md.timestamp).slice(0, 10)}</div>}
-                          <div style={{ color: "#0369a1", fontStyle: "italic" }}>Row {md.childRowNum} falls outside the new contract period but contains actuals (invoices or expenses) so cannot be auto-removed. Manual review required.</div>
+                          <div style={{ color: "#0369a1", fontStyle: "italic" }}>A billing period falls outside the new contract period but contains actuals (invoices or expenses) so cannot be auto-removed. Manual review required.</div>
                         </div>
                       );
                     })()}
@@ -965,7 +964,7 @@ export default function NonAdminAlertListView({
                         {(m.amount || alert.amount) && <div><strong>Amount:</strong> £{parseFloat(String(m.amount || alert.amount).replace(/[£,\s]/g, "")).toFixed(2)}</div>}
                         {(m.sentDate || alert.sentDate) && <div><strong>Sent date:</strong> {m.sentDate || alert.sentDate}</div>}
                         <div style={{ marginTop: "4px", color: "#c62828" }}>
-                          Invoice reference appears on Confirmed tab but was not found in the accounting system (it may have been deleted or voided in Xero).
+                          Invoice reference appears in Confirmed jobs but was not found in the accounting system (it may have been deleted or voided in Xero).
                         </div>
                       </div>
                     )}
@@ -976,7 +975,7 @@ export default function NonAdminAlertListView({
                         {(m.jobName || alert.jobName) && <div><strong>Job:</strong> {m.jobName || alert.jobName}</div>}
                         {(m.stableJobKey || alert.stableJobKey) && <div><strong>Expense ID / Ref:</strong> {m.stableJobKey || alert.stableJobKey}</div>}
                         <div style={{ marginTop: "4px", color: "#c62828" }}>
-                          Expense reference appears on Confirmed tab but was not found in the accounting system (it may have been deleted or voided in Xero).
+                          Expense reference appears in Confirmed jobs but was not found in the accounting system (it may have been deleted or voided in Xero).
                         </div>
                       </div>
                     )}
@@ -1012,8 +1011,6 @@ export default function NonAdminAlertListView({
                         <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "3px", marginTop: "2px", marginBottom: "4px" }}>
                           {clientName && <div><strong>{isExp ? "Contractor:" : "End client:"}</strong> {clientName}</div>}
                           {jName && !isExp && <div><strong>Job:</strong> {jName}</div>}
-                          {confRow && <div><strong>Confirmed tab row:</strong> {confRow}{slot ? `, Slot ${slot}` : ""}</div>}
-                          {m.cellCoord && <div><strong>Outgoings cell:</strong> {m.cellCoord}</div>}
                           {ref && <div><strong>{isExp ? "Expense ID:" : "Invoice ref:"}</strong> {ref}</div>}
                           {balance && <div><strong>Unpaid balance:</strong> <span style={{ fontWeight: "600", color: "#0f172a" }}>£{parseFloat(balance).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></div>}
                           {sendDate && <div><strong>{isExp ? "Received date:" : "Sent date:"}</strong> {sendDate}</div>}
@@ -1115,7 +1112,7 @@ export default function NonAdminAlertListView({
                                   className="triage-btn"
                                   onClick={() => onViewJob(jobTarget)}
                                   style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#0284c7", borderColor: "#bae6fd" }}
-                                  title={jobTarget.isOutgoings ? "View Outgoings expense details" : "View and edit job details in pop-up"}
+                                  title={jobTarget.isOutgoings ? "View overhead expense details" : "View and edit job details in pop-up"}
                                 >
                                   {jobTarget.isOutgoings ? "🔍 View expense" : "🔍 View job"}
                                 </button>

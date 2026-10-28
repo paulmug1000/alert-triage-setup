@@ -431,7 +431,7 @@ function AlignedBreakdownView({
   bankItems = [],
   pulseItems = [],
   title = "Revenue matching",
-  subtitle = "Bank deposits tagged as revenue vs paid invoices from Pulse Monthly! tab:"
+  subtitle = "Bank deposits tagged as revenue vs paid invoices in Pulse:"
 }) {
   const comparison = useMemo(() => {
     return buildAlignedComparison(bankItems, pulseItems);
@@ -898,8 +898,8 @@ export default function CashflowWorkbenchView({
         })
       });
       const data = await resp.json();
-      if (!data.success) throw new Error(data.error || "Failed to update platform in DA1");
-      setApiMsg(`✓ Statement platform set to ${data.platform} in DA1`);
+      if (!data.success) throw new Error(data.error || (isAdmin ? "Failed to update platform in DA1" : "Failed to update statement platform"));
+      setApiMsg(`✓ Statement platform set to ${data.platform}${isAdmin ? " in DA1" : ""}`);
       if (onRefresh) onRefresh();
     } catch (err) {
       console.error("Error setting DA1 platform:", err);
@@ -1337,12 +1337,13 @@ export default function CashflowWorkbenchView({
   // 2. Fetch API Transactions (Xero / QuickBooks)
   const handleFetchApiTxns = async () => {
     if (!clientInfo?.masterSheetId) {
+      const errMsg = isAdmin ? "Missing Master Sheet ID for client." : "Client configuration is incomplete.";
       setCustomModal({
         title: "Configuration missing",
-        message: "Missing Master Sheet ID for client.",
+        message: errMsg,
         type: "error"
       });
-      return { success: false, error: "Missing Master Sheet ID for client." };
+      return { success: false, error: errMsg };
     }
     setFetchingApi(true);
     setApiMsg("");
@@ -1424,7 +1425,7 @@ export default function CashflowWorkbenchView({
     if (!clientInfo?.masterSheetId) {
       setCustomModal({
         title: "Configuration missing",
-        message: "Missing Master Sheet ID for client.",
+        message: isAdmin ? "Missing Master Sheet ID for client." : "Client configuration is incomplete.",
         type: "error"
       });
       return;
@@ -1624,7 +1625,9 @@ export default function CashflowWorkbenchView({
         accountName: t.accountName || defaultAccount
       }));
       setBankTxns(updated);
-      setApiMsg(`✓ Recategorised ${updated.length} bank transactions using historical learning from past Recon Sheet tabs.`);
+      setApiMsg(isAdmin
+        ? `✓ Recategorised ${updated.length} bank transactions using historical learning from past Recon Sheet tabs.`
+        : `✓ Recategorised ${updated.length} bank transactions using historical learning from past reconciliations.`);
       triggerAutoSync(updated, unreconItems);
     } catch (err) {
       console.error("Recategorise all error:", err);
@@ -1776,7 +1779,7 @@ export default function CashflowWorkbenchView({
 
       setCustomModal({
         title: "Unreconciled items added",
-        message: `✓ Added ${selectedItems.length} unreconciled statement line${selectedItems.length > 1 ? "s" : ""} to the bank transactions list and auto-saved to sheet.`,
+        message: `✓ Added ${selectedItems.length} unreconciled statement line${selectedItems.length > 1 ? "s" : ""} to the bank transactions list and auto-saved${isAdmin ? " to sheet" : ""}.`,
         type: "success",
         secondaryAction: {
           label: "Add unreconciled items from another account",
@@ -1817,7 +1820,9 @@ export default function CashflowWorkbenchView({
     setSyncing(true);
     try {
       await triggerAutoSync(bankTxns, unreconItems);
-      setSyncMsg(`✓ Synchronized ${bankTxns.length} bank transactions to recon sheet '${tabName}'.`);
+      setSyncMsg(isAdmin
+        ? `✓ Synchronized ${bankTxns.length} bank transactions to recon sheet '${tabName}'.`
+        : `✓ Synchronized ${bankTxns.length} bank transactions for ${reconData?.targetMonthLabel || tabName}.`);
       if (onRefresh) onRefresh();
     } catch (err) {
       console.error("Sync error:", err);
@@ -2458,7 +2463,7 @@ export default function CashflowWorkbenchView({
                 </div>
                 {(!reconData?.cashflowComparisons || reconData.cashflowComparisons.length === 0) ? (
                   <div style={{ textAlign: "center", padding: "40px 20px", color: "#94a3b8" }}>
-                    No comparison data available for this tab. Ensure Recon Sheet tab is populated.
+                    {isAdmin ? "No comparison data available for this tab. Ensure Recon Sheet tab is populated." : "No comparison data available for this month."}
                   </div>
                 ) : (
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
@@ -2539,7 +2544,7 @@ export default function CashflowWorkbenchView({
                 bankItems={liveRevenueBankItems}
                 pulseItems={sanitizedPulseInvoices}
                 title="Revenue matching"
-                subtitle="Bank deposits tagged as Revenue vs paid invoices from Pulse Monthly! tab:"
+                subtitle={isAdmin ? "Bank deposits tagged as Revenue vs paid invoices from Pulse Monthly! tab:" : "Bank deposits tagged as Revenue vs paid invoices in Pulse:"}
               />
             )}
 
@@ -2704,7 +2709,7 @@ export default function CashflowWorkbenchView({
                       </div>
 
                       <div style={{ display: "flex", alignItems: "center", gap: "6px", background: "#f8fafc", padding: "4px 10px", borderRadius: "8px", border: "1px solid #cbd5e1", fontSize: "11px" }}>
-                        <span style={{ color: "#475569", fontWeight: "600" }}>Statement platform (DA1):</span>
+                        <span style={{ color: "#475569", fontWeight: "600" }}>Statement platform{isAdmin ? " (DA1)" : ""}:</span>
                         <select
                           value={da1Platform}
                           onChange={e => handleUpdateDa1Platform(e.target.value)}
@@ -2759,7 +2764,7 @@ export default function CashflowWorkbenchView({
                       </div>
                       {pasteParsing && (
                         <div style={{ marginTop: "14px", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", color: "#0284c7", fontSize: "13px", fontWeight: "600" }}>
-                          <Spinner size={16} color="#0284c7" /> Parsing spreadsheet...
+                          <Spinner size={16} color="#0284c7" /> Parsing file...
                         </div>
                       )}
                     </div>

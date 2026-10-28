@@ -515,7 +515,7 @@ export default function OutgoingsContractorPickerModal({
                   Placeholder / unrecon gap exists
                 </h3>
                 <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#475569", lineHeight: "1.5" }}>
-                  This cell already contains a placeholder / gap of <strong>£{totalManual.toFixed(2)}</strong>.<br />
+                  This month already contains a placeholder / gap of <strong>£{totalManual.toFixed(2)}</strong>.<br />
                   You are placing 1 expense totaling <strong>£{expAmount.toFixed(2)}</strong> against <strong>{contractor.name}</strong> ({month.label}).<br /><br />
                   Would you like to replace it, keep both, or use up part of the estimate?
                 </p>

@@ -282,7 +282,7 @@ export default function CashflowReconTab({
         });
         return { ...prev, rows: newRows };
       });
-      setSuccessMsg(targetState ? `Cell ${cell.colLetter}${cell.sheetRow} marked resolved.` : `Cell ${cell.colLetter}${cell.sheetRow} un-marked.`);
+      setSuccessMsg(isAdmin ? (targetState ? `Cell ${cell.colLetter}${cell.sheetRow} marked resolved.` : `Cell ${cell.colLetter}${cell.sheetRow} un-marked.`) : (targetState ? "Item marked resolved." : "Item unmarked."));
     } catch (err) {
       console.error("Error toggling resolved:", err);
       setError(err.message);
@@ -300,8 +300,13 @@ export default function CashflowReconTab({
       rawValue: cell.rawVal ?? cell.v
     });
     const rawStr = cell.rawVal !== null && cell.rawVal !== undefined ? String(cell.rawVal) : (cell.v || "");
-    const initialVal = rawStr.replace(/^['’]=/, "=");
-    setEditValue(initialVal);
+    const cleanRaw = rawStr.replace(/^['’]=/, "=");
+    if (!isAdmin && cleanRaw.startsWith("=")) {
+      const displayNum = cell.v ? String(cell.v).replace(/[£,\s]/g, "") : "0";
+      setEditValue(displayNum);
+    } else {
+      setEditValue(cleanRaw);
+    }
   };
 
   // Save Adjustment Edit
@@ -327,7 +332,7 @@ export default function CashflowReconTab({
       const res = await resp.json();
       if (!res.success) throw new Error(res.error || "Failed to save adjustment");
       setEditingCell(null);
-      setSuccessMsg(`Adjustment saved to Cash!${editingCell.colLetter}${editingCell.sheetRow}`);
+      setSuccessMsg(isAdmin ? `Adjustment saved to Cash!${editingCell.colLetter}${editingCell.sheetRow}` : "Adjustment saved.");
       // Reload table to recalculate all formula cells
       await loadData(selectedClient);
     } catch (err) {
@@ -820,7 +825,7 @@ export default function CashflowReconTab({
           e.stopPropagation();
           handleOpenNote(row, cell);
         }}
-        title={hasNote ? `Note: ${cell.note}` : "Add cell note"}
+        title={hasNote ? `Note: ${cell.note}` : (isAdmin ? "Add cell note" : "Add note")}
         style={{
           background: hasNote ? "#fef3c7" : "transparent",
           border: hasNote ? "1px solid #fde68a" : "none",
@@ -2007,20 +2012,20 @@ export default function CashflowReconTab({
             boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)"
           }}>
             <h4 style={{ margin: "0 0 6px", fontSize: "16px", fontWeight: "700", color: "#0f172a" }}>
-              Edit Adjustment: {editingCell.label}
+              Edit adjustment: {editingCell.label}
             </h4>
             <p style={{ margin: "0 0 14px", fontSize: "12px", color: "#64748b" }}>
-              Cell: <strong>Cash!{editingCell.colLetter}{editingCell.sheetRow}</strong> • Current: {editingCell.currentValue || "0"}
+              {isAdmin && <>Cell: <strong>Cash!{editingCell.colLetter}{editingCell.sheetRow}</strong> • </>}Current: {editingCell.currentValue || "0"}
             </p>
 
             <label style={{ display: "block", fontSize: "11px", fontWeight: "700", color: "#475569", marginBottom: "6px" }}>
-              New Value or Formula (e.g. 500, -250, or =26850-C6)
+              {isAdmin ? "New value or formula (e.g. 500, -250, or =26850-C6)" : "New adjustment value (e.g. 500 or -250)"}
             </label>
             <input
               type="text"
               value={editValue}
               onChange={e => setEditValue(e.target.value)}
-              placeholder="Enter number or formula..."
+              placeholder={isAdmin ? "Enter number or formula..." : "Enter adjustment amount..."}
               autoFocus
               onKeyDown={e => {
                 if (e.key === "Enter") handleSaveEdit();
@@ -2106,10 +2111,10 @@ export default function CashflowReconTab({
             </div>
 
             <p style={{ margin: "0 0 12px", fontSize: "13px", color: "#334155", lineHeight: "1.4" }}>
-              The target adjustment cell <strong>Cash!{overwriteModal.colLetter}{overwriteModal.targetRow}</strong> ({overwriteModal.adjRowLabel}) currently contains a pre-existing value:
+              The target adjustment {isAdmin ? <>cell <strong>Cash!{overwriteModal.colLetter}{overwriteModal.targetRow}</strong> ({overwriteModal.adjRowLabel})</> : <>line <strong>{overwriteModal.adjRowLabel}</strong></>} currently contains a pre-existing value:
             </p>
 
-            {overwriteModal.currentFormula ? (
+            {isAdmin && overwriteModal.currentFormula ? (
               <div style={{ padding: "10px 12px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "6px", marginBottom: "14px" }}>
                 <div style={{ fontSize: "12px", color: "#7f1d1d", marginBottom: "4px" }}>
                   Current formula: <code style={{ background: "#ffffff", padding: "2px 6px", borderRadius: "4px", border: "1px solid #fca5a5", fontSize: "12px", fontWeight: "700", color: "#991b1b" }}>{overwriteModal.currentFormula}</code>
@@ -2124,13 +2129,15 @@ export default function CashflowReconTab({
               </div>
             )}
 
-            <p style={{ margin: "0 0 14px", fontSize: "13px", color: "#334155" }}>
-              Applying this recon figure will overwrite it with formula:
-              <br />
-              <code style={{ display: "block", marginTop: "4px", padding: "6px 8px", background: "#f1f5f9", borderRadius: "4px", fontSize: "13px", color: "#0f172a" }}>
-                {overwriteModal.formula}
-              </code>
-            </p>
+            {isAdmin && (
+              <p style={{ margin: "0 0 14px", fontSize: "13px", color: "#334155" }}>
+                Applying this recon figure will overwrite it with formula:
+                <br />
+                <code style={{ display: "block", marginTop: "4px", padding: "6px 8px", background: "#f1f5f9", borderRadius: "4px", fontSize: "13px", color: "#0f172a" }}>
+                  {overwriteModal.formula}
+                </code>
+              </p>
+            )}
 
             <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px" }}>
               <button
@@ -2163,7 +2170,7 @@ export default function CashflowReconTab({
                   cursor: applyingRecon ? "default" : "pointer"
                 }}
               >
-                {applyingRecon ? "Applying..." : "Overwrite & apply formula"}
+                {applyingRecon ? "Applying..." : (isAdmin ? "Overwrite & apply formula" : "Overwrite & apply")}
               </button>
             </div>
           </div>
@@ -2201,7 +2208,7 @@ export default function CashflowReconTab({
             </div>
 
             <p style={{ margin: "0 0 12px", fontSize: "13px", color: "#334155", lineHeight: "1.5" }}>
-              This action will automatically apply the reconciliation actual formulas to all adjustment rows and mark all cashflow lines as <strong>resolved</strong> for <strong>{reconData?.targetMonthLabel || "target month"}</strong> ({targetCol?.colLetter}):
+              This action will automatically apply the {isAdmin ? "reconciliation actual formulas" : "reconciliation actuals"} to all adjustment rows and mark all cashflow lines as <strong>resolved</strong> for <strong>{reconData?.targetMonthLabel || "target month"}</strong>{isAdmin ? ` (${targetCol?.colLetter})` : ""}:
             </p>
 
             <div style={{
@@ -2228,7 +2235,9 @@ export default function CashflowReconTab({
             </div>
 
             <p style={{ margin: "0 0 18px", fontSize: "12px", color: "#64748b", fontStyle: "italic" }}>
-              Any pre-existing adjustment formulas or manual overrides for this month will be updated with the calculated variance formulas.
+              {isAdmin
+                ? "Any pre-existing adjustment formulas or manual overrides for this month will be updated with the calculated variance formulas."
+                : "Any pre-existing adjustments or manual overrides for this month will be updated with the reconciled figures."}
             </p>
 
             <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px" }}>
@@ -2297,11 +2306,13 @@ export default function CashflowReconTab({
             boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.1)"
           }}>
             <h4 style={{ margin: "0 0 6px", fontSize: "16px", fontWeight: "700", color: "#0f172a" }}>
-              Edit cell note: {noteModal.label}
+              {isAdmin ? "Edit cell note" : "Edit note"}: {noteModal.label}
             </h4>
-            <p style={{ margin: "0 0 14px", fontSize: "12px", color: "#64748b" }}>
-              Cell: <strong>Cash!{noteModal.colLetter}{noteModal.sheetRow}</strong>
-            </p>
+            {isAdmin && (
+              <p style={{ margin: "0 0 14px", fontSize: "12px", color: "#64748b" }}>
+                Cell: <strong>Cash!{noteModal.colLetter}{noteModal.sheetRow}</strong>
+              </p>
+            )}
 
             <div style={{ marginBottom: "14px" }}>
               <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#334155", marginBottom: "4px" }}>

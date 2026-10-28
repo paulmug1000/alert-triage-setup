@@ -116,7 +116,7 @@ export default function ClientSelectionView({
   // State 1: All alerts have been resolved
   if (totalAlertsCount === 0 && proactiveLoadedAt > 0) {
     return (
-      <div style={styles.container}>
+      <div className="pma-page-container" style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Alerts{managedClient ? ` — ${managedClient.clientName}` : ""}</h1>
           <p style={styles.subtitle}>
@@ -154,7 +154,7 @@ export default function ClientSelectionView({
 
   // State 3: Main Alerts List
   return (
-    <div style={styles.container}>
+    <div className="pma-page-container" style={styles.container}>
       <div style={styles.header}>
         <h1 style={styles.title}>Alerts{managedClient ? ` — ${managedClient.clientName}` : ""}</h1>
         <p style={styles.subtitle}>
@@ -165,7 +165,7 @@ export default function ClientSelectionView({
       </div>
 
       <div style={styles.card}>
-        <h2 style={{ fontSize: "15px", fontWeight: "600", marginBottom: "12px", color: "#1a1a1a" }}>Alerts</h2>
+
         {acceptError && <div style={styles.errorBanner}>{acceptError}</div>}
         {error && <div style={styles.errorBanner}>{error}</div>}
 

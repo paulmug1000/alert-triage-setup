@@ -122,6 +122,8 @@ export default function DeepDivePopover({
       (item.name && item.name.toLowerCase().includes(q)) ||
       (item.client && item.client.toLowerCase().includes(q)) ||
       (item.detail && item.detail.toLowerCase().includes(q)) ||
+      (item.supplier && item.supplier.toLowerCase().includes(q)) ||
+      (item.ref && item.ref.toLowerCase().includes(q)) ||
       (item.transactions && item.transactions.some((t) =>
         (t.supplier && t.supplier.toLowerCase().includes(q)) ||
         (t.ref && t.ref.toLowerCase().includes(q))
@@ -503,6 +505,86 @@ export default function DeepDivePopover({
                         }}
                       >
                         {formatGBP(item.amount)}
+                      </div>
+                    </div>
+                  );
+                }
+
+                if (item.isTransaction) {
+                  const isCashTxn = Boolean(item.isCash);
+                  const dateDisplay = isCashTxn && item.paidDate
+                    ? (item.date && item.date !== item.paidDate ? `Paid: ${item.paidDate} (Inv: ${item.date})` : `Paid: ${item.paidDate}`)
+                    : (item.date || "—");
+
+                  return (
+                    <div
+                      key={idx}
+                      style={{
+                        display: "flex",
+                        alignItems: "flex-start",
+                        justifyContent: "space-between",
+                        gap: "20px",
+                        padding: "7px 18px",
+                        borderBottom: idx === filteredItems.length - 1 ? "none" : "1px dashed #e2e8f0",
+                        fontSize: "11.5px",
+                      }}
+                    >
+                      <div style={{ flex: 1, minWidth: 0, paddingRight: "4px" }}>
+                        <div style={{ color: "#0f172a", fontWeight: 500, display: "flex", alignItems: "center", gap: "5px", flexWrap: "wrap" }}>
+                          <span style={{ color: "#64748b", fontSize: "10.5px" }}>{dateDisplay}</span>
+                          <span>{item.supplier}</span>
+                          {item.isUnreconciled && (
+                            <span
+                              style={{
+                                fontSize: "9px",
+                                padding: "1px 4px",
+                                background: "#fef3c7",
+                                color: "#92400e",
+                                border: "1px solid #fde68a",
+                                borderRadius: "3px",
+                                fontWeight: 600,
+                              }}
+                              title="Unreconciled bank statement line from Cashflow Reconciliation"
+                            >
+                              Pending Recon
+                            </span>
+                          )}
+                        </div>
+                        {item.ref ? (
+                          <div style={{ color: "#94a3b8", fontSize: "10px", marginTop: "1px" }}>
+                            Ref: {item.ref}
+                            {isCashTxn
+                              ? ((item.net !== undefined ? ` • Net: ${formatGBP(item.net)}` : "") + (item.vat > 0 ? ` • VAT: ${formatGBP(item.vat)}` : ""))
+                              : (item.vat > 0 ? ` • Gross: ${formatGBP(item.gross)}` : "")
+                            }
+                          </div>
+                        ) : (
+                          isCashTxn ? (
+                            (item.net !== undefined || item.vat > 0) && (
+                              <div style={{ color: "#94a3b8", fontSize: "10px", marginTop: "1px" }}>
+                                {item.net !== undefined ? `Net: ${formatGBP(item.net)}` : ""}{item.vat > 0 ? ` • VAT: ${formatGBP(item.vat)}` : ""}
+                              </div>
+                            )
+                          ) : (
+                            item.vat > 0 && (
+                              <div style={{ color: "#94a3b8", fontSize: "10px", marginTop: "1px" }}>
+                                Gross: {formatGBP(item.gross)}
+                              </div>
+                            )
+                          )
+                        )}
+                      </div>
+                      <div
+                        style={{
+                          fontWeight: 600,
+                          color: isCashTxn ? "#0047AB" : "#334155",
+                          whiteSpace: "nowrap",
+                          flexShrink: 0,
+                          minWidth: "95px",
+                          textAlign: "right",
+                        }}
+                      >
+                        {formatGBP(isCashTxn ? (item.amount !== undefined ? item.amount : -Math.abs(item.gross || 0)) : (item.net !== undefined ? item.net : (item.amount || item.gross || 0)))}
                       </div>
                     </div>
                   );

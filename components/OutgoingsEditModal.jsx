@@ -782,11 +782,11 @@ export default function OutgoingsEditModal({ editCellData, outgoingsData, update
           </div>
         )}
 
-        {/* ── SECTION 2: CELL NOTE (MOVED TO BOTTOM) ───────────────────── */}
+        {/* ── SECTION 2: NOTE (MOVED TO BOTTOM) ───────────────────── */}
         <div style={{ marginBottom: "16px", background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "8px", padding: "12px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
             <label style={{ fontSize: "12px", fontWeight: 700, color: "#334155" }}>
-              Cell note
+              Note
             </label>
           </div>
           <textarea
@@ -795,7 +795,7 @@ export default function OutgoingsEditModal({ editCellData, outgoingsData, update
               dirtyRef.current = true;
               setTopNote(e.target.value);
             }}
-            placeholder="Add note for this cell..."
+            placeholder="Add a note..."
             rows={2}
             style={{
               width: "100%",

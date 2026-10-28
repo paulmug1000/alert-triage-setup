@@ -179,7 +179,7 @@ export default function BudgetView({
           No Budget Configured
         </h3>
         <p style={{ color: "#64748b", maxWidth: "460px", margin: "0 auto" }}>
-          This client does not have budget tracking enabled or the budget tab is empty.
+          This client does not have budget tracking enabled or no budget data has been configured.
         </p>
       </div>
     );

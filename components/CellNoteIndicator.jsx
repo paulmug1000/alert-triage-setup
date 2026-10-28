@@ -110,7 +110,7 @@ export default function CellNoteIndicator({
               marginBottom: "3px",
             }}
           >
-            Cell note
+            Note
           </div>
           <div style={{ color: "#ffffff", fontWeight: 500 }}>{tooltipText}</div>
           {onClick && (

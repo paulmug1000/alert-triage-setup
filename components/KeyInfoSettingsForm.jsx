@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import Spinner from "./Spinner";
 
-export default function KeyInfoSettingsForm({ masterSheetId, clientName, onSaved }) {
+export default function KeyInfoSettingsForm({ masterSheetId, clientName, onSaved, isAdmin = false }) {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState(null);
@@ -80,10 +80,10 @@ export default function KeyInfoSettingsForm({ masterSheetId, clientName, onSaved
 
       const data = await res.json();
       if (data.success) {
-        setFeedback({ type: "success", message: "KeyInfo financial parameters saved to Master Sheet successfully." });
+        setFeedback({ type: "success", message: isAdmin ? "KeyInfo financial parameters saved to Master Sheet successfully." : "Financial settings saved successfully." });
         if (onSaved) onSaved(data.settings);
       } else {
-        throw new Error(data.error || "Failed to save KeyInfo settings.");
+        throw new Error(data.error || "Failed to save settings.");
       }
     } catch (err) {
       console.error("Save KeyInfo error:", err);
@@ -97,7 +97,7 @@ export default function KeyInfoSettingsForm({ masterSheetId, clientName, onSaved
     return (
       <div style={{ textAlign: "center", padding: "24px" }}>
         <Spinner size={24} color="#023f98" />
-        <p style={{ marginTop: "8px", fontSize: "12px", color: "#64748B" }}>Loading Master Sheet KeyInfo settings...</p>
+        <p style={{ marginTop: "8px", fontSize: "12px", color: "#64748B" }}>{isAdmin ? "Loading Master Sheet KeyInfo settings..." : "Loading financial settings..."}</p>
       </div>
     );
   }
@@ -129,7 +129,7 @@ export default function KeyInfoSettingsForm({ masterSheetId, clientName, onSaved
         {/* Start Date */}
         <div>
           <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#334155", marginBottom: "4px" }}>
-            Tracker Start Date (B2)
+            Tracker start date{isAdmin ? " (B2)" : ""}
           </label>
           <input
             type="text"
@@ -143,7 +143,7 @@ export default function KeyInfoSettingsForm({ masterSheetId, clientName, onSaved
         {/* VAT Scheme */}
         <div>
           <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#334155", marginBottom: "4px" }}>
-            VAT Scheme (B8)
+            VAT scheme{isAdmin ? " (B8)" : ""}
           </label>
           <select
             value={vatScheme}
@@ -158,7 +158,7 @@ export default function KeyInfoSettingsForm({ masterSheetId, clientName, onSaved
         {/* VAT Rate */}
         <div>
           <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#334155", marginBottom: "4px" }}>
-            VAT Rate (B9)
+            VAT rate{isAdmin ? " (B9)" : ""}
           </label>
           <input
             type="text"
@@ -172,7 +172,7 @@ export default function KeyInfoSettingsForm({ masterSheetId, clientName, onSaved
         {/* VAT Months */}
         <div>
           <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#334155", marginBottom: "4px" }}>
-            VAT Payment Months (B7)
+            VAT payment months{isAdmin ? " (B7)" : ""}
           </label>
           <input
             type="text"
@@ -186,7 +186,7 @@ export default function KeyInfoSettingsForm({ masterSheetId, clientName, onSaved
         {/* PAYE Cycle */}
         <div>
           <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#334155", marginBottom: "4px" }}>
-            PAYE Cycle (B12)
+            PAYE cycle{isAdmin ? " (B12)" : ""}
           </label>
           <select
             value={payeCycle}
@@ -201,7 +201,7 @@ export default function KeyInfoSettingsForm({ masterSheetId, clientName, onSaved
         {/* Revenue Focus */}
         <div>
           <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#334155", marginBottom: "4px" }}>
-            Revenue / Income Focus (B15)
+            Revenue / income focus{isAdmin ? " (B15)" : ""}
           </label>
           <select
             value={revenueFocus}
@@ -216,7 +216,7 @@ export default function KeyInfoSettingsForm({ masterSheetId, clientName, onSaved
         {/* Profit Share % */}
         <div>
           <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#334155", marginBottom: "4px" }}>
-            Profit Share % (F11)
+            Profit share %{isAdmin ? " (F11)" : ""}
           </label>
           <input
             type="text"
@@ -230,7 +230,7 @@ export default function KeyInfoSettingsForm({ masterSheetId, clientName, onSaved
         {/* Contractors Method */}
         <div>
           <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#334155", marginBottom: "4px" }}>
-            Contractors Method (B20)
+            Contractors method{isAdmin ? " (B20)" : ""}
           </label>
           <select
             value={contractorMethod}
@@ -238,7 +238,7 @@ export default function KeyInfoSettingsForm({ masterSheetId, clientName, onSaved
             style={{ width: "100%", padding: "8px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "13px", background: "#FFFFFF", boxSizing: "border-box" }}
           >
             <option value="Notes metadata">Notes metadata (Default)</option>
-            <option value="Cell value">Cell value</option>
+            <option value="Cell value">{isAdmin ? "Cell value" : "Direct value"}</option>
           </select>
         </div>
       </div>
@@ -262,7 +262,7 @@ export default function KeyInfoSettingsForm({ masterSheetId, clientName, onSaved
           }}
         >
           {saving && <Spinner size={14} color="#FFFFFF" />}
-          <span>{saving ? "Saving KeyInfo..." : "Save KeyInfo Settings"}</span>
+          <span>{saving ? (isAdmin ? "Saving KeyInfo..." : "Saving...") : (isAdmin ? "Save KeyInfo settings" : "Save settings")}</span>
         </button>
       </div>
     </form>

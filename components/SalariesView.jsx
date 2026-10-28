@@ -102,9 +102,11 @@ export default function SalariesView({
   managedClient,
   onClearManagedClient,
   initialClient,
+  onSelectClient,
 }) {
   const { user } = useAuth();
   const isAdmin = Boolean(user?.isAdmin || user?.role === "Admin" || user?.role === "ClientManager");
+  const isSysAdmin = Boolean(user?.isAdmin || user?.role === "Admin");
   const { getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId } = useAppGlobals();
 
   // Client Selection State (synchronous initial selection from managedClient or initialClient to eliminate flash)
@@ -177,6 +179,7 @@ export default function SalariesView({
     } else {
       setSelectedClient(null);
       setSalariesData(null);
+      onSelectClient?.(null);
       if (typeof window !== "undefined") {
         sessionStorage.removeItem("pma_salaries_client");
       }
@@ -291,7 +294,7 @@ export default function SalariesView({
         throw new Error(data.error || "Failed to save employee");
       }
       setEditingEmployee(null);
-      showSuccess(`Saved employee "${updatedEmp.name || "Row " + updatedEmp.sheetRow}" successfully.`);
+      showSuccess(`Saved employee "${updatedEmp.name || (isSysAdmin ? "Row " + updatedEmp.sheetRow : "employee")}" successfully.`);
       await fetchSalaries(selectedClient, true);
     } catch (err) {
       console.error("Save employee error:", err);
@@ -476,7 +479,7 @@ export default function SalariesView({
           transition: "background 0.1s",
         }}
       >
-        <td style={{ padding: "6px 10px", color: "#94a3b8", fontWeight: 600 }}>{emp.sheetRow}</td>
+        <td style={{ padding: "6px 10px", color: "#94a3b8", fontWeight: 600 }}>{isSysAdmin ? emp.sheetRow : emp.index + 1}</td>
         <td style={{ position: "relative", padding: "6px 10px", fontWeight: 600, color: isFormer ? "#475569" : "#1e293b", whiteSpace: "nowrap" }}>
           <CellNoteIndicator note={emp.notes?.name} />
           <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
@@ -568,7 +571,7 @@ export default function SalariesView({
   };
 
   return (
-    <div style={{ maxWidth: "1600px", margin: "0 auto", padding: "16px 24px 60px" }}>
+    <div className="pma-page-container" style={{ width: "100%", maxWidth: "100%", margin: "0 auto", padding: "20px 32px 60px", boxSizing: "border-box" }}>
       {/* ── TOP HEADER / TOOLBAR ── */}
       <div
         style={{
@@ -629,14 +632,10 @@ export default function SalariesView({
                 </span>
               )}
             </h1>
-            {selectedClient ? (
+            {selectedClient && (
               <div style={{ margin: "3px 0 0", fontSize: "14px", fontWeight: 600, color: "#0047AB" }}>
                 {selectedClient.clientName}
               </div>
-            ) : (
-              <p style={{ margin: "4px 0 0", fontSize: "13px", color: "#64748b" }}>
-                Select a client to view and manage salaries
-              </p>
             )}
           </div>
         </div>
@@ -692,10 +691,13 @@ export default function SalariesView({
       </div>
 
       {/* ── CLIENT SELECTOR SCREEN (WHEN NO CLIENT SELECTED) ── */}
-      {!selectedClient && !managedClient && !initialClient && (
+      {!selectedClient && !managedClient && (
         <EditClientSelector
           clients={allOutgoingsClients}
-          onSelectClient={(c) => setSelectedClient(c)}
+          onSelectClient={(c) => {
+            setSelectedClient(c);
+            onSelectClient?.(c);
+          }}
           loading={loading}
           title="Select a client to view and manage salaries:"
         />
@@ -1324,9 +1326,11 @@ export default function SalariesView({
                   <span style={{ fontSize: "15px", fontWeight: 700, color: "#1e293b" }}>
                     Dividends in lieu of salary
                   </span>
-                  <span style={{ fontSize: "12px", color: "#64748b", marginLeft: "8px" }}>
-                    (Outgoings Tab · Client Sheet · Rows 118:121)
-                  </span>
+                  {isSysAdmin && (
+                    <span style={{ fontSize: "12px", color: "#64748b", marginLeft: "8px" }}>
+                      (Outgoings Tab · Client Sheet · Rows 118:121)
+                    </span>
+                  )}
                 </div>
 
                 <div style={{ display: "flex", alignItems: "center", gap: "16px", flexWrap: "wrap" }}>
@@ -1526,7 +1530,7 @@ export default function SalariesView({
                     {currentFy.row119.hasData && (
                       <tr style={{ background: "#ffffff", borderBottom: "1px solid #e2e8f0", fontSize: "13px" }}>
                         <td style={{ padding: "9px 12px", textAlign: "left", fontWeight: 600, color: "#1e293b" }}>
-                          {currentFy.row119.description || "Dividends slot 2"}
+                          {currentFy.row119.description || (isSysAdmin ? "Dividends slot 2" : "Dividends 2")}
                         </td>
                         {currentFy.row119.months.map((m) => (
                           <td
@@ -1654,7 +1658,7 @@ export default function SalariesView({
           >
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
               <h3 style={{ margin: 0, fontSize: "17px", fontWeight: 700, color: "#1e293b" }}>
-                {editingEmployee.isNew ? "Add Employee" : `Edit Employee (Row ${editingEmployee.sheetRow})`}
+                {editingEmployee.isNew ? "Add employee" : `Edit employee${isSysAdmin ? ` (Row ${editingEmployee.sheetRow})` : ""}`}
               </h3>
               <button
                 type="button"
@@ -1838,7 +1842,7 @@ export default function SalariesView({
               <div style={{ marginTop: "14px", borderTop: "1px solid #e2e8f0", paddingTop: "12px" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
                   <span style={{ fontSize: "12px", fontWeight: 700, color: "#334155" }}>
-                    Cell notes (Google Sheet notes)
+                    {isSysAdmin ? "Cell notes (Google Sheet notes)" : "Notes"}
                   </span>
                   <span style={{ fontSize: "11px", color: "#64748b" }}>
                     Optional note per field

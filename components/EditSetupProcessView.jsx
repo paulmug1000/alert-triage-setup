@@ -310,7 +310,7 @@ export default function EditSetupProcessView({ onBack, user, isAdmin }) {
   }, [phases, activePhaseFilter]);
 
   return (
-    <div style={{ maxWidth: "1140px", margin: "0 auto", padding: "24px 16px" }}>
+    <div className="pma-page-container" style={{ width: "100%", maxWidth: "100%", margin: "0 auto", padding: "20px 32px 60px", boxSizing: "border-box" }}>
       {/* Top Breadcrumb & Navigation */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", flexWrap: "wrap", gap: "12px" }}>
         <button

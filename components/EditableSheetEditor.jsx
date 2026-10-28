@@ -228,7 +228,7 @@ export default function EditableSheetEditor({
       }
     } catch (err) {
       console.error("handleUpdateCell error:", err);
-      alert(`Failed to save cell: ${err.message}`);
+      alert(`Failed to save: ${err.message}`);
       fetchData("budget", true);
     }
   };
@@ -354,7 +354,7 @@ export default function EditableSheetEditor({
             <div style={{ textAlign: "center", padding: "80px 20px" }}>
               <Spinner size={32} color="#0066cc" />
               <div style={{ marginTop: "14px", fontSize: "14px", color: "#64748b", fontWeight: "600" }}>
-                Loading sheet table data...
+                Loading budget data...
               </div>
             </div>
           ) : error ? (
@@ -374,6 +374,7 @@ export default function EditableSheetEditor({
               data={currentTabData}
               fyIdx={budgetFyIdx}
               onFyChange={setBudgetFyIdx}
+              isAdmin={isAdmin}
               onUpdateCell={(sheetRow, colIdx, val) => handleUpdateCell("budget", sheetRow, colIdx, val)}
             />
           )}
@@ -386,7 +387,7 @@ export default function EditableSheetEditor({
 // ─────────────────────────────────────────────────────────────────────────────
 // BUDGET TABLE COMPONENT
 // ─────────────────────────────────────────────────────────────────────────────
-function BudgetTableView({ data, fyIdx, onFyChange, onUpdateCell }) {
+function BudgetTableView({ data, fyIdx, onFyChange, onUpdateCell, isAdmin = false }) {
   const [editingCell, setEditingCell] = useState(null);
   const [savingKey, setSavingKey] = useState(null);
   const committingRef = useRef(false);
@@ -479,7 +480,7 @@ function BudgetTableView({ data, fyIdx, onFyChange, onUpdateCell }) {
         <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "12px", fontFamily: "monospace" }}>
           <thead>
             <tr style={{ background: THEME_HEADER_BG, color: "#ffffff" }}>
-              <th style={{ padding: "8px 6px", border: "1px solid #312e81", width: "40px" }}>Row</th>
+              {isAdmin && <th style={{ padding: "8px 6px", border: "1px solid #312e81", width: "40px" }}>Row</th>}
               <th style={{ padding: "8px 8px", border: "1px solid #312e81", textAlign: "left", minWidth: "220px" }}>
                 {headerRow0?.[0]?.v || "Description"}
               </th>
@@ -511,7 +512,7 @@ function BudgetTableView({ data, fyIdx, onFyChange, onUpdateCell }) {
                     fontWeight: isSectionHeader ? "700" : "normal",
                   }}
                 >
-                  <td style={{ padding: "4px", textAlign: "center", color: "#94a3b8", background: "#f8fafc", borderRight: "1px solid #e2e8f0" }}>{sheetRow}</td>
+                  {isAdmin && <td style={{ padding: "4px", textAlign: "center", color: "#94a3b8", background: "#f8fafc", borderRight: "1px solid #e2e8f0" }}>{sheetRow}</td>}
                   <td style={{ padding: "4px 8px", borderRight: "1px solid #f1f5f9", color: isSectionHeader ? "#1e1b4b" : "inherit" }}>
                     {row?.[0]?.v || ""}
                   </td>
@@ -598,7 +599,7 @@ function EditableCell({ cell, editableOpts, align = "left", fontSize = "12px", i
   return (
     <td
       onClick={onStartEdit}
-      title="Click to edit cell"
+      title="Click to edit"
       style={{
         padding: "4px 8px",
         textAlign: align,

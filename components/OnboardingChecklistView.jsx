@@ -37,6 +37,59 @@ export default function OnboardingChecklistView({
   // Completing setup
   const [completingSetup, setCompletingSetup] = useState(false);
   const [applyingEomTasks, setApplyingEomTasks] = useState(false);
+  const isUserAdmin = Boolean(!user?.isReadOnly && (user?.isAdmin || user?.role === "Admin"));
+
+  const formatPhaseTitle = (title) => {
+    if (isUserAdmin || !title) return title;
+    return String(title).replace(/Infrastructure & Sheet Linking/gi, "System provisioning & initialisation");
+  };
+
+  const formatPhaseDescription = (desc) => {
+    if (isUserAdmin || !desc) return desc;
+    return String(desc)
+      .replace(/Drive folder provisioning, template duplication, cross-linking, and script deployment\./gi, "Client workspace provisioning and system initialisation.")
+      .replace(/and financial KeyInfo anchors\./gi, "and core financial settings.");
+  };
+
+  const formatTaskTitle = (task) => {
+    const title = task?.title || "";
+    if (isUserAdmin || !title) return title;
+    const nonAdminMap = {
+      p1_drive_folder: "Create client workspace folder",
+      p1_duplicate_templates: "Provision client financial models",
+      p1_bookmarks: "Configure workspace shortcuts",
+      p1_importrange_auth: "Authorise internal data sync connections",
+      p1_agent_secret: "Configure automation security credentials",
+      p1_gas_deployment: "Deploy background sync service",
+      p1_rename_gas: "Configure background sync service identifiers",
+      p1_script_ids: "Register client in system version tracker",
+      p2_select_tools: "Select accounting tool and CRM in setup",
+      p2_keyinfo_settings: "Adjust core financial settings (Start date, VAT, PAYE, Revenue focus, Profit share %)",
+      p3_chart_of_accounts: "Pull Chart of Accounts and select manual categories",
+      p3_pull_pl: "Pull P&L and Year 0 P&L and assign categories",
+      p3_other_expenses: "Add 'other expenses' forecast amounts into Outgoings",
+      p3_contractors_info: "Add contractor information to Outgoings",
+      p3_dividends_info: "Add dividends in lieu of salary information to Outgoings",
+      p4_crm_list_tab: "Set up CRM field mappings and Confirmed & Pipeline definitions",
+      p4_agent_trigger: "Enable automated proactive checks",
+      p4_pl_trigger: "Enable scheduled P&L sync",
+      p4_ac_enrollment: "Enrol client in automated sync scheduler",
+      p4_automation_freq: "Select frequency of automations",
+      p4_datachg_flags: "Configure automated alert flags as required",
+      p4_rep_control: "Enrol client in month-end reporting",
+      p5_add_users: "Add client users in Settings > Users"
+    };
+    if (task?.id && nonAdminMap[task.id]) return nonAdminMap[task.id];
+    return String(title)
+      .replace(/\s*\(KeyInfo[^)]*\)/gi, "")
+      .replace(/\s+in KeyInfo\b[^)]*/gi, "")
+      .replace(/\binto Outgoings tab\b/gi, "into Outgoings")
+      .replace(/\bto Outgoings tab\b/gi, "to Outgoings")
+      .replace(/\bCRMList tab\b/gi, "CRM configuration")
+      .replace(/\bDataChgAlert\s*tab\b/gi, "automation settings")
+      .replace(/\bMaster sheet\b/gi, "Pulse")
+      .replace(/\s+sheet\b/gi, "");
+  };
 
   const handleApplyDefaultEomTasks = async () => {
     setApplyingEomTasks(true);
@@ -377,9 +430,9 @@ export default function OnboardingChecklistView({
               >
                 <div>
                   <h3 style={{ margin: "0 0 2px", fontSize: "15px", fontWeight: "700", color: "#0F172A" }}>
-                    {phase.title}
+                    {formatPhaseTitle(phase.title)}
                   </h3>
-                  <p style={{ margin: 0, fontSize: "12px", color: "#64748B" }}>{phase.description}</p>
+                  <p style={{ margin: 0, fontSize: "12px", color: "#64748B" }}>{formatPhaseDescription(phase.description)}</p>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
                   <span
@@ -402,7 +455,7 @@ export default function OnboardingChecklistView({
               {isOpen && (
                 <div style={{ padding: "20px" }}>
                   {/* Phase 1 Custom Widgets: Quick Links, Script IDs, GAS Deployment */}
-                  {phase.id === "phase_1" && (
+                  {phase.id === "phase_1" && isUserAdmin && (
                     <div style={{ display: "flex", flexDirection: "column", gap: "16px", marginBottom: "20px" }}>
                       {/* Deep Links Box */}
                       <div style={{ padding: "14px 18px", borderRadius: "10px", background: "#F8FAFC", border: "1px solid #E2E8F0" }}>
@@ -584,11 +637,12 @@ export default function OnboardingChecklistView({
 
                       <div style={{ padding: "16px", borderRadius: "10px", background: "#F8FAFC", border: "1px solid #E2E8F0", marginBottom: "16px" }}>
                         <span style={{ display: "block", fontSize: "13px", fontWeight: "700", color: "#1E293B", marginBottom: "12px" }}>
-                          Master sheet KeyInfo settings form
+                          {isUserAdmin ? "Master sheet KeyInfo settings form" : "Core financial settings"}
                         </span>
                         <KeyInfoSettingsForm
                           masterSheetId={masterSheetId}
                           clientName={clientName}
+                          isAdmin={isUserAdmin}
                           onSaved={() => loadChecklist()}
                         />
                       </div>
@@ -670,7 +724,7 @@ export default function OnboardingChecklistView({
                               Auto-suggest CRM mappings & rules
                             </span>
                             <p style={{ margin: "2px 0 0", fontSize: "12px", color: "#3B82F6" }}>
-                              Inspects 100+ sample deals from DataFromCRM to match the 13 Pulse fields, determine transformation rules, and suggest confirmed job criteria.
+                              Inspects 100+ sample deals from {isUserAdmin ? "DataFromCRM" : "connected CRM data"} to match the 13 Pulse fields, determine transformation rules, and suggest confirmed job criteria.
                             </p>
                           </div>
                           <button
@@ -768,9 +822,9 @@ export default function OnboardingChecklistView({
                               textDecoration: task.isCompleted ? "line-through" : "none"
                             }}
                           >
-                            {task.title}
+                            {formatTaskTitle(task)}
                           </span>
-                          {task.metadata && (
+                          {task.metadata && isUserAdmin && (
                             <span style={{ display: "block", fontSize: "11px", color: "#64748B", marginTop: "2px" }}>
                               {task.metadata}
                             </span>
@@ -897,34 +951,37 @@ export default function OnboardingChecklistView({
       <AccountingSettingsSuggestionModal
         clientName={clientName}
         masterSheetId={masterSheetId}
+        isAdmin={isUserAdmin}
         isOpen={showAccountingModal}
         onClose={() => setShowAccountingModal(false)}
         onApplied={() => {
           handleAutoCompleteTask("p2_keyinfo_settings");
-          setFeedback({ type: "success", message: "Initial accounting settings applied to Master Sheet." });
+          setFeedback({ type: "success", message: isUserAdmin ? "Initial accounting settings applied to Master Sheet." : "Initial accounting settings applied." });
         }}
       />
 
       <CategoryMappingSuggestionModal
         clientName={clientName}
         masterSheetId={masterSheetId}
+        isAdmin={isUserAdmin}
         isOpen={showCategoryModal}
         onClose={() => setShowCategoryModal(false)}
         onApplied={() => {
           handleAutoCompleteTask("p3_pull_pl");
-          setFeedback({ type: "success", message: "Category mapping rules applied to Master Sheet KeyInfo!BA2:BA180." });
+          setFeedback({ type: "success", message: isUserAdmin ? "Category mapping rules applied to Master Sheet KeyInfo!BA2:BA180." : "Category mapping rules applied." });
         }}
       />
 
       <CrmMappingSuggestionModal
         clientName={clientName}
         masterSheetId={masterSheetId}
+        isAdmin={isUserAdmin}
         isOpen={showCrmModal}
         onClose={() => setShowCrmModal(false)}
         onApplied={() => {
           handleAutoCompleteTask("p4_review_crm");
           handleAutoCompleteTask("p4_crm_list_tab");
-          setFeedback({ type: "success", message: "CRM field mappings and job definitions applied to Master Sheet CRMList." });
+          setFeedback({ type: "success", message: isUserAdmin ? "CRM field mappings and job definitions applied to Master Sheet CRMList." : "CRM field mappings and job definitions applied." });
         }}
       />
     </div>

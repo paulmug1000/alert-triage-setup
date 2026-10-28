@@ -22,9 +22,11 @@ export default function NBToFindView({
   managedClient,
   onClearManagedClient,
   initialClient,
+  onSelectClient,
 }) {
   const { user } = useAuth();
   const isAdmin = Boolean(user?.isAdmin || user?.role === "Admin" || user?.role === "ClientManager");
+  const isSysAdmin = Boolean(user?.isAdmin || user?.role === "Admin");
   const { getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId } = useAppGlobals();
 
   // Client Selection State (synchronous initial selection from managedClient or initialClient to eliminate flash)
@@ -103,6 +105,7 @@ export default function NBToFindView({
     } else {
       setSelectedClient(null);
       setNbData(null);
+      onSelectClient?.(null);
       if (typeof window !== "undefined") {
         sessionStorage.removeItem("pma_nbtofind_client");
       }
@@ -262,7 +265,7 @@ export default function NBToFindView({
       });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || "Failed to update month status");
-      showSuccess(`Updated ${colLetter}25 to ${nextVal}.`);
+      showSuccess(isSysAdmin ? `Updated ${colLetter}25 to ${nextVal}.` : `Updated month status to ${nextVal}.`);
       await fetchNBData(selectedClient, true);
     } catch (err) {
       console.error("Toggle month error:", err);
@@ -292,7 +295,7 @@ export default function NBToFindView({
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || "Failed to save targets");
       setEditingTargets(false);
-      showSuccess(`Saved monthly ${modeTermLower} targets (Row ${editingTargetsRow}) successfully.`);
+      showSuccess(`Saved monthly ${modeTermLower} targets${isSysAdmin ? ` (Row ${editingTargetsRow})` : ""} successfully.`);
       await fetchNBData(selectedClient, true);
     } catch (err) {
       console.error("Save targets error:", err);
@@ -365,7 +368,7 @@ export default function NBToFindView({
   const fyRow25 = nbData?.sections?.row25?.fyData?.[currentFy?.id];
 
   return (
-    <div style={{ maxWidth: "1600px", margin: "0 auto", padding: "16px 24px 60px" }}>
+    <div className="pma-page-container" style={{ width: "100%", maxWidth: "100%", margin: "0 auto", padding: "20px 32px 60px", boxSizing: "border-box" }}>
       {/* ── TOP HEADER / TOOLBAR ── */}
       <div
         style={{
@@ -426,14 +429,10 @@ export default function NBToFindView({
                 </span>
               )}
             </h1>
-            {selectedClient ? (
+            {selectedClient && (
               <div style={{ margin: "3px 0 0", fontSize: "14px", fontWeight: 600, color: "#0047AB" }}>
                 {selectedClient.clientName}
               </div>
-            ) : (
-              <p style={{ margin: "4px 0 0", fontSize: "13px", color: "#64748b" }}>
-                Select a client to view and edit new business to find
-              </p>
             )}
           </div>
         </div>
@@ -542,10 +541,10 @@ export default function NBToFindView({
                 disabled={loading || saving || !nbData || (targetsSetting === "Yes" && budgetSetting === "Yes")}
                 title={
                   targetsSetting === "Yes" && budgetSetting === "Yes"
-                    ? "Targets are derived from Budget!Row 26"
+                    ? (isSysAdmin ? "Targets are derived from Budget!Row 26" : "Targets are derived from the budget")
                     : targetsSetting === "Yes"
-                    ? `Edit monthly total ${modeTermLower} targets (Row 10)`
-                    : `Edit monthly new business ${modeTermLower} figures (Row 3)`
+                    ? `Edit monthly total ${modeTermLower} targets${isSysAdmin ? " (Row 10)" : ""}`
+                    : `Edit monthly new business ${modeTermLower} figures${isSysAdmin ? " (Row 3)" : ""}`
                 }
                 style={{
                   padding: "7px 14px",
@@ -574,10 +573,13 @@ export default function NBToFindView({
       </div>
 
       {/* ── CLIENT SELECTOR SCREEN (WHEN NO CLIENT SELECTED) ── */}
-      {!selectedClient && !managedClient && !initialClient && (
+      {!selectedClient && !managedClient && (
         <EditClientSelector
           clients={allOutgoingsClients}
-          onSelectClient={(c) => setSelectedClient(c)}
+          onSelectClient={(c) => {
+            setSelectedClient(c);
+            onSelectClient?.(c);
+          }}
           loading={loading}
           title="Select a client to view and edit new business to find:"
         />
@@ -656,16 +658,18 @@ export default function NBToFindView({
               <div>
                 {/* Question 1: Use targets to determine NB to find amounts? */}
                 <div>
-                  <div style={{ fontSize: "11px", fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                    Options Cell A9
-                  </div>
-                  <div style={{ fontSize: "14px", fontWeight: 700, color: "#1e293b", marginTop: "4px" }}>
+                  {isSysAdmin && (
+                    <div style={{ fontSize: "11px", fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                      Options Cell A9
+                    </div>
+                  )}
+                  <div style={{ fontSize: "14px", fontWeight: 700, color: "#1e293b", marginTop: isSysAdmin ? "4px" : 0 }}>
                     Use targets to determine NB to find amounts?
                   </div>
                   <div style={{ fontSize: "12px", color: "#64748b", marginTop: "4px" }}>
                     {targetsSetting === "Yes"
                       ? "Target-driven forecasting mode is enabled."
-                      : `Manual monthly ${modeTermLower} inputs entered directly in Row 3.`}
+                      : `Manual monthly ${modeTermLower} inputs entered directly${isSysAdmin ? " in Row 3" : ""}.`}
                   </div>
                 </div>
 
@@ -770,16 +774,18 @@ export default function NBToFindView({
                 {/* Question 2: If "Yes" is selected here, the "Use budget to determine targets?" question appears */}
                 {targetsSetting === "Yes" && (
                   <div style={{ marginTop: "14px", paddingTop: "14px", borderTop: "1px dashed #cbd5e1" }}>
-                    <div style={{ fontSize: "11px", fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                      Options Cell A12
-                    </div>
-                    <div style={{ fontSize: "14px", fontWeight: 700, color: "#1e293b", marginTop: "4px" }}>
+                    {isSysAdmin && (
+                      <div style={{ fontSize: "11px", fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                        Options Cell A12
+                      </div>
+                    )}
+                    <div style={{ fontSize: "14px", fontWeight: 700, color: "#1e293b", marginTop: isSysAdmin ? "4px" : 0 }}>
                       Use budget to determine targets?
                     </div>
                     <div style={{ fontSize: "12px", color: "#64748b", marginTop: "4px" }}>
                       {budgetSetting === "Yes"
-                        ? `Targets dynamically populated from Budget tab (Row 26).`
-                        : `Manual total ${modeTermLower} targets entered in Row 10.`}
+                        ? `Targets dynamically populated from Budget${isSysAdmin ? " tab (Row 26)" : ""}.`
+                        : `Manual total ${modeTermLower} targets entered${isSysAdmin ? " in Row 10" : ""}.`}
                     </div>
 
                     <div style={{ marginTop: "10px", display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
@@ -899,10 +905,12 @@ export default function NBToFindView({
                 }}
               >
                 <div>
-                  <div style={{ fontSize: "11px", fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                    Options Cell A21
-                  </div>
-                  <div style={{ fontSize: "14px", fontWeight: 700, color: "#1e293b", marginTop: "4px" }}>
+                  {isSysAdmin && (
+                    <div style={{ fontSize: "11px", fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                      Options Cell A21
+                    </div>
+                  )}
+                  <div style={{ fontSize: "14px", fontWeight: 700, color: "#1e293b", marginTop: isSysAdmin ? "4px" : 0 }}>
                     NB direct costs as a percentage?
                   </div>
                   <div style={{ fontSize: "12px", color: "#64748b", marginTop: "4px" }}>
@@ -1061,7 +1069,7 @@ export default function NBToFindView({
                         <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                           <span>{fyRow3.label}</span>
                           <span style={{ fontSize: "10px", background: "#eff6ff", color: "#1d4ed8", padding: "1px 5px", borderRadius: "4px", fontWeight: 700 }}>
-                            Editable (Row 3)
+                            {isSysAdmin ? "Editable (Row 3)" : "Editable"}
                           </span>
                         </div>
                       </td>
@@ -1115,7 +1123,7 @@ export default function NBToFindView({
                         <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                           <span>{fyRow10.label}</span>
                           <span style={{ fontSize: "10px", background: "#eff6ff", color: "#1d4ed8", padding: "1px 5px", borderRadius: "4px", fontWeight: 700 }}>
-                            Editable (Row 10)
+                            {isSysAdmin ? "Editable (Row 10)" : "Editable"}
                           </span>
                         </div>
                       </td>
@@ -1168,9 +1176,11 @@ export default function NBToFindView({
                       <td style={{ padding: "9px 14px", textAlign: "left", fontWeight: 600 }}>
                         <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                           <span>Budget {modeTermLower} target</span>
-                          <span style={{ fontSize: "10px", background: "#f1f5f9", color: "#64748b", padding: "1px 5px", borderRadius: "4px", fontWeight: 600 }}>
-                            Budget!Row 26
-                          </span>
+                          {isSysAdmin && (
+                            <span style={{ fontSize: "10px", background: "#f1f5f9", color: "#64748b", padding: "1px 5px", borderRadius: "4px", fontWeight: 600 }}>
+                              Budget!Row 26
+                            </span>
+                          )}
                         </div>
                       </td>
                       {fyRow12.months.map((m) => (
@@ -1208,7 +1218,7 @@ export default function NBToFindView({
                         <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                           <span>NB to find direct costs</span>
                           <span style={{ fontSize: "10px", background: "#eff6ff", color: "#1d4ed8", padding: "1px 5px", borderRadius: "4px", fontWeight: 700 }}>
-                            Editable (Row 5)
+                            {isSysAdmin ? "Editable (Row 5)" : "Editable"}
                           </span>
                         </div>
                       </td>
@@ -1366,7 +1376,7 @@ export default function NBToFindView({
                         </td>
                       ))}
                       <td style={{ padding: "10px 14px", textAlign: "center", color: "#64748b", fontSize: "11px" }}>
-                        Row 25
+                        {isSysAdmin ? "Row 25" : ""}
                       </td>
                     </tr>
                   )}
@@ -1410,7 +1420,7 @@ export default function NBToFindView({
               Edit monthly targets ({currentFy.label})
             </h3>
             <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#64748b" }}>
-              Input monthly {modeTermLower} targets (writes directly to NBtoFind!Row {editingTargetsRow}).
+              Input monthly {modeTermLower} targets{isSysAdmin ? ` (writes directly to NBtoFind!Row ${editingTargetsRow})` : ""}.
             </p>
 
             <div
@@ -1424,7 +1434,7 @@ export default function NBToFindView({
               {currentFy.monthCols.map((m) => (
                 <div key={m.colLetter}>
                   <label style={{ display: "block", fontSize: "11px", fontWeight: 700, color: "#475569", marginBottom: "4px" }}>
-                    {m.label} ({m.colLetter}{editingTargetsRow})
+                    {m.label}{isSysAdmin ? ` (${m.colLetter}${editingTargetsRow})` : ""}
                   </label>
                   <input
                     type="text"
@@ -1515,11 +1525,11 @@ export default function NBToFindView({
               Edit {editingSingleCell.title}
             </h3>
             <p style={{ margin: "0 0 14px", fontSize: "12px", color: "#64748b" }}>
-              Month: <strong>{editingSingleCell.label}</strong> (Row {editingSingleCell.rowNum}, Col {editingSingleCell.colLetter})
+              Month: <strong>{editingSingleCell.label}</strong>{isSysAdmin ? ` (Row ${editingSingleCell.rowNum}, Col ${editingSingleCell.colLetter})` : ""}
             </p>
             <div style={{ marginBottom: "16px" }}>
               <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "#334155", marginBottom: "4px" }}>
-                {editingSingleCell.rowNum === 5 ? "Direct Costs Amount" : `${modeTerm} Target Amount`} ({currencySymbol})
+                {editingSingleCell.rowNum === 5 ? "Direct costs amount" : `${modeTerm} target amount`} ({currencySymbol})
               </label>
               <input
                 type="text"
@@ -1543,7 +1553,7 @@ export default function NBToFindView({
             </div>
             <div style={{ marginBottom: "16px" }}>
               <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "#334155", marginBottom: "4px" }}>
-                Cell note
+                {isSysAdmin ? "Cell note" : "Note"}
               </label>
               <textarea
                 value={singleCellNoteValue}

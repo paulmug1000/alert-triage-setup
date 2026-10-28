@@ -98,7 +98,7 @@ export default function DeleteInvoiceFromPulseModal({
       // 1. If invoice was found on the sheet, clear the live slot on the Confirmed tab
       if (!isInvoiceAlreadyGone) {
         if (!resolvedClientSheetId) {
-          throw new Error("Unable to find client spreadsheet ID for this client.");
+          throw new Error(isAdmin ? "Unable to find client spreadsheet ID for this client." : "Unable to find client configuration in Pulse.");
         }
 
         const updateRes = await fetch("/api/triage", {
@@ -121,7 +121,7 @@ export default function DeleteInvoiceFromPulseModal({
 
         const updateData = await updateRes.json();
         if (!updateData.success && !updateData.alreadyDeleted) {
-          throw new Error(updateData.error || "Failed to clear invoice slot from sheet.");
+          throw new Error(updateData.error || "Failed to remove invoice from Pulse.");
         }
       }
 
@@ -238,7 +238,7 @@ export default function DeleteInvoiceFromPulseModal({
             }}
           >
             <Spinner size={13} color="#0284c7" />
-            <span>Checking live spreadsheet to verify invoice reference location...</span>
+            <span>{isAdmin ? "Checking live spreadsheet to verify invoice reference location..." : "Checking Pulse to verify invoice reference..."}</span>
           </div>
         ) : isInvoiceAlreadyGone ? (
           <div
@@ -253,7 +253,7 @@ export default function DeleteInvoiceFromPulseModal({
               lineHeight: "1.45"
             }}
           >
-            <strong>Live check result:</strong> This invoice reference was not found anywhere on in Pulse confirmed jobs. It appears to have already been removed or voided. You can safely resolve this alert now without modifying the sheet.
+            <strong>Live check result:</strong> This invoice reference was not found anywhere in Pulse confirmed jobs. It appears to have already been removed or voided. You can safely resolve this alert now.
           </div>
         ) : liveCheck?.found ? (
           <div
@@ -269,9 +269,9 @@ export default function DeleteInvoiceFromPulseModal({
             }}
           >
             <div>
-              ✓ <strong>Live verified:</strong> Invoice located on Confirmed tab {isAdmin ? `at Row ${effectiveRowNum}, slot ${effectiveSlotNum}` : `in slot ${effectiveSlotNum}`}
+              ✓ <strong>Live verified:</strong> {isAdmin ? `Invoice located on Confirmed tab at Row ${effectiveRowNum}, slot ${effectiveSlotNum}` : "Invoice located in Confirmed jobs"}
             </div>
-            {liveCheck.rowShifted && (
+            {isAdmin && liveCheck.rowShifted && (
               <div style={{ marginTop: "3px", color: "#15803d", fontSize: "11px" }}>
                 ℹ Row shifted from row {confirmedRow} to row {effectiveRowNum} since the alert was raised. The live row will be targeted.
               </div>

@@ -63,9 +63,11 @@ export default function CashEditView({
   managedClient,
   onClearManagedClient,
   initialClient,
+  onSelectClient,
 }) {
   const { user } = useAuth();
   const isAdmin = Boolean(user?.isAdmin || user?.role === "Admin" || user?.role === "ClientManager");
+  const isSysAdmin = Boolean(user?.isAdmin || user?.role === "Admin");
   const { getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId } = useAppGlobals();
 
   // Selected Client State
@@ -129,15 +131,25 @@ export default function CashEditView({
   const scrollContainerRef = useRef(null);
   const hasAutoScrolledRef = useRef(false);
 
-  // Synchronize client selection from managedClient
+  // Synchronize client selection from managedClient or initialClient
   useEffect(() => {
     if (managedClient) {
       const match = (allOutgoingsClients || []).find(
         (c) => c.clientName?.toLowerCase() === managedClient.clientName?.toLowerCase()
       ) || managedClient;
       setSelectedClient(match);
+      return;
     }
-  }, [managedClient, allOutgoingsClients]);
+    if (initialClient) {
+      const targetStr = typeof initialClient === "string" ? initialClient.toLowerCase() : initialClient?.clientName?.toLowerCase();
+      const match = (allOutgoingsClients || []).find(
+        (c) => c.clientName?.toLowerCase() === targetStr
+      ) || (typeof initialClient === "object" ? initialClient : null);
+      if (match) {
+        setSelectedClient(match);
+      }
+    }
+  }, [managedClient, initialClient, allOutgoingsClients]);
 
   // Back to client selector navigation handler (matches other Edit screens)
   const handleBackToClients = () => {
@@ -146,6 +158,7 @@ export default function CashEditView({
     } else {
       setSelectedClient(null);
       setCashData(null);
+      onSelectClient?.(null);
       if (typeof window !== "undefined") {
         sessionStorage.removeItem("pma_cash_client");
         const url = new URL(window.location.href);
@@ -753,7 +766,7 @@ export default function CashEditView({
       colIdx,
       colLetter,
       title: `${rowLabel} • ${monthLabel}`,
-      subtitle: `Cell Cash!${colLetter}${sheetRow} • ${cellData?.formattedValue || "£0"}`,
+      subtitle: isSysAdmin ? `Cell Cash!${colLetter}${sheetRow} • ${cellData?.formattedValue || "£0"}` : (cellData?.formattedValue || "£0"),
       initialNote: cellData?.note || "",
     });
   };
@@ -782,10 +795,33 @@ export default function CashEditView({
   // If no client selected, show standardized EditClientSelector
   if (!selectedClient) {
     return (
-      <div style={{ padding: "24px", maxWidth: "1200px", margin: "0 auto" }}>
+      <div className="pma-page-container" style={{ width: "100%", maxWidth: "100%", margin: "0 auto", padding: "20px 32px 60px", boxSizing: "border-box" }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            flexWrap: "wrap",
+            gap: "16px",
+            marginBottom: "20px",
+            background: "#ffffff",
+            padding: "16px 20px",
+            borderRadius: "10px",
+            boxShadow: "0 1px 3px rgba(15, 23, 42, 0.04)",
+            border: "1px solid #e2e8f0",
+          }}
+        >
+          <div>
+            <h1 style={{ margin: 0, fontSize: "20px", fontWeight: 700, color: "#0f172a" }}>Cash</h1>
+          </div>
+        </div>
         <EditClientSelector
           clients={allOutgoingsClients}
-          onSelectClient={(c) => setSelectedClient(c)}
+          onSelectClient={(c) => {
+            setSelectedClient(c);
+            onSelectClient?.(c);
+          }}
+          title="Select a client to view and edit cashflow forecast and actuals:"
         />
       </div>
     );
@@ -795,8 +831,13 @@ export default function CashEditView({
 
   return (
     <div
+      className="pma-page-container"
       style={{
-        padding: "16px 24px 40px 24px",
+        width: "100%",
+        maxWidth: "100%",
+        margin: "0 auto",
+        padding: "20px 32px 60px",
+        boxSizing: "border-box",
         minHeight: "100vh",
         background: "#f8fafc",
         fontFamily: "'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
@@ -867,14 +908,10 @@ export default function CashEditView({
             >
               <span>Cash</span>
             </h1>
-            {selectedClient ? (
+            {selectedClient && (
               <div style={{ margin: "3px 0 0", fontSize: "14px", fontWeight: 600, color: "#0047AB" }}>
                 {selectedClient.clientName}
               </div>
-            ) : (
-              <p style={{ margin: "4px 0 0", fontSize: "13px", color: "#64748b" }}>
-                Select a client to view and edit cash
-              </p>
             )}
           </div>
         </div>
@@ -966,29 +1003,31 @@ export default function CashEditView({
               color: "#334155",
               cursor: loading ? "not-allowed" : "pointer",
             }}
-            title="Refresh from Google Sheet"
+            title={isSysAdmin ? "Refresh from Google Sheet" : "Refresh cashflow data"}
           >
             {loading ? "Refreshing..." : "↻ Refresh"}
           </button>
 
-          {/* External Google Sheets Link */}
-          <a
-            href={`https://docs.google.com/spreadsheets/d/${selectedClient.clientSheetId}/edit#gid=0`}
-            target="_blank"
-            rel="noopener noreferrer"
-            style={{
-              fontSize: "12px",
-              color: "#0047AB",
-              textDecoration: "none",
-              fontWeight: 600,
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "4px",
-            }}
-          >
-            <span>Open in Google Sheets</span>
-            <span style={{ fontSize: "10px" }}>↗</span>
-          </a>
+          {/* External Google Sheets Link (Admins only) */}
+          {isSysAdmin && selectedClient?.clientSheetId && (
+            <a
+              href={`https://docs.google.com/spreadsheets/d/${selectedClient.clientSheetId}/edit#gid=0`}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                fontSize: "12px",
+                color: "#0047AB",
+                textDecoration: "none",
+                fontWeight: 600,
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "4px",
+              }}
+            >
+              <span>Open in Google Sheets</span>
+              <span style={{ fontSize: "10px" }}>↗</span>
+            </a>
+          )}
         </div>
       </div>
 
@@ -1185,7 +1224,7 @@ export default function CashEditView({
                   <span style={{ marginRight: "8px", color: "#0047AB" }}>{table2Open ? "▼" : "▶"}</span>
                   <span>Including pipeline</span>
                   <span style={{ marginLeft: "10px", fontSize: "11px", fontWeight: 500, color: "#64748b" }}>
-                    (Linked dynamically to Table 1; B61, B63 and J61 overrides editable)
+                    {isSysAdmin ? "(Linked dynamically to Table 1; B61, B63 and J61 overrides editable)" : "(Linked dynamically to Table 1; balance and debtor/creditor overrides editable)"}
                   </span>
                 </td>
               </tr>

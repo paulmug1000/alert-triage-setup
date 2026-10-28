@@ -282,12 +282,12 @@ export default function JobDetailModal({
               targetProjectCode ? `[${target.projectCode}]` : null,
               targetEndClient ? targetEndClient : null,
               target.jobName ? `"${target.jobName}"` : null,
-              targetRow ? `(row ${targetRow})` : null
+              isAdmin && targetRow ? `(row ${targetRow})` : null
             ].filter(Boolean).join(" ");
-            setError(`Job ${desc} could not be found in the client sheet.`);
+            setError(`Job ${desc} could not be found in ${isAdmin ? "the client sheet" : "Pulse"}.`);
           }
         } else {
-          setError(data.error || "Failed to load job details from spreadsheet.");
+          setError(data.error || `Failed to load job details from ${isAdmin ? "spreadsheet" : "Pulse"}.`);
         }
       } catch (err) {
         if (isMounted) setError(err.message || "Failed to fetch job details.");
@@ -352,7 +352,11 @@ export default function JobDetailModal({
         setJob(null);
         setDraftEdits({});
         const name = target?.clientName || target?.client?.clientName || target?.endClientName || "this client";
-        setError(`Client spreadsheet not found for "${name}". Please ensure the client has a valid Client Sheet URL configured in PMA.`);
+        setError(
+          isAdmin
+            ? `Client spreadsheet not found for "${name}". Please ensure the client has a valid Client Sheet URL configured in PMA.`
+            : `Client data not found for "${name}".`
+        );
       }
     };
 
@@ -792,7 +796,7 @@ export default function JobDetailModal({
     setCellNoteModalConfig({
       isOpen: true,
       title: "Job note",
-      subtitle: `${clientVal || job.client || ""} · ${jobNameVal || job.jobName || ""} (${tabName} Row ${parentRow.rowNum})`,
+      subtitle: `${clientVal || job.client || ""} · ${jobNameVal || job.jobName || ""}${isAdmin ? ` (${tabName} Row ${parentRow.rowNum})` : ""}`,
       initialNote: currentNote,
       tabName,
       sheetRow: parentRow.rowNum,
@@ -823,7 +827,7 @@ export default function JobDetailModal({
     setCellNoteModalConfig({
       isOpen: true,
       title: type === "invoice" ? `Invoice note (${invRefDisplay})` : `Direct cost note (${item.label})`,
-      subtitle: `${clientVal || job.client || ""} · ${jobNameVal || job.jobName || ""} (${currentTab} Row ${rowNum})`,
+      subtitle: `${clientVal || job.client || ""} · ${jobNameVal || job.jobName || ""}${isAdmin ? ` (${currentTab} Row ${rowNum})` : ""}`,
       initialNote: currentNote,
       tabName: currentTab,
       sheetRow: rowNum,
@@ -1189,7 +1193,7 @@ export default function JobDetailModal({
                     {projectCodeVal}
                   </span>
                 )}
-                {parentRow.rowNum && (
+                {isAdmin && parentRow.rowNum && (
                   <span style={{ fontSize: "12px", color: "#64748b", whiteSpace: "nowrap" }}>
                     ({tabName} Row {parentRow.rowNum}{job?.rows?.length > 1 ? `-${job.rows[job.rows.length - 1].rowNum}` : ""})
                   </span>
@@ -1878,7 +1882,7 @@ export default function JobDetailModal({
                                   slot,
                                   jobClient: item.row.client || parentRow.client || job.client,
                                   jobName: item.row.jobName || parentRow.jobName || job.jobName,
-                                  slotLabel: slot.ref ? `#${slot.ref}` : (isPlaceholder ? "Placeholder" : `Slot ${item.slotNum}`),
+                                  slotLabel: slot.ref ? `#${slot.ref}` : (isPlaceholder ? "Placeholder" : (isAdmin ? `Slot ${item.slotNum}` : `Invoice ${item.slotNum}`)),
                                   tabName,
                                   job
                                 });
@@ -1901,7 +1905,7 @@ export default function JobDetailModal({
                               title={
                                 hasAccountingIntegration && !isPlaceholder && slot.ref && String(slot.ref).trim() !== ""
                                   ? "Synced from accounting software. Click to view or edit days to pay."
-                                  : "Click to edit invoice slot"
+                                  : "Click to edit invoice"
                               }
                               onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#60a5fa"; e.currentTarget.style.background = "#eff6ff"; }}
                               onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#e2e8f0"; e.currentTarget.style.background = "#ffffff"; }}
@@ -1937,7 +1941,7 @@ export default function JobDetailModal({
                                     size="sm"
                                     note={slot.note || ""}
                                     onClick={() => openSlotNoteModal({ item, type: "invoice" })}
-                                    title={slot.note ? `Invoice note: ${slot.note}` : "Add note to invoice slot"}
+                                    title={slot.note ? `Invoice note: ${slot.note}` : "Add note to invoice"}
                                   />
 
                                   {isRetainer && item.row && (
@@ -2207,7 +2211,7 @@ export default function JobDetailModal({
                               title={
                                 hasAccountingIntegration && !isPlaceholder && slot.transactionId && String(slot.transactionId).trim() !== ""
                                   ? "Synced from accounting software. Click to view or edit days to pay."
-                                  : "Click to edit direct cost slot"
+                                  : "Click to edit direct cost"
                               }
                               onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#60a5fa"; e.currentTarget.style.background = "#eff6ff"; }}
                               onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#e2e8f0"; e.currentTarget.style.background = "#ffffff"; }}

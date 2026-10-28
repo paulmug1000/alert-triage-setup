@@ -481,22 +481,26 @@ export async function linkExcelToClient({
   const rowNumStr = String(headerRowNum || "1").trim();
   const cleanRange = String(rangeAddress || "").trim();
   const cleanKeyHeaders = String(keyHeaders || "").trim();
+  const safeCell = (v) => {
+    const s = String(v || "").trim();
+    return /^[=+\-@|\t\r]/.test(s) ? `'${s}` : s;
+  };
 
   const updates = [
-    { range: "KeyInfo!X36", values: [[String(resolvedDriveId || "").trim()]] },
-    { range: "KeyInfo!X37", values: [[String(resolvedFileId || "").trim()]] },
-    { range: "KeyInfo!X38", values: [[String(sheetName || "").trim()]] },
-    { range: "KeyInfo!X39", values: [[cleanRange]] },
-    { range: "KeyInfo!X40", values: [[rowNumStr]] },
-    { range: "KeyInfo!X41", values: [[cleanKeyHeaders]] },
+    { range: "KeyInfo!X36", values: [[safeCell(resolvedDriveId)]] },
+    { range: "KeyInfo!X37", values: [[safeCell(resolvedFileId)]] },
+    { range: "KeyInfo!X38", values: [[safeCell(sheetName)]] },
+    { range: "KeyInfo!X39", values: [[safeCell(cleanRange)]] },
+    { range: "KeyInfo!X40", values: [[safeCell(rowNumStr)]] },
+    { range: "KeyInfo!X41", values: [[safeCell(cleanKeyHeaders)]] },
     { range: "KeyInfo!Q8", values: [["Excel"]] }
   ];
 
   if (tenantId || clientId || clientSecret) {
     updates.push(
-      { range: "KeyInfo!X33", values: [[String(tenantId || "").trim()]] },
-      { range: "KeyInfo!X34", values: [[String(clientId || "").trim()]] },
-      { range: "KeyInfo!X35", values: [[String(clientSecret || "").trim()]] }
+      { range: "KeyInfo!X33", values: [[safeCell(tenantId)]] },
+      { range: "KeyInfo!X34", values: [[safeCell(clientId)]] },
+      { range: "KeyInfo!X35", values: [[safeCell(clientSecret)]] }
     );
   }
 

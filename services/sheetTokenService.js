@@ -13,6 +13,16 @@ const SHEET_ID_KEYS = new Set([
   "cashTabSheetId",
   "automationCommanderSheetId",
   "acSheetId",
+  "spreadsheetId",
+  "payrollClientSheetId",
+  "timeMasterSheetId",
+  "targetSheetId",
+  "sourceSheetId",
+  "templateSheetId",
+  "masterId",
+  "reconId",
+  "sheetIdToCheck",
+  "expectedSheetId",
 ]);
 
 const CONDITIONAL_SHEET_ID_KEYS = new Set([
@@ -31,6 +41,18 @@ const STRIP_NON_ADMIN_KEYS = new Set([
   "clientScriptId",
   "gasUrl",
   "deploymentUrl",
+  "parentTemplateUrl",
+  "driveFolderUrl",
+  "folderUrl",
+  "masterDeploymentUrl",
+  "backupUrl",
+  "reportUrl",
+  "masterSheetScriptId",
+  "clientSheetScriptId",
+  "templateMasterUrl",
+  "templateClientUrl",
+  "spreadsheetUrl",
+  "webAppUrl",
 ]);
 
 function getTokenEncryptionKey() {
@@ -143,6 +165,7 @@ export function unwrapRequestSheetIds(obj, seen = new WeakSet(), rawSheetRefs = 
     return obj;
   }
 
+  const canonicalAcId = process.env.AUTOMATION_COMMANDER_SHEET_ID || DEFAULT_AC_ID;
   for (const key of Object.keys(obj)) {
     const val = obj[key];
     if (typeof val === "string") {
@@ -151,10 +174,16 @@ export function unwrapRequestSheetIds(obj, seen = new WeakSet(), rawSheetRefs = 
         obj[key] = unwrapSheetId(t);
       } else if (
         (key === "automationCommanderSheetId" || key === "acSheetId") &&
-        t === "default"
+        (t === "default" || t === canonicalAcId)
       ) {
-        obj[key] = unwrapSheetId("default");
+        obj[key] = canonicalAcId;
       } else if (rawSheetRefs && SHEET_ID_KEYS.has(key) && t.length > 0 && t !== "default") {
+        rawSheetRefs.push({ target: obj, key });
+      } else if (
+        rawSheetRefs &&
+        CONDITIONAL_SHEET_ID_KEYS.has(key) &&
+        /^[a-zA-Z0-9-_]{22,}$/.test(t)
+      ) {
         rawSheetRefs.push({ target: obj, key });
       }
     } else if (val && typeof val === "object") {

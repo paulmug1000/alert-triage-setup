@@ -7,12 +7,14 @@
  */
 
 import { getSessionUser } from "../../../services/authService.js";
+import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
 import { canAccessPma } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { getAllClientsSetupOverview } from "../../../services/setupService.js";
 
 export default async function handler(req, res) {
-  const sessionUser = getSessionUser(req);
+  const sessionUser = getSessionUser(req, res);
+  installSheetIdBoundary(req, res, sessionUser);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Active session required." });
   }

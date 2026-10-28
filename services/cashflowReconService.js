@@ -1091,7 +1091,8 @@ export async function updateCashAdjustment({
   sheetRow,
   value,
   clientName,
-  automationCommanderSheetId
+  automationCommanderSheetId,
+  isAdmin = true
 }) {
   if (!clientSheetId || !colLetter || !sheetRow) {
     throw new Error("Missing clientSheetId, colLetter, or sheetRow");
@@ -1108,7 +1109,15 @@ export async function updateCashAdjustment({
   const cellRange = `Cash!${cleanCol}${rowNum}`;
 
   const cleanValue = typeof value === "string" ? value.trim().replace(/^['’]=/, "=") : value;
-  const safeValue = sanitizeCashAdjustmentInput(cleanValue ?? "");
+  let safeValue = sanitizeCashAdjustmentInput(cleanValue ?? "");
+  if (!isAdmin && typeof safeValue === "string" && safeValue.startsWith("=") && /^=[0-9+\-*/().\s]+$/.test(safeValue)) {
+    try {
+      const evaluated = Function(`"use strict"; return (${safeValue.slice(1)});`)();
+      if (typeof evaluated === "number" && isFinite(evaluated)) {
+        safeValue = Math.round(evaluated * 100) / 100;
+      }
+    } catch (_) {}
+  }
 
   await withRetry(() => sheets.spreadsheets.values.update({
     spreadsheetId: cleanClientSheetId,
@@ -1174,6 +1183,9 @@ export async function toggleCashCellResolved({
   const cleanClientSheetId = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
   const rowNum = parseInt(sheetRow, 10);
   const colIndex = parseInt(colIdx, 10);
+  if (isNaN(rowNum) || rowNum < 3 || rowNum > 80 || isNaN(colIndex) || colIndex < 1 || colIndex > 50) {
+    throw new Error("Invalid Cash row or column index");
+  }
   const targetBg = resolved ? RESOLVED_GREEN_RGB : WHITE_RGB;
 
   await withRetry(() => sheets.spreadsheets.batchUpdate({
@@ -1244,6 +1256,9 @@ export async function updateCashCellNote({
   const cleanClientSheetId = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
   const rowNum = parseInt(sheetRow, 10);
   const colIndex = parseInt(colIdx, 10);
+  if (isNaN(rowNum) || rowNum < 3 || rowNum > 80 || isNaN(colIndex) || colIndex < 1 || colIndex > 50) {
+    throw new Error("Invalid Cash row or column index");
+  }
 
   await withRetry(() => sheets.spreadsheets.batchUpdate({
     spreadsheetId: cleanClientSheetId,
@@ -1313,29 +1328,39 @@ export async function batchMatchCashflowActuals({
   const sheets = await getSheetsClient();
   const cleanClientSheetId = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
   const colIndex = parseInt(colIdx, 10);
+  const cleanCol = String(colLetter).trim().toUpperCase();
+  const ALLOWED_ADJUSTMENT_ROWS = new Set([13, 14, 15, 19, 20, 21]);
+  if (!/^[E-Z]$|^A[A-Z]$/.test(cleanCol) || isNaN(colIndex) || colIndex < 1 || colIndex > 50) {
+    throw new Error("Invalid Cash column");
+  }
 
   // 1. Batch update adjustment formulas
   if (adjustments.length > 0) {
-    const dataUpdates = adjustments.map(adj => {
-      const cleanFormula = typeof adj.formula === "string" ? adj.formula.trim().replace(/^['’]=/, "=") : adj.formula;
-      return {
-        range: `Cash!${colLetter}${adj.sheetRow}`,
-        values: [[sanitizeCashAdjustmentInput(cleanFormula)]]
-      };
-    });
+    const dataUpdates = adjustments
+      .filter(adj => ALLOWED_ADJUSTMENT_ROWS.has(parseInt(adj?.sheetRow, 10)))
+      .map(adj => {
+        const cleanFormula = typeof adj.formula === "string" ? adj.formula.trim().replace(/^['’]=/, "=") : adj.formula;
+        return {
+          range: `Cash!${cleanCol}${parseInt(adj.sheetRow, 10)}`,
+          values: [[sanitizeCashAdjustmentInput(cleanFormula)]]
+        };
+      });
 
-    await withRetry(() => sheets.spreadsheets.values.batchUpdate({
-      spreadsheetId: cleanClientSheetId,
-      requestBody: {
-        valueInputOption: "USER_ENTERED",
-        data: dataUpdates
-      }
-    }));
+    if (dataUpdates.length > 0) {
+      await withRetry(() => sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: cleanClientSheetId,
+        requestBody: {
+          valueInputOption: "USER_ENTERED",
+          data: dataUpdates
+        }
+      }));
+    }
   }
 
   // 2. Batch update resolved background colors
-  if (resolvedRows.length > 0 && cashTabSheetId) {
-    const formatRequests = resolvedRows.map(rowNum => ({
+  const validResolvedRows = (resolvedRows || []).map(r => parseInt(r, 10)).filter(r => !isNaN(r) && r >= 3 && r <= 80);
+  if (validResolvedRows.length > 0 && cashTabSheetId) {
+    const formatRequests = validResolvedRows.map(rowNum => ({
       repeatCell: {
         range: {
           sheetId: cashTabSheetId,

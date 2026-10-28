@@ -14,10 +14,10 @@ import { waitUntil } from "@vercel/functions";
 import { redisClient } from "../../services/redisClient";
 import { invalidatePmaClientCache } from "../../services/cacheService";
 import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "../../services/sheetsClient";
-import { 
-  readFlagSweepLog, 
-  readPrecomputeLog, 
-  readBuildOptionsLog 
+import {
+  readFlagSweepLog,
+  readPrecomputeLog,
+  readBuildOptionsLog
 } from "../../services/systemLogs";
 import { fetchSecurityAuditLogs } from "../../services/pulseLogger";
 import {
@@ -70,7 +70,7 @@ import {
 } from "../../services/importTools";
 import { handleGetActivity } from "../../services/activityService";
 import {
-  handleBustCache, handleGetAlerts, handleRemoveAlert, handleIgnoreAlert, 
+  handleBustCache, handleGetAlerts, handleRemoveAlert, handleIgnoreAlert,
   handleUnignoreAlert, handleGetIgnoredAlerts, handleUpdateSessionFlags,
   handleResolveNoActionFlag, handleBulkResolveNoActionFlags, handleRecordDecision, handleBulkIgnoreAlerts,
   handleAcknowledgeProactiveAlert, handleResolveProactiveAlert, handleBulkAcknowledgeProactiveAlerts,
@@ -207,10 +207,8 @@ export default async function handler(req, res) {
   }
 
   try {
-    unwrapRequestSheetIds(req.body);
-    unwrapRequestSheetIds(req.query);
     // Handle both POST (req.body) and GET (req.query) requests
-    const action = req.method === "GET" ? req.query.action : req.body.action;
+    const action = req.method === "GET" ? req.query.action : req.body?.action;
     const automationCommanderSheetId = getCanonicalAcSheetId();
     if (req.body && typeof req.body === "object") {
       req.body.automationCommanderSheetId = automationCommanderSheetId;
@@ -251,7 +249,7 @@ export default async function handler(req, res) {
     };
 
     const originalJson = res.json.bind(res);
-    res.json = function(data) {
+    res.json = function (data) {
       if (data && data.success && PMA_MUTATION_SCOPES[action]) {
         const cId = req.body?.clientSheetId;
         const mId = req.body?.masterSheetId;
@@ -322,9 +320,6 @@ export default async function handler(req, res) {
 
     console.log(`\n📍 API Request: method=${req.method}, action=${action}, bodyKeys=${Object.keys(req.body || {}).join(",")}, bodySize=${JSON.stringify(req.body || {}).length}`);
 
-    const sessionUser = getSessionUser(req, res);
-    installSheetIdBoundary(req, res, sessionUser);
-
     // Public endpoints that do not require an active user session
     const PUBLIC_ACTIONS = new Set(["send_otp", "verify_otp", "get_session", "logout"]);
 
@@ -380,6 +375,9 @@ export default async function handler(req, res) {
 
     req.isSystemAuthorized = Boolean(isSystemAuthorized);
 
+    const sessionUser = getSessionUser(req, res);
+    installSheetIdBoundary(req, res, sessionUser);
+
     // Enforce authentication gateway across all protected actions
     if (!PUBLIC_ACTIONS.has(action) && !isSystemAuthorized) {
       if (!sessionUser) {
@@ -396,10 +394,10 @@ export default async function handler(req, res) {
 
       // Block ClientUser, Senior (Restricted), and any EmailOTP / read-only session from accessing internal PMA actions
       const isPulseOnly = !canAccessPma(sessionUser) ||
-                          isReadOnlySession(sessionUser) ||
-                          sessionUser.role === "ClientUser" ||
-                          sessionUser.role === "Senior (Restricted)" ||
-                          Boolean(sessionUser.isSenior);
+        isReadOnlySession(sessionUser) ||
+        sessionUser.role === "ClientUser" ||
+        sessionUser.role === "Senior (Restricted)" ||
+        Boolean(sessionUser.isSenior);
 
       const ALLOWED_CLIENT_ACTIONS = new Set(["get_session", "logout", "get_user_preferences", "update_user_preference"]);
       if (isPulseOnly && !ALLOWED_CLIENT_ACTIONS.has(action)) {
@@ -576,7 +574,7 @@ export default async function handler(req, res) {
       await redisClient.flushDb();
       return res.status(200).json({ success: true, message: "Redis database flushed successfully." });
 
-} else if (action === "get_all_clients") {
+    } else if (action === "get_all_clients") {
       return await handleGetAllClients(req, res, sheets);
     } else if (action === "get_assigned_expenses") {
       return await handleGetAssignedExpenses(req, res, sheets);
@@ -674,7 +672,7 @@ export default async function handler(req, res) {
         if (!(await checkTriageClientAuth(sheets, sessionUser, clientName, [clientSheetId, masterSheetId]))) {
           return res.status(403).json({ success: false, error: "Access denied to this client" });
         }
-        const data = await getClientViewData({ clientSheetId, masterSheetId, tab, bypassCache });
+        const data = await getClientViewData({ clientSheetId, masterSheetId, tab, bypassCache, sessionUser });
         return res.status(200).json(data);
       } catch (err) {
         console.error("❌ get_client_view_data error:", err);
@@ -710,8 +708,12 @@ export default async function handler(req, res) {
           sheetRow,
           value,
           clientName,
-          automationCommanderSheetId
+          automationCommanderSheetId,
+          isAdmin: Boolean(sessionUser?.isAdmin || isSystemAuthorized)
         });
+        if (!sessionUser?.isAdmin && !isSystemAuthorized && result?.cellRef) {
+          delete result.cellRef;
+        }
         return res.status(200).json(result);
       } catch (err) {
         console.error("❌ update_cash_adjustment error:", err);
@@ -732,6 +734,9 @@ export default async function handler(req, res) {
           clientName,
           automationCommanderSheetId
         });
+        if (!sessionUser?.isAdmin && !isSystemAuthorized && result?.cellRef) {
+          delete result.cellRef;
+        }
         return res.status(200).json(result);
       } catch (err) {
         console.error("❌ toggle_cash_cell_resolved error:", err);
@@ -752,6 +757,9 @@ export default async function handler(req, res) {
           clientName,
           automationCommanderSheetId
         });
+        if (!sessionUser?.isAdmin && !isSystemAuthorized && result?.cellRef) {
+          delete result.cellRef;
+        }
         return res.status(200).json(result);
       } catch (err) {
         console.error("❌ update_cash_cell_note error:", err);
@@ -1006,7 +1014,7 @@ export default async function handler(req, res) {
           });
           const gasText = await gasResp.text();
           let gasData = null;
-          try { gasData = JSON.parse(gasText); } catch (e) {}
+          try { gasData = JSON.parse(gasText); } catch (e) { }
           return res.status(200).json({ success: true, gasResult: gasData || gasText });
         }
         return res.status(200).json({ success: true, message: "No Master Web App URL configured" });

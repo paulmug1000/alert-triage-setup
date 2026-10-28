@@ -2,6 +2,7 @@ import { getSessionUser } from "../../../services/authService.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { verifyUserAuthorizedForSheet, isUserAuthorizedForClient } from "../../../services/userPermissions.js";
 import { logPulseActivity } from "../../../services/pulseLogger.js";
+import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -12,6 +13,8 @@ export default async function handler(req, res) {
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
   }
+
+  installSheetIdBoundary(req, res, sessionUser);
 
   const { clientName, clientSheetId, action = "PORTAL_ENTERED" } = req.body || {};
 
@@ -28,7 +31,7 @@ export default async function handler(req, res) {
       if (!auth.authorized) {
         return res.status(auth.status || 403).json({ success: false, error: auth.error });
       }
-      targetClient = auth.clientName;
+      targetClient = auth.clientName || targetClient;
     } else if (!isUserAuthorizedForClient(sessionUser, targetClient)) {
       return res.status(403).json({ success: false, error: "Forbidden: Not authorized for this client" });
     }
@@ -36,10 +39,10 @@ export default async function handler(req, res) {
     const clientIp = (typeof forwarded === "string" ? forwarded.split(",")[0] : forwarded?.[0])?.trim() || req.socket?.remoteAddress || "-";
 
     await logPulseActivity(sheets, {
-      clientName: clientName.trim(),
+      clientName: targetClient,
       category: "PORTAL",
       action: "PORTAL_ENTERED",
-      summary: `${sessionUser.name || sessionUser.email} accessed ${clientName.trim()} workspace`,
+      summary: `${sessionUser.name || sessionUser.email} accessed ${targetClient} workspace`,
       details: { role: sessionUser.role, clientSheetId: clientSheetId || "-", ip: clientIp },
       user: sessionUser.name || sessionUser.email
     });

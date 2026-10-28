@@ -14,6 +14,8 @@ import { getIntegrationTokens } from "../../../services/vaultService.js";
 import { verifyUserAuthorizedForSheet, isReadOnlySession } from "../../../services/userPermissions.js";
 import { assertExternalCrmSpreadsheet } from "../../../services/googleSheetService.js";
 import { assertSafeGraphId } from "../../../services/excelIntegrationService.js";
+import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
+import { sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
 
 export default async function handler(req, res) {
   const sessionUser = getSessionUser(req);
@@ -24,6 +26,8 @@ export default async function handler(req, res) {
   if (isReadOnlySession(sessionUser)) {
     return res.status(403).json({ success: false, error: "Read-only session cannot test integration sources." });
   }
+
+  installSheetIdBoundary(req, res, sessionUser);
 
   const { clientKey, masterSheetId, tool = "", category = "crm" } = req.method === "POST" ? req.body : req.query;
 
@@ -67,7 +71,7 @@ export default async function handler(req, res) {
       if (!url) {
         return res.status(200).json({
           success: false,
-          error: "No Google Sheet URL configured in KeyInfo (X11)."
+          error: sessionUser.isAdmin ? "No Google Sheet URL configured in KeyInfo (X11)." : "No external Google Sheet URL configured."
         });
       }
 
@@ -163,12 +167,14 @@ export default async function handler(req, res) {
 
       if (!driveId || !fileId || !sheetName) {
         const missing = [];
-        if (!driveId) missing.push("Drive ID (X36)");
-        if (!fileId) missing.push("File ID (X37)");
-        if (!sheetName) missing.push("Worksheet Name (X38)");
+        if (!driveId) missing.push(sessionUser.isAdmin ? "Drive ID (X36)" : "Drive ID");
+        if (!fileId) missing.push(sessionUser.isAdmin ? "File ID (X37)" : "File ID");
+        if (!sheetName) missing.push(sessionUser.isAdmin ? "Worksheet Name (X38)" : "Worksheet Name");
         return res.status(200).json({
           success: false,
-          error: `Missing Excel configuration in KeyInfo: ${missing.join(", ")}`
+          error: sessionUser.isAdmin
+            ? `Missing Excel configuration in KeyInfo: ${missing.join(", ")}`
+            : `Missing Excel configuration: ${missing.join(", ")}`
         });
       }
 
@@ -185,7 +191,9 @@ export default async function handler(req, res) {
         if (!tenantId || !clientId || !clientSecret) {
           return res.status(200).json({
             success: false,
-            error: "No Microsoft authorization found. Please connect Excel via OAuth or populate Azure credentials in KeyInfo (X33-X35)."
+            error: sessionUser.isAdmin
+              ? "No Microsoft authorization found. Please connect Excel via OAuth or populate Azure credentials in KeyInfo (X33-X35)."
+              : sanitizeSpreadsheetTerms("No Microsoft authorization found. Please connect Excel via OAuth or populate Azure credentials.")
           });
         }
 

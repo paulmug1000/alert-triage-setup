@@ -82,15 +82,46 @@ export default async function handler(req, res) {
     if (!isSeniorUser || !data) return data;
     const isRestrictedCat = (cat) => {
       const s = String(cat || "").toLowerCase();
-      return s.includes("salar") || s.includes("divid") || s.includes("payroll") || s.includes("wages");
+      return (
+        s.includes("salar") ||
+        s.includes("divid") ||
+        s.includes("payroll") ||
+        s.includes("wages") ||
+        s.includes("remuneration") ||
+        s.includes("net pay") ||
+        s.includes("director")
+      );
+    };
+    const isRestrictedTx = (tx) => {
+      if (!tx || typeof tx !== "object") return false;
+      return (
+        isRestrictedCat(tx.c) ||
+        isRestrictedCat(tx.category) ||
+        isRestrictedCat(tx.pulseCategory) ||
+        isRestrictedCat(tx.sheetCategory) ||
+        isRestrictedCat(tx.r) ||
+        isRestrictedCat(tx.s) ||
+        isRestrictedCat(tx.d) ||
+        isRestrictedCat(tx.payee) ||
+        isRestrictedCat(tx.desc) ||
+        isRestrictedCat(tx.description)
+      );
     };
     const cleanTxByMonth = data.outgoings?.transactionsByMonth
       ? Object.fromEntries(
-          Object.entries(data.outgoings.transactionsByMonth).map(([m, map]) => [
-            m,
-            map && typeof map === "object"
-              ? Object.fromEntries(Object.entries(map).filter(([cat]) => !isRestrictedCat(cat)))
-              : map,
+          Object.entries(data.outgoings.transactionsByMonth).map(([fy, fyData]) => [
+            fy,
+            Array.isArray(fyData)
+              ? fyData.map((monthArr) =>
+                  Array.isArray(monthArr) ? monthArr.filter((tx) => !isRestrictedTx(tx)) : monthArr
+                )
+              : fyData && typeof fyData === "object"
+              ? Object.fromEntries(
+                  Object.entries(fyData)
+                    .filter(([cat]) => !isRestrictedCat(cat))
+                    .map(([k, v]) => [k, Array.isArray(v) ? v.filter((tx) => !isRestrictedTx(tx)) : v])
+                )
+              : fyData,
           ])
         )
       : data.outgoings?.transactionsByMonth;
@@ -102,11 +133,16 @@ export default async function handler(req, res) {
               ? {
                   ...rm,
                   bankOutgoings: Array.isArray(rm.bankOutgoings)
-                    ? rm.bankOutgoings.filter((tx) => !isRestrictedCat(tx?.category || tx?.pulseCategory))
+                    ? rm.bankOutgoings.filter((tx) => !isRestrictedTx(tx))
                     : rm.bankOutgoings,
                   unreconciledItems: Array.isArray(rm.unreconciledItems)
-                    ? rm.unreconciledItems.filter((tx) => !isRestrictedCat(tx?.category || tx?.pulseCategory))
+                    ? rm.unreconciledItems.filter((tx) => !isRestrictedTx(tx))
                     : rm.unreconciledItems,
+                  categoryComparisons: Array.isArray(rm.categoryComparisons)
+                    ? rm.categoryComparisons.filter(
+                        (cc) => !isRestrictedCat(cc?.category || cc?.name || cc?.label)
+                      )
+                    : rm.categoryComparisons,
                 }
               : rm,
           ])

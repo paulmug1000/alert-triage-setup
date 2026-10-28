@@ -49,6 +49,37 @@ export default async function handler(req, res) {
     return res.status(auth.status || 403).json({ success: false, error: auth.error });
   }
 
+  const isSeniorUser = Boolean(
+    sessionUser.isSenior ||
+    sessionUser.role === "Senior (Restricted)" ||
+    String(sessionUser.role || "").toLowerCase().includes("senior")
+  );
+
+  const sanitizeCashForUser = (payload) => {
+    if (!isSeniorUser || !payload) return payload;
+    const isRestrictedLabel = (lbl) =>
+      /salar|divid|payroll|wages|director|remuneration|net pay/i.test(String(lbl || ""));
+    const redactRows = (rows) =>
+      Array.isArray(rows)
+        ? rows.map((r) =>
+            isRestrictedLabel(r?.label)
+              ? {
+                  ...r,
+                  rollingValues: Array.isArray(r.rollingValues) ? r.rollingValues.map(() => "—") : r.rollingValues,
+                  rollingNotes: Array.isArray(r.rollingNotes) ? r.rollingNotes.map(() => "") : r.rollingNotes,
+                  allValues: Array.isArray(r.allValues) ? r.allValues.map(() => "—") : r.allValues,
+                  allNotes: Array.isArray(r.allNotes) ? r.allNotes.map(() => "") : r.allNotes,
+                }
+              : r
+          )
+        : rows;
+    return {
+      ...payload,
+      excludingPipeline: redactRows(payload.excludingPipeline),
+      includingPipeline: redactRows(payload.includingPipeline),
+    };
+  };
+
   res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
 
   const cacheKey = `pulse:portal:cash:${clientSheetId}`;
@@ -67,7 +98,7 @@ export default async function handler(req, res) {
         success: true,
         fromCache: true,
         fromMemory: true,
-        data: memCached,
+        data: sanitizeCashForUser(memCached),
         cachedAt: memCached._cachedAt || null,
       });
     }
@@ -82,7 +113,7 @@ export default async function handler(req, res) {
           success: true,
           fromCache: true,
           fromRedis: true,
-          data: parsed,
+          data: sanitizeCashForUser(parsed),
           cachedAt: parsed._cachedAt || null,
         });
       }
@@ -216,7 +247,7 @@ export default async function handler(req, res) {
     return res.status(200).json({
       success: true,
       fromCache: false,
-      data: cashPayload,
+      data: sanitizeCashForUser(cashPayload),
     });
   } catch (err) {
     console.error("❌ /api/portal/cash error:", err);

@@ -72,7 +72,33 @@ export default async function handler(req, res) {
         let scopedClients = cachedData.allClients || [];
         if (!sessionUser.isAdmin) {
           const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
-          scopedClients = scopedClients.filter(c => assignedList.some(assigned => matchesClientName(assigned, c.clientName)));
+          scopedClients = scopedClients
+            .filter(c => assignedList.some(assigned => matchesClientName(assigned, c.clientName)))
+            .map(c => {
+              const copy = { ...c };
+              if (copy.integrations?.xero) {
+                copy.integrations = {
+                  ...copy.integrations,
+                  xero: {
+                    ...copy.integrations.xero,
+                    availableTenants: [],
+                    metadata: copy.integrations.xero.metadata
+                      ? { ...copy.integrations.xero.metadata, availableTenants: [] }
+                      : copy.integrations.xero.metadata
+                  }
+                };
+              }
+              if (copy.accountingStatus) {
+                copy.accountingStatus = {
+                  ...copy.accountingStatus,
+                  availableTenants: [],
+                  metadata: copy.accountingStatus.metadata
+                    ? { ...copy.accountingStatus.metadata, availableTenants: [] }
+                    : copy.accountingStatus.metadata
+                };
+              }
+              return copy;
+            });
         }
         let attentionCount = 0;
         for (const c of scopedClients) {
@@ -314,9 +340,37 @@ export default async function handler(req, res) {
       }
       if (sharedXero?.reconnectRequired) attentionCount++;
 
+      const scopedClientConfigs = sessionUser.isAdmin
+        ? clientConfigs
+        : clientConfigs.map(c => {
+            const copy = { ...c };
+            if (copy.integrations?.xero) {
+              copy.integrations = {
+                ...copy.integrations,
+                xero: {
+                  ...copy.integrations.xero,
+                  availableTenants: [],
+                  metadata: copy.integrations.xero.metadata
+                    ? { ...copy.integrations.xero.metadata, availableTenants: [] }
+                    : copy.integrations.xero.metadata
+                }
+              };
+            }
+            if (copy.accountingStatus) {
+              copy.accountingStatus = {
+                ...copy.accountingStatus,
+                availableTenants: [],
+                metadata: copy.accountingStatus.metadata
+                  ? { ...copy.accountingStatus.metadata, availableTenants: [] }
+                  : copy.accountingStatus.metadata
+              };
+            }
+            return copy;
+          });
+
       return res.status(200).json({
         success: true,
-        allClients: clientConfigs,
+        allClients: scopedClientConfigs,
         sharedXero: scopedSharedXero,
         attentionCount
       });
@@ -331,6 +385,10 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "Missing clientKey, clientName, or masterSheetId parameter." });
   }
 
+  if (clientKey && clientName && !matchesClientName(clientKey, clientName)) {
+    return res.status(403).json({ error: "Forbidden: Mismatched clientKey and clientName." });
+  }
+
   let targetClient = clientName || clientKey;
   if (!targetClient && masterSheetId) {
     try {
@@ -339,8 +397,18 @@ export default async function handler(req, res) {
     } catch (_) { }
   }
 
+  const isAdvisorLookup =
+    String(clientKey || "").trim().toLowerCase() === "advisor" ||
+    String(clientName || "").trim().toLowerCase() === "advisor";
+
   if (!sessionUser.isAdmin) {
+    if (isAdvisorLookup) {
+      return res.status(403).json({ error: "Access denied to central advisor status." });
+    }
     if (!targetClient || !isUserAuthorizedForClient(sessionUser, targetClient)) {
+      return res.status(403).json({ error: "Access denied to this client." });
+    }
+    if (clientKey && !isUserAuthorizedForClient(sessionUser, clientKey)) {
       return res.status(403).json({ error: "Access denied to this client." });
     }
   }
@@ -355,6 +423,13 @@ export default async function handler(req, res) {
         masterSheetId,
         tool
       });
+      if (!sessionUser.isAdmin && status && typeof status === "object") {
+        delete status.availableTenants;
+        if (status.metadata && typeof status.metadata === "object") {
+          status.metadata = { ...status.metadata };
+          delete status.metadata.availableTenants;
+        }
+      }
       statuses[tool] = status;
     }
 

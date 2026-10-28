@@ -3,6 +3,7 @@ import { fetchCashData, saveCashBatch, saveCashCellNote } from "../../../service
 import { getClients } from "../../../services/workspaces.js";
 import { verifyUserAuthorizedForSheet, canAccessPma, isReadOnlySession, getCanonicalAcSheetId } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
+import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
 
 export default async function handler(req, res) {
   // 1. Authenticate user
@@ -14,6 +15,8 @@ export default async function handler(req, res) {
   if (!canAccessPma(sessionUser)) {
     return res.status(403).json({ success: false, error: "Forbidden: Access restricted to Pulse Portal" });
   }
+
+  installSheetIdBoundary(req, res, sessionUser);
 
   // 2. GET: Fetch Cash Edit Data (36 Months)
   if (req.method === "GET") {
@@ -50,6 +53,20 @@ export default async function handler(req, res) {
         clientSheetId,
         bypassCache === "true" || bypassCache === true
       );
+      if (!sessionUser.isAdmin && data) {
+        const stripFormulas = (rows) => (rows || []).map(row => ({
+          ...row,
+          cells: (row.cells || []).map(({ formula, cellRef, colLetter, ...rest }) => ({
+            ...rest,
+            formula: "",
+          })),
+        }));
+        return res.status(200).json({
+          ...data,
+          table1Rows: stripFormulas(data.table1Rows),
+          table2Rows: stripFormulas(data.table2Rows),
+        });
+      }
       return res.status(200).json(data);
     } catch (err) {
       console.error("Error in GET /api/pma/cash:", err);
@@ -121,6 +138,7 @@ export default async function handler(req, res) {
         cellNotes: cellNotes || [],
         userEmail: sessionUser.email,
         automationCommanderSheetId,
+        isAdmin: Boolean(sessionUser.isAdmin),
       });
       return res.status(200).json(result);
     } catch (err) {

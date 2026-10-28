@@ -271,6 +271,7 @@ export async function saveCashBatch({
   cellNotes = [], // [{ sheetRow, colIdx, colLetter, note }]
   userEmail,
   automationCommanderSheetId,
+  isAdmin = true,
 }) {
   if (!clientSheetId) throw new Error("Client Sheet ID is required");
   const cleanId = String(clientSheetId).trim();
@@ -287,7 +288,15 @@ export async function saveCashBatch({
       continue;
     }
 
-    const cleanVal = sanitizeCashAdjustmentInput(String(up.value ?? "").trim());
+    let cleanVal = sanitizeCashAdjustmentInput(String(up.value ?? "").trim());
+    if (!isAdmin && typeof cleanVal === "string" && cleanVal.startsWith("=") && /^=[0-9+\-*/().\s]+$/.test(cleanVal)) {
+      try {
+        const evaluated = Function(`"use strict"; return (${cleanVal.slice(1)});`)();
+        if (typeof evaluated === "number" && isFinite(evaluated)) {
+          cleanVal = Math.round(evaluated * 100) / 100;
+        }
+      } catch (_) {}
+    }
     validValueUpdates.push({
       range: `Cash!${colLetter}${rowNum}`,
       values: [[cleanVal]],

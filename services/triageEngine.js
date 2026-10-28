@@ -3372,8 +3372,12 @@ export async function handleAnalyzeAlert(req, res, sheets) {
     await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
     const memoryRows = await readAlertMemory(sheets, automationCommanderSheetId);
 
-    // CRITICAL FIX: Use the row passed directly from the builder to bypass Google Sheets read-after-write latency
-    const memoryRow = req.body.memoryRow || findMemoryRow(memoryRows, fingerprintHash);
+    // NEVER trust client-supplied req.body.memoryRow; always look up from AlertMemory and verify tenant match
+    const foundMemoryRow = findMemoryRow(memoryRows, fingerprintHash);
+    const memoryRow = (
+      foundMemoryRow &&
+      (!foundMemoryRow.clientName || !alert.clientName || matchesClientName(alert.clientName, foundMemoryRow.clientName))
+    ) ? foundMemoryRow : null;
 
     if (memoryRow) {
       if (memoryRow.status === "ignored") {
@@ -6789,7 +6793,7 @@ export async function handleAcceptOption(req, res, sheets) {
         dataSnapshot = JSON.stringify({ alertType: alert.type || alert.flagType || "", flagType: alert.flagType || "", masterSheetId: alert.masterSheetId || "" });
       }
 
-      if (mr) {
+      if (mr && (!mr.clientName || !alert.clientName || matchesClientName(alert.clientName, mr.clientName))) {
         await updateAlertMemoryRow(sheets, automationCommanderSheetId, mr.rowIndex, { ...mr, status: "ignored", ignoreReason, dataSnapshot });
       } else {
         await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
@@ -7287,7 +7291,7 @@ export async function handleAcceptOption(req, res, sheets) {
         const fingerprintHash2 = alert.fingerprintHash || buildAlertFingerprint(alert);
         const memoryRow2 = findMemoryRow(memoryRows2, fingerprintHash2);
         const alertSummary2 = alert.summary?.summary || `${alert.type} ${fingerprintHash2}`;
-        if (memoryRow2) {
+        if (memoryRow2 && (!memoryRow2.clientName || !alert.clientName || matchesClientName(alert.clientName, memoryRow2.clientName))) {
           await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow2.rowIndex, { ...memoryRow2, status: "accepted" });
         } else {
           await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
@@ -7607,7 +7611,7 @@ export async function handleAcceptOption(req, res, sheets) {
       const fpHash = alert.fingerprintHash || buildAlertFingerprint(alert);
       const memRowFinal = findMemoryRow(memoryRowsFinal, fpHash);
       const alertSummaryFinal = alert.summary?.summary || `${alert.type || alert.flagType} ${fpHash}`;
-      if (memRowFinal) {
+      if (memRowFinal && (!memRowFinal.clientName || !alert.clientName || matchesClientName(alert.clientName, memRowFinal.clientName))) {
         await updateAlertMemoryRow(sheets, automationCommanderSheetId, memRowFinal.rowIndex, {
           ...memRowFinal, status: "accepted",
         });
@@ -7791,13 +7795,13 @@ export async function handleDeleteJob(req, res, sheets) {
       requestBody: {
         values: [[
           new Date().toISOString(),
-          alert.alertType || alert.type || "crm",
-          `${alert.sheetName}-${alert.rowNumber}`,
-          alert.clientName || "",
+          sanitizeFormulaInput(String(alert.alertType || alert.type || "crm")),
+          sanitizeFormulaInput(`${alert.sheetName}-${alert.rowNumber}`),
+          sanitizeFormulaInput(String(alert.clientName || "")),
           "",
-          JSON.stringify({ deletedJob: option.jobName, tabName, rowsBlank: rowsToBlank.map(r => r + 1) }),
+          sanitizeFormulaInput(JSON.stringify({ deletedJob: option.jobName, tabName, rowsBlank: rowsToBlank.map(r => r + 1) })),
           "ACCEPTED",
-          `Deleted job: ${option.jobName} from ${tabName} tab`,
+          sanitizeFormulaInput(`Deleted job: ${option.jobName} from ${tabName} tab`),
         ]],
       },
     });
@@ -7808,7 +7812,7 @@ export async function handleDeleteJob(req, res, sheets) {
       const memoryRows = await readAlertMemory(sheets, automationCommanderSheetId);
       const fingerprintHash = alert.fingerprintHash || buildAlertFingerprint(alert);
       const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
-      if (memoryRow) {
+      if (memoryRow && (!memoryRow.clientName || !alert.clientName || matchesClientName(alert.clientName, memoryRow.clientName))) {
         await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, {
           ...memoryRow, status: "accepted",
         });
@@ -10036,9 +10040,9 @@ export async function logClaudeUsage_(sheets, automationCommanderSheetId, client
     requestBody: {
       values: [[
         new Date().toISOString(),
-        source || "precompute",
-        clientName || "",
-        alertType || "",
+        sanitizeFormulaInput(String(source || "precompute")),
+        sanitizeFormulaInput(String(clientName || "")),
+        sanitizeFormulaInput(String(alertType || "")),
         (inputTokens || 0) + (outputTokens || 0),
         costUsd.toFixed(6),
       ]],

@@ -335,6 +335,14 @@ export async function handleEomSaveClientTask(req, res, sheets) {
     if (taskId) {
       const rowIdx = rows.findIndex(r => r[0] === taskId);
       if (rowIdx === -1) return res.status(404).json({ success: false, error: "Task assignment not found" });
+      const existingOwner = String(rows[rowIdx][1] || "").trim();
+      const sessionUser = getSessionUser(req);
+      if (existingOwner && !matchesClientName(existingOwner, taskClientName)) {
+        return res.status(403).json({ success: false, error: "Forbidden: Task belongs to a different client." });
+      }
+      if (!req.isSystemAuthorized && sessionUser && !sessionUser.isAdmin && existingOwner && !isUserAuthorizedForClient(sessionUser, existingOwner)) {
+        return res.status(403).json({ success: false, error: "Forbidden: Not authorized for this client's task." });
+      }
       const sheetRow = rowIdx + 2;
       await withRetry(() => sheets.spreadsheets.values.update({
         spreadsheetId: automationCommanderSheetId, range: `EomClientTasks!B${sheetRow}:F${sheetRow}`,
@@ -513,7 +521,11 @@ export async function handleEomReorderTasks(req, res, sheets) {
     const resp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:H5000" });
     const rows = resp.data.values || [];
     const rowIndexByTaskId = {};
-    rows.forEach((r, i) => { if (r[0]) rowIndexByTaskId[r[0]] = i + 2; });
+    rows.forEach((r, i) => {
+      if (r[0] && matchesClientName(r[1], rClientName)) {
+        rowIndexByTaskId[r[0]] = i + 2;
+      }
+    });
 
     const writes = [];
     orderedTaskIds.forEach((taskId, index) => {
@@ -810,7 +822,12 @@ export async function handleEomMarkMonthActual(req, res, sheets) {
       details: { clientName: perfClientName, month: monthLabel, col: targetColLetter }
     }).catch(e => console.error("PMA log failed:", e));
 
-    return res.status(200).json({ success: true, monthLabel, targetCol: targetColLetter });
+    const isAdmin = Boolean(getSessionUser(req)?.isAdmin);
+    return res.status(200).json({
+      success: true,
+      monthLabel,
+      ...(isAdmin ? { targetCol: targetColLetter } : {}),
+    });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
   }
@@ -864,14 +881,14 @@ export async function handleEomMarkNbExclude(req, res, sheets) {
     });
     const headers = headerResp.data.values?.[0] || [];
     if (!headers.length) {
-      return res.status(400).json({ success: false, error: "Could not read headers on the NBtoFind tab." });
+      return res.status(400).json({ success: false, error: "Could not read new business target headers." });
     }
 
     const targetColIdx0 = findNbToFindColIndex_(headers, targetMonthKey);
     if (targetColIdx0 === -1) {
       return res.status(400).json({
         success: false,
-        error: `Could not find a column for target month (${targetMonthLabel}) on the NBtoFind tab.`
+        error: `Could not find a column for target month (${targetMonthLabel}).`
       });
     }
 
@@ -890,7 +907,7 @@ export async function handleEomMarkNbExclude(req, res, sheets) {
       if (currentColIdx0 === -1) {
         return res.status(400).json({
           success: false,
-          error: `Could not find a column for current month (${currentMonthLabel}) on the NBtoFind tab.`
+          error: `Could not find a column for current month (${currentMonthLabel}).`
         });
       }
       const currentColLetter = columnIndexToLetter_(currentColIdx0 + 1);
@@ -929,7 +946,13 @@ export async function handleEomMarkNbExclude(req, res, sheets) {
       details: { clientName, markedMonths, ranges: updates.map(u => u.range) }
     }).catch(e => console.error("PMA log failed:", e));
 
-    return res.status(200).json({ success: true, clientName, markedMonths, ranges: updates.map(u => u.range) });
+    const isAdmin = Boolean(getSessionUser(req)?.isAdmin);
+    return res.status(200).json({
+      success: true,
+      clientName,
+      markedMonths,
+      ...(isAdmin ? { ranges: updates.map(u => u.range) } : {}),
+    });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
   }
@@ -3536,11 +3559,11 @@ export async function handleEomAddZeroBudgetCategory(req, res, sheets) {
       return res.status(400).json({ success: false, error: "At least one category name is required." });
     }
 
-    // Read Budget!A150:AV250 to locate the last populated row in the section (150..250)
+    // Read Budget!A150:AV250 with FORMULA render option so existing formulas are preserved
     const budgetResp = await withRetry(() => sheets.spreadsheets.values.get({
       spreadsheetId: mId,
       range: "Budget!A150:AV250",
-      valueRenderOption: "UNFORMATTED_VALUE"
+      valueRenderOption: "FORMULA"
     }));
     const budgetRows = budgetResp.data.values || [];
 
@@ -3587,7 +3610,7 @@ export async function handleEomAddZeroBudgetCategory(req, res, sheets) {
         if (nextTargetRow > 250) {
           return res.status(400).json({
             success: false,
-            error: "Budget section (Budget!A150:A250) is full — no trailing blank rows remain after row 250."
+            error: "The budget category list is full — no blank slots remain."
           });
         }
         targetRow = nextTargetRow;
@@ -3642,12 +3665,17 @@ export async function handleEomAddZeroBudgetCategory(req, res, sheets) {
       details: { clientName, masterSheetId: mId, addedRowsInfo }
     }).catch(() => { });
 
+    const isAdmin = Boolean(getSessionUser(req)?.isAdmin);
     return res.status(200).json({
       success: true,
-      addedRowsInfo,
+      addedRowsInfo: isAdmin ? addedRowsInfo : addedRowsInfo.map(({ category: c, mode }) => ({ category: c, mode })),
       message: addedRowsInfo.length === 1
-        ? `Added "${addedRowsInfo[0].category}" to Budget row ${addedRowsInfo[0].sheetRow} with £0 across all 3 financial years.`
-        : `Added ${addedRowsInfo.length} £0 budget categories to the Budget tab (${addedRowsInfo.map(a => `${a.category} [row ${a.sheetRow}]`).join(", ")}).`,
+        ? (isAdmin
+            ? `Added "${addedRowsInfo[0].category}" to Budget row ${addedRowsInfo[0].sheetRow} with £0 across all 3 financial years.`
+            : `Added "${addedRowsInfo[0].category}" to budget with £0 across all 3 financial years.`)
+        : (isAdmin
+            ? `Added ${addedRowsInfo.length} £0 budget categories to the Budget tab (${addedRowsInfo.map(a => `${a.category} [row ${a.sheetRow}]`).join(", ")}).`
+            : `Added ${addedRowsInfo.length} £0 budget categories (${addedRowsInfo.map(a => a.category).join(", ")}).`),
       ...refreshed
     });
   } catch (err) {

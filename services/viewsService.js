@@ -2,7 +2,8 @@ import { getSheetsClient, withRetry, colLetterToNum, colIndexToLetter, getSheetG
 import { resolveClientNameBySheetId } from "./workspaces.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { getSessionUser } from "./authService.js";
-import { isUserAuthorizedForClient, sanitizeFormulaInput, verifyUserAuthorizedForSheet, isReadOnlySession } from "./userPermissions.js";
+import { isUserAuthorizedForClient, sanitizeFormulaInput, verifyUserAuthorizedForSheet, isReadOnlySession, canViewSalariesAndDividends } from "./userPermissions.js";
+import { sanitizeSpreadsheetTerms } from "../utils/helpers.js";
 import { memoryCache } from "./cacheService.js";
 import { redisClient } from "./redisClient.js";
 
@@ -117,7 +118,46 @@ export function isBudgetCellEditable(sheetRow, colIdx) {
   return false;
 }
 
-export async function getClientViewData({ clientSheetId, masterSheetId, tab, bypassCache = false }) {
+function sanitizeViewDataForUser(result, sessionUser) {
+  if (!result || !sessionUser || canViewSalariesAndDividends(sessionUser)) {
+    return result;
+  }
+  if (result.tab === "contractors") {
+    return {
+      ...result,
+      section1Rows: [],
+      section2Rows: [],
+    };
+  }
+  if (result.tab === "budget" && Array.isArray(result.matrix)) {
+    return {
+      ...result,
+      matrix: result.matrix.map((row, idx) => {
+        const sheetRow = idx + 1;
+        if (sheetRow >= 58 && sheetRow <= 120) {
+          return Array.isArray(row) ? row.map((cell, cIdx) => (cIdx === 0 ? cell : null)) : row;
+        }
+        return row;
+      }),
+    };
+  }
+  if (result.tab === "cash" && Array.isArray(result.matrix)) {
+    return {
+      ...result,
+      matrix: result.matrix.map((row, idx) => {
+        if (idx === 0 || !Array.isArray(row)) return row;
+        const lbl = String(row[0]?.v || "");
+        if (/salar|divid|payroll|wages|director|remuneration|net pay/i.test(lbl)) {
+          return row.map((cell, cIdx) => (cIdx === 0 ? cell : cell ? { ...cell, v: "—", note: undefined } : null));
+        }
+        return row;
+      }),
+    };
+  }
+  return result;
+}
+
+export async function getClientViewData({ clientSheetId, masterSheetId, tab, bypassCache = false, sessionUser = null }) {
   if (!clientSheetId && !masterSheetId) {
     throw new Error("Missing clientSheetId or masterSheetId");
   }
@@ -130,7 +170,7 @@ export async function getClientViewData({ clientSheetId, masterSheetId, tab, byp
   if (!bypassCache) {
     const memCached = memoryCache.get(cacheKey);
     if (memCached && memCached.success) {
-      return memCached;
+      return sanitizeViewDataForUser(memCached, sessionUser);
     }
     if (redisClient?.isOpen) {
       try {
@@ -139,7 +179,7 @@ export async function getClientViewData({ clientSheetId, masterSheetId, tab, byp
           const parsed = JSON.parse(redisCached);
           if (parsed && parsed.success) {
             memoryCache.set(cacheKey, parsed, 120);
-            return parsed;
+            return sanitizeViewDataForUser(parsed, sessionUser);
           }
         }
       } catch (e) {}
@@ -151,7 +191,7 @@ export async function getClientViewData({ clientSheetId, masterSheetId, tab, byp
     if (redisClient?.isOpen) {
       redisClient.set(cacheKey, JSON.stringify(result), { EX: 120 }).catch(() => {});
     }
-    return result;
+    return sanitizeViewDataForUser(result, sessionUser);
   };
 
   const sheets = await getSheetsClient();
@@ -428,8 +468,23 @@ export async function handleUpdateViewCell(req, res, sheets) {
   if (!isAllowed) {
     return res.status(403).json({
       success: false,
-      error: `Cell ${colLetter}${rowNum} is not within the editable range for ${screenTab}`
+      error: sessionUser.isAdmin
+        ? `Cell ${colLetter}${rowNum} is not within the editable range for ${screenTab}`
+        : "This field is not within the editable range."
     });
+  }
+
+  if (!canViewSalariesAndDividends(sessionUser)) {
+    const isRestrictedBudgetRow = screenTab === "budget" && rowNum >= 58 && rowNum <= 120;
+    const isRestrictedOutgoingsRow =
+      (screenTab === "contractors" || screenTab === "outgoings") &&
+      ((rowNum >= 115 && rowNum <= 123) || (rowNum >= 230 && rowNum <= 238) || (rowNum >= 6 && rowNum <= 7));
+    if (isRestrictedBudgetRow || isRestrictedOutgoingsRow) {
+      return res.status(403).json({
+        success: false,
+        error: "Forbidden: You do not have permission to modify salary or dividend figures."
+      });
+    }
   }
 
   // Column-specific data validation
@@ -645,14 +700,14 @@ export async function handleUpdateViewCell(req, res, sheets) {
 
     return res.status(200).json({
       success: true,
-      cellRef: `${colLetter}${rowNum}`,
+      ...(sessionUser.isAdmin ? { cellRef: `${colLetter}${rowNum}` } : {}),
       value: formattedValue,
       monthText,
-      updatedMatrix
+      updatedMatrix: sanitizeViewDataForUser({ tab: screenTab, matrix: updatedMatrix }, sessionUser)?.matrix ?? updatedMatrix
     });
   } catch (err) {
     console.error("❌ handleUpdateViewCell error:", err);
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: sessionUser.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message) });
   }
 }
 
@@ -697,7 +752,28 @@ export async function handleSpreadViewRow(req, res, sheets) {
 
   const rowNum = parseInt(sheetRow, 10);
   if (screenTab === "budget" && rowNum !== 5 && rowNum !== 13) {
-    return res.status(403).json({ success: false, error: "Spread only supported on rows 5 and 13 for budget" });
+    return res.status(403).json({ success: false, error: "Spread is not supported for this line item." });
+  }
+
+  const startColIdx = colLetterToNum(String(startColLetter).trim().toUpperCase()) - 1;
+  const endColIdx = colLetterToNum(String(endColLetter).trim().toUpperCase()) - 1;
+  if (
+    isNaN(startColIdx) ||
+    isNaN(endColIdx) ||
+    startColIdx < 6 ||
+    endColIdx < startColIdx ||
+    endColIdx > 47
+  ) {
+    return res.status(400).json({ success: false, error: "Invalid column range for spread." });
+  }
+  for (let c = startColIdx; c <= endColIdx; c++) {
+    if (!isBudgetCellEditable(rowNum, c)) {
+      return res.status(403).json({ success: false, error: "One or more target columns are not editable." });
+    }
+  }
+  const maxLen = endColIdx - startColIdx + 1;
+  if (values.length > maxLen) {
+    return res.status(400).json({ success: false, error: "Too many values for specified column range." });
   }
 
   try {
@@ -768,13 +844,13 @@ export async function handleSpreadViewRow(req, res, sheets) {
 
     return res.status(200).json({
       success: true,
-      range,
+      ...(sessionUser.isAdmin ? { range } : {}),
       values: safeValues,
-      updatedMatrix,
+      updatedMatrix: sanitizeViewDataForUser({ tab: "budget", matrix: updatedMatrix }, sessionUser)?.matrix ?? updatedMatrix,
     });
   } catch (err) {
     console.error("❌ handleSpreadViewRow error:", err);
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: sessionUser.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message) });
   }
 }
 
@@ -845,7 +921,21 @@ export async function handleUpdateCellNote(req, res, sheets) {
     targetTab = "Pipeline";
     targetSpreadsheetId = clientSheetId;
   } else {
-    return res.status(400).json({ success: false, error: `Unsupported tab for cell notes: ${tab}` });
+    return res.status(400).json({ success: false, error: "Unsupported section for notes" });
+  }
+
+  if (!canViewSalariesAndDividends(sessionUser)) {
+    const isRestrictedNote =
+      targetTab === "Salaries" ||
+      (targetTab === "Budget" && rowNum >= 58 && rowNum <= 120) ||
+      ((targetTab === "Outgoings" || targetTab === "OutgNotes") &&
+        ((rowNum >= 115 && rowNum <= 123) || (rowNum >= 230 && rowNum <= 238) || (rowNum >= 6 && rowNum <= 7)));
+    if (isRestrictedNote) {
+      return res.status(403).json({
+        success: false,
+        error: "Forbidden: You do not have permission to modify salary or dividend notes."
+      });
+    }
   }
 
   try {
@@ -908,14 +998,12 @@ export async function handleUpdateCellNote(req, res, sheets) {
 
     return res.status(200).json({
       success: true,
-      tab: targetTab,
-      sheetRow: rowNum,
-      colLetter: finalColLetter,
+      ...(sessionUser.isAdmin ? { tab: targetTab, sheetRow: rowNum, colLetter: finalColLetter } : {}),
       note: cleanNote,
     });
   } catch (err) {
     console.error("❌ handleUpdateCellNote error:", err);
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: sessionUser.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message) });
   }
 }
 

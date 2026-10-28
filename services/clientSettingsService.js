@@ -992,27 +992,13 @@ export async function saveClientSettings({
     }));
   }
 
-  // Update Redis cache immediately
+  // Invalidate Redis cache so next GET loads complete merged settings from Sheets
   const redisKey = getSettingsRedisKey(clientName);
-  const updatedSettings = {
-    ...settings,
-    lastSyncedAt: new Date().toISOString()
-  };
-  if (updatedSettings?.crm?.excel?.azureClientSecret) {
-    updatedSettings.crm = {
-      ...updatedSettings.crm,
-      excel: {
-        ...updatedSettings.crm.excel,
-        azureClientSecret: "••••••••"
-      }
-    };
-  }
-
   if (redisClient?.isOpen) {
     try {
-      await redisClient.set(redisKey, JSON.stringify(updatedSettings), { EX: REDIS_SETTINGS_TTL });
+      await redisClient.del(redisKey);
     } catch (err) {
-      console.warn("⚠️ Failed to update Redis cache after save:", err.message);
+      console.warn("⚠️ Failed to invalidate Redis settings cache after save:", err.message);
     }
   }
 

@@ -49,6 +49,20 @@ export default async function handler(req, res) {
 
     try {
       const config = await getClientSetupConfig({ clientName, masterSheetId });
+      if (!sessionUser.isAdmin && config && typeof config === "object") {
+        if (config.integrations?.xero) {
+          delete config.integrations.xero.availableTenants;
+          if (config.integrations.xero.metadata) {
+            delete config.integrations.xero.metadata.availableTenants;
+          }
+        }
+        if (config.accountingStatus) {
+          delete config.accountingStatus.availableTenants;
+          if (config.accountingStatus.metadata) {
+            delete config.accountingStatus.metadata.availableTenants;
+          }
+        }
+      }
       return res.status(200).json({ success: true, config });
     } catch (err) {
       console.error("GET /api/setup/config error:", err);

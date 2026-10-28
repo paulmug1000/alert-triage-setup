@@ -32,6 +32,7 @@ import { refreshHubSpotTokens } from "../../../services/hubspotService.js";
 import { refreshGoogleSheetTokens } from "../../../services/googleSheetService.js";
 import { refreshExcelTokens } from "../../../services/excelIntegrationService.js";
 import { getSessionUser } from "../../../services/authService.js";
+import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
 import { redisClient } from "../../../services/redisClient.js";
 import { getSheetsClient, extractSheetIdFromUrl } from "../../../services/sheetsClient.js";
 import {
@@ -111,7 +112,27 @@ export default async function handler(req, res) {
     return res.status(405).json({ success: false, error: "Method not allowed" });
   }
 
-  // 1. Parse Target Integration & Client Identifier
+  // 1. Verify Authentication: Client-Specific Secret (Master Sheet) OR Authorized PMA Session (verify=true only)
+  const authHeader = req.headers.authorization || "";
+  const tokenMatch = authHeader.match(/^Bearer\s+(.+)$/i);
+  const providedSecret = tokenMatch ? tokenMatch[1].trim() : (req.query.secret || req.body?.secret || "");
+
+  const expectedSecret = process.env.PULSE_INTERNAL_SECRET || "";
+  const isMasterSecretValid = Boolean(expectedSecret && providedSecret && safeCompare(providedSecret, expectedSecret));
+
+  // Client-specific secret sent in custom header (or body fallback)
+  const providedClientSecret = String(
+    req.headers["x-pulse-client-secret"] ||
+    req.headers["x-client-secret"] ||
+    req.body?.clientSecret ||
+    ""
+  ).trim();
+
+  req.isSystemAuthorized = Boolean(providedClientSecret || isMasterSecretValid);
+  const sessionUser = getSessionUser(req, res);
+  installSheetIdBoundary(req, res, sessionUser);
+
+  // 2. Parse Target Integration & Client Identifier (after ws_ token boundary unwrapping)
   const tool = String(req.query.tool || req.body?.tool || "xero").trim().toLowerCase();
   const rawSpreadsheetId = req.query.spreadsheetId || req.query.sheetId || req.body?.spreadsheetId || req.body?.sheetId || "";
   const spreadsheetId = rawSpreadsheetId ? (extractSheetIdFromUrl(String(rawSpreadsheetId).trim()) || String(rawSpreadsheetId).trim()) : "";
@@ -121,24 +142,6 @@ export default async function handler(req, res) {
   if (!spreadsheetId && !clientKey) {
     return res.status(400).json({ success: false, error: "Missing spreadsheetId or clientKey parameter." });
   }
-
-  // 2. Verify Authentication: Client-Specific Secret (Master Sheet) OR Authorized PMA Session (verify=true only)
-  const authHeader = req.headers.authorization || "";
-  const tokenMatch = authHeader.match(/^Bearer\s+(.+)$/i);
-  const providedSecret = tokenMatch ? tokenMatch[1].trim() : (req.query.secret || req.body?.secret || "");
-
-  const expectedSecret = process.env.PULSE_INTERNAL_SECRET || "";
-  const isMasterSecretValid = Boolean(expectedSecret && providedSecret && safeCompare(providedSecret, expectedSecret));
-
-  const sessionUser = getSessionUser(req);
-
-  // Client-specific secret sent in custom header (or body fallback)
-  const providedClientSecret = String(
-    req.headers["x-pulse-client-secret"] ||
-    req.headers["x-client-secret"] ||
-    req.body?.clientSecret ||
-    ""
-  ).trim();
 
   let isAuthorized = false;
   let isBrowserSessionCall = false;

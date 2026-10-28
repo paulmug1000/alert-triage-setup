@@ -1,9 +1,9 @@
 import nodemailer from "nodemailer";
-import { getAllUsers } from "./userPermissions.js";
+import { getAllUsers, canAccessPma } from "./userPermissions.js";
 import { readAlertMemory, ensureAlertMemoryTab } from "./alertMemory.js";
 import { redisClient } from "./redisClient.js";
 const PRECOMPUTED_KEY = "triage_precomputed";
-import { matchesClientName, stripRowInfo } from "../utils/helpers.js";
+import { matchesClientName, stripRowInfo, ADMIN_ONLY_ALERT_TYPES, sanitizeSpreadsheetTerms } from "../utils/helpers.js";
 import { logPmaActivity } from "./pmaLogger.js";
 
 /**
@@ -132,6 +132,7 @@ export async function sendDailyAlertsSummary(sheets, automationCommanderSheetId)
   const users = await getAllUsers(sheets, acId, true);
   const eligibleUsers = (users || []).filter(u =>
     u.status === "Active" &&
+    canAccessPma(u) &&
     String(u.dailyAlertsEmail || "Yes").toLowerCase() !== "no" &&
     u.email && u.email.includes("@")
   );
@@ -205,12 +206,17 @@ export async function sendDailyAlertsSummary(sheets, automationCommanderSheetId)
 
   // 4. Process each eligible user
   for (const user of eligibleUsers) {
-    const isGlobal = user.role === "Admin" || user.assignedClients === "*";
+    const isAdminUser = user.role === "Admin" || Boolean(user.isAdmin);
+    const isGlobal = isAdminUser || user.assignedClients === "*";
     const assignedList = Array.isArray(user.assignedClients) ? user.assignedClients : [];
 
-    // Filter alerts to this user's authorized clients
+    // Filter alerts to this user's authorized clients and exclude admin-only alerts for non-admins
     const userAlerts = allAlerts.filter(a => {
       if (!a.clientName) return false;
+      if (!isAdminUser) {
+        const aType = a.alertType || a.flagType || a.type || "";
+        if (a.isAdminOnly || ADMIN_ONLY_ALERT_TYPES.has(aType)) return false;
+      }
       if (isGlobal) return true;
       return assignedList.some(assigned => matchesClientName(assigned, a.clientName));
     });
@@ -249,7 +255,7 @@ export async function sendDailyAlertsSummary(sheets, automationCommanderSheetId)
       else cm.proactiveCount++;
 
       const rawSummaryText = alert.summary || alert.alertSummary || (typeof alert.dataSnapshot === "string" ? alert.dataSnapshot.slice(0, 100) : "");
-      const summaryText = user.role === "Admin" ? rawSummaryText : stripRowInfo(rawSummaryText);
+      const summaryText = isAdminUser ? rawSummaryText : sanitizeSpreadsheetTerms(stripRowInfo(rawSummaryText));
       if (summaryText) cm.alerts.push({ summary: summaryText });
     }
 

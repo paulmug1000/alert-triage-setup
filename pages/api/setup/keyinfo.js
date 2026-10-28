@@ -8,12 +8,14 @@
  */
 
 import { getSessionUser } from "../../../services/authService.js";
+import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
 import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, canAccessPma, isReadOnlySession } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { getMasterKeyInfoSettings, saveMasterKeyInfoSettings } from "../../../services/setupService.js";
 
 export default async function handler(req, res) {
-  const sessionUser = getSessionUser(req);
+  const sessionUser = getSessionUser(req, res);
+  installSheetIdBoundary(req, res, sessionUser);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Active session required." });
   }
@@ -47,19 +49,12 @@ export default async function handler(req, res) {
   }
 
   if (req.method === "POST") {
-    if (isReadOnlySession(sessionUser)) {
-      return res.status(403).json({ success: false, error: "Read-only session cannot modify KeyInfo." });
+    if (isReadOnlySession(sessionUser) || !sessionUser.isAdmin) {
+      return res.status(403).json({ success: false, error: "Forbidden: Admin privileges required to modify KeyInfo financial settings." });
     }
     const { masterSheetId, clientName, settings } = req.body || {};
     if (!masterSheetId || !settings) {
       return res.status(400).json({ success: false, error: "Missing masterSheetId or settings." });
-    }
-
-    if (!sessionUser.isAdmin) {
-      const auth = await verifyUserAuthorizedForSheet(sessionUser, masterSheetId, clientName, sheets);
-      if (!auth.authorized) {
-        return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
-      }
     }
 
     try {

@@ -257,7 +257,10 @@ export function matchesClientName(assignedIdentifier, actualClientName) {
   const sa = String(assignedIdentifier).trim().toLowerCase();
   const sb = String(actualClientName).trim().toLowerCase();
   if (sa === "*") return true;
-  return sa === sb;
+  if (sa === sb) return true;
+  const na = normalizeClientKeyForLookup(sa);
+  const nb = normalizeClientKeyForLookup(sb);
+  return Boolean(na && nb && na === nb);
 }
 
 const clientSheetIdToNameCache = new Map();

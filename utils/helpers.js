@@ -1575,7 +1575,10 @@ export function toInputDateFormat(dStr) {
 export function toSheetDateFormat(dStr) {
   if (!dStr) return "";
   const d = parseSheetDate(dStr);
-  if (!d) return String(dStr).trim();
+  if (!d) {
+    const raw = String(dStr).trim();
+    return /^[=+\-@|\t\r]/.test(raw) ? `'${raw}` : raw;
+  }
   const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const day = d.getDate();
   const mmm = months[d.getMonth()];
@@ -2029,7 +2032,7 @@ export function sanitizeRedirectUrl(url, defaultTarget = "/pma") {
     if (trustedHosts.includes(parsed.hostname) || parsed.hostname.endsWith(".pulsedashboard.co.uk")) {
       return trimmed;
     }
-  } catch (_) {}
+  } catch (_) { }
   return defaultTarget;
 }
 

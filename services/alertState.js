@@ -429,6 +429,10 @@ export async function handleBulkResolveNoActionFlags(req, res, sheets) {
 export async function handleRecordDecision(req, res, sheets) {
   const { alert, decision, automationCommanderSheetId } = req.body;
   if (!alert || !decision || !automationCommanderSheetId) return res.status(400).json({ success: false, error: "Missing alert, decision, or acId" });
+  const sessionUser = getSessionUser(req, res);
+  if (sessionUser && !sessionUser.isAdmin && alert.clientName && !isUserAuthorizedForClient(sessionUser, alert.clientName)) {
+    return res.status(403).json({ success: false, error: "Forbidden: Not authorized for this client." });
+  }
   try {
     const timestamp = new Date().toISOString();
     const alertAmount = alert.summary?.amount || alert.data?.amount || alert.data?.revenue || "";
@@ -454,7 +458,7 @@ export async function handleRecordDecision(req, res, sheets) {
         const fp = alert.fingerprintHash || buildAlertFingerprint(alert);
         const mr = findMemoryRow(memRows, fp);
         const alertSummary = alert.summary?.summary || `${alert.type || alert.flagType || "alert"} ${alert.summary?.invoiceNo || alert.summary?.description || ""} £${alert.summary?.amount || ""}`.trim();
-        if (mr) {
+        if (mr && (!mr.clientName || !alert.clientName || matchesClientName(alert.clientName, mr.clientName))) {
           await updateAlertMemoryRow(sheets, automationCommanderSheetId, mr.rowIndex, { ...mr, status: "accepted" });
         } else {
           await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
@@ -516,6 +520,7 @@ export async function handleIgnoreAlert(req, res, sheets) {
 export async function handleBulkIgnoreAlerts(req, res, sheets) {
   const { alerts: alertsToIgnore, ignoreReason, automationCommanderSheetId: acId } = req.body;
   if (!alertsToIgnore?.length || !acId) return res.status(400).json({ success: false, error: "Missing alerts or acId" });
+  const sessionUser = getSessionUser(req, res);
   try {
     await ensureAlertMemoryTab(sheets, acId);
     const memoryRows = await readAlertMemory(sheets, acId);
@@ -523,8 +528,14 @@ export async function handleBulkIgnoreAlerts(req, res, sheets) {
     const rowsToUpdate = [];
 
     for (const alert of alertsToIgnore) {
+      if (sessionUser && !sessionUser.isAdmin && alert?.clientName && !isUserAuthorizedForClient(sessionUser, alert.clientName)) {
+        return res.status(403).json({ success: false, error: "Forbidden: Not authorized for one or more alerts in batch." });
+      }
       const fingerprintHash = alert.fingerprintHash || buildAlertFingerprint(alert);
       const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
+      if (memoryRow && sessionUser && !sessionUser.isAdmin && memoryRow.clientName && !isUserAuthorizedForClient(sessionUser, memoryRow.clientName)) {
+        return res.status(403).json({ success: false, error: "Forbidden: Target AlertMemory row belongs to an unauthorized client." });
+      }
       const alertSummary = alert.summary?.summary || `${alert.type || "alert"} ${alert.summary?.invoiceNo || ""} £${alert.summary?.amount || ""}`.trim();
       const crmIdentitySnap = alert.type === "crm" ? extractCrmComparisonSnapshot(alert) : null;
       const dataSnapshot = JSON.stringify({
@@ -536,7 +547,7 @@ export async function handleBulkIgnoreAlerts(req, res, sheets) {
         masterSheetId: alert.masterSheetId || "", crmJobName:    crmIdentitySnap?.jobName    || "",
         crmEndClient:  crmIdentitySnap?.clientName || "", crmFields:     crmIdentitySnap?.fields     || null,
       });
-      if (memoryRow) {
+      if (memoryRow && (!memoryRow.clientName || !alert.clientName || matchesClientName(alert.clientName, memoryRow.clientName))) {
         rowsToUpdate.push({ rowIndex: memoryRow.rowIndex, row: { ...memoryRow, status: "ignored", ignoreReason: ignoreReason || "", dataSnapshot } });
       } else {
         rowsToAppend.push({ fingerprintHash, alertType: alert.type || alert.flagType || "unknown",

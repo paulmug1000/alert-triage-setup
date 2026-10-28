@@ -263,17 +263,12 @@ export default async function handler(req, res) {
       confirmedChildRows.push(targetChildRow);
     }
 
-    const sanitizedBatchData = confirmedBatchData.map(item => ({
-      ...item,
-      values: item.values.map(row => row.map(cell => sanitizeFormulaInput(cell)))
-    }));
-
     await withRetry(() =>
       sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: clientSheetId,
         requestBody: {
           valueInputOption: "USER_ENTERED",
-          data: sanitizedBatchData,
+          data: confirmedBatchData,
         },
       })
     );

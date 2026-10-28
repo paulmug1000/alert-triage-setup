@@ -13,7 +13,7 @@ import { getIntegrationTokens, deleteIntegrationTokens } from "../../../../servi
 import { revokeXeroToken } from "../../../../services/xeroService.js";
 import { getSessionUser } from "../../../../services/authService.js";
 import { getSheetsClient } from "../../../../services/sheetsClient.js";
-import { isUserAuthorizedForClient, isReadOnlySession, verifyUserAuthorizedForSheet } from "../../../../services/userPermissions.js";
+import { isUserAuthorizedForClient, isReadOnlySession, verifyUserAuthorizedForSheet, matchesClientName } from "../../../../services/userPermissions.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -35,12 +35,23 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "Missing required clientKey, clientName, or masterSheetId parameter." });
   }
 
+  if (clientKey && clientName && !matchesClientName(clientKey, clientName)) {
+    return res.status(403).json({ error: "Access denied: Mismatched clientKey and clientName." });
+  }
+
   const targetClient = clientName || clientKey;
-  if (targetClient === "advisor" && !sessionUser.isAdmin) {
+  const isAdvisorTarget =
+    String(clientKey || "").trim().toLowerCase() === "advisor" ||
+    String(clientName || "").trim().toLowerCase() === "advisor";
+
+  if (isAdvisorTarget && !sessionUser.isAdmin) {
     return res.status(403).json({ error: "Admin access required to disconnect advisor integration." });
   }
-  if (!sessionUser.isAdmin && targetClient !== "advisor") {
+  if (!sessionUser.isAdmin && !isAdvisorTarget) {
     if (targetClient && !isUserAuthorizedForClient(sessionUser, targetClient)) {
+      return res.status(403).json({ error: "Access denied to this client." });
+    }
+    if (clientKey && !isUserAuthorizedForClient(sessionUser, clientKey)) {
       return res.status(403).json({ error: "Access denied to this client." });
     }
     if (masterSheetId) {

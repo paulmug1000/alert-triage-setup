@@ -909,9 +909,9 @@ export async function handleChangeRetainerStartDate(req, res, sheets) {
           { range: `Confirmed!AR${rn}`, values: [[retFmtDate(newRowDates[dateIdx])]] }
         );
       }
-      allUpdates.push({ range: `Confirmed!AL${parentRowNum}`, values: [[newStartDate]] });
+      allUpdates.push({ range: `Confirmed!AL${parentRowNum}`, values: [[sanitizeFormulaInput(String(newStartDate || ""))]] });
       if (newEndDate) {
-        allUpdates.push({ range: `Confirmed!AM${parentRowNum}`, values: [[newEndDate]] });
+        allUpdates.push({ range: `Confirmed!AM${parentRowNum}`, values: [[sanitizeFormulaInput(String(newEndDate || ""))]] });
       }
       if (newMonthlyAmount !== undefined && newMonthlyAmount !== null && newMonthlyAmount !== "") {
         allUpdates.push({ range: `Confirmed!AG${parentRowNum}`, values: [[revenue]] });

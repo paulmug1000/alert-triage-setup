@@ -266,7 +266,7 @@ export default async function handler(req, res) {
 
     pipelineBatchData.push({
       range: `${pipelineSheetName}!AN${pipelineRow}`,
-      values: [[targetLikelihood]],
+      values: [[sanitizeFormulaInput(targetLikelihood)]],
     });
 
     // Parent row AP:BH (cols 42-60, index 41-59)
@@ -332,17 +332,12 @@ export default async function handler(req, res) {
       pipelineChildRows.push(targetChildRow);
     }
 
-    const sanitizedPipelineBatchData = pipelineBatchData.map(item => ({
-      ...item,
-      values: item.values.map(row => row.map(cell => sanitizeFormulaInput(cell)))
-    }));
-
     await withRetry(() =>
       sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: clientSheetId,
         requestBody: {
           valueInputOption: "USER_ENTERED",
-          data: sanitizedPipelineBatchData,
+          data: pipelineBatchData,
         },
       })
     );

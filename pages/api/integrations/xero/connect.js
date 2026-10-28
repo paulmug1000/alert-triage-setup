@@ -35,9 +35,25 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "Missing required clientKey, clientName, or masterSheetId parameter." });
   }
 
+  if (clientKey && clientName && !matchesClientName(clientKey, clientName)) {
+    return res.status(403).json({ error: "Access denied: Mismatched clientKey and clientName." });
+  }
+
   const targetName = clientName || clientKey;
-  if (!sessionUser.isAdmin && targetName && targetName !== "advisor" && !isUserAuthorizedForClient(sessionUser, targetName)) {
-    return res.status(403).json({ error: "Access denied to this client." });
+  const isAdvisorTarget =
+    String(clientKey || "").trim().toLowerCase() === "advisor" ||
+    String(clientName || "").trim().toLowerCase() === "advisor";
+
+  if (!sessionUser.isAdmin) {
+    if (isAdvisorTarget) {
+      return res.status(403).json({ error: "Only administrators can connect or modify the central Xero advisor grant." });
+    }
+    if (targetName && !isUserAuthorizedForClient(sessionUser, targetName)) {
+      return res.status(403).json({ error: "Access denied to this client." });
+    }
+    if (clientKey && !isUserAuthorizedForClient(sessionUser, clientKey)) {
+      return res.status(403).json({ error: "Access denied to this client." });
+    }
   }
   if (!sessionUser.isAdmin && (masterSheetId || clientSheetId)) {
     const sheets = await getSheetsClient();

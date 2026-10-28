@@ -731,6 +731,10 @@ export async function handleUpdateTask(req, res, sheets) {
 
     let taskMeta = {};
     try { taskMeta = JSON.parse(memoryRow.dataSnapshot || "{}"); } catch (e) {}
+    const isAdminOnly = !!taskMeta.isAdminOnly || ADMIN_ONLY_ALERT_TYPES.has(memoryRow.alertType);
+    if (!req.isSystemAuthorized && sessionUser && !sessionUser.isAdmin && isAdminOnly) {
+      return res.status(403).json({ success: false, error: "Forbidden: Access denied to Admin-only task." });
+    }
     taskMeta.furtherNotes = [...(taskMeta.furtherNotes || []), { text: `Alert data changed - analysis updated${unsnooze ? " and task unsnoozed" : ""}`, timestamp: new Date().toISOString(), system: true }];
     if (unsnooze) taskMeta.snoozedUntil = "";
     if (newAlertData) taskMeta.alertData = newAlertData;

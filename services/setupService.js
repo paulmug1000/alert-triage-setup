@@ -16,7 +16,7 @@
 
 import { redisClient } from "./redisClient.js";
 import { getIntegrationStatus } from "./vaultService.js";
-import { getSheetsClient, getDriveClient, withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
+import { getSheetsClient, getDriveClient, withRetry, extractSheetIdFromUrl, sanitizeFormulaInput } from "./sheetsClient.js";
 import { logPmaActivity, DEFAULT_AC_SHEET_ID } from "./pmaLogger.js";
 import { isUserAuthorizedForClient } from "./userPermissions.js";
 
@@ -1195,14 +1195,14 @@ export async function updateClientChecklistTask(sheets, { clientName, taskId, is
   );
 
   const newRowValues = [
-    clientName,
-    phaseId,
-    taskId,
-    taskTitle,
+    sanitizeFormulaInput(String(clientName || "")),
+    sanitizeFormulaInput(String(phaseId || "")),
+    sanitizeFormulaInput(String(taskId || "")),
+    sanitizeFormulaInput(String(taskTitle || "")),
     isCompleted ? "TRUE" : "FALSE",
     isCompleted ? now : "",
-    userEmail || "Admin",
-    metadata || ""
+    sanitizeFormulaInput(String(userEmail || "Admin")),
+    sanitizeFormulaInput(String(metadata || ""))
   ];
 
   if (existingIdx === -1) {
@@ -1330,15 +1330,15 @@ export async function saveMasterKeyInfoSettings(sheets, { masterSheetId, clientN
   if (!masterSheetId) throw new Error("Missing masterSheetId");
 
   const updates = [];
-  if (settings.startDate !== undefined) updates.push({ range: "KeyInfo!B2", values: [[settings.startDate]] });
-  if (settings.vatQuarters !== undefined) updates.push({ range: "KeyInfo!B6", values: [[settings.vatQuarters]] });
-  if (settings.vatMonths !== undefined) updates.push({ range: "KeyInfo!B7", values: [[settings.vatMonths]] });
-  if (settings.vatScheme !== undefined) updates.push({ range: "KeyInfo!B8", values: [[settings.vatScheme]] });
-  if (settings.vatRate !== undefined) updates.push({ range: "KeyInfo!B9", values: [[settings.vatRate]] });
-  if (settings.payeCycle !== undefined) updates.push({ range: "KeyInfo!B12", values: [[settings.payeCycle]] });
-  if (settings.revenueFocus !== undefined) updates.push({ range: "KeyInfo!B15", values: [[settings.revenueFocus]] });
-  if (settings.profitShare !== undefined) updates.push({ range: "KeyInfo!F11", values: [[settings.profitShare]] });
-  if (settings.contractorMethod !== undefined) updates.push({ range: "KeyInfo!B20", values: [[settings.contractorMethod]] });
+  if (settings.startDate !== undefined) updates.push({ range: "KeyInfo!B2", values: [[sanitizeFormulaInput(String(settings.startDate))]] });
+  if (settings.vatQuarters !== undefined) updates.push({ range: "KeyInfo!B6", values: [[sanitizeFormulaInput(String(settings.vatQuarters))]] });
+  if (settings.vatMonths !== undefined) updates.push({ range: "KeyInfo!B7", values: [[sanitizeFormulaInput(String(settings.vatMonths))]] });
+  if (settings.vatScheme !== undefined) updates.push({ range: "KeyInfo!B8", values: [[sanitizeFormulaInput(String(settings.vatScheme))]] });
+  if (settings.vatRate !== undefined) updates.push({ range: "KeyInfo!B9", values: [[sanitizeFormulaInput(String(settings.vatRate))]] });
+  if (settings.payeCycle !== undefined) updates.push({ range: "KeyInfo!B12", values: [[sanitizeFormulaInput(String(settings.payeCycle))]] });
+  if (settings.revenueFocus !== undefined) updates.push({ range: "KeyInfo!B15", values: [[sanitizeFormulaInput(String(settings.revenueFocus))]] });
+  if (settings.profitShare !== undefined) updates.push({ range: "KeyInfo!F11", values: [[sanitizeFormulaInput(String(settings.profitShare))]] });
+  if (settings.contractorMethod !== undefined) updates.push({ range: "KeyInfo!B20", values: [[sanitizeFormulaInput(String(settings.contractorMethod))]] });
 
   if (updates.length > 0) {
     await withRetry(() =>
@@ -1400,7 +1400,11 @@ export async function saveScriptIdsToTracker(sheets, { clientName, clientScriptI
       range: `Clients!R${rowNum}:T${rowNum}`,
       valueInputOption: "USER_ENTERED",
       requestBody: {
-        values: [[clientScriptId || "", masterScriptId || "", reconScriptId || ""]]
+        values: [[
+          sanitizeFormulaInput(String(clientScriptId || "")),
+          sanitizeFormulaInput(String(masterScriptId || "")),
+          sanitizeFormulaInput(String(reconScriptId || ""))
+        ]]
       }
     })
   );
@@ -1529,7 +1533,7 @@ export async function provisionNewClientSystem({
     throw new Error("Client name is required");
   }
 
-  const cleanClientName = clientName.trim();
+  const cleanClientName = sanitizeFormulaInput(clientName.trim());
   const drive = await getDriveClient();
   const sheets = await getSheetsClient();
   await ensureClientSetupTabs(sheets);

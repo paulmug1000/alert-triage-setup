@@ -10,6 +10,7 @@
  */
 
 import { getSessionUser } from "../../../services/authService.js";
+import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
 import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, canAccessPma, isReadOnlySession } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import {
@@ -18,7 +19,8 @@ import {
 } from "../../../services/accountingSuggestionsService.js";
 
 export default async function handler(req, res) {
-  const sessionUser = getSessionUser(req);
+  const sessionUser = getSessionUser(req, res);
+  installSheetIdBoundary(req, res, sessionUser);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Active session required." });
   }
@@ -54,23 +56,12 @@ export default async function handler(req, res) {
   }
 
   if (req.method === "POST") {
-    if (isReadOnlySession(sessionUser)) {
-      return res.status(403).json({ success: false, error: "Read-only session cannot modify accounting settings." });
+    if (isReadOnlySession(sessionUser) || !sessionUser.isAdmin) {
+      return res.status(403).json({ success: false, error: "Forbidden: Admin privileges required to apply accounting settings." });
     }
     const { clientName, masterSheetId, settings } = req.body || {};
     if (!clientName || !settings) {
       return res.status(400).json({ success: false, error: "Missing required clientName or settings payload." });
-    }
-
-    if (!sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, clientName)) {
-      return res.status(403).json({ success: false, error: "Access denied to this client." });
-    }
-    if (!sessionUser.isAdmin && masterSheetId) {
-      const sheets = await getSheetsClient();
-      const auth = await verifyUserAuthorizedForSheet(sessionUser, masterSheetId, clientName, sheets);
-      if (!auth.authorized) {
-        return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
-      }
     }
 
     try {

@@ -8,12 +8,43 @@
  */
 
 import { getSessionUser } from "../../../services/authService.js";
+import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
 import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, canAccessPma, isReadOnlySession } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { getClientChecklistState, updateClientChecklistTask } from "../../../services/setupService.js";
+import { sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
+
+function sanitizeChecklistStateForUser(state, sessionUser) {
+  if (!state || sessionUser?.isAdmin) return state;
+  const sanitizeTask = (t) =>
+    t && typeof t === "object"
+      ? {
+          ...t,
+          title: t.title ? sanitizeSpreadsheetTerms(t.title) : t.title,
+          description: t.description ? sanitizeSpreadsheetTerms(t.description) : t.description,
+          instructions: Array.isArray(t.instructions)
+            ? t.instructions.map((step) => sanitizeSpreadsheetTerms(String(step || "")))
+            : t.instructions,
+          metadata: t.metadata ? sanitizeSpreadsheetTerms(String(t.metadata)) : t.metadata,
+        }
+      : t;
+  return {
+    ...state,
+    phases: Array.isArray(state.phases)
+      ? state.phases.map((p) => ({
+          ...p,
+          title: p.title ? sanitizeSpreadsheetTerms(p.title) : p.title,
+          description: p.description ? sanitizeSpreadsheetTerms(p.description) : p.description,
+          tasks: Array.isArray(p.tasks) ? p.tasks.map(sanitizeTask) : p.tasks,
+        }))
+      : state.phases,
+    tasks: Array.isArray(state.tasks) ? state.tasks.map(sanitizeTask) : state.tasks,
+  };
+}
 
 export default async function handler(req, res) {
-  const sessionUser = getSessionUser(req);
+  const sessionUser = getSessionUser(req, res);
+  installSheetIdBoundary(req, res, sessionUser);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Active session required." });
   }
@@ -42,7 +73,7 @@ export default async function handler(req, res) {
 
     try {
       const state = await getClientChecklistState(sheets, clientName, masterSheetId);
-      return res.status(200).json({ success: true, ...state });
+      return res.status(200).json({ success: true, ...sanitizeChecklistStateForUser(state, sessionUser) });
     } catch (err) {
       console.error("GET /api/setup/checklist error:", err);
       return res.status(500).json({ success: false, error: err.message });
@@ -76,7 +107,7 @@ export default async function handler(req, res) {
         metadata: metadata || "",
         userEmail: sessionUser.email
       });
-      return res.status(200).json({ success: true, ...updatedState });
+      return res.status(200).json({ success: true, ...sanitizeChecklistStateForUser(updatedState, sessionUser) });
     } catch (err) {
       console.error("POST /api/setup/checklist error:", err);
       return res.status(500).json({ success: false, error: err.message });

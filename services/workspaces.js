@@ -2289,8 +2289,14 @@ export async function handleUpdateExpenseSlot(req, res, sheets) {
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
     const targetTab = tabName ? String(tabName).trim() : "Confirmed";
+    if (targetTab !== "Confirmed" && targetTab !== "Pipeline") {
+      return res.status(400).json({ success: false, error: "Invalid tabName" });
+    }
 
     let actualRowNum = parseInt(rowNum, 10);
+    if (isNaN(actualRowNum) || actualRowNum < 2) {
+      return res.status(400).json({ success: false, error: "Invalid rowNum" });
+    }
     let actualSlotNum = parseInt(slotNum, 10);
 
     if (createNewRow) {
@@ -2793,6 +2799,9 @@ export async function handleMoveInvoiceToJob(req, res, sheets) {
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
     const targetTab = tabName ? String(tabName).trim() : "Confirmed";
+    if (targetTab !== "Confirmed" && targetTab !== "Pipeline") {
+      return res.status(400).json({ success: false, error: "Invalid tabName" });
+    }
 
     const slotCols = {
       1: { a: "AP", ref: "AQ", sent: "AR", days: "AS", st: "AT" },
@@ -2990,6 +2999,9 @@ export async function handleVerifyInvoiceSlot(req, res, sheets) {
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
     const targetTab = tabName ? String(tabName).trim() : "Confirmed";
+    if (targetTab !== "Confirmed" && targetTab !== "Pipeline") {
+      return res.status(400).json({ success: false, error: "Invalid tabName" });
+    }
     const cleanTargetRef = String(invoiceRef).trim().toLowerCase();
     const parsedRowNum = rowNum ? parseInt(rowNum, 10) : null;
 
@@ -3097,8 +3109,14 @@ export async function handleUpdateInvoiceSlot(req, res, sheets) {
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
     const targetTab = tabName ? String(tabName).trim() : "Confirmed";
+    if (targetTab !== "Confirmed" && targetTab !== "Pipeline") {
+      return res.status(400).json({ success: false, error: "Invalid tabName" });
+    }
 
     let actualRowNum = parseInt(rowNum, 10);
+    if (isNaN(actualRowNum) || actualRowNum < 2) {
+      return res.status(400).json({ success: false, error: "Invalid rowNum" });
+    }
     let actualSlotNum = parseInt(slotNum, 10);
 
     if (createNewRow) {
@@ -3798,6 +3816,15 @@ export async function handleAddNewJob(req, res, sheets) {
 export async function handleUpdateOutgoingNote(req, res, sheets) {
   const { clientSheetId, sheetRow, colLetter, blocks, topNote } = req.body;
   if (!clientSheetId || !sheetRow || !colLetter) return res.status(400).json({ success: false, error: "Missing required fields" });
+  const parsedRow = parseInt(sheetRow, 10);
+  const cleanColLetter = String(colLetter).trim().toUpperCase();
+  if (isNaN(parsedRow) || parsedRow < 4 || parsedRow > 400 || !/^[E-Z]$|^A[A-Z]$/.test(cleanColLetter)) {
+    return res.status(400).json({ success: false, error: "Invalid Outgoings row or column" });
+  }
+  const sessionUser = getSessionUser(req);
+  if (sessionUser?.role === "Senior (Restricted)" && ((parsedRow >= 115 && parsedRow <= 123) || (parsedRow >= 230 && parsedRow <= 238))) {
+    return res.status(403).json({ success: false, error: "Forbidden: Access to salary and dividend rows is restricted." });
+  }
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
 
@@ -4043,20 +4070,20 @@ export async function handleFireOutgoingsPull(req, res, sheets) {
 
 export async function handleMarkPipelineCopied(req, res, sheets) {
   const { clientSheetId: pipeClientSheetId, pipelineRow } = req.body;
-  
-  if (!pipeClientSheetId || !pipelineRow) {
-    return res.status(400).json({ success: false, error: "Missing clientSheetId or pipelineRow" });
+  const parsedPipeRow = parseInt(pipelineRow, 10);
+  if (!pipeClientSheetId || !pipelineRow || isNaN(parsedPipeRow) || parsedPipeRow < 2 || parsedPipeRow > 5000) {
+    return res.status(400).json({ success: false, error: "Missing or invalid clientSheetId or pipelineRow" });
   }
   
   try {
     await sheets.spreadsheets.values.update({
       spreadsheetId: pipeClientSheetId,
-      range: `Pipeline!DD${pipelineRow}`,
+      range: `Pipeline!DD${parsedPipeRow}`,
       valueInputOption: "RAW",
       requestBody: { values: [["Yes"]] },
     });
     
-    console.log(`  ✅ mark_pipeline_copied: wrote Yes to Pipeline!DD${pipelineRow}`);
+    console.log(`  ✅ mark_pipeline_copied: wrote Yes to Pipeline!DD${parsedPipeRow}`);
     return res.status(200).json({ success: true });
   } catch (err) {
     console.error("❌ mark_pipeline_copied error:", err);
@@ -4071,6 +4098,9 @@ export async function handleDeleteDirectJob(req, res, sheets) {
   }
 
   const targetTab = tabName ? String(tabName).trim() : "Confirmed";
+  if (targetTab !== "Confirmed" && targetTab !== "Pipeline") {
+    return res.status(400).json({ success: false, error: "Invalid tabName" });
+  }
   const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
 
   try {

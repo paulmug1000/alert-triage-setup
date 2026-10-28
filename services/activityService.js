@@ -18,7 +18,8 @@ import { redisClient } from "./redisClient.js";
 import { fetchPmaActivity, DEFAULT_AC_SHEET_ID } from "./pmaLogger.js";
 import { fetchPulseActivity } from "./pulseLogger.js";
 import { getSessionUser } from "./authService.js";
-import { isUserAuthorizedForClient, filterClientsForUser, matchesClientName, getCanonicalAcSheetId } from "./userPermissions.js";
+import { isUserAuthorizedForClient, filterClientsForUser, matchesClientName, getCanonicalAcSheetId, canViewSalariesAndDividends } from "./userPermissions.js";
+import { sanitizeSpreadsheetTerms } from "../utils/helpers.js";
 
 const REDIS_ACTIVITY_PREFIX = "pulse:activity:";
 const CACHE_TTL_SECONDS = 7 * 24 * 3600; // 7 days permanent cache
@@ -1352,6 +1353,38 @@ export async function fetchAllClientsActivity(sheets, clientsList, forceRefresh 
   return payload;
 }
 
+function sanitizeActivityEventsForUser(events, sessionUser) {
+  if (!Array.isArray(events) || !sessionUser || sessionUser.isAdmin) return events;
+  const hideSalaries = !canViewSalariesAndDividends(sessionUser);
+  const filtered = hideSalaries
+    ? events.filter((e) => {
+        const cat = String(e?.category || "").toUpperCase();
+        if (cat === "SALARIES" || cat === "DIVIDENDS") return false;
+        const text = `${e?.title || ""} ${e?.summary || ""} ${e?.rawSummary || ""} ${e?.rawDetails || ""}`;
+        return !/salar|divid|payroll|wages|director|remuneration|net pay/i.test(text);
+      })
+    : events;
+  return filtered.map((e) => ({
+    ...e,
+    title: e.title ? sanitizeSpreadsheetTerms(e.title) : e.title,
+    summary: e.summary ? sanitizeSpreadsheetTerms(e.summary) : e.summary,
+    rawSummary: undefined,
+    rawDetails: undefined,
+    details: Array.isArray(e.details)
+      ? e.details.map((d) => (typeof d === "string" ? sanitizeSpreadsheetTerms(d) : d))
+      : e.details && typeof e.details === "object"
+      ? {
+          ...e.details,
+          cellRef: undefined,
+          sheetRow: undefined,
+          colLetter: undefined,
+          tab: undefined,
+          range: undefined,
+        }
+      : e.details,
+  }));
+}
+
 /**
  * API Route Handler for Activity feed
  */
@@ -1419,7 +1452,14 @@ export async function handleGetActivity(req, res, sheets) {
         targetClient = { clientName };
       }
       const data = await fetchClientActivity(sheets, targetClient, !!includeRoutine, !!forceRefresh, acId);
-      return res.status(200).json({ success: true, clientName, data });
+      const safeData =
+        !sessionUser.isAdmin && data
+          ? {
+              ...data,
+              events: sanitizeActivityEventsForUser(data.events, sessionUser),
+            }
+          : data;
+      return res.status(200).json({ success: true, clientName, data: safeData });
     }
 
     // 2. All Clients View
@@ -1429,19 +1469,27 @@ export async function handleGetActivity(req, res, sheets) {
     }
     const data = await fetchAllClientsActivity(sheets, clientsList, !!forceRefresh, !!includeRoutine, acId, isGlobalScope);
 
-    // Filter aggregated data for non-admins to prevent cache bleeding
-    if (!sessionUser.isAdmin) {
+    // Filter aggregated data for non-admins to prevent cache bleeding and spreadsheet term leakage
+    if (!sessionUser.isAdmin && data) {
       const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
-      if (data && data.allEvents) {
-        data.allEvents = data.allEvents.filter(e =>
-          assignedList.some(assigned => matchesClientName(assigned, e.clientName))
+      if (data.allEvents) {
+        data.allEvents = sanitizeActivityEventsForUser(
+          data.allEvents.filter(e =>
+            assignedList.some(assigned => matchesClientName(assigned, e.clientName))
+          ),
+          sessionUser
         );
       }
-      if (data && data.clients) {
+      if (data.clients) {
         data.clients = Object.fromEntries(
-          Object.entries(data.clients).filter(([k]) =>
-            assignedList.some(assigned => matchesClientName(assigned, k))
-          )
+          Object.entries(data.clients)
+            .filter(([k]) => assignedList.some(assigned => matchesClientName(assigned, k)))
+            .map(([k, v]) => [
+              k,
+              v && typeof v === "object"
+                ? { ...v, events: sanitizeActivityEventsForUser(v.events, sessionUser) }
+                : v,
+            ])
         );
       }
     }

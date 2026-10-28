@@ -2976,13 +2976,25 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
 
     const RICH_INFO_TYPES = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete",
       "retainerInvoicesCreated", "retainerInvoicesDeleted", "invoiceStaleUnsentChanges"];
-    const pendingRich = memoryRows.filter(r =>
-      r.status === "cached" && RICH_INFO_TYPES.includes(r.alertType) && !r.cachedOptionsJSON &&
-      !(r.alertType === "crmCopiedConfChecked" && (
+    const pendingRich = memoryRows.filter(r => {
+      if (r.status !== "cached" || !RICH_INFO_TYPES.includes(r.alertType)) return false;
+      if (r.alertType === "crmCopiedConfChecked" && (
         String(r.alertSummary || "").includes("Skipped Copy: Job with Project Code") ||
         String(r.alertSummary || "").includes("already exists in Confirmed")
-      ))
-    );
+      )) return false;
+      if (!r.cachedOptionsJSON) return true;
+      if (r.alertType === "crmCopiedConfChecked" || r.alertType === "crmCopiedConfUnchecked") {
+        try {
+          const parsed = JSON.parse(r.cachedOptionsJSON);
+          if (Array.isArray(parsed?.results) && parsed.results.length > 0 && parsed.results[0].revenue === undefined) {
+            return true;
+          }
+        } catch (_) {
+          return true;
+        }
+      }
+      return false;
+    });
     let richAnalyzed = 0, richErrors = 0;
     if (pendingRich.length > 0 && !hasMore) {
       console.log(`build_cached_alert_options: ${pendingRich.length} rich informational row(s) pending analysis`);
@@ -7955,10 +7967,10 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
       const relevantEntries = allCRMEntries.filter(row => {
         const details = String(row[3] || "");
         if (expectCopied) {
-          // Pipeline DD changed to Yes
-          return details.includes("Copied Status:") && (
+          // Pipeline DD changed to Yes, or job copied/converted from Pipeline to Confirmed
+          return (details.includes("Copied Status:") && (
             details.includes("-> 'Yes'") || details.includes("-> \"Yes\"")
-          );
+          )) || details.includes("Copied Pipeline Project") || details.includes("Converted Pipeline Job to Confirmed Retainer");
         } else {
           // Pipeline DD changed away from Yes
           return details.includes("Copied Status:") && (
@@ -7975,48 +7987,59 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
         for (const entry of relevantEntries) {
           const details = String(entry[3] || "");
           // Format: "Updated Pipeline: Row N, ClientName | JobName - ... Copied Status: 'X' -> 'Yes'"
-          // We need to match the line that contains BOTH the job info AND the Copied Status change
+          // Or direct copy line: "Copied Pipeline Project to Confirmed: ClientName | JobName"
           const lines = details.split('\n');
           for (const line of lines) {
             if (line.includes("Skipped Copy: Job with Project Code") || line.includes("already exists in Confirmed")) {
               continue;
             }
-            if (!line.includes("Copied Status:")) continue;
-            if (!line.includes("-> 'Yes'") && !line.includes("-> \"Yes\"")) continue;
-            // Extract client | job from: "Updated Pipeline: Row N, ClientName | JobName - FieldName: ..."
-            // Job names can contain " - " (e.g. "Grace & Co (Delta) - Prototype"), so we can't
-            // simply stop at the first " - ". Instead, find the first known change-field keyword
-            // (Start date:, End date:, Copied Status:, etc.) then take the last " - " before it.
-            const pipeIdx = line.indexOf("|");
-            if (pipeIdx !== -1) {
-              const rowMatch = line.match(/Row\s*(\d+),\s*([^|]*)/);
-              const pipelineRowFromLog = rowMatch ? parseInt(rowMatch[1], 10) : null;
-              const clientParsed = rowMatch ? rowMatch[2].trim() : "";
-              const afterPipe = line.slice(pipeIdx + 1).trim();
-              const knownFields = ["Start date:", "End date:", "Job name:", "Date originally",
-                "Direct costs:", "Prod. line:", "% likel.", "Copied Status:", "Revenue:", "Type:", "VAT"];
-              let firstFieldPos = afterPipe.length;
-              for (const field of knownFields) {
-                const idx = afterPipe.indexOf(field);
-                if (idx !== -1 && idx < firstFieldPos) firstFieldPos = idx;
+            if (line.includes("Copied Status:") && (line.includes("-> 'Yes'") || line.includes("-> \"Yes\""))) {
+              const pipeIdx = line.indexOf("|");
+              if (pipeIdx !== -1) {
+                const rowMatch = line.match(/Row\s*(\d+),\s*([^|]*)/);
+                const pipelineRowFromLog = rowMatch ? parseInt(rowMatch[1], 10) : null;
+                const clientParsed = rowMatch ? rowMatch[2].trim() : "";
+                const afterPipe = line.slice(pipeIdx + 1).trim();
+                const knownFields = ["Start date:", "End date:", "Job name:", "Date originally",
+                  "Direct costs:", "Prod. line:", "% likel.", "Copied Status:", "Revenue:", "Type:", "VAT"];
+                let firstFieldPos = afterPipe.length;
+                for (const field of knownFields) {
+                  const idx = afterPipe.indexOf(field);
+                  if (idx !== -1 && idx < firstFieldPos) firstFieldPos = idx;
+                }
+                const chunk = afterPipe.slice(0, firstFieldPos);
+                const lastSep = chunk.lastIndexOf(" - ");
+                const jobName = (lastSep !== -1 ? chunk.slice(0, lastSep) : chunk).trim();
+                if (jobName) affectedJobs.push({ jobName, clientParsed, pipelineRowFromLog, logTimestamp: String(entry[0] || "") });
               }
-              const chunk = afterPipe.slice(0, firstFieldPos);
-              const lastSep = chunk.lastIndexOf(" - ");
-              const jobName = (lastSep !== -1 ? chunk.slice(0, lastSep) : chunk).trim();
-              if (jobName) affectedJobs.push({ jobName, clientParsed, pipelineRowFromLog, logTimestamp: String(entry[0] || "") });
+              continue;
+            }
+            const copyMatch = line.match(/(?:Copied Pipeline Project (?:to Confirmed|\(with[^)]*\))|Converted Pipeline Job to Confirmed Retainer):\s*([^|]+)\|\s*([^[\n(]+)(?:\s*\[([^\]]+)\])?(?:\s*\(Pipeline\s+row\s+(\d+)\s*->\s*Confirmed\s+row\s+(\d+)\))?/i);
+            if (copyMatch) {
+              const clientParsed = copyMatch[1] ? copyMatch[1].trim() : "";
+              const jobName = copyMatch[2] ? copyMatch[2].trim() : "";
+              const projectCodeFromLog = copyMatch[3] ? copyMatch[3].trim() : undefined;
+              const pipelineRowFromLog = copyMatch[4] ? parseInt(copyMatch[4], 10) : null;
+              if (jobName) {
+                affectedJobs.push({ jobName, clientParsed, projectCodeFromLog, pipelineRowFromLog, logTimestamp: String(entry[0] || "") });
+              }
             }
           }
         }
-        // Deduplicate by clientParsed + jobName or projectCodeFromLog
-        const seen = new Set();
-        const deduped = affectedJobs.filter(j => {
-          const key = `${j.clientParsed}|||${j.jobName}|||${j.projectCodeFromLog || ""}`;
-          if (seen.has(key)) return false;
-          seen.add(key);
-          return true;
-        });
+        // Deduplicate by clientParsed + jobName (preferring entries with pipelineRowFromLog / projectCodeFromLog)
+        const byKey = new Map();
+        for (const j of affectedJobs) {
+          const key = `${(j.clientParsed || "").toLowerCase()}|||${(j.jobName || "").toLowerCase()}`;
+          if (!byKey.has(key)) {
+            byKey.set(key, j);
+          } else {
+            const existing = byKey.get(key);
+            if (!existing.pipelineRowFromLog && j.pipelineRowFromLog) existing.pipelineRowFromLog = j.pipelineRowFromLog;
+            if (!existing.projectCodeFromLog && j.projectCodeFromLog) existing.projectCodeFromLog = j.projectCodeFromLog;
+          }
+        }
         affectedJobs.length = 0;
-        affectedJobs.push(...deduped);
+        affectedJobs.push(...byKey.values());
         console.log(`  ✓ Parsed ${affectedJobs.length} affected jobs: ${JSON.stringify(affectedJobs)}`);
       } else {
         // UNchecked: parse all relevant entries, same line-by-line approach as checked branch.
@@ -8080,9 +8103,34 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
 
         const confirmedResp = await withRetry(() => sheets.spreadsheets.values.get({
           spreadsheetId: clientSheetIdClean,
-          range: "Confirmed!A1:C5000",
+          range: "Confirmed!A1:AN5000",
         }));
         const confirmedRows = confirmedResp.data.values || [];
+
+        const extractJobExtras = (row) => {
+          if (!row) return {};
+          return {
+            rawRevenue: String(row[32] ?? "").trim(),
+            rawDirectCosts: String(row[33] ?? "").trim(),
+            jobType: String(row[35] ?? "").trim(),
+            startDate: row[37] ? toSheetDateFormat(String(row[37]).trim()) : "",
+            endDate: row[38] ? toSheetDateFormat(String(row[38]).trim()) : "",
+          };
+        };
+
+        const formatJobCurrency = (val, defaultToZero = false) => {
+          const s = String(val ?? "").trim();
+          if (!s || s === "-") return defaultToZero ? "£0" : "";
+          const symMatch = s.match(/^([£$€])/);
+          const sym = symMatch ? symMatch[1] : "£";
+          const num = parseFloat(s.replace(/[£$€,\s]/g, ""));
+          if (isNaN(num)) return s;
+          const isInt = Math.abs(num - Math.round(num)) < 0.005;
+          return `${num < 0 ? "-" : ""}${sym}${Math.abs(num).toLocaleString("en-GB", {
+            minimumFractionDigits: isInt ? 0 : 2,
+            maximumFractionDigits: isInt ? 0 : 2,
+          })}`;
+        };
 
         for (const job of affectedJobs) {
           const checks = [];
@@ -8117,6 +8165,7 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
                     projectCode: String(pr[2] || "").trim(),
                     copiedToConf: String(pr[107] || "").trim(),
                     rowNumber: job.pipelineRowFromLog,
+                    ...extractJobExtras(pr),
                   };
                 } else {
                   console.log(`  ⚠️ Pipeline row ${job.pipelineRowFromLog} has "${prJobName}" / "${prClientName}" - expected "${job.jobName}" / "${job.clientParsed}". Row may have shifted - falling back to name search.`);
@@ -8140,6 +8189,7 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
                     projectCode: pProjectCode,
                     copiedToConf: String(pr[107] || "").trim(),
                     rowNumber: pri + 6,
+                    ...extractJobExtras(pr),
                   };
                   break;
                 }
@@ -8155,6 +8205,7 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
                   projectCode: String(pr[2] || "").trim(),
                   copiedToConf: String(pr[107] || "").trim(),
                   rowNumber: pri + 6,
+                  ...extractJobExtras(pr),
                 };
                 break;
               }
@@ -8189,7 +8240,13 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
               const crProjectCode = String(cr[2] || "").trim();
               // Primary match: project code (most reliable, unique per job)
               if (pipelineProjectCode && crProjectCode && crProjectCode.toLowerCase() === pipelineProjectCode.toLowerCase()) {
-                confirmedMatch = { jobName: crJobName, projectCode: crProjectCode, clientName: crClientName, rowNumber: cri + 1 };
+                confirmedMatch = {
+                  jobName: crJobName,
+                  projectCode: crProjectCode,
+                  clientName: crClientName,
+                  rowNumber: cri + 1,
+                  ...extractJobExtras(cr),
+                };
                 break;
               }
               // Fallback: job name + client name (skip if job name is blank/placeholder)
@@ -8198,7 +8255,13 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
               if (crJobName.toLowerCase() !== jobNameLower) continue;
               // Use resolvedClientLower (from pipelineJob) for a more accurate client match
               if (resolvedClientLower && crClientName && !crClientName.toLowerCase().includes(resolvedClientLower) && !resolvedClientLower.includes(crClientName.toLowerCase())) continue;
-              confirmedMatch = { jobName: crJobName, projectCode: crProjectCode, clientName: crClientName, rowNumber: cri + 1 };
+              confirmedMatch = {
+                jobName: crJobName,
+                projectCode: crProjectCode,
+                clientName: crClientName,
+                rowNumber: cri + 1,
+                ...extractJobExtras(cr),
+              };
               break;
             }
             const confExists = confirmedMatch !== null;
@@ -8242,6 +8305,7 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
                     clientName: prClientName,
                     jobName: prJobName,
                     projectCode: String(pr[2] || "").trim(),
+                    ...extractJobExtras(pr),
                   };
                 }
               }
@@ -8261,6 +8325,7 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
                   clientName: pClientName,
                   jobName: pJobName,
                   projectCode: String(pr[2] || "").trim(),
+                  ...extractJobExtras(pr),
                 };
                 break;
               }
@@ -8292,7 +8357,13 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
               const crProjectCode = String(cr[2] || "").trim();
               if (uncheckedProjectCode && crProjectCode &&
                 crProjectCode.toLowerCase() === uncheckedProjectCode.toLowerCase()) {
-                confirmedMatch = { jobName: crJobName, projectCode: crProjectCode, clientName: crClientName, rowNumber: cri + 1 };
+                confirmedMatch = {
+                  jobName: crJobName,
+                  projectCode: crProjectCode,
+                  clientName: crClientName,
+                  rowNumber: cri + 1,
+                  ...extractJobExtras(cr),
+                };
                 break;
               }
               if (!jobNameIsBlank && crJobName.toLowerCase() === jobNameLower) {
@@ -8300,7 +8371,13 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
                   crClientName.toLowerCase().includes(clientParsedLower) ||
                   clientParsedLower.includes(crClientName.toLowerCase());
                 if (clientOk) {
-                  confirmedMatch = { jobName: crJobName, projectCode: crProjectCode, clientName: crClientName, rowNumber: cri + 1 };
+                  confirmedMatch = {
+                    jobName: crJobName,
+                    projectCode: crProjectCode,
+                    clientName: crClientName,
+                    rowNumber: cri + 1,
+                    ...extractJobExtras(cr),
+                  };
                   break;
                 }
               }
@@ -8317,6 +8394,10 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
             if (inConfirmed) allOk = false;
           }
 
+          const hasJobRow = Boolean(confirmedMatch || pipelineJob);
+          const rawRev = confirmedMatch?.rawRevenue || pipelineJob?.rawRevenue || "";
+          const rawDC = confirmedMatch?.rawDirectCosts || pipelineJob?.rawDirectCosts || "";
+
           results.push({
             jobName: (job.jobName && job.jobName !== "-") ? job.jobName
               : pipelineJob?.jobName || confirmedMatch?.jobName || "-",
@@ -8324,6 +8405,11 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
             clientName: job.clientParsed || pipelineJob?.clientName || confirmedMatch?.clientName || "",
             pipelineRow: pipelineJob?.rowNumber || null,
             confirmedRow: confirmedMatch?.rowNumber || null,
+            revenue: formatJobCurrency(rawRev, hasJobRow),
+            directCosts: formatJobCurrency(rawDC, hasJobRow),
+            jobType: confirmedMatch?.jobType || pipelineJob?.jobType || "",
+            startDate: confirmedMatch?.startDate || pipelineJob?.startDate || "",
+            endDate: confirmedMatch?.endDate || pipelineJob?.endDate || "",
             clientParsed: job.clientParsed,
             logTimestamp: job.logTimestamp,
             status: allOk ? "ok" : "issue",
@@ -9721,7 +9807,51 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
 
     const overallOk = results.every(r => r.status === "ok" || r.status === "info");
     console.log(`  ✅ Analysis complete: ${results.length} items, overall ${overallOk ? "OK" : "ISSUES FOUND"}`);
-    return res.status(200).json({ success: true, flagType, results, overallOk });
+    const responsePayload = { success: true, flagType, results, overallOk };
+
+    if (targetLine && acIdClean && clientName && !req.body.secret) {
+      try {
+        const memoryRows = await readAlertMemory(sheets, acIdClean);
+        const matchRow = memoryRows.find(r =>
+          r.clientName === clientName &&
+          r.alertType === flagType &&
+          r.status === "cached" &&
+          String(r.alertSummary || "").trim() === String(targetLine).trim()
+        );
+        if (matchRow) {
+          await updateAlertMemoryRow(sheets, acIdClean, matchRow.rowIndex, {
+            ...matchRow,
+            cachedOptionsJSON: JSON.stringify(responsePayload),
+          });
+        }
+        if (!redisClient?.isOpen) await redisClient.connect();
+        const rawPrecomputed = await redisClient.get(PRECOMPUTED_KEY);
+        const precomputed = rawPrecomputed ? JSON.parse(rawPrecomputed) : null;
+        if (precomputed && Array.isArray(precomputed.noActionAlerts)) {
+          let updatedCache = false;
+          precomputed.noActionAlerts = precomputed.noActionAlerts.map(na => {
+            if (na.clientName === clientName && na.flagType === flagType && String(na.flagDetail || "").trim() === String(targetLine).trim()) {
+              updatedCache = true;
+              return { ...na, analysisResult: responsePayload };
+            }
+            return na;
+          });
+          if (updatedCache) {
+            if (matchRow?.fingerprintHash && precomputed.noActionAnalysisResults) {
+              precomputed.noActionAnalysisResults[`${clientName}___${matchRow.fingerprintHash}`] = responsePayload;
+            }
+            const serializedPrecomputed = JSON.stringify(precomputed);
+            await redisClient.set(PRECOMPUTED_KEY, serializedPrecomputed, { EX: 86400 * 7 });
+            _precomputedMemoryCache = serializedPrecomputed;
+            _precomputedCachedAt = Date.now();
+          }
+        }
+      } catch (cacheUpdateErr) {
+        console.warn(`  ⚠ Could not persist updated no-action analysis to cache: ${cacheUpdateErr.message}`);
+      }
+    }
+
+    return res.status(200).json(responsePayload);
 
   } catch (err) {
     console.error(`❌ Error analyzing non-actionable flag:`, err);

@@ -68,7 +68,7 @@ export default async function handler(req, res) {
               sheets.spreadsheets.values.update({
                 spreadsheetId: masterSheetId,
                 range: "KeyInfo!X2",
-                valueInputOption: "USER_ENTERED",
+                valueInputOption: "RAW",
                 requestBody: { values: [[tenantId]] }
               })
             );
@@ -131,7 +131,7 @@ export default async function handler(req, res) {
           sheets.spreadsheets.values.update({
             spreadsheetId: effectiveMasterSheetId,
             range: "KeyInfo!X2",
-            valueInputOption: "USER_ENTERED",
+            valueInputOption: "RAW",
             requestBody: { values: [[tenantId]] }
           })
         );

@@ -14,6 +14,15 @@ function parseCookies(cookieHeader) {
   }, {});
 }
 
+function safeJsonForScript(value) {
+  return JSON.stringify(value ?? "")
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/&/g, "\\u0026")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
+}
+
 function renderPopupResponse(res, { email, provider, ssoToken, error }) {
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   if (error) {
@@ -38,12 +47,12 @@ function renderPopupResponse(res, { email, provider, ssoToken, error }) {
       try {
         if (document.referrer) {
           var ref = new URL(document.referrer).origin;
-          if (ref.endsWith('.pulsedashboard.co.uk') || ref === window.location.origin) {
+          if (ref === 'https://app.pulsedashboard.co.uk' || ref === 'https://pulsedashboard.co.uk' || ref === window.location.origin) {
             targetOrigin = ref;
           }
         }
       } catch(e) {}
-      window.opener.postMessage({ type: 'PULSE_SSO_ERROR', provider: 'Google', error: ${JSON.stringify(error)} }, targetOrigin);
+      window.opener.postMessage({ type: 'PULSE_SSO_ERROR', provider: 'Google', error: ${safeJsonForScript(error)} }, targetOrigin);
     }
     setTimeout(function() { window.close(); }, 1200);
   </script>
@@ -76,16 +85,16 @@ function renderPopupResponse(res, { email, provider, ssoToken, error }) {
         try {
           if (document.referrer) {
             var ref = new URL(document.referrer).origin;
-            if (ref.endsWith('.pulsedashboard.co.uk') || ref === window.location.origin) {
+            if (ref === 'https://app.pulsedashboard.co.uk' || ref === 'https://pulsedashboard.co.uk' || ref === window.location.origin) {
               targetOrigin = ref;
             }
           }
         } catch(e) {}
         window.opener.postMessage({
           type: 'PULSE_SSO_SUCCESS',
-          email: ${JSON.stringify(email)},
-          provider: ${JSON.stringify(provider || 'Google')},
-          ssoToken: ${JSON.stringify(ssoToken)}
+          email: ${safeJsonForScript(email)},
+          provider: ${safeJsonForScript(provider || 'Google')},
+          ssoToken: ${safeJsonForScript(ssoToken)}
         }, targetOrigin);
       }
     } catch (e) {
@@ -121,21 +130,21 @@ export default async function handler(req, res) {
     `pma_oauth_verifier=; Path=/api/auth/oauth; HttpOnly; Max-Age=0${isProd ? "; Secure" : ""}`
   ]);
 
-  if (error) {
-    console.warn("⚠️ Google OAuth error:", error);
-    if (isPopup) {
-      return renderPopupResponse(res, { error: String(error) });
-    }
-    res.redirect(`/pma?auth_error=${encodeURIComponent(error)}`);
-    return;
-  }
-
   if (!stateNonce || !cookieNonce || stateNonce !== cookieNonce || !codeVerifier) {
     console.warn("⚠️ Google OAuth state or PKCE verifier mismatch/missing (potential CSRF attempt)");
     if (isPopup) {
       return renderPopupResponse(res, { error: "state_mismatch" });
     }
     res.redirect("/pma?auth_error=state_mismatch");
+    return;
+  }
+
+  if (error) {
+    console.warn("⚠️ Google OAuth error:", error);
+    if (isPopup) {
+      return renderPopupResponse(res, { error: String(error) });
+    }
+    res.redirect(`/pma?auth_error=${encodeURIComponent(error)}`);
     return;
   }
 

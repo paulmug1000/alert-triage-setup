@@ -317,7 +317,20 @@ export async function resolveMasterSheetIdByClientName(sheets, clientNameOrKey) 
  * Universal Fail-Closed Authorization Guard for spreadsheet operations.
  * Binds sheetId to verified tenant identity and enforces role/client permissions.
  */
-export async function verifyUserAuthorizedForSheet(sessionUser, sheetId, clientNameClaim, sheets, _ignoredAcId = DEFAULT_AC_SHEET_ID) {
+export async function verifyUserAuthorizedForSheet(arg1, arg2, arg3, arg4, _ignoredAcId = DEFAULT_AC_SHEET_ID) {
+  let sessionUser = arg1;
+  let sheetId = arg2;
+  let clientNameClaim = arg3;
+  let sheets = arg4;
+
+  // Support both (sessionUser, sheetId, clientNameClaim, sheets) and (sheets, sessionUser, sheetId, clientNameClaim)
+  if (arg1 && typeof arg1 === "object" && arg1.spreadsheets) {
+    sheets = arg1;
+    sessionUser = arg2;
+    sheetId = arg3;
+    clientNameClaim = typeof arg4 === "string" ? arg4 : "";
+  }
+
   if (!sessionUser) {
     return { authorized: false, status: 401, error: "Unauthorized: Active session required" };
   }

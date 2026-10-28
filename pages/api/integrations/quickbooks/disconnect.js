@@ -12,7 +12,8 @@
 import { getIntegrationTokens, deleteIntegrationTokens } from "../../../../services/vaultService.js";
 import { revokeQBToken } from "../../../../services/quickbooksService.js";
 import { getSessionUser } from "../../../../services/authService.js";
-import { isUserAuthorizedForClient, isReadOnlySession } from "../../../../services/userPermissions.js";
+import { getSheetsClient } from "../../../../services/sheetsClient.js";
+import { isUserAuthorizedForClient, isReadOnlySession, verifyUserAuthorizedForSheet } from "../../../../services/userPermissions.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -35,8 +36,17 @@ export default async function handler(req, res) {
   }
 
   const targetClient = clientName || clientKey;
-  if (!sessionUser.isAdmin && targetClient && !isUserAuthorizedForClient(sessionUser, targetClient)) {
-    return res.status(403).json({ error: "Access denied to this client." });
+  if (!sessionUser.isAdmin) {
+    if (targetClient && !isUserAuthorizedForClient(sessionUser, targetClient)) {
+      return res.status(403).json({ error: "Access denied to this client." });
+    }
+    if (masterSheetId) {
+      const sheets = await getSheetsClient();
+      const sheetAuth = await verifyUserAuthorizedForSheet(sheets, sessionUser, masterSheetId);
+      if (!sheetAuth.authorized) {
+        return res.status(403).json({ error: "Access denied to this client." });
+      }
+    }
   }
 
   try {

@@ -1,7 +1,7 @@
 import React from "react";
 import Spinner from "./Spinner";
 import TruncatedCode from "./TruncatedCode";
-import { stripRowInfo, parseUnreceivedExpensesDetail, parseStaleExpenseDetail, parseInfoAlertDetail, filterAnalysisResultsForAlert, getCleanPLCategoryName, getAlertJobTarget, formatSeenTimestamp, parseRevenueMismatchDetail, parseDirectCostsMismatchDetail, toInputDateFormat } from "../utils/helpers";
+import { stripRowInfo, parseUnreceivedExpensesDetail, parseStaleExpenseDetail, parseInfoAlertDetail, getInfoCardTitle, getProactiveCardTitle, filterAnalysisResultsForAlert, getCleanPLCategoryName, getAlertJobTarget, formatSeenTimestamp, parseRevenueMismatchDetail, parseDirectCostsMismatchDetail, toInputDateFormat } from "../utils/helpers";
 
 const KNOWN_PROACTIVE_TYPES = new Set([
   "retainer_invoice",
@@ -344,9 +344,15 @@ export default function NonAdminAlertListView({
                 const analysis = rawAnalysis ? { ...rawAnalysis, results: displayedResults, overallOk } : null;
 
                 const parsed = parseInfoAlertDetail(na.flagType, na.flagDetail);
-                const cardTitle = parsed?.tab === "Outgoings"
-                  ? (parsed.contractor ? `Stale placeholder expense date moved (${parsed.contractor})` : "Stale placeholder expense date moved")
-                  : (parsed?.client ? `${getFlagName(na.flagType) || na.flagName || "Alert"} (${parsed.client})` : (getFlagName(na.flagType) || na.flagName || "Alert"));
+                const primaryResult = displayedResults[0] || null;
+                const displayClient = parsed.client || primaryResult?.clientName || "";
+                const displayJob = parsed.job || (primaryResult?.jobName && primaryResult.jobName !== "-" ? primaryResult.jobName : "") || "";
+                const displayProjectCode = parsed.projectCode || primaryResult?.projectCode || "";
+                const displayRevenue = parsed.revenue || primaryResult?.revenue || "";
+                const displayDirectCosts = parsed.directCosts || primaryResult?.directCosts || "";
+                const displayStartDate = parsed.startDate || primaryResult?.startDate || "";
+                const displayEndDate = parsed.endDate || primaryResult?.endDate || "";
+                const cardTitle = getInfoCardTitle(na, parsed, getFlagName, false);
 
                 const isExiting = exitingAlertKeys.has(alertId);
                 return (
@@ -399,11 +405,15 @@ export default function NonAdminAlertListView({
                       gap: "2px",
                       marginTop: "2px",
                     }}>
-                      {parsed.tab && <div><strong>Section:</strong> {parsed.tab}</div>}
+                      {parsed.tab && na.flagType !== "crmCopiedConfChecked" && <div><strong>Section:</strong> {parsed.tab}</div>}
                       {parsed.month && <div><strong>Month:</strong> {parsed.month}</div>}
-                      {parsed.client && <div><strong>End client:</strong> {parsed.client}</div>}
+                      {displayClient && <div><strong>End client:</strong> {displayClient}</div>}
                       {parsed.contractor && <div><strong>{parsed.tab === "Outgoings" ? "Vendor:" : "Contractor:"}</strong> {parsed.contractor}</div>}
-                      {parsed.job && <div><strong>Job:</strong> {parsed.job}{parsed.projectCode ? ` [${parsed.projectCode}]` : ""}</div>}
+                      {displayJob && <div><strong>Job:</strong> {displayJob}{displayProjectCode ? ` [${displayProjectCode}]` : ""}</div>}
+                      {displayRevenue && <div><strong>Revenue:</strong> {displayRevenue}</div>}
+                      {displayDirectCosts && <div><strong>Direct costs:</strong> {displayDirectCosts}</div>}
+                      {displayStartDate && <div><strong>Start date:</strong> {displayStartDate}</div>}
+                      {displayEndDate && <div><strong>End date:</strong> {displayEndDate}</div>}
                       {parsed.amount && <div><strong>Amount:</strong> {parsed.amount}</div>}
                       {parsed.changes && parsed.changes.length > 0 && (
                         <div style={{ marginTop: "3px" }}>
@@ -420,11 +430,6 @@ export default function NonAdminAlertListView({
                               </span>
                             ))}
                           </div>
-                        </div>
-                      )}
-                      {parsed.highlight && (
-                        <div style={{ marginTop: "4px", fontWeight: "600", color: "#0284c7" }}>
-                          {parsed.highlight}
                         </div>
                       )}
                       {parsed.rawText && (
@@ -578,7 +583,7 @@ export default function NonAdminAlertListView({
                     <div style={{ minHeight: 0, overflow: "hidden" }}>
                       <div className="non-admin-alert-card" style={{ border: isExiting ? "1px solid #86efac" : "1px solid #cbd5e1", borderRadius: "8px", padding: "14px 16px", backgroundColor: isExiting ? "#f0fdf4" : "#ffffff", boxSizing: "border-box", width: "100%", display: "flex", flexDirection: "column", gap: "4px", transition: "background-color 200ms ease, border-color 200ms ease" }}>
                     <div style={{ fontWeight: "600", fontSize: "13.5px", color: "#0f172a", marginBottom: "2px", wordBreak: "break-word" }}>
-                      {alert.heading}
+                      {getProactiveCardTitle(alert, false)}
                     </div>
 
                     {alert.alertType === "retainer_invoice" && (
@@ -884,7 +889,6 @@ export default function NonAdminAlertListView({
                       const md = alert.metadata || {};
                       return (
                         <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
-                          <div style={{ fontWeight: "600", color: "#c62828", marginBottom: "4px" }}>Job exists in both Confirmed and Pipeline but Pipeline is not closed out</div>
                           <div style={{ marginBottom: "2px" }}><strong>Confirmed jobs</strong></div>
                           {md.endClientName && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Client: {md.endClientName}</div>}
                           {md.jobName && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Job: {md.jobName}</div>}
@@ -902,7 +906,6 @@ export default function NonAdminAlertListView({
                       const md = alert.metadata || {};
                       return (
                         <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
-                          <div style={{ fontWeight: "600", color: "#c62828", marginBottom: "4px" }}>Retainer contract shrunk - excess billing period could not be removed automatically</div>
                           {md.clientJobStr && <div style={{ marginBottom: "2px" }}><strong>Job:</strong> {md.clientJobStr}</div>}
                           {md.timestamp && <div style={{ marginBottom: "4px" }}><strong>First detected:</strong> {String(md.timestamp).slice(0, 10)}</div>}
                           <div style={{ color: "#0369a1", fontStyle: "italic" }}>A billing period falls outside the new contract period but contains actuals (invoices or expenses) so cannot be auto-removed. Manual review required.</div>

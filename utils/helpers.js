@@ -1199,13 +1199,20 @@ export function parseInfoAlertDetail(flagType, detail = "") {
   if (flagType === "crmCopiedConfChecked" || clean.includes("Copied Pipeline Project") || clean.includes("Converted Pipeline Job")) {
     const m = clean.match(/(?:Copied Pipeline Project (?:to Confirmed|\(with[^)]*\))|Converted Pipeline Job to Confirmed Retainer):\s*([^|]+)\|\s*([^[\n]+)(?:\s*\[([^\]]+)\])?(?:\s*\(Pipeline\s+row\s+(\d+)\s*->\s*Confirmed\s+row\s+(\d+)\))?/i);
     if (m) {
+      const revMatch = clean.match(/Revenue:\s*([^|,;\n]+)/i);
+      const dcMatch = clean.match(/Direct\s+costs:\s*([^|,;\n]+)/i);
+      const startMatch = clean.match(/Start(?:\s+date)?:\s*([^|,;\n]+)/i);
+      const endMatch = clean.match(/End(?:\s+date)?:\s*([^|,;\n]+)/i);
       return {
-        tab: "Confirmed",
         client: m[1] ? m[1].trim() : "",
         job: m[2] ? m[2].trim() : "",
         projectCode: m[3] ? m[3].trim() : "",
         pipelineRow: m[4] ? parseInt(m[4], 10) : null,
         confirmedRow: m[5] ? parseInt(m[5], 10) : null,
+        revenue: revMatch ? revMatch[1].trim() : "",
+        directCosts: dcMatch ? dcMatch[1].trim() : "",
+        startDate: startMatch ? startMatch[1].trim() : "",
+        endDate: endMatch ? endMatch[1].trim() : "",
         highlight: clean.includes("Converted")
           ? "Converted Pipeline job to Confirmed Retainer."
           : "Pipeline project promoted to Confirmed jobs (Copied box checked)."
@@ -1259,9 +1266,11 @@ export function parseInfoAlertDetail(flagType, detail = "") {
 
   // 9. Generic Fallback
   const res = {};
-  if (clean.includes("[Confirmed]")) res.tab = "Confirmed";
-  else if (clean.includes("[Pipeline]")) res.tab = "Pipeline";
-  else if (clean.includes("[Outgoings]")) res.tab = "Outgoings";
+  if (flagType !== "crmCopiedConfChecked") {
+    if (clean.includes("[Confirmed]")) res.tab = "Confirmed";
+    else if (clean.includes("[Pipeline]")) res.tab = "Pipeline";
+    else if (clean.includes("[Outgoings]")) res.tab = "Outgoings";
+  }
 
   const pipeIdx = clean.indexOf("|");
   if (pipeIdx > 0) {
@@ -1274,8 +1283,113 @@ export function parseInfoAlertDetail(flagType, detail = "") {
   const rowMatch = clean.match(/\bRow\s+(\d+)\b/i);
   if (rowMatch) res.rowNum = parseInt(rowMatch[1], 10);
 
+  const DEFAULT_INFO_HIGHLIGHTS = {
+    crmCopiedConfChecked: "Pipeline project promoted to Confirmed jobs (Copied box checked).",
+    crmCopiedConfUnchecked: "Copied status reverted back from Yes to No by CRM source.",
+    crmCopiedConfDelete: "Confirmed job removed because CRM deal was deleted or moved.",
+    retainerInvoicesCreated: "Added future monthly billing periods for retainer contract.",
+    retainerInvoicesDeleted: "Trimmed excess billing periods after retainer contract end date.",
+    expenseAdded: "New expense entry created in Pulse.",
+    invoiceStaleUnsentChanges: "Stale unsent invoice send date moved forward to current month.",
+    expenseUnreconGaps: "Stale unreceived expense dates moved forward to current month.",
+  };
+  if (DEFAULT_INFO_HIGHLIGHTS[flagType]) {
+    res.highlight = DEFAULT_INFO_HIGHLIGHTS[flagType];
+  }
+
   res.rawText = clean.replace(/^\[[^\]]+\]\s*/, "");
   return res;
+}
+
+/**
+ * Returns the human-readable event/action summary sentence for an informational alert card header (Option 3),
+ * avoiding duplication with the blue section header above the group.
+ */
+export function getInfoCardTitle(na, parsed, getFlagName, isAdmin = true) {
+  const rawHighlight = parsed?.highlight ? String(parsed.highlight).trim().replace(/\.$/, "") : "";
+  if (rawHighlight) {
+    return isAdmin ? rawHighlight : sanitizeSpreadsheetTerms(rawHighlight);
+  }
+  const fallback = (typeof getFlagName === "function" ? getFlagName(na?.flagType) : "") || na?.flagName || "Alert";
+  return isAdmin ? fallback : sanitizeSpreadsheetTerms(fallback);
+}
+
+/**
+ * Returns the human-readable problem/event summary sentence for a proactive alert card header (Option 3),
+ * avoiding duplication with the blue PROACTIVE_TYPE_LABELS section header above the group.
+ */
+export function getProactiveCardTitle(alert, isAdmin = true) {
+  if (!alert) return "Alert";
+  const m = alert.metadata || {};
+  const type = alert.alertType || "";
+  switch (type) {
+    case "retainer_invoice":
+      if (m.possibleMatchCase === "draft") return "Draft retainer invoice found but not yet sent";
+      if (m.possibleMatchCase === "changed") return "Expected retainer invoice not found at current retainer amount";
+      return "Expected recurring retainer invoice has not been sent";
+    case "uninvoiced_new_job":
+      return "Job started over a month ago with no invoices sent";
+    case "uninvoiced_revenue":
+      return "Completed job has uninvoiced revenue remaining";
+    case "unreceived_expenses":
+      return "Completed job has unreceived direct cost budget remaining";
+    case "stale_unrecon_gap":
+      return "Placeholder expense received date is overdue and has not been reconciled";
+    case "retroactive_outgoings_update":
+      return "Actual expenses were added to a past month in Outgoings";
+    case "unmapped_pl_category": {
+      const catName = getCleanPLCategoryName(alert);
+      return catName && catName !== "Unknown Category"
+        ? `New accounting category "${catName}" requires P&L mapping`
+        : "New accounting category requires P&L mapping";
+    }
+    case "crm_wipe":
+      return "Large drop in CRM deals detected during sync";
+    case "revenue_mismatch":
+      return "Total invoiced does not match confirmed job revenue budget";
+    case "direct_costs_mismatch":
+      return "Total expenses do not match job direct cost budget";
+    case "pipeline_confirmed_overlap":
+      return isAdmin
+        ? "Job exists in both Confirmed and Pipeline tabs but Pipeline is not closed out"
+        : "Job exists in both Confirmed and Pipeline jobs but Pipeline is not closed out";
+    case "retainer_shrink_blocked":
+      return isAdmin
+        ? "Retainer contract shrunk - excess child row could not be removed automatically"
+        : "Retainer contract shrunk - excess billing period could not be removed automatically";
+    case "autolog_error": {
+      const cleanSummary = String(m.summary || alert.heading || "")
+        .replace(/^AutoLog\s+error:\s*/i, "")
+        .trim();
+      const title = cleanSummary || "Error recorded during automated background sync";
+      return isAdmin ? title : sanitizeSpreadsheetTerms(title);
+    }
+    case "infinite_loop": {
+      const cleanSummary = String(m.summary || alert.heading || "")
+        .replace(/^Sync\s+conflict\s*(?:\(possible\s+infinite\s+loop\))?:\s*/i, "")
+        .trim();
+      const title = cleanSummary
+        ? `Repeated field oscillation detected: ${cleanSummary}`
+        : "Repeated field oscillation detected between sync runs";
+      return isAdmin ? title : sanitizeSpreadsheetTerms(title);
+    }
+    case "deleted_invoice":
+      return "Invoice reference in Pulse was not found in accounting";
+    case "deleted_expense":
+      return "Expense reference in Pulse was not found in accounting";
+    case "job_structure_error":
+      return isAdmin
+        ? "Confirmed job has an invalid parent or child row structure"
+        : "Confirmed job has an invalid billing structure";
+    case "part_paid_balance": {
+      const isExp = (m.itemType || alert.itemType) === "expense";
+      return isExp
+        ? "Remaining balance on part-paid expense needs an expected payment date"
+        : "Remaining balance on part-paid invoice needs an expected payment date";
+    }
+    default:
+      return isAdmin ? (alert.heading || "Proactive alert") : sanitizeSpreadsheetTerms(alert.heading || "Proactive alert");
+  }
 }
 
 /**

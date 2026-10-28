@@ -11,8 +11,8 @@
 import crypto from "crypto";
 import { buildXeroAuthUrl } from "../../../../services/xeroService.js";
 import { getSheetsClient, extractSheetIdFromUrl } from "../../../../services/sheetsClient.js";
-import { DEFAULT_AC_SHEET_ID, matchesClientName, isUserAuthorizedForClient, isReadOnlySession } from "../../../../services/userPermissions.js";
-import { getSessionUser } from "../../../../services/authService.js";
+import { DEFAULT_AC_SHEET_ID, matchesClientName, isUserAuthorizedForClient, isReadOnlySession, verifyUserAuthorizedForSheet } from "../../../../services/userPermissions.js";
+import { getSessionUser, createSignedOAuthState } from "../../../../services/authService.js";
 import { sanitizeRedirectUrl } from "../../../../utils/helpers.js";
 
 export default async function handler(req, res) {
@@ -38,6 +38,17 @@ export default async function handler(req, res) {
   const targetName = clientName || clientKey;
   if (!sessionUser.isAdmin && targetName && targetName !== "advisor" && !isUserAuthorizedForClient(sessionUser, targetName)) {
     return res.status(403).json({ error: "Access denied to this client." });
+  }
+  if (!sessionUser.isAdmin && (masterSheetId || clientSheetId)) {
+    const sheets = await getSheetsClient();
+    if (masterSheetId) {
+      const sheetAuth = await verifyUserAuthorizedForSheet(sheets, sessionUser, masterSheetId);
+      if (!sheetAuth.authorized) return res.status(403).json({ error: "Access denied to this client." });
+    }
+    if (clientSheetId) {
+      const sheetAuth = await verifyUserAuthorizedForSheet(sheets, sessionUser, clientSheetId);
+      if (!sheetAuth.authorized) return res.status(403).json({ error: "Access denied to this client." });
+    }
   }
 
   // Determine connection mode:
@@ -102,7 +113,7 @@ export default async function handler(req, res) {
       mode: effectiveMode
     };
 
-    const stateToken = Buffer.from(JSON.stringify(statePayload)).toString("base64url");
+    const stateToken = createSignedOAuthState(statePayload);
 
     // Secure HttpOnly state cookie
     const isProd = process.env.NODE_ENV === "production";

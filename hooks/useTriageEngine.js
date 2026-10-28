@@ -448,12 +448,12 @@ export function useTriageEngine({
         if (alert.clientName !== client.clientName) return false;
         const hash = alert.fingerprintHash || `${alert.flagType || alert.type}-${alert.sheetName}-${alert.rowNumber}`;
         if (processedAlerts.has(hash)) return false;
-        const txId = alert.summary?.transactionId || alert.summary?.appId || alert.summary?.reference || alert.summary?.id;
+        const txId = alert.summary?.transactionId || alert.summary?.appId || alert.data?.accounting?.[6] || alert.data?.accounting?.[11] || alert.summary?.reference || alert.summary?.id;
         if (txId && isAssigned(txId, client.clientName)) return false;
         const invNo = alert.summary?.invoiceNo || alert.summary?.reference || alert.summary?.id || alert.data?.accounting?.[5];
         if (invNo && isAssigned(invNo, client.clientName)) {
           // Only optimistically suppress missing invoices; active discrepancy alerts (VAT/amount/date mismatch) must never be hidden
-          const isMissing = alert.data?.flags?.[0] === "1" || (alert.flagColumns?.[0] === "Missing invoice?" && alert.data?.flags?.[0] === "1");
+          const isMissing = String(alert.data?.flags?.[0] ?? "").trim() === "1";
           if (isMissing || alert.flagType !== "invoiceDashboardDiscr") return false;
         }
         return true;
@@ -818,12 +818,12 @@ export function useTriageEngine({
   const groupedAlerts = useMemo(() => {
     const g = {};
     const filteredAlerts = (clientAlerts || []).filter(alert => {
-      const txId = alert.summary?.transactionId || alert.summary?.appId || alert.summary?.reference || alert.summary?.id;
+      const txId = alert.summary?.transactionId || alert.summary?.appId || alert.data?.accounting?.[6] || alert.data?.accounting?.[11] || alert.summary?.reference || alert.summary?.id;
       if (txId && isAssigned(txId, selectedClient?.clientName)) return false;
       const invNo = alert.summary?.invoiceNo || alert.summary?.reference || alert.summary?.id || alert.data?.accounting?.[5];
       if (invNo && isAssigned(invNo, selectedClient?.clientName)) {
         // Only optimistically suppress missing invoices; active discrepancy alerts (VAT/amount/date mismatch) must never be hidden
-        const isMissing = alert.data?.flags?.[0] === "1" || (alert.flagColumns?.[0] === "Missing invoice?" && alert.data?.flags?.[0] === "1");
+        const isMissing = String(alert.data?.flags?.[0] ?? "").trim() === "1";
         if (isMissing || alert.flagType !== "invoiceDashboardDiscr") return false;
       }
       const isPipeAlert = (alert.mode === "Pipeline" || alert.alertType === "crmPipeAppDiscr" || alert.alertType === "crmPipeDashDiscr" || alert.flagType === "crmPipeAppDiscr" || alert.flagType === "crmPipeDashDiscr");
@@ -954,7 +954,7 @@ export function useTriageEngine({
   };
 
   const analyzeNoActionFlag = async (na) => {
-    const key = na.fingerprintHash || na.flagType;
+    const key = na.fingerprintHash || `${na.flagType}-${na.flagDetail || ""}`;
     if ((!selectedClient && !na.clientName) || noActionAnalysisLoading[key]) return;
     setNoActionAnalysisLoading(prev => ({ ...prev, [key]: true }));
 

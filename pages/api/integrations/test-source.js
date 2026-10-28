@@ -12,6 +12,8 @@ import { getSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, extractSheetIdFromUrl, withRetry } from "../../../services/sheetsClient.js";
 import { getIntegrationTokens } from "../../../services/vaultService.js";
 import { verifyUserAuthorizedForSheet, isReadOnlySession } from "../../../services/userPermissions.js";
+import { assertExternalCrmSpreadsheet } from "../../../services/googleSheetService.js";
+import { assertSafeGraphId } from "../../../services/excelIntegrationService.js";
 
 export default async function handler(req, res) {
   const sessionUser = getSessionUser(req);
@@ -77,6 +79,16 @@ export default async function handler(req, res) {
         });
       }
 
+      // Enforce blocklist against internal Pulse control-plane and tenant spreadsheets (CRIT-03)
+      try {
+        await assertExternalCrmSpreadsheet(sheets, targetSheetId);
+      } catch (blockErr) {
+        return res.status(403).json({
+          success: false,
+          error: blockErr.message || "Access denied to internal spreadsheet."
+        });
+      }
+
       // Check sheet accessibility
       let sheetMeta;
       try {
@@ -111,7 +123,8 @@ export default async function handler(req, res) {
       }
 
       // Read sample data to check row count and UUID column
-      const sampleRange = tabName ? `'${tabName}'!1:5` : "1:5";
+      const escapedTab = tabName ? tabName.replace(/'/g, "''") : "";
+      const sampleRange = escapedTab ? `'${escapedTab}'!1:5` : "1:5";
       const sampleRes = await sheets.spreadsheets.values.get({
         spreadsheetId: targetSheetId,
         range: sampleRange
@@ -176,7 +189,8 @@ export default async function handler(req, res) {
           });
         }
 
-        const tokenUrl = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
+        const safeTenantId = assertSafeGraphId(tenantId, "tenantId");
+        const tokenUrl = `https://login.microsoftonline.com/${safeTenantId}/oauth2/v2.0/token`;
         const tokenBody = new URLSearchParams({
           client_id: clientId,
           scope: "https://graph.microsoft.com/.default",
@@ -200,13 +214,15 @@ export default async function handler(req, res) {
         accessToken = tokenData.access_token;
       }
 
-      // Step 2: Query Graph API workbook worksheet range or usedRange
+      // Step 2: Query Graph API workbook worksheet range or usedRange (validate IDs against path traversal - HIGH-04)
+      const safeDriveId = assertSafeGraphId(driveId, "driveId");
+      const safeFileId = assertSafeGraphId(fileId, "fileId");
       const cleanAddress = (rangeAddress || "").trim();
       let graphUrl;
       if (!cleanAddress || cleanAddress.toLowerCase() === "usedrange") {
-        graphUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${fileId}/workbook/worksheets/${encodeURIComponent(sheetName)}/usedRange?$select=address,values`;
+        graphUrl = `https://graph.microsoft.com/v1.0/drives/${safeDriveId}/items/${safeFileId}/workbook/worksheets/${encodeURIComponent(sheetName)}/usedRange?$select=address,values`;
       } else {
-        graphUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${fileId}/workbook/worksheets/${encodeURIComponent(sheetName)}/range(address='${encodeURIComponent(cleanAddress)}')`;
+        graphUrl = `https://graph.microsoft.com/v1.0/drives/${safeDriveId}/items/${safeFileId}/workbook/worksheets/${encodeURIComponent(sheetName)}/range(address='${encodeURIComponent(cleanAddress)}')`;
       }
 
       const graphRes = await fetch(graphUrl, {

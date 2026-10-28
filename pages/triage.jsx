@@ -14,6 +14,8 @@ import AlertSelectionView from "../components/AlertSelectionView";
 import TriageAnalysisView from "../components/TriageAnalysisView";
 import HomeView from "../components/HomeView";
 import AuthGateView from "../components/AuthGateView";
+import InvoicesView from "../components/InvoicesView";
+import OutgoingsView from "../components/OutgoingsView";
 
 // Secondary views code-split via next/dynamic to reduce PMA bundle size
 const AppLogView = dynamic(() => import("../components/AppLogView"), { loading: () => <PmaActivitySkeleton /> });
@@ -21,9 +23,7 @@ const ActivityView = dynamic(() => import("../components/ActivityView"), { loadi
 const IgnoredAlertsView = dynamic(() => import("../components/IgnoredAlertsView"), { loading: () => <PmaAlertsSkeleton /> });
 const TasksView = dynamic(() => import("../components/TasksView"), { loading: () => <PmaTasksSkeleton /> });
 const CreateTaskModal = dynamic(() => import("../components/CreateTaskModal"));
-const InvoicesView = dynamic(() => import("../components/InvoicesView"), { loading: () => <PmaInvoicesTableSkeleton /> });
 const JobsView = dynamic(() => import("../components/JobsView"), { loading: () => <PmaJobsTableSkeleton /> });
-const OutgoingsView = dynamic(() => import("../components/OutgoingsView"), { loading: () => <PmaOutgoingsTableSkeleton /> });
 const RetainersView = dynamic(() => import("../components/RetainersView"), { loading: () => <PmaRetainersTableSkeleton /> });
 const SalariesView = dynamic(() => import("../components/SalariesView"), { loading: () => <PmaSalariesSkeleton /> });
 const ExpensesView = dynamic(() => import("../components/ExpensesView"), { loading: () => <PmaExpensesTableSkeleton /> });
@@ -193,6 +193,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
   const [editStickyClient, setEditStickyClient] = useState(null);
   const [viewsStickyClient, setViewsStickyClient] = useState(null);
   const [activeViewTab, setActiveViewTab] = useState("fyPerformance");
+  const [alertAssignOverlay, setAlertAssignOverlay] = useState(null); // { mode: "invoices" | "outgoings", client }
 
   const EDIT_NAV_KEYS = useMemo(
     () => new Set(["jobs", "outgoings", "invoices", "retainers", "salaries", "expenses", "nbtofind", "budget", "cash"]),
@@ -208,18 +209,51 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
     if (activeNav !== "views") {
       setViewsStickyClient(null);
     }
+    if (activeNav !== "alerts") {
+      setAlertAssignOverlay(null);
+    }
   }, [activeNav, EDIT_NAV_KEYS]);
 
+  useEffect(() => {
+    if (!alertAssignOverlay) return;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [alertAssignOverlay]);
+
+  const resolveFullClient = (client) => {
+    if (!client) return null;
+    const targetName = String(client.clientName || client.name || "").trim().toLowerCase();
+    const matchOutgoings = (allOutgoingsClients || []).find(
+      c => String(c.clientName || "").trim().toLowerCase() === targetName && c.clientSheetId
+    );
+    const matchFlags = (triageEngine.clientsWithFlags || []).find(
+      c => String(c.clientName || "").trim().toLowerCase() === targetName
+    );
+    const matchMap = allClientsMap?.[client.clientName] ||
+      Object.values(allClientsMap || {}).find(c => String(c.clientName || "").trim().toLowerCase() === targetName);
+    return {
+      ...(matchMap || {}),
+      ...(matchFlags || {}),
+      ...(matchOutgoings || {}),
+      ...client,
+      clientSheetId: client.clientSheetId || matchOutgoings?.clientSheetId || matchFlags?.clientSheetId || matchMap?.clientSheetId || "",
+      masterSheetId: client.masterSheetId || matchOutgoings?.masterSheetId || matchFlags?.masterSheetId || matchMap?.masterSheetId || "",
+    };
+  };
+
   const handleNavInvoicesForClient = (client) => {
-    setInvoicesInitialClient(client);
-    setEditStickyClient(client);
-    setActiveNav("invoices");
+    loadClients();
+    const resolved = resolveFullClient(client);
+    setAlertAssignOverlay({ mode: "invoices", client: resolved });
   };
 
   const handleNavOutgoingsForClient = (client) => {
-    setOutgoingsInitialClient(client);
-    setEditStickyClient(client);
-    setActiveNav("outgoings");
+    loadClients();
+    const resolved = resolveFullClient(client);
+    setAlertAssignOverlay({ mode: "outgoings", client: resolved });
   };
 
   const {
@@ -526,6 +560,11 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "fire_outgoings_pull", clientSheetId, masterSheetId }),
     }).catch(e => console.error("fireOutgoingsPull error:", e));
+  };
+
+  const handleCloseAlertAssignOverlay = () => {
+    fireOutgoingsPullIfPending();
+    setAlertAssignOverlay(null);
   };
 
   const clientsLoadedRef = useRef(Boolean(Array.isArray(initialClients) && initialClients.length > 0));
@@ -977,6 +1016,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
             onClearManagedClient={handleClearManagedClient}
             allClients={allOutgoingsClients}
             isSingleClientUser={isSingleClientUser}
+            isAssignOverlayOpen={Boolean(alertAssignOverlay)}
           />
         );
       }
@@ -1328,6 +1368,201 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
         onClearManagedClient={() => navigateWithGuard(() => handleClearManagedClient())}
       >
         {renderActiveView()}
+        {alertAssignOverlay && (
+          <div
+            className="pma-assign-overlay-backdrop"
+            style={{
+              position: "fixed",
+              inset: 0,
+              zIndex: 950,
+              backgroundColor: "rgba(15, 23, 42, 0.58)",
+              backdropFilter: "blur(3px)",
+              WebkitBackdropFilter: "blur(3px)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: "20px",
+              boxSizing: "border-box",
+            }}
+            onClick={(e) => {
+              if (e.target === e.currentTarget) {
+                handleCloseAlertAssignOverlay();
+              }
+            }}
+          >
+            <style>{`
+              @media (max-width: 640px) {
+                .pma-assign-overlay-backdrop {
+                  padding: 0 !important;
+                }
+                .pma-assign-overlay-dialog {
+                  width: 100vw !important;
+                  height: 100vh !important;
+                  max-height: 100vh !important;
+                  border-radius: 0 !important;
+                }
+              }
+            `}</style>
+            <div
+              className="pma-assign-overlay-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-label={alertAssignOverlay.mode === "invoices" ? "Assign invoices" : "Assign expenses"}
+              style={{
+                width: "min(96vw, 1680px)",
+                height: "92vh",
+                maxHeight: "92vh",
+                backgroundColor: "#f8fafc",
+                borderRadius: "14px",
+                boxShadow: "0 25px 60px -12px rgba(15, 23, 42, 0.45), 0 0 0 1px rgba(15, 23, 42, 0.08)",
+                display: "flex",
+                flexDirection: "column",
+                overflow: "hidden",
+              }}
+            >
+              {/* Modal sticky top header */}
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: "12px",
+                  padding: "14px 24px",
+                  backgroundColor: "#ffffff",
+                  borderBottom: "1px solid #e2e8f0",
+                  flexShrink: 0,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap", minWidth: 0 }}>
+                  <span
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      width: "32px",
+                      height: "32px",
+                      borderRadius: "8px",
+                      backgroundColor: "#eff6ff",
+                      color: "#0047AB",
+                      flexShrink: 0,
+                    }}
+                  >
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      {alertAssignOverlay.mode === "invoices" ? (
+                        <>
+                          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                          <polyline points="14 2 14 8 20 8" />
+                          <line x1="16" y1="13" x2="8" y2="13" />
+                          <line x1="16" y1="17" x2="8" y2="17" />
+                        </>
+                      ) : (
+                        <>
+                          <rect x="2" y="5" width="20" height="14" rx="2" />
+                          <line x1="2" y1="10" x2="22" y2="10" />
+                        </>
+                      )}
+                    </svg>
+                  </span>
+                  <div style={{ display: "flex", alignItems: "baseline", gap: "10px", flexWrap: "wrap" }}>
+                    <h2 style={{ margin: 0, fontSize: "18px", fontWeight: 700, color: "#0f172a" }}>
+                      {alertAssignOverlay.mode === "invoices" ? "Assign invoices" : "Assign expenses"}
+                    </h2>
+                    {alertAssignOverlay.client?.clientName && (
+                      <span
+                        style={{
+                          fontSize: "13px",
+                          fontWeight: 600,
+                          color: "#0047AB",
+                          backgroundColor: "#eff6ff",
+                          border: "1px solid #bfdbfe",
+                          padding: "2px 10px",
+                          borderRadius: "999px",
+                        }}
+                      >
+                        {alertAssignOverlay.client.clientName}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", gap: "10px", flexShrink: 0 }}>
+                  <button
+                    type="button"
+                    onClick={handleCloseAlertAssignOverlay}
+                    style={{
+                      padding: "7px 16px",
+                      fontSize: "13px",
+                      fontWeight: 600,
+                      color: "#ffffff",
+                      backgroundColor: "#0047AB",
+                      border: "none",
+                      borderRadius: "7px",
+                      cursor: "pointer",
+                      boxShadow: "0 1px 2px rgba(0, 71, 171, 0.2)",
+                    }}
+                  >
+                    Done
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCloseAlertAssignOverlay}
+                    title="Close and return to alerts"
+                    aria-label="Close modal"
+                    style={{
+                      width: "34px",
+                      height: "34px",
+                      borderRadius: "8px",
+                      border: "1px solid #cbd5e1",
+                      backgroundColor: "#ffffff",
+                      color: "#475569",
+                      fontSize: "18px",
+                      lineHeight: 1,
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      cursor: "pointer",
+                    }}
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+
+              {/* Modal scrollable workspace body */}
+              <div
+                style={{
+                  flex: 1,
+                  overflowY: "auto",
+                  overflowX: "hidden",
+                  position: "relative",
+                }}
+              >
+                {(() => {
+                  const overlayClient = resolveFullClient(alertAssignOverlay.client);
+                  return alertAssignOverlay.mode === "invoices" ? (
+                    <InvoicesView
+                      allOutgoingsClients={allOutgoingsClients}
+                      styles={styles}
+                      isAdmin={isAdmin}
+                      managedClient={overlayClient}
+                      initialClient={overlayClient}
+                      isModalOverlay={true}
+                    />
+                  ) : (
+                    <OutgoingsView
+                      allOutgoingsClients={allOutgoingsClients}
+                      styles={styles}
+                      isAdmin={isAdmin}
+                      managedClient={overlayClient}
+                      initialClient={overlayClient}
+                      isModalOverlay={true}
+                    />
+                  );
+                })()}
+              </div>
+            </div>
+          </div>
+        )}
       </NavShell>
     </TriageProvider>
   );

@@ -1209,6 +1209,7 @@ export default function PortalPage({ initialUser = null }) {
 
             {activeView === "scenarios" && (
               <ScenariosView
+                key={selectedClient?.clientSheetId || "scenarios"}
                 clientName={selectedClient?.clientName || "Client"}
                 performanceData={performanceData}
                 keyData={keyData}
@@ -1222,6 +1223,7 @@ export default function PortalPage({ initialUser = null }) {
                     fetchKeyData(selectedClient, true);
                   }
                 }}
+                isSenior={isSeniorRestricted}
               />
             )}
 

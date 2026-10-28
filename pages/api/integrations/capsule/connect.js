@@ -6,8 +6,9 @@
 
 import crypto from "crypto";
 import { buildCapsuleAuthUrl } from "../../../../services/capsuleService.js";
-import { getSessionUser } from "../../../../services/authService.js";
-import { isUserAuthorizedForClient, isReadOnlySession } from "../../../../services/userPermissions.js";
+import { getSessionUser, createSignedOAuthState } from "../../../../services/authService.js";
+import { getSheetsClient } from "../../../../services/sheetsClient.js";
+import { isUserAuthorizedForClient, isReadOnlySession, verifyUserAuthorizedForSheet } from "../../../../services/userPermissions.js";
 import { sanitizeRedirectUrl } from "../../../../utils/helpers.js";
 
 export default async function handler(req, res) {
@@ -34,6 +35,17 @@ export default async function handler(req, res) {
   if (!sessionUser.isAdmin && targetName && !isUserAuthorizedForClient(sessionUser, targetName)) {
     return res.status(403).json({ error: "Access denied to this client." });
   }
+  if (!sessionUser.isAdmin && (masterSheetId || clientSheetId)) {
+    const sheets = await getSheetsClient();
+    if (masterSheetId) {
+      const sheetAuth = await verifyUserAuthorizedForSheet(sheets, sessionUser, masterSheetId);
+      if (!sheetAuth.authorized) return res.status(403).json({ error: "Access denied to this client." });
+    }
+    if (clientSheetId) {
+      const sheetAuth = await verifyUserAuthorizedForSheet(sheets, sessionUser, clientSheetId);
+      if (!sheetAuth.authorized) return res.status(403).json({ error: "Access denied to this client." });
+    }
+  }
 
   const sanitizedRedirectBack = sanitizeRedirectUrl(redirectBack, "/pma");
 
@@ -56,7 +68,7 @@ export default async function handler(req, res) {
       redirectBack: sanitizedRedirectBack
     };
 
-    const stateToken = Buffer.from(JSON.stringify(statePayload)).toString("base64url");
+    const stateToken = createSignedOAuthState(statePayload);
 
     const isProd = process.env.NODE_ENV === "production";
     const cookieOptions = `Path=/api/integrations/capsule; HttpOnly; SameSite=Lax; Max-Age=900${isProd ? "; Secure" : ""}`;

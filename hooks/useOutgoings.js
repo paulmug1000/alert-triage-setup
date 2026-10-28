@@ -54,10 +54,16 @@ export function useOutgoings(assignedAppIds, assignedByClient, setAssignedByClie
   const [directCostsLoading, setDirectCostsLoading] = useState(false);
   const [directCostsShowAll, setDirectCostsShowAll] = useState(false);
   const [directCostsSavingCell, setDirectCostsSavingCell] = useState(null);
+  const [outgoingsError, setOutgoingsError] = useState("");
 
   const loadOutgoings = async (client, bypassCache = false) => {
-    if (!client?.clientSheetId) return;
+    if (!client?.clientSheetId) {
+      setOutgoingsLoading(false);
+      setOutgoingsError("Missing client configuration (clientSheetId). Please close and try again.");
+      return;
+    }
     setOutgoingsClient(client);
+    setOutgoingsError("");
 
     const cleanId = cleanSheetId ? cleanSheetId(client.clientSheetId) : String(client.clientSheetId).replace(/.*\/d\/([a-zA-Z0-9-_]+).*/, "$1");
     const cleanMasterId = client.masterSheetId ? (cleanSheetId ? cleanSheetId(client.masterSheetId) : String(client.masterSheetId).replace(/.*\/d\/([a-zA-Z0-9-_]+).*/, "$1")) : null;
@@ -128,7 +134,10 @@ export function useOutgoings(assignedAppIds, assignedByClient, setAssignedByClie
           body: JSON.stringify({ action: "get_outgoings_inbox", clientSheetId: client.clientSheetId, masterSheetId: client.masterSheetId, bypassCache }),
         }),
       ]);
-      const [gridData, inboxData] = await Promise.all([gridRes.json(), inboxRes.json()]);
+      const [gridData, inboxData] = await Promise.all([
+        gridRes.json().catch(() => ({ success: false, error: `Server returned status ${gridRes.status}` })),
+        inboxRes.json().catch(() => ({ success: false, error: `Server returned status ${inboxRes.status}` }))
+      ]);
       if (gridData.success) {
         setCachedClientData(client.clientSheetId, "outgoings", gridData);
         setOutgoingsData({ contractors: gridData.contractors, months: gridData.months });
@@ -136,6 +145,8 @@ export function useOutgoings(assignedAppIds, assignedByClient, setAssignedByClie
         const curIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
         const currentIdx = gridData.months.findIndex(m => (m.isoMonth || "").startsWith(curIso));
         if (currentIdx >= 0) setOutgoingsMonthOffset(Math.max(0, currentIdx - 3));
+      } else {
+        setOutgoingsError(gridData.error || "Failed to load expenses data.");
       }
       if (inboxData.success) {
         setCachedClientData(client.clientSheetId, "outgoings_inbox", inboxData);
@@ -203,7 +214,10 @@ export function useOutgoings(assignedAppIds, assignedByClient, setAssignedByClie
           setOutgoingsInbox(freshInbox);
         }
       }
-    } catch(e) { console.error("loadOutgoings error:", e); }
+    } catch(e) {
+      console.error("loadOutgoings error:", e);
+      setOutgoingsError(e?.message || "Network error while loading expenses.");
+    }
     finally {
       setOutgoingsLoading(false);
       setDirectCostsJobs(null);
@@ -252,6 +266,7 @@ export function useOutgoings(assignedAppIds, assignedByClient, setAssignedByClie
     directCostsLoading, setDirectCostsLoading,
     directCostsShowAll, setDirectCostsShowAll,
     directCostsSavingCell, setDirectCostsSavingCell,
+    outgoingsError, setOutgoingsError,
     loadOutgoings, loadDirectCostsJobs
   };
 }

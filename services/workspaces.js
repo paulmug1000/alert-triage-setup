@@ -63,18 +63,20 @@ export async function getClientWebAppUrl(sheets, clientName, acId = DEFAULT_AC_S
   }
 }
 
-export async function getAllClients(sheets, sessionUser = { isAdmin: true }, bypassCache = false, automationCommanderSheetId = DEFAULT_AC_SHEET_ID) {
-  const acId = automationCommanderSheetId || process.env.AUTOMATION_COMMANDER_SHEET_ID || DEFAULT_AC_SHEET_ID;
+export async function getAllClients(sheets, sessionUser = { isAdmin: true }, bypassCache = false, _ignoredAcId = DEFAULT_AC_SHEET_ID) {
+  const acId = process.env.AUTOMATION_COMMANDER_SHEET_ID || DEFAULT_AC_SHEET_ID;
   const cacheKey = `pulse:all_clients:${acId}`;
   const now = Date.now();
+  const isCallerAdmin = !sessionUser || Boolean(sessionUser.isAdmin || sessionUser.role === "Admin");
+  const effectiveBypass = Boolean(bypassCache && isCallerAdmin);
 
   let clientsArray = null;
   let clientsObj = null;
 
-  if (!bypassCache && _allClientsMemoryCache && (now - _allClientsCachedAt < 600000)) {
+  if (!effectiveBypass && _allClientsMemoryCache && (now - _allClientsCachedAt < 600000)) {
     clientsArray = _allClientsMemoryCache.clientsArray;
     clientsObj = _allClientsMemoryCache.clientsObj;
-  } else if (!bypassCache && redisClient?.isOpen) {
+  } else if (!effectiveBypass && redisClient?.isOpen) {
     try {
       const cached = await redisClient.get(cacheKey);
       if (cached) {
@@ -191,7 +193,7 @@ export async function getClients(sessionUser = { isAdmin: true }, bypassCache = 
 }
 
 export async function handleGetAllClients(req, res, sheets) {
-  const automationCommanderSheetId = req.body?.automationCommanderSheetId || process.env.AUTOMATION_COMMANDER_SHEET_ID || DEFAULT_AC_SHEET_ID;
+  const automationCommanderSheetId = process.env.AUTOMATION_COMMANDER_SHEET_ID || DEFAULT_AC_SHEET_ID;
   const { bypassCache } = req.body || {};
 
   const sessionUser = getSessionUser(req);
@@ -209,7 +211,7 @@ export async function handleGetAllClients(req, res, sheets) {
 }
 
 export async function handleGetAssignedExpenses(req, res, sheets) {
-  const aeAcId = req.body?.automationCommanderSheetId || process.env.AUTOMATION_COMMANDER_SHEET_ID || "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
+  const aeAcId = process.env.AUTOMATION_COMMANDER_SHEET_ID || DEFAULT_AC_SHEET_ID;
   const { bypassCache } = req.body || {};
   const cacheKey = `pulse:assigned_expenses:${aeAcId}`;
   const now = Date.now();
@@ -3922,7 +3924,7 @@ export async function handleUpdateOutgoingNote(req, res, sheets) {
       sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: targetMasterId,
         requestBody: {
-          valueInputOption: "USER_ENTERED",
+          valueInputOption: "RAW",
           data: masterData
         }
       }).catch(e => console.warn("Failed to write to Master OutgNotes:", e.message));
@@ -4303,11 +4305,13 @@ export async function handleMarkPipelineAlreadyConfirmed(req, res, sheets) {
     ];
 
     if (Array.isArray(updates) && updates.length > 0) {
+      const SAFE_CELL_REF_RE = /^[A-Z]{1,2}\d{1,4}$/;
       for (const u of updates) {
-        if (u.cellRef && u.value !== undefined) {
+        if (u && SAFE_CELL_REF_RE.test(String(u.cellRef || "")) && u.value !== undefined) {
+          const safeVal = typeof u.value === "number" ? u.value : sanitizeFormulaInput(String(u.value));
           batchData.push({
             range: `Pipeline!${u.cellRef}`,
-            values: [[u.value]],
+            values: [[safeVal]],
           });
         }
       }

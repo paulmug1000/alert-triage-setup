@@ -277,6 +277,38 @@ export function suggestCrmColumnMapping(headers = []) {
   return result;
 }
 
+const BLOCKED_INTERNAL_SHEET_IDS = new Set([
+  DEFAULT_AC_SHEET_ID,
+  process.env.AUTOMATION_COMMANDER_SHEET_ID || "",
+  process.env.REPORTING_CONTROL_SHEET_ID || "1uAJS6ZWn0o-GPU9Ea3DIVU9nzQoRnXrMfmBcQYHNJ_s",
+  process.env.TRACKER_SHEET_ID || "1tx4rRD55-W53-B9Z_kMAJjXMf0nrIE9CCczYXFR84co",
+  process.env.APP_LOG_SHEET_ID || "1v1N5ymNkcUCSPfzEGJxE43ylgGN95iyZmhKgnz62OQQ",
+  process.env.MASTER_TEMPLATE_SHEET_ID || "",
+  process.env.CLIENT_TEMPLATE_SHEET_ID || "",
+  process.env.RECON_TEMPLATE_SHEET_ID || "",
+  "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M",
+  "1s7aa2180754aH3238j112f79d7b64a3b52f5920e"
+].filter(Boolean));
+
+/**
+ * Ensures a spreadsheet ID is an external CRM spreadsheet and NOT an internal
+ * Pulse control-plane, template, Master, or Client spreadsheet (CRIT-03 remediation).
+ */
+export async function assertExternalCrmSpreadsheet(sheets, spreadsheetId) {
+  const cleanId = extractSheetIdFromUrl(spreadsheetId) || String(spreadsheetId || "").trim();
+  if (!cleanId || !/^[A-Za-z0-9_-]{10,120}$/.test(cleanId)) {
+    throw new Error("Invalid Google Sheet ID format.");
+  }
+  if (BLOCKED_INTERNAL_SHEET_IDS.has(cleanId)) {
+    throw new Error("Access denied: Cannot link or inspect internal Pulse system spreadsheets.");
+  }
+  const sheetsClient = sheets || (await getSheetsClient());
+  const ownerClient = await resolveClientNameBySheetId(sheetsClient, cleanId);
+  if (ownerClient) {
+    throw new Error("Access denied: Cannot link an internal Pulse client or master spreadsheet as an external CRM source.");
+  }
+}
+
 /**
  * Inspects a Google Sheet by URL or Sheet ID.
  * Uses OAuth Bearer token if provided, otherwise falls back to the backend service account.
@@ -294,16 +326,8 @@ export async function inspectGoogleSpreadsheet({
   if (!targetId) {
     throw new Error("Invalid or missing Google Sheet URL / ID");
   }
-  if (targetId === DEFAULT_AC_SHEET_ID) {
-    throw new Error("Cannot inspect internal Automation Commander spreadsheet.");
-  }
-  if (!accessToken) {
-    const sheets = await getSheetsClient();
-    const ownerClient = await resolveClientNameBySheetId(sheets, targetId);
-    if (ownerClient && !isAdmin && (!clientKey || !matchesClientName(ownerClient, clientKey))) {
-      throw new Error("Access denied: target spreadsheet belongs to another tenant.");
-    }
-  }
+  const sheetsForCheck = await getSheetsClient();
+  await assertExternalCrmSpreadsheet(sheetsForCheck, targetId);
 
   let metadata = null;
   let sampleData = [];
@@ -361,9 +385,10 @@ export async function inspectGoogleSpreadsheet({
       sampleData = sJson.values || [];
     } else {
       const sheets = await getSheetsClient();
+      const escapedTab = targetTab.replace(/'/g, "''");
       const sRes = await sheets.spreadsheets.values.get({
         spreadsheetId: targetId,
-        range: `'${targetTab}'!1:10`
+        range: `'${escapedTab}'!1:10`
       });
       sampleData = sRes.data.values || [];
     }
@@ -372,7 +397,7 @@ export async function inspectGoogleSpreadsheet({
   }
 
   const detectedRow = detectCandidateHeaderRow(sampleData);
-  const activeHeaderRow = headerRowNum ? Math.max(1, parseInt(headerRowNum, 10)) : detectedRow;
+  const activeHeaderRow = headerRowNum ? Math.min(50, Math.max(1, parseInt(headerRowNum, 10) || 1)) : detectedRow;
   const headerIdx = Math.max(0, activeHeaderRow - 1);
   const rawHeaderRow = sampleData[headerIdx] || [];
   const headers = rawHeaderRow.map((h) => String(h || "").trim()).filter(Boolean);
@@ -413,6 +438,8 @@ export async function linkGoogleSheetToClient({
   if (!targetId) throw new Error("Could not parse spreadsheet ID from URL");
 
   const sheets = await getSheetsClient();
+  await assertExternalCrmSpreadsheet(sheets, targetId);
+
   const cleanTab = String(tabName || "").trim() || "Sheet1";
   const rowNumStr = String(headerRowNum || 1);
   const cleanKeyHeaders = String(keyHeaders || "").trim();
@@ -422,7 +449,7 @@ export async function linkGoogleSheetToClient({
     sheets.spreadsheets.values.batchUpdate({
       spreadsheetId: masterSheetId,
       requestBody: {
-        valueInputOption: "USER_ENTERED",
+        valueInputOption: "RAW",
         data: [
           { range: "KeyInfo!X11", values: [[url.trim()]] },
           { range: "KeyInfo!X12", values: [[cleanTab]] },

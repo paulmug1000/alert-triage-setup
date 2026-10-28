@@ -27,12 +27,12 @@ const IV_LENGTH = 12; // 96 bits recommended for GCM
  * Throws in production if INTEGRATION_ENCRYPTION_KEY is missing.
  */
 function getEncryptionKey() {
-  const envKey = process.env.INTEGRATION_ENCRYPTION_KEY;
+  const envKey = process.env.INTEGRATION_ENCRYPTION_KEY || process.env.PULSE_VAULT_MASTER_KEY;
   if (!envKey) {
-    if (process.env.NODE_ENV === "production") {
-      throw new Error("CRITICAL: INTEGRATION_ENCRYPTION_KEY environment variable is not configured.");
+    if (process.env.NODE_ENV === "production" || process.env.UPSTASH_REDIS_REST_URL || process.env.REDIS_URL) {
+      throw new Error("CRITICAL: INTEGRATION_ENCRYPTION_KEY environment variable is not configured while connected to a persistent or production store.");
     }
-    // Fallback key for local development only
+    // Fallback key for isolated local in-memory development only
     return crypto.createHash("sha256").update("pulse_dev_local_vault_key_2026").digest();
   }
 

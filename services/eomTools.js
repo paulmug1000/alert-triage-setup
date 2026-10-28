@@ -3,6 +3,7 @@ import { redisClient } from "./redisClient";
 import { memoryCache } from "./cacheService";
 import { logPmaActivity } from "./pmaLogger";
 import { getSessionUser } from "./authService";
+import { isUserAuthorizedForClient, sanitizeFormulaInput } from "./userPermissions";
 import { getAllClients, DEFAULT_AC_SHEET_ID } from "./workspaces";
 
 // Moved from triage.js local scope
@@ -24,7 +25,7 @@ function isDateMatchJs_(sheetHeader, aiDate) {
   const s1 = String(sheetHeader).toLowerCase();
   const s2 = String(aiDate).toLowerCase();
   if (s1 === s2) return true;
-  const months = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"];
+  const months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
   const m1 = months.find(m => s1.includes(m));
   const m2 = months.find(m => s2.includes(m));
   const y1 = s1.match(/\d{2,4}/);
@@ -39,7 +40,7 @@ function isDateMatchJs_(sheetHeader, aiDate) {
 }
 
 export function monthStrToEomKey_(monthStr) {
-  const monthAbbrs = { jan:1, feb:2, mar:3, apr:4, may:5, jun:6, jul:7, aug:8, sep:9, oct:10, nov:11, dec:12 };
+  const monthAbbrs = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
   const parts = String(monthStr || "").trim().split(/\s+/);
   if (parts.length !== 2) return null;
   const monthNum = monthAbbrs[parts[0].slice(0, 3).toLowerCase()];
@@ -49,7 +50,7 @@ export function monthStrToEomKey_(monthStr) {
 }
 
 export function eomKeyToMonthStr_(monthKey) {
-  const monthNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const parts = String(monthKey || "").split("-");
   if (parts.length !== 2) return null;
   const year = parseInt(parts[0], 10);
@@ -61,14 +62,14 @@ export function eomKeyToMonthStr_(monthKey) {
 export function eomWorkMonthToTargetMonth_(workMonthKey) {
   const [y, m] = String(workMonthKey || "").split("-").map(Number);
   if (!y || !m) return null;
-  const d = new Date(y, m - 1 - 1, 1); 
+  const d = new Date(y, m - 1 - 1, 1);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
 export function eomTargetMonthToWorkMonth_(targetMonthKey) {
   const [y, m] = String(targetMonthKey || "").split("-").map(Number);
   if (!y || !m) return null;
-  const d = new Date(y, m - 1 + 1, 1); 
+  const d = new Date(y, m - 1 + 1, 1);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
@@ -132,13 +133,17 @@ export async function handleEomGetTemplates(req, res, sheets) {
 export async function handleEomGetExcludedClients(req, res, sheets) {
   const { automationCommanderSheetId } = req.body;
   if (!automationCommanderSheetId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+  const sessionUser = getSessionUser(req);
   try {
     await ensureEomTabs_(sheets, automationCommanderSheetId);
     const resp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomExcludedClients!A2:C1000" }));
-    const clients = (resp.data.values || []).filter(r => r[0]).map(r => ({
-      clientName: r[0], excluded: r[1] === "TRUE" || r[1] === true,
-      sortOrder: r[2] !== undefined && r[2] !== "" ? Number(r[2]) : null,
-    }));
+    const clients = (resp.data.values || [])
+      .filter(r => r[0])
+      .filter(r => req.isSystemAuthorized || !sessionUser || sessionUser.isAdmin || isUserAuthorizedForClient(sessionUser, r[0]))
+      .map(r => ({
+        clientName: r[0], excluded: r[1] === "TRUE" || r[1] === true,
+        sortOrder: r[2] !== undefined && r[2] !== "" ? Number(r[2]) : null,
+      }));
     return res.status(200).json({ success: true, clients });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
@@ -259,9 +264,11 @@ export async function handleEomGetClientTasks(req, res, sheets) {
       if (r[0]) { templateNameById[r[0]] = r[1] || ""; templateLinkedFunctionById[r[0]] = r[3] || ""; templateAlertCategoriesById[r[0]] = r[6] || ""; }
     });
 
+    const sessionUser = getSessionUser(req);
     const rows = (tasksResp.data.values || []).filter(r => r[0]);
     const tasks = rows
       .filter(r => !filterClient || r[1] === filterClient)
+      .filter(r => req.isSystemAuthorized || !sessionUser || sessionUser.isAdmin || isUserAuthorizedForClient(sessionUser, r[1]))
       .map((r, i) => ({
         taskId: r[0], clientName: r[1], templateId: r[2] || "",
         name: r[2] ? (templateNameById[r[2]] || "(template deleted)") : (r[3] || ""),
@@ -362,9 +369,13 @@ export async function handleEomGetMonthStatus(req, res, sheets) {
       if (r[0]) { templateLinkedFunctionById[r[0]] = r[3] || ""; templateAlertCategoriesById[r[0]] = r[6] || ""; }
     });
 
+    const sessionUser = getSessionUser(req);
+    const canSeeClient = (cName) => req.isSystemAuthorized || !sessionUser || sessionUser.isAdmin || isUserAuthorizedForClient(sessionUser, cName);
+
     const activeTasks = (tasksResp.data.values || [])
       .filter(r => r[0] && (r[5] !== "FALSE" && r[5] !== false))
       .filter(r => !statusClient || r[1] === statusClient)
+      .filter(r => canSeeClient(r[1]))
       .map(r => ({
         taskId: r[0], clientName: r[1],
         linkedFunction: r[2] ? (templateLinkedFunctionById[r[2]] || "") : "",
@@ -374,6 +385,7 @@ export async function handleEomGetMonthStatus(req, res, sheets) {
     const statusResp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A2:F200000" }));
     const statusOverrides = (statusResp.data.values || [])
       .filter(r => (!statusClient || r[0] === statusClient) && r[2] === monthKey)
+      .filter(r => canSeeClient(r[0]))
       .map(r => ({ clientName: r[0], taskId: r[1], status: r[3] || "pending", notelet: r[5] || "" }));
 
     return res.status(200).json({ success: true, monthKey, activeTasks, statusOverrides });
@@ -426,7 +438,7 @@ export async function handleEomUpdateTaskStatusBatch(req, res, sheets) {
   try {
     const resp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A2:F200000" }));
     const rows = resp.data.values || [];
-    
+
     const appends = [];
     const updateRequests = [];
     const nowIso = new Date().toISOString();
@@ -434,7 +446,7 @@ export async function handleEomUpdateTaskStatusBatch(req, res, sheets) {
     for (const u of updates) {
       const rowIdx = rows.findIndex(r => r[0] === u.clientName && r[1] === u.taskId && r[2] === u.monthKey);
       const completedAt = u.status === "done" ? nowIso : "";
-      
+
       if (rowIdx === -1) {
         rows.push([u.clientName, u.taskId, u.monthKey, u.status, completedAt, ""]);
         appends.push([u.clientName, u.taskId, u.monthKey, u.status, completedAt, ""]);
@@ -506,7 +518,7 @@ export async function handleEomReorderTasks(req, res, sheets) {
     const writes = [];
     orderedTaskIds.forEach((taskId, index) => {
       const sheetRow = rowIndexByTaskId[taskId];
-      if (!sheetRow) return; 
+      if (!sheetRow) return;
       writes.push({ range: `EomClientTasks!H${sheetRow}`, values: [[(index + 1) * 10]] });
     });
     if (writes.length > 0) {
@@ -533,7 +545,7 @@ export async function handleEomReorderTemplates(req, res, sheets) {
     const writes = [];
     orderedTemplateIds.forEach((templateId, index) => {
       const sheetRow = rowIndexByTemplateId[templateId];
-      if (!sheetRow) return; 
+      if (!sheetRow) return;
       writes.push({ range: `EomTemplates!H${sheetRow}`, values: [[(index + 1) * 10]] });
     });
     if (writes.length > 0) {
@@ -594,16 +606,19 @@ export async function handleEomLoadBankAccounts(req, res, sheets) {
 export async function handleEomGetBankAccounts(req, res, sheets) {
   const { automationCommanderSheetId } = req.body;
   if (!automationCommanderSheetId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+  const sessionUser = getSessionUser(req);
   try {
     await ensureEomTabs_(sheets, automationCommanderSheetId);
     const resp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomBankAccounts!A2:C50000" }));
-    const rows = (resp.data.values || []).filter(r => r[0] && r[1]);
+    const rows = (resp.data.values || [])
+      .filter(r => r[0] && r[1])
+      .filter(r => req.isSystemAuthorized || !sessionUser || sessionUser.isAdmin || isUserAuthorizedForClient(sessionUser, r[0]));
     const accountsByClient = {};
     let loadedAt = "";
     rows.forEach(r => {
       if (!accountsByClient[r[0]]) accountsByClient[r[0]] = [];
       accountsByClient[r[0]].push(r[1]);
-      if (r[2]) loadedAt = r[2]; 
+      if (r[2]) loadedAt = r[2];
     });
     return res.status(200).json({ success: true, accountsByClient, loadedAt });
   } catch (err) {
@@ -615,6 +630,7 @@ export async function handleEomGetCashBalanceProgress(req, res, sheets) {
   const { automationCommanderSheetId, monthKey: progressTargetMonthKey } = req.body;
   if (!automationCommanderSheetId || !progressTargetMonthKey) return res.status(400).json({ success: false, error: "Missing required fields" });
   const progressWorkMonthKey = eomTargetMonthToWorkMonth_(progressTargetMonthKey);
+  const sessionUser = getSessionUser(req);
   try {
     await ensureEomTabs_(sheets, automationCommanderSheetId);
     const [templatesR, clientTasksR, statusR] = await Promise.all([
@@ -625,7 +641,11 @@ export async function handleEomGetCashBalanceProgress(req, res, sheets) {
     const cashTemplateIds = new Set((templatesR.data.values || []).filter(r => r[0] && r[3] === "cash_balance").map(r => r[0]));
     const cashTaskIdByClient = {};
     (clientTasksR.data.values || []).forEach(r => {
-      if (r[0] && cashTemplateIds.has(r[2]) && (r[5] !== "FALSE" && r[5] !== false)) cashTaskIdByClient[r[1]] = r[0];
+      if (r[0] && cashTemplateIds.has(r[2]) && (r[5] !== "FALSE" && r[5] !== false)) {
+        if (req.isSystemAuthorized || !sessionUser || sessionUser.isAdmin || isUserAuthorizedForClient(sessionUser, r[1])) {
+          cashTaskIdByClient[r[1]] = r[0];
+        }
+      }
     });
     const statusRows = statusR.data.values || [];
     const completedClients = Object.keys(cashTaskIdByClient).filter(clientName => {
@@ -733,7 +753,7 @@ export async function handleEomCreateDashboardBackup(req, res, sheets) {
       spreadsheetId: clientSheetId, range: "Dashboard!A1:ZZ", valueRenderOption: "UNFORMATTED_VALUE", dateTimeRenderOption: "SERIAL_NUMBER"
     }));
     const sourceData = sourceDataResp.data.values || [];
-    
+
     if (sourceData.length > 0) {
       await withRetry(() => sheets.spreadsheets.values.clear({ spreadsheetId: backupSheetId, range: `'${tabName}'!A1:ZZ` }));
       await withRetry(() => sheets.spreadsheets.values.update({
@@ -1585,7 +1605,7 @@ export async function handleEomPullFreshPl(req, res, sheets) {
 
     const gasText = await gasResp.text();
     let gasData = null;
-    try { gasData = JSON.parse(gasText); } catch (e) {}
+    try { gasData = JSON.parse(gasText); } catch (e) { }
     if (!gasData) {
       console.error(`❌ Master Web App pull_pl failed (HTTP ${gasResp.status}):`, gasText.slice(0, 300));
       return res.status(502).json({
@@ -1674,7 +1694,7 @@ export async function handleEomPushOutgoings(req, res, sheets) {
 
     const gasText = await gasResp.text();
     let gasData = null;
-    try { gasData = JSON.parse(gasText); } catch (e) {}
+    try { gasData = JSON.parse(gasText); } catch (e) { }
     if (!gasData) {
       console.error(`❌ Master Web App ${action} failed (HTTP ${gasResp.status}):`, gasText.slice(0, 300));
       return res.status(502).json({
@@ -1693,7 +1713,7 @@ export async function handleEomPushOutgoings(req, res, sheets) {
     if (workMonthKey) {
       const targetMonthKey = eomWorkMonthToTargetMonth_(workMonthKey);
       targetMonthLabel = eomKeyToMonthStr_(targetMonthKey) || "";
-      
+
       const checkRange = isInclUnrec ? "PLComp!T1:Y1" : "PLComp!F1:K1";
       const headersResp = await withRetry(() => sheets.spreadsheets.values.get({
         spreadsheetId: masterSheetId,
@@ -2076,6 +2096,7 @@ export async function handleEomApplyDefaultTasks(req, res, sheets) {
 
 export const REPORTING_CONTROL_SHEET_ID = "1uAJS6ZWn0o-GPU9Ea3DIVU9nzQoRnXrMfmBcQYHNJ_s";
 export const CLIENT_VERSION_TRACKER_SHEET_ID = "1tx4rRD55-W53-B9Z_kMAJjXMf0nrIE9CCczYXFR84co";
+export const DEFAULT_REPORTING_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbzHt00OpXWt8ztCDLC81bnYYUAlbQlAUG6o4fcfH8r5aFGL83j-l39Sd-v4pzJcCSZD/exec";
 
 function parseHeaderToMonthKey_(headerStr) {
   if (!headerStr) return "";
@@ -2212,11 +2233,11 @@ export async function handleEomGetReportingData(req, res, sheets) {
     // 3. Fetch EomReportingConfig from Reporting Control spreadsheet
     const configResp = await withRetry(() => sheets.spreadsheets.values.get({
       spreadsheetId: rcId,
-      range: "EomReportingConfig!A2:G500",
+      range: "EomReportingConfig!A2:H500",
       valueRenderOption: "FORMATTED_VALUE"
     }));
     const configMap = {};
-    let systemWebAppUrl = process.env.REPORTING_WEBAPP_URL || "";
+    let systemWebAppUrl = process.env.REPORTING_WEBAPP_URL || DEFAULT_REPORTING_WEBAPP_URL;
     (configResp.data.values || []).forEach(r => {
       const cName = String(r[0] || "").trim();
       if (!cName) return;
@@ -2224,12 +2245,20 @@ export async function handleEomGetReportingData(req, res, sheets) {
         if (r[5]) systemWebAppUrl = String(r[5]).trim();
         return;
       }
+      let overheadFinalisedByMonth = {};
+      if (r[7]) {
+        try {
+          const parsed = JSON.parse(String(r[7]));
+          if (parsed && typeof parsed === "object") overheadFinalisedByMonth = parsed;
+        } catch (_) {}
+      }
       configMap[cName] = {
         emailTo: r[1] || "",
         emailSubj: r[2] || "",
         emailBody: r[3] || "",
         folderUrl: r[4] || "",
-        webAppUrl: r[5] || ""
+        webAppUrl: r[5] || "",
+        overheadFinalisedByMonth
       };
     });
 
@@ -2287,6 +2316,9 @@ export async function handleEomGetReportingData(req, res, sheets) {
       const monthReport = history.find(h => h.month === targetReportMonth) || null;
       const latestReport = monthReport || history[0] || null;
 
+      const overheadFinalisedByMonth = conf.overheadFinalisedByMonth || {};
+      const overheadFinalisedAt = targetReportMonth ? (overheadFinalisedByMonth[targetReportMonth] || null) : null;
+
       return {
         clientName: name,
         clientSheetId: c.clientSheetId,
@@ -2300,7 +2332,10 @@ export async function handleEomGetReportingData(req, res, sheets) {
         emailBody: conf.emailBody || "",
         webAppUrl: conf.webAppUrl || systemWebAppUrl || c.webAppUrl || "",
         latestReport: latestReport,
-        reportHistory: history
+        reportHistory: history,
+        overheadFinalisedByMonth,
+        overheadFinalisedAt,
+        isOverheadFinalised: Boolean(overheadFinalisedAt)
       };
     });
 
@@ -2539,7 +2574,7 @@ export async function handleEomTestReportingWebApp(req, res) {
 
     const gasText = await gasResp.text();
     let gasData = null;
-    try { gasData = JSON.parse(gasText); } catch (e) {}
+    try { gasData = JSON.parse(gasText); } catch (e) { }
 
     if (!gasData) {
       return res.status(200).json({
@@ -2735,16 +2770,7 @@ export async function handleEomRunReportingAction(req, res, sheets) {
     if (step === "PREPARE_MASTER") {
       for (const c of clients) {
         if (c.masterSheetId) {
-          try {
-            await withRetry(() => sheets.spreadsheets.values.update({
-              spreadsheetId: c.masterSheetId,
-              range: "MgmtRep!B1",
-              valueInputOption: "USER_ENTERED",
-              requestBody: { values: [[targetDateFormatted]] }
-            }));
-          } catch (mErr) {
-            console.warn(`Master MgmtRep date update note for ${c.clientName}:`, mErr.message);
-          }
+          await ensureOverheadAlignmentAndMonth_(sheets, c.masterSheetId, effectiveReportMonth, targetDateFormatted);
         }
       }
 
@@ -2872,7 +2898,7 @@ export async function handleEomRunReportingAction(req, res, sheets) {
     }
 
     // 3. Resolve Web App URL
-    const targetWebAppUrl = String(webAppUrlOverride || process.env.REPORTING_WEBAPP_URL || clients[0]?.webAppUrl || "").trim();
+    const targetWebAppUrl = String(webAppUrlOverride || process.env.REPORTING_WEBAPP_URL || clients[0]?.webAppUrl || DEFAULT_REPORTING_WEBAPP_URL).trim();
     if (!targetWebAppUrl) {
       return res.status(400).json({
         success: false,
@@ -2948,7 +2974,7 @@ export async function handleEomRunReportingAction(req, res, sheets) {
 
     const gasText = await gasResp.text();
     let gasData = null;
-    try { gasData = JSON.parse(gasText); } catch (e) {}
+    try { gasData = JSON.parse(gasText); } catch (e) { }
 
     if (!gasData) {
       console.error(`❌ Reporting Web App returned HTTP ${gasResp.status}:`, gasText.slice(0, 300));
@@ -3063,5 +3089,692 @@ export async function autoCompleteTaskByKeyword_(sheets, automationCommanderShee
     return true;
   } catch (e) {
     return false;
+  }
+}
+
+// ============================================================================
+// OVERHEAD EXPENSES MANAGEMENT (MgmtRep!A371:F493 & AB371:AG493 + Budget!A150:AV250)
+// ============================================================================
+
+const ALIGNED_MGMTREP_B372_FORMULA = "=FILTER(INDEX(Outgoings!A125:BC228,0,G2),LEN(Outgoings!A125:A228)>0)";
+
+function formatCurrencyGBP_(num) {
+  if (num === null || num === undefined || num === "" || isNaN(Number(num))) return "£0";
+  const rounded = Math.round(Number(num));
+  if (rounded < 0) {
+    return `-£${Math.abs(rounded).toLocaleString("en-GB")}`;
+  }
+  return `£${rounded.toLocaleString("en-GB")}`;
+}
+
+function parseNumericValue_(val) {
+  if (val === null || val === undefined || val === "") return null;
+  if (typeof val === "number") return isNaN(val) ? null : val;
+  const s = String(val).trim();
+  if (!s) return null;
+  const isNeg = (s.startsWith("(") && s.endsWith(")")) || s.startsWith("-");
+  const cleaned = s.replace(/[£$€,\s()]/g, "");
+  if (!cleaned) return null;
+  const num = parseFloat(cleaned);
+  if (isNaN(num)) return null;
+  return isNeg ? -Math.abs(num) : num;
+}
+
+/**
+ * Ensures MgmtRep!B1 is set to targetDateFormatted, MgmtRep!B372 uses the 1-to-1 aligned
+ * FILTER(INDEX(...)) formula, and Outgoings!A227 IMPORTRANGE is not blocked by stray cells.
+ */
+async function ensureOverheadAlignmentAndMonth_(sheets, masterSheetId, reportMonthKey, isoDateOverride = null) {
+  if (!masterSheetId) return;
+  try {
+    let expectedLabel = null;
+    let isoDateToWrite = isoDateOverride;
+    if (reportMonthKey && /^\d{4}-\d{2}$/.test(reportMonthKey)) {
+      const [yStr, mStr] = reportMonthKey.split("-");
+      const monthNamesShort = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+      const mIdx = parseInt(mStr, 10) - 1;
+      if (mIdx >= 0 && mIdx < 12) {
+        expectedLabel = `${monthNamesShort[mIdx]} ${yStr}`;
+        if (!isoDateToWrite) isoDateToWrite = `${yStr}-${mStr}-01`;
+      }
+    }
+
+    const [checkRes, currentB1Resp] = await Promise.all([
+      withRetry(() => sheets.spreadsheets.values.batchGet({
+        spreadsheetId: masterSheetId,
+        ranges: ["MgmtRep!B372", "Outgoings!A227:AZ250"],
+        valueRenderOption: "FORMULA"
+      })),
+      withRetry(() => sheets.spreadsheets.values.get({
+        spreadsheetId: masterSheetId,
+        range: "MgmtRep!B1",
+        valueRenderOption: "FORMATTED_VALUE"
+      }))
+    ]);
+
+    const currentB1Formatted = String(currentB1Resp.data.values?.[0]?.[0] || "").trim();
+    const b372Formula = String(checkRes.data.valueRanges?.[0]?.values?.[0]?.[0] || "").trim();
+    const outBlock = checkRes.data.valueRanges?.[1]?.values || [];
+    const a227Formula = String(outBlock[0]?.[0] || "").trim();
+
+    const updates = [];
+    if (isoDateToWrite && (!expectedLabel || currentB1Formatted.toLowerCase() !== expectedLabel.toLowerCase())) {
+      updates.push({
+        range: "MgmtRep!B1",
+        values: [[isoDateToWrite]]
+      });
+    }
+    if (b372Formula !== ALIGNED_MGMTREP_B372_FORMULA) {
+      updates.push({
+        range: "MgmtRep!B372",
+        values: [[ALIGNED_MGMTREP_B372_FORMULA]]
+      });
+    }
+    if (updates.length > 0) {
+      await withRetry(() => sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: masterSheetId,
+        requestBody: {
+          valueInputOption: "USER_ENTERED",
+          data: updates
+        }
+      }));
+    }
+
+    const hasBlockingOutgoingsCells = a227Formula.toLowerCase().startsWith("=importrange") && (
+      (outBlock[0] || []).slice(1).some(c => c !== "" && c !== undefined) ||
+      outBlock.slice(1).some(r => (r || []).some(c => c !== "" && c !== undefined))
+    );
+    if (hasBlockingOutgoingsCells) {
+      await withRetry(() => sheets.spreadsheets.values.batchClear({
+        spreadsheetId: masterSheetId,
+        requestBody: {
+          ranges: ["Outgoings!B227:AZ227", "Outgoings!A228:AZ250"]
+        }
+      }));
+    }
+  } catch (err) {
+    console.warn(`ensureOverheadAlignmentAndMonth_ warning for ${masterSheetId}:`, err.message);
+  }
+}
+
+/**
+ * Subset-sum helper to suggest which unchecked/checked rows account for a difference.
+ */
+function findSubsetMatchingSum_(candidates, targetAmount) {
+  const target = Math.abs(Number(targetAmount) || 0);
+  if (target < 0.5 || !Array.isArray(candidates) || candidates.length === 0) return [];
+
+  // Filter to candidates with positive actual amounts
+  const valid = candidates
+    .filter(c => Math.abs(Number(c.actualNum) || 0) >= 0.5)
+    .sort((a, b) => {
+      // Deprioritize depreciation slightly if non-depreciation items also match
+      const aDep = /depreciation/i.test(a.category) ? 1 : 0;
+      const bDep = /depreciation/i.test(b.category) ? 1 : 0;
+      if (aDep !== bDep) return aDep - bDep;
+      return Math.abs(b.actualNum) - Math.abs(a.actualNum);
+    });
+
+  // 1. Check single-item exact/rounded match first
+  for (const item of valid) {
+    if (Math.abs(item.actualNum - target) < 0.75) {
+      return [item];
+    }
+  }
+
+  // 2. Check combinations of size 2..6 via bounded backtracking
+  const maxItems = Math.min(6, valid.length);
+  for (let size = 2; size <= maxItems; size++) {
+    let found = null;
+    const search = (startIdx, chosen, currentSum) => {
+      if (found) return;
+      if (chosen.length === size) {
+        if (Math.abs(currentSum - target) < 0.75) {
+          found = [...chosen];
+        }
+        return;
+      }
+      for (let i = startIdx; i < valid.length; i++) {
+        const nextSum = currentSum + valid[i].actualNum;
+        if (nextSum - target > 2 && valid[i].actualNum > 0) continue;
+        chosen.push(valid[i]);
+        search(i + 1, chosen, nextSum);
+        chosen.pop();
+        if (found) return;
+      }
+    };
+    search(0, [], 0);
+    if (found) return found;
+  }
+
+  return [];
+}
+
+/**
+ * Computes the right-hand table (MgmtRep!AB371:AG493) and reconciliation analysis
+ * from the left-hand rows and their checked states.
+ */
+export function computeOverheadRightTableAndAnalysis_(leftRows = []) {
+  const checkedRows = leftRows.filter(r => Boolean(r.checked) && !r.isTotalRow);
+
+  const rightRows = checkedRows.map(r => {
+    const actualNum = Number(r.actualNum) || 0;
+    const hasBudget = r.budgetNum !== null && r.budgetNum !== undefined && r.budgetNum !== "";
+    const budgetNum = hasBudget ? Number(r.budgetNum) : null;
+    const varNum = (budgetNum ?? 0) - actualNum;
+
+    // Mirrors Google Sheets formula in MgmtRep!AG372:AG493:
+    // =if(AB372="","", if(AND(AC372=0,AD372=0),0,if(AD372=0,"!!!",AF372/AD372)))
+    // When AD is "" (budgetNum === null), AD=0 is FALSE in Google Sheets, so AF/AD divides by 0 -> #DIV/0!
+    let pctFormatted = "";
+    let hasDivZeroError = false;
+    if (!hasBudget) {
+      pctFormatted = "#DIV/0!";
+      hasDivZeroError = true;
+    } else if (Math.abs(actualNum) < 0.005 && Math.abs(budgetNum) < 0.005) {
+      pctFormatted = "0%";
+    } else if (Math.abs(budgetNum) < 0.005) {
+      pctFormatted = "!!!";
+    } else {
+      pctFormatted = `${Math.round((varNum / budgetNum) * 100)}%`;
+    }
+
+    return {
+      sheetRow: r.sheetRow,
+      category: r.category,
+      actualNum,
+      actualFormatted: r.actualFormatted || formatCurrencyGBP_(actualNum),
+      budgetNum,
+      budgetFormatted: hasBudget ? (r.budgetFormatted || formatCurrencyGBP_(budgetNum)) : "",
+      varNum,
+      varFormatted: formatCurrencyGBP_(varNum),
+      pctFormatted,
+      hasDivZeroError
+    };
+  });
+
+  const totalActualNum = rightRows.reduce((sum, r) => sum + (Number(r.actualNum) || 0), 0);
+  const totalBudgetNum = rightRows.reduce((sum, r) => sum + (r.budgetNum !== null ? Number(r.budgetNum) : 0), 0);
+  const totalVarNum = totalBudgetNum - totalActualNum;
+  let totalPctFormatted = "0%";
+  if (Math.abs(totalActualNum) < 0.005 && Math.abs(totalBudgetNum) < 0.005) {
+    totalPctFormatted = "0%";
+  } else if (Math.abs(totalBudgetNum) < 0.005) {
+    totalPctFormatted = "!!!";
+  } else {
+    totalPctFormatted = `${Math.round((totalVarNum / totalBudgetNum) * 100)}%`;
+  }
+
+  const rightTotal = {
+    category: "Total",
+    actualNum: totalActualNum,
+    actualFormatted: formatCurrencyGBP_(totalActualNum),
+    budgetNum: totalBudgetNum,
+    budgetFormatted: formatCurrencyGBP_(totalBudgetNum),
+    varNum: totalVarNum,
+    varFormatted: formatCurrencyGBP_(totalVarNum),
+    pctFormatted: totalPctFormatted
+  };
+
+  // Reconciliation against "Total other expenses - non-del" in left-hand table
+  const nonDelRow = leftRows.find(r => r.isNonDelTotalRow);
+  const targetNonDelActualNum = nonDelRow ? (Number(nonDelRow.actualNum) || 0) : null;
+  const targetNonDelFormatted = nonDelRow
+    ? (nonDelRow.actualFormatted || formatCurrencyGBP_(targetNonDelActualNum))
+    : "£0";
+
+  const differenceNum = targetNonDelActualNum !== null ? (targetNonDelActualNum - totalActualNum) : 0;
+  const isMatched = targetNonDelActualNum !== null && Math.abs(differenceNum) < 0.75;
+
+  let suggestedItems = [];
+  let suggestionDirection = null; // "check" | "uncheck"
+  let fallbackCandidates = [];
+
+  if (!isMatched && targetNonDelActualNum !== null) {
+    if (differenceNum > 0) {
+      suggestionDirection = "check";
+      const uncheckedCandidates = leftRows.filter(r => !r.checked && !r.isTotalRow && Math.abs(Number(r.actualNum) || 0) >= 0.5);
+      suggestedItems = findSubsetMatchingSum_(uncheckedCandidates, differenceNum).map(r => ({
+        sheetRow: r.sheetRow,
+        category: r.category,
+        actualNum: r.actualNum,
+        actualFormatted: r.actualFormatted || formatCurrencyGBP_(r.actualNum)
+      }));
+      if (suggestedItems.length === 0) {
+        fallbackCandidates = uncheckedCandidates.map(r => ({
+          sheetRow: r.sheetRow,
+          category: r.category,
+          actualNum: r.actualNum,
+          actualFormatted: r.actualFormatted || formatCurrencyGBP_(r.actualNum)
+        }));
+      }
+    } else if (differenceNum < 0) {
+      suggestionDirection = "uncheck";
+      const checkedCandidates = leftRows.filter(r => r.checked && !r.isTotalRow && Math.abs(Number(r.actualNum) || 0) >= 0.5);
+      suggestedItems = findSubsetMatchingSum_(checkedCandidates, Math.abs(differenceNum)).map(r => ({
+        sheetRow: r.sheetRow,
+        category: r.category,
+        actualNum: r.actualNum,
+        actualFormatted: r.actualFormatted || formatCurrencyGBP_(r.actualNum)
+      }));
+    }
+  }
+
+  const divZeroCategories = rightRows.filter(r => r.hasDivZeroError).map(r => r.category);
+
+  return {
+    rightRows,
+    rightTotal,
+    analysis: {
+      hasNonDelTarget: nonDelRow !== undefined,
+      nonDelLabel: nonDelRow?.category || "Total other expenses - non-del",
+      targetNonDelActualNum,
+      targetNonDelFormatted,
+      rightTotalActualNum: totalActualNum,
+      rightTotalActualFormatted: formatCurrencyGBP_(totalActualNum),
+      differenceNum,
+      differenceFormatted: formatCurrencyGBP_(differenceNum),
+      absDifferenceFormatted: formatCurrencyGBP_(Math.abs(differenceNum)),
+      isMatched,
+      suggestionDirection,
+      suggestedItems,
+      fallbackCandidates,
+      divZeroCategories
+    }
+  };
+}
+
+/**
+ * Reads MgmtRep!A371:F493 from the Master Sheet and builds leftRows + rightRows + analysis.
+ */
+async function readAndParseOverheadExpenses_(sheets, masterSheetId, checkboxOverrides = null) {
+  const [fmtResp, unfmtResp] = await Promise.all([
+    withRetry(() => sheets.spreadsheets.values.batchGet({
+      spreadsheetId: masterSheetId,
+      ranges: ["MgmtRep!B1", "MgmtRep!A371:F493"],
+      valueRenderOption: "FORMATTED_VALUE"
+    })),
+    withRetry(() => sheets.spreadsheets.values.batchGet({
+      spreadsheetId: masterSheetId,
+      ranges: ["MgmtRep!A371:F493"],
+      valueRenderOption: "UNFORMATTED_VALUE"
+    }))
+  ]);
+
+  const currentMonthFormatted = String(fmtResp.data.valueRanges?.[0]?.values?.[0]?.[0] || "").trim();
+  const fmtRows = fmtResp.data.valueRanges?.[1]?.values || [];
+  const unfmtRows = unfmtResp.data.valueRanges?.[0]?.values || [];
+
+  const leftHeaders = fmtRows[0] || ["", "Actual", "Budget", "Variance", "%"];
+  const leftRows = [];
+
+  for (let i = 1; i < Math.max(fmtRows.length, unfmtRows.length); i++) {
+    const sheetRow = 371 + i; // i=1 -> Row 372
+    const fRow = fmtRows[i] || [];
+    const uRow = unfmtRows[i] || [];
+    const category = String(fRow[0] ?? uRow[0] ?? "").trim();
+
+    // Only include rows with actual category data in them
+    if (!category) continue;
+
+    const isTotalRow = /^total other expenses/i.test(category);
+    const isNonDelTotalRow = /total other expenses\s*-\s*non-del/i.test(category) || /^total other expenses$/i.test(category);
+    const isDeliveryTotalRow = /total other expenses\s*-\s*delivery/i.test(category);
+
+    const actualNum = parseNumericValue_(uRow[1]) ?? 0;
+    const rawBudgetCell = uRow[2];
+    const budgetNum = (rawBudgetCell === "" || rawBudgetCell === undefined || rawBudgetCell === null)
+      ? null
+      : parseNumericValue_(rawBudgetCell);
+    const varianceNum = parseNumericValue_(uRow[3]) ?? ((budgetNum ?? 0) - actualNum);
+
+    const sheetChecked = Boolean(uRow[5] === true || String(fRow[5] || "").toUpperCase() === "TRUE");
+    const checked = isTotalRow
+      ? false
+      : (checkboxOverrides && Object.prototype.hasOwnProperty.call(checkboxOverrides, sheetRow)
+        ? Boolean(checkboxOverrides[sheetRow])
+        : sheetChecked);
+
+    leftRows.push({
+      sheetRow,
+      category,
+      actualNum,
+      actualFormatted: String(fRow[1] || "").trim() || formatCurrencyGBP_(actualNum),
+      budgetNum,
+      budgetFormatted: budgetNum !== null ? (String(fRow[2] || "").trim() || formatCurrencyGBP_(budgetNum)) : "",
+      varianceNum,
+      varianceFormatted: String(fRow[3] || "").trim() || formatCurrencyGBP_(varianceNum),
+      pctFormatted: String(fRow[4] || "").trim(),
+      sheetChecked,
+      checked,
+      isTotalRow,
+      isNonDelTotalRow,
+      isDeliveryTotalRow
+    });
+  }
+
+  const computed = computeOverheadRightTableAndAnalysis_(leftRows);
+  return {
+    currentMonthFormatted,
+    leftHeaders: [
+      leftHeaders[0] || "Category",
+      leftHeaders[1] || "Actual",
+      leftHeaders[2] || "Budget",
+      leftHeaders[3] || "Variance",
+      leftHeaders[4] || "%"
+    ],
+    leftRows,
+    ...computed
+  };
+}
+
+/**
+ * POST /api/triage { action: "eom_get_overhead_expenses", masterSheetId, clientName, reportMonthKey }
+ */
+export async function handleEomGetOverheadExpenses(req, res, sheets) {
+  try {
+    const { masterSheetId, clientName, reportMonthKey } = req.body || {};
+    const mId = extractSheetIdFromUrl(masterSheetId) || masterSheetId;
+    if (!mId) {
+      return res.status(400).json({ success: false, error: "Master Sheet ID is required." });
+    }
+
+    await ensureOverheadAlignmentAndMonth_(sheets, mId, reportMonthKey);
+    const data = await readAndParseOverheadExpenses_(sheets, mId, null);
+
+    return res.status(200).json({
+      success: true,
+      clientName,
+      masterSheetId: mId,
+      ...data
+    });
+  } catch (err) {
+    console.error("❌ handleEomGetOverheadExpenses error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+/**
+ * POST /api/triage { action: "eom_preview_overhead_expenses", leftRows }
+ * Recalculates the right-hand table (AB371:AG493) and difference suggestions on the server.
+ */
+export async function handleEomPreviewOverheadExpenses(req, res) {
+  try {
+    const { leftRows } = req.body || {};
+    if (!Array.isArray(leftRows)) {
+      return res.status(400).json({ success: false, error: "leftRows array is required." });
+    }
+    const computed = computeOverheadRightTableAndAnalysis_(leftRows);
+    return res.status(200).json({
+      success: true,
+      ...computed
+    });
+  } catch (err) {
+    console.error("❌ handleEomPreviewOverheadExpenses error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+/**
+ * POST /api/triage { action: "eom_add_zero_budget_category", masterSheetId, clientName, categories, checkboxOverrides }
+ * Adds £0 budget category(s) to the first blank row AFTER all populated rows in Budget!A150:A250,
+ * assigning £0 across all 3 financial years (G:R, V:AG, AK:AV).
+ */
+export async function handleEomAddZeroBudgetCategory(req, res, sheets) {
+  try {
+    const { masterSheetId, clientName, category, categories, checkboxOverrides, automationCommanderSheetId } = req.body || {};
+    const mId = extractSheetIdFromUrl(masterSheetId) || masterSheetId;
+    if (!mId) {
+      return res.status(400).json({ success: false, error: "Master Sheet ID is required." });
+    }
+
+    const catsToAdd = Array.isArray(categories)
+      ? categories.map(c => String(c || "").trim()).filter(Boolean)
+      : (category ? [String(category).trim()] : []);
+
+    if (catsToAdd.length === 0) {
+      return res.status(400).json({ success: false, error: "At least one category name is required." });
+    }
+
+    // Read Budget!A150:AV250 to locate the last populated row in the section (150..250)
+    const budgetResp = await withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: mId,
+      range: "Budget!A150:AV250",
+      valueRenderOption: "UNFORMATTED_VALUE"
+    }));
+    const budgetRows = budgetResp.data.values || [];
+
+    const isMonthColIdx = (cIdx) =>
+      (cIdx >= 6 && cIdx <= 17) ||
+      (cIdx >= 21 && cIdx <= 32) ||
+      (cIdx >= 36 && cIdx <= 47);
+
+    let lastPopulatedSheetRow = 149; // So if completely empty, first blank row is 150
+    const existingCategoryRowMap = new Map(); // lowercase category -> first matching sheetRow in 150..250
+
+    for (let i = 0; i <= 100; i++) {
+      const sRow = 150 + i;
+      const r = budgetRows[i] || [];
+      const catCell = String(r[0] ?? "").trim();
+      if (catCell && !existingCategoryRowMap.has(catCell.toLowerCase())) {
+        existingCategoryRowMap.set(catCell.toLowerCase(), sRow);
+      }
+
+      let hasMonthData = false;
+      for (let c = 6; c <= 47; c++) {
+        if (!isMonthColIdx(c)) continue;
+        if (r[c] !== "" && r[c] !== undefined && r[c] !== null) {
+          hasMonthData = true;
+          break;
+        }
+      }
+
+      if (catCell !== "" || hasMonthData) {
+        lastPopulatedSheetRow = sRow;
+      }
+    }
+
+    let nextTargetRow = lastPopulatedSheetRow + 1;
+    const zeroTwelve = new Array(12).fill(0);
+    const batchData = [];
+    const addedRowsInfo = [];
+
+    for (const catName of catsToAdd) {
+      const existingRow = existingCategoryRowMap.get(catName.toLowerCase());
+      let targetRow = existingRow;
+
+      if (!targetRow) {
+        if (nextTargetRow > 250) {
+          return res.status(400).json({
+            success: false,
+            error: "Budget section (Budget!A150:A250) is full — no trailing blank rows remain after row 250."
+          });
+        }
+        targetRow = nextTargetRow;
+        nextTargetRow++;
+
+        batchData.push(
+          { range: `Budget!A${targetRow}`, values: [[sanitizeFormulaInput(catName)]] },
+          { range: `Budget!E${targetRow}`, values: [[0]] },
+          { range: `Budget!G${targetRow}:R${targetRow}`, values: [zeroTwelve] },
+          { range: `Budget!V${targetRow}:AG${targetRow}`, values: [zeroTwelve] },
+          { range: `Budget!AK${targetRow}:AV${targetRow}`, values: [zeroTwelve] }
+        );
+        addedRowsInfo.push({ category: catName, sheetRow: targetRow, mode: "inserted_after_all" });
+      } else {
+        // Category already exists in Budget!A150:A250 with blank month cells -> populate blank month cells with £0
+        const r = budgetRows[targetRow - 150] || [];
+        const fillFyRange = (startIdx) => {
+          const vals = [];
+          for (let k = 0; k < 12; k++) {
+            const cur = r[startIdx + k];
+            vals.push(cur === "" || cur === undefined || cur === null ? 0 : cur);
+          }
+          return vals;
+        };
+        batchData.push(
+          { range: `Budget!G${targetRow}:R${targetRow}`, values: [fillFyRange(6)] },
+          { range: `Budget!V${targetRow}:AG${targetRow}`, values: [fillFyRange(21)] },
+          { range: `Budget!AK${targetRow}:AV${targetRow}`, values: [fillFyRange(36)] }
+        );
+        addedRowsInfo.push({ category: catName, sheetRow: targetRow, mode: "filled_existing_blank_months" });
+      }
+    }
+
+    if (batchData.length > 0) {
+      await withRetry(() => sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: mId,
+        requestBody: {
+          valueInputOption: "USER_ENTERED",
+          data: batchData
+        }
+      }));
+    }
+
+    // Re-read MgmtRep!A371:F493 so VLOOKUP in Col C picks up the new £0 budget categories
+    const refreshed = await readAndParseOverheadExpenses_(sheets, mId, checkboxOverrides || null);
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId: automationCommanderSheetId || DEFAULT_AC_SHEET_ID,
+      category: "REPORTING",
+      action: "Added £0 Budget Category",
+      summary: `Added £0 budget category (${catsToAdd.join(", ")}) for ${clientName || mId}`,
+      details: { clientName, masterSheetId: mId, addedRowsInfo }
+    }).catch(() => { });
+
+    return res.status(200).json({
+      success: true,
+      addedRowsInfo,
+      message: addedRowsInfo.length === 1
+        ? `Added "${addedRowsInfo[0].category}" to Budget row ${addedRowsInfo[0].sheetRow} with £0 across all 3 financial years.`
+        : `Added ${addedRowsInfo.length} £0 budget categories to the Budget tab (${addedRowsInfo.map(a => `${a.category} [row ${a.sheetRow}]`).join(", ")}).`,
+      ...refreshed
+    });
+  } catch (err) {
+    console.error("❌ handleEomAddZeroBudgetCategory error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+/**
+ * POST /api/triage { action: "eom_confirm_overhead_expenses", masterSheetId, clientName, checkboxOverrides }
+ * Commits the checked boxes from the modal to column F (MgmtRep!F372:F493) in the client's Master Sheet.
+ */
+export async function handleEomConfirmOverheadExpenses(req, res, sheets) {
+  try {
+    const { masterSheetId, clientName, reportMonthKey, checkboxOverrides, automationCommanderSheetId } = req.body || {};
+    const mId = extractSheetIdFromUrl(masterSheetId) || masterSheetId;
+    if (!mId) {
+      return res.status(400).json({ success: false, error: "Master Sheet ID is required." });
+    }
+    if (!checkboxOverrides || typeof checkboxOverrides !== "object") {
+      return res.status(400).json({ success: false, error: "checkboxOverrides map is required." });
+    }
+
+    // Read MgmtRep!A372:F493 to build the exact 122-row boolean column for F372:F493
+    const currentResp = await withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: mId,
+      range: "MgmtRep!A372:F493",
+      valueRenderOption: "UNFORMATTED_VALUE"
+    }));
+    const rawRows = currentResp.data.values || [];
+
+    const colFValues = [];
+    let checkedCount = 0;
+    for (let i = 0; i < 122; i++) {
+      const sheetRow = 372 + i;
+      const r = rawRows[i] || [];
+      const cat = String(r[0] ?? "").trim();
+      const isTotal = /^total other expenses/i.test(cat);
+
+      if (!cat || isTotal) {
+        colFValues.push([false]);
+      } else if (Object.prototype.hasOwnProperty.call(checkboxOverrides, sheetRow)) {
+        const val = Boolean(checkboxOverrides[sheetRow]);
+        if (val) checkedCount++;
+        colFValues.push([val]);
+      } else {
+        const existingVal = Boolean(r[5] === true || String(r[5] || "").toUpperCase() === "TRUE");
+        if (existingVal) checkedCount++;
+        colFValues.push([existingVal]);
+      }
+    }
+
+    await withRetry(() => sheets.spreadsheets.values.update({
+      spreadsheetId: mId,
+      range: "MgmtRep!F372:F493",
+      valueInputOption: "RAW",
+      requestBody: { values: colFValues }
+    }));
+
+    const refreshed = await readAndParseOverheadExpenses_(sheets, mId, null);
+    const effectiveMonthKey = reportMonthKey || monthStrToEomKey_(refreshed.currentMonthFormatted) || "";
+    const finalisedAt = new Date().toISOString();
+    let overheadFinalisedByMonth = {};
+
+    // Persist finalised status per client + report month in EomReportingConfig (Col H) on Reporting Control sheet
+    if (clientName && effectiveMonthKey) {
+      try {
+        await ensureEomReportingTabs_(sheets, REPORTING_CONTROL_SHEET_ID);
+        const cfgResp = await withRetry(() => sheets.spreadsheets.values.get({
+          spreadsheetId: REPORTING_CONTROL_SHEET_ID,
+          range: "EomReportingConfig!A2:H500"
+        }));
+        const cfgRows = cfgResp.data.values || [];
+        const existingIdx = cfgRows.findIndex(r => String(r[0] || "").trim() === clientName);
+
+        if (existingIdx !== -1 && cfgRows[existingIdx]?.[7]) {
+          try {
+            const parsed = JSON.parse(String(cfgRows[existingIdx][7]));
+            if (parsed && typeof parsed === "object") overheadFinalisedByMonth = parsed;
+          } catch (_) {}
+        }
+        overheadFinalisedByMonth[effectiveMonthKey] = finalisedAt;
+        const jsonStr = JSON.stringify(overheadFinalisedByMonth);
+
+        if (existingIdx === -1) {
+          await withRetry(() => sheets.spreadsheets.values.append({
+            spreadsheetId: REPORTING_CONTROL_SHEET_ID,
+            range: "EomReportingConfig!A:H",
+            valueInputOption: "RAW",
+            requestBody: {
+              values: [[clientName, "", "", "", "", "", finalisedAt, jsonStr]]
+            }
+          }));
+        } else {
+          const cfgSheetRow = existingIdx + 2;
+          await withRetry(() => sheets.spreadsheets.values.update({
+            spreadsheetId: REPORTING_CONTROL_SHEET_ID,
+            range: `EomReportingConfig!G${cfgSheetRow}:H${cfgSheetRow}`,
+            valueInputOption: "RAW",
+            requestBody: {
+              values: [[finalisedAt, jsonStr]]
+            }
+          }));
+        }
+      } catch (cfgErr) {
+        console.warn("Could not persist overhead finalised status to EomReportingConfig:", cfgErr.message);
+      }
+    }
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId: automationCommanderSheetId || DEFAULT_AC_SHEET_ID,
+      category: "REPORTING",
+      action: "Confirmed Overhead Expenses",
+      summary: `Confirmed ${checkedCount} overhead expense rows in MgmtRep!F372:F493 for ${clientName || mId} (${effectiveMonthKey})`,
+      details: { clientName, masterSheetId: mId, checkedCount, reportMonthKey: effectiveMonthKey, finalisedAt }
+    }).catch(() => { });
+
+    return res.status(200).json({
+      success: true,
+      finalisedAt,
+      reportMonthKey: effectiveMonthKey,
+      overheadFinalisedByMonth,
+      message: `Saved ${checkedCount} checked overhead expense categories to MgmtRep!F372:F493 for ${clientName || "client"}.`,
+      ...refreshed
+    });
+  } catch (err) {
+    console.error("❌ handleEomConfirmOverheadExpenses error:", err);
+    return res.status(500).json({ success: false, error: err.message });
   }
 }

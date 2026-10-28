@@ -12,7 +12,7 @@ import { useTasks } from "../contexts/TaskContext";
 import { useTriage } from "../contexts/TriageContext";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useAuth } from "../hooks/useAuth";
-import { ADMIN_ONLY_ALERT_TYPES, stripRowInfo, parseUnreceivedExpensesDetail, parseStaleExpenseDetail, parseInfoAlertDetail, filterAnalysisResultsForAlert, getCleanPLCategoryName, getAlertJobTarget, formatSeenTimestamp, formatLikelihood, parseRevenueMismatchDetail, parseDirectCostsMismatchDetail, toInputDateFormat } from "../utils/helpers";
+import { ADMIN_ONLY_ALERT_TYPES, stripRowInfo, parseUnreceivedExpensesDetail, parseStaleExpenseDetail, parseInfoAlertDetail, getInfoCardTitle, getProactiveCardTitle, filterAnalysisResultsForAlert, getCleanPLCategoryName, getAlertJobTarget, formatSeenTimestamp, formatLikelihood, parseRevenueMismatchDetail, parseDirectCostsMismatchDetail, toInputDateFormat } from "../utils/helpers";
 
 const RICH_NOACTION_FLAG_GROUP = {
   crmCopiedConfChecked: "crm",
@@ -77,7 +77,8 @@ export default function AlertSelectionView({
   onNavInvoices, onNavOutgoings,
   isAdmin: propIsAdmin, user,
   managedClient, onClearManagedClient,
-  allClients = [], isSingleClientUser = false
+  allClients = [], isSingleClientUser = false,
+  isAssignOverlayOpen = false
 }) {
   const auth = useAuth();
   const currentUser = user || auth.user;
@@ -1300,11 +1301,30 @@ export default function AlertSelectionView({
 
   const totalVisibleAlertsCount = Object.values(groupedAlerts).reduce((sum, arr) => sum + arr.length, 0) + visibleNoActionAlerts.length + clientProactiveAlertsList.length;
 
+  const enrichedNoActionRef = React.useRef(new Set());
   React.useEffect(() => {
-    if (totalVisibleAlertsCount === 0 && !isLoading && !selectingClient) {
+    visibleNoActionAlerts.forEach((na) => {
+      if (na.flagType !== "crmCopiedConfChecked" && na.flagType !== "crmCopiedConfUnchecked") return;
+      const alertId = na.fingerprintHash || `${na.flagType}-${na.flagDetail || ""}`;
+      if (enrichedNoActionRef.current.has(alertId) || noActionAnalysisLoading[alertId]) return;
+      const rawAnalysis = noActionAnalysis[alertId] || na.analysisResult;
+      const needsEnrichment = !rawAnalysis || (
+        Array.isArray(rawAnalysis.results) &&
+        rawAnalysis.results.length > 0 &&
+        rawAnalysis.results[0].revenue === undefined
+      );
+      if (needsEnrichment) {
+        enrichedNoActionRef.current.add(alertId);
+        analyzeNoActionFlag(na);
+      }
+    });
+  }, [visibleNoActionAlerts, noActionAnalysis, noActionAnalysisLoading, analyzeNoActionFlag]);
+
+  React.useEffect(() => {
+    if (totalVisibleAlertsCount === 0 && !isLoading && !selectingClient && !isAssignOverlayOpen) {
       handlePostClear([], resolvedNoActionFlags);
     }
-  }, [totalVisibleAlertsCount, isLoading, selectingClient, handlePostClear, resolvedNoActionFlags]);
+  }, [totalVisibleAlertsCount, isLoading, selectingClient, isAssignOverlayOpen, handlePostClear, resolvedNoActionFlags]);
 
   return (
     <div className="pma-page-container" style={styles.container}>
@@ -1600,16 +1620,17 @@ export default function AlertSelectionView({
                             const cName = na.clientName || selectedClient?.clientName;
                             const clientInfo = (clientsWithFlags || []).find(c => c.clientName === cName) || (allClientsMap && (allClientsMap[cName] || Object.values(allClientsMap).find(cl => cl.clientName?.toLowerCase() === cName?.toLowerCase()))) || selectedClient;
                             const parsed = parseInfoAlertDetail(na.flagType, na.flagDetail);
+                            const primaryResult = displayedResults[0] || null;
+                            const displayClient = parsed.client || primaryResult?.clientName || "";
+                            const displayJob = parsed.job || (primaryResult?.jobName && primaryResult.jobName !== "-" ? primaryResult.jobName : "") || "";
+                            const displayProjectCode = parsed.projectCode || primaryResult?.projectCode || "";
+                            const displayRevenue = parsed.revenue || primaryResult?.revenue || "";
+                            const displayDirectCosts = parsed.directCosts || primaryResult?.directCosts || "";
+                            const displayStartDate = parsed.startDate || primaryResult?.startDate || "";
+                            const displayEndDate = parsed.endDate || primaryResult?.endDate || "";
                             const isBulkSelected = infoBulkSelected.has(alertId);
 
-                            let cardTitle = getFlagName(na.flagType) || na.flagName;
-                            if (na.flagType === "expenseUnreconGaps") {
-                              cardTitle = parsed?.tab === "Outgoings"
-                                ? (parsed.contractor ? `Stale placeholder expense date moved (${parsed.contractor})` : "Stale placeholder expense date moved")
-                                : (parsed?.client ? `Stale placeholder expense date moved (${parsed.client})` : "Stale placeholder expense date moved");
-                            } else if (na.flagType === "invoiceStaleUnsentChanges") {
-                              cardTitle = parsed?.client ? `Stale unsent invoice send date changed (${parsed.client})` : "Stale unsent invoice send date changed";
-                            }
+                            const cardTitle = getInfoCardTitle(na, parsed, getFlagName, isAdmin);
 
                             const isExiting = exitingAlertKeys.has(alertId);
                             return (
@@ -1672,11 +1693,15 @@ export default function AlertSelectionView({
                                   gap: "2px",
                                   marginTop: "2px",
                                 }}>
-                                  {parsed.tab && <div><strong>Tab:</strong> {parsed.tab}{parsed.slot ? ` (Slot ${parsed.slot})` : ""}</div>}
+                                  {parsed.tab && na.flagType !== "crmCopiedConfChecked" && <div><strong>Tab:</strong> {parsed.tab}{parsed.slot ? ` (Slot ${parsed.slot})` : ""}</div>}
                                   {parsed.month && <div><strong>Month:</strong> {parsed.month}</div>}
-                                  {parsed.client && <div><strong>End client:</strong> {parsed.client}</div>}
+                                  {displayClient && <div><strong>End client:</strong> {displayClient}</div>}
                                   {parsed.contractor && <div><strong>{parsed.tab === "Outgoings" ? "Vendor:" : "Contractor:"}</strong> {parsed.contractor}</div>}
-                                  {parsed.job && <div><strong>Job:</strong> {parsed.job}{parsed.projectCode ? ` [${parsed.projectCode}]` : ""}</div>}
+                                  {displayJob && <div><strong>Job:</strong> {displayJob}{displayProjectCode ? ` [${displayProjectCode}]` : ""}</div>}
+                                  {displayRevenue && <div><strong>Revenue:</strong> {displayRevenue}</div>}
+                                  {displayDirectCosts && <div><strong>Direct costs:</strong> {displayDirectCosts}</div>}
+                                  {displayStartDate && <div><strong>Start date:</strong> {displayStartDate}</div>}
+                                  {displayEndDate && <div><strong>End date:</strong> {displayEndDate}</div>}
                                   {isAdmin && parsed.confirmedRow && <div><strong>Confirmed tab row:</strong> {parsed.confirmedRow}</div>}
                                   {isAdmin && parsed.pipelineRow && <div><strong>Pipeline tab row:</strong> {parsed.pipelineRow}</div>}
                                   {isAdmin && parsed.rowNum && !parsed.confirmedRow && !parsed.pipelineRow && (
@@ -1698,11 +1723,6 @@ export default function AlertSelectionView({
                                           </span>
                                         ))}
                                       </div>
-                                    </div>
-                                  )}
-                                  {parsed.highlight && (
-                                    <div style={{ marginTop: "4px", fontWeight: "600", color: "#0284c7" }}>
-                                      {parsed.highlight}
                                     </div>
                                   )}
                                   {parsed.rawText && (
@@ -1989,7 +2009,7 @@ export default function AlertSelectionView({
                                   </label>
                                 )}
                                 <div style={{ fontWeight: "600", fontSize: "13.5px", color: "#0f172a", marginBottom: "2px", display: "flex", alignItems: "center" }}>
-                                  <span>{alert.heading}</span>
+                                  <span>{getProactiveCardTitle(alert, isAdmin)}</span>
                                   {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(alert.alertType) && <AdminBadge show={clientHasManager} />}
                                 </div>
                                 {alert.alertType === "retainer_invoice" && (
@@ -2301,7 +2321,6 @@ export default function AlertSelectionView({
                                   const md = alert.metadata || {};
                                   return (
                                     <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
-                                      <div style={{ fontWeight: "600", color: "#c62828", marginBottom: "4px" }}>Job exists in both tabs but Pipeline is not closed out</div>
                                       <div style={{ marginBottom: "2px" }}><strong>Confirmed tab</strong></div>
                                       {md.confirmedRow && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Row: {md.confirmedRow}</div>}
                                       {md.endClientName && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Client: {md.endClientName}</div>}
@@ -2326,7 +2345,6 @@ export default function AlertSelectionView({
                                   const md = alert.metadata || {};
                                   return (
                                     <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
-                                      <div style={{ fontWeight: "600", color: "#c62828", marginBottom: "4px" }}>Retainer contract shrunk - excess child row could not be removed automatically</div>
                                       {md.clientJobStr && <div style={{ marginBottom: "2px" }}><strong>Job:</strong> {md.clientJobStr}</div>}
                                       {md.childRowNum && <div style={{ marginBottom: "2px" }}><strong>Blocked child row:</strong> {md.childRowNum}</div>}
                                       {md.timestamp && <div style={{ marginBottom: "4px" }}><strong>First detected:</strong> {String(md.timestamp).slice(0, 10)}</div>}

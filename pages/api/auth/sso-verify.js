@@ -6,10 +6,9 @@ export default async function handler(req, res) {
   const origin = req.headers.origin;
   const isAllowedOrigin = origin && (
     origin === "https://app.pulsedashboard.co.uk" ||
+    origin === "https://pulsedashboard.co.uk" ||
     origin === "https://pma.pulsedashboard.co.uk" ||
-    origin === "https://project-shj9n.vercel.app" ||
-    origin === "http://localhost:3000" ||
-    origin.endsWith(".pulsedashboard.co.uk")
+    (process.env.NODE_ENV !== "production" && origin === "http://localhost:3000")
   );
 
   if (isAllowedOrigin) {

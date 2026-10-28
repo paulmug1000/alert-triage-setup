@@ -49,11 +49,63 @@ export function getJwtSecret() {
   if (process.env.PMA_JWT_SECRET && process.env.PMA_JWT_SECRET.trim().length > 0) {
     return process.env.PMA_JWT_SECRET.trim();
   }
+  if (process.env.AUTH_SECRET && process.env.AUTH_SECRET.trim().length > 0) {
+    return process.env.AUTH_SECRET.trim();
+  }
   if (process.env.NODE_ENV === "production") {
     throw new Error("FATAL: PMA_JWT_SECRET environment variable is missing or empty in production.");
   }
   console.warn("⚠️ WARNING: PMA_JWT_SECRET is unset. Using ephemeral development secret.");
   return _devEphemeralSecret;
+}
+
+/**
+ * Create an HMAC-SHA256 signed OAuth state token (CRIT-02 remediation)
+ */
+export function createSignedOAuthState(payload) {
+  const enriched = {
+    ...payload,
+    ts: payload?.ts || Date.now(),
+  };
+  const data = Buffer.from(JSON.stringify(enriched)).toString("base64url");
+  const sig = crypto
+    .createHmac("sha256", getJwtSecret())
+    .update(`oauth_state:${data}`)
+    .digest("base64url");
+  return `${data}.${sig}`;
+}
+
+/**
+ * Verify an HMAC-SHA256 signed OAuth state token (CRIT-02 remediation)
+ */
+export function verifySignedOAuthState(stateToken, maxAgeMs = 15 * 60 * 1000) {
+  if (!stateToken || typeof stateToken !== "string" || !stateToken.includes(".")) {
+    return null;
+  }
+  const dotIdx = stateToken.lastIndexOf(".");
+  const data = stateToken.slice(0, dotIdx);
+  const sig = stateToken.slice(dotIdx + 1);
+  if (!data || !sig) return null;
+
+  try {
+    const expectedSig = crypto
+      .createHmac("sha256", getJwtSecret())
+      .update(`oauth_state:${data}`)
+      .digest("base64url");
+    const sigBuf = Buffer.from(sig);
+    const expBuf = Buffer.from(expectedSig);
+    if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+      return null;
+    }
+    const parsed = JSON.parse(Buffer.from(data, "base64url").toString("utf8"));
+    if (!parsed || typeof parsed !== "object") return null;
+    if (maxAgeMs > 0 && (!parsed.ts || Date.now() - Number(parsed.ts) > maxAgeMs)) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
 }
 
 
@@ -157,9 +209,17 @@ export async function sendOtp(email, _ignoredAcId, clientIp) {
     };
   }
 
-  // Rate limiting cooldown check
+  // Rate limiting cooldown & lockout check
   const cooldownKey = `pma_otp_cooldown:${normalizedEmail}`;
+  const attemptsKey = `pma_otp_attempts:${normalizedEmail}`;
   try {
+    const priorFailedAttempts = parseInt((await redisClient.get(attemptsKey)) || "0", 10) || 0;
+    if (priorFailedAttempts >= 5) {
+      return {
+        success: false,
+        message: "Too many failed verification attempts. Please try again in 15 minutes."
+      };
+    }
     const inCooldown = await redisClient.get(cooldownKey);
     if (inCooldown) {
       const ttl = await redisClient.ttl(cooldownKey);
@@ -180,12 +240,10 @@ export async function sendOtp(email, _ignoredAcId, clientIp) {
     console.log(`📧 Generated OTP code for ${normalizedEmail}`);
   }
 
-  // Store OTP in Redis (reset atomic attempts key alongside fresh OTP)
+  // Store OTP in Redis (preserve attemptsKey across cooldowns to prevent brute-force reset)
   const otpKey = `pma_otp:${normalizedEmail}`;
-  const attemptsKey = `pma_otp_attempts:${normalizedEmail}`;
   try {
     await redisClient.set(otpKey, JSON.stringify({ code, attempts: 0 }), { EX: OTP_EXPIRY_SECS });
-    await redisClient.del(attemptsKey);
     await redisClient.set(cooldownKey, "1", { EX: COOLDOWN_SECS });
   } catch (e) {
     console.error("❌ Redis OTP storage error:", e.message);
@@ -254,7 +312,10 @@ export async function sendOtp(email, _ignoredAcId, clientIp) {
         html: htmlBody
       });
       console.log(`✅ Verification email sent to ${normalizedEmail} via Gmail SMTP.`);
-      return { success: true, message: `Verification code sent to ${normalizedEmail}.` };
+      return {
+        success: true,
+        message: "If this email address is registered, a verification code has been sent. Please check your inbox."
+      };
     } catch (sendErr) {
       console.error(`❌ Gmail SMTP sending failed:`, sendErr.message);
       if (process.env.NODE_ENV !== "production") {
@@ -328,14 +389,14 @@ export async function verifyOtp(email, code, _ignoredAcId, res, clientIp = "-") 
     try {
       newAttempts = await redisClient.incr(attemptsKey);
       if (newAttempts === 1) {
-        await redisClient.expire(attemptsKey, OTP_EXPIRY_SECS);
+        await redisClient.expire(attemptsKey, 900); // 15-minute lockout window
       }
     } catch { }
 
     if (newAttempts >= 5) {
       try {
         await redisClient.del(otpKey);
-        await redisClient.del(attemptsKey);
+        await redisClient.expire(attemptsKey, 900); // keep lockout active for 15 minutes
       } catch { }
       getSheetsClient().then(sheets => {
         logPulseActivity(sheets, {
@@ -425,13 +486,20 @@ export async function createSessionForVerifiedEmail(email, res, provider = "OAut
     };
   }
 
-  // Block Admin or ClientManager if logging in via EmailOTP
-  const isBlockedRole = provider === "EmailOTP" && user && (user.isAdmin || user.role === "Admin" || user.role === "ClientManager" || String(user.role || "").toLowerCase() === "clientmanager");
-  if (isBlockedRole) {
+  // Block Admin or ClientManager if logging in via EmailOTP or Microsoft (internal staff use Google SSO)
+  const isStaffRole = user && (user.isAdmin || user.role === "Admin" || user.role === "ClientManager" || String(user.role || "").toLowerCase() === "clientmanager");
+  if (provider === "EmailOTP" && isStaffRole) {
     return {
       success: false,
       adminOtpBlocked: true,
-      message: "You cannot access Pulse or the Pulse Management Area using a one-time password. Please log in using Google or Microsoft."
+      message: "You cannot access Pulse or the Pulse Management Area using a one-time password. Please log in using Google."
+    };
+  }
+  if (provider === "Microsoft" && isStaffRole) {
+    return {
+      success: false,
+      unauthorized: true,
+      message: "Staff and administrator accounts must sign in using Google."
     };
   }
 
@@ -470,6 +538,7 @@ export async function createSessionForVerifiedEmail(email, res, provider = "OAut
 
   // Sign JWT session
   const payload = {
+    jti: crypto.randomUUID(),
     tokenType: "session",
     email: user.email,
     name: user.name,

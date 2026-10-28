@@ -60,7 +60,9 @@ import {
   handleEomGetDefaultTasks, handleEomSaveDefaultTask, handleEomDeleteDefaultTask,
   handleEomReorderDefaultTasks, handleEomSeedDefaultTasksFromTemplates, handleEomApplyDefaultTasks,
   handleEomGetReportingData, handleEomSaveReportingConfig, handleEomRunReportingAction,
-  handleEomTestReportingWebApp, handleEomSaveChartRef, handleEomDeleteChartRef
+  handleEomTestReportingWebApp, handleEomSaveChartRef, handleEomDeleteChartRef,
+  handleEomGetOverheadExpenses, handleEomPreviewOverheadExpenses,
+  handleEomAddZeroBudgetCategory, handleEomConfirmOverheadExpenses
 } from "../../services/eomTools";
 import {
   handleUploadPayrollChunk, handleIdentifyPayrollClient, handleIdentifyTimeClient,
@@ -119,7 +121,7 @@ import {
   isReadOnlySession,
   canAccessPma
 } from "../../services/userPermissions";
-import { matchesClientName } from "../../utils/helpers";
+import { matchesClientName, sanitizeSpreadsheetTerms } from "../../utils/helpers";
 
 async function checkTriageClientAuth(sheets, sessionUser, clientNameClaim, sheetIds = []) {
   if (sessionUser?.isAdmin && !isReadOnlySession(sessionUser)) return true;
@@ -178,15 +180,15 @@ export const config = {
 // ============================================================================
 
 export default async function handler(req, res) {
-  // Set CORS headers
+  // Set CORS headers (MED-03: strict origin allowlist)
   const allowedOrigins = [
     "https://app.pulsedashboard.co.uk",
+    "https://pulsedashboard.co.uk",
     "https://pma.pulsedashboard.co.uk",
-    "https://project-shj9n.vercel.app",
-    "http://localhost:3000"
+    ...(process.env.NODE_ENV !== "production" ? ["http://localhost:3000"] : [])
   ];
   const origin = req.headers.origin;
-  if (origin && (allowedOrigins.includes(origin) || origin.endsWith(".pulsedashboard.co.uk"))) {
+  if (origin && allowedOrigins.includes(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
   } else {
     res.setHeader("Access-Control-Allow-Origin", "https://app.pulsedashboard.co.uk");
@@ -240,7 +242,8 @@ export default async function handler(req, res) {
       update_outgoing_note: ["outgoings", "cash"],
       mark_expense_assigned: ["outgoings", "cash"],
       prune_assigned_expenses: ["outgoings", "cash"],
-      delete_invoice_from_pulse: ["invoices", "jobs", "cash"]
+      delete_invoice_from_pulse: ["invoices", "jobs", "cash"],
+      eom_add_zero_budget_category: ["budget"]
     };
 
     const originalJson = res.json.bind(res);
@@ -395,15 +398,34 @@ export default async function handler(req, res) {
         return res.status(403).json({ success: false, error: "Forbidden: Access restricted to Pulse Portal" });
       }
 
-      // Restrict system/admin-only actions
+      // Restrict system/admin-only actions (HIGH-02)
       const ADMIN_ONLY_TRIAGE_ACTIONS = new Set([
         "agent_progress",
         "eom_save_template",
+        "eom_reorder_templates",
         "eom_toggle_client_excluded",
         "eom_reorder_clients",
+        "eom_load_bank_accounts",
+        "eom_seed_from_checklist",
+        "eom_save_default_task",
+        "eom_delete_default_task",
+        "eom_reorder_default_tasks",
+        "eom_seed_default_tasks",
+        "eom_apply_default_tasks",
         "eom_save_reporting_config",
         "eom_test_reporting_webapp",
         "eom_run_reporting_action",
+        "save_claude_settings",
+        "get_claude_settings",
+        "log_claude_usage",
+        "get_app_log",
+        "get_flag_sweep_log",
+        "get_precompute_log",
+        "get_build_options_log",
+        "run_flag_sweep",
+        "build_cached_alert_options",
+        "trigger_refresh",
+        "sync_all_master_script_secrets",
         "bust_cache"
       ]);
       if (ADMIN_ONLY_TRIAGE_ACTIONS.has(action) && !sessionUser.isAdmin) {
@@ -444,6 +466,15 @@ export default async function handler(req, res) {
             );
             if (!itemAllowed) {
               return res.status(403).json({ success: false, error: "Forbidden: Access denied to one or more client alerts in batch." });
+            }
+          }
+        }
+
+        if (Array.isArray(b.updates) && b.updates.length > 0) {
+          for (const item of b.updates) {
+            if (!item || !item.clientName) continue;
+            if (!isUserAuthorizedForClient(sessionUser, item.clientName)) {
+              return res.status(403).json({ success: false, error: "Forbidden: Access denied to one or more clients in batch update." });
             }
           }
         }
@@ -1245,6 +1276,14 @@ export default async function handler(req, res) {
       return await handleEomSaveChartRef(req, res, sheets);
     } else if (action === "eom_delete_chart_ref") {
       return await handleEomDeleteChartRef(req, res, sheets);
+    } else if (action === "eom_get_overhead_expenses") {
+      return await handleEomGetOverheadExpenses(req, res, sheets);
+    } else if (action === "eom_preview_overhead_expenses") {
+      return await handleEomPreviewOverheadExpenses(req, res, sheets);
+    } else if (action === "eom_add_zero_budget_category") {
+      return await handleEomAddZeroBudgetCategory(req, res, sheets);
+    } else if (action === "eom_confirm_overhead_expenses") {
+      return await handleEomConfirmOverheadExpenses(req, res, sheets);
 
     } else if (action === "get_flag_sweep_log") {
       const runs = await readFlagSweepLog(sheets, req.body.automationCommanderSheetId);
@@ -1267,9 +1306,11 @@ export default async function handler(req, res) {
     }
   } catch (error) {
     console.error("Triage API error:", error);
+    const sessionUser = getSessionUser(req);
+    const safeMsg = sessionUser?.isAdmin ? error.message : sanitizeSpreadsheetTerms(error.message || "Internal server error");
     res.status(500).json({
       success: false,
-      error: error.message,
+      error: safeMsg,
     });
   }
 }

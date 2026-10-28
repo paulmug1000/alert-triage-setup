@@ -13,6 +13,7 @@ import { exchangeQBCodeForTokens, getQBCompanyInfo } from "../../../../services/
 import { saveIntegrationTokens } from "../../../../services/vaultService.js";
 import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "../../../../services/sheetsClient.js";
 import { DEFAULT_AC_SHEET_ID, matchesClientName } from "../../../../services/userPermissions.js";
+import { verifySignedOAuthState } from "../../../../services/authService.js";
 import { notifyStaffOnClientConnection } from "../../../../services/connectionNotifier.js";
 import { sanitizeRedirectUrl } from "../../../../utils/helpers.js";
 
@@ -32,19 +33,10 @@ export default async function handler(req, res) {
 
   const { code, state, realmId, error, error_description } = req.query;
 
-  // 1. Decode state early to extract redirectBack and client context
-  let statePayload = null;
-  if (state) {
-    try {
-      const stateJson = Buffer.from(state, "base64url").toString("utf8");
-      statePayload = JSON.parse(stateJson);
-    } catch (err) {
-      console.warn("Invalid state token structure in QuickBooks callback:", err.message);
-    }
-  }
+  // 1. Verify HMAC-signed state early to extract redirectBack and client context (CRIT-02 & HIGH-06)
+  const statePayload = state ? verifySignedOAuthState(String(state)) : null;
 
-  const defaultReturnUrl = statePayload?.redirectBack || "/pulse";
-  let returnUrl = sanitizeRedirectUrl(statePayload?.redirectBack, defaultReturnUrl);
+  let returnUrl = sanitizeRedirectUrl(statePayload?.redirectBack, "/pulse");
   if (returnUrl.startsWith("/pma") && !returnUrl.includes("nav=")) {
     const sep = returnUrl.includes("?") ? "&" : "?";
     returnUrl = `${returnUrl}${sep}nav=integrations`;

@@ -97,7 +97,8 @@ export default function OutgoingsView({
   managedClient,
   onClearManagedClient,
   initialClient,
-  onSelectClient
+  onSelectClient,
+  isModalOverlay = false
 }) {
   const auth = useAuth();
   const isAdmin = propIsAdmin || (!auth.user?.isReadOnly && !!(auth.user?.isAdmin || auth.user?.role === "Admin"));
@@ -106,7 +107,43 @@ export default function OutgoingsView({
     automationCommanderSheetId, assignedAppIds, assignedByClient,
     setAssignedByClient, setAssignedAppIds, outgoingsPullPendingRef, addAssignedAppId
   } = useAppGlobals();
-  const { clientsWithFlags, setClientsWithFlags } = useTriage();
+  const { clientsWithFlags, setClientsWithFlags, setClientAlerts, sessionId } = useTriage();
+
+  const removeAssignedExpenseAlerts = (appIds, clientName) => {
+    const idSet = new Set((appIds || []).map(id => String(id || "").trim()).filter(Boolean));
+    if (idSet.size === 0 || !setClientAlerts) return;
+    setClientAlerts(prev => {
+      if (!Array.isArray(prev)) return prev;
+      const toRemove = [];
+      const next = prev.filter(a => {
+        if (a.type === "expenseDashboardDiscr" && (!clientName || a.clientName === clientName)) {
+          const txId = String(a.data?.accounting?.[6] || a.data?.accounting?.[10] || a.data?.accounting?.[11] || a.data?.accounting?.[0] || "").trim();
+          const isMissing = String(a.data?.flags?.[0] ?? "").trim() === "1";
+          if (isMissing && idSet.has(txId)) {
+            toRemove.push(a);
+            return false;
+          }
+        }
+        return true;
+      });
+      if (toRemove.length > 0 && sessionId) {
+        toRemove.forEach(a => {
+          fetch("/api/triage", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "remove_alert",
+              sessionId,
+              clientName: a.clientName,
+              alertType: a.type,
+              rowNumber: a.rowNumber
+            })
+          }).catch(() => {});
+        });
+      }
+      return next;
+    });
+  };
   const {
     outgoingsData, setOutgoingsData,
     outgoingsLoading, setOutgoingsLoading,
@@ -123,6 +160,7 @@ export default function OutgoingsView({
     directCostsLoading, setDirectCostsLoading,
     directCostsShowAll, setDirectCostsShowAll,
     directCostsSavingCell, setDirectCostsSavingCell,
+    outgoingsError,
     loadOutgoings, loadDirectCostsJobs
   } = useOutgoings(assignedAppIds, assignedByClient, setAssignedByClient, setAssignedAppIds, outgoingsPullPendingRef, automationCommanderSheetId, managedClient || initialClient);
 
@@ -132,19 +170,26 @@ export default function OutgoingsView({
   useEffect(() => {
     if (managedClient) {
       const currentName = managedClient.clientName?.toLowerCase();
-      const hasFullClient = Boolean(outgoingsClient?.clientSheetId);
-      const clientWithSheet = (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === currentName && c.clientSheetId) || (managedClient.clientSheetId ? managedClient : null);
+      const hasFullClient = Boolean(outgoingsClient?.clientSheetId && outgoingsData);
+      const clientWithSheet =
+        (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === currentName && c.clientSheetId) ||
+        (clientsWithFlags || []).find(c => c.clientName?.toLowerCase() === currentName && c.clientSheetId) ||
+        (managedClient.clientSheetId ? managedClient : null);
       if (prevManagedClientRef.current !== currentName || (!hasFullClient && clientWithSheet)) {
-        prevManagedClientRef.current = currentName;
         const clientObj = clientWithSheet || (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === currentName) || managedClient;
         if (clientObj?.clientSheetId) {
+          prevManagedClientRef.current = currentName;
           loadOutgoings(clientObj);
         }
       }
     } else if (initialClient && (initialClient !== prevInitialClientRef.current || (!outgoingsClient?.clientSheetId && initialClient.clientSheetId))) {
-      prevInitialClientRef.current = initialClient;
-      const clientObj = (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === initialClient.clientName?.toLowerCase()) || initialClient;
+      const currentName = initialClient.clientName?.toLowerCase();
+      const clientObj =
+        (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === currentName && c.clientSheetId) ||
+        (clientsWithFlags || []).find(c => c.clientName?.toLowerCase() === currentName && c.clientSheetId) ||
+        initialClient;
       if (clientObj?.clientSheetId) {
+        prevInitialClientRef.current = initialClient;
         loadOutgoings(clientObj);
       }
     } else if (prevManagedClientRef.current && !managedClient) {
@@ -154,7 +199,7 @@ export default function OutgoingsView({
       setOutgoingsInbox([]);
       if (typeof clearInboxSelection === "function") clearInboxSelection();
     }
-  }, [managedClient, initialClient, allOutgoingsClients, outgoingsClient?.clientSheetId]);
+  }, [managedClient, initialClient, allOutgoingsClients, clientsWithFlags, outgoingsClient?.clientSheetId, outgoingsData]);
 
   const effectiveClientObj = outgoingsClient || (managedClient?.clientName ? (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === managedClient.clientName.toLowerCase()) || managedClient : null) || initialClient;
   const effectiveSheetId = outgoingsClient?.clientSheetId || managedClient?.clientSheetId || (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === (outgoingsClient?.clientName || managedClient?.clientName)?.toLowerCase())?.clientSheetId;
@@ -264,6 +309,7 @@ export default function OutgoingsView({
 
     const placedIds = new Set(toPlace.map(e => e.appId));
     toPlace.forEach(exp => addAssignedAppId(exp.appId, outgoingsClient?.clientName));
+    removeAssignedExpenseAlerts([...placedIds], outgoingsClient?.clientName);
     decrementClientExpenseCount(outgoingsClient?.clientName, toPlace.length);
     setOutgoingsInbox(prev => {
       const remaining = prev.filter(e => !placedIds.has(e.appId));
@@ -629,6 +675,7 @@ export default function OutgoingsView({
           expenseList.forEach(item => {
             addAssignedAppId(item.appId, outgoingsClient?.clientName);
           });
+          removeAssignedExpenseAlerts([...placedIds], outgoingsClient?.clientName);
           decrementClientExpenseCount(outgoingsClient?.clientName, expenseList.length);
           clearInboxSelection();
         };
@@ -670,6 +717,7 @@ export default function OutgoingsView({
           expenseList.forEach(item => {
             addAssignedAppId(item.appId, outgoingsClient?.clientName);
           });
+          removeAssignedExpenseAlerts([...placedIds], outgoingsClient?.clientName);
           decrementClientExpenseCount(outgoingsClient?.clientName, expenseList.length);
           clearInboxSelection();
         };
@@ -714,7 +762,12 @@ export default function OutgoingsView({
           : (outgoingsPlacing ? [outgoingsPlacing] : []);
         const totalAmt = selectedList.reduce((s, e) => s + (e.amount || 0), 0);
         return (
-          <div style={{ background: "#1a56db", color: "#fff", padding: "12px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: "13px", borderRadius: "8px", margin: "0 20px 16px", boxShadow: "0 4px 14px rgba(26,86,219,0.25)" }}>
+          <div style={{
+            background: "#1a56db", color: "#fff", padding: "12px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: "13px", borderRadius: "8px",
+            margin: isModalOverlay ? "12px 24px 0" : "0 20px 16px",
+            boxShadow: "0 4px 14px rgba(26,86,219,0.25)",
+            ...(isModalOverlay ? { position: "sticky", top: "8px", zIndex: 20 } : {})
+          }}>
             <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
               <span style={{ fontWeight: "700", background: "rgba(255,255,255,0.2)", padding: "2px 8px", borderRadius: "10px" }}>
                 {selectedList.length} {selectedList.length === 1 ? "expense" : "expenses"} selected
@@ -734,7 +787,8 @@ export default function OutgoingsView({
         );
       })()}
 
-      <div className="pma-page-container" style={{ width: "100%", maxWidth: "100%", margin: "0 auto", padding: "20px 32px 60px", boxSizing: "border-box" }}>
+      <div className="pma-page-container" style={{ width: "100%", maxWidth: "100%", margin: "0 auto", padding: isModalOverlay ? "16px 24px 32px" : "20px 32px 60px", boxSizing: "border-box" }}>
+        {!isModalOverlay && (
         <div
           style={{
             display: "flex",
@@ -846,6 +900,7 @@ export default function OutgoingsView({
             </div>
           )}
         </div>
+        )}
 
         {noClient && (
           <EditClientSelector
@@ -969,48 +1024,129 @@ export default function OutgoingsView({
           </div>
         )}
 
-        {!noClient && (outgoingsLoading || !outgoingsData) && (
+        {!noClient && outgoingsLoading && (
           <PmaOutgoingsTableSkeleton />
+        )}
+
+        {!noClient && !outgoingsLoading && !outgoingsData && (
+          <div style={{ background: "#fff", border: "1px solid #fecaca", borderRadius: "10px", padding: "24px", textAlign: "center", marginBottom: "16px" }}>
+            <div style={{ fontSize: "14px", fontWeight: 600, color: "#b91c1c", marginBottom: "8px" }}>
+              {outgoingsError || "Unable to load contractor expenses data."}
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                if (effectiveClientObj?.clientSheetId) {
+                  loadOutgoings(effectiveClientObj, true);
+                }
+              }}
+              style={{
+                padding: "7px 16px",
+                backgroundColor: "#0047AB",
+                color: "#ffffff",
+                border: "none",
+                borderRadius: "6px",
+                fontSize: "13px",
+                fontWeight: 600,
+                cursor: "pointer"
+              }}
+            >
+              ↻ Retry loading expenses
+            </button>
+          </div>
         )}
 
         {!noClient && !outgoingsLoading && outgoingsData && (
           <>
-            <div style={{ display: "flex", gap: "8px", marginBottom: "14px", borderBottom: "1px solid #e0e0e0" }}>
-              <a
-                href={`/pma?nav=outgoings&subtab=contractors${outgoingsClient?.clientName ? `&client=${encodeURIComponent(outgoingsClient.clientName)}` : ""}`}
-                onClick={(e) => {
-                  if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) {
-                    e.preventDefault();
-                    setVendorsSubTab("contractors");
-                  }
-                }}
-                style={{
-                  padding: "8px 16px", background: "none", border: "none",
-                  borderBottom: vendorsSubTab === "contractors" ? "2px solid #0066cc" : "2px solid transparent",
-                  color: vendorsSubTab === "contractors" ? "#0066cc" : "#666",
-                  fontWeight: vendorsSubTab === "contractors" ? "700" : "500", fontSize: "14px", cursor: "pointer",
-                  textDecoration: "none", display: "inline-block", boxSizing: "border-box"
-                }}>
-                By month
-              </a>
-              <a
-                href={`/pma?nav=outgoings&subtab=directCosts${outgoingsClient?.clientName ? `&client=${encodeURIComponent(outgoingsClient.clientName)}` : ""}`}
-                onClick={(e) => {
-                  if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) {
-                    e.preventDefault();
-                    setVendorsSubTab("directCosts");
-                    if (!directCostsJobs && outgoingsClient) loadDirectCostsJobs(outgoingsClient, false);
-                  }
-                }}
-                style={{
-                  padding: "8px 16px", background: "none", border: "none",
-                  borderBottom: vendorsSubTab === "directCosts" ? "2px solid #0066cc" : "2px solid transparent",
-                  color: vendorsSubTab === "directCosts" ? "#0066cc" : "#666",
-                  fontWeight: vendorsSubTab === "directCosts" ? "700" : "500", fontSize: "14px", cursor: "pointer",
-                  textDecoration: "none", display: "inline-block", boxSizing: "border-box"
-                }}>
-                By job
-              </a>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", marginBottom: "14px", borderBottom: "1px solid #e0e0e0" }}>
+              <div style={{ display: "flex", gap: "8px" }}>
+                <a
+                  href={`/pma?nav=outgoings&subtab=contractors${outgoingsClient?.clientName ? `&client=${encodeURIComponent(outgoingsClient.clientName)}` : ""}`}
+                  onClick={(e) => {
+                    if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) {
+                      e.preventDefault();
+                      setVendorsSubTab("contractors");
+                    }
+                  }}
+                  style={{
+                    padding: "8px 16px", background: "none", border: "none",
+                    borderBottom: vendorsSubTab === "contractors" ? "2px solid #0066cc" : "2px solid transparent",
+                    color: vendorsSubTab === "contractors" ? "#0066cc" : "#666",
+                    fontWeight: vendorsSubTab === "contractors" ? "700" : "500", fontSize: "14px", cursor: "pointer",
+                    textDecoration: "none", display: "inline-block", boxSizing: "border-box"
+                  }}>
+                  By month
+                </a>
+                <a
+                  href={`/pma?nav=outgoings&subtab=directCosts${outgoingsClient?.clientName ? `&client=${encodeURIComponent(outgoingsClient.clientName)}` : ""}`}
+                  onClick={(e) => {
+                    if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) {
+                      e.preventDefault();
+                      setVendorsSubTab("directCosts");
+                      if (!directCostsJobs && outgoingsClient) loadDirectCostsJobs(outgoingsClient, false);
+                    }
+                  }}
+                  style={{
+                    padding: "8px 16px", background: "none", border: "none",
+                    borderBottom: vendorsSubTab === "directCosts" ? "2px solid #0066cc" : "2px solid transparent",
+                    color: vendorsSubTab === "directCosts" ? "#0066cc" : "#666",
+                    fontWeight: vendorsSubTab === "directCosts" ? "700" : "500", fontSize: "14px", cursor: "pointer",
+                    textDecoration: "none", display: "inline-block", boxSizing: "border-box"
+                  }}>
+                  By job
+                </a>
+              </div>
+              {isModalOverlay && outgoingsClient && (
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", paddingBottom: "6px" }}>
+                  {isAdmin && vendorsSubTab === "directCosts" && (
+                    <button
+                      type="button"
+                      onClick={() => setViewMode(prev => prev === "modern" ? "legacy" : "modern")}
+                      style={{
+                        padding: "5px 12px",
+                        borderRadius: "6px",
+                        border: "1px solid #cbd5e1",
+                        background: viewMode === "legacy" ? "#0f172a" : "#ffffff",
+                        color: viewMode === "legacy" ? "#ffffff" : "#334155",
+                        fontSize: "12px",
+                        fontWeight: "600",
+                        cursor: "pointer",
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "5px",
+                        boxShadow: "0 1px 2px rgba(0,0,0,0.05)"
+                      }}
+                      title={viewMode === "modern" ? "Switch to traditional spreadsheet view" : "Switch to improved modern view"}
+                    >
+                      <span>{viewMode === "modern" ? "📋 Legacy view" : "✨ Modern view"}</span>
+                    </button>
+                  )}
+                  <button
+                    className="triage-btn"
+                    onClick={() => {
+                      loadOutgoings(outgoingsClient);
+                      if (vendorsSubTab === "directCosts") {
+                        loadDirectCostsJobs(outgoingsClient, directCostsShowAll);
+                      }
+                    }}
+                    style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 12px" }}
+                    title={isAdmin ? "Refresh expenses from live sheets" : "Refresh expenses"}
+                  >
+                    ↻ Refresh
+                  </button>
+                  {isAdmin && outgoingsClient.clientSheetId && (
+                    <button
+                      className="triage-btn"
+                      onClick={() => {
+                        window.open(`https://docs.google.com/spreadsheets/d/${outgoingsClient.clientSheetId}/edit`, "_blank");
+                      }}
+                      style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 12px", color: "#1d4ed8", borderColor: "#93c5fd" }}
+                    >
+                      📊 Open sheets
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           </>
         )}
@@ -1215,6 +1351,7 @@ export default function OutgoingsView({
                             toPlace.forEach(exp => {
                               addAssignedAppId(exp.appId, outgoingsClient?.clientName);
                             });
+                            removeAssignedExpenseAlerts([...placedIds], outgoingsClient?.clientName);
                             decrementClientExpenseCount(outgoingsClient?.clientName, toPlace.length);
                             clearInboxSelection();
                           } else {
@@ -1873,6 +2010,7 @@ export default function OutgoingsView({
                                           setDirectCostsSavingCell(cellSavingKey);
                                           const placedIds = new Set(toPlace.map(e => e.appId));
                                           toPlace.forEach(exp => addAssignedAppId(exp.appId, outgoingsClient?.clientName));
+                                          removeAssignedExpenseAlerts([...placedIds], outgoingsClient?.clientName);
                                           decrementClientExpenseCount(outgoingsClient?.clientName, toPlace.length);
                                           setOutgoingsInbox(prev => {
                                             const remaining = prev.filter(e => !placedIds.has(e.appId));
@@ -1993,6 +2131,7 @@ export default function OutgoingsView({
                                         setDirectCostsSavingCell(savingKey);
                                         const placedIds = new Set(toPlace.map(e => e.appId));
                                         toPlace.forEach(exp => addAssignedAppId(exp.appId, outgoingsClient?.clientName));
+                                        removeAssignedExpenseAlerts([...placedIds], outgoingsClient?.clientName);
                                         decrementClientExpenseCount(outgoingsClient?.clientName, toPlace.length);
                                         setOutgoingsInbox(prev => {
                                           const remaining = prev.filter(e => !placedIds.has(e.appId));

@@ -123,11 +123,26 @@ export async function refreshExcelTokens(refreshToken) {
   };
 }
 
+const SAFE_GRAPH_ID_RE = /^[A-Za-z0-9!._,-]+$/;
+
+/**
+ * Validates Microsoft Graph identifiers (driveId, fileId, siteId, tenantId) to prevent
+ * path traversal / authenticated SSRF against arbitrary Graph endpoints (HIGH-04 remediation).
+ */
+export function assertSafeGraphId(value, fieldName = "identifier") {
+  const str = String(value || "").trim();
+  if (!str || str.includes("..") || str.includes("/") || str.includes("\\") || !SAFE_GRAPH_ID_RE.test(str)) {
+    throw new Error(`Invalid Microsoft Graph ${fieldName} format.`);
+  }
+  return encodeURIComponent(str);
+}
+
 /**
  * Acquires a Microsoft Graph access token using enterprise Azure Client Credentials.
  */
 export async function getAzureClientCredentialsToken(tenantId, clientId, clientSecret) {
-  const tokenUrl = `https://login.microsoftonline.com/${encodeURIComponent(tenantId)}/oauth2/v2.0/token`;
+  const safeTenant = assertSafeGraphId(tenantId, "tenantId");
+  const tokenUrl = `https://login.microsoftonline.com/${safeTenant}/oauth2/v2.0/token`;
   const body = new URLSearchParams({
     client_id: clientId,
     scope: "https://graph.microsoft.com/.default",
@@ -219,7 +234,7 @@ export async function resolveSharePointDriveItem({ sharingUrl, token }) {
       });
       const driveData = await driveRes.json();
       if (driveRes.ok && driveData.id) {
-        const myDriveId = driveData.id;
+        const myDriveId = assertSafeGraphId(driveData.id, "driveId");
         const urlWithoutQuery = cleanUrl.split("?")[0];
         const match = urlWithoutQuery.match(/\/Documents\/(.+)$/i);
         if (match && match[1]) {
@@ -268,16 +283,17 @@ export async function resolveSharePointDriveItem({ sharingUrl, token }) {
     try {
       const u = new URL(cleanUrl);
       const siteMatch = u.pathname.match(/\/sites\/([^/]+)/);
-      if (siteMatch && siteMatch[1]) {
-        const siteName = siteMatch[1];
+      if (siteMatch && siteMatch[1] && /^[A-Za-z0-9.-]+\.sharepoint\.com$/i.test(u.hostname)) {
+        const siteName = encodeURIComponent(siteMatch[1]);
         const siteRes = await fetch(`https://graph.microsoft.com/v1.0/sites/${u.hostname}:/sites/${siteName}?$select=id,name`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         const siteData = await siteRes.json();
         if (siteRes.ok && siteData.id) {
+          const safeSiteId = assertSafeGraphId(siteData.id, "siteId");
           const fileName = decodeURIComponent(u.pathname.split("/").pop());
           if (fileName && fileName.endsWith(".xlsx")) {
-            const searchRes = await fetch(`https://graph.microsoft.com/v1.0/sites/${siteData.id}/drive/root/search(q='${encodeURIComponent(fileName)}')?$select=id,name,parentReference`, {
+            const searchRes = await fetch(`https://graph.microsoft.com/v1.0/sites/${safeSiteId}/drive/root/search(q='${encodeURIComponent(fileName)}')?$select=id,name,parentReference`, {
               headers: { Authorization: `Bearer ${token}` }
             });
             const searchData = await searchRes.json();
@@ -347,8 +363,11 @@ export async function inspectExcelWorkbook({
     throw new Error("Could not access Excel workbook. Please ensure your Microsoft 365 account has permission to access this SharePoint or OneDrive file, and that the link is correct.");
   }
 
+  const safeDriveId = assertSafeGraphId(resolvedDriveId, "driveId");
+  const safeFileId = assertSafeGraphId(resolvedFileId, "fileId");
+
   // 1. List worksheets in the workbook
-  const sheetsUrl = `https://graph.microsoft.com/v1.0/drives/${resolvedDriveId}/items/${resolvedFileId}/workbook/worksheets`;
+  const sheetsUrl = `https://graph.microsoft.com/v1.0/drives/${safeDriveId}/items/${safeFileId}/workbook/worksheets`;
   const sheetsRes = await fetch(sheetsUrl, {
     headers: { Authorization: `Bearer ${accessToken}` }
   });
@@ -379,7 +398,7 @@ export async function inspectExcelWorkbook({
   let suggestedMapping = {};
 
   try {
-    const rangeUrl = `https://graph.microsoft.com/v1.0/drives/${resolvedDriveId}/items/${resolvedFileId}/workbook/worksheets/${encodeURIComponent(targetWorksheet)}/usedRange?$select=address,values`;
+    const rangeUrl = `https://graph.microsoft.com/v1.0/drives/${safeDriveId}/items/${safeFileId}/workbook/worksheets/${encodeURIComponent(targetWorksheet)}/usedRange?$select=address,values`;
     const rangeRes = await fetch(rangeUrl, {
       headers: { Authorization: `Bearer ${accessToken}` }
     });
@@ -454,6 +473,10 @@ export async function linkExcelToClient({
     throw new Error("Missing required Excel parameters (driveId, fileId, sheetName)");
   }
 
+  assertSafeGraphId(resolvedDriveId, "driveId");
+  assertSafeGraphId(resolvedFileId, "fileId");
+  if (tenantId) assertSafeGraphId(tenantId, "tenantId");
+
   const sheets = await getSheetsClient();
   const rowNumStr = String(headerRowNum || "1").trim();
   const cleanRange = String(rangeAddress || "").trim();
@@ -481,7 +504,7 @@ export async function linkExcelToClient({
     sheets.spreadsheets.values.batchUpdate({
       spreadsheetId: masterSheetId,
       requestBody: {
-        valueInputOption: "USER_ENTERED",
+        valueInputOption: "RAW",
         data: updates
       }
     })

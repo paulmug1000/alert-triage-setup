@@ -156,8 +156,8 @@ export default async function handler(req, res) {
     const hasNBtoFind = existingSheetTitles.has("NBtoFind");
 
     const batchRanges = [];
-    if (hasConfirmed) batchRanges.push(`${confirmedTitle}!A1:CR`);
-    if (hasPipeline) batchRanges.push(`${pipelineTitle}!A1:CR`);
+    if (hasConfirmed) batchRanges.push(`${confirmedTitle}!A1:JF`);
+    if (hasPipeline) batchRanges.push(`${pipelineTitle}!A1:JF`);
     if (hasSalaries) {
       batchRanges.push("Salaries!A1:I100");
       batchRanges.push("Salaries!A1:JC1");
@@ -361,10 +361,12 @@ export default async function handler(req, res) {
           continue;
         }
 
-        // Pipeline: skip if copied to confirmed
+        // Pipeline: skip if copied to confirmed (Col DD / index 107)
         if (jobType === "Pipeline") {
-          const copied = getValueByHeader(row, colMap, "copied to confirmed tab?");
-          if (copied && copied.toLowerCase() === "yes") {
+          const copied =
+            getValueByHeader(row, colMap, ["copied to confirmed tab?", "copied to confirmed?", "copied to confirmed"]) ||
+            (row[107] !== undefined ? String(row[107]).trim() : "");
+          if (["yes", "y", "true"].includes(String(copied).toLowerCase().trim())) {
             i++;
             continue;
           }

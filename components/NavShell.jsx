@@ -244,6 +244,7 @@ export default function NavShell({
   const [editDropdownOpen, setEditDropdownOpen] = useState(false);
   const [viewsDropdownOpen, setViewsDropdownOpen] = useState(false);
   const [mobileExpandedGroup, setMobileExpandedGroup] = useState(null);
+  const [navigatingPulseClient, setNavigatingPulseClient] = useState(null);
   const [portalClients, setPortalClients] = useState(() => (clients && clients.length > 0 ? clients : []));
   const [clientsLoading, setClientsLoading] = useState(false);
   const [clientSearch, setClientSearch] = useState("");
@@ -334,12 +335,16 @@ export default function NavShell({
   }, [showMore, manageDropdownOpen, pulseDropdownOpen, profileDropdownOpen, editDropdownOpen, viewsDropdownOpen]);
 
   const handleSelectPulseClient = (client) => {
+    if (!client || navigatingPulseClient) return;
+    setNavigatingPulseClient(client.clientName || "Pulse");
     if (typeof window !== "undefined") {
       localStorage.setItem("pulse_portal_client", client.clientName);
       localStorage.setItem("pulse_portal_active_client_obj", JSON.stringify(client));
     }
-    setPulseDropdownOpen(false);
-    router.push(`/pulse?client=${encodeURIComponent(client.clientName)}`);
+    router.push(`/pulse?client=${encodeURIComponent(client.clientName)}`).finally(() => {
+      setNavigatingPulseClient(null);
+      setPulseDropdownOpen(false);
+    });
   };
 
   const filteredClients = portalClients.filter((c) =>
@@ -679,7 +684,9 @@ export default function NavShell({
                 <button
                   type="button"
                   className="pma-pulse-btn triage-btn"
+                  disabled={Boolean(navigatingPulseClient)}
                   onClick={() => {
+                    if (navigatingPulseClient) return;
                     if (isSingleClientUser && (singleClient || managedClient)) {
                       handleSelectPulseClient(singleClient || managedClient);
                     } else {
@@ -698,19 +705,21 @@ export default function NavShell({
                     fontSize: "13px",
                     fontWeight: 600,
                     padding: "5px 12px",
-                    cursor: "pointer",
+                    cursor: navigatingPulseClient ? "wait" : "pointer",
                     display: "inline-flex",
                     alignItems: "center",
                     gap: "6px",
                     transition: "all 0.15s ease",
-                    boxShadow: "0 1px 3px rgba(0,0,0,0.2)"
+                    boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+                    opacity: navigatingPulseClient ? 0.92 : 1,
                   }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = "#003b8e"; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.background = "#0047AB"; }}
+                  onMouseEnter={(e) => { if (!navigatingPulseClient) e.currentTarget.style.background = "#003b8e"; }}
+                  onMouseLeave={(e) => { if (!navigatingPulseClient) e.currentTarget.style.background = "#0047AB"; }}
                   title={isSingleClientUser ? `Open Pulse for ${(singleClient || managedClient)?.clientName || "client"}` : "Select client to visit in Pulse"}
                 >
-                  <span>Pulse</span>
-                  {!isSingleClientUser && (
+                  {navigatingPulseClient && <Spinner size={13} color="#ffffff" />}
+                  <span>{navigatingPulseClient ? "Opening Pulse..." : "Pulse"}</span>
+                  {!isSingleClientUser && !navigatingPulseClient && (
                     <span style={{ fontSize: "10px", opacity: 0.85, lineHeight: 1 }}>{pulseDropdownOpen ? "▲" : "▼"}</span>
                   )}
                 </button>
@@ -755,6 +764,7 @@ export default function NavShell({
                           value={clientSearch}
                           onChange={(e) => setClientSearch(e.target.value)}
                           onClick={(e) => e.stopPropagation()}
+                          disabled={Boolean(navigatingPulseClient)}
                           style={{
                             width: "100%",
                             padding: "5px 8px",
@@ -780,47 +790,66 @@ export default function NavShell({
                           No clients found
                         </div>
                       ) : (
-                        filteredClients.map((c) => (
-                          <a
-                            key={c.clientName}
-                            href={`/pulse?client=${encodeURIComponent(c.clientName)}`}
-                            onClick={(e) => {
-                              if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) {
-                                e.preventDefault();
-                                handleSelectPulseClient(c);
-                              }
-                            }}
-                            style={{
-                              width: "100%",
-                              padding: "8px 14px",
-                              textAlign: "left",
-                              fontSize: "13px",
-                              fontWeight: 500,
-                              color: "#1e293b",
-                              background: "transparent",
-                              border: "none",
-                              borderBottom: "1px solid #f1f5f9",
-                              cursor: "pointer",
-                              display: "block",
-                              whiteSpace: "nowrap",
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                              transition: "background 0.12s, color 0.12s",
-                              textDecoration: "none",
-                              boxSizing: "border-box"
-                            }}
-                            onMouseEnter={(e) => {
-                              e.currentTarget.style.background = "#f0f7ff";
-                              e.currentTarget.style.color = "#0047AB";
-                            }}
-                            onMouseLeave={(e) => {
-                              e.currentTarget.style.background = "transparent";
-                              e.currentTarget.style.color = "#1e293b";
-                            }}
-                          >
-                            {c.clientName}
-                          </a>
-                        ))
+                        filteredClients.map((c) => {
+                          const isNavigatingThis = navigatingPulseClient === c.clientName;
+                          const isNavigatingOther = Boolean(navigatingPulseClient && !isNavigatingThis);
+                          return (
+                            <a
+                              key={c.clientName}
+                              href={`/pulse?client=${encodeURIComponent(c.clientName)}`}
+                              onClick={(e) => {
+                                if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) {
+                                  e.preventDefault();
+                                  handleSelectPulseClient(c);
+                                }
+                              }}
+                              style={{
+                                width: "100%",
+                                padding: "8px 14px",
+                                textAlign: "left",
+                                fontSize: "13px",
+                                fontWeight: isNavigatingThis ? 700 : 500,
+                                color: isNavigatingThis ? "#0047AB" : "#1e293b",
+                                background: isNavigatingThis ? "#eff6ff" : "transparent",
+                                border: "none",
+                                borderBottom: "1px solid #f1f5f9",
+                                cursor: navigatingPulseClient ? "wait" : "pointer",
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                gap: "8px",
+                                whiteSpace: "nowrap",
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                transition: "background 0.12s, color 0.12s, opacity 0.12s",
+                                textDecoration: "none",
+                                boxSizing: "border-box",
+                                opacity: isNavigatingOther ? 0.5 : 1,
+                                pointerEvents: navigatingPulseClient ? "none" : "auto",
+                              }}
+                              onMouseEnter={(e) => {
+                                if (!navigatingPulseClient) {
+                                  e.currentTarget.style.background = "#f0f7ff";
+                                  e.currentTarget.style.color = "#0047AB";
+                                }
+                              }}
+                              onMouseLeave={(e) => {
+                                if (!navigatingPulseClient) {
+                                  e.currentTarget.style.background = "transparent";
+                                  e.currentTarget.style.color = "#1e293b";
+                                }
+                              }}
+                            >
+                              <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{c.clientName}</span>
+                              {isNavigatingThis && (
+                                <span style={{ display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11px", fontWeight: 600, color: "#0047AB", flexShrink: 0 }}>
+                                  <Spinner size={13} color="#0047AB" />
+                                  <span>Opening...</span>
+                                </span>
+                              )}
+                            </a>
+                          );
+                        })
                       )}
                     </div>
                   </div>

@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect } from "react";
 import Spinner from "../Spinner";
-import { PerformanceSkeleton } from "../Skeleton";
+import Skeleton, { PerformanceSkeleton } from "../Skeleton";
 import DeepDivePopover from "./DeepDivePopover";
 import { PulseMath, mutateFYDataForScenarios, getDeepDiveType, buildDeepDiveData, formatMoney as universalFormatMoney, parseMoney, formatCurrencyString } from "../../services/deepDiveHelper";
 
@@ -13,6 +13,7 @@ export default function ScenariosView({
   isLoading,
   error,
   onRefresh,
+  isSenior = false,
 }) {
   const years = performanceData?.years || [];
   const defaultYearIdx =
@@ -21,19 +22,27 @@ export default function ScenariosView({
       : years.length > 0
         ? years.length - 2
         : 0;
-  const [selectedYearIdx, setSelectedYearIdx] = useState(defaultYearIdx);
+  const [selectedYearIdx, setSelectedYearIdx] = useState(null);
   const [pipelineSort, setPipelineSort] = useState("likelihood-desc");
 
-  const activeYearIdx = Math.min(Math.max(0, selectedYearIdx), Math.max(0, years.length - 1));
+  const resolvedYearIdx = selectedYearIdx !== null ? selectedYearIdx : defaultYearIdx;
+  const activeYearIdx = Math.min(Math.max(0, resolvedYearIdx), Math.max(0, years.length - 1));
   const activeYear = years[activeYearIdx];
 
   const pipelineJobs = useMemo(() => {
-    return keyData?.jobs?.pipeline || [];
+    const rawList = keyData?.jobs?.pipeline || [];
+    // Exclude any job marked copied to confirmed or with 0% likelihood (matching webappserver.gs line 5592)
+    return rawList.filter((j) => {
+      const copiedStr = String(j.copiedToConfirmed || j.copiedToConf || "").trim().toLowerCase();
+      if (copiedStr === "yes" || copiedStr === "y" || copiedStr === "true") return false;
+      const likelihoodStr = String(j.likelihood || "").trim();
+      if (likelihoodStr === "") return true;
+      const parsed = parseFloat(likelihoodStr.replace("%", ""));
+      return isNaN(parsed) || parsed > 0;
+    });
   }, [keyData]);
 
-  // Adjustments state: 12 months
-  // nbChecked: boolean[12], rev: number[12], delStaff: number[12], delExp: number[12], nonDelStaff: number[12], nonDelExp: number[12]
-  const [adjs, setAdjs] = useState({
+  const createEmptyAdjs = () => ({
     nbChecked: new Array(12).fill(true),
     rev: new Array(12).fill(0),
     delStaff: new Array(12).fill(0),
@@ -42,23 +51,54 @@ export default function ScenariosView({
     nonDelExp: new Array(12).fill(0),
   });
 
+  // Adjustments state stored per financial year (matching WebApp.html getScenarioAdjs)
+  const [adjsByYear, setAdjsByYear] = useState({});
+  const adjs = useMemo(
+    () => adjsByYear[activeYearIdx] || createEmptyAdjs(),
+    [adjsByYear, activeYearIdx]
+  );
+
   // Pipeline job toggles:
   // disabledJobs: Set of job IDs excluded from pipeline
   // confirmedJobs: Set of job IDs treated as confirmed
   const [disabledJobIds, setDisabledJobIds] = useState(new Set());
   const [confirmedJobIds, setConfirmedJobIds] = useState(new Set());
 
-  // Master checkboxes status
-  const allIncluded = pipelineJobs.length > 0 && pipelineJobs.every((j) => !disabledJobIds.has(j.id) && !confirmedJobIds.has(j.id));
-  const allConfirmed = pipelineJobs.length > 0 && pipelineJobs.every((j) => confirmedJobIds.has(j.id));
+  // Master checkboxes status (matching WebApp.html updateMasterStates lines 15171-15187)
+  const isJobsLoading = !keyData || Boolean(isLoading);
+  const unconfirmedJobs = useMemo(
+    () => pipelineJobs.filter((j) => !confirmedJobIds.has(j.id)),
+    [pipelineJobs, confirmedJobIds]
+  );
+  const includedCount = useMemo(
+    () => unconfirmedJobs.filter((j) => !disabledJobIds.has(j.id)).length,
+    [unconfirmedJobs, disabledJobIds]
+  );
+  const confirmedCount = useMemo(
+    () => pipelineJobs.filter((j) => confirmedJobIds.has(j.id)).length,
+    [pipelineJobs, confirmedJobIds]
+  );
+  const allIncluded = unconfirmedJobs.length > 0 && includedCount === unconfirmedJobs.length;
+  const someIncluded = includedCount > 0 && includedCount < unconfirmedJobs.length;
+  const allConfirmed = pipelineJobs.length > 0 && confirmedCount === pipelineJobs.length;
+  const someConfirmed = confirmedCount > 0 && confirmedCount < pipelineJobs.length;
 
   const toggleAllIncluded = () => {
+    if (unconfirmedJobs.length === 0) return;
     if (allIncluded) {
-      // Exclude all that are not confirmed
-      setDisabledJobIds(new Set(pipelineJobs.map((j) => j.id)));
+      // Exclude all unconfirmed jobs
+      setDisabledJobIds((prev) => {
+        const next = new Set(prev);
+        unconfirmedJobs.forEach((j) => next.add(j.id));
+        return next;
+      });
     } else {
-      // Include all, clear exclusions
-      setDisabledJobIds(new Set());
+      // Include all unconfirmed jobs
+      setDisabledJobIds((prev) => {
+        const next = new Set(prev);
+        unconfirmedJobs.forEach((j) => next.delete(j.id));
+        return next;
+      });
     }
   };
 
@@ -106,45 +146,52 @@ export default function ScenariosView({
 
   const handleAdjMonthChange = (category, mIdx, val) => {
     const num = parseMoney(val);
-    setAdjs((prev) => {
-      const copy = [...prev[category]];
+    setAdjsByYear((prev) => {
+      const current = prev[activeYearIdx] || createEmptyAdjs();
+      const copy = [...current[category]];
       copy[mIdx] = num;
-      return { ...prev, [category]: copy };
+      return {
+        ...prev,
+        [activeYearIdx]: { ...current, [category]: copy },
+      };
     });
   };
 
   const handleToggleNBMonth = (mIdx) => {
-    setAdjs((prev) => {
-      const copy = [...prev.nbChecked];
+    setAdjsByYear((prev) => {
+      const current = prev[activeYearIdx] || createEmptyAdjs();
+      const copy = [...current.nbChecked];
       copy[mIdx] = !copy[mIdx];
-      return { ...prev, nbChecked: copy };
+      return {
+        ...prev,
+        [activeYearIdx]: { ...current, nbChecked: copy },
+      };
     });
   };
 
   const handleToggleMasterNB = () => {
     const anyUnchecked = adjs.nbChecked.some((c) => !c);
-    setAdjs((prev) => ({
-      ...prev,
-      nbChecked: new Array(12).fill(anyUnchecked),
-    }));
+    setAdjsByYear((prev) => {
+      const current = prev[activeYearIdx] || createEmptyAdjs();
+      return {
+        ...prev,
+        [activeYearIdx]: {
+          ...current,
+          nbChecked: new Array(12).fill(anyUnchecked),
+        },
+      };
+    });
   };
 
   const handleResetScenarios = () => {
-    setAdjs({
-      nbChecked: new Array(12).fill(true),
-      rev: new Array(12).fill(0),
-      delStaff: new Array(12).fill(0),
-      delExp: new Array(12).fill(0),
-      nonDelStaff: new Array(12).fill(0),
-      nonDelExp: new Array(12).fill(0),
-    });
+    setAdjsByYear({});
     setDisabledJobIds(new Set());
     setConfirmedJobIds(new Set());
   };
 
   const [activePopover, setActivePopover] = useState(null);
 
-  const handleCellClick = (e, rowLabel, val, mIdx, periodLabel) => {
+  const handleCellClick = (e, rowLabel, val, mIdx, periodLabel, rIdx) => {
     const ddType = getDeepDiveType(rowLabel);
     if (!ddType || !val || val === "—" || val === "" || Math.abs(parseMoney(val)) < 0.001) return;
 
@@ -170,12 +217,14 @@ export default function ScenariosView({
       keyData,
       isIncomeMode,
       isScenarioView: true,
+      isRestricted: isSenior,
       scenariosConfig: {
         confirmedJobs: confirmedJobIds,
         disabledJobs: disabledJobIds,
         adjs,
         jobs: pipelineJobs,
         outgoingsMeta: keyData?.outgoingsMeta,
+        nbtofind: keyData?.nbtofind,
         profitShareSwitch: keyData?.outgoingsMeta?.profitShareSwitch,
         profitSharePct: keyData?.outgoingsMeta?.profitSharePct,
         scenarioMeta: mutatedYearData?.scenarioMeta,
@@ -191,45 +240,9 @@ export default function ScenariosView({
       items: ddData.items || [],
       sections: ddData.sections || null,
       isLoading: isDataLoading,
-      _clickParams: { ddType, periodLabel, mIdx, val, activeYearIdx, targetDate, isIncomeMode, rect },
+      _clickParams: { ddType, periodLabel, mIdx, val, rIdx, activeYearIdx, targetDate, isIncomeMode, rect },
     });
   };
-
-  useEffect(() => {
-    if (activePopover?.isOpen && activePopover._clickParams && keyData) {
-      const p = activePopover._clickParams;
-      const ddData = buildDeepDiveData({
-        ddType: p.ddType,
-        periodLabel: p.periodLabel,
-        monthIndex: p.mIdx,
-        cellValue: p.val,
-        yearIndex: p.activeYearIdx,
-        targetDate: p.targetDate,
-        keyData,
-        isIncomeMode: p.isIncomeMode,
-        isScenarioView: true,
-        scenariosConfig: {
-          confirmedJobs: confirmedJobIds,
-          disabledJobs: disabledJobIds,
-          adjs,
-          jobs: pipelineJobs,
-          outgoingsMeta: keyData?.outgoingsMeta,
-          profitShareSwitch: keyData?.outgoingsMeta?.profitShareSwitch,
-          profitSharePct: keyData?.outgoingsMeta?.profitSharePct,
-          scenarioMeta: mutatedYearData?.scenarioMeta,
-        },
-      });
-      setActivePopover((prev) => prev ? {
-        ...prev,
-        title: ddData.title,
-        period: ddData.period,
-        total: ddData.total,
-        items: ddData.items || [],
-        sections: ddData.sections || null,
-        isLoading: false,
-      } : null);
-    }
-  }, [keyData]);
 
   const currencySymbol = propCurrencySymbol || keyData?.currencySymbol || "£";
   const thousandsSeparator = propThousandsSeparator || keyData?.thousandsSeparator || ",";
@@ -341,13 +354,58 @@ export default function ScenariosView({
       adjs,
       jobs: pipelineJobs,
       outgoingsMeta: keyData?.outgoingsMeta,
+      nbtofind: keyData?.nbtofind,
       profitShareSwitch: keyData?.outgoingsMeta?.profitShareSwitch,
       profitSharePct: keyData?.outgoingsMeta?.profitSharePct,
       yearIndex: activeYearIdx,
+      currencySymbol,
+      thousandsSeparator,
     });
-  }, [activeYear, confirmedJobIds, disabledJobIds, adjs, pipelineJobs, keyData?.outgoingsMeta, activeYearIdx]);
+  }, [activeYear, confirmedJobIds, disabledJobIds, adjs, pipelineJobs, keyData?.outgoingsMeta, keyData?.nbtofind, activeYearIdx, currencySymbol, thousandsSeparator]);
 
   const mutatedRows = mutatedYearData?.rows || activeYear?.rows || [];
+
+  useEffect(() => {
+    if (activePopover?.isOpen && activePopover._clickParams && keyData) {
+      const p = activePopover._clickParams;
+      const liveRow = p.rIdx !== undefined ? mutatedRows[p.rIdx] : null;
+      const liveVal = liveRow
+        ? (p.mIdx === -1 ? liveRow.totalVal : liveRow.monthlyValues?.[p.mIdx])
+        : p.val;
+      const ddData = buildDeepDiveData({
+        ddType: p.ddType,
+        periodLabel: p.periodLabel,
+        monthIndex: p.mIdx,
+        cellValue: liveVal || p.val,
+        yearIndex: p.activeYearIdx,
+        targetDate: p.targetDate,
+        keyData,
+        isIncomeMode: p.isIncomeMode,
+        isScenarioView: true,
+        isRestricted: isSenior,
+        scenariosConfig: {
+          confirmedJobs: confirmedJobIds,
+          disabledJobs: disabledJobIds,
+          adjs,
+          jobs: pipelineJobs,
+          outgoingsMeta: keyData?.outgoingsMeta,
+          nbtofind: keyData?.nbtofind,
+          profitShareSwitch: keyData?.outgoingsMeta?.profitShareSwitch,
+          profitSharePct: keyData?.outgoingsMeta?.profitSharePct,
+          scenarioMeta: mutatedYearData?.scenarioMeta,
+        },
+      });
+      setActivePopover((prev) => prev ? {
+        ...prev,
+        title: ddData.title,
+        period: ddData.period,
+        total: ddData.total,
+        items: ddData.items || [],
+        sections: ddData.sections || null,
+        isLoading: false,
+      } : null);
+    }
+  }, [keyData, mutatedYearData, confirmedJobIds, disabledJobIds, adjs, isSenior]);
 
   // Row styling matching PerformanceFYView and WebApp.html
   const getRowStyle = (label) => {
@@ -834,8 +892,8 @@ export default function ScenariosView({
                           paddingLeft: isMarginRow
                             ? "20px"
                             : !rowStyle.isHeader && !rowStyle.isMajor
-                            ? "16px"
-                            : "10px",
+                              ? "16px"
+                              : "10px",
                           fontStyle: isPercentageRow ? "italic" : "normal",
                           position: "sticky",
                           left: 0,
@@ -871,7 +929,7 @@ export default function ScenariosView({
                           return (
                             <td
                               key={mIdx}
-                              onClick={(e) => isClickable && handleCellClick(e, label, val, mIdx, monthLabel)}
+                              onClick={(e) => isClickable && handleCellClick(e, label, val, mIdx, monthLabel, rIdx)}
                               style={{
                                 padding: "4.5px 4px",
                                 textAlign: "right",
@@ -929,7 +987,7 @@ export default function ScenariosView({
                         return (
                           <td
                             key={mIdx}
-                            onClick={(e) => isClickable && handleCellClick(e, label, val, mIdx, monthLabel)}
+                            onClick={(e) => isClickable && handleCellClick(e, label, val, mIdx, monthLabel, rIdx)}
                             style={{
                               padding: "4.5px 4px",
                               textAlign: "right",
@@ -968,7 +1026,7 @@ export default function ScenariosView({
                             <td
                               onClick={(e) =>
                                 isClickable &&
-                                handleCellClick(e, label, totalVal, -1, `${activeYear?.fyLabel || "FY"} Total`)
+                                handleCellClick(e, label, totalVal, -1, `${activeYear?.fyLabel || "FY"} Total`, rIdx)
                               }
                               style={{
                                 padding: "4.5px 10px",
@@ -1027,7 +1085,7 @@ export default function ScenariosView({
                           <td
                             onClick={(e) =>
                               isClickable &&
-                              handleCellClick(e, label, totalVal, -1, `${activeYear?.fyLabel || "FY"} Total`)
+                              handleCellClick(e, label, totalVal, -1, `${activeYear?.fyLabel || "FY"} Total`, rIdx)
                             }
                             style={{
                               padding: "4.5px 10px",
@@ -1107,6 +1165,12 @@ export default function ScenariosView({
                       <input
                         type="checkbox"
                         checked={adjs.nbChecked.every(Boolean)}
+                        ref={(el) => {
+                          if (el) {
+                            const checkedCount = adjs.nbChecked.filter(Boolean).length;
+                            el.indeterminate = checkedCount > 0 && checkedCount < 12;
+                          }
+                        }}
                         onChange={handleToggleMasterNB}
                         style={{ cursor: "pointer", width: "14px", height: "14px", accentColor: "#0047AB" }}
                         title="Toggle all months"
@@ -1368,8 +1432,18 @@ export default function ScenariosView({
                     <input
                       type="checkbox"
                       checked={allIncluded}
+                      disabled={unconfirmedJobs.length === 0}
+                      ref={(el) => {
+                        if (el) el.indeterminate = someIncluded;
+                      }}
                       onChange={toggleAllIncluded}
-                      style={{ width: "16px", height: "16px", cursor: "pointer", accentColor: "#0047AB" }}
+                      style={{
+                        width: "16px",
+                        height: "16px",
+                        cursor: unconfirmedJobs.length === 0 ? "not-allowed" : "pointer",
+                        opacity: unconfirmedJobs.length === 0 ? 0.4 : 1,
+                        accentColor: "#0047AB",
+                      }}
                       title="Include all in pipeline"
                     />
                     <span style={{ fontSize: "11px", fontWeight: 600 }}>Include</span>
@@ -1382,11 +1456,21 @@ export default function ScenariosView({
                     <input
                       type="checkbox"
                       checked={allConfirmed}
+                      disabled={pipelineJobs.length === 0}
+                      ref={(el) => {
+                        if (el) el.indeterminate = someConfirmed;
+                      }}
                       onChange={toggleAllConfirmed}
-                      style={{ width: "16px", height: "16px", cursor: "pointer", accentColor: "#0047AB" }}
+                      style={{
+                        width: "16px",
+                        height: "16px",
+                        cursor: pipelineJobs.length === 0 ? "not-allowed" : "pointer",
+                        opacity: pipelineJobs.length === 0 ? 0.4 : 1,
+                        accentColor: "#0047AB",
+                      }}
                       title="Assume all confirmed"
                     />
-                    <span style={{ fontSize: "11px", fontWeight: 600, whiteSpace: "nowrap" }}>Assume Conf</span>
+                    <span style={{ fontSize: "11px", fontWeight: 600, whiteSpace: "nowrap" }}>Assume conf</span>
                   </div>
                 </th>
 
@@ -1397,7 +1481,7 @@ export default function ScenariosView({
 
                 {/* Column 4: Job Name */}
                 <th style={{ padding: "10px 12px", borderBottom: "1px solid #cbd5e1", fontWeight: 600 }}>
-                  Job Name
+                  Job name
                 </th>
 
                 {/* Column 5: Type */}
@@ -1434,11 +1518,56 @@ export default function ScenariosView({
 
             <tbody>
               {sortedPipelineJobs.length === 0 ? (
-                <tr>
-                  <td colSpan={10} style={{ padding: "3rem", textAlign: "center", color: "#64748b" }}>
-                    No pipeline deals found.
-                  </td>
-                </tr>
+                isJobsLoading ? (
+                  [0, 1, 2, 3, 4, 5].map((rIdx) => (
+                    <tr key={`pipe-skel-${rIdx}`} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                      <td style={{ padding: "10px 8px", textAlign: "center" }}>
+                        <div style={{ display: "flex", justifyContent: "center" }}>
+                          <Skeleton width="16px" height="16px" borderRadius="4px" />
+                        </div>
+                      </td>
+                      <td style={{ padding: "10px 8px", textAlign: "center" }}>
+                        <div style={{ display: "flex", justifyContent: "center" }}>
+                          <Skeleton width="16px" height="16px" borderRadius="4px" />
+                        </div>
+                      </td>
+                      <td style={{ padding: "10px 12px" }}>
+                        <Skeleton width={rIdx % 2 === 0 ? "68%" : "55%"} height="13px" borderRadius="3px" />
+                      </td>
+                      <td style={{ padding: "10px 12px" }}>
+                        <Skeleton width={rIdx % 2 === 0 ? "75%" : "62%"} height="13px" borderRadius="3px" />
+                      </td>
+                      <td style={{ padding: "10px 12px" }}>
+                        <Skeleton width="58px" height="20px" borderRadius="999px" />
+                      </td>
+                      <td style={{ padding: "10px 12px" }}>
+                        <Skeleton width="72px" height="13px" borderRadius="3px" />
+                      </td>
+                      <td style={{ padding: "10px 12px" }}>
+                        <Skeleton width="72px" height="13px" borderRadius="3px" />
+                      </td>
+                      <td style={{ padding: "10px 12px" }}>
+                        <Skeleton width="38px" height="13px" borderRadius="3px" />
+                      </td>
+                      <td style={{ padding: "10px 12px", textAlign: "right" }}>
+                        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                          <Skeleton width="64px" height="13px" borderRadius="3px" />
+                        </div>
+                      </td>
+                      <td style={{ padding: "10px 12px", textAlign: "right" }}>
+                        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                          <Skeleton width="50px" height="13px" borderRadius="3px" />
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={10} style={{ padding: "3rem", textAlign: "center", color: "#64748b" }}>
+                      No pipeline deals found.
+                    </td>
+                  </tr>
+                )
               ) : (
                 sortedPipelineJobs.map((job, idx) => {
                   const isConf = confirmedJobIds.has(job.id);

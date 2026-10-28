@@ -140,7 +140,7 @@ export function parseLikelihood(likelihoodVal, fallback = 0.5) {
 }
 
 export const PulseMath = {
-  calcMonthly(job, targetDate, valueType = "revenue", isIncomeMode = false) {
+  calcMonthly(job, targetDate, valueType = "revenue", isIncomeMode = false, ignoreLikelihood = false) {
     if (!job || !targetDate) return 0;
     const eqStart = job.eqStartDate ? new Date(job.eqStartDate) : (job.startDate ? new Date(job.startDate) : null);
     const eqEnd = job.erEndDate ? new Date(job.erEndDate) : (job.endDate ? new Date(job.endDate) : null);
@@ -183,7 +183,7 @@ export const PulseMath = {
         valToReturn = isIncomeMode ? splitRevVal - splitRevVal * prop : splitRevVal;
       }
 
-      if (isPipeline) {
+      if (isPipeline && !ignoreLikelihood) {
         let prob = parseLikelihood(job.likelihoodNum !== undefined ? job.likelihoodNum : job.likelihood, 1);
         if (prob < 0 || prob > 1) prob = 1;
         valToReturn = valToReturn * prob;
@@ -195,7 +195,7 @@ export const PulseMath = {
     // --- RETAINER LOGIC (Matches Calcs!K2 & Calcs!L2 ret_sum) ---
     if (isRetainer) {
       let prob = 1;
-      if (isPipeline) {
+      if (isPipeline && !ignoreLikelihood) {
         prob = parseLikelihood(job.likelihoodNum !== undefined ? job.likelihoodNum : job.likelihood, 0.5);
       }
 
@@ -248,19 +248,31 @@ export const PulseMath = {
     }
 
     // --- STANDARD PROJECT LOGIC (Matches Calcs!K2 std_sum) ---
+    const rev = parseMoney(job.revenue || job.revNum);
+    const dc = parseMoney(job.directCosts || job.dcNum);
+    const totalMonths = Math.max(1, (eqEnd.getFullYear() - eqStart.getFullYear()) * 12 + (eqEnd.getMonth() - eqStart.getMonth()) + 1);
+
+    if (ignoreLikelihood) {
+      const grossRev = rev / totalMonths;
+      const grossIncome = (rev - dc) / totalMonths;
+      const grossDC = dc / totalMonths;
+      if (valueType === "directCosts") return grossDC;
+      if (valueType === "revenue") {
+        return isIncomeMode ? grossIncome : grossRev;
+      }
+      return 0;
+    }
+
     let origBaseRev = parseMoney(job.origBaseRev);
     let origBaseIncome = parseMoney(job.origBaseIncome);
     let origBaseDC = origBaseRev - origBaseIncome;
 
     if (origBaseRev === 0 && origBaseIncome === 0) {
       // Fallback if spreadsheet helper columns are missing for this row
-      const rev = parseMoney(job.revenue || job.revNum);
-      const dc = parseMoney(job.directCosts || job.dcNum);
       let prob = 1;
       if (isPipeline) {
         prob = parseLikelihood(job.likelihoodNum !== undefined ? job.likelihoodNum : job.likelihood, 0.5);
       }
-      const totalMonths = Math.max(1, (eqEnd.getFullYear() - eqStart.getFullYear()) * 12 + (eqEnd.getMonth() - eqStart.getMonth()) + 1);
       origBaseRev = (rev / totalMonths) * prob;
       origBaseIncome = ((rev - dc) / totalMonths) * prob;
       origBaseDC = (dc / totalMonths) * prob;
@@ -357,18 +369,7 @@ export const DeepDiveEngine = {
       if (type === "pipeRev" && effectiveType !== "pipeline") return;
 
       const valueType = type === "dirCosts" ? "directCosts" : "revenue";
-      let monthlyAmount = PulseMath.calcMonthly(job, targetDate, valueType, isIncomeMode);
-
-      if (isAssumedConfirmed) {
-        let prob = 1;
-        if (job.likelihoodNum !== undefined && !isNaN(job.likelihoodNum)) {
-          prob = job.likelihoodNum;
-        } else if (job.likelihood) {
-          prob = parseLikelihood(job.likelihood, 1);
-        }
-        if (prob <= 0 || prob > 1) prob = 1;
-        monthlyAmount = prob > 0 ? (monthlyAmount / prob) : 0;
-      }
+      const monthlyAmount = PulseMath.calcMonthly(job, targetDate, valueType, isIncomeMode, isAssumedConfirmed);
 
       if (Math.abs(monthlyAmount) >= 0.01) {
         let rawAmount = 0;
@@ -2637,7 +2638,9 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
   const rows = yearData.rows;
   const headerMonths = yearData.headerMonths || [];
 
-  const formatCurrency = (num) => (num === 0 ? `${getCurrencySymbol()}0` : formatMoney(num));
+  const ccySymbol = scenariosConfig.currencySymbol || yearData.currencySymbol || getCurrencySymbol();
+  const ccySep = scenariosConfig.thousandsSeparator || yearData.thousandsSeparator || getThousandsSeparator();
+  const formatCurrency = (num) => (num === 0 ? `${ccySymbol}0` : formatMoney(num, 0, ccySymbol, ccySep));
   const formatPercent = (num) => Math.round(num * 100) + "%";
 
   const monthDates = [];
@@ -2673,12 +2676,25 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
   };
   const jobsList = scenariosConfig.jobs || [];
   const outgoingsMeta = scenariosConfig.outgoingsMeta || {};
+  const nbtofind = scenariosConfig.nbtofind || {};
   const yearIdx = scenariosConfig.yearIndex !== undefined ? scenariosConfig.yearIndex : 2;
   const outIdx = Math.max(0, yearIdx - 1);
 
   // Determine mode directly from row 12
   const row12Label = String(rows[12]?.label || "").toLowerCase();
   const isRevMode = row12Label.includes("direct");
+
+  // Calculate New Business Direct Costs deduction array respecting monthly checkboxes (Revenue mode only)
+  const nbDCDeduction = new Array(12).fill(0);
+  if (isRevMode && yearIdx > 0 && nbtofind?.directCosts) {
+    const nbDcYearKey = `y${yearIdx}`;
+    const nbDcArr = nbtofind.directCosts[nbDcYearKey] || [];
+    for (let m = 0; m < 12; m++) {
+      if (!adjs.nbChecked[m]) {
+        nbDCDeduction[m] = parseMoney(nbDcArr[m] || 0);
+      }
+    }
+  }
 
   let sumDeltaConfRev = 0, sumDeltaPipeRev = 0, sumDeltaNB = 0;
   let sumDeltaDC = 0, sumDeltaDelStaff = 0, sumDeltaDelExp = 0;
@@ -2728,25 +2744,18 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
         const isConfirmed = confirmedJobs.has(pId) || confirmedJobs.has(job.id);
         const isUnchecked = disabledJobs.has(pId) || disabledJobs.has(job.id);
 
-        let prob = 1;
-        if (job.likelihood) {
-          let parsed = parseFloat(String(job.likelihood).replace("%", ""));
-          if (!isNaN(parsed)) prob = String(job.likelihood).includes("%") ? parsed / 100 : (parsed > 1 ? parsed / 100 : parsed);
-        }
-        if (prob <= 0 || prob > 1) prob = 1;
-
         if (!monthDates[m]) return;
 
-        let jobRevMonthWeighted = PulseMath.calcMonthly(job, monthDates[m], "revenue", !isRevMode);
-        let jobDcMonthWeighted = PulseMath.calcMonthly(job, monthDates[m], "directCosts", !isRevMode);
+        const jobRevMonthWeighted = PulseMath.calcMonthly(job, monthDates[m], "revenue", !isRevMode, false);
+        const jobDcMonthWeighted = PulseMath.calcMonthly(job, monthDates[m], "directCosts", !isRevMode, false);
 
         if (isConfirmed || isUnchecked) {
           exactPipeRevDeduction += jobRevMonthWeighted;
         }
 
         if (isConfirmed) {
-          let grossRevMonth = prob > 0 ? jobRevMonthWeighted / prob : 0;
-          let grossDcMonth = prob > 0 ? jobDcMonthWeighted / prob : 0;
+          const grossRevMonth = PulseMath.calcMonthly(job, monthDates[m], "revenue", !isRevMode, true);
+          const grossDcMonth = PulseMath.calcMonthly(job, monthDates[m], "directCosts", !isRevMode, true);
           exactAssumedConfRev += grossRevMonth;
           if (isRevMode) {
             exactAssumedConfDCAdd += grossDcMonth - jobDcMonthWeighted;
@@ -2760,7 +2769,7 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
       const exactNewConfRev = exactOldConfRev + exactAssumedConfRev + (adjs.rev[m] || 0);
 
       const exactOldPipeRev = getOldVal(4);
-      const exactNewPipeRev = exactOldPipeRev - exactPipeRevDeduction;
+      const exactNewPipeRev = Math.max(0, exactOldPipeRev - exactPipeRevDeduction);
 
       const exactOldNB = getOldVal(5);
       const exactNewNB = adjs.nbChecked[m] ? exactOldNB : 0;
@@ -2774,7 +2783,8 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
       let exactNewDC = 0;
       if (isRevMode) {
         const exactOldDC = getOldVal(12);
-        exactNewDC = Math.max(0, exactOldDC - exactDCDeduction + exactAssumedConfDCAdd);
+        const exactNbDCDeduction = nbDCDeduction[m] || 0;
+        exactNewDC = Math.max(0, exactOldDC - exactDCDeduction - exactNbDCDeduction + exactAssumedConfDCAdd);
         deltaDC = Math.round(exactNewDC) - Math.round(exactOldDC);
       } else {
         deltaDC = 0;
@@ -2967,6 +2977,11 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
       const pct = formatPercent(newTotalRev ? getNewVal(29) / newTotalRev : 0);
       if (isTotalCol) rows[31].totalVal = pct;
       else rows[31].monthlyValues[m] = pct;
+    }
+    if (rows[33] && rows[33].label !== "Hide") {
+      const pct = formatPercent(newTotalRev ? (getNewVal(22) + getNewVal(11)) / newTotalRev : 0);
+      if (isTotalCol) rows[33].totalVal = pct;
+      else rows[33].monthlyValues[m] = pct;
     }
   }
 

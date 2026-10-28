@@ -8,15 +8,19 @@ const nextConfig = {
     buildActivity: false,
   },
   async headers() {
+    const isProd = process.env.NODE_ENV === "production";
+    const scriptSrc = isProd
+      ? "script-src 'self' 'unsafe-inline' https://accounts.google.com https://login.microsoftonline.com https://cdnjs.cloudflare.com"
+      : "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://accounts.google.com https://login.microsoftonline.com https://cdnjs.cloudflare.com";
     const cspHeader = [
       "default-src 'self'",
-      "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://accounts.google.com https://login.microsoftonline.com https://cdnjs.cloudflare.com",
+      scriptSrc,
       "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
       "font-src 'self' data: https://fonts.gstatic.com",
       "img-src 'self' data: blob: https:",
       "connect-src 'self' https://app.pulsedashboard.co.uk https://pma.pulsedashboard.co.uk https://*.pulsedashboard.co.uk https://accounts.google.com https://login.microsoftonline.com",
       "frame-src 'self' https://accounts.google.com https://login.microsoftonline.com",
-      "frame-ancestors 'self' https://script.google.com https://*.googleusercontent.com",
+      "frame-ancestors 'self'",
       "worker-src 'self' blob: https://cdnjs.cloudflare.com",
       "base-uri 'self'",
       "form-action 'self'",

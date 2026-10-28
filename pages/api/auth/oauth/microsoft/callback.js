@@ -14,6 +14,15 @@ function parseCookies(cookieHeader) {
   }, {});
 }
 
+function safeJsonForScript(value) {
+  return JSON.stringify(value ?? "")
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/&/g, "\\u0026")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
+}
+
 function renderPopupResponse(res, { email, provider, ssoToken, error }) {
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   if (error) {
@@ -38,12 +47,12 @@ function renderPopupResponse(res, { email, provider, ssoToken, error }) {
       try {
         if (document.referrer) {
           var ref = new URL(document.referrer).origin;
-          if (ref.endsWith('.pulsedashboard.co.uk') || ref === window.location.origin) {
+          if (ref === 'https://app.pulsedashboard.co.uk' || ref === 'https://pulsedashboard.co.uk' || ref === window.location.origin) {
             targetOrigin = ref;
           }
         }
       } catch(e) {}
-      window.opener.postMessage({ type: 'PULSE_SSO_ERROR', provider: 'Microsoft', error: ${JSON.stringify(error)} }, targetOrigin);
+      window.opener.postMessage({ type: 'PULSE_SSO_ERROR', provider: 'Microsoft', error: ${safeJsonForScript(error)} }, targetOrigin);
     }
     setTimeout(function() { window.close(); }, 1200);
   </script>
@@ -76,16 +85,16 @@ function renderPopupResponse(res, { email, provider, ssoToken, error }) {
         try {
           if (document.referrer) {
             var ref = new URL(document.referrer).origin;
-            if (ref.endsWith('.pulsedashboard.co.uk') || ref === window.location.origin) {
+            if (ref === 'https://app.pulsedashboard.co.uk' || ref === 'https://pulsedashboard.co.uk' || ref === window.location.origin) {
               targetOrigin = ref;
             }
           }
         } catch(e) {}
         window.opener.postMessage({
           type: 'PULSE_SSO_SUCCESS',
-          email: ${JSON.stringify(email)},
-          provider: ${JSON.stringify(provider || 'Microsoft')},
-          ssoToken: ${JSON.stringify(ssoToken)}
+          email: ${safeJsonForScript(email)},
+          provider: ${safeJsonForScript(provider || 'Microsoft')},
+          ssoToken: ${safeJsonForScript(ssoToken)}
         }, targetOrigin);
       }
     } catch (e) {
@@ -121,21 +130,21 @@ export default async function handler(req, res) {
     `pma_oauth_verifier=; Path=/api/auth/oauth; HttpOnly; Max-Age=0${isProd ? "; Secure" : ""}`
   ]);
 
-  if (error) {
-    console.warn("⚠️ Microsoft OAuth error:", error, error_description);
-    if (isPopup) {
-      return renderPopupResponse(res, { error: String(error_description || error) });
-    }
-    res.redirect(`/pma?auth_error=${encodeURIComponent(error_description || error)}`);
-    return;
-  }
-
   if (!stateNonce || !cookieNonce || stateNonce !== cookieNonce || !codeVerifier) {
     console.warn("⚠️ Microsoft OAuth state or PKCE verifier mismatch/missing (potential CSRF attempt)");
     if (isPopup) {
       return renderPopupResponse(res, { error: "state_mismatch" });
     }
     res.redirect("/pma?auth_error=state_mismatch");
+    return;
+  }
+
+  if (error) {
+    console.warn("⚠️ Microsoft OAuth error:", error, error_description);
+    if (isPopup) {
+      return renderPopupResponse(res, { error: String(error_description || error) });
+    }
+    res.redirect(`/pma?auth_error=${encodeURIComponent(error_description || error)}`);
     return;
   }
 
@@ -195,7 +204,42 @@ export default async function handler(req, res) {
       return;
     }
 
-    // 2. Fetch user profile from Microsoft Graph
+    // 2. Verify id_token identity & email domain ownership (CRIT-01: prevent nOAuth unverified mail spoofing)
+    if (!tokenData.id_token) {
+      console.error("❌ Microsoft token response missing id_token");
+      if (isPopup) {
+        return renderPopupResponse(res, { error: "missing_identity_token" });
+      }
+      res.redirect("/pma?auth_error=missing_identity_token");
+      return;
+    }
+
+    let idClaims = null;
+    try {
+      const idTokenParts = String(tokenData.id_token).split(".");
+      if (idTokenParts.length === 3) {
+        idClaims = JSON.parse(Buffer.from(idTokenParts[1], "base64url").toString("utf8"));
+      }
+    } catch (parseErr) {
+      console.error("❌ Failed to parse Microsoft id_token claims:", parseErr);
+    }
+
+    if (!idClaims || typeof idClaims !== "object") {
+      if (isPopup) {
+        return renderPopupResponse(res, { error: "invalid_identity_token" });
+      }
+      res.redirect("/pma?auth_error=invalid_identity_token");
+      return;
+    }
+
+    // Consumer MSA tenant ID vs organizational Entra ID tenant
+    const MSA_TENANT_ID = "9188040d-6c67-4c5b-b112-36a304b66dad";
+    const isDomainVerified =
+      idClaims.xms_edov === true ||
+      idClaims.xms_edov === "true" ||
+      idClaims.xms_edov === 1;
+
+    // Fetch user profile from Microsoft Graph
     const graphRes = await fetch("https://graph.microsoft.com/v1.0/me", {
       headers: { Authorization: `Bearer ${tokenData.access_token}` }
     });
@@ -210,14 +254,25 @@ export default async function handler(req, res) {
       return;
     }
 
-    // Work accounts usually have 'mail', fallback to 'userPrincipalName'
-    const email = (graphUser.mail || graphUser.userPrincipalName || "").toLowerCase().trim();
-    if (!email) {
-      console.error("❌ No email found in Microsoft profile:", graphUser);
+    // Only trust verified identity claims (never trust an unverified external directory's editable `mail` attribute)
+    const upnEmail = String(idClaims.preferred_username || graphUser.userPrincipalName || "").toLowerCase().trim();
+    const claimEmail = String(idClaims.email || "").toLowerCase().trim();
+    let email = "";
+    if (isDomainVerified) {
+      email = claimEmail || upnEmail;
+    } else if (idClaims.tid === MSA_TENANT_ID) {
+      email = upnEmail || claimEmail;
+    } else if (upnEmail && !upnEmail.includes("#ext#") && (!claimEmail || claimEmail === upnEmail)) {
+      // If xms_edov is omitted on older tenant tokens, only accept UPN (which requires tenant DNS domain verification in Entra ID), never an arbitrary `mail` override
+      email = upnEmail;
+    }
+
+    if (!email || !email.includes("@")) {
+      console.error("❌ Unverified or missing email in Microsoft profile:", { tid: idClaims.tid, xms_edov: idClaims.xms_edov });
       if (isPopup) {
-        return renderPopupResponse(res, { error: "no_email_returned_from_microsoft" });
+        return renderPopupResponse(res, { error: "unverified_email_domain" });
       }
-      res.redirect("/pma?auth_error=no_email_returned_from_microsoft");
+      res.redirect("/pma?auth_error=unverified_email_domain");
       return;
     }
 

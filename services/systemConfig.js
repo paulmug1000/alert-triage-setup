@@ -1,6 +1,8 @@
 import { waitUntil } from "@vercel/functions";
 import { redisClient } from "./redisClient.js";
 import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
+import { getSessionUser } from "./authService.js";
+import { isUserAuthorizedForClient } from "./userPermissions.js";
 
 export const SWEEP_SCHEDULE_TAB = "SweepSchedule";
 export const SWEEP_SCHEDULE_DEFAULTS = {
@@ -77,7 +79,7 @@ export async function logClaudeUsage_(sheets, automationCommanderSheetId, client
   await withRetry(() => sheets.spreadsheets.values.append({
     spreadsheetId: acIdClean,
     range: "ClaudeUsage!A:F",
-    valueInputOption: "USER_ENTERED",
+    valueInputOption: "RAW",
     requestBody: {
       values: [[
         new Date().toISOString(),
@@ -475,11 +477,17 @@ export async function handleGetAgentRunProgress(req, res) {
 
 export async function handleGetActiveAgentRun(req, res) {
   const { clientName } = req.body || {};
+  const sessionUser = getSessionUser(req);
   try {
     let key = clientName ? `active_agent_run:${clientName}` : "active_agent_run:latest";
     const raw = await redisClient.get(key);
     if (!raw) return res.status(200).json({ success: true, activeRun: null });
     const activeRun = JSON.parse(raw);
+    if (!req.isSystemAuthorized && sessionUser && !sessionUser.isAdmin) {
+      if (!activeRun?.clientName || !isUserAuthorizedForClient(sessionUser, activeRun.clientName)) {
+        return res.status(200).json({ success: true, activeRun: null });
+      }
+    }
     return res.status(200).json({ success: true, activeRun });
   } catch (err) {
     console.error("❌ get_active_agent_run error:", err);

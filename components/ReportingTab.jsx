@@ -25,6 +25,8 @@ function formatMonthKey(monthKey) {
   return new Date(y, m - 1, 1).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
 }
 
+const HARDCODED_REPORTING_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbzHt00OpXWt8ztCDLC81bnYYUAlbQlAUG6o4fcfH8r5aFGL83j-l39Sd-v4pzJcCSZD/exec";
+
 export default function ReportingTab({
   automationCommanderSheetId = "",
   eomMonthKey = "",
@@ -37,8 +39,9 @@ export default function ReportingTab({
 
   // Clients & configuration
   const [clients, setClients] = useState([]);
-  const [systemWebAppUrl, setSystemWebAppUrl] = useState("");
+  const [systemWebAppUrl, setSystemWebAppUrl] = useState(HARDCODED_REPORTING_WEBAPP_URL);
   const [chartRefs, setChartRefs] = useState([]);
+  const [copiedClient, setCopiedClient] = useState(null);
 
   // Checkbox selections for batch actions
   const [selectedClients, setSelectedClients] = useState(new Set());
@@ -51,7 +54,7 @@ export default function ReportingTab({
 
   // Action states
   const [actionInProgress, setActionInProgress] = useState(null); // 'GENERATE' | 'UPDATE' | 'EMAIL' | null
-  const [clientStatuses, setClientStatuses] = useState({}); // { [clientName]: { status, message, subDetail, percent, reportUrl } }
+  const [clientStatuses, setClientStatuses] = useState({}); // { [clientName]: { status, message, subDetail, percent, reportUrl, completedAt } }
   const [runProgress, setRunProgress] = useState(null);
   const activeStageRefsRef = useRef({ stageIdx: 0, refs: [], stageStartMs: 0, basePercent: 0, maxPercent: 0, clientName: "" });
 
@@ -65,10 +68,23 @@ export default function ReportingTab({
   const [editingRef, setEditingRef] = useState(null); // { code, range, label, originalCode, isNew }
   const [refSaving, setRefSaving] = useState(false);
   const [refDeletingCode, setRefDeletingCode] = useState(null);
-  const [showSettingsModal, setShowSettingsModal] = useState(false);
-  const [settingsUrlInput, setSettingsUrlInput] = useState("");
-  const [settingsTesting, setSettingsTesting] = useState(false);
-  const [settingsTestResult, setSettingsTestResult] = useState(null);
+
+  // Overhead expenses modal state
+  const [overheadModalClient, setOverheadModalClient] = useState(null);
+  const [overheadLoading, setOverheadLoading] = useState(false);
+  const [overheadPreviewing, setOverheadPreviewing] = useState(false);
+  const [overheadConfirming, setOverheadConfirming] = useState(false);
+  const [addingBudgetCategory, setAddingBudgetCategory] = useState(null); // category name or "__ALL__"
+  const [overheadError, setOverheadError] = useState("");
+  const [overheadNotice, setOverheadNotice] = useState(null); // { type: 'success' | 'info' | 'error', text: string }
+  const [overheadData, setOverheadData] = useState({
+    currentMonthFormatted: "",
+    leftHeaders: ["Category", "Actual", "Budget", "Variance", "%"],
+    leftRows: [],
+    rightRows: [],
+    rightTotal: null,
+    analysis: null
+  });
 
   // Default report covered month is 1 month prior to the EoM work cycle (e.g. 2026-10 cycle reports on 2026-09)
   const defaultReportMonthKey = useMemo(() => {
@@ -90,10 +106,6 @@ export default function ReportingTab({
     return formatMonthKey(selectedReportMonthKey);
   }, [selectedReportMonthKey]);
 
-  const cycleMonthLabel = useMemo(() => {
-    return formatMonthKey(eomMonthKey);
-  }, [eomMonthKey]);
-
   const isOverridden = selectedReportMonthKey !== defaultReportMonthKey;
 
   // Filter clients by configured deck status
@@ -107,7 +119,7 @@ export default function ReportingTab({
   }, [clients, showConfiguredOnly]);
 
   // Load reporting data
-  const loadReportingData = useCallback(async () => {
+  const loadReportingData = useCallback(async (preserveSelection = false) => {
     setLoading(true);
     setError("");
     try {
@@ -126,12 +138,13 @@ export default function ReportingTab({
         throw new Error(data.error || "Failed to load reporting data");
       }
       setClients(data.clients || []);
-      setSystemWebAppUrl(data.systemWebAppUrl || "");
-      setSettingsUrlInput(data.systemWebAppUrl || "");
+      setSystemWebAppUrl(data.systemWebAppUrl || HARDCODED_REPORTING_WEBAPP_URL);
       setChartRefs(data.chartRefs || []);
 
-      // Default: do not check any clients
-      setSelectedClients(new Set());
+      // Default: do not check any clients on initial load, but preserve selection after running an action
+      if (!preserveSelection) {
+        setSelectedClients(new Set());
+      }
     } catch (err) {
       console.error("Error loading reporting data:", err);
       setError(err.message);
@@ -141,8 +154,22 @@ export default function ReportingTab({
   }, [automationCommanderSheetId, eomMonthKey, selectedReportMonthKey]);
 
   useEffect(() => {
-    loadReportingData();
+    loadReportingData(false);
   }, [loadReportingData]);
+
+  // Quick copy report URL to clipboard
+  const handleCopyReportUrl = async (clientName, url) => {
+    if (!url) return;
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedClient(clientName);
+      setTimeout(() => {
+        setCopiedClient(prev => (prev === clientName ? null : prev));
+      }, 2000);
+    } catch (err) {
+      console.error("Failed to copy URL:", err);
+    }
+  };
 
   // Toggle single client selection
   const toggleClientSelection = (clientName) => {
@@ -442,12 +469,14 @@ export default function ReportingTab({
             updateStage(1, "done", "EoM checklist updated", 100, `${client.clientName}: Completed.`);
 
             const clientDur = Math.max(1, Math.round((Date.now() - clientStartMs) / 1000));
+            const completedTimeStr = nowTime();
             setClientStatuses(prev => ({
               ...prev,
               [client.clientName]: {
                 status: "success",
                 message: `Draft created (${clientDur}s)`,
                 subDetail: `Recipient: ${client.emailTo}`,
+                completedAt: completedTimeStr,
                 percent: 100
               }
             }));
@@ -698,6 +727,7 @@ export default function ReportingTab({
           });
 
           const totalClientSec = Math.max(1, Math.round((Date.now() - clientStartMs) / 1000));
+          const completedTimeStr = nowTime();
           updateStage(
             3,
             "done",
@@ -712,6 +742,7 @@ export default function ReportingTab({
               status: "success",
               message: mode === "GENERATE" ? `Report generated (${totalClientSec}s)` : `Deck updated (${totalClientSec}s)`,
               subDetail: finalClientRes.reportName || reportMonthLabel,
+              completedAt: completedTimeStr,
               percent: 100,
               reportUrl: finalClientRes.reportUrl || null
             }
@@ -725,6 +756,7 @@ export default function ReportingTab({
           }
           console.error(`Error processing ${client.clientName}:`, clientErr);
           failCount++;
+          const failedTimeStr = nowTime();
           setRunProgress(prev => prev ? {
             ...prev,
             stages: prev.stages.map(s => s.status === "running" ? { ...s, status: "error", detail: clientErr.message } : s),
@@ -736,6 +768,7 @@ export default function ReportingTab({
               status: "error",
               message: "Error",
               subDetail: clientErr.message,
+              completedAt: failedTimeStr,
               percent: 0
             }
           }));
@@ -771,8 +804,8 @@ export default function ReportingTab({
           });
         }
 
-        // Reload fresh state to pull new report URLs and logs
-        loadReportingData();
+        // Reload fresh state to pull new report URLs and logs, preserving selected checkboxes
+        loadReportingData(true);
       }
     } catch (err) {
       if (err.name === "AbortError" || controller.signal.aborted) {
@@ -835,68 +868,6 @@ export default function ReportingTab({
       alert(`Error saving email template: ${err.message}`);
     } finally {
       setEmailSaving(false);
-    }
-  };
-
-  // Test Web App Connection (proxied via backend to avoid browser CORS restrictions)
-  const handleTestWebAppConnection = async () => {
-    const cleanUrl = settingsUrlInput.trim();
-    if (!cleanUrl) {
-      alert("Please enter a Web App URL first.");
-      return;
-    }
-    setSettingsTesting(true);
-    setSettingsTestResult(null);
-    try {
-      const resp = await fetch("/api/triage", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "eom_test_reporting_webapp",
-          webAppUrl: cleanUrl
-        })
-      });
-      let data = null;
-      try {
-        data = await resp.json();
-      } catch (parseErr) {
-        setSettingsTestResult({
-          success: false,
-          message: `Server returned HTTP ${resp.status}. Please verify the Next.js server is running.`
-        });
-        return;
-      }
-      if (data && data.success) {
-        setSettingsTestResult({ success: true, message: data.message || "Connection successful!" });
-      } else {
-        setSettingsTestResult({ success: false, message: data?.error || "Server returned error." });
-      }
-    } catch (err) {
-      setSettingsTestResult({ success: false, message: `Connection failed: ${err.message}` });
-    } finally {
-      setSettingsTesting(false);
-    }
-  };
-
-  // Save Web App URL
-  const handleSaveSettings = async () => {
-    const cleanUrl = settingsUrlInput.trim();
-    try {
-      await fetch("/api/triage", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "eom_save_reporting_config",
-          clientName: "__SYSTEM__",
-          webAppUrl: cleanUrl,
-          automationCommanderSheetId
-        })
-      });
-      setSystemWebAppUrl(cleanUrl);
-      setShowSettingsModal(false);
-      setStatusMsg({ type: "success", text: "Reporting Web App URL updated." });
-    } catch (err) {
-      alert(`Error saving settings: ${err.message}`);
     }
   };
 
@@ -971,6 +942,230 @@ export default function ReportingTab({
     }
   };
 
+  // ── OVERHEAD EXPENSES HANDLERS ──────────────────────────────────────────────
+  const openOverheadModal = async (client) => {
+    setOverheadModalClient(client);
+    setOverheadLoading(true);
+    setOverheadError("");
+    setOverheadNotice(null);
+    setOverheadData({
+      currentMonthFormatted: "",
+      leftHeaders: ["Category", "Actual", "Budget", "Variance", "%"],
+      leftRows: [],
+      rightRows: [],
+      rightTotal: null,
+      analysis: null
+    });
+
+    try {
+      const resp = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "eom_get_overhead_expenses",
+          masterSheetId: client.masterSheetId || client.masterSheetUrl,
+          clientName: client.clientName,
+          reportMonthKey: selectedReportMonthKey
+        })
+      });
+      const data = await resp.json();
+      if (!data.success) throw new Error(data.error || "Failed to load overhead expenses");
+
+      setOverheadData({
+        currentMonthFormatted: data.currentMonthFormatted || reportMonthLabel,
+        leftHeaders: data.leftHeaders || ["Category", "Actual", "Budget", "Variance", "%"],
+        leftRows: data.leftRows || [],
+        rightRows: data.rightRows || [],
+        rightTotal: data.rightTotal || null,
+        analysis: data.analysis || null
+      });
+    } catch (err) {
+      console.error("Error loading overhead expenses:", err);
+      setOverheadError(err.message);
+    } finally {
+      setOverheadLoading(false);
+    }
+  };
+
+  const applyLeftRowsAndServerPreview = async (nextLeftRows) => {
+    setOverheadData(prev => ({
+      ...prev,
+      leftRows: nextLeftRows
+    }));
+    setOverheadPreviewing(true);
+    try {
+      const resp = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "eom_preview_overhead_expenses",
+          leftRows: nextLeftRows
+        })
+      });
+      const data = await resp.json();
+      if (!data.success) throw new Error(data.error || "Failed to update preview");
+
+      setOverheadData(prev => ({
+        ...prev,
+        leftRows: nextLeftRows,
+        rightRows: data.rightRows || [],
+        rightTotal: data.rightTotal || null,
+        analysis: data.analysis || null
+      }));
+    } catch (err) {
+      console.error("Error updating overhead preview:", err);
+      setOverheadError(err.message);
+    } finally {
+      setOverheadPreviewing(false);
+    }
+  };
+
+  const handleToggleOverheadRow = (sheetRow) => {
+    const nextLeftRows = (overheadData.leftRows || []).map(r => {
+      if (r.sheetRow === sheetRow && !r.isTotalRow) {
+        return { ...r, checked: !r.checked };
+      }
+      return r;
+    });
+    applyLeftRowsAndServerPreview(nextLeftRows);
+  };
+
+  const handleApplySuggestedOverheadItems = () => {
+    const analysis = overheadData.analysis;
+    if (!analysis || !Array.isArray(analysis.suggestedItems) || analysis.suggestedItems.length === 0) return;
+    const targetSheetRows = new Set(analysis.suggestedItems.map(item => item.sheetRow));
+    const shouldCheck = analysis.suggestionDirection !== "uncheck";
+
+    const nextLeftRows = (overheadData.leftRows || []).map(r => {
+      if (targetSheetRows.has(r.sheetRow) && !r.isTotalRow) {
+        return { ...r, checked: shouldCheck };
+      }
+      return r;
+    });
+    applyLeftRowsAndServerPreview(nextLeftRows);
+  };
+
+  const handleAddZeroBudgetCategories = async (categoriesToAdd) => {
+    if (!overheadModalClient) return;
+    const list = Array.isArray(categoriesToAdd) ? categoriesToAdd.filter(Boolean) : [categoriesToAdd].filter(Boolean);
+    if (list.length === 0) return;
+
+    const busyKey = list.length > 1 ? "__ALL__" : list[0];
+    setAddingBudgetCategory(busyKey);
+    setOverheadError("");
+    setOverheadNotice(null);
+
+    try {
+      const checkboxOverrides = {};
+      (overheadData.leftRows || []).forEach(r => {
+        if (!r.isTotalRow) {
+          checkboxOverrides[r.sheetRow] = Boolean(r.checked);
+        }
+      });
+
+      const resp = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "eom_add_zero_budget_category",
+          masterSheetId: overheadModalClient.masterSheetId || overheadModalClient.masterSheetUrl,
+          clientName: overheadModalClient.clientName,
+          categories: list,
+          checkboxOverrides,
+          automationCommanderSheetId
+        })
+      });
+      const data = await resp.json();
+      if (!data.success) throw new Error(data.error || "Failed to add £0 budget category");
+
+      setOverheadData({
+        currentMonthFormatted: data.currentMonthFormatted || overheadData.currentMonthFormatted,
+        leftHeaders: data.leftHeaders || overheadData.leftHeaders,
+        leftRows: data.leftRows || [],
+        rightRows: data.rightRows || [],
+        rightTotal: data.rightTotal || null,
+        analysis: data.analysis || null
+      });
+      setOverheadNotice({
+        type: "success",
+        text: data.message || `Added £0 budget category (${list.join(", ")}).`
+      });
+    } catch (err) {
+      console.error("Error adding £0 budget category:", err);
+      setOverheadError(err.message);
+    } finally {
+      setAddingBudgetCategory(null);
+    }
+  };
+
+  const handleConfirmOverheadExpenses = async () => {
+    if (!overheadModalClient) return;
+    setOverheadConfirming(true);
+    setOverheadError("");
+    setOverheadNotice(null);
+
+    try {
+      const checkboxOverrides = {};
+      (overheadData.leftRows || []).forEach(r => {
+        if (!r.isTotalRow) {
+          checkboxOverrides[r.sheetRow] = Boolean(r.checked);
+        }
+      });
+
+      const resp = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "eom_confirm_overhead_expenses",
+          masterSheetId: overheadModalClient.masterSheetId || overheadModalClient.masterSheetUrl,
+          clientName: overheadModalClient.clientName,
+          reportMonthKey: selectedReportMonthKey,
+          checkboxOverrides,
+          automationCommanderSheetId
+        })
+      });
+      const data = await resp.json();
+      if (!data.success) throw new Error(data.error || "Failed to confirm overhead expenses");
+
+      const confirmedMonthKey = data.reportMonthKey || selectedReportMonthKey;
+      const confirmedAt = data.finalisedAt || new Date().toISOString();
+
+      setClients(prev => prev.map(c => {
+        if (c.clientName !== overheadModalClient.clientName) return c;
+        const nextMap = {
+          ...(c.overheadFinalisedByMonth || {}),
+          ...(data.overheadFinalisedByMonth || {}),
+          [confirmedMonthKey]: confirmedAt
+        };
+        return {
+          ...c,
+          overheadFinalisedByMonth: nextMap,
+          overheadFinalisedAt: nextMap[selectedReportMonthKey] || confirmedAt,
+          isOverheadFinalised: Boolean(nextMap[selectedReportMonthKey])
+        };
+      }));
+
+      setOverheadData({
+        currentMonthFormatted: data.currentMonthFormatted || overheadData.currentMonthFormatted,
+        leftHeaders: data.leftHeaders || overheadData.leftHeaders,
+        leftRows: data.leftRows || [],
+        rightRows: data.rightRows || [],
+        rightTotal: data.rightTotal || null,
+        analysis: data.analysis || null
+      });
+      setStatusMsg({
+        type: "success",
+        text: data.message || `Saved overhead expense selections for ${overheadModalClient.clientName}.`
+      });
+      setOverheadModalClient(null);
+    } catch (err) {
+      console.error("Error confirming overhead expenses:", err);
+      setOverheadError(err.message);
+    } finally {
+      setOverheadConfirming(false);
+    }
+  };
+
   if (!isAdmin) {
     return (
       <div style={{ padding: "40px 20px", textAlign: "center", color: "#64748b" }}>
@@ -1038,11 +1233,6 @@ export default function ReportingTab({
                   <span style={{ fontSize: "12px", fontWeight: 700, color: "#0f172a", whiteSpace: "nowrap" }}>
                     Report covers: {reportMonthLabel}
                   </span>
-                  {cycleMonthLabel && (
-                    <span style={{ fontSize: "11px", fontWeight: 500, color: "#64748b", whiteSpace: "nowrap" }}>
-                      ({cycleMonthLabel} EoM cycle)
-                    </span>
-                  )}
                 </div>
 
                 <button
@@ -1087,7 +1277,7 @@ export default function ReportingTab({
                     padding: "2px 4px"
                   }}
                 >
-                  Reset to cycle default ({formatMonthKey(defaultReportMonthKey)})
+                  Reset to default ({formatMonthKey(defaultReportMonthKey)})
                 </button>
               )}
             </div>
@@ -1127,22 +1317,6 @@ export default function ReportingTab({
               }}
             >
               Chart references
-            </button>
-            <button
-              onClick={() => setShowSettingsModal(true)}
-              style={{
-                padding: "7px 12px",
-                fontSize: "12px",
-                fontWeight: 600,
-                color: "#334155",
-                background: "#f8fafc",
-                border: "1px solid #cbd5e1",
-                borderRadius: "6px",
-                cursor: "pointer"
-              }}
-              title="Configure Web App deployment URL"
-            >
-              Settings
             </button>
           </div>
         </div>
@@ -1531,8 +1705,8 @@ export default function ReportingTab({
                     />
                   </th>
                   <th style={{ padding: "12px 16px" }}>Client</th>
-                  <th style={{ padding: "12px 16px" }}>Deck status</th>
                   <th style={{ padding: "12px 16px" }}>Latest report</th>
+                  <th style={{ padding: "12px 16px" }}>Overhead expenses</th>
                   <th style={{ padding: "12px 16px" }}>Quick links</th>
                   <th style={{ padding: "12px 16px" }}>Email template</th>
                   <th style={{ padding: "12px 16px" }}>Execution status</th>
@@ -1543,6 +1717,7 @@ export default function ReportingTab({
                   const isChecked = selectedClients.has(client.clientName);
                   const statusInfo = clientStatuses[client.clientName];
                   const latestReport = client.latestReport;
+                  const activeReportUrl = statusInfo?.reportUrl || latestReport?.reportUrl || "";
 
                   return (
                     <tr
@@ -1570,59 +1745,58 @@ export default function ReportingTab({
                         </div>
                       </td>
 
-                      {/* Deck Setup Badge */}
-                      <td style={{ padding: "12px 16px" }}>
-                        {client.hasDeckConfigured ? (
-                          <span style={{
-                            fontSize: "11px",
-                            fontWeight: 600,
-                            padding: "3px 8px",
-                            borderRadius: "4px",
-                            background: "#e0f2fe",
-                            color: "#0369a1"
-                          }}>
-                            Deck configured
-                          </span>
-                        ) : (
-                          <span style={{
-                            fontSize: "11px",
-                            fontWeight: 500,
-                            padding: "3px 8px",
-                            borderRadius: "4px",
-                            background: "#f1f5f9",
-                            color: "#64748b"
-                          }}>
-                            No deck folder
-                          </span>
-                        )}
-                      </td>
-
                       {/* Latest Report */}
                       <td style={{ padding: "12px 16px" }}>
-                        {statusInfo?.reportUrl || latestReport?.reportUrl ? (
+                        {activeReportUrl ? (
                           <div style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
-                            <a
-                              href={statusInfo?.reportUrl || latestReport?.reportUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              style={{
-                                display: "inline-flex",
-                                alignItems: "center",
-                                gap: "4px",
-                                padding: "3px 8px",
-                                background: "#f0fdf4",
-                                color: "#15803d",
-                                border: "1px solid #bbf7d0",
-                                borderRadius: "4px",
-                                fontSize: "12px",
-                                fontWeight: 600,
-                                textDecoration: "none",
-                                width: "fit-content"
-                              }}
-                            >
-                              <span>Open deck</span>
-                              <span style={{ fontSize: "10px" }}>↗</span>
-                            </a>
+                            <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                              <a
+                                href={activeReportUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: "4px",
+                                  padding: "3px 8px",
+                                  background: "#f0fdf4",
+                                  color: "#15803d",
+                                  border: "1px solid #bbf7d0",
+                                  borderRadius: "4px",
+                                  fontSize: "12px",
+                                  fontWeight: 600,
+                                  textDecoration: "none",
+                                  width: "fit-content"
+                                }}
+                              >
+                                <span>Open deck</span>
+                                <span style={{ fontSize: "10px" }}>↗</span>
+                              </a>
+                              <button
+                                type="button"
+                                onClick={() => handleCopyReportUrl(client.clientName, activeReportUrl)}
+                                title="Copy latest report link"
+                                style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: "4px",
+                                  padding: "3px 8px",
+                                  background: copiedClient === client.clientName ? "#f0fdf4" : "#f8fafc",
+                                  color: copiedClient === client.clientName ? "#15803d" : "#475569",
+                                  border: `1px solid ${copiedClient === client.clientName ? "#bbf7d0" : "#cbd5e1"}`,
+                                  borderRadius: "4px",
+                                  fontSize: "11px",
+                                  fontWeight: 600,
+                                  cursor: "pointer"
+                                }}
+                              >
+                                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                                </svg>
+                                <span>{copiedClient === client.clientName ? "Copied" : "Copy link"}</span>
+                              </button>
+                            </div>
                             {latestReport?.month && (
                               <span style={{
                                 fontSize: "11px",
@@ -1640,9 +1814,74 @@ export default function ReportingTab({
                         )}
                       </td>
 
+                      {/* Overhead Expenses */}
+                      <td style={{ padding: "12px 16px" }}>
+                        {(() => {
+                          const finalisedIso = client.overheadFinalisedByMonth?.[selectedReportMonthKey]
+                            || (client.isOverheadFinalised ? client.overheadFinalisedAt : null);
+                          const isFinalisedForMonth = Boolean(finalisedIso);
+                          const formattedFinalisedTime = finalisedIso
+                            ? new Date(finalisedIso).toLocaleString("en-GB", {
+                                day: "2-digit",
+                                month: "short",
+                                hour: "2-digit",
+                                minute: "2-digit"
+                              })
+                            : "";
+
+                          return (
+                            <div style={{ display: "inline-flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                              <button
+                                type="button"
+                                disabled={!client.masterSheetId && !client.masterSheetUrl}
+                                onClick={() => openOverheadModal(client)}
+                                style={{
+                                  background: "#f8fafc",
+                                  border: "1px solid #cbd5e1",
+                                  borderRadius: "4px",
+                                  padding: "4px 10px",
+                                  fontSize: "12px",
+                                  fontWeight: 600,
+                                  color: (!client.masterSheetId && !client.masterSheetUrl) ? "#94a3b8" : "#334155",
+                                  cursor: (!client.masterSheetId && !client.masterSheetUrl) ? "not-allowed" : "pointer",
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: "4px"
+                                }}
+                              >
+                                <span>Manage</span>
+                              </button>
+
+                              {isFinalisedForMonth && (
+                                <span
+                                  title={formattedFinalisedTime ? `Finalised for ${reportMonthLabel} (${formattedFinalisedTime})` : `Finalised for ${reportMonthLabel}`}
+                                  style={{
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    gap: "4px",
+                                    padding: "3px 8px",
+                                    borderRadius: "999px",
+                                    background: "#f0fdf4",
+                                    border: "1px solid #bbf7d0",
+                                    color: "#15803d",
+                                    fontSize: "11px",
+                                    fontWeight: 600
+                                  }}
+                                >
+                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round">
+                                    <polyline points="20 6 9 17 4 12" />
+                                  </svg>
+                                  <span>Finalised</span>
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })()}
+                      </td>
+
                       {/* Quick Links */}
                       <td style={{ padding: "12px 16px" }}>
-                        <div style={{ display: "flex", gap: "8px", fontSize: "12px" }}>
+                        <div style={{ display: "flex", gap: "10px", fontSize: "12px" }}>
                           {client.masterSheetUrl && (
                             <a
                               href={client.masterSheetUrl}
@@ -1660,7 +1899,7 @@ export default function ReportingTab({
                               rel="noopener noreferrer"
                               style={{ color: "#0284c7", textDecoration: "none" }}
                             >
-                              Folder
+                              Reports folder
                             </a>
                           )}
                         </div>
@@ -1712,6 +1951,11 @@ export default function ReportingTab({
                             {statusInfo.status === "running" && typeof statusInfo.percent === "number" && (
                               <div style={{ width: "100%", maxWidth: "220px", height: "4px", background: "#e2e8f0", borderRadius: "999px", overflow: "hidden" }}>
                                 <div style={{ width: `${Math.min(100, Math.max(0, statusInfo.percent))}%`, height: "100%", background: "#0284c7", transition: "width 0.4s ease" }} />
+                              </div>
+                            )}
+                            {statusInfo.completedAt && (
+                              <div style={{ fontSize: "11px", fontWeight: 600, color: "#475569" }}>
+                                Completed at {statusInfo.completedAt}
                               </div>
                             )}
                             {statusInfo.subDetail && (
@@ -2156,117 +2400,644 @@ export default function ReportingTab({
         </div>
       )}
 
-      {/* ── SETTINGS MODAL ────────────────────────────────────────────────────── */}
-      {showSettingsModal && (
-        <div style={{
-          position: "fixed",
-          inset: 0,
-          background: "rgba(0,0,0,0.5)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          zIndex: 9999,
-          padding: "20px"
-        }}>
+      {/* ── OVERHEAD EXPENSES MODAL ───────────────────────────────────────────── */}
+      {overheadModalClient && (() => {
+        const analysis = overheadData.analysis;
+        const suggestedSheetRows = new Set((analysis?.suggestedItems || []).map(item => item.sheetRow));
+        const divZeroCategories = analysis?.divZeroCategories || [];
+        const unsavedChangesCount = (overheadData.leftRows || []).filter(r => !r.isTotalRow && Boolean(r.checked) !== Boolean(r.sheetChecked)).length;
+
+        return (
           <div style={{
-            background: "#ffffff",
-            borderRadius: "10px",
-            width: "100%",
-            maxWidth: "540px",
-            padding: "24px",
-            boxShadow: "0 10px 25px rgba(0,0,0,0.15)"
+            position: "fixed",
+            inset: 0,
+            background: "rgba(15, 23, 42, 0.55)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 10000,
+            padding: "20px"
           }}>
-            <h2 style={{ margin: "0 0 8px", fontSize: "18px", fontWeight: 700, color: "#0f172a" }}>
-              Reporting integration settings
-            </h2>
-            <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#64748b" }}>
-              Deployed Google Apps Script Web App URL for generating slides and drafting emails.
-            </p>
-
-            <div style={{ marginBottom: "16px" }}>
-              <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "#475569", marginBottom: "4px" }}>
-                Web App URL:
-              </label>
-              <input
-                type="text"
-                value={settingsUrlInput}
-                onChange={(e) => setSettingsUrlInput(e.target.value)}
-                placeholder="https://script.google.com/macros/s/.../exec"
-                style={{
-                  width: "100%",
-                  padding: "8px 12px",
-                  fontSize: "13px",
-                  border: "1px solid #cbd5e1",
-                  borderRadius: "6px",
-                  boxSizing: "border-box"
-                }}
-              />
-            </div>
-
-            {settingsTestResult && (
+            <div style={{
+              background: "#ffffff",
+              borderRadius: "12px",
+              width: "100%",
+              maxWidth: "1260px",
+              maxHeight: "90vh",
+              display: "flex",
+              flexDirection: "column",
+              boxShadow: "0 20px 40px rgba(15, 23, 42, 0.25)",
+              overflow: "hidden"
+            }}>
+              {/* Modal Header */}
               <div style={{
-                marginBottom: "16px",
-                padding: "8px 12px",
-                borderRadius: "6px",
-                fontSize: "12px",
-                backgroundColor: settingsTestResult.success ? "#f0fdf4" : "#fef2f2",
-                color: settingsTestResult.success ? "#166534" : "#991b1b",
-                border: `1px solid ${settingsTestResult.success ? "#bbf7d0" : "#fecaca"}`
+                padding: "16px 24px",
+                borderBottom: "1px solid #e2e8f0",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: "12px",
+                background: "#f8fafc"
               }}>
-                {settingsTestResult.message}
-              </div>
-            )}
+                <div>
+                  <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                    <h2 style={{ margin: 0, fontSize: "18px", fontWeight: 700, color: "#0f172a" }}>
+                      Overhead expenses: {overheadModalClient.clientName}
+                    </h2>
+                    <span style={{
+                      fontSize: "12px",
+                      fontWeight: 600,
+                      padding: "3px 10px",
+                      borderRadius: "999px",
+                      background: "#e0f2fe",
+                      color: "#0369a1",
+                      border: "1px solid #bae6fd"
+                    }}>
+                      Report covers: {overheadData.currentMonthFormatted || reportMonthLabel}
+                    </span>
+                    {overheadPreviewing && (
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#0284c7", fontWeight: 600 }}>
+                        <Spinner size="12px" color="#0284c7" />
+                        <span>Updating table...</span>
+                      </span>
+                    )}
+                  </div>
+                  <p style={{ margin: "4px 0 0", fontSize: "12px", color: "#64748b" }}>
+                    Check or uncheck categories on the left (MgmtRep!A371:F493) to preview the report table on the right (MgmtRep!AB371:AG493). Click Confirm when ready to save to the Master Sheet.
+                  </p>
+                </div>
 
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <button
-                disabled={settingsTesting}
-                onClick={handleTestWebAppConnection}
-                style={{
-                  padding: "7px 12px",
-                  background: "#f8fafc",
-                  border: "1px solid #cbd5e1",
-                  borderRadius: "6px",
-                  fontSize: "12px",
-                  cursor: settingsTesting ? "default" : "pointer"
-                }}
-              >
-                {settingsTesting ? "Testing..." : "Test connection"}
-              </button>
-
-              <div style={{ display: "flex", gap: "10px" }}>
                 <button
-                  onClick={() => setShowSettingsModal(false)}
+                  type="button"
+                  disabled={overheadConfirming}
+                  onClick={() => setOverheadModalClient(null)}
                   style={{
-                    padding: "8px 16px",
                     background: "none",
-                    border: "1px solid #cbd5e1",
-                    borderRadius: "6px",
-                    fontSize: "13px",
-                    cursor: "pointer"
-                  }}
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleSaveSettings}
-                  style={{
-                    padding: "8px 16px",
-                    background: "#0066cc",
-                    color: "#ffffff",
                     border: "none",
-                    borderRadius: "6px",
-                    fontSize: "13px",
-                    fontWeight: 600,
-                    cursor: "pointer"
+                    fontSize: "20px",
+                    cursor: overheadConfirming ? "default" : "pointer",
+                    color: "#64748b",
+                    padding: "4px 8px"
                   }}
                 >
-                  Save settings
+                  ✕
                 </button>
+              </div>
+
+              {/* Modal Body */}
+              <div style={{ padding: "18px 24px", overflowY: "auto", flex: 1, display: "flex", flexDirection: "column", gap: "14px" }}>
+                {overheadError && (
+                  <div style={{
+                    padding: "10px 14px",
+                    borderRadius: "8px",
+                    background: "#fef2f2",
+                    border: "1px solid #fecaca",
+                    color: "#991b1b",
+                    fontSize: "13px"
+                  }}>
+                    {overheadError}
+                  </div>
+                )}
+
+                {overheadNotice && (
+                  <div style={{
+                    padding: "10px 14px",
+                    borderRadius: "8px",
+                    background: overheadNotice.type === "error" ? "#fef2f2" : "#f0fdf4",
+                    border: `1px solid ${overheadNotice.type === "error" ? "#fecaca" : "#bbf7d0"}`,
+                    color: overheadNotice.type === "error" ? "#991b1b" : "#166534",
+                    fontSize: "13px",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center"
+                  }}>
+                    <span>{overheadNotice.text}</span>
+                    <button
+                      type="button"
+                      onClick={() => setOverheadNotice(null)}
+                      style={{ background: "none", border: "none", cursor: "pointer", color: "inherit", fontWeight: 700 }}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                )}
+
+                {overheadLoading ? (
+                  <div style={{ padding: "60px 20px", textAlign: "center", color: "#64748b", display: "flex", flexDirection: "column", alignItems: "center", gap: "12px" }}>
+                    <Spinner size="28px" color="#0284c7" />
+                    <div style={{ fontSize: "14px", fontWeight: 600, color: "#334155" }}>
+                      Loading overhead expenses from Master Sheet...
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    {/* Reconciliation & #DIV/0! Status Banners */}
+                    {analysis && analysis.hasNonDelTarget && (
+                      <div style={{
+                        padding: "12px 16px",
+                        borderRadius: "8px",
+                        background: analysis.isMatched ? "#f0fdf4" : "#fffbeb",
+                        border: `1px solid ${analysis.isMatched ? "#bbf7d0" : "#fde68a"}`,
+                        color: analysis.isMatched ? "#166534" : "#92400e",
+                        fontSize: "13px",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: "8px"
+                      }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                            <span style={{
+                              display: "inline-block",
+                              width: "8px",
+                              height: "8px",
+                              borderRadius: "50%",
+                              background: analysis.isMatched ? "#16a34a" : "#d97706"
+                            }} />
+                            {analysis.isMatched ? (
+                              <span style={{ fontWeight: 600 }}>
+                                Actual total on the right ({analysis.rightTotalActualFormatted}) matches &ldquo;{analysis.nonDelLabel}&rdquo; ({analysis.targetNonDelFormatted}).
+                              </span>
+                            ) : (
+                              <span style={{ fontWeight: 600 }}>
+                                Actual total on the right ({analysis.rightTotalActualFormatted}) does not match &ldquo;{analysis.nonDelLabel}&rdquo; ({analysis.targetNonDelFormatted}) — difference of{" "}
+                                <strong style={{ color: "#b45309", textDecoration: "underline" }}>
+                                  {analysis.differenceFormatted}
+                                </strong>
+                                {analysis.differenceNum > 0
+                                  ? ` (${analysis.absDifferenceFormatted} not yet checked on the left)`
+                                  : ` (${analysis.absDifferenceFormatted} checked in excess of non-delivery total)`}.
+                              </span>
+                            )}
+                          </div>
+
+                          {!analysis.isMatched && Array.isArray(analysis.suggestedItems) && analysis.suggestedItems.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={handleApplySuggestedOverheadItems}
+                              style={{
+                                padding: "5px 12px",
+                                background: "#d97706",
+                                color: "#ffffff",
+                                border: "none",
+                                borderRadius: "6px",
+                                fontSize: "12px",
+                                fontWeight: 600,
+                                cursor: "pointer",
+                                whiteSpace: "nowrap"
+                              }}
+                            >
+                              {analysis.suggestionDirection === "uncheck"
+                                ? `Uncheck suggested (${analysis.suggestedItems.length})`
+                                : `Check suggested (${analysis.suggestedItems.length})`}
+                            </button>
+                          )}
+                        </div>
+
+                        {!analysis.isMatched && Array.isArray(analysis.suggestedItems) && analysis.suggestedItems.length > 0 && (
+                          <div style={{ fontSize: "12px", color: "#78350f", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                            <span style={{ fontWeight: 600 }}>
+                              Suggested item(s) to {analysis.suggestionDirection === "uncheck" ? "uncheck" : "check"} to match totals:
+                            </span>
+                            {analysis.suggestedItems.map((item) => (
+                              <span
+                                key={item.sheetRow}
+                                onClick={() => handleToggleOverheadRow(item.sheetRow)}
+                                title="Click to toggle this item"
+                                style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: "4px",
+                                  padding: "2px 8px",
+                                  background: "#fef3c7",
+                                  border: "1px solid #f59e0b",
+                                  borderRadius: "999px",
+                                  fontWeight: 600,
+                                  color: "#92400e",
+                                  cursor: "pointer"
+                                }}
+                              >
+                                <span>{item.category}</span>
+                                <span style={{ fontFamily: "monospace" }}>({item.actualFormatted})</span>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+
+                        {!analysis.isMatched && (!analysis.suggestedItems || analysis.suggestedItems.length === 0) && Array.isArray(analysis.fallbackCandidates) && analysis.fallbackCandidates.length > 0 && (
+                          <div style={{ fontSize: "12px", color: "#78350f", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                            <span style={{ fontWeight: 600 }}>Unchecked items with actual amounts:</span>
+                            {analysis.fallbackCandidates.map((item) => (
+                              <span
+                                key={item.sheetRow}
+                                onClick={() => handleToggleOverheadRow(item.sheetRow)}
+                                title="Click to toggle this item"
+                                style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: "4px",
+                                  padding: "2px 8px",
+                                  background: "#fef3c7",
+                                  border: "1px solid #fcd34d",
+                                  borderRadius: "999px",
+                                  color: "#92400e",
+                                  cursor: "pointer"
+                                }}
+                              >
+                                <span>{item.category}</span>
+                                <span style={{ fontFamily: "monospace" }}>({item.actualFormatted})</span>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* #DIV/0! Warning Banner with Bulk Action */}
+                    {divZeroCategories.length > 0 && (
+                      <div style={{
+                        padding: "10px 16px",
+                        borderRadius: "8px",
+                        background: "#fef2f2",
+                        border: "1px solid #fecaca",
+                        color: "#991b1b",
+                        fontSize: "13px",
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        flexWrap: "wrap",
+                        gap: "10px"
+                      }}>
+                        <div>
+                          <strong>{divZeroCategories.length} checked category(s)</strong> have a <code style={{ background: "#fee2e2", padding: "1px 5px", borderRadius: "4px" }}>#DIV/0!</code> error in the % column because they have no budget row in <code style={{ background: "#fee2e2", padding: "1px 5px", borderRadius: "4px" }}>Budget!A150:A250</code>:{" "}
+                          <span style={{ fontWeight: 600 }}>{divZeroCategories.join(", ")}</span>.
+                        </div>
+                        {divZeroCategories.length > 1 && (
+                          <button
+                            type="button"
+                            disabled={addingBudgetCategory !== null}
+                            onClick={() => handleAddZeroBudgetCategories(divZeroCategories)}
+                            style={{
+                              padding: "5px 12px",
+                              background: "#dc2626",
+                              color: "#ffffff",
+                              border: "none",
+                              borderRadius: "6px",
+                              fontSize: "12px",
+                              fontWeight: 600,
+                              cursor: addingBudgetCategory !== null ? "not-allowed" : "pointer",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "6px",
+                              whiteSpace: "nowrap"
+                            }}
+                          >
+                            {addingBudgetCategory === "__ALL__" && <Spinner size="12px" color="#ffffff" />}
+                            <span>Add all £0 budget categories ({divZeroCategories.length})</span>
+                          </button>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Two Side-by-Side Sections */}
+                    <div style={{
+                      display: "grid",
+                      gridTemplateColumns: "1.08fr 1fr",
+                      gap: "18px",
+                      alignItems: "start"
+                    }}>
+                      {/* LEFT SECTION: MgmtRep!A371:F493 */}
+                      <div style={{
+                        border: "1px solid #e2e8f0",
+                        borderRadius: "8px",
+                        overflow: "hidden",
+                        background: "#ffffff"
+                      }}>
+                        <div style={{
+                          padding: "10px 14px",
+                          background: "#f8fafc",
+                          borderBottom: "1px solid #e2e8f0",
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center"
+                        }}>
+                          <span style={{ fontSize: "13px", fontWeight: 700, color: "#0f172a" }}>
+                            All expense categories (MgmtRep!A371:F493)
+                          </span>
+                          <span style={{ fontSize: "11px", color: "#64748b" }}>
+                            {(overheadData.leftRows || []).filter(r => !r.isTotalRow && r.checked).length} of {(overheadData.leftRows || []).filter(r => !r.isTotalRow).length} checked
+                          </span>
+                        </div>
+
+                        <div style={{ maxHeight: "52vh", overflowY: "auto" }}>
+                          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
+                            <thead>
+                              <tr style={{ position: "sticky", top: 0, background: "#f1f5f9", borderBottom: "1px solid #cbd5e1", color: "#475569", zIndex: 1 }}>
+                                <th style={{ padding: "8px 10px", width: "34px", textAlign: "center" }}>Inc.</th>
+                                <th style={{ padding: "8px 10px", textAlign: "left" }}>Category</th>
+                                <th style={{ padding: "8px 10px", textAlign: "right" }}>Actual</th>
+                                <th style={{ padding: "8px 10px", textAlign: "right" }}>Budget</th>
+                                <th style={{ padding: "8px 10px", textAlign: "right" }}>Variance</th>
+                                <th style={{ padding: "8px 10px", textAlign: "right" }}>%</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {(overheadData.leftRows || []).map((row) => {
+                                const isSuggested = suggestedSheetRows.has(row.sheetRow);
+                                const isModified = !row.isTotalRow && Boolean(row.checked) !== Boolean(row.sheetChecked);
+
+                                return (
+                                  <tr
+                                    key={row.sheetRow}
+                                    onClick={() => !row.isTotalRow && handleToggleOverheadRow(row.sheetRow)}
+                                    style={{
+                                      borderBottom: "1px solid #f1f5f9",
+                                      borderTop: row.isTotalRow ? "2px solid #cbd5e1" : "none",
+                                      background: row.isNonDelTotalRow
+                                        ? "#eff6ff"
+                                        : (row.isTotalRow
+                                          ? "#f8fafc"
+                                          : (isSuggested
+                                            ? "#fffbeb"
+                                            : (row.checked ? "#f0fdf4" : "#ffffff"))),
+                                      fontWeight: row.isTotalRow ? 700 : 400,
+                                      cursor: row.isTotalRow ? "default" : "pointer"
+                                    }}
+                                  >
+                                    <td
+                                      style={{ padding: "7px 10px", textAlign: "center" }}
+                                      onClick={(e) => e.stopPropagation()}
+                                    >
+                                      {!row.isTotalRow && (
+                                        <input
+                                          type="checkbox"
+                                          checked={Boolean(row.checked)}
+                                          onChange={() => handleToggleOverheadRow(row.sheetRow)}
+                                          style={{ cursor: "pointer" }}
+                                        />
+                                      )}
+                                    </td>
+                                    <td style={{ padding: "7px 10px", color: "#0f172a" }}>
+                                      <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                                        <span>{row.category}</span>
+                                        {isSuggested && (
+                                          <span style={{
+                                            fontSize: "10px",
+                                            fontWeight: 700,
+                                            padding: "1px 6px",
+                                            borderRadius: "999px",
+                                            background: "#fef3c7",
+                                            color: "#b45309",
+                                            border: "1px solid #f59e0b"
+                                          }}>
+                                            Suggested
+                                          </span>
+                                        )}
+                                        {isModified && (
+                                          <span style={{
+                                            fontSize: "10px",
+                                            fontWeight: 600,
+                                            color: "#0284c7"
+                                          }}>
+                                            • edited
+                                          </span>
+                                        )}
+                                      </div>
+                                    </td>
+                                    <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: "monospace", fontWeight: row.isTotalRow || row.actualNum !== 0 ? 600 : 400, color: row.isNonDelTotalRow ? "#0369a1" : "#0f172a" }}>
+                                      {row.actualFormatted}
+                                    </td>
+                                    <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: "monospace", color: row.budgetNum === null ? "#94a3b8" : "#334155" }}>
+                                      {row.budgetFormatted || "—"}
+                                    </td>
+                                    <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: "monospace", color: row.varianceNum < 0 ? "#b91c1c" : "#334155" }}>
+                                      {row.varianceFormatted}
+                                    </td>
+                                    <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: "monospace", color: "#475569" }}>
+                                      {row.pctFormatted || "—"}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+
+                      {/* RIGHT SECTION: MgmtRep!AB371:AG493 */}
+                      <div style={{
+                        border: "1px solid #e2e8f0",
+                        borderRadius: "8px",
+                        overflow: "hidden",
+                        background: "#ffffff"
+                      }}>
+                        <div style={{
+                          padding: "10px 14px",
+                          background: "#f8fafc",
+                          borderBottom: "1px solid #e2e8f0",
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center"
+                        }}>
+                          <span style={{ fontSize: "13px", fontWeight: 700, color: "#0f172a" }}>
+                            Report overhead table (MgmtRep!AB371:AG493)
+                          </span>
+                          <span style={{ fontSize: "11px", color: "#64748b" }}>
+                            {(overheadData.rightRows || []).length} categories included
+                          </span>
+                        </div>
+
+                        <div style={{ maxHeight: "52vh", overflowY: "auto" }}>
+                          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
+                            <thead>
+                              <tr style={{ position: "sticky", top: 0, background: "#f1f5f9", borderBottom: "1px solid #cbd5e1", color: "#475569", zIndex: 1 }}>
+                                <th style={{ padding: "8px 10px", textAlign: "left" }}>Category</th>
+                                <th style={{ padding: "8px 10px", textAlign: "right" }}>Actual</th>
+                                <th style={{ padding: "8px 10px", textAlign: "right" }}>Budget</th>
+                                <th style={{ padding: "8px 10px", textAlign: "right" }}>Var.</th>
+                                <th style={{ padding: "8px 10px", textAlign: "right" }}>%</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {(overheadData.rightRows || []).length === 0 ? (
+                                <tr>
+                                  <td colSpan={5} style={{ padding: "32px 16px", textAlign: "center", color: "#94a3b8" }}>
+                                    No categories checked on the left.
+                                  </td>
+                                </tr>
+                              ) : (
+                                (overheadData.rightRows || []).map((row) => (
+                                  <tr
+                                    key={row.sheetRow}
+                                    style={{
+                                      borderBottom: "1px solid #f1f5f9",
+                                      background: row.hasDivZeroError ? "#fef2f2" : "#ffffff"
+                                    }}
+                                  >
+                                    <td style={{ padding: "7px 10px", color: "#0f172a" }}>
+                                      {row.category}
+                                    </td>
+                                    <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: "monospace", fontWeight: row.actualNum !== 0 ? 600 : 400 }}>
+                                      {row.actualFormatted}
+                                    </td>
+                                    <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: "monospace", color: row.budgetNum === null ? "#b91c1c" : "#334155" }}>
+                                      {row.budgetFormatted || "—"}
+                                    </td>
+                                    <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: "monospace", color: row.varNum < 0 ? "#b91c1c" : "#334155" }}>
+                                      {row.varFormatted}
+                                    </td>
+                                    <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: "monospace" }}>
+                                      {row.hasDivZeroError ? (
+                                        <div style={{ display: "inline-flex", alignItems: "center", gap: "6px", justifyContent: "flex-end", flexWrap: "wrap" }}>
+                                          <span style={{
+                                            padding: "1px 6px",
+                                            borderRadius: "4px",
+                                            background: "#fee2e2",
+                                            color: "#b91c1c",
+                                            fontWeight: 700,
+                                            fontSize: "11px"
+                                          }}>
+                                            #DIV/0!
+                                          </span>
+                                          <button
+                                            type="button"
+                                            disabled={addingBudgetCategory !== null}
+                                            onClick={() => handleAddZeroBudgetCategories([row.category])}
+                                            style={{
+                                              padding: "2px 8px",
+                                              background: "#ffffff",
+                                              color: "#b91c1c",
+                                              border: "1px solid #f87171",
+                                              borderRadius: "4px",
+                                              fontSize: "11px",
+                                              fontWeight: 600,
+                                              fontFamily: "sans-serif",
+                                              cursor: addingBudgetCategory !== null ? "not-allowed" : "pointer",
+                                              display: "inline-flex",
+                                              alignItems: "center",
+                                              gap: "4px",
+                                              whiteSpace: "nowrap"
+                                            }}
+                                          >
+                                            {addingBudgetCategory === row.category && <Spinner size="10px" color="#b91c1c" />}
+                                            <span>Add £0 budget category</span>
+                                          </button>
+                                        </div>
+                                      ) : (
+                                        <span style={{ color: "#475569" }}>{row.pctFormatted}</span>
+                                      )}
+                                    </td>
+                                  </tr>
+                                ))
+                              )}
+
+                              {overheadData.rightTotal && (
+                                <tr style={{
+                                  borderTop: "2px solid #cbd5e1",
+                                  background: analysis?.isMatched ? "#f0fdf4" : "#fffbeb",
+                                  fontWeight: 700
+                                }}>
+                                  <td style={{ padding: "9px 10px", color: "#0f172a" }}>
+                                    {overheadData.rightTotal.category}
+                                  </td>
+                                  <td style={{
+                                    padding: "9px 10px",
+                                    textAlign: "right",
+                                    fontFamily: "monospace",
+                                    color: analysis?.isMatched ? "#15803d" : "#b45309"
+                                  }}>
+                                    {overheadData.rightTotal.actualFormatted}
+                                  </td>
+                                  <td style={{ padding: "9px 10px", textAlign: "right", fontFamily: "monospace", color: "#0f172a" }}>
+                                    {overheadData.rightTotal.budgetFormatted}
+                                  </td>
+                                  <td style={{
+                                    padding: "9px 10px",
+                                    textAlign: "right",
+                                    fontFamily: "monospace",
+                                    color: overheadData.rightTotal.varNum < 0 ? "#b91c1c" : "#0f172a"
+                                  }}>
+                                    {overheadData.rightTotal.varFormatted}
+                                  </td>
+                                  <td style={{ padding: "9px 10px", textAlign: "right", fontFamily: "monospace", color: "#0f172a" }}>
+                                    {overheadData.rightTotal.pctFormatted}
+                                  </td>
+                                </tr>
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* Modal Footer */}
+              <div style={{
+                padding: "14px 24px",
+                borderTop: "1px solid #e2e8f0",
+                background: "#f8fafc",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                flexWrap: "wrap",
+                gap: "12px"
+              }}>
+                <div style={{ fontSize: "12px", color: "#64748b" }}>
+                  {unsavedChangesCount > 0 ? (
+                    <span style={{ color: "#0369a1", fontWeight: 600 }}>
+                      {unsavedChangesCount} checkbox change(s) ready to save to MgmtRep!F372:F493.
+                    </span>
+                  ) : (
+                    <span>Checkboxes currently match column F of the MgmtRep tab.</span>
+                  )}
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                  <button
+                    type="button"
+                    disabled={overheadConfirming}
+                    onClick={() => setOverheadModalClient(null)}
+                    style={{
+                      padding: "8px 16px",
+                      background: "#ffffff",
+                      color: "#334155",
+                      border: "1px solid #cbd5e1",
+                      borderRadius: "6px",
+                      fontSize: "13px",
+                      fontWeight: 600,
+                      cursor: overheadConfirming ? "not-allowed" : "pointer"
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={overheadLoading || overheadConfirming}
+                    onClick={handleConfirmOverheadExpenses}
+                    style={{
+                      padding: "8px 20px",
+                      background: "#0066cc",
+                      color: "#ffffff",
+                      border: "none",
+                      borderRadius: "6px",
+                      fontSize: "13px",
+                      fontWeight: 600,
+                      cursor: (overheadLoading || overheadConfirming) ? "not-allowed" : "pointer",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "6px"
+                    }}
+                  >
+                    {overheadConfirming && <Spinner size="14px" color="#ffffff" />}
+                    <span>Confirm</span>
+                  </button>
+                </div>
               </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 }

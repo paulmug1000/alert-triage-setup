@@ -108,13 +108,51 @@ export default function InvoicesView({
   managedClient,
   onClearManagedClient,
   initialClient,
-  onSelectClient
+  onSelectClient,
+  isModalOverlay = false
 }) {
   const auth = useAuth();
   const isAdmin = propIsAdmin !== undefined ? propIsAdmin : (!auth.user?.isReadOnly && !!(auth.user?.isAdmin || auth.user?.role === "Admin"));
 
   const { assignedAppIds, setAssignedAppIds, outgoingsPullPendingRef, addAssignedAppId } = useAppGlobals();
-  const { clientsWithFlags, setClientsWithFlags } = useTriage();
+  const { clientsWithFlags, setClientsWithFlags, setClientAlerts, sessionId } = useTriage();
+
+  const removeAssignedInvoiceAlert = (invNo, refNo, clientName) => {
+    const cleanInvNo = String(invNo || "").trim();
+    const cleanRef = String(refNo || "").trim();
+    if (!cleanInvNo || !setClientAlerts) return;
+    setClientAlerts(prev => {
+      if (!Array.isArray(prev)) return prev;
+      const toRemove = [];
+      const next = prev.filter(a => {
+        if (a.type === "invoiceDashboardDiscr" && (!clientName || a.clientName === clientName)) {
+          const txId = String(a.data?.accounting?.[10] || a.data?.accounting?.[1] || a.data?.accounting?.[0] || "").trim();
+          const isMissing = String(a.data?.flags?.[0] ?? "").trim() === "1";
+          if (isMissing && (txId === cleanInvNo || (cleanRef && txId === cleanRef))) {
+            toRemove.push(a);
+            return false;
+          }
+        }
+        return true;
+      });
+      if (toRemove.length > 0 && sessionId) {
+        toRemove.forEach(a => {
+          fetch("/api/triage", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "remove_alert",
+              sessionId,
+              clientName: a.clientName,
+              alertType: a.type,
+              rowNumber: a.rowNumber
+            })
+          }).catch(() => { });
+        });
+      }
+      return next;
+    });
+  };
 
   const {
     invoicesClient, setInvoicesClient,
@@ -135,23 +173,30 @@ export default function InvoicesView({
   useEffect(() => {
     if (managedClient) {
       const currentName = managedClient.clientName?.toLowerCase();
-      const hasFullClient = Boolean(invoicesClient?.clientSheetId);
-      const clientWithSheet = (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === currentName && c.clientSheetId) || (managedClient.clientSheetId ? managedClient : null);
+      const hasFullClient = Boolean(invoicesClient?.clientSheetId && invoicesJobs);
+      const clientWithSheet =
+        (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === currentName && c.clientSheetId) ||
+        (clientsWithFlags || []).find(c => c.clientName?.toLowerCase() === currentName && c.clientSheetId) ||
+        (managedClient.clientSheetId ? managedClient : null);
       if (prevManagedClientRef.current !== currentName || (!hasFullClient && clientWithSheet)) {
-        prevManagedClientRef.current = currentName;
         const clientObj = clientWithSheet || (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === currentName) || managedClient;
         setInvoicesClient(clientObj);
         if (clientObj?.clientSheetId) {
+          prevManagedClientRef.current = currentName;
           loadInvoicesInbox(clientObj);
           loadInvoicesJobs(clientObj, false);
           setInvoicesShowAll(false);
         }
       }
     } else if (initialClient && (initialClient !== prevInitialClientRef.current || (!invoicesClient?.clientSheetId && initialClient.clientSheetId))) {
-      prevInitialClientRef.current = initialClient;
-      const clientObj = (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === initialClient.clientName?.toLowerCase()) || initialClient;
+      const currentName = initialClient.clientName?.toLowerCase();
+      const clientObj =
+        (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === currentName && c.clientSheetId) ||
+        (clientsWithFlags || []).find(c => c.clientName?.toLowerCase() === currentName && c.clientSheetId) ||
+        initialClient;
       setInvoicesClient(clientObj);
       if (clientObj?.clientSheetId) {
+        prevInitialClientRef.current = initialClient;
         loadInvoicesInbox(clientObj);
         loadInvoicesJobs(clientObj, false);
         setInvoicesShowAll(false);
@@ -162,7 +207,7 @@ export default function InvoicesView({
       setInvoicesInbox([]);
       setInvoicesJobs(null);
     }
-  }, [managedClient, initialClient, allOutgoingsClients, invoicesClient?.clientSheetId]);
+  }, [managedClient, initialClient, allOutgoingsClients, clientsWithFlags, invoicesClient?.clientSheetId, invoicesJobs]);
 
   const [viewMode, setViewMode] = useState("modern");
   const [invoicesSubTab, setInvoicesSubTab] = useState(() => {
@@ -479,12 +524,15 @@ export default function InvoicesView({
       });
     }
     setInvoicesInbox(prev => prev.filter(e => e.invoiceNo !== inv.invoiceNo));
+    removeAssignedInvoiceAlert(inv.invoiceNo, inv.reference, invoicesClient?.clientName);
 
     setClientsWithFlags(prev => prev.map(c => {
       if (c.clientName !== invoicesClient?.clientName) return c;
       const updatedCounts = { ...c.alertCounts };
       if (updatedCounts["invoiceDashboardDiscr"] > 0) updatedCounts["invoiceDashboardDiscr"]--;
-      return { ...c, alertCounts: updatedCounts };
+      const updatedFlags = { ...c.flags };
+      if (updatedCounts["invoiceDashboardDiscr"] === 0) updatedFlags.invoiceDashboardDiscr = false;
+      return { ...c, alertCounts: updatedCounts, flags: updatedFlags };
     }));
 
     const jobRowNums = job?.rows ? job.rows.map(r => r.rowNum) : (rowNum ? [rowNum] : []);
@@ -947,11 +995,14 @@ export default function InvoicesView({
               });
             }
             setInvoicesInbox(prev => prev.filter(e => e.invoiceNo !== inv.invoiceNo));
+            removeAssignedInvoiceAlert(inv.invoiceNo, inv.reference, invoicesClient?.clientName);
             setClientsWithFlags(prev => prev.map(c => {
               if (c.clientName !== invoicesClient?.clientName) return c;
               const updatedCounts = { ...c.alertCounts };
               if (updatedCounts["invoiceDashboardDiscr"] > 0) updatedCounts["invoiceDashboardDiscr"]--;
-              return { ...c, alertCounts: updatedCounts };
+              const updatedFlags = { ...c.flags };
+              if (updatedCounts["invoiceDashboardDiscr"] === 0) updatedFlags.invoiceDashboardDiscr = false;
+              return { ...c, alertCounts: updatedCounts, flags: updatedFlags };
             }));
             await loadInvoicesJobs(invoicesClient, invoicesShowAll);
           }}
@@ -1036,117 +1087,119 @@ export default function InvoicesView({
           </div>
         </div>
       )}
-      <div className="pma-page-container" style={{ width: "100%", maxWidth: "100%", margin: "0 auto", padding: "20px 32px 60px", boxSizing: "border-box" }}>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            flexWrap: "wrap",
-            gap: "16px",
-            marginBottom: "20px",
-            background: "#ffffff",
-            padding: "16px 20px",
-            borderRadius: "8px",
-            boxShadow: "0 1px 3px rgba(0,0,0,0.06)",
-            border: "1px solid #e2e8f0",
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-            {invoicesClient && !managedClient && (allOutgoingsClients || []).length > 1 && (
-              <button
-                type="button"
-                onClick={() => {
-                  if (managedClient && onClearManagedClient) {
-                    onClearManagedClient();
-                  } else {
-                    setInvoicesClient(null);
-                    setInvoicesInbox([]);
-                    setInvoicesJobs(null);
-                    onSelectClient?.(null);
-                  }
-                }}
-                style={{
-                  background: "#ffffff",
-                  border: "1px solid #cbd5e1",
-                  borderRadius: "6px",
-                  cursor: "pointer",
-                  padding: "6px 12px",
-                  fontSize: "16px",
-                  color: "#475569",
-                  lineHeight: 1,
-                  display: "inline-flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  transition: "all 0.15s ease",
-                  boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.backgroundColor = "#f1f5f9";
-                  e.currentTarget.style.borderColor = "#94a3b8";
-                  e.currentTarget.style.color = "#0f172a";
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.backgroundColor = "#ffffff";
-                  e.currentTarget.style.borderColor = "#cbd5e1";
-                  e.currentTarget.style.color = "#475569";
-                }}
-                title="Back to client list"
-              >
-                ←
-              </button>
-            )}
-            <div>
-              <h1 style={{ margin: 0, fontSize: "20px", fontWeight: 700, color: "#1e293b", display: "flex", alignItems: "center", gap: "8px" }}>
-                <span>Invoices</span>
-              </h1>
-              {invoicesClient && (
-                <div style={{ margin: "3px 0 0", fontSize: "14px", fontWeight: 600, color: "#0047AB" }}>
-                  {invoicesClient.clientName}
-                </div>
-              )}
-            </div>
-          </div>
-
-          {invoicesClient && (
-            <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-              {isAdmin && (
+      <div className="pma-page-container" style={{ width: "100%", maxWidth: "100%", margin: "0 auto", padding: isModalOverlay ? "16px 24px 32px" : "20px 32px 60px", boxSizing: "border-box" }}>
+        {!isModalOverlay && (
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              flexWrap: "wrap",
+              gap: "16px",
+              marginBottom: "20px",
+              background: "#ffffff",
+              padding: "16px 20px",
+              borderRadius: "8px",
+              boxShadow: "0 1px 3px rgba(0,0,0,0.06)",
+              border: "1px solid #e2e8f0",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+              {invoicesClient && !managedClient && (allOutgoingsClients || []).length > 1 && (
                 <button
                   type="button"
-                  onClick={() => setViewMode(prev => prev === "modern" ? "legacy" : "modern")}
+                  onClick={() => {
+                    if (managedClient && onClearManagedClient) {
+                      onClearManagedClient();
+                    } else {
+                      setInvoicesClient(null);
+                      setInvoicesInbox([]);
+                      setInvoicesJobs(null);
+                      onSelectClient?.(null);
+                    }
+                  }}
                   style={{
-                    padding: "5px 12px",
-                    borderRadius: "6px",
+                    background: "#ffffff",
                     border: "1px solid #cbd5e1",
-                    background: viewMode === "legacy" ? "#0f172a" : "#ffffff",
-                    color: viewMode === "legacy" ? "#ffffff" : "#334155",
-                    fontSize: "12px",
-                    fontWeight: "600",
+                    borderRadius: "6px",
                     cursor: "pointer",
+                    padding: "6px 12px",
+                    fontSize: "16px",
+                    color: "#475569",
+                    lineHeight: 1,
                     display: "inline-flex",
                     alignItems: "center",
-                    gap: "5px",
-                    boxShadow: "0 1px 2px rgba(0,0,0,0.05)"
+                    justifyContent: "center",
+                    transition: "all 0.15s ease",
+                    boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
                   }}
-                  title={viewMode === "modern" ? "Switch to traditional spreadsheet view" : "Switch to improved modern view"}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.backgroundColor = "#f1f5f9";
+                    e.currentTarget.style.borderColor = "#94a3b8";
+                    e.currentTarget.style.color = "#0f172a";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.backgroundColor = "#ffffff";
+                    e.currentTarget.style.borderColor = "#cbd5e1";
+                    e.currentTarget.style.color = "#475569";
+                  }}
+                  title="Back to client list"
                 >
-                  <span>{viewMode === "modern" ? "📋 Legacy view" : "✨ Modern view"}</span>
+                  ←
                 </button>
               )}
-              <button
-                className="triage-btn"
-                onClick={() => {
-                  loadInvoicesInbox(invoicesClient);
-                  loadInvoicesJobs(invoicesClient, invoicesShowAll);
-                }}
-                style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 12px" }}
-                title={isAdmin ? "Refresh jobs and invoices from live sheets" : "Refresh jobs and invoices"}
-              >
-                ↻ Refresh
-              </button>
+              <div>
+                <h1 style={{ margin: 0, fontSize: "20px", fontWeight: 700, color: "#1e293b", display: "flex", alignItems: "center", gap: "8px" }}>
+                  <span>Invoices</span>
+                </h1>
+                {invoicesClient && (
+                  <div style={{ margin: "3px 0 0", fontSize: "14px", fontWeight: 600, color: "#0047AB" }}>
+                    {invoicesClient.clientName}
+                  </div>
+                )}
+              </div>
             </div>
-          )}
-        </div>
+
+            {invoicesClient && (
+              <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                {isAdmin && (
+                  <button
+                    type="button"
+                    onClick={() => setViewMode(prev => prev === "modern" ? "legacy" : "modern")}
+                    style={{
+                      padding: "5px 12px",
+                      borderRadius: "6px",
+                      border: "1px solid #cbd5e1",
+                      background: viewMode === "legacy" ? "#0f172a" : "#ffffff",
+                      color: viewMode === "legacy" ? "#ffffff" : "#334155",
+                      fontSize: "12px",
+                      fontWeight: "600",
+                      cursor: "pointer",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "5px",
+                      boxShadow: "0 1px 2px rgba(0,0,0,0.05)"
+                    }}
+                    title={viewMode === "modern" ? "Switch to traditional spreadsheet view" : "Switch to improved modern view"}
+                  >
+                    <span>{viewMode === "modern" ? "📋 Legacy view" : "✨ Modern view"}</span>
+                  </button>
+                )}
+                <button
+                  className="triage-btn"
+                  onClick={() => {
+                    loadInvoicesInbox(invoicesClient);
+                    loadInvoicesJobs(invoicesClient, invoicesShowAll);
+                  }}
+                  style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 12px" }}
+                  title={isAdmin ? "Refresh jobs and invoices from live sheets" : "Refresh jobs and invoices"}
+                >
+                  ↻ Refresh
+                </button>
+              </div>
+            )}
+          </div>
+        )}
 
         {noInvClient && (
           <EditClientSelector
@@ -1177,60 +1230,100 @@ export default function InvoicesView({
         {!noInvClient && (
           <>
             {/* Subtabs: By job / By invoice no. */}
-            <div style={{ display: "flex", gap: "8px", marginBottom: "16px", borderBottom: "1px solid #e0e0e0" }}>
-              <a
-                href={`/pma?nav=invoices&subtab=byJob${invoicesClient ? `&client=${encodeURIComponent(invoicesClient)}` : ""}`}
-                onClick={(e) => {
-                  if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) {
-                    e.preventDefault();
-                    setInvoicesSubTab("byJob");
-                  }
-                }}
-                style={{
-                  padding: "8px 16px",
-                  background: "none",
-                  border: "none",
-                  borderBottom: invoicesSubTab === "byJob" ? "2px solid #0066cc" : "2px solid transparent",
-                  color: invoicesSubTab === "byJob" ? "#0066cc" : "#666",
-                  fontWeight: invoicesSubTab === "byJob" ? "700" : "500",
-                  fontSize: "14px",
-                  cursor: "pointer",
-                  textDecoration: "none",
-                  display: "inline-block",
-                  boxSizing: "border-box"
-                }}
-              >
-                By job
-              </a>
-              <a
-                href={`/pma?nav=invoices&subtab=byInvoiceNo${invoicesClient ? `&client=${encodeURIComponent(invoicesClient)}` : ""}`}
-                onClick={(e) => {
-                  if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) {
-                    e.preventDefault();
-                    setInvoicesSubTab("byInvoiceNo");
-                    setInvoicesPlacing(null);
-                    if (!invoicesShowAll && invoicesClient) {
-                      setInvoicesShowAll(true);
-                      loadInvoicesJobs(invoicesClient, true);
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", marginBottom: "16px", borderBottom: "1px solid #e0e0e0" }}>
+              <div style={{ display: "flex", gap: "8px" }}>
+                <a
+                  href={`/pma?nav=invoices&subtab=byJob${invoicesClient ? `&client=${encodeURIComponent(invoicesClient)}` : ""}`}
+                  onClick={(e) => {
+                    if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) {
+                      e.preventDefault();
+                      setInvoicesSubTab("byJob");
                     }
-                  }
-                }}
-                style={{
-                  padding: "8px 16px",
-                  background: "none",
-                  border: "none",
-                  borderBottom: invoicesSubTab === "byInvoiceNo" ? "2px solid #0066cc" : "2px solid transparent",
-                  color: invoicesSubTab === "byInvoiceNo" ? "#0066cc" : "#666",
-                  fontWeight: invoicesSubTab === "byInvoiceNo" ? "700" : "500",
-                  fontSize: "14px",
-                  cursor: "pointer",
-                  textDecoration: "none",
-                  display: "inline-block",
-                  boxSizing: "border-box"
-                }}
-              >
-                By invoice no.
-              </a>
+                  }}
+                  style={{
+                    padding: "8px 16px",
+                    background: "none",
+                    border: "none",
+                    borderBottom: invoicesSubTab === "byJob" ? "2px solid #0066cc" : "2px solid transparent",
+                    color: invoicesSubTab === "byJob" ? "#0066cc" : "#666",
+                    fontWeight: invoicesSubTab === "byJob" ? "700" : "500",
+                    fontSize: "14px",
+                    cursor: "pointer",
+                    textDecoration: "none",
+                    display: "inline-block",
+                    boxSizing: "border-box"
+                  }}
+                >
+                  By job
+                </a>
+                <a
+                  href={`/pma?nav=invoices&subtab=byInvoiceNo${invoicesClient ? `&client=${encodeURIComponent(invoicesClient)}` : ""}`}
+                  onClick={(e) => {
+                    if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) {
+                      e.preventDefault();
+                      setInvoicesSubTab("byInvoiceNo");
+                      setInvoicesPlacing(null);
+                      if (!invoicesShowAll && invoicesClient) {
+                        setInvoicesShowAll(true);
+                        loadInvoicesJobs(invoicesClient, true);
+                      }
+                    }
+                  }}
+                  style={{
+                    padding: "8px 16px",
+                    background: "none",
+                    border: "none",
+                    borderBottom: invoicesSubTab === "byInvoiceNo" ? "2px solid #0066cc" : "2px solid transparent",
+                    color: invoicesSubTab === "byInvoiceNo" ? "#0066cc" : "#666",
+                    fontWeight: invoicesSubTab === "byInvoiceNo" ? "700" : "500",
+                    fontSize: "14px",
+                    cursor: "pointer",
+                    textDecoration: "none",
+                    display: "inline-block",
+                    boxSizing: "border-box"
+                  }}
+                >
+                  By invoice no.
+                </a>
+              </div>
+              {isModalOverlay && invoicesClient && (
+                <div style={{ display: "flex", gap: "8px", alignItems: "center", paddingBottom: "6px" }}>
+                  {isAdmin && (
+                    <button
+                      type="button"
+                      onClick={() => setViewMode(prev => prev === "modern" ? "legacy" : "modern")}
+                      style={{
+                        padding: "5px 12px",
+                        borderRadius: "6px",
+                        border: "1px solid #cbd5e1",
+                        background: viewMode === "legacy" ? "#0f172a" : "#ffffff",
+                        color: viewMode === "legacy" ? "#ffffff" : "#334155",
+                        fontSize: "12px",
+                        fontWeight: "600",
+                        cursor: "pointer",
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "5px",
+                        boxShadow: "0 1px 2px rgba(0,0,0,0.05)"
+                      }}
+                      title={viewMode === "modern" ? "Switch to traditional spreadsheet view" : "Switch to improved modern view"}
+                    >
+                      <span>{viewMode === "modern" ? "📋 Legacy view" : "✨ Modern view"}</span>
+                    </button>
+                  )}
+                  <button
+                    className="triage-btn"
+                    onClick={() => {
+                      loadInvoicesInbox(invoicesClient);
+                      loadInvoicesJobs(invoicesClient, invoicesShowAll);
+                    }}
+                    style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 12px" }}
+                    title={isAdmin ? "Refresh jobs and invoices from live sheets" : "Refresh jobs and invoices"}
+                  >
+                    ↻ Refresh
+                  </button>
+                </div>
+              )}
             </div>
 
             {invoicesSubTab === "byJob" && (

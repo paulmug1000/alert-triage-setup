@@ -1023,6 +1023,14 @@ export default function TasksView({
                     background: r.status === "ok" ? "#f9fef9" : r.status === "issue" ? "#fff8f6" : "#fafafa",
                   }}>
                     {r.message && <div style={{ fontSize: "12px", color: "#333", fontWeight: "600", marginBottom: "4px" }}>{isAdmin ? r.message : stripRowInfo(r.message)}</div>}
+                    {(r.revenue || r.directCosts || r.startDate || r.endDate) && (
+                      <div style={{ fontSize: "12px", color: "#555", marginBottom: "4px", display: "flex", flexWrap: "wrap", gap: "12px" }}>
+                        {r.revenue && <span><strong>Revenue:</strong> {r.revenue}</span>}
+                        {r.directCosts && <span><strong>Direct costs:</strong> {r.directCosts}</span>}
+                        {r.startDate && <span><strong>Start date:</strong> {r.startDate}</span>}
+                        {r.endDate && <span><strong>End date:</strong> {r.endDate}</span>}
+                      </div>
+                    )}
                     {(r.checks || []).map((chk, ci) => (
                       <div key={ci} style={{ fontSize: "12px", color: chk.ok ? "#2e7d32" : "#c62828", marginTop: "2px" }}>
                         {(() => {

@@ -715,11 +715,18 @@ export async function handleResolveTask(req, res, sheets) {
 export async function handleUpdateTask(req, res, sheets) {
   const { fingerprintHash, newCachedOptionsJSON, newAlertData, unsnooze, automationCommanderSheetId: acId } = req.body;
   if (!fingerprintHash || !acId) return res.status(400).json({ success: false, error: "Missing required fields" });
+  const sessionUser = getSessionUser(req);
   try {
     await ensureAlertMemoryTab(sheets, acId);
     const memoryRows = await readAlertMemory(sheets, acId);
     const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
     if (!memoryRow) return res.status(404).json({ success: false, error: "Task not found" });
+
+    if (!req.isSystemAuthorized && sessionUser && !sessionUser.isAdmin) {
+      if (!memoryRow.client || !isUserAuthorizedForClient(sessionUser, memoryRow.client)) {
+        return res.status(403).json({ success: false, error: "Forbidden: Access denied to this client's task." });
+      }
+    }
 
     let taskMeta = {};
     try { taskMeta = JSON.parse(memoryRow.dataSnapshot || "{}"); } catch (e) {}
@@ -739,6 +746,12 @@ export async function handleUpdateTask(req, res, sheets) {
 export async function handleCheckExistingTask(req, res, sheets) {
   const { alert, automationCommanderSheetId: acId } = req.body;
   if (!alert || !acId) return res.status(400).json({ success: false, error: "Missing alert or automationCommanderSheetId" });
+  const sessionUser = getSessionUser(req);
+  if (!req.isSystemAuthorized && sessionUser && !sessionUser.isAdmin) {
+    if (!alert.clientName || !isUserAuthorizedForClient(sessionUser, alert.clientName)) {
+      return res.status(403).json({ success: false, error: "Forbidden: Access denied to this client." });
+    }
+  }
   try {
     const taskRef = alert.summary?.invoiceNo || alert.summary?.reference || alert.summary?.jobName || alert.alertKey || "";
     const taskKey = `${alert.clientName}||${alert.type || alert.flagType || "alert"}||${taskRef}`;

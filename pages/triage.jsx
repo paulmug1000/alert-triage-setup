@@ -867,7 +867,28 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
   }, []);
 
   // --- AUTHENTICATION GATE ---
-  if (authChecking || !hasMounted) {
+  // Never render NavShell or any PMA skeleton unless the user is already authenticated
+  if (!isAuthenticated || !user) {
+    return (
+      <AuthGateView
+        authStep={auth.authStep}
+        emailInput={auth.emailInput}
+        setEmailInput={auth.setEmailInput}
+        codeInput={auth.codeInput}
+        setCodeInput={auth.setCodeInput}
+        authError={auth.authError}
+        setAuthError={auth.setAuthError}
+        authLoading={auth.authLoading}
+        statusMessage={auth.statusMessage}
+        cooldown={auth.cooldown}
+        sendVerificationCode={auth.sendVerificationCode}
+        verifyCode={auth.verifyCode}
+        resetToEmailStep={auth.resetToEmailStep}
+      />
+    );
+  }
+
+  if (!hasMounted) {
     const ssrNav = initialNav || "home";
     const hasSsrClients = Array.isArray(initialClients) && initialClients.length > 0;
     return (
@@ -889,26 +910,6 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
           )}
         </NavShell>
       </TriageProvider>
-    );
-  }
-
-  if (!isAuthenticated) {
-    return (
-      <AuthGateView
-        authStep={auth.authStep}
-        emailInput={auth.emailInput}
-        setEmailInput={auth.setEmailInput}
-        codeInput={auth.codeInput}
-        setCodeInput={auth.setCodeInput}
-        authError={auth.authError}
-        setAuthError={auth.setAuthError}
-        authLoading={auth.authLoading}
-        statusMessage={auth.statusMessage}
-        cooldown={auth.cooldown}
-        sendVerificationCode={auth.sendVerificationCode}
-        verifyCode={auth.verifyCode}
-        resetToEmailStep={auth.resetToEmailStep}
-      />
     );
   }
 

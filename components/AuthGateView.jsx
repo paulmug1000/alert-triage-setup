@@ -57,8 +57,26 @@ export default function AuthGateView({
   const status = propStatusMessage !== undefined ? propStatusMessage : localStatus;
   const cooldown = propCooldown !== undefined ? propCooldown : localCooldown;
 
+  const router = useRouter();
   const [oauthError, setOauthError] = useState("");
   const [redirectingProvider, setRedirectingProvider] = useState(null);
+
+  const queryOauthError = (() => {
+    const qErr = router?.query?.auth_error;
+    const qEmail = router?.query?.email;
+    const qProvider = router?.query?.provider;
+    if (qErr) {
+      return formatOauthErrorMessage(String(qErr), qEmail ? String(qEmail) : "", qProvider ? String(qProvider) : "");
+    }
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const wErr = params.get("auth_error");
+      if (wErr) {
+        return formatOauthErrorMessage(wErr, params.get("email") || "", params.get("provider") || "");
+      }
+    }
+    return "";
+  })();
 
   // Catch any OAuth errors passed via redirect query params (e.g. unauthorized)
   useEffect(() => {
@@ -67,17 +85,8 @@ export default function AuthGateView({
       const err = params.get("auth_error");
       const errEmail = params.get("email");
       const provider = params.get("provider");
-
-      if (err === "unauthorized") {
-        const accountLabel = provider ? `${provider} account` : "account";
-        const emailSuffix = errEmail ? ` (${errEmail})` : "";
-        setOauthError(
-          `Access Denied: The ${accountLabel}${emailSuffix} is not authorised to access Pulse. Please contact hello@pulsedashboard.co.uk with any queries.`
-        );
-      } else if (err === "access_denied" || err === "consent_required") {
-        setOauthError("Sign-in was cancelled or consent was not granted. Please try again.");
-      } else if (err) {
-        setOauthError(`Sign in failed: ${err.replace(/_/g, " ")}`);
+      if (err) {
+        setOauthError(formatOauthErrorMessage(err, errEmail, provider));
       }
     }
   }, []);
@@ -166,7 +175,7 @@ export default function AuthGateView({
     }
   };
 
-  const activeError = oauthError || error;
+  const activeError = queryOauthError || oauthError || error;
 
   const [showEmailOption, setShowEmailOption] = useState(false);
   const OTP_ADMIN_BLOCKED_MSG =

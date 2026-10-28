@@ -515,6 +515,19 @@ export async function createSessionForVerifiedEmail(email, res, provider = "OAut
     };
   }
   if (provider === "Microsoft" && isStaffRole) {
+    if (res && typeof res.setHeader === "function") {
+      const isProd = process.env.NODE_ENV === "production";
+      res.setHeader(
+        "Set-Cookie",
+        serializeCookie("pma_session", "", {
+          httpOnly: true,
+          secure: isProd,
+          sameSite: "lax",
+          maxAge: 0,
+          path: "/",
+        })
+      );
+    }
     return {
       success: false,
       unauthorized: true,

@@ -831,34 +831,9 @@ export default function PortalPage({ initialUser = null }) {
     }
   }, [isSeniorRestricted, activeView]);
 
-  // Auth checking loading state: render PortalShell + MonthViewSkeleton immediately instead of a spinner
-  if (authChecking) {
-    return (
-      <>
-        <Head>
-          <title>Pulse</title>
-        </Head>
-        <PortalShell
-          clientName={selectedClient?.clientName || (typeof router.query.client === "string" ? router.query.client : "")}
-          clients={clients}
-          onSelectClient={handleSelectClient}
-          activeView={activeView}
-          onSelectView={setActiveView}
-          user={user}
-          onLogout={handleLogout}
-          hasBudget={true}
-          hasCash={true}
-          setupStatus={null}
-          onPreviewSetup={() => setIsPreviewSetup(true)}
-        >
-          <MonthViewSkeleton />
-        </PortalShell>
-      </>
-    );
-  }
-
-  // Not authenticated: Show the pixel-accurate Pulse login screen
-  if (!isAuthenticated) {
+  // Not authenticated: Show the pixel-accurate Pulse login screen immediately.
+  // Never render PortalShell or MonthViewSkeleton unless the user is authenticated.
+  if (!isAuthenticated || !user) {
     return (
       <>
         <Head>

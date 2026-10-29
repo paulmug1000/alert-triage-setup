@@ -43,6 +43,7 @@ export default function JobsNewJobModal({
   const [dateConfirmed, setDateConfirmed] = useState(todayISO);
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
+  const [noEndDate, setNoEndDate] = useState(false);
   const [productLine, setProductLine] = useState("");
   const [leadSource, setLeadSource] = useState("");
 
@@ -240,7 +241,12 @@ export default function JobsNewJobModal({
       setError("Please enter a Job Name.");
       return;
     }
-    if (startDate && endDate && endDate < startDate) {
+    const isRetainerNoEnd = projectRetainer === "Retainer" && noEndDate;
+    if (projectRetainer === "Retainer" && !isRetainerNoEnd && !endDate) {
+      setError("Please enter an end date or tick 'No end date'.");
+      return;
+    }
+    if (!isRetainerNoEnd && startDate && endDate && endDate < startDate) {
       setError("End Date cannot be before Start Date.");
       return;
     }
@@ -335,7 +341,8 @@ export default function JobsNewJobModal({
             dateConfirmed,
             dateAdded: dateConfirmed,
             startDate,
-            endDate,
+            endDate: isRetainerNoEnd ? "31-Dec-2050" : endDate,
+            noEndDate: isRetainerNoEnd,
             productLine,
             leadSource,
             invoices: activeInvoices,
@@ -352,7 +359,7 @@ export default function JobsNewJobModal({
         return;
       }
 
-      onSuccess(data.targetTab || status, data.targetRow);
+      onSuccess(data.targetTab || status, data.targetRow, data);
     } catch (err) {
       console.error("Error creating new job:", err);
       setError(err.message || "Network error while creating job.");
@@ -548,7 +555,11 @@ export default function JobsNewJobModal({
                 <select
                   style={inputStyle}
                   value={projectRetainer}
-                  onChange={(e) => setProjectRetainer(e.target.value)}
+                  onChange={(e) => {
+                    const nextType = e.target.value;
+                    setProjectRetainer(nextType);
+                    if (nextType !== "Retainer") setNoEndDate(false);
+                  }}
                 >
                   <option value="Project">Project</option>
                   <option value="Retainer">Retainer</option>
@@ -684,7 +695,7 @@ export default function JobsNewJobModal({
             {/* Row 4: Start Date | End Date | Product Line | Lead Source */}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "12px" }}>
               <div>
-                <label style={labelStyle}>Start Date</label>
+                <label style={labelStyle}>Start date</label>
                 <DateInput
                   style={inputStyle}
                   value={startDate}
@@ -693,13 +704,35 @@ export default function JobsNewJobModal({
               </div>
 
               <div>
-                <label style={labelStyle}>End Date</label>
-                <DateInput
-                  style={inputStyle}
-                  value={endDate}
-                  onChange={(e) => setEndDate(e.target.value)}
-                  min={startDate || undefined}
-                />
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
+                  <label style={{ ...labelStyle, marginBottom: 0 }}>End Date</label>
+                  {projectRetainer === "Retainer" && (
+                    <label style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "10px", fontWeight: "600", color: "#475569", cursor: "pointer", userSelect: "none" }}>
+                      <input
+                        type="checkbox"
+                        checked={noEndDate}
+                        onChange={(e) => setNoEndDate(e.target.checked)}
+                        style={{ margin: 0, cursor: "pointer" }}
+                      />
+                      No end date
+                    </label>
+                  )}
+                </div>
+                {projectRetainer === "Retainer" && noEndDate ? (
+                  <input
+                    type="text"
+                    style={{ ...inputStyle, backgroundColor: "#f8fafc", color: "#64748b", cursor: "not-allowed" }}
+                    value="No end date"
+                    disabled
+                  />
+                ) : (
+                  <DateInput
+                    style={inputStyle}
+                    value={endDate}
+                    onChange={(e) => setEndDate(e.target.value)}
+                    min={startDate || undefined}
+                  />
+                )}
               </div>
 
               <div>
@@ -1317,10 +1350,10 @@ export default function JobsNewJobModal({
                 {saving ? (
                   <>
                     <Spinner size={14} color="#ffffff" />
-                    <span>Adding Job...</span>
+                    <span>Adding job...</span>
                   </>
                 ) : (
-                  <span>Save Job</span>
+                  <span>Save job</span>
                 )}
               </button>
             </div>

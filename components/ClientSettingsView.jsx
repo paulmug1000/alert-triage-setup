@@ -529,7 +529,7 @@ function transformCrmRows({
           break;
         case "AddRetEnd":
           if (!rawEnd && isRetainer) {
-            endVal = "31-Dec-50";
+            endVal = "No end date";
           } else {
             endVal = rawEnd ? parseRawEndDate() : "";
           }
@@ -566,21 +566,21 @@ function transformCrmRows({
           break;
         case "ActualOrAddRetEndOr2MonthsProj":
           if (!rawEnd) {
-            endVal = isRetainer ? "31-Dec-50" : edateStr(2);
+            endVal = isRetainer ? "No end date" : edateStr(2);
           } else {
             endVal = parseRawEndDate();
           }
           break;
         case "ActualOrAddRetEndOr3MonthsProj":
           if (!rawEnd) {
-            endVal = isRetainer ? "31-Dec-50" : edateStr(3);
+            endVal = isRetainer ? "No end date" : edateStr(3);
           } else {
             endVal = parseRawEndDate();
           }
           break;
         case "ActualOrAddRetEndOr4MonthsProj":
           if (!rawEnd) {
-            endVal = isRetainer ? "31-Dec-50" : edateStr(4);
+            endVal = isRetainer ? "No end date" : edateStr(4);
           } else {
             endVal = parseRawEndDate();
           }
@@ -588,6 +588,9 @@ function transformCrmRows({
         default:
           endVal = rawEnd ? parseRawEndDate() : "";
           break;
+      }
+      if (/^(31[-/\s]Dec[-/\s](?:20)?50|2050-12-31|31\/12\/(?:20)?50)$/i.test(String(endVal || "").trim())) {
+        endVal = "No end date";
       }
     }
 
@@ -839,6 +842,7 @@ export default function ClientSettingsView({
   initialSection = "main",
   initialSubsection = "",
   onSelectClient,
+  onSelectSection,
   user,
   isAdmin = false,
   onRegisterNavGuard
@@ -1053,9 +1057,13 @@ export default function ClientSettingsView({
     }
   }, [managedClient, initialClientName, selectedClientName]);
 
+  const prevInitialSectionRef = useRef(initialSection);
   useEffect(() => {
-    if (initialSection && initialSection !== activeSection) {
-      setActiveSection(initialSection);
+    if (initialSection !== prevInitialSectionRef.current) {
+      prevInitialSectionRef.current = initialSection;
+      if (initialSection && initialSection !== activeSection) {
+        setActiveSection(initialSection);
+      }
     }
   }, [initialSection, activeSection]);
 
@@ -2751,7 +2759,10 @@ export default function ClientSettingsView({
                   <button
                     key={s.id}
                     type="button"
-                    onClick={() => setActiveSection(s.id)}
+                    onClick={() => {
+                      setActiveSection(s.id);
+                      onSelectSection?.(s.id);
+                    }}
                     style={{
                       width: "100%",
                       display: "flex",
@@ -5340,6 +5351,28 @@ export default function ClientSettingsView({
                           ))}
                         </select>
                         {renderCellRef("KeyInfo!F19")}
+                      </div>
+
+                      <div>
+                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "4px" }}>
+                          No end date retainer months (bookings &amp; pipeline)
+                        </label>
+                        <input
+                          type="number"
+                          min="1"
+                          max="120"
+                          step="1"
+                          value={settings.jobs?.dateAdjustment?.noEndDateRetainerMonths ?? 18}
+                          onChange={(e) => {
+                            const val = e.target.value === "" ? "" : Math.max(1, parseInt(e.target.value, 10) || 18);
+                            updateSettingsField(prev => ({
+                              ...prev,
+                              jobs: { ...prev.jobs, dateAdjustment: { ...prev.jobs?.dateAdjustment, noEndDateRetainerMonths: val } }
+                            }));
+                          }}
+                          style={{ width: "100%", padding: "8px 12px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "13px", boxSizing: "border-box" }}
+                        />
+                        {renderCellRef("KeyInfo!D18")}
                       </div>
                     </div>
                   </div>

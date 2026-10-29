@@ -8,6 +8,7 @@ import {
 import { getClients } from "../../../services/workspaces.js";
 import { verifyUserAuthorizedForSheet, canAccessPma, isReadOnlySession } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
+import { assertTrustedOrigin } from "../../../utils/helpers.js";
 
 export default async function handler(req, res) {
   // 1. Authenticate user
@@ -52,10 +53,12 @@ export default async function handler(req, res) {
       if (!masterAuth.authorized) {
         return res.status(masterAuth.status || 403).json({ success: false, error: masterAuth.error || "Access denied to this client." });
       }
-      const clientAuth = await verifyUserAuthorizedForSheet(sessionUser, clientSheetId, clientName, sheets);
+      const boundClient = masterAuth.clientName || clientName;
+      const clientAuth = await verifyUserAuthorizedForSheet(sessionUser, clientSheetId, boundClient, sheets);
       if (!clientAuth.authorized) {
         return res.status(clientAuth.status || 403).json({ success: false, error: clientAuth.error || "Access denied to this client." });
       }
+      clientName = boundClient || clientName;
     }
 
     try {
@@ -63,7 +66,7 @@ export default async function handler(req, res) {
         clientName: clientName || "Client",
         masterSheetId,
         clientSheetId,
-        bypassCache: bypassCache === "true" || bypassCache === true,
+        bypassCache: (bypassCache === "true" || bypassCache === true) && !isReadOnlySession(sessionUser),
       });
 
       return res.status(200).json(data);
@@ -75,10 +78,11 @@ export default async function handler(req, res) {
 
   // 3. POST Request: Save modifications
   if (req.method === "POST") {
+    if (!assertTrustedOrigin(req, res)) return;
     if (isReadOnlySession(sessionUser)) {
       return res.status(403).json({ success: false, error: "Read-only session cannot modify salaries." });
     }
-    const { action, clientName, masterSheetId, clientSheetId } = req.body || {};
+    let { action, clientName, masterSheetId, clientSheetId } = req.body || {};
 
     if (!masterSheetId && !clientSheetId) {
       return res.status(400).json({
@@ -89,18 +93,22 @@ export default async function handler(req, res) {
 
     if (!sessionUser.isAdmin) {
       const sheets = await getSheetsClient();
+      let boundClient = clientName;
       if (masterSheetId) {
-        const masterAuth = await verifyUserAuthorizedForSheet(sessionUser, masterSheetId, clientName, sheets);
+        const masterAuth = await verifyUserAuthorizedForSheet(sessionUser, masterSheetId, boundClient, sheets);
         if (!masterAuth.authorized) {
           return res.status(masterAuth.status || 403).json({ success: false, error: masterAuth.error || "Access denied to this client." });
         }
+        boundClient = masterAuth.clientName || boundClient;
       }
       if (clientSheetId) {
-        const clientAuth = await verifyUserAuthorizedForSheet(sessionUser, clientSheetId, clientName, sheets);
+        const clientAuth = await verifyUserAuthorizedForSheet(sessionUser, clientSheetId, boundClient, sheets);
         if (!clientAuth.authorized) {
           return res.status(clientAuth.status || 403).json({ success: false, error: clientAuth.error || "Access denied to this client." });
         }
+        boundClient = clientAuth.clientName || boundClient;
       }
+      clientName = boundClient || clientName;
     }
 
     try {

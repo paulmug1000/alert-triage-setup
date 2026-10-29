@@ -5,16 +5,18 @@
  */
 
 import { getSessionUser } from "../../../../services/authService.js";
-import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, isReadOnlySession } from "../../../../services/userPermissions.js";
+import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, isReadOnlySession, matchesClientName } from "../../../../services/userPermissions.js";
 import { getSheetsClient, withRetry } from "../../../../services/sheetsClient.js";
 import { deleteIntegrationTokens, invalidateIntegrationsCache } from "../../../../services/vaultService.js";
 import { updateClientChecklistTask } from "../../../../services/setupService.js";
 import { redisClient } from "../../../../services/redisClient.js";
+import { assertTrustedOrigin } from "../../../../utils/helpers.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ success: false, error: "Method not allowed" });
   }
+  if (!assertTrustedOrigin(req, res)) return;
 
   const sessionUser = getSessionUser(req);
   if (!sessionUser) {
@@ -25,12 +27,17 @@ export default async function handler(req, res) {
     return res.status(403).json({ success: false, error: "Read-only session cannot disconnect integrations." });
   }
 
-  const { clientKey, masterSheetId } = req.body;
-  if (!clientKey) {
+  const { clientKey, clientName, masterSheetId } = req.body;
+  const targetClient = clientKey || clientName;
+  if (!targetClient) {
     return res.status(400).json({ success: false, error: "Missing clientKey parameter" });
   }
 
-  if (!sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, clientKey)) {
+  if (clientKey && clientName && !matchesClientName(clientKey, clientName)) {
+    return res.status(403).json({ success: false, error: "Access denied: Mismatched clientKey and clientName." });
+  }
+
+  if (!sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, targetClient)) {
     return res.status(403).json({ success: false, error: "Access denied to this client." });
   }
 

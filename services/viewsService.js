@@ -443,8 +443,15 @@ export async function handleUpdateViewCell(req, res, sheets) {
     } catch (e) {}
   }
 
+  const cleanColLetter = String(colLetter || "").trim().toUpperCase();
+  if (!/^[A-Z]{1,2}$/.test(cleanColLetter)) {
+    return res.status(400).json({ success: false, error: "Invalid column letter" });
+  }
   const rowNum = parseInt(sheetRow, 10);
-  const colIndex = colIdx !== undefined ? parseInt(colIdx, 10) : colLetterToNum(colLetter) - 1;
+  const colIndex = colLetterToNum(cleanColLetter) - 1;
+  if (colIdx !== undefined && parseInt(colIdx, 10) !== colIndex) {
+    return res.status(400).json({ success: false, error: "Column index mismatch" });
+  }
 
   // Validate allowed ranges:
   // Contractors: A13:F110, G13:R110, V13:AG110, AK13:AV110
@@ -542,8 +549,8 @@ export async function handleUpdateViewCell(req, res, sheets) {
     }
 
     const sheetIdClean = extractSheetIdFromUrl(targetSpreadsheetId) || targetSpreadsheetId;
-    const targetTab = screenTab === "budget" ? "Budget" : (tab || "Outgoings");
-    const cellRange = `${targetTab}!${colLetter}${rowNum}`;
+    const targetTab = screenTab === "budget" ? "Budget" : "Outgoings";
+    const cellRange = `${targetTab}!${cleanColLetter}${rowNum}`;
 
     // Sanitize user inputs to prevent CSV / Spreadsheet formula injection (CWE-1236)
     const safeValue = sanitizeFormulaInput(value ?? "");
@@ -876,11 +883,13 @@ export async function handleUpdateCellNote(req, res, sheets) {
   }
 
   if (!sessionUser.isAdmin) {
+    let boundClient = clientName || "";
     for (const sid of [clientSheetId, masterSheetId].filter(Boolean)) {
-      const auth = await verifyUserAuthorizedForSheet(sessionUser, sid, clientName, sheets);
+      const auth = await verifyUserAuthorizedForSheet(sessionUser, sid, boundClient, sheets);
       if (!auth.authorized) {
         return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client" });
       }
+      boundClient = auth.clientName || boundClient;
     }
   }
 

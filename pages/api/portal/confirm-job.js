@@ -4,7 +4,10 @@ import { verifyUserAuthorizedForSheet, sanitizeFormulaInput, isReadOnlySession }
 import { redisClient } from "../../../services/redisClient.js";
 import { memoryCache } from "../../../services/cacheService.js";
 import { logPulseActivity } from "../../../services/pulseLogger.js";
-import { hasActiveCrmIntegration, isCrmDrivenTab, getCrmDisplayName } from "../../../utils/helpers.js";
+import { hasActiveCrmIntegration, isCrmDrivenTab, getCrmDisplayName, isPlaceholderInvoice, NO_END_DATE_SHEET_VALUE, isNoEndDateSentinel } from "../../../utils/helpers.js";
+import { buildRetainerChildRowsWritePlan } from "../../../services/retainers.js";
+import { getToleranceValues } from "../../../services/sharedHelpers.js";
+import { resolveMasterSheetIdForClient_ } from "../../../services/workspaces.js";
 
 function colToLetter(colIndex) {
   let temp, letter = "";
@@ -116,7 +119,7 @@ export default async function handler(req, res) {
               if (parsed.crmTool) crmTool = parsed.crmTool;
               if (parsed.crmDrives) crmDrives = parsed.crmDrives;
             }
-          } catch (e) {}
+          } catch (e) { }
         }
       }
 
@@ -177,8 +180,11 @@ export default async function handler(req, res) {
       }
     }
 
-    // In Confirmed, use second blank row after all jobs (original app Step 5)
-    const targetParentRow = lastJobRow + 2;
+    const isRetainer = String(parentData[35] || "").trim().toLowerCase().includes("retainer");
+    const shouldProvisionRetainer = isRetainer && childRowsData.length === 0;
+
+    // Place new retainer parent row at lastJobRow + 1; keep existing placement for standard jobs
+    const targetParentRow = shouldProvisionRetainer ? lastJobRow + 1 : lastJobRow + 2;
 
     // 5. Copy safe column ranges from Pipeline to Confirmed
     // Safe ranges: A:AM (1-39), AP:BH (42-60), BX:CR (76-96)
@@ -193,6 +199,9 @@ export default async function handler(req, res) {
     const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     const todayStr = `${now.getDate()}-${months[now.getMonth()]}-${String(now.getFullYear()).slice(-2)}`;
     parentA_AM[3] = todayStr;
+    if (isRetainer && (!String(parentA_AM[38] || "").trim() || isNoEndDateSentinel(parentA_AM[38]))) {
+      parentA_AM[38] = NO_END_DATE_SHEET_VALUE;
+    }
 
     confirmedBatchData.push({
       range: `${confirmedSheetName}!A${targetParentRow}:AM${targetParentRow}`,
@@ -205,8 +214,26 @@ export default async function handler(req, res) {
       values: [[""]],
     });
 
+    // Extract any real invoices from Pipeline parent row if promoting a Retainer
+    const initialRetainerInvoices = [];
+    if (shouldProvisionRetainer) {
+      const slotBases = [41, 48, 55];
+      for (const base of slotBases) {
+        const amt = parentData[base];
+        const ref = String(parentData[base + 1] || "").trim();
+        const sent = parentData[base + 2];
+        const days = parentData[base + 3];
+        const st = String(parentData[base + 4] || "").trim();
+        const desc = parentData[base + 5];
+        if (ref && !isPlaceholderInvoice(ref, st)) {
+          initialRetainerInvoices.push({ amount: amt, ref, sendDate: sent, days, status: st, desc });
+        }
+      }
+    }
+
     // Parent row AP:BH (cols 42-60, index 41-59)
-    const parentAP_BH = parentData.slice(41, 60);
+    // For Retainers whose child rows are provisioned in background, keep parent AP:BH empty
+    const parentAP_BH = shouldProvisionRetainer ? new Array(19).fill("") : parentData.slice(41, 60);
     while (parentAP_BH.length < 19) parentAP_BH.push("");
     confirmedBatchData.push({
       range: `${confirmedSheetName}!AP${targetParentRow}:BH${targetParentRow}`,
@@ -263,57 +290,67 @@ export default async function handler(req, res) {
       confirmedChildRows.push(targetChildRow);
     }
 
-    await withRetry(() =>
-      sheets.spreadsheets.values.batchUpdate({
-        spreadsheetId: clientSheetId,
-        requestBody: {
-          valueInputOption: "USER_ENTERED",
-          data: confirmedBatchData,
-        },
-      })
-    );
+    if (shouldProvisionRetainer) {
+      let tolerance = null;
+      try {
+        const resolvedMasterId = await resolveMasterSheetIdForClient_(
+          sheets,
+          clientSheetId,
+          verifiedClientName || clientName || ""
+        );
+        tolerance = await getToleranceValues(sheets, resolvedMasterId || clientSheetId);
+      } catch (_) {}
 
-    // Format Date Confirmed cell (Column D) with d-mmm-yy format and italics
-    try {
-      await withRetry(() =>
-        sheets.spreadsheets.batchUpdate({
-          spreadsheetId: clientSheetId,
-          requestBody: {
-            requests: [
-              {
-                repeatCell: {
-                  range: {
-                    sheetId: confirmedSheetId,
-                    startRowIndex: targetParentRow - 1,
-                    endRowIndex: targetParentRow,
-                    startColumnIndex: 3,
-                    endColumnIndex: 4,
-                  },
-                  cell: {
-                    userEnteredFormat: {
-                      numberFormat: {
-                        type: "DATE",
-                        pattern: "d-mmm-yy",
-                      },
-                      textFormat: {
-                        italic: true,
-                      },
-                    },
-                  },
-                  fields: "userEnteredFormat.numberFormat,userEnteredFormat.textFormat.italic",
-                },
-              },
-            ],
-          },
-        })
-      );
-    } catch (fmtErr) {
-      console.warn("⚠️ Formatting Date Conf in Confirmed warning (non-fatal):", fmtErr.message);
+      const retainerPlan = buildRetainerChildRowsWritePlan({
+        parentRowNum: targetParentRow,
+        client: parentClient,
+        jobName: parentJobName,
+        monthlyRevenue: parentData[32],
+        vat: parentData[34] || "No",
+        startDate: parentData[37],
+        endDate: parentA_AM[38] || NO_END_DATE_SHEET_VALUE,
+        b51TargetDay: tolerance?.retainerInvoiceDay || 28,
+        defaultDaysToPay: tolerance?.defaultDaysToPay || 30,
+        initialInvoices: initialRetainerInvoices,
+        confirmedTabTitle: confirmedSheetName,
+      });
+      if (retainerPlan.writeData.length > 0) {
+        confirmedBatchData.push(...retainerPlan.writeData);
+        confirmedChildRows.push(...retainerPlan.childRowNums);
+      }
     }
 
-    // 7. Group child rows in Confirmed sheet under targetParentRow
-    if (confirmedChildRows.length > 0) {
-      try {
+    // 7. Format Date Confirmed cell (Column D) and group child rows in Confirmed BEFORE values.batchUpdate
+    // so structural spreadsheets.batchUpdate executes while the sheet is idle (<1s) rather than waiting
+    // behind Google Sheets' 2-3 minute formula recalculation lock triggered by values.batchUpdate.
+    try {
+      const preWriteStructReqs = [
+        {
+          repeatCell: {
+            range: {
+              sheetId: confirmedSheetId,
+              startRowIndex: targetParentRow - 1,
+              endRowIndex: targetParentRow,
+              startColumnIndex: 3,
+              endColumnIndex: 4,
+            },
+            cell: {
+              userEnteredFormat: {
+                numberFormat: {
+                  type: "DATE",
+                  pattern: "d-mmm-yy",
+                },
+                textFormat: {
+                  italic: true,
+                },
+              },
+            },
+            fields: "userEnteredFormat.numberFormat,userEnteredFormat.textFormat.italic",
+          },
+        },
+      ];
+
+      if (confirmedChildRows.length > 0) {
         const childStartIndex = confirmedChildRows[0] - 1; // 0-based inclusive
         const childEndIndex = confirmedChildRows[confirmedChildRows.length - 1]; // 0-based exclusive
         const existingConfGroups = confirmedSheetObj.rowGroups || [];
@@ -325,18 +362,19 @@ export default async function handler(req, res) {
         );
 
         if (!exactMatch) {
-          const deleteReqs = overlappingGroups.map((g) => ({
-            deleteDimensionGroup: {
-              range: {
-                sheetId: confirmedSheetId,
-                dimension: "ROWS",
-                startIndex: g.range.startIndex,
-                endIndex: g.range.endIndex,
+          for (const g of overlappingGroups) {
+            preWriteStructReqs.push({
+              deleteDimensionGroup: {
+                range: {
+                  sheetId: confirmedSheetId,
+                  dimension: "ROWS",
+                  startIndex: g.range.startIndex,
+                  endIndex: g.range.endIndex,
+                },
               },
-            },
-          }));
-
-          const addReq = {
+            });
+          }
+          preWriteStructReqs.push({
             addDimensionGroup: {
               range: {
                 sheetId: confirmedSheetId,
@@ -345,21 +383,47 @@ export default async function handler(req, res) {
                 endIndex: childEndIndex,
               },
             },
-          };
-
-          await withRetry(() =>
-            sheets.spreadsheets.batchUpdate({
-              spreadsheetId: clientSheetId,
-              requestBody: {
-                requests: [...deleteReqs, addReq],
+          });
+          if (isRetainer) {
+            preWriteStructReqs.push({
+              updateDimensionGroup: {
+                dimensionGroup: {
+                  range: {
+                    sheetId: confirmedSheetId,
+                    dimension: "ROWS",
+                    startIndex: childStartIndex,
+                    endIndex: childEndIndex,
+                  },
+                  depth: 1,
+                  collapsed: true,
+                },
+                fields: "collapsed",
               },
-            })
-          );
+            });
+          }
         }
-      } catch (groupErr) {
-        console.warn("⚠️ Grouping child rows in Confirmed warning (non-fatal):", groupErr.message);
       }
+
+      await sheets.spreadsheets.batchUpdate(
+        {
+          spreadsheetId: clientSheetId,
+          requestBody: { requests: preWriteStructReqs },
+        },
+        { timeout: 10000, retry: false }
+      );
+    } catch (structErr) {
+      console.warn("⚠️ Pre-write formatting/grouping in Confirmed warning (non-fatal):", structErr.message);
     }
+
+    await withRetry(() =>
+      sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: clientSheetId,
+        requestBody: {
+          valueInputOption: "USER_ENTERED",
+          data: confirmedBatchData,
+        },
+      })
+    );
 
     // 8. Update Pipeline row: set % likelihood to 100% and Copied to Conf? to "Yes"
     let likelihoodCol = "AN";
@@ -446,6 +510,7 @@ export default async function handler(req, res) {
       success: true,
       confirmedRow: targetParentRow,
       childRows: confirmedChildRows,
+      backgroundProvisioning: false,
       message: `Successfully confirmed job to row ${targetParentRow}`,
     });
   } catch (err) {

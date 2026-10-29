@@ -495,7 +495,8 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
         projectEndDate: String(keyA1F20[15]?.[5] || "").trim(),   // F16
         retainerDates: String(keyA1F20[16]?.[5] || "").trim(),    // F17
         retainerDur: String(keyA1F20[17]?.[5] || "").trim(),      // F18
-        moveCrmDatesIfPast: String(keyA1F20[18]?.[5] || "").trim() // F19
+        moveCrmDatesIfPast: String(keyA1F20[18]?.[5] || "").trim(), // F19
+        noEndDateRetainerMonths: String(keyA1F20[17]?.[3] || "18").trim() // D18
       },
       productLines: productLines,
       productLineMappings: productLineMappings,
@@ -847,6 +848,9 @@ export async function saveClientSettings({
       addMasterCell("KeyInfo!F17", da.retainerDates);
       addMasterCell("KeyInfo!F18", da.retainerDur);
       addMasterCell("KeyInfo!F19", da.moveCrmDatesIfPast);
+      if (da.noEndDateRetainerMonths !== undefined) {
+        addMasterCell("KeyInfo!D18", da.noEndDateRetainerMonths);
+      }
     }
     if (Array.isArray(settings.jobs.productLines)) {
       addMasterColumnSlice("B", 23, 37, settings.jobs.productLines);
@@ -993,6 +997,7 @@ export async function saveClientSettings({
   }
 
   // Invalidate Redis cache so next GET loads complete merged settings from Sheets
+  const savedAt = new Date().toISOString();
   const redisKey = getSettingsRedisKey(clientName);
   if (redisClient?.isOpen) {
     try {
@@ -1002,7 +1007,7 @@ export async function saveClientSettings({
     }
   }
 
-  return { success: true, savedAt: updatedSettings.lastSyncedAt };
+  return { success: true, savedAt };
 }
 
 /**

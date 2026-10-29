@@ -1,10 +1,10 @@
 import React from "react";
 import Spinner from "./Spinner";
-import { isPlaceholderInvoice } from "../utils/helpers";
+import { isPlaceholderInvoice, NO_END_DATE_SHEET_VALUE, isNoEndDateSentinel } from "../utils/helpers";
 
 // Converts a sheet-formatted date string like "15-Mar-26" (or a few other common
 // shapes) to ISO "YYYY-MM-DD" for use with a native <input type="date">.
-const RET_MONTHS = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
+const RET_MONTHS = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
 
 function sheetDateToISO(val) {
   if (!val) return "";
@@ -26,7 +26,7 @@ function sheetDateToISO(val) {
   }
   const d = new Date(s);
   if (isNaN(d.getTime())) return "";
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
 // Converts ISO "YYYY-MM-DD" back to the sheet's "DD-Mon-YY" display format
@@ -34,13 +34,14 @@ function isoToSheetDate(iso) {
   if (!iso) return "";
   const [y, m, d] = iso.split("-").map(Number);
   if (!y || !m || !d) return "";
-  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-  return `${d}-${months[m-1]}-${y}`;
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  return `${d}-${months[m - 1]}-${y}`;
 }
 
 export default function RetainersEditModal({ job, clientName, clientSheetId, masterSheetId, onClose, onRenamedInPlace, onNeedsReload }) {
+  const initialNoEndDate = isNoEndDateSentinel(job.rows[0]?.endDate);
   const jobStartISO = sheetDateToISO(job.rows[0]?.startDate);
-  const jobEndISO = sheetDateToISO(job.rows[0]?.endDate);
+  const jobEndISO = initialNoEndDate ? "" : sheetDateToISO(job.rows[0]?.endDate);
 
   const hasRealInvoices = React.useMemo(() => {
     if (!job || !job.rows) return false;
@@ -80,6 +81,7 @@ export default function RetainersEditModal({ job, clientName, clientSheetId, mas
   const [jobName, setJobName] = React.useState(job.jobName || "");
   const [startDate, setStartDate] = React.useState(jobStartISO);
   const [endDate, setEndDate] = React.useState(jobEndISO);
+  const [noEndDate, setNoEndDate] = React.useState(initialNoEndDate);
   const [wholeRetainerAmount, setWholeRetainerAmount] = React.useState(currentRevenueClean);
 
   const [changingAmount, setChangingAmount] = React.useState(false);
@@ -136,7 +138,8 @@ export default function RetainersEditModal({ job, clientName, clientSheetId, mas
     setError("");
     const nameChanged = jobName.trim() !== job.jobName;
     const startChanged = !hasRealInvoices && startDate !== jobStartISO;
-    const endChanged = endDate !== jobEndISO;
+    const endChanged = (noEndDate !== initialNoEndDate) || (!noEndDate && endDate !== jobEndISO);
+    const effectiveNewEndSheet = noEndDate ? NO_END_DATE_SHEET_VALUE : isoToSheetDate(endDate);
 
     const parsedWholeAmount = parseFloat(wholeRetainerAmount);
     const originalRevenueNum = parseFloat(currentRevenueClean) || 0;
@@ -144,8 +147,8 @@ export default function RetainersEditModal({ job, clientName, clientSheetId, mas
 
     if (!jobName.trim()) { setError("Job name cannot be blank."); return; }
     if (!startDate) { setError("Please enter a valid start date."); return; }
-    if (!endDate) { setError("Please enter a valid end date."); return; }
-    if (startDate && endDate && startDate > endDate) {
+    if (!noEndDate && !endDate) { setError("Please enter a valid end date or tick 'No end date'."); return; }
+    if (!noEndDate && startDate && endDate && startDate > endDate) {
       setError("Start date cannot be after end date.");
       return;
     }
@@ -186,7 +189,8 @@ export default function RetainersEditModal({ job, clientName, clientSheetId, mas
             clientSheetId, masterSheetId,
             client: job.client, jobName: nameChanged ? jobName.trim() : job.jobName, parentRowNum: job.parentRowNum,
             newStartDate: isoToSheetDate(startDate),
-            newEndDate: endChanged ? isoToSheetDate(endDate) : undefined,
+            newEndDate: endChanged ? effectiveNewEndSheet : undefined,
+            noEndDate,
             newMonthlyAmount: amountChanged ? parsedWholeAmount : undefined,
           }),
         });
@@ -206,7 +210,8 @@ export default function RetainersEditModal({ job, clientName, clientSheetId, mas
             clientName: clientName || "",
             clientSheetId, masterSheetId,
             client: job.client, jobName: nameChanged ? jobName.trim() : job.jobName, parentRowNum: job.parentRowNum,
-            newEndDate: isoToSheetDate(endDate),
+            newEndDate: effectiveNewEndSheet,
+            noEndDate,
           }),
         });
         const data = await res.json();
@@ -239,7 +244,7 @@ export default function RetainersEditModal({ job, clientName, clientSheetId, mas
         onRenamedInPlace(jobName.trim());
       }
       onClose();
-    } catch(e) { setError(e.message); setSaving(false); setSavingMessage(""); }
+    } catch (e) { setError(e.message); setSaving(false); setSavingMessage(""); }
   };
 
   const saveAmountChange = async () => {
@@ -272,7 +277,7 @@ export default function RetainersEditModal({ job, clientName, clientSheetId, mas
       if (!data.success) { setError(data.error || "Failed to change monthly amount"); setSaving(false); setSavingMessage(""); return; }
       onClose();
       if (onNeedsReload) onNeedsReload();
-    } catch(e) { setError(e.message); setSaving(false); setSavingMessage(""); }
+    } catch (e) { setError(e.message); setSaving(false); setSavingMessage(""); }
   };
 
   const inputStyle = { width: "100%", padding: "7px 9px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "15px", boxSizing: "border-box" };
@@ -317,8 +322,28 @@ export default function RetainersEditModal({ job, clientName, clientSheetId, mas
                 )}
               </div>
               <div>
-                <label style={labelStyle}>End date</label>
-                <input type="date" style={inputStyle} value={endDate} onChange={e => setEndDate(e.target.value)} min={startDate || undefined} />
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "3px" }}>
+                  <label style={{ ...labelStyle, marginBottom: 0 }}>End date</label>
+                  <label style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "11px", fontWeight: "600", color: "#475569", cursor: "pointer", userSelect: "none" }}>
+                    <input
+                      type="checkbox"
+                      checked={noEndDate}
+                      onChange={e => setNoEndDate(e.target.checked)}
+                      style={{ margin: 0, cursor: "pointer" }}
+                    />
+                    No end date
+                  </label>
+                </div>
+                {noEndDate ? (
+                  <input
+                    type="text"
+                    style={{ ...inputStyle, background: "#f8fafc", color: "#64748b", cursor: "not-allowed" }}
+                    value="No end date"
+                    disabled
+                  />
+                ) : (
+                  <input type="date" style={inputStyle} value={endDate} onChange={e => setEndDate(e.target.value)} min={startDate || undefined} />
+                )}
               </div>
             </div>
 

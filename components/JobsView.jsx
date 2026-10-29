@@ -22,11 +22,15 @@ import {
   isCrmDeal,
   getCrmDisplayName,
   calculatePaymentDate,
-  groupSlotItemsForDisplay
+  groupSlotItemsForDisplay,
+  NO_END_DATE_SHEET_VALUE,
+  isNoEndDateSentinel,
+  formatJobEndDateDisplay
 } from "../utils/helpers";
 
 export const parseSheetDate = (dStr) => {
   if (!dStr) return null;
+  if (isNoEndDateSentinel(dStr)) return new Date(2050, 11, 31);
   if (dStr instanceof Date) return isNaN(dStr.getTime()) ? null : dStr;
   const s = String(dStr).trim();
   const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
@@ -86,6 +90,7 @@ export const addMonths = (baseDate, n) => {
 
 export const toInputDateFormat = (dStr) => {
   if (!dStr) return "";
+  if (isNoEndDateSentinel(dStr)) return "";
   const d = parseSheetDate(dStr);
   if (!d) return "";
   const y = d.getFullYear();
@@ -96,6 +101,7 @@ export const toInputDateFormat = (dStr) => {
 
 export const toSheetDateFormat = (dStr) => {
   if (!dStr) return "";
+  if (isNoEndDateSentinel(dStr)) return NO_END_DATE_SHEET_VALUE;
   const d = parseSheetDate(dStr);
   if (!d) return String(dStr).trim();
   const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -158,11 +164,11 @@ export const JobDateInput = ({
 
   const handleChange = (e) => {
     const newVal = e.target.value;
-    if (newVal) {
+    if (newVal && !/^0\d{3}-/.test(newVal)) {
       onChange(newVal);
     }
-    // If newVal is "", the user is in an intermediate state while typing in Chrome.
-    // We intentionally avoid updating the DOM node with empty string, preserving other segments.
+    // If newVal is "" or a partial 4-digit year (< 1000), the user is in an intermediate state while typing in Chrome.
+    // We intentionally avoid updating state/DOM node mid-keystroke, preserving other segments.
   };
 
   const handleFocus = () => {
@@ -288,6 +294,10 @@ export const isJobMatchSearch = (job, query, draftEdits = {}) => {
       if (!r) return;
       Object.entries(r).forEach(([key, val]) => {
         if (key === "invoiceSlots" || key === "expenseSlots") return;
+        if (key === "endDate" && isNoEndDateSentinel(val)) {
+          add("no end date");
+          return;
+        }
         add(val);
       });
 
@@ -607,7 +617,7 @@ export const getJobExpenseItems = (job, isRetainer) => {
   return items;
 };
 
-export const getJobFinancialMetrics = (job, isRetainer, isConfirmed, currentRevVal, currentCostVal) => {
+export const getJobFinancialMetrics = (job, isRetainer, isConfirmed, currentRevVal, currentCostVal, noEndDateRetainerMonths = 18, currentEndDateVal) => {
   if (!job || !job.rows || job.rows.length === 0) {
     return {
       revenue: 0,
@@ -694,9 +704,13 @@ export const getJobFinancialMetrics = (job, isRetainer, isConfirmed, currentRevV
     }
 
     const sDate = baseStartDate || parseSheetDate(parentRow.startDate);
-    const eDate = parseSheetDate(parentRow.endDate);
+    const effectiveEndVal = currentEndDateVal !== undefined ? currentEndDateVal : parentRow.endDate;
+    const eDate = parseSheetDate(effectiveEndVal);
     let monthsCount = job.rows.length;
-    if (sDate && eDate && eDate > sDate) {
+    if (isNoEndDateSentinel(effectiveEndVal)) {
+      const d18Months = (typeof noEndDateRetainerMonths === "number" && noEndDateRetainerMonths > 0) ? noEndDateRetainerMonths : 18;
+      monthsCount = Math.max(job.rows.length, d18Months);
+    } else if (sDate && eDate && eDate > sDate) {
       const diffDays = (eDate.getTime() - sDate.getTime()) / (24 * 60 * 60 * 1000);
       const diffMonths = Math.round(diffDays / 30.4375);
       monthsCount = Math.max(job.rows.length, diffMonths);
@@ -849,6 +863,7 @@ export default function JobsView({
     hasAccountingIntegration,
     crmTool,
     crmDrives,
+    noEndDateRetainerMonths,
     loadJobsData
   } = useJobs(managedClient || initialClient);
 
@@ -1046,7 +1061,7 @@ export default function JobsView({
     if (!job) return;
     const isRetainer = String(job.rows?.[0]?.projectRetainer || "").toLowerCase().includes("retainer");
     const parentRow = job.rows?.[0] || job;
-    const metrics = getJobFinancialMetrics(job, isRetainer, filterType !== "pipeline");
+    const metrics = getJobFinancialMetrics(job, isRetainer, filterType !== "pipeline", undefined, undefined, noEndDateRetainerMonths);
 
     let targetRowNum = null;
     let targetSlotNum = null;
@@ -1104,7 +1119,7 @@ export default function JobsView({
     if (!job) return;
     const isRetainer = String(job.rows?.[0]?.projectRetainer || "").toLowerCase().includes("retainer");
     const parentRow = job.rows?.[0] || job;
-    const metrics = getJobFinancialMetrics(job, isRetainer, filterType !== "pipeline");
+    const metrics = getJobFinancialMetrics(job, isRetainer, filterType !== "pipeline", undefined, undefined, noEndDateRetainerMonths);
 
     let targetRowNum = null;
     let targetSlotNum = null;
@@ -1418,7 +1433,11 @@ export default function JobsView({
       });
 
       // 4. Reload jobs data
-      await loadJobsData(jobsClient, "All");
+      await loadJobsData(jobsClient, "All", true);
+      if (resData.backgroundProvisioning) {
+        setTimeout(() => loadJobsData(jobsClient, "All", true, true), 4000);
+        setTimeout(() => loadJobsData(jobsClient, "All", true, true), 8000);
+      }
     } catch (err) {
       console.error("Confirm job error:", err);
       setActionError(`Failed to confirm ${job.jobName || "job"}: ${err.message}`);
@@ -1613,13 +1632,13 @@ export default function JobsView({
     const tabName = job.tabName || parentRow?.tabName || (filterType === "pipeline" ? "Pipeline" : "Confirmed");
     const tabLower = tabName.toLowerCase();
 
-    // 1. Record in tombstone refs to defend against stale Google Sheets API reads
-    recentlyDeletedJobKeysRef.current.add(jobKey);
-    if (job.id) recentlyDeletedJobKeysRef.current.add(job.id);
+    // 1. Record in tombstone refs (scoped by row + client + jobName) to defend against stale Google Sheets API reads
+    const delSig = `${Number(parentRow?.rowNum || rowNums[0])}:${String(parentRow?.client || job.client || "").trim().toLowerCase()}:${String(parentRow?.jobName || job.jobName || "").trim().toLowerCase()}`;
+    recentlyDeletedJobKeysRef.current.add(delSig);
     if (!recentlyDeletedJobRowsRef.current.has(tabLower)) {
       recentlyDeletedJobRowsRef.current.set(tabLower, new Set());
     }
-    rowNums.forEach((rn) => recentlyDeletedJobRowsRef.current.get(tabLower).add(Number(rn)));
+    rowNums.forEach((rn) => recentlyDeletedJobRowsRef.current.get(tabLower).add(`${Number(rn)}:${String(parentRow?.client || job.client || "").trim().toLowerCase()}:${String(parentRow?.jobName || job.jobName || "").trim().toLowerCase()}`));
 
     // 2. Immediately remove job optimistically from local jobsData state
     setJobsData((prev) => {
@@ -1893,6 +1912,11 @@ export default function JobsView({
           return next;
         });
       }, 3000);
+
+      if (data.backgroundProvisioning) {
+        setTimeout(() => loadJobsData(jobsClient, "All", true, true), 4000);
+        setTimeout(() => loadJobsData(jobsClient, "All", true, true), 8000);
+      }
     } catch (err) {
       console.error("Save job failed:", err);
       setActionError(`Save failed for ${job.jobName || "job"}: ${err.message}`);
@@ -1910,13 +1934,15 @@ export default function JobsView({
     if (!jobsData || !Array.isArray(jobsData)) return [];
     let list = [...jobsData];
 
-    // Exclude any jobs that have been deleted in this session (defending against stale Google Sheets API reads)
+    // Exclude any jobs that have been deleted in this session (scoped by row + client + jobName so reused rows for new jobs are never suppressed)
     list = list.filter((j) => {
-      const k = getJobKey(j);
-      if (recentlyDeletedJobKeysRef.current.has(k) || (j.id && recentlyDeletedJobKeysRef.current.has(j.id))) return false;
       const jTab = (j.tabName || j.rows?.[0]?.tabName || "").toLowerCase();
       const jRowNum = Number(j.rows?.[0]?.rowNum);
-      if (jTab && jRowNum && recentlyDeletedJobRowsRef.current.get(jTab)?.has(jRowNum)) return false;
+      const jClient = String(j.rows?.[0]?.client || j.client || "").trim().toLowerCase();
+      const jName = String(j.rows?.[0]?.jobName || j.jobName || "").trim().toLowerCase();
+      const sig = `${jRowNum}:${jClient}:${jName}`;
+      if (recentlyDeletedJobKeysRef.current.has(sig)) return false;
+      if (jTab && jRowNum && recentlyDeletedJobRowsRef.current.get(jTab)?.has(sig)) return false;
       return true;
     });
 
@@ -2050,11 +2076,13 @@ export default function JobsView({
     let conf = 0;
     let pipe = 0;
     jobsData.forEach((j) => {
-      const k = getJobKey(j);
-      if (recentlyDeletedJobKeysRef.current.has(k) || (j.id && recentlyDeletedJobKeysRef.current.has(j.id))) return;
       const jTab = (j.tabName || j.rows?.[0]?.tabName || "").toLowerCase();
       const jRowNum = Number(j.rows?.[0]?.rowNum);
-      if (jTab && jRowNum && recentlyDeletedJobRowsRef.current.get(jTab)?.has(jRowNum)) return;
+      const jClient = String(j.rows?.[0]?.client || j.client || "").trim().toLowerCase();
+      const jName = String(j.rows?.[0]?.jobName || j.jobName || "").trim().toLowerCase();
+      const sig = `${jRowNum}:${jClient}:${jName}`;
+      if (recentlyDeletedJobKeysRef.current.has(sig)) return;
+      if (jTab && jRowNum && recentlyDeletedJobRowsRef.current.get(jTab)?.has(sig)) return;
 
       // Exclude pipeline jobs copied to confirmed tab
       if (isJobCopiedToConfirmed(j)) return;
@@ -2186,7 +2214,7 @@ export default function JobsView({
     );
 
     try {
-      await fetch("/api/triage", {
+      const inlineRes = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -2203,6 +2231,11 @@ export default function JobsView({
           value: newValue
         })
       });
+      const inlineData = await inlineRes.json().catch(() => ({}));
+      if (inlineData?.backgroundProvisioning) {
+        setTimeout(() => loadJobsData(jobsClient, "All", true, true), 4000);
+        setTimeout(() => loadJobsData(jobsClient, "All", true, true), 8000);
+      }
     } catch (e) {
       console.error("Inline update failed:", e);
     }
@@ -2678,17 +2711,37 @@ export default function JobsView({
           leadSources={leadSources}
           existingClients={existingClients}
           onClose={() => setShowAddJobModal(false)}
-          onSuccess={(targetTab, targetRow) => {
+          onSuccess={(targetTab, targetRow, resData) => {
             setShowAddJobModal(false);
+            const tabClean = targetTab || "Confirmed";
+            const tabLower = tabClean.toLowerCase();
             if (targetTab) {
-              setFilterType(targetTab.toLowerCase() === "pipeline" ? "pipeline" : "confirmed");
+              setFilterType(tabLower === "pipeline" ? "pipeline" : "confirmed");
             }
             setSearchQuery("");
-            loadJobsData(jobsClient, "All");
+
+            // Clear any deleted-row tombstones for this row so even if the user re-creates an identical job on the same row, it shows immediately
+            recentlyDeletedJobKeysRef.current.clear();
+            recentlyDeletedJobRowsRef.current.clear();
+
             if (targetRow && targetTab) {
-              const newKey = `${targetTab.toLowerCase()}_${targetRow}`;
+              const newKey = `${tabLower}_${targetRow}`;
               setRecentlySavedKeys((prev) => new Set(prev).add(newKey));
               setExpandedJobIds((prev) => new Set(prev).add(newKey));
+            }
+
+            // Optimistically insert the newly created job into jobsData so it is visible at 0ms
+            if (resData?.newJob) {
+              setJobsData((prev) => {
+                const base = Array.isArray(prev) ? prev.filter((j) => getJobKey(j) !== getJobKey(resData.newJob)) : [];
+                return [resData.newJob, ...base];
+              });
+            }
+
+            loadJobsData(jobsClient, "All", true, true);
+            if (resData?.backgroundProvisioning) {
+              setTimeout(() => loadJobsData(jobsClient, "All", true, true), 3500);
+              setTimeout(() => loadJobsData(jobsClient, "All", true, true), 7500);
             }
           }}
         />
@@ -3185,7 +3238,7 @@ export default function JobsView({
                 )}
 
                 {/* Loading State */}
-                {(jobsLoading || !jobsData) ? (
+                {!jobsData ? (
                   <PmaJobsTableSkeleton />
                 ) : processedJobs.length === 0 ? (
                   <div style={{ textAlign: "center", padding: "48px 0", background: "#ffffff", borderRadius: "10px", border: "1px solid #e2e8f0", color: "#64748b" }}>
@@ -3251,7 +3304,7 @@ export default function JobsView({
                           const costsOutstandingVal = parentRow.costsOutstanding || "";
 
                           // Calculate real revenue and direct cost metrics strictly excluding gap sweep placeholders
-                          const metrics = getJobFinancialMetrics(job, isRetainer, isConfirmed, revVal, directCostsVal);
+                          const metrics = getJobFinancialMetrics(job, isRetainer, isConfirmed, revVal, directCostsVal, noEndDateRetainerMonths, endDateVal);
 
                           // Distinct product line and lead source options including current value
                           const plOptions = Array.from(new Set([...(productLines || []), prodLineVal].filter(Boolean))).sort();
@@ -3589,14 +3642,87 @@ export default function JobsView({
                                 </td>
 
                                 {/* End Date */}
-                                <td style={{ padding: "9px 10px", verticalAlign: "middle" }}>
-                                  <JobDateInput
-                                    value={endDateVal}
-                                    onChange={(val) => handleDraftFieldChange(job, "endDate", val)}
-                                    onKeyDown={(e) => handleFieldKeyDown(e, job, "endDate")}
-                                    isDirty={isDirty && draftEdits[jobKey]?.endDate !== undefined}
-                                    title={isJobFromCrm ? `Synced with ${crmDisplayName}: Changes to data will be overwritten by CRM data at the next sync.` : undefined}
-                                  />
+                                <td style={{ padding: "9px 10px", verticalAlign: "middle" }} onClick={(e) => e.stopPropagation()}>
+                                  {isNoEndDateSentinel(endDateVal) ? (
+                                    <div style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
+                                      <div
+                                        style={{
+                                          padding: "3px 6px",
+                                          borderRadius: "5px",
+                                          border: isDirty && draftEdits[jobKey]?.endDate !== undefined ? "1px solid #f59e0b" : "1px solid #e2e8f0",
+                                          background: "#f8fafc",
+                                          fontSize: "12px",
+                                          color: "#64748b",
+                                          fontWeight: "500",
+                                          whiteSpace: "nowrap"
+                                        }}
+                                      >
+                                        No end date
+                                      </div>
+                                      {isRetainer && (
+                                        <label
+                                          style={{
+                                            display: "inline-flex",
+                                            alignItems: "center",
+                                            gap: "4px",
+                                            fontSize: "10px",
+                                            fontWeight: "600",
+                                            color: "#475569",
+                                            cursor: "pointer",
+                                            userSelect: "none"
+                                          }}
+                                        >
+                                          <input
+                                            type="checkbox"
+                                            checked={true}
+                                            onChange={(e) => {
+                                              if (!e.target.checked) {
+                                                handleDraftFieldChange(job, "endDate", startDateVal || "");
+                                              }
+                                            }}
+                                            style={{ margin: 0, cursor: "pointer" }}
+                                          />
+                                          No end date
+                                        </label>
+                                      )}
+                                    </div>
+                                  ) : (
+                                    <div style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
+                                      <JobDateInput
+                                        value={endDateVal}
+                                        onChange={(val) => handleDraftFieldChange(job, "endDate", val)}
+                                        onKeyDown={(e) => handleFieldKeyDown(e, job, "endDate")}
+                                        isDirty={isDirty && draftEdits[jobKey]?.endDate !== undefined}
+                                        title={isJobFromCrm ? `Synced with ${crmDisplayName}: Changes to data will be overwritten by CRM data at the next sync.` : undefined}
+                                      />
+                                      {isRetainer && (
+                                        <label
+                                          style={{
+                                            display: "inline-flex",
+                                            alignItems: "center",
+                                            gap: "4px",
+                                            fontSize: "10px",
+                                            fontWeight: "600",
+                                            color: "#475569",
+                                            cursor: "pointer",
+                                            userSelect: "none"
+                                          }}
+                                        >
+                                          <input
+                                            type="checkbox"
+                                            checked={false}
+                                            onChange={(e) => {
+                                              if (e.target.checked) {
+                                                handleDraftFieldChange(job, "endDate", NO_END_DATE_SHEET_VALUE);
+                                              }
+                                            }}
+                                            style={{ margin: 0, cursor: "pointer" }}
+                                          />
+                                          No end date
+                                        </label>
+                                      )}
+                                    </div>
+                                  )}
                                 </td>
 
                                 {/* Likelihood (%) */}
@@ -4958,7 +5084,7 @@ export default function JobsView({
                   </div>
                 </div>
 
-                {(jobsLoading || !jobsData) ? (
+                {!jobsData ? (
                   <div style={{ textAlign: "center", color: "#999", padding: "24px" }}>Loading jobs...</div>
                 ) : (
                   <div style={{ overflowX: "auto", borderRadius: "8px", border: "1px solid #e0e0e0" }}>
@@ -5069,7 +5195,7 @@ export default function JobsView({
                                   {showFields && <LegacyEditableCell value={r.startDate} colLetter="AL" rowNum={r.rowNum} onSave={handleLegacyInlineUpdate} title={crmWarningTitle} />}
                                 </td>
                                 <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
-                                  {showFields && <LegacyEditableCell value={r.endDate} colLetter="AM" rowNum={r.rowNum} onSave={handleLegacyInlineUpdate} title={crmWarningTitle} />}
+                                  {showFields && <LegacyEditableCell value={r.endDate ? formatJobEndDateDisplay(r.endDate, "") : ""} colLetter="AM" rowNum={r.rowNum} onSave={handleLegacyInlineUpdate} title={crmWarningTitle} />}
                                 </td>
                                 {jobsTab === "Pipeline" && (
                                   <>

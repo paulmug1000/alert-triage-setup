@@ -70,6 +70,7 @@ if (!global._pulseMemoryCache) {
   global._pulseMemoryCache = memoryCache;
 }
 
+import { waitUntil } from "@vercel/functions";
 import { redisClient } from "./redisClient.js";
 
 /**
@@ -193,5 +194,37 @@ export async function invalidatePmaClientCache(clientSheetId, masterSheetId, sco
     }
   }
 
-  await Promise.allSettled(patterns.map((p) => del2TierCache(p)));
+  const uniquePatterns = [...new Set(patterns)];
+  for (const p of uniquePatterns) {
+    memoryCache.del(p);
+  }
+
+  if (redisClient?.isOpen && uniquePatterns.length > 0) {
+    const redisCleanup = (async () => {
+      try {
+        const keyLists = await Promise.all(
+          uniquePatterns.map((p) =>
+            p.includes("*")
+              ? redisClient.keys(p).catch(() => [])
+              : Promise.resolve([p])
+          )
+        );
+        const allKeysToDel = [...new Set(keyLists.flat().filter(Boolean))];
+        if (allKeysToDel.length > 0) {
+          await redisClient.del(allKeysToDel);
+        }
+      } catch (err) {
+        console.warn("[invalidatePmaClientCache] Redis delete error:", err?.message);
+      }
+    })();
+    if (typeof waitUntil === "function") {
+      try {
+        waitUntil(redisCleanup);
+      } catch (_) {}
+    }
+    await Promise.race([
+      redisCleanup,
+      new Promise((resolve) => setTimeout(resolve, 1000)),
+    ]);
+  }
 }

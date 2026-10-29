@@ -72,6 +72,7 @@ export async function logPmaActivity(sheetsOrOptions, maybeOptions = {}) {
       details = {},
       user = "PMA Admin",
       userEmail = "",
+      actor = "",
     } = options || {};
 
     const acId = automationCommanderSheetId || DEFAULT_AC_SHEET_ID;
@@ -80,7 +81,7 @@ export async function logPmaActivity(sheetsOrOptions, maybeOptions = {}) {
     const cleanCategory = String(category || "PMA").trim().toUpperCase();
     const cleanAction = String(action || "").trim();
     const cleanSummary = String(summary || "").trim();
-    const cleanUser = String(userEmail || user || "PMA Admin").trim();
+    const cleanUser = String(userEmail || actor || user || "PMA Admin").trim();
     const detailsStr = typeof details === "string" ? details : JSON.stringify(details || {});
 
     if (!sheets) {

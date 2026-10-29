@@ -30,7 +30,7 @@ export default async function handler(req, res) {
     return res.status(403).json({ success: false, error: "Only administrators can provision new client systems." });
   }
 
-  const { clientName, accountingTool, crmTool, crmDrives, targetParentFolderId } = req.body || {};
+  const { clientName, accountingTool, crmTool, crmDrives, targetParentFolderId, existingFolderId } = req.body || {};
 
   if (!clientName || !clientName.trim()) {
     return res.status(400).json({ success: false, error: "Client Name is required." });
@@ -43,6 +43,7 @@ export default async function handler(req, res) {
       crmTool: crmTool || "None",
       crmDrives: crmDrives || "NA",
       targetParentFolderId,
+      existingFolderId: existingFolderId ? String(existingFolderId).trim() : "",
       userEmail: sessionUser.email
     });
 

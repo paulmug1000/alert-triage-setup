@@ -217,7 +217,7 @@ export default function SalariesView({
             setLoading(false);
             return;
           }
-        } catch {}
+        } catch { }
       }
     }
 
@@ -1759,7 +1759,7 @@ export default function SalariesView({
 
                 <div>
                   <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "#475569", marginBottom: "4px" }}>
-                    Start Date
+                    Start date
                   </label>
                   <input
                     type="text"

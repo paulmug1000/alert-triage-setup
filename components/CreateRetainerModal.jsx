@@ -9,6 +9,7 @@ export default function CreateRetainerModal({ clientName: agencyClientName, clie
   const [vat, setVat] = React.useState("No");
   const [startDate, setStartDate] = React.useState("");
   const [endDate, setEndDate] = React.useState("");
+  const [noEndDate, setNoEndDate] = React.useState(false);
   const [invoiceFrequency, setInvoiceFrequency] = React.useState("monthly");
   const [invoiceSendDay, setInvoiceSendDay] = React.useState("");
   const [saving, setSaving] = React.useState(false);
@@ -29,10 +30,16 @@ export default function CreateRetainerModal({ clientName: agencyClientName, clie
     const directCosts = monthlyDirectCosts === "" ? 0 : parseFloat(monthlyDirectCosts);
     if (isNaN(directCosts) || directCosts < 0) { setError("Direct costs must be zero or a positive number."); return; }
     if (!startDate) { setError("Please enter a start date."); return; }
-    if (!endDate) { setError("Please enter an end date."); return; }
-    if (endDate < startDate) { setError("End date can't be before start date."); return; }
-    const sendDay = parseInt(invoiceSendDay, 10);
-    if (!invoiceSendDay || isNaN(sendDay) || sendDay < 1 || sendDay > 31) { setError("Please enter a valid day of the month (1-31) for invoices to be sent on."); return; }
+    if (!noEndDate && !endDate) { setError("Please enter an end date or tick 'No end date'."); return; }
+    if (!noEndDate && endDate && endDate < startDate) { setError("End date can't be before start date."); return; }
+    let sendDay = null;
+    if (invoiceSendDay !== "") {
+      sendDay = parseInt(invoiceSendDay, 10);
+      if (isNaN(sendDay) || sendDay < 1 || sendDay > 31) {
+        setError("Please enter a valid day of the month (1-31) for invoices to be sent on.");
+        return;
+      }
+    }
 
     const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
     const isoToSheetDate = (iso) => {
@@ -41,7 +48,7 @@ export default function CreateRetainerModal({ clientName: agencyClientName, clie
     };
 
     setSaving(true);
-    setSavingMessage("Creating the retainer and its invoice schedule - this can take a little while...");
+    setSavingMessage("Creating retainer...");
     try {
       const res = await fetch("/api/triage", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -51,14 +58,16 @@ export default function CreateRetainerModal({ clientName: agencyClientName, clie
           clientName: agencyClientName || "",
           client: endClientName.trim(), jobName: jobName.trim(),
           monthlyRevenue: revenue, monthlyDirectCosts: directCosts, vat,
-          startDate: isoToSheetDate(startDate), endDate: isoToSheetDate(endDate),
+          startDate: isoToSheetDate(startDate),
+          endDate: noEndDate ? "31-Dec-2050" : (endDate ? isoToSheetDate(endDate) : ""),
+          noEndDate,
           invoiceFrequency, invoiceSendDay: sendDay,
         }),
       });
       const data = await res.json();
       if (!data.success) { setError(data.error || "Failed to create retainer"); setSaving(false); setSavingMessage(""); return; }
       onClose();
-      if (onCreated) onCreated();
+      if (onCreated) onCreated(data);
     } catch (e) { setError(e.message); setSaving(false); setSavingMessage(""); }
   };
 
@@ -120,8 +129,28 @@ export default function CreateRetainerModal({ clientName: agencyClientName, clie
                   <input type="date" style={inputStyle} value={startDate} onChange={e => setStartDate(e.target.value)} />
                 </div>
                 <div>
-                  <label style={labelStyle}>End date</label>
-                  <input type="date" style={inputStyle} value={endDate} onChange={e => setEndDate(e.target.value)} min={startDate || undefined} />
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "3px" }}>
+                    <label style={{ ...labelStyle, marginBottom: 0 }}>End date</label>
+                    <label style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "11px", fontWeight: "600", color: "#475569", cursor: "pointer", userSelect: "none" }}>
+                      <input
+                        type="checkbox"
+                        checked={noEndDate}
+                        onChange={e => setNoEndDate(e.target.checked)}
+                        style={{ margin: 0, cursor: "pointer" }}
+                      />
+                      No end date
+                    </label>
+                  </div>
+                  {noEndDate ? (
+                    <input
+                      type="text"
+                      style={{ ...inputStyle, background: "#f8fafc", color: "#64748b", cursor: "not-allowed" }}
+                      value="No end date"
+                      disabled
+                    />
+                  ) : (
+                    <input type="date" style={inputStyle} value={endDate} onChange={e => setEndDate(e.target.value)} min={startDate || undefined} />
+                  )}
                 </div>
               </div>
               <div>

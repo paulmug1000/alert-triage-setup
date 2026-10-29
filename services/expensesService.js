@@ -486,11 +486,16 @@ export async function saveExpenseAmount({
     }
   }
 
+  const isOutgoingsMonthlyCol = (colIdx) =>
+    (colIdx >= 6 && colIdx <= 17) || (colIdx >= 21 && colIdx <= 32) || (colIdx >= 36 && colIdx <= 47);
+
   const dataUpdates = [];
   if (monthlyAmounts && typeof monthlyAmounts === "object") {
     for (const [colLetter, val] of Object.entries(monthlyAmounts)) {
       const cleanLetter = String(colLetter).toUpperCase().trim();
       if (!/^[A-Z]{1,2}$/.test(cleanLetter)) continue;
+      const colIdx = colLetterToNum(cleanLetter) - 1;
+      if (!isOutgoingsMonthlyCol(colIdx)) continue;
       const cleanVal = sanitizeFormulaInput(String(val ?? "").trim());
       dataUpdates.push({
         range: `Outgoings!${cleanLetter}${rowNum}`,
@@ -521,6 +526,7 @@ export async function saveExpenseAmount({
       const cleanLetter = String(colLetter).toUpperCase().trim();
       if (!/^[A-Z]{1,2}$/.test(cleanLetter)) continue;
       const colIdx = colLetterToNum(cleanLetter) - 1;
+      if (!isOutgoingsMonthlyCol(colIdx)) continue;
       noteRequests.push({
         updateCells: {
           range: {

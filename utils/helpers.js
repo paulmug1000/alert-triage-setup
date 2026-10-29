@@ -825,9 +825,9 @@ export function sanitizeFormulaInput(val) {
   if (!trimmed) return val;
   // If it's a valid finite number, it is safe (e.g. "-500", "+25.5")
   if (!isNaN(Number(trimmed))) return val;
-  // If it starts with formula trigger characters, neutralize it
-  if (/^[=+\-@]/.test(trimmed)) {
-    return `'${val}`;
+  // If it starts with formula trigger characters (including after leading whitespace or quotes), neutralize it
+  if (/^[\s'’]*[=+\-@]/.test(val)) {
+    return `'${val.replace(/^[\s'’]+/, "")}`;
   }
   return val;
 }
@@ -2023,16 +2023,126 @@ export function sanitizeRedirectUrl(url, defaultTarget = "/pma") {
   // Explicit trusted domains
   try {
     const parsed = new URL(trimmed);
+    const isLocalhost = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
+    const isValidScheme = parsed.protocol === "https:" || (isLocalhost && parsed.protocol === "http:");
+    if (!isValidScheme) return defaultTarget;
     const trustedHosts = [
       "app.pulsedashboard.co.uk",
       "pma.pulsedashboard.co.uk",
       "pulsedashboard.co.uk",
-      "localhost"
+      "localhost",
+      "127.0.0.1"
     ];
     if (trustedHosts.includes(parsed.hostname) || parsed.hostname.endsWith(".pulsedashboard.co.uk")) {
       return trimmed;
     }
   } catch (_) { }
   return defaultTarget;
+}
+
+/**
+ * Validates that a URL is strictly a deployed Google Apps Script Web App (/exec).
+ */
+export function isValidGoogleScriptUrl(url) {
+  if (!url || typeof url !== "string") return false;
+  return /^https:\/\/script\.google\.com\/macros\/s\/[a-zA-Z0-9_-]+\/exec$/.test(url.trim());
+}
+
+export const NO_END_DATE_SHEET_VALUE = "31-Dec-2050";
+export const NO_END_DATE_DISPLAY_LABEL = "No end date";
+
+/**
+ * Checks whether an end-date value represents the canonical "No end date" sentinel (31-Dec-2050).
+ * Only 31-Dec-2050 (in its various formatted representations) or "No end date" matches.
+ */
+export function isNoEndDateSentinel(val) {
+  if (!val) return false;
+  if (val instanceof Date && !isNaN(val.getTime())) {
+    return val.getFullYear() === 2050 && val.getMonth() === 11 && val.getDate() === 31;
+  }
+  const s = String(val).trim().toLowerCase();
+  if (!s) return false;
+  if (s === "no end date") return true;
+  if (
+    s === "31-dec-2050" ||
+    s === "31-dec-50" ||
+    s === "31 dec 2050" ||
+    s === "31 dec 50" ||
+    s === "31 december 2050" ||
+    s === "2050-12-31" ||
+    s === "2050/12/31" ||
+    s === "31/12/2050" ||
+    s === "31/12/50" ||
+    s === "12/31/2050" ||
+    s.startsWith("2050-12-31t")
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Formats a job end date for UI display, masking 31-Dec-2050 as "No end date".
+ */
+export function formatJobEndDateDisplay(val, fallback = "—") {
+  if (isNoEndDateSentinel(val)) return NO_END_DATE_DISPLAY_LABEL;
+  const s = String(val ?? "").trim();
+  return s || fallback;
+}
+
+/**
+ * Validates Origin / Sec-Fetch-Site headers on cookie-authenticated state-mutating requests to prevent CSRF.
+ */
+export function assertTrustedOrigin(req, res) {
+  if (!req || !req.headers) return true;
+  const origin = req.headers.origin;
+  const secFetchSite = req.headers["sec-fetch-site"];
+  const reqHostRaw = String(req.headers["x-forwarded-host"] || req.headers.host || "").split(",")[0].trim().toLowerCase();
+  const reqHostname = reqHostRaw.split(":")[0];
+
+  const isTrustedHostname = (h) => {
+    if (!h) return false;
+    const lower = h.toLowerCase();
+    return (
+      lower === "app.pulsedashboard.co.uk" ||
+      lower === "pma.pulsedashboard.co.uk" ||
+      lower === "pulsedashboard.co.uk" ||
+      lower === "localhost" ||
+      lower === "127.0.0.1" ||
+      lower.endsWith(".pulsedashboard.co.uk") ||
+      lower.endsWith(".vercel.app") ||
+      (reqHostname && lower === reqHostname)
+    );
+  };
+
+  if (origin) {
+    if (origin === "null") {
+      if (res && typeof res.status === "function") {
+        res.status(403).json({ success: false, error: "Forbidden: Untrusted request origin." });
+      }
+      return false;
+    }
+    try {
+      const parsed = new URL(origin);
+      if (!isTrustedHostname(parsed.hostname)) {
+        if (res && typeof res.status === "function") {
+          res.status(403).json({ success: false, error: "Forbidden: Untrusted request origin." });
+        }
+        return false;
+      }
+    } catch (_) {
+      if (res && typeof res.status === "function") {
+        res.status(403).json({ success: false, error: "Forbidden: Invalid request origin." });
+      }
+      return false;
+    }
+  } else if (secFetchSite === "cross-site") {
+    if (res && typeof res.status === "function") {
+      res.status(403).json({ success: false, error: "Forbidden: Cross-site request blocked." });
+    }
+    return false;
+  }
+
+  return true;
 }
 

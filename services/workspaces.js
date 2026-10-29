@@ -1,3 +1,4 @@
+import { waitUntil } from "@vercel/functions";
 import { getSheetsClient, withRetry, extractSheetIdFromUrl, colLetterToNum, colIndexToLetter, getSheetGid, getSheetId, applySheetFontFormat } from "./sheetsClient.js";
 import { setMasterSwitch, checkAllGASLocks, fetchJobRowsForDisplay, getToleranceValues } from "./sharedHelpers.js";
 import {
@@ -9,7 +10,10 @@ import {
   canonicalizeExpenseStatus,
   hasActiveCrmIntegration,
   isCrmDrivenTab,
-  getCrmDisplayName
+  getCrmDisplayName,
+  NO_END_DATE_SHEET_VALUE,
+  isNoEndDateSentinel,
+  formatJobEndDateDisplay
 } from "../utils/helpers.js";
 import { isUserAuthorizedForClient, matchesClientName, sanitizeFormulaInput, getClientManagerClientMap, DEFAULT_AC_SHEET_ID, verifyUserAuthorizedForSheet, resolveClientNameBySheetId } from "./userPermissions.js";
 export { DEFAULT_AC_SHEET_ID, resolveClientNameBySheetId };
@@ -17,6 +21,12 @@ import { logPmaActivity } from "./pmaLogger.js";
 import { getSessionUser } from "./authService.js";
 import { redisClient } from "./redisClient.js";
 import { memoryCache, get2TierCache, set2TierCache, invalidatePmaClientCache } from "./cacheService.js";
+import {
+  provisionRetainerChildRows_,
+  provisionRetainerScheduleInBackground,
+  buildRetainerChildRowsWritePlan,
+  groupAndCollapseRetainerChildRows_,
+} from "./retainers.js";
 
 let _allClientsMemoryCache = null;
 let _allClientsCachedAt = 0;
@@ -974,12 +984,13 @@ export async function handleGetAllClientJobs(req, res, sheets) {
     let accountingTool = "None";
     let crmTool = "None";
     let crmDrives = "NA";
+    let noEndDateRetainerMonths = 18;
 
     if (tabName === "All" || !tabName) {
       try {
         const batchResp = await sheets.spreadsheets.values.batchGet({
           spreadsheetId: sheetIdClean,
-          ranges: ["Confirmed!A1:DD5000", "Pipeline!A1:DD5000", "KeyInfo!C23:C26", "KeyInfo!G32:G75", "KeyInfo!Q4", "KeyInfo!Q8:Q9"],
+          ranges: ["Confirmed!A1:DD5000", "Pipeline!A1:DD5000", "KeyInfo!C23:C26", "KeyInfo!G32:G75", "KeyInfo!Q4", "KeyInfo!Q8:Q9", "KeyInfo!D18"],
           valueRenderOption: "FORMATTED_VALUE",
         });
         confRows = batchResp.data.valueRanges?.[0]?.values || [];
@@ -988,11 +999,14 @@ export async function handleGetAllClientJobs(req, res, sheets) {
         const lsData = batchResp.data.valueRanges?.[3]?.values || [];
         const accData = batchResp.data.valueRanges?.[4]?.values || [];
         const crmData = batchResp.data.valueRanges?.[5]?.values || [];
+        const d18Data = batchResp.data.valueRanges?.[6]?.values || [];
         productLines = plData.flat().map(v => String(v || "").trim()).filter(Boolean);
         leadSources = lsData.flat().map(v => String(v || "").trim()).filter(Boolean);
         if (accData?.[0]?.[0]) accountingTool = String(accData[0][0]).trim();
         if (crmData?.[0]?.[0]) crmTool = String(crmData[0][0]).trim();
         if (crmData?.[1]?.[0]) crmDrives = String(crmData[1][0]).trim();
+        const parsedD18 = parseInt(String(d18Data?.[0]?.[0] || "").trim(), 10);
+        if (!isNaN(parsedD18) && parsedD18 > 0) noEndDateRetainerMonths = parsedD18;
 
         if ((accountingTool === "None" || !accountingTool) && redisClient?.isOpen) {
           try {
@@ -1039,18 +1053,21 @@ export async function handleGetAllClientJobs(req, res, sheets) {
       try {
         const keyInfoResp = await sheets.spreadsheets.values.batchGet({
           spreadsheetId: sheetIdClean,
-          ranges: ["KeyInfo!C23:C26", "KeyInfo!G32:G75", "KeyInfo!Q4", "KeyInfo!Q8:Q9"],
+          ranges: ["KeyInfo!C23:C26", "KeyInfo!G32:G75", "KeyInfo!Q4", "KeyInfo!Q8:Q9", "KeyInfo!D18"],
           valueRenderOption: "FORMATTED_VALUE"
         });
         const plData = keyInfoResp.data.valueRanges?.[0]?.values || [];
         const lsData = keyInfoResp.data.valueRanges?.[1]?.values || [];
         const accData = keyInfoResp.data.valueRanges?.[2]?.values || [];
         const crmData = keyInfoResp.data.valueRanges?.[3]?.values || [];
+        const d18Data = keyInfoResp.data.valueRanges?.[4]?.values || [];
         productLines = plData.flat().map(v => String(v || "").trim()).filter(Boolean);
         leadSources = lsData.flat().map(v => String(v || "").trim()).filter(Boolean);
         if (accData?.[0]?.[0]) accountingTool = String(accData[0][0]).trim();
         if (crmData?.[0]?.[0]) crmTool = String(crmData[0][0]).trim();
         if (crmData?.[1]?.[0]) crmDrives = String(crmData[1][0]).trim();
+        const parsedD18 = parseInt(String(d18Data?.[0]?.[0] || "").trim(), 10);
+        if (!isNaN(parsedD18) && parsedD18 > 0) noEndDateRetainerMonths = parsedD18;
 
         if ((accountingTool === "None" || !accountingTool) && redisClient?.isOpen) {
           try {
@@ -1068,10 +1085,20 @@ export async function handleGetAllClientJobs(req, res, sheets) {
       } catch (_) {}
     }
 
-    // Phase 2 Optimization: Scoped cell notes range based on actual rows in the sheet
-    // Cuts note scanning by over 90% (e.g. 50 rows instead of 1,000 rows across 90 columns)
-    const confNoteMaxRow = Math.min(Math.max(confRows.length + 5, 20), 1000);
-    const pipeNoteMaxRow = Math.min(Math.max(pipeRows.length + 5, 20), 1000);
+    // Phase 2 Optimization: Scoped cell notes range based on actual active job rows in the sheet
+    // (confRows.length can be 5000 due to formula columns BT:DD, so find the last row with actual job/slot data)
+    const getLastActiveRowCount = (rowsArr) => {
+      if (!Array.isArray(rowsArr)) return 0;
+      for (let i = rowsArr.length - 1; i >= 0; i--) {
+        const r = rowsArr[i];
+        if (r && (r[0] || r[1] || r[32] || r[41] || r[42] || r[48] || r[55] || r[75] || r[82] || r[89])) {
+          return i + 1;
+        }
+      }
+      return 0;
+    };
+    const confNoteMaxRow = Math.min(Math.max(getLastActiveRowCount(confRows) + 5, 20), 1000);
+    const pipeNoteMaxRow = Math.min(Math.max(getLastActiveRowCount(pipeRows) + 5, 20), 1000);
 
     const notesRanges = (tabName === "All" || !tabName)
       ? [`Confirmed!A1:CL${confNoteMaxRow}`, `Pipeline!A1:CL${pipeNoteMaxRow}`]
@@ -1165,21 +1192,23 @@ export async function handleGetAllClientJobs(req, res, sheets) {
       }),
     });
 
-    const deletedConfRows = new Set(memoryCache.get(`deleted_job_rows:${sheetIdClean}:confirmed`) || []);
-    const deletedPipeRows = new Set(memoryCache.get(`deleted_job_rows:${sheetIdClean}:pipeline`) || []);
+    const deletedConfEntries = new Set(memoryCache.get(`deleted_job_rows:${sheetIdClean}:confirmed`) || []);
+    const deletedPipeEntries = new Set(memoryCache.get(`deleted_job_rows:${sheetIdClean}:pipeline`) || []);
 
     const parseTabJobs = (rows, currentTab) => {
-      const deletedRowsSet = currentTab === "Pipeline" ? deletedPipeRows : deletedConfRows;
+      const deletedEntriesSet = currentTab === "Pipeline" ? deletedPipeEntries : deletedConfEntries;
       const tabJobs = [];
       let ri = currentTab === "Pipeline" ? 5 : 1; 
       while (ri < rows.length) {
         const row = rows[ri] || [];
         const parentRowNum = ri + 1;
-        if (deletedRowsSet.has(parentRowNum)) { ri++; continue; }
 
         const client = String(row[0] || "").trim();
         const jobName = String(row[1] || "").trim();
         if (!client && !jobName) { ri++; continue; }
+
+        const rowSig = `${parentRowNum}:${client.toLowerCase()}:${jobName.toLowerCase()}`;
+        if (deletedEntriesSet.has(rowSig)) { ri++; continue; }
 
         const jobRows = [buildRowData(parentRowNum, row, true, currentTab)];
         let cj = ri + 1;
@@ -1277,7 +1306,7 @@ export async function handleGetAllClientJobs(req, res, sheets) {
     leadSources = Array.from(distinctLs).filter(Boolean).sort();
     const existingClients = Array.from(distinctClients).filter(Boolean).sort();
     const hasAccountingIntegration = ["xero", "quickbooks", "qb"].some(t => accountingTool.toLowerCase().includes(t));
-    const payload = { success: true, jobs, productLines, leadSources, existingClients, accountingTool, crmTool, crmDrives, hasAccountingIntegration };
+    const payload = { success: true, jobs, productLines, leadSources, existingClients, accountingTool, crmTool, crmDrives, hasAccountingIntegration, noEndDateRetainerMonths };
     await set2TierCache(cacheKey, payload, 120);
     return res.status(200).json(payload);
   } catch (err) {
@@ -1312,7 +1341,10 @@ export async function handleUpdateJobField(req, res, sheets) {
   }
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
-    const safeValue = sanitizeFormulaInput(value);
+    const targetCol = (colLetter || cellRef.replace(/[0-9]/g, "")).toUpperCase();
+    const targetRow = parseInt(rowNum || cellRef.replace(/[^0-9]/g, ""), 10);
+    const normalizedVal = (targetCol === "AM" && isNoEndDateSentinel(value)) ? NO_END_DATE_SHEET_VALUE : value;
+    const safeValue = sanitizeFormulaInput(normalizedVal);
     await sheets.spreadsheets.values.update({
       spreadsheetId: sheetIdClean,
       range: `${tabName}!${cellRef}`,
@@ -1320,12 +1352,19 @@ export async function handleUpdateJobField(req, res, sheets) {
       requestBody: { values: [[safeValue]] }
     });
 
-    const targetCol = (colLetter || cellRef.replace(/[0-9]/g, "")).toUpperCase();
-    const targetRow = parseInt(rowNum || cellRef.replace(/[^0-9]/g, ""), 10);
-
-    // If Revenue (AG), Direct Costs (AH), or Dates (AL, AM) change on Confirmed tab, synchronize placeholders
+    // If Revenue (AG), Direct Costs (AH), Dates (AL, AM), or Type (AJ) change on Confirmed tab, synchronize placeholders or provision retainer rows
+    let backgroundProvisioning = false;
     if (tabName === "Confirmed" && targetRow) {
-      if (targetCol === "AG") {
+      if (targetCol === "AJ" && String(safeValue || "").trim().toLowerCase() === "retainer") {
+        await provisionRetainerChildRows_(sheets, {
+          clientSheetId: sheetIdClean,
+          masterSheetId: req.body.masterSheetId,
+          clientName: req.body.clientName || "",
+          parentRowNum: targetRow,
+          client: endClientName || "",
+          jobName: jobName || "",
+        });
+      } else if (targetCol === "AG") {
         const revNum = parseFloat(safeValue) || 0;
         adjustJobInvoicePlaceholders_(sheets, sheetIdClean, tabName, [targetRow], revNum).catch(e => console.warn("Job revenue placeholder adjust failed:", e.message));
       } else if (targetCol === "AH") {
@@ -1398,7 +1437,8 @@ export async function handleUpdateJobField(req, res, sheets) {
       jobIdentifier = `Row ${targetRow || cellRef}`;
     }
 
-    const valStr = value !== "" && value !== null && value !== undefined ? ` to "${value}"` : " (cleared)";
+    const displayLogVal = targetCol === "AM" ? formatJobEndDateDisplay(normalizedVal, "") : value;
+    const valStr = displayLogVal !== "" && displayLogVal !== null && displayLogVal !== undefined ? ` to "${displayLogVal}"` : " (cleared)";
     const summary = `Updated ${resolvedFieldName} for ${jobIdentifier}${valStr}`;
 
     logPmaActivity(sheets, {
@@ -1418,7 +1458,7 @@ export async function handleUpdateJobField(req, res, sheets) {
       }
     }).catch(e => console.error("PMA log failed:", e));
 
-    return res.status(200).json({ success: true });
+    return res.status(200).json({ success: true, backgroundProvisioning });
   } catch (err) {
     console.error("❌ update_job_field error:", err);
     return res.status(500).json({ success: false, error: err.message });
@@ -1454,10 +1494,21 @@ export async function handleUpdateJobFields(req, res, sheets) {
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
 
-    const data = updates.map(u => ({
-      range: `${tabName}!${u.cellRef || `${u.colLetter}${u.rowNum || rowNum}`}`,
-      values: [[sanitizeFormulaInput(u.value)]]
-    }));
+    const isSettingRetainer = updates.some(
+      u => ((u.colLetter || "").toUpperCase() === "AJ" || (u.cellRef || "").toUpperCase().startsWith("AJ")) &&
+           String(u.value || "").trim().toLowerCase() === "retainer"
+    );
+    const data = updates.map(u => {
+      const colUp = (u.colLetter || String(u.cellRef || "").replace(/[0-9]/g, "")).toUpperCase();
+      let v = u.value;
+      if (colUp === "AM" && (isNoEndDateSentinel(v) || (isSettingRetainer && !String(v || "").trim()))) {
+        v = NO_END_DATE_SHEET_VALUE;
+      }
+      return {
+        range: `${tabName}!${u.cellRef || `${u.colLetter}${u.rowNum || rowNum}`}`,
+        values: [[sanitizeFormulaInput(v)]]
+      };
+    });
 
     await sheets.spreadsheets.values.batchUpdate({
       spreadsheetId: sheetIdClean,
@@ -1467,18 +1518,31 @@ export async function handleUpdateJobFields(req, res, sheets) {
       }
     });
 
-    // If Revenue (AG), Direct Costs (AH), or Dates (AL, AM) change on Confirmed tab, synchronize placeholders
+    // If Revenue (AG), Direct Costs (AH), Dates (AL, AM), or Type (AJ) change on Confirmed tab, synchronize placeholders or provision retainer rows
+    let backgroundProvisioning = false;
     if (tabName === "Confirmed" && rowNum) {
       const targetRowNum = parseInt(rowNum, 10);
+      const typeUpdate = updates.find(u => (u.colLetter || "").toUpperCase() === "AJ" || (u.cellRef || "").toUpperCase().startsWith("AJ"));
       const revUpdate = updates.find(u => (u.colLetter || "").toUpperCase() === "AG" || (u.cellRef || "").toUpperCase().startsWith("AG"));
       const costUpdate = updates.find(u => (u.colLetter || "").toUpperCase() === "AH" || (u.cellRef || "").toUpperCase().startsWith("AH"));
       const dateUpdate = updates.find(u => ["AL", "AM"].includes((u.colLetter || "").toUpperCase()) || ["AL", "AM"].some(c => (u.cellRef || "").toUpperCase().startsWith(c)));
 
-      if (revUpdate) {
-        const revNum = parseFloat(revUpdate.value) || 0;
-        adjustJobInvoicePlaceholders_(sheets, sheetIdClean, tabName, [targetRowNum], revNum).catch(e => console.warn("Job fields revenue placeholder adjust failed:", e.message));
-      } else if (dateUpdate) {
-        adjustJobInvoicePlaceholders_(sheets, sheetIdClean, tabName, [targetRowNum]).catch(e => console.warn("Job fields date invoice placeholder adjust failed:", e.message));
+      if (typeUpdate && String(typeUpdate.value || "").trim().toLowerCase() === "retainer") {
+        await provisionRetainerChildRows_(sheets, {
+          clientSheetId: sheetIdClean,
+          masterSheetId: req.body.masterSheetId,
+          clientName: req.body.clientName || "",
+          parentRowNum: targetRowNum,
+          client: endClientName || "",
+          jobName: jobName || "",
+        });
+      } else {
+        if (revUpdate) {
+          const revNum = parseFloat(revUpdate.value) || 0;
+          adjustJobInvoicePlaceholders_(sheets, sheetIdClean, tabName, [targetRowNum], revNum).catch(e => console.warn("Job fields revenue placeholder adjust failed:", e.message));
+        } else if (dateUpdate) {
+          adjustJobInvoicePlaceholders_(sheets, sheetIdClean, tabName, [targetRowNum]).catch(e => console.warn("Job fields date invoice placeholder adjust failed:", e.message));
+        }
       }
 
       if (costUpdate) {
@@ -1514,7 +1578,7 @@ export async function handleUpdateJobFields(req, res, sheets) {
       }
     }).catch(e => console.error("PMA log failed:", e));
 
-    return res.status(200).json({ success: true });
+    return res.status(200).json({ success: true, backgroundProvisioning });
   } catch (err) {
     console.error("❌ update_job_fields error:", err);
     return res.status(500).json({ success: false, error: err.message });
@@ -1777,6 +1841,9 @@ export async function adjustJobInvoicePlaceholders_(sheets, sheetIdClean, target
       })
     );
     const rows = resp.data.values || [];
+    if (targetTab === "Confirmed" && String(rows[0]?.[3] || "").trim().toLowerCase().includes("retainer")) {
+      return null;
+    }
     let effectiveRev = jobRevenue;
     if (effectiveRev === undefined || effectiveRev === null || isNaN(effectiveRev)) {
       effectiveRev = parseFloat(String(rows[0]?.[0] || "0").replace(/[£$€,\s]/g, "")) || 0;
@@ -3355,12 +3422,53 @@ export async function handleCreateJobFromInvoice(req, res, sheets) {
     const startRow = 2;
 
     // Scan Confirmed tab across full width A1:CR5000 to find the true next available row
-    const resp = await withRetry(() => sheets.spreadsheets.values.get({
-      spreadsheetId: sheetIdClean,
-      range: "Confirmed!A1:CR5000",
-      valueRenderOption: "UNFORMATTED_VALUE",
-    }));
+    const isRetainerReq = String(projectType || "").trim().toLowerCase() === "retainer";
+    let targetMasterId = (req.body.masterSheetId || invoice.masterSheetId)
+      ? (extractSheetIdFromUrl(req.body.masterSheetId || invoice.masterSheetId) || req.body.masterSheetId || invoice.masterSheetId)
+      : null;
+
+    const [resp, metaResp, tols] = await Promise.all([
+      withRetry(() =>
+        sheets.spreadsheets.values.get({
+          spreadsheetId: sheetIdClean,
+          range: "Confirmed!A1:CR5000",
+          valueRenderOption: "FORMULA",
+        })
+      ),
+      isRetainerReq
+        ? sheets.spreadsheets
+            .get(
+              {
+                spreadsheetId: sheetIdClean,
+                fields: "sheets(properties.sheetId,properties.title,properties.gridProperties,rowGroups)",
+              },
+              { timeout: 8000, retry: false }
+            )
+            .catch(() => null)
+        : Promise.resolve(null),
+      (async () => {
+        try {
+          if (!targetMasterId && sheetIdClean) {
+            const { clientsArray } = await getAllClients(sheets, { isAdmin: true }, false);
+            const found = clientsArray?.find(c =>
+              extractSheetIdFromUrl(c.clientSheetId) === sheetIdClean ||
+              extractSheetIdFromUrl(c.masterSheetId) === sheetIdClean ||
+              (req.body.clientName && c.clientName?.toLowerCase() === req.body.clientName.toLowerCase())
+            );
+            if (found?.masterSheetId) {
+              targetMasterId = extractSheetIdFromUrl(found.masterSheetId) || found.masterSheetId;
+            }
+          }
+          return await getToleranceValues(sheets, targetMasterId || sheetIdClean);
+        } catch (e) {
+          return null;
+        }
+      })(),
+    ]);
     const allRows = resp.data.values || [];
+    const confirmedSheetMeta = (metaResp?.data?.sheets || []).find(
+      s => s.properties?.title === "Confirmed" || s.properties?.title === "ConfCalcs"
+    ) || null;
 
     // Step 1: Find the last row with active job data
     let lastJobRow = startRow - 1;
@@ -3402,28 +3510,9 @@ export async function handleCreateJobFromInvoice(req, res, sheets) {
 
     // Read client's default days to pay from DataChgAlert!B52 (Master Sheet)
     let clientDefaultDays = 30;
-    let targetMasterId = (req.body.masterSheetId || invoice.masterSheetId) ? (extractSheetIdFromUrl(req.body.masterSheetId || invoice.masterSheetId) || req.body.masterSheetId || invoice.masterSheetId) : null;
-    if (!targetMasterId && sheetIdClean) {
-      try {
-        const { clientsArray } = await getAllClients(sheets, { isAdmin: true }, false);
-        const found = clientsArray?.find(c => 
-          extractSheetIdFromUrl(c.clientSheetId) === sheetIdClean || 
-          extractSheetIdFromUrl(c.masterSheetId) === sheetIdClean ||
-          (req.body.clientName && c.clientName?.toLowerCase() === req.body.clientName.toLowerCase())
-        );
-        if (found?.masterSheetId) {
-          targetMasterId = extractSheetIdFromUrl(found.masterSheetId) || found.masterSheetId;
-        }
-      } catch (e) {}
-    }
-    try {
-      const tols = await getToleranceValues(sheets, targetMasterId || sheetIdClean);
-      const b52Val = parseInt(tols?.defaultDaysToPay, 10);
-      if (!isNaN(b52Val) && b52Val >= 0 && b52Val <= 365) {
-        clientDefaultDays = b52Val;
-      }
-    } catch (e) {
-      console.warn("Could not read DataChgAlert!B52 defaultDaysToPay:", e.message);
+    const b52Val = parseInt(tols?.defaultDaysToPay, 10);
+    if (!isNaN(b52Val) && b52Val >= 0 && b52Val <= 365) {
+      clientDefaultDays = b52Val;
     }
 
     // Days to pay calculation and sanitisation:
@@ -3460,6 +3549,10 @@ export async function handleCreateJobFromInvoice(req, res, sheets) {
 
     const formatSheetDate = (dStr) => toSheetDateFormat(dStr);
     const todayFormatted = formatSheetDate(new Date());
+    const isRetainer = String(projectType || "").trim().toLowerCase() === "retainer";
+    const resolvedRetainerEndDate = (endDate && !req.body.noEndDate && !isNoEndDateSentinel(endDate))
+      ? formatSheetDate(endDate)
+      : NO_END_DATE_SHEET_VALUE;
 
     const updateData = [
       { range: `Confirmed!A${newRow}`,  values: [[sanitizeFormulaInput(invoice.client || "")]] },
@@ -3471,49 +3564,100 @@ export async function handleCreateJobFromInvoice(req, res, sheets) {
       { range: `Confirmed!AI${newRow}`, values: [[sanitizeFormulaInput(vatYesNo || (invoice.vatAmount > 0 ? "Yes" : "No"))]] },
       { range: `Confirmed!AJ${newRow}`, values: [[sanitizeFormulaInput(projectType || "Project")]] },
       { range: `Confirmed!AL${newRow}`, values: [[formatSheetDate(startDate || invoice.sentDate)]] },
-      { range: `Confirmed!AM${newRow}`, values: [[formatSheetDate(endDate || invoice.dueDate)]] },
-      { range: `Confirmed!AP${newRow}`, values: [[parseFloat(invoice.amount) || 0]] },
-      { range: `Confirmed!AQ${newRow}`, values: [[sanitizeFormulaInput(invoice.invoiceNo || "")]] },
-      { range: `Confirmed!AR${newRow}`, values: [[formatSheetDate(invoice.sentDate)]] },
-      { range: `Confirmed!AS${newRow}`, values: [[finalDaysToPay]] },
-      { range: `Confirmed!AT${newRow}`, values: [[sanitizeFormulaInput(canonicalizeInvoiceStatus(invoice.status) || "Sent")]] },
+      { range: `Confirmed!AM${newRow}`, values: [[isRetainer ? resolvedRetainerEndDate : formatSheetDate(endDate || invoice.dueDate)]] },
     ];
 
-    await withRetry(() => sheets.spreadsheets.values.batchUpdate({
-      spreadsheetId: sheetIdClean,
-      requestBody: {
-        valueInputOption: "USER_ENTERED",
-        data: updateData,
-      },
-    }));
-
-    let tenantClient = req.body.clientName || "";
-    if (!tenantClient) {
-      tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
+    let retainerPlan = null;
+    if (isRetainer) {
+      retainerPlan = buildRetainerChildRowsWritePlan({
+        parentRowNum: newRow,
+        client: invoice.client || "",
+        jobName: jobName || invoice.job || "",
+        monthlyRevenue: parseFloat(revenue) || parseFloat(invoice.amount) || 0,
+        vat: vatYesNo || (invoice.vatAmount > 0 ? "Yes" : "No"),
+        startDate: formatSheetDate(startDate || invoice.sentDate),
+        endDate: resolvedRetainerEndDate,
+        b51TargetDay: tols?.retainerInvoiceDay || 28,
+        defaultDaysToPay: clientDefaultDays,
+        initialInvoices: [
+          {
+            amount: parseFloat(invoice.amount) || 0,
+            ref: invoice.invoiceNo || "",
+            sentDate: formatSheetDate(invoice.sentDate),
+            daysToPay: finalDaysToPay,
+            status: canonicalizeInvoiceStatus(invoice.status) || "Sent",
+          },
+        ],
+        confirmedTabTitle: "Confirmed",
+      });
+      if (retainerPlan.writeData.length > 0) {
+        updateData.push(...retainerPlan.writeData);
+      }
+    } else {
+      updateData.push(
+        { range: `Confirmed!AP${newRow}`, values: [[parseFloat(invoice.amount) || 0]] },
+        { range: `Confirmed!AQ${newRow}`, values: [[sanitizeFormulaInput(invoice.invoiceNo || "")]] },
+        { range: `Confirmed!AR${newRow}`, values: [[formatSheetDate(invoice.sentDate)]] },
+        { range: `Confirmed!AS${newRow}`, values: [[finalDaysToPay]] },
+        { range: `Confirmed!AT${newRow}`, values: [[sanitizeFormulaInput(canonicalizeInvoiceStatus(invoice.status) || "Sent")]] },
+      );
     }
+
+    // Group FIRST while sheet is idle (<1s), then write cell values SECOND so grouping never waits behind formula recalculation
+    if (retainerPlan?.rowsToCreate > 0) {
+      await groupAndCollapseRetainerChildRows_(
+        sheets,
+        sheetIdClean,
+        retainerPlan.startWriteRow,
+        retainerPlan.endWriteRow,
+        confirmedSheetMeta
+      );
+    }
+    await withRetry(() =>
+      sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: sheetIdClean,
+        requestBody: {
+          valueInputOption: "USER_ENTERED",
+          data: updateData,
+        },
+      })
+    );
+
     const endClient = invoice?.client || "";
     const createdJob = jobName || invoice?.job || "Job";
     const jobIdentifier = endClient ? `"${endClient} - ${createdJob}"` : `"${createdJob}"`;
 
-    logPmaActivity(sheets, {
-      automationCommanderSheetId: req.body.automationCommanderSheetId,
-      clientName: tenantClient,
-      category: "INVOICES",
-      action: "Job Created from Invoice",
-      summary: `Created new job ${jobIdentifier} from invoice #${invoice?.invoiceNo} (£${invoice?.amount || 0}) (Row ${newRow})`,
-      details: {
-        jobName: createdJob,
-        endClient,
-        clientName: tenantClient,
-        invoiceNumber: invoice?.invoiceNo,
-        amount: invoice?.amount,
-        projectCode,
-        revenue,
-        row: newRow
+    const logPromise = (async () => {
+      let tenantClient = req.body.clientName || "";
+      if (!tenantClient) {
+        tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
       }
-    }).catch(e => console.error("PMA log failed:", e));
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId: req.body.automationCommanderSheetId,
+        clientName: tenantClient,
+        category: "INVOICES",
+        action: "Job Created from Invoice",
+        summary: `Created new job ${jobIdentifier} from invoice #${invoice?.invoiceNo} (£${invoice?.amount || 0}) (Row ${newRow})`,
+        details: {
+          jobName: createdJob,
+          endClient,
+          clientName: tenantClient,
+          invoiceNumber: invoice?.invoiceNo,
+          amount: invoice?.amount,
+          projectCode,
+          revenue,
+          row: newRow
+        }
+      });
+    })().catch(e => console.error("PMA log failed:", e));
+    if (typeof waitUntil === "function") {
+      try { waitUntil(logPromise); } catch (_) {}
+    }
 
-    return res.status(200).json({ success: true, newRowNum: newRow });
+    memoryCache.del(`deleted_job_rows:${sheetIdClean}:confirmed`);
+    await invalidatePmaClientCache(sheetIdClean, targetMasterId, ["jobs", "invoices", "retainers", "cash"]);
+
+    return res.status(200).json({ success: true, newRowNum: newRow, backgroundProvisioning: isRetainer });
   } catch (err) {
     console.error("❌ create_job_from_invoice error:", err);
     return res.status(500).json({ success: false, error: err.message });
@@ -3529,14 +3673,58 @@ export async function handleAddNewJob(req, res, sheets) {
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
     const targetTab = (jobData.status || tabName || "Confirmed") === "Pipeline" ? "Pipeline" : "Confirmed";
-    const startRow = targetTab === "Pipeline" ? 6 : 2;
+    const startRow = 2;
 
-    const resp = await withRetry(() => sheets.spreadsheets.values.get({
-      spreadsheetId: sheetIdClean,
-      range: `${targetTab}!A1:CR5000`,
-      valueRenderOption: "UNFORMATTED_VALUE",
-    }));
+    const isConfirmedRetainer =
+      targetTab === "Confirmed" &&
+      String(jobData.projectRetainer || "").trim().toLowerCase() === "retainer";
+
+    let targetMasterId = (jobData.masterSheetId || req.body.masterSheetId)
+      ? (extractSheetIdFromUrl(jobData.masterSheetId || req.body.masterSheetId) || jobData.masterSheetId || req.body.masterSheetId)
+      : null;
+
+    const [resp, metaResp, tols] = await Promise.all([
+      withRetry(() =>
+        sheets.spreadsheets.values.get({
+          spreadsheetId: sheetIdClean,
+          range: `${targetTab}!A1:CR5000`,
+          valueRenderOption: "FORMULA",
+        })
+      ),
+      isConfirmedRetainer
+        ? sheets.spreadsheets
+            .get(
+              {
+                spreadsheetId: sheetIdClean,
+                fields: "sheets(properties.sheetId,properties.title,properties.gridProperties,rowGroups)",
+              },
+              { timeout: 8000, retry: false }
+            )
+            .catch(() => null)
+        : Promise.resolve(null),
+      (async () => {
+        try {
+          if (!targetMasterId && sheetIdClean) {
+            const { clientsArray } = await getAllClients(sheets, { isAdmin: true }, false);
+            const found = clientsArray?.find(c =>
+              extractSheetIdFromUrl(c.clientSheetId) === sheetIdClean ||
+              extractSheetIdFromUrl(c.masterSheetId) === sheetIdClean ||
+              ((req.body.clientName || jobData.client) && c.clientName?.toLowerCase() === (req.body.clientName || jobData.client).toLowerCase())
+            );
+            if (found?.masterSheetId) {
+              targetMasterId = extractSheetIdFromUrl(found.masterSheetId) || found.masterSheetId;
+            }
+          }
+          return await getToleranceValues(sheets, targetMasterId || sheetIdClean);
+        } catch (e) {
+          return null;
+        }
+      })(),
+    ]);
     const allRows = resp.data.values || [];
+    const confirmedSheetMeta = (metaResp?.data?.sheets || []).find(
+      s => s.properties?.title === targetTab || s.properties?.title === "Confirmed"
+    ) || null;
 
     // Step 1: Find the last row with active job data
     let lastJobRow = startRow - 1;
@@ -3577,6 +3765,10 @@ export async function handleAddNewJob(req, res, sheets) {
     }
 
     const formatSheetDate = (dStr) => toSheetDateFormat(dStr);
+    const isRetainerJob = String(jobData.projectRetainer || "").trim().toLowerCase() === "retainer";
+    const resolvedEndDate = isRetainerJob
+      ? ((jobData.endDate && !jobData.noEndDate && !isNoEndDateSentinel(jobData.endDate)) ? formatSheetDate(jobData.endDate) : NO_END_DATE_SHEET_VALUE)
+      : (isNoEndDateSentinel(jobData.endDate) ? NO_END_DATE_SHEET_VALUE : formatSheetDate(jobData.endDate));
 
     const updateData = [
       { range: `${targetTab}!A${targetRow}`,  values: [[sanitizeFormulaInput(jobData.client || "")]] },
@@ -3590,7 +3782,7 @@ export async function handleAddNewJob(req, res, sheets) {
       { range: `${targetTab}!AJ${targetRow}`, values: [[sanitizeFormulaInput(jobData.projectRetainer || "Project")]] },
       { range: `${targetTab}!AK${targetRow}`, values: [[sanitizeFormulaInput(jobData.productLine || "")]] },
       { range: `${targetTab}!AL${targetRow}`, values: [[formatSheetDate(jobData.startDate)]] },
-      { range: `${targetTab}!AM${targetRow}`, values: [[formatSheetDate(jobData.endDate)]] },
+      { range: `${targetTab}!AM${targetRow}`, values: [[resolvedEndDate]] },
     ];
 
     if (jobData.unevenSplit || jobData.splitStr) {
@@ -3610,37 +3802,19 @@ export async function handleAddNewJob(req, res, sheets) {
 
     // Read client's default days to pay from DataChgAlert!B52 (Master Sheet)
     let clientDefaultDays = 30;
-    let targetMasterId = (jobData.masterSheetId || req.body.masterSheetId) ? (extractSheetIdFromUrl(jobData.masterSheetId || req.body.masterSheetId) || jobData.masterSheetId || req.body.masterSheetId) : null;
-    if (!targetMasterId && sheetIdClean) {
-      try {
-        const { clientsArray } = await getAllClients(sheets, { isAdmin: true }, false);
-        const found = clientsArray?.find(c => 
-          extractSheetIdFromUrl(c.clientSheetId) === sheetIdClean || 
-          extractSheetIdFromUrl(c.masterSheetId) === sheetIdClean ||
-          ((req.body.clientName || jobData.client) && c.clientName?.toLowerCase() === (req.body.clientName || jobData.client).toLowerCase())
-        );
-        if (found?.masterSheetId) {
-          targetMasterId = extractSheetIdFromUrl(found.masterSheetId) || found.masterSheetId;
-        }
-      } catch (e) {}
+    const b52Val = parseInt(tols?.defaultDaysToPay, 10);
+    if (!isNaN(b52Val) && b52Val >= 0 && b52Val <= 365) {
+      clientDefaultDays = b52Val;
     }
-    let tols = null;
-    try {
-      tols = await getToleranceValues(sheets, targetMasterId || sheetIdClean);
-      const b52Val = parseInt(tols?.defaultDaysToPay, 10);
-      if (!isNaN(b52Val) && b52Val >= 0 && b52Val <= 365) {
-        clientDefaultDays = b52Val;
-      }
-    } catch (e) {}
 
-    // Invoice Slots (up to 3)
+    // Invoice Slots (up to 3) - skipped on parent row for Confirmed Retainers (handled on child rows in background)
     const invoiceSlotCols = {
       1: { a: "AP", ref: "AQ", sent: "AR", days: "AS", st: "AT" },
       2: { a: "AW", ref: "AX", sent: "AY", days: "AZ", st: "BA" },
       3: { a: "BD", ref: "BE", sent: "BF", days: "BG", st: "BH" },
     };
     let writtenInvoicesCount = 0;
-    if (jobData.invoices && Array.isArray(jobData.invoices)) {
+    if (!isConfirmedRetainer && jobData.invoices && Array.isArray(jobData.invoices)) {
       for (const inv of jobData.invoices) {
         const sCols = invoiceSlotCols[inv.slotNum || 1];
         if (!sCols) continue;
@@ -3669,7 +3843,7 @@ export async function handleAddNewJob(req, res, sheets) {
       }
     }
 
-    if (writtenInvoicesCount === 0 && (parseFloat(jobData.revenue) || 0) > 0) {
+    if (!isConfirmedRetainer && writtenInvoicesCount === 0 && (parseFloat(jobData.revenue) || 0) > 0) {
       const rev = parseFloat(jobData.revenue) || 0;
       const startDate = jobData.startDate ? parseSheetDate(jobData.startDate) : new Date();
       const endDate = jobData.endDate ? parseSheetDate(jobData.endDate) : startDate;
@@ -3732,7 +3906,7 @@ export async function handleAddNewJob(req, res, sheets) {
       }
     }
 
-    if (writtenExpensesCount === 0 && (parseFloat(jobData.directCosts) || 0) > 0) {
+    if (!isConfirmedRetainer && writtenExpensesCount === 0 && (parseFloat(jobData.directCosts) || 0) > 0) {
       const dc = parseFloat(jobData.directCosts) || 0;
       const startDate = jobData.startDate ? parseSheetDate(jobData.startDate) : new Date();
       const endDate = jobData.endDate ? parseSheetDate(jobData.endDate) : startDate;
@@ -3757,18 +3931,46 @@ export async function handleAddNewJob(req, res, sheets) {
       });
     }
 
-    await withRetry(() => sheets.spreadsheets.values.batchUpdate({
-      spreadsheetId: sheetIdClean,
-      requestBody: {
-        valueInputOption: "USER_ENTERED",
-        data: updateData
+    let retainerPlan = null;
+    if (isConfirmedRetainer) {
+      retainerPlan = buildRetainerChildRowsWritePlan({
+        parentRowNum: targetRow,
+        client: jobData.client || "",
+        jobName: jobData.jobName || "",
+        monthlyRevenue: parseFloat(jobData.revenue) || 0,
+        vat: jobData.vat || "Yes",
+        startDate: formatSheetDate(jobData.startDate),
+        endDate: resolvedEndDate,
+        b51TargetDay: tols?.retainerInvoiceDay || 28,
+        defaultDaysToPay: clientDefaultDays,
+        initialInvoices: Array.isArray(jobData.invoices) ? jobData.invoices : [],
+        confirmedTabTitle: targetTab,
+      });
+      if (retainerPlan.writeData.length > 0) {
+        updateData.push(...retainerPlan.writeData);
       }
-    }));
-
-    let tenantClient = req.body.clientName || "";
-    if (!tenantClient) {
-      tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
     }
+
+    // Group FIRST while sheet is idle (<1s), then write cell values SECOND so grouping never waits behind formula recalculation
+    if (retainerPlan?.rowsToCreate > 0) {
+      await groupAndCollapseRetainerChildRows_(
+        sheets,
+        sheetIdClean,
+        retainerPlan.startWriteRow,
+        retainerPlan.endWriteRow,
+        confirmedSheetMeta
+      );
+    }
+    await withRetry(() =>
+      sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: sheetIdClean,
+        requestBody: {
+          valueInputOption: "USER_ENTERED",
+          data: updateData,
+        },
+      })
+    );
+
     const endClient = jobData.client || "";
     const createdJob = jobData.jobName || "Job";
     const jobIdentifier = endClient ? `"${endClient} - ${createdJob}"` : `"${createdJob}"`;
@@ -3779,34 +3981,128 @@ export async function handleAddNewJob(req, res, sheets) {
     if (writtenExpensesCount > 0) summaryAdditions.push(`${writtenExpensesCount} expense(s)`);
     const detailsExtra = summaryAdditions.length > 0 ? ` with ${summaryAdditions.join(" and ")}` : "";
 
-    logPmaActivity(sheets, {
-      automationCommanderSheetId: req.body.automationCommanderSheetId,
-      clientName: tenantClient,
-      category: "JOB",
-      action: "Job Created",
-      summary: `Created new ${targetTab} job ${jobIdentifier} (£${parseFloat(jobData.revenue) || 0})${detailsExtra} (Row ${targetRow})`,
-      details: {
-        tabName: targetTab,
-        row: targetRow,
-        client: endClient,
-        jobName: createdJob,
-        projectCode: jobData.projectCode,
-        revenue: jobData.revenue,
-        directCosts: jobData.directCosts,
-        vat: jobData.vat,
-        projectRetainer: jobData.projectRetainer,
-        productLine: jobData.productLine,
-        leadSource: jobData.leadSource,
-        startDate: jobData.startDate,
-        endDate: jobData.endDate,
-        likelihood: jobData.likelihood,
-        invoicesCount: writtenInvoicesCount,
-        expensesCount: writtenExpensesCount,
-        clientName: tenantClient
+    const logPromise = (async () => {
+      let tenantClient = req.body.clientName || "";
+      if (!tenantClient) {
+        tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
       }
-    }).catch(e => console.error("PMA log failed:", e));
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId: req.body.automationCommanderSheetId,
+        clientName: tenantClient,
+        category: "JOB",
+        action: "Job Created",
+        summary: `Created new ${targetTab} job ${jobIdentifier} (£${parseFloat(jobData.revenue) || 0})${detailsExtra} (Row ${targetRow})`,
+        details: {
+          tabName: targetTab,
+          row: targetRow,
+          client: endClient,
+          jobName: createdJob,
+          projectCode: jobData.projectCode,
+          revenue: jobData.revenue,
+          directCosts: jobData.directCosts,
+          vat: jobData.vat,
+          projectRetainer: jobData.projectRetainer,
+          productLine: jobData.productLine,
+          leadSource: jobData.leadSource,
+          startDate: jobData.startDate,
+          endDate: jobData.endDate,
+          likelihood: jobData.likelihood,
+          invoicesCount: writtenInvoicesCount,
+          expensesCount: writtenExpensesCount,
+          clientName: tenantClient
+        }
+      });
+    })().catch(e => console.error("PMA log failed:", e));
+    if (typeof waitUntil === "function") {
+      try { waitUntil(logPromise); } catch (_) {}
+    }
 
-    return res.status(200).json({ success: true, targetRow, targetTab });
+    // Clear any deleted_job_rows tombstones and invalidate PMA job caches immediately so the new job is visible right away
+    memoryCache.del(`deleted_job_rows:${sheetIdClean}:${targetTab.toLowerCase()}`);
+    await invalidatePmaClientCache(sheetIdClean, targetMasterId, ["jobs", "invoices", "retainers", "cash"]);
+
+    const formattedDateConf = formatSheetDate(jobData.dateConfirmed || jobData.dateAdded || new Date());
+    const formattedStartDate = formatSheetDate(jobData.startDate);
+    const formattedRev = parseFloat(jobData.revenue) || 0;
+    const formattedDc = parseFloat(jobData.directCosts) || 0;
+    const formattedVat = sanitizeFormulaInput(jobData.vat || "Yes");
+    const formattedType = sanitizeFormulaInput(jobData.projectRetainer || "Project");
+    const formattedProdLine = sanitizeFormulaInput(jobData.productLine || "");
+    const formattedLeadSrc = sanitizeFormulaInput(jobData.leadSource || "");
+    const formattedCode = sanitizeFormulaInput(jobData.projectCode || "");
+    const formattedClient = sanitizeFormulaInput(jobData.client || "");
+    const formattedJobName = sanitizeFormulaInput(jobData.jobName || "");
+    const formattedLikelihood = targetTab === "Pipeline"
+      ? `${Math.round((parseFloat(jobData.likelihood) > 1 ? parseFloat(jobData.likelihood) : (parseFloat(jobData.likelihood) || 0.5) * 100))}%`
+      : "100%";
+
+    const newJob = {
+      id: `${targetTab.toLowerCase()}_${targetRow}`,
+      tabName: targetTab,
+      status: targetTab,
+      client: formattedClient,
+      jobName: formattedJobName,
+      projectCode: formattedCode,
+      copiedToConf: targetTab === "Pipeline" ? "" : null,
+      note: "",
+      rows: [
+        {
+          rowNum: targetRow,
+          isParent: true,
+          tabName: targetTab,
+          note: "",
+          client: formattedClient,
+          jobName: formattedJobName,
+          projectCode: formattedCode,
+          dateConf: formattedDateConf,
+          leadSrc: formattedLeadSrc,
+          unevenSplit: sanitizeFormulaInput(jobData.unevenSplit || jobData.splitStr || ""),
+          revenue: `£${formattedRev.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+          directCosts: `£${formattedDc.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+          vat: formattedVat,
+          projectRetainer: formattedType,
+          prodLine: formattedProdLine,
+          startDate: formattedStartDate,
+          endDate: resolvedEndDate,
+          likelihood: formattedLikelihood,
+          copiedToConf: targetTab === "Pipeline" ? "" : null,
+          leftToInvoice: "",
+          costsOutstanding: "",
+          invoiceSlots: [1, 2, 3].map(n => ({
+            slotNum: n,
+            amount: "",
+            ref: "",
+            sentDate: "",
+            daysToPay: "",
+            status: "",
+            highlighted: false,
+            note: ""
+          })),
+          expenseSlots: [1, 2, 3].map(n => ({
+            slotNum: n,
+            description: "",
+            amount: "",
+            vat: "",
+            date: "",
+            daysToPay: "",
+            status: "",
+            transactionId: "",
+            highlighted: false,
+            note: ""
+          })),
+        },
+        ...(retainerPlan?.childRowsForUi || []),
+      ]
+    };
+
+    return res.status(200).json({
+      success: true,
+      targetRow,
+      targetTab,
+      childRowCount: retainerPlan?.rowsToCreate || 0,
+      backgroundProvisioning: false,
+      newJob,
+    });
   } catch (err) {
     console.error("❌ add_new_job error:", err);
     return res.status(500).json({ success: false, error: err.message });
@@ -3820,6 +4116,11 @@ export async function handleUpdateOutgoingNote(req, res, sheets) {
   const cleanColLetter = String(colLetter).trim().toUpperCase();
   if (isNaN(parsedRow) || parsedRow < 4 || parsedRow > 400 || !/^[E-Z]$|^A[A-Z]$/.test(cleanColLetter)) {
     return res.status(400).json({ success: false, error: "Invalid Outgoings row or column" });
+  }
+  const colIdx0 = colLetterToNum(cleanColLetter) - 1;
+  const isMonthlyCol = (colIdx0 >= 6 && colIdx0 <= 17) || (colIdx0 >= 21 && colIdx0 <= 32) || (colIdx0 >= 36 && colIdx0 <= 47);
+  if (!isMonthlyCol) {
+    return res.status(400).json({ success: false, error: "Invalid Outgoings monthly column" });
   }
   const sessionUser = getSessionUser(req);
   if (sessionUser?.role === "Senior (Restricted)" && ((parsedRow >= 115 && parsedRow <= 123) || (parsedRow >= 230 && parsedRow <= 238))) {
@@ -4101,13 +4402,15 @@ export async function handleDeleteDirectJob(req, res, sheets) {
   if (targetTab !== "Confirmed" && targetTab !== "Pipeline") {
     return res.status(400).json({ success: false, error: "Invalid tabName" });
   }
+  const minJobRow = 2;
   const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
 
   try {
     const unassignedInvoices = [];
     try {
-      const minR = Math.min(...rowNums.map(Number).filter(n => n >= 2));
-      const maxR = Math.max(...rowNums.map(Number).filter(n => n >= 2));
+      const validScanRows = rowNums.map(Number).filter(n => n >= minJobRow);
+      const minR = validScanRows.length > 0 ? Math.min(...validScanRows) : minJobRow;
+      const maxR = validScanRows.length > 0 ? Math.max(...validScanRows) : minJobRow;
       const scanResp = await withRetry(() =>
         sheets.spreadsheets.values.get({
           spreadsheetId: sheetIdClean,
@@ -4116,7 +4419,7 @@ export async function handleDeleteDirectJob(req, res, sheets) {
         })
       );
       const scanData = scanResp.data.values || [];
-      for (const rNum of rowNums) {
+      for (const rNum of validScanRows) {
         const rIdx = Number(rNum) - minR;
         const rowVals = scanData[rIdx] || [];
         for (let s = 1; s <= 3; s++) {
@@ -4162,7 +4465,7 @@ export async function handleDeleteDirectJob(req, res, sheets) {
     const clearRanges = [];
     for (const rNum of rowNums) {
       const r = parseInt(rNum, 10);
-      if (isNaN(r) || r < 2) continue;
+      if (isNaN(r) || r < minJobRow) continue;
       for (const [startCol, endCol] of colRanges) {
         const startLetter = colIndexToLetter(startCol);
         const endLetter = colIndexToLetter(endCol);
@@ -4224,18 +4527,17 @@ export async function handleDeleteDirectJob(req, res, sheets) {
       }
     }
 
-    // Invalidate caches & record deleted row numbers to avoid stale Sheets API read replicas
+    // Invalidate caches & record deleted row signatures briefly (15s) to avoid stale Sheets API read replicas
+    // Scoped by row + client + jobName so a new job immediately created on the same blanked row is never suppressed
     const delCacheKey = `deleted_job_rows:${sheetIdClean}:${targetTab.toLowerCase()}`;
     const prevDel = memoryCache.get(delCacheKey) || [];
-    const updatedDel = Array.from(new Set([...prevDel, ...rowNums.map(Number)]));
-    memoryCache.set(delCacheKey, updatedDel, 300); // 5 min TTL
+    const delClientLower = String(endClientName || "").trim().toLowerCase();
+    const delJobLower = String(jobName || "").trim().toLowerCase();
+    const newSigs = rowNums.map(r => `${Number(r)}:${delClientLower}:${delJobLower}`);
+    const updatedDel = Array.from(new Set([...prevDel, ...newSigs]));
+    memoryCache.set(delCacheKey, updatedDel, 15); // 15s TTL
 
-    memoryCache.del(`pulse:portal:*:${sheetIdClean}*`);
-    memoryCache.del(`pulse:view_data:${sheetIdClean}:*`);
-    try {
-      const keys = await redisClient.keys(`pulse:portal:*:${sheetIdClean}*`);
-      if (keys.length > 0) await redisClient.del(...keys);
-    } catch (e) {}
+    await invalidatePmaClientCache(sheetIdClean, null, ["jobs", "invoices", "retainers", "cash"]);
 
     // Log activity
     const tenantClient = clientName || (await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId));
@@ -4360,12 +4662,13 @@ export async function handleMarkPipelineAlreadyConfirmed(req, res, sheets) {
     ];
 
     if (Array.isArray(updates) && updates.length > 0) {
-      const SAFE_CELL_REF_RE = /^[A-Z]{1,2}\d{1,4}$/;
+      const ALLOWED_UPDATE_COLS = new Set(["A", "B", "C", "D", "E", "F", "G", "AE", "AG", "AH", "AI", "AJ", "AK", "AL", "AM", "AN", "DD"]);
       for (const u of updates) {
-        if (u && SAFE_CELL_REF_RE.test(String(u.cellRef || "")) && u.value !== undefined) {
+        const match = String(u?.cellRef || "").trim().toUpperCase().match(/^([A-Z]{1,2})(\d{1,4})$/);
+        if (match && ALLOWED_UPDATE_COLS.has(match[1]) && parseInt(match[2], 10) === pRow && u.value !== undefined) {
           const safeVal = typeof u.value === "number" ? u.value : sanitizeFormulaInput(String(u.value));
           batchData.push({
-            range: `Pipeline!${u.cellRef}`,
+            range: `Pipeline!${match[1]}${pRow}`,
             values: [[safeVal]],
           });
         }

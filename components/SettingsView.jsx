@@ -21,6 +21,7 @@ export default function SettingsView({
   initialSection = "",
   initialSubsection = "",
   onSelectClient,
+  onSelectSection,
   onRegisterNavGuard
 }) {
   const { clientsWithFlags, isLoading, refreshTriage } = useTriage();
@@ -320,6 +321,7 @@ export default function SettingsView({
           initialSection={initialSection}
           initialSubsection={initialSubsection}
           onSelectClient={onSelectClient}
+          onSelectSection={onSelectSection}
           user={user}
           isAdmin={effectiveIsAdmin}
           onRegisterNavGuard={(guardFn) => {

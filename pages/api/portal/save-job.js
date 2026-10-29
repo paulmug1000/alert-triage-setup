@@ -4,12 +4,16 @@ import { verifyUserAuthorizedForSheet, sanitizeFormulaInput, isReadOnlySession }
 import { redisClient } from "../../../services/redisClient.js";
 import { memoryCache } from "../../../services/cacheService.js";
 import { logPulseActivity } from "../../../services/pulseLogger.js";
+import { provisionRetainerChildRows_ } from "../../../services/retainers.js";
 import {
   canonicalizeInvoiceStatus,
   canonicalizeExpenseStatus,
   hasActiveCrmIntegration,
   isCrmDrivenTab,
-  getCrmDisplayName
+  getCrmDisplayName,
+  assertTrustedOrigin,
+  NO_END_DATE_SHEET_VALUE,
+  isNoEndDateSentinel
 } from "../../../utils/helpers.js";
 
 // Helper to convert 0-indexed column number to letters (e.g. 0 -> A, 27 -> AB)
@@ -177,7 +181,14 @@ function applyParentRowValues(rowArray, job, cols, invoiceSlots, expenseSlots) {
   if (cols.projectRetainer !== -1 && job.projectRetainer !== undefined) rowArray[cols.projectRetainer] = parseText(job.projectRetainer);
   if (cols.productLine !== -1 && job.productLine !== undefined) rowArray[cols.productLine] = parseText(job.productLine);
   if (cols.startDate !== -1 && job.startDate !== undefined) rowArray[cols.startDate] = formatDate(job.startDate);
-  if (cols.endDate !== -1 && job.endDate !== undefined) rowArray[cols.endDate] = formatDate(job.endDate);
+  if (cols.endDate !== -1) {
+    const isRet = String(job.projectRetainer || "").trim().toLowerCase() === "retainer";
+    if (job.noEndDate || isNoEndDateSentinel(job.endDate) || (isRet && !String(job.endDate || "").trim())) {
+      rowArray[cols.endDate] = NO_END_DATE_SHEET_VALUE;
+    } else if (job.endDate !== undefined) {
+      rowArray[cols.endDate] = formatDate(job.endDate);
+    }
+  }
   if (cols.likelihood !== -1 && job.likelihood !== undefined) rowArray[cols.likelihood] = parseText(job.likelihood);
   if (cols.prodTime !== -1 && job.prodTime !== undefined) rowArray[cols.prodTime] = parseNumber(job.prodTime);
 
@@ -298,6 +309,7 @@ export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ success: false, error: "Method not allowed. Use POST." });
   }
+  if (!assertTrustedOrigin(req, res)) return;
 
   const sessionUser = getSessionUser(req);
   if (!sessionUser) {
@@ -526,14 +538,48 @@ export default async function handler(req, res) {
     }
 
     let parentRow = parseInt(job.rowNumber, 10);
-    let existingChildRows = Array.isArray(job.childRowNumbers) ? [...job.childRowNumbers] : [];
+    const sanitizeContiguousChildren = (baseRow, rawChildren) => {
+      if (isNaN(baseRow) || !Array.isArray(rawChildren)) return [];
+      const sorted = rawChildren
+        .map((n) => parseInt(n, 10))
+        .filter((n) => !isNaN(n) && n > baseRow && n <= baseRow + 25)
+        .sort((a, b) => a - b);
+      const valid = [];
+      for (let i = 0; i < sorted.length; i++) {
+        if (sorted[i] === baseRow + 1 + i) valid.push(sorted[i]);
+        else break;
+      }
+      return valid;
+    };
+    let existingChildRows = sanitizeContiguousChildren(parentRow, job.childRowNumbers);
 
     if (isSheetChange) {
       // Clear old rows on the previous sheet
       const oldSheetName = wasPipeline ? "Pipeline" : "Confirmed";
+      const minOldRow = 2;
       const oldRow = parseInt(job.rowNumber, 10);
-      if (!isNaN(oldRow) && oldRow >= 2) {
-        const rowsToClear = [oldRow, ...existingChildRows].filter((r) => r >= 2);
+      if (!isNaN(oldRow) && oldRow >= minOldRow) {
+        const verifiedOldChildren = [];
+        if (existingChildRows.length > 0) {
+          try {
+            const oldInspectResp = await withRetry(() =>
+              sheets.spreadsheets.values.get({
+                spreadsheetId: clientSheetId,
+                range: `${oldSheetName}!A${oldRow + 1}:BH${oldRow + existingChildRows.length}`,
+                valueRenderOption: "FORMATTED_VALUE",
+              })
+            );
+            const oldNextRows = oldInspectResp.data?.values || [];
+            for (let i = 0; i < existingChildRows.length; i++) {
+              const r = oldNextRows[i] || [];
+              const rRev = (r[cols.revenue] || "").trim();
+              const rDc = (r[cols.directCosts] || "").trim();
+              if (rRev === "" && rDc === "") verifiedOldChildren.push(oldRow + 1 + i);
+              else break;
+            }
+          } catch (_) { }
+        }
+        const rowsToClear = [oldRow, ...verifiedOldChildren].filter((r) => r >= minOldRow);
         const oldClearRanges = [];
         for (const r of rowsToClear) {
           oldClearRanges.push(
@@ -561,46 +607,56 @@ export default async function handler(req, res) {
       existingChildRows = [];
     }
 
-    if (isNewJob || isNaN(parentRow) || parentRow < 2) {
+    const minTargetRow = 2;
+    if (isNewJob || isNaN(parentRow) || parentRow < minTargetRow) {
       const lastJobRow = await findLastJobRow(sheets, clientSheetId, sheetName, 1);
-      parentRow = lastJobRow + 1;
+      parentRow = Math.max(minTargetRow, lastJobRow + 1);
       existingChildRows = [];
     } else {
-      // For existing job on the same sheet, if childRowNumbers wasn't passed or to verify,
-      // inspect rows directly below parentRow
-      if (existingChildRows.length === 0) {
-        try {
-          const checkCount = 10;
-          const inspectResp = await withRetry(() =>
-            sheets.spreadsheets.values.get({
-              spreadsheetId: clientSheetId,
-              range: `${sheetName}!A${parentRow + 1}:BH${parentRow + checkCount}`,
-              valueRenderOption: "FORMATTED_VALUE",
-            })
-          );
-          const nextRows = inspectResp.data?.values || [];
-          for (let i = 0; i < nextRows.length; i++) {
-            const r = nextRows[i];
-            const rClient = (r[cols.client] || "").trim();
-            const rJobName = (r[cols.jobName] || "").trim();
-            const rRev = (r[cols.revenue] || "").trim();
-            const rDc = (r[cols.directCosts] || "").trim();
-            if (
-              rClient.toLowerCase() === String(job.client || "").toLowerCase() &&
-              rJobName.toLowerCase() === String(job.jobName || "").toLowerCase() &&
-              rRev === "" &&
-              rDc === ""
-            ) {
-              existingChildRows.push(parentRow + 1 + i);
-            } else {
-              break;
-            }
+      // For existing job on the same sheet, verify or discover child rows directly below parentRow
+      try {
+        const checkCount = Math.max(10, existingChildRows.length);
+        const inspectResp = await withRetry(() =>
+          sheets.spreadsheets.values.get({
+            spreadsheetId: clientSheetId,
+            range: `${sheetName}!A${parentRow + 1}:BH${parentRow + checkCount}`,
+            valueRenderOption: "FORMATTED_VALUE",
+          })
+        );
+        const nextRows = inspectResp.data?.values || [];
+        const verifiedChildren = [];
+        for (let i = 0; i < nextRows.length; i++) {
+          const r = nextRows[i] || [];
+          const rClient = (r[cols.client] || "").trim();
+          const rJobName = (r[cols.jobName] || "").trim();
+          const rRev = (r[cols.revenue] || "").trim();
+          const rDc = (r[cols.directCosts] || "").trim();
+          const isExplicitChild = existingChildRows.includes(parentRow + 1 + i);
+          const isAutoMatchedChild =
+            rClient.toLowerCase() === String(job.client || "").toLowerCase() &&
+            rJobName.toLowerCase() === String(job.jobName || "").toLowerCase();
+          if ((isExplicitChild || isAutoMatchedChild) && rRev === "" && rDc === "") {
+            verifiedChildren.push(parentRow + 1 + i);
+          } else {
+            break;
           }
-        } catch (e) {
-          console.warn("Child row auto-detection warning:", e.message);
         }
+        existingChildRows = verifiedChildren;
+      } catch (e) {
+        console.warn("Child row auto-detection warning:", e.message);
       }
     }
+
+    // Read existing parent row early so we can detect Project -> Retainer conversions and preserve formula columns
+    const maxCols = 96;
+    const parentRowResp = await withRetry(() =>
+      sheets.spreadsheets.values.get({
+        spreadsheetId: clientSheetId,
+        range: `${sheetName}!A${parentRow}:CR${parentRow}`,
+        valueRenderOption: "FORMULA",
+      })
+    );
+    const existingParentRow = parentRowResp.data?.values?.[0] || [];
 
     // 4. INVOICE AND EXPENSE PACKING LOGIC (1:1 with Original App)
     const validInvoices = (job.invoices || []).filter(
@@ -618,13 +674,28 @@ export default async function handler(req, res) {
     );
 
     const isRetainer = String(job.projectRetainer || "").toLowerCase() === "retainer";
+    const wasPreviouslyRetainer =
+      !isNewJob &&
+      cols.projectRetainer !== -1 &&
+      String(existingParentRow[cols.projectRetainer] || "")
+        .trim()
+        .toLowerCase()
+        .includes("retainer");
+    const shouldProvisionRetainerSchedule =
+      isTargetConfirmed &&
+      isRetainer &&
+      (isNewJob || !wasPreviouslyRetainer || existingChildRows.length === 0);
 
     const parentInvoices = {};
     const childInvoices = [];
 
-    if (isRetainer) {
+    if (shouldProvisionRetainerSchedule) {
+      // Confirmed Retainers being created, promoted, or converted from Project have their
+      // child rows and scheduled monthly invoices provisioned in the background.
+      // Parent row invoice slots remain empty.
+    } else if (isRetainer) {
       if (validInvoices.length === 1) {
-        // Retainer with 1 invoice: sits on parent row slot 1; slots 2 & 3 empty
+        // Retainer with 1 invoice (e.g. Pipeline retainer): sits on parent row slot 1; slots 2 & 3 empty
         parentInvoices[1] = validInvoices[0];
       } else if (validInvoices.length > 1) {
         // Retainer with 2+ invoices: parent row slots 1, 2, 3 cleared; each invoice on its own child row slot 1
@@ -723,15 +794,6 @@ export default async function handler(req, res) {
 
     // 6. PREPARE PARENT ROW (segmented into safe bands: A:AM, AN, AP:BH, BX:CR)
     // Preserves column AO (col 41) and calculation formulas in BI:BW (cols 61-75), CS:DC, and DD
-    const maxCols = 96;
-    const parentRowResp = await withRetry(() =>
-      sheets.spreadsheets.values.get({
-        spreadsheetId: clientSheetId,
-        range: `${sheetName}!A${parentRow}:CR${parentRow}`,
-        valueRenderOption: "FORMULA",
-      })
-    );
-    const existingParentRow = parentRowResp.data?.values?.[0] || [];
     const updatedParentRow = new Array(maxCols).fill("");
     for (let c = 0; c < maxCols; c++) {
       if (existingParentRow[c] !== undefined) {
@@ -945,11 +1007,27 @@ export default async function handler(req, res) {
       console.warn("⚠️ Failed to log job activity:", logErr.message);
     }
 
+    if (shouldProvisionRetainerSchedule) {
+      await provisionRetainerChildRows_(sheets, {
+        clientSheetId,
+        clientName: verifiedClientName || clientName || "",
+        parentRowNum: parentRow,
+        client: job.client || "",
+        jobName: job.jobName || "",
+        monthlyRevenue: parseMoney(job.revenue) || 0,
+        vat: job.vat || "Yes",
+        startDate: formatDate(job.startDate),
+        endDate: (cols.endDate !== -1 ? updatedParentRow[cols.endDate] : formatDate(job.endDate)) || NO_END_DATE_SHEET_VALUE,
+        initialInvoices: validInvoices,
+      });
+    }
+
     return res.status(200).json({
       success: true,
       rowNumber: parentRow,
       sheetName,
       childRowNumbers: actualChildRows,
+      backgroundProvisioning: false,
     });
   } catch (err) {
     console.error("❌ /api/portal/save-job error:", err);

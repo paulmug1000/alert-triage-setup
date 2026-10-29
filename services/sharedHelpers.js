@@ -1,25 +1,38 @@
 import { withRetry } from "./sheetsClient.js";
+import { memoryCache } from "./cacheService.js";
 import { canonicalizeInvoiceStatus, canonicalizeExpenseStatus } from "../utils/helpers.js";
 
 export async function getToleranceValues(sheets, masterSheetId) {
+  const cleanId = masterSheetId
+    ? String(masterSheetId).replace(/.*\/d\/([a-zA-Z0-9-_]+).*/, "$1")
+    : "";
+  const cacheKey = cleanId ? `pulse:tolerance:${cleanId}` : "";
+  if (cacheKey) {
+    const cached = memoryCache.get(cacheKey);
+    if (cached) return cached;
+  }
   try {
-    const response = await sheets.spreadsheets.values.batchGet({
-      spreadsheetId: masterSheetId,
-      ranges: [
-        "DataChgAlert!F39",
-        "DataChgAlert!J111",
-        "DataChgAlert!B52",
-        "DataChgAlert!B50",
-        "DataChgAlert!B51",
-        "DataChgAlert!B105",
-        "DataChgAlert!B106"
-      ],
-    });
+    const response = await sheets.spreadsheets.values.batchGet(
+      {
+        spreadsheetId: masterSheetId,
+        ranges: [
+          "DataChgAlert!F39",
+          "DataChgAlert!J111",
+          "DataChgAlert!B52",
+          "DataChgAlert!B50",
+          "DataChgAlert!B51",
+          "DataChgAlert!B105",
+          "DataChgAlert!B106"
+        ],
+        valueRenderOption: "UNFORMATTED_VALUE",
+      },
+      { timeout: 3500, retry: false }
+    );
     const ranges = response.data.valueRanges || [];
     const b52Val = parseInt(ranges[2]?.values?.[0]?.[0], 10);
     const b51Val = parseInt(ranges[4]?.values?.[0]?.[0], 10);
     const b106Val = parseInt(ranges[6]?.values?.[0]?.[0], 10);
-    return {
+    const result = {
       invoiceMonthsTolerance: ranges[0]?.values?.[0]?.[0] || 2,
       expenseMonthsTolerance: ranges[1]?.values?.[0]?.[0] || 1,
       defaultDaysToPay:       !isNaN(b52Val) && b52Val > 0 ? b52Val : 30,
@@ -28,6 +41,10 @@ export async function getToleranceValues(sheets, masterSheetId) {
       expenseLogicMode:       String(ranges[5]?.values?.[0]?.[0] || "100 at start").trim(),
       retainerExpenseDay:     !isNaN(b106Val) && b106Val > 0 ? b106Val : 28,
     };
+    if (cacheKey) {
+      memoryCache.set(cacheKey, result, 300);
+    }
+    return result;
   } catch (err) {
     console.log("⚠️ Using default tolerance values");
     return {

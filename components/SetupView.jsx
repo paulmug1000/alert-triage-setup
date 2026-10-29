@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import Spinner from "./Spinner";
 import Skeleton, { PmaSetupOverviewSkeleton, PmaSetupDetailSkeleton } from "./Skeleton";
 import EditableSheetEditor from "./EditableSheetEditor";
@@ -11,13 +11,14 @@ export default function SetupView({
   initialClientName = "",
   onSelectClient,
   onGoToBudget,
+  onGoToTasks,
   user,
   isAdmin,
   managedClient,
   onClearManagedClient
 }) {
   const isUserAdmin = Boolean(
-    !user?.isReadOnly && (isAdmin || user?.isAdmin || user?.role === "Admin")
+    !user?.isReadOnly && (isAdmin || user?.isAdmin || user?.role === "Admin") && user?.role !== "ClientManager"
   );
 
   const [activeSheetEditor, setActiveSheetEditor] = useState(null); // 'budget' | 'contractors' | 'outgoings' | null
@@ -159,8 +160,16 @@ export default function SetupView({
     }
   }, []);
 
+  const loadedClientKeyRef = useRef("");
+
   useEffect(() => {
-    if (selectedClient) {
+    if (!selectedClient) {
+      loadedClientKeyRef.current = "";
+      return;
+    }
+    const clientKey = `${(selectedClient.clientName || "").toLowerCase()}`;
+    if (loadedClientKeyRef.current !== clientKey) {
+      loadedClientKeyRef.current = clientKey;
       loadConfig(selectedClient);
     }
   }, [selectedClient, loadConfig]);
@@ -329,7 +338,7 @@ export default function SetupView({
   // ============================================================================
   // VIEW 0: EDIT SETUP PROCESS SCREEN (ADMIN ONLY)
   // ============================================================================
-  if (isEditingProcess) {
+  if (isEditingProcess && isUserAdmin) {
     return (
       <EditSetupProcessView
         onBack={handleCloseEditProcess}
@@ -826,7 +835,7 @@ export default function SetupView({
         </div>
       )}
 
-      {loading ? (
+      {loading && (!config || (config.clientName || "").toLowerCase() !== (selectedClient?.clientName || selectedClientName || "").toLowerCase()) ? (
         <PmaSetupDetailSkeleton />
       ) : (
         <>
@@ -1029,6 +1038,7 @@ export default function SetupView({
               user={user}
               onOpenSheetEditor={(editor) => setActiveSheetEditor(editor)}
               onGoToBudget={onGoToBudget}
+              onGoToTasks={onGoToTasks}
               onSetupModeToggled={(newMode) => {
                 setSetupMode(newMode);
                 if (selectedClient) loadConfig(selectedClient);
@@ -1255,6 +1265,7 @@ export default function SetupView({
                         user={user}
                         onOpenSheetEditor={(editor) => setActiveSheetEditor(editor)}
                         onGoToBudget={onGoToBudget}
+                        onGoToTasks={onGoToTasks}
                         onSetupModeToggled={(newMode) => {
                           setSetupMode(newMode);
                           if (selectedClient) loadConfig(selectedClient);

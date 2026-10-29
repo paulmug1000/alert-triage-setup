@@ -1,7 +1,7 @@
 import React from "react";
 import Spinner from "./Spinner";
 import TruncatedCode from "./TruncatedCode";
-import { stripRowInfo, parseUnreceivedExpensesDetail, parseStaleExpenseDetail, parseInfoAlertDetail, getInfoCardTitle, getProactiveCardTitle, filterAnalysisResultsForAlert, getCleanPLCategoryName, getAlertJobTarget, formatSeenTimestamp, parseRevenueMismatchDetail, parseDirectCostsMismatchDetail, toInputDateFormat, parseSheetDate, toSheetDateFormat } from "../utils/helpers";
+import { stripRowInfo, parseUnreceivedExpensesDetail, parseStaleExpenseDetail, parseInfoAlertDetail, getInfoCardTitle, getProactiveCardTitle, filterAnalysisResultsForAlert, getCleanPLCategoryName, getAlertJobTarget, formatSeenTimestamp, parseRevenueMismatchDetail, parseDirectCostsMismatchDetail, toInputDateFormat, parseSheetDate, toSheetDateFormat, isNoEndDateSentinel, formatJobEndDateDisplay } from "../utils/helpers";
 
 const KNOWN_PROACTIVE_TYPES = new Set([
   "retainer_invoice",
@@ -351,7 +351,8 @@ export default function NonAdminAlertListView({
                 const displayRevenue = parsed.revenue || primaryResult?.revenue || "";
                 const displayDirectCosts = parsed.directCosts || primaryResult?.directCosts || "";
                 const displayStartDate = parsed.startDate || primaryResult?.startDate || "";
-                const displayEndDate = parsed.endDate || primaryResult?.endDate || "";
+                const rawDisplayEndDate = parsed.endDate || primaryResult?.endDate || "";
+                const displayEndDate = rawDisplayEndDate ? formatJobEndDateDisplay(rawDisplayEndDate, rawDisplayEndDate) : "";
                 const cardTitle = getInfoCardTitle(na, parsed, getFlagName, false);
 
                 const isExiting = exitingAlertKeys.has(alertId);
@@ -591,7 +592,7 @@ export default function NonAdminAlertListView({
                         {m.endClientName && <div><strong>End client:</strong> {m.endClientName}</div>}
                         {m.jobName && <div><strong>Job:</strong> {m.jobName}</div>}
                         {m.revenue && <div><strong>Monthly revenue:</strong> {m.revenue}</div>}
-                        {m.startDate && <div><strong>Contract period:</strong> {m.startDate} → {m.endDate}</div>}
+                        {m.startDate && <div><strong>Contract period:</strong> {m.startDate} → {formatJobEndDateDisplay(m.endDate, m.endDate)}</div>}
                         {m.frequencyDays && <div><strong>Invoice frequency:</strong> {freqLabel(m.frequencyDays)} (every ~{m.frequencyDays} days)</div>}
                         {m.lastInvoiceDate && <div><strong>Last invoice sent:</strong> {m.lastInvoiceDate}</div>}
                         {m.expectedByDate && <div><strong>Next expected by:</strong> {m.expectedByDate}</div>}
@@ -678,7 +679,7 @@ export default function NonAdminAlertListView({
                       <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                         {m.endClientName && <div><strong>End client:</strong> {m.endClientName}</div>}
                         {m.jobName && <div><strong>Job:</strong> {m.jobName}{m.projectCode ? ` [${m.projectCode}]` : ""}</div>}
-                        {m.endDate && <div><strong>Job ended:</strong> {m.endDate}</div>}
+                        {m.endDate && <div><strong>Job ended:</strong> {formatJobEndDateDisplay(m.endDate, m.endDate)}</div>}
                         {m.revenue && <div><strong>Revenue:</strong> £{parseFloat(m.revenue).toFixed(2)}</div>}
                         {m.uninvoicedAmount && <div style={{ marginTop: "4px", fontWeight: "600", color: "#c62828" }}>£{parseFloat(m.uninvoicedAmount).toFixed(2)} uninvoiced (placeholders and drafts excluded)</div>}
                         {m.draftCount && parseInt(m.draftCount) > 0 && <div style={{ marginTop: "4px", color: "#d97706" }}>{m.draftCount} invoice{parseInt(m.draftCount) > 1 ? "s" : ""} totalling £{parseFloat(m.draftTotal || 0).toFixed(2)} {parseInt(m.draftCount) > 1 ? "have" : "has"} a reference but {parseInt(m.draftCount) > 1 ? "are" : "is"} still <strong>Draft</strong> (not yet sent) - not counted as invoiced above.</div>}
@@ -700,7 +701,7 @@ export default function NonAdminAlertListView({
                         <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                           {clientName && <div><strong>End client:</strong> {clientName}</div>}
                           {jName && <div><strong>Job:</strong> {jName}{pCode ? ` [${pCode}]` : ""}</div>}
-                          {eDate && <div><strong>Job ended:</strong> {eDate}</div>}
+                          {eDate && <div><strong>Job ended:</strong> {formatJobEndDateDisplay(eDate, eDate)}</div>}
                           {dCosts && <div><strong>Direct cost budget:</strong> £{parseFloat(dCosts).toFixed(2)}</div>}
                           {unrecAmt && <div style={{ marginTop: "4px", fontWeight: "600", color: "#c62828" }}>£{parseFloat(unrecAmt).toFixed(2)} unreceived (placeholders and estimates excluded)</div>}
                           {pCount > 0 && (
@@ -841,11 +842,11 @@ export default function NonAdminAlertListView({
                       const jName = m.jobName || alert.jobName || parsed.jobName;
                       const pCode = m.projectCode || alert.projectCode || parsed.projectCode;
                       const rawEDate = m.endDate || alert.endDate || parsed.endDate;
-                      const eDate = rawEDate ? toSheetDateFormat(rawEDate) : "";
-                      const parsedEnd = eDate ? parseSheetDate(eDate) : null;
+                      const eDate = rawEDate ? (isNoEndDateSentinel(rawEDate) ? formatJobEndDateDisplay(rawEDate) : toSheetDateFormat(rawEDate)) : "";
+                      const parsedEnd = eDate && !isNoEndDateSentinel(rawEDate) ? parseSheetDate(eDate) : null;
                       const todayMid = new Date();
                       todayMid.setHours(0, 0, 0, 0);
-                      const endLabel = parsedEnd && parsedEnd > todayMid ? "Job ends:" : "Job ended:";
+                      const endLabel = isNoEndDateSentinel(rawEDate) || (parsedEnd && parsedEnd > todayMid) ? "Job ends:" : "Job ended:";
                       const rev = m.revenue || alert.revenue || parsed.revenue;
                       const inv = m.totalInvoiced || alert.totalInvoiced || parsed.totalInvoiced;
                       const diff = m.diff || alert.diff || parsed.diff;
@@ -869,11 +870,11 @@ export default function NonAdminAlertListView({
                       const jName = m.jobName || alert.jobName || parsed.jobName;
                       const pCode = m.projectCode || alert.projectCode || parsed.projectCode;
                       const rawEDate = m.endDate || alert.endDate || parsed.endDate;
-                      const eDate = rawEDate ? toSheetDateFormat(rawEDate) : "";
-                      const parsedEnd = eDate ? parseSheetDate(eDate) : null;
+                      const eDate = rawEDate ? (isNoEndDateSentinel(rawEDate) ? formatJobEndDateDisplay(rawEDate) : toSheetDateFormat(rawEDate)) : "";
+                      const parsedEnd = eDate && !isNoEndDateSentinel(rawEDate) ? parseSheetDate(eDate) : null;
                       const todayMid = new Date();
                       todayMid.setHours(0, 0, 0, 0);
-                      const endLabel = parsedEnd && parsedEnd > todayMid ? "Job ends:" : "Job ended:";
+                      const endLabel = isNoEndDateSentinel(rawEDate) || (parsedEnd && parsedEnd > todayMid) ? "Job ends:" : "Job ended:";
                       const dCosts = m.directCosts || alert.directCosts || parsed.directCosts;
                       const expenses = m.totalExpenses || alert.totalExpenses || parsed.totalExpenses || m.childExp || alert.childExp;
                       const diff = m.diff || alert.diff || parsed.diff;

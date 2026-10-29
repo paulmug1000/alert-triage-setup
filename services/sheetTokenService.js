@@ -10,7 +10,6 @@ const SHEET_ID_KEYS = new Set([
   "clientSheetId",
   "masterSheetId",
   "reconSheetId",
-  "cashTabSheetId",
   "automationCommanderSheetId",
   "acSheetId",
   "spreadsheetId",

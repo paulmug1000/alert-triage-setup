@@ -3,6 +3,7 @@ import Spinner from "../Spinner";
 import Skeleton, { PerformanceSkeleton } from "../Skeleton";
 import DeepDivePopover from "./DeepDivePopover";
 import { PulseMath, mutateFYDataForScenarios, getDeepDiveType, buildDeepDiveData, formatMoney as universalFormatMoney, parseMoney, formatCurrencyString } from "../../services/deepDiveHelper";
+import { isNoEndDateSentinel } from "../../utils/helpers";
 
 export default function ScenariosView({
   clientName,
@@ -299,8 +300,10 @@ export default function ScenariosView({
   };
 
   const formatDateDisplay = (dateVal) => {
+    if (isNoEndDateSentinel(dateVal)) return "No end date";
     const d = parseDateSafe(dateVal);
     if (!d) return "—";
+    if (isNoEndDateSentinel(d)) return "No end date";
     const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     return `${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}`;
   };

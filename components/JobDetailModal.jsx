@@ -24,7 +24,9 @@ import {
   isCrmDeal,
   getCrmDisplayName,
   calculatePaymentDate,
-  groupSlotItemsForDisplay
+  groupSlotItemsForDisplay,
+  NO_END_DATE_SHEET_VALUE,
+  isNoEndDateSentinel
 } from "../utils/helpers";
 import CrmSyncBadge, { CrmSyncIcon } from "./CrmSyncBadge";
 import { useAppGlobals } from "../hooks/useAppGlobals";
@@ -56,6 +58,7 @@ export default function JobDetailModal({
     : Boolean(!user?.isReadOnly && (user?.isAdmin || user?.role === "Admin"));
   const [crmTool, setCrmTool] = useState(() => target?.crmTool || target?.client?.crmTool || null);
   const [crmDrives, setCrmDrives] = useState(() => target?.crmDrives || target?.client?.crmDrives || null);
+  const [noEndDateRetainerMonths, setNoEndDateRetainerMonths] = useState(18);
   const [hasAccountingIntegration, setHasAccountingIntegration] = useState(() => {
     return Boolean(
       target?.hasAccountingIntegration ||
@@ -179,6 +182,7 @@ export default function JobDetailModal({
           if (data.hasAccountingIntegration !== undefined) setHasAccountingIntegration(Boolean(data.hasAccountingIntegration));
           if (data.crmTool) setCrmTool(data.crmTool);
           if (data.crmDrives) setCrmDrives(data.crmDrives);
+          if (typeof data.noEndDateRetainerMonths === "number") setNoEndDateRetainerMonths(data.noEndDateRetainerMonths);
 
           const rawCode = String(target?.projectCode || "").trim().toLowerCase();
           const targetProjectCode = ["-", "n/a", "none"].includes(rawCode) ? "" : rawCode;
@@ -504,9 +508,13 @@ export default function JobDetailModal({
       const now = new Date();
       let baseStartDate = parseSheetDate(parentRow.startDate) || parseSheetDate(parentRow.dateConf);
       const sDate = baseStartDate || parseSheetDate(parentRow.startDate);
-      const eDate = parseSheetDate(parentRow.endDate);
+      const effectiveEndVal = endDateVal !== undefined ? endDateVal : parentRow.endDate;
+      const eDate = parseSheetDate(effectiveEndVal);
       let monthsCount = job.rows.length;
-      if (sDate && eDate && eDate > sDate) {
+      if (isNoEndDateSentinel(effectiveEndVal)) {
+        const d18Months = (typeof noEndDateRetainerMonths === "number" && noEndDateRetainerMonths > 0) ? noEndDateRetainerMonths : 18;
+        monthsCount = Math.max(job.rows.length, d18Months);
+      } else if (sDate && eDate && eDate > sDate) {
         const diffDays = (eDate.getTime() - sDate.getTime()) / (24 * 60 * 60 * 1000);
         monthsCount = Math.max(job.rows.length, Math.round(diffDays / 30.4375));
       }
@@ -558,8 +566,8 @@ export default function JobDetailModal({
         const slots = r.invoiceSlots || [];
         slots.forEach((s) => {
           const hasRef = Boolean(s.ref && String(s.ref).trim() !== "");
-        const hasAmt = Boolean(s.amount && parseFloat(String(s.amount).replace(/[£$€,\s]/g, "")) > 0);
-        const hasData = hasRef || hasAmt;
+          const hasAmt = Boolean(s.amount && parseFloat(String(s.amount).replace(/[£$€,\s]/g, "")) > 0);
+          const hasData = hasRef || hasAmt;
           if (hasData) {
             const isPartPaid = String(s.status || "").toLowerCase().includes("part");
             const isPlace = isPlaceholderInvoice(s.ref, s.status);
@@ -583,8 +591,8 @@ export default function JobDetailModal({
         const slots = r.invoiceSlots || [];
         slots.forEach((s) => {
           const hasRef = Boolean(s.ref && String(s.ref).trim() !== "");
-        const hasAmt = Boolean(s.amount && parseFloat(String(s.amount).replace(/[£$€,\s]/g, "")) > 0);
-        const hasData = hasRef || hasAmt;
+          const hasAmt = Boolean(s.amount && parseFloat(String(s.amount).replace(/[£$€,\s]/g, "")) > 0);
+          const hasData = hasRef || hasAmt;
           if (hasData) {
             const isPlace = isPlaceholderInvoice(s.ref, s.status);
             const refStr = s.ref && String(s.ref).trim() !== ""
@@ -616,15 +624,15 @@ export default function JobDetailModal({
         const slots = r.expenseSlots || [];
         slots.forEach((s) => {
           const hasDesc = Boolean(s.description && String(s.description).trim() !== "");
-        const hasAmt = Boolean(s.amount && parseFloat(String(s.amount).replace(/[£$€,\s]/g, "")) > 0);
-        const hasTx = Boolean(s.transactionId && String(s.transactionId).trim() !== "");
-        const hasData = hasDesc || hasAmt || hasTx;
+          const hasAmt = Boolean(s.amount && parseFloat(String(s.amount).replace(/[£$€,\s]/g, "")) > 0);
+          const hasTx = Boolean(s.transactionId && String(s.transactionId).trim() !== "");
+          const hasData = hasDesc || hasAmt || hasTx;
           if (hasData) {
             const expLabel = s.description && String(s.description).trim() !== ""
               ? String(s.description).trim()
               : (s.transactionId && String(s.transactionId).trim() !== ""
-                  ? `#${String(s.transactionId).trim()}`
-                  : (isPlaceholderExpense(s) ? "Placeholder" : `${monthLabel} direct cost`));
+                ? `#${String(s.transactionId).trim()}`
+                : (isPlaceholderExpense(s) ? "Placeholder" : `${monthLabel} direct cost`));
             items.push({
               id: `ret_exp_${r.rowNum}_${s.slotNum}`,
               rowNum: r.rowNum,
@@ -642,15 +650,15 @@ export default function JobDetailModal({
         const slots = r.expenseSlots || [];
         slots.forEach((s) => {
           const hasDesc = Boolean(s.description && String(s.description).trim() !== "");
-        const hasAmt = Boolean(s.amount && parseFloat(String(s.amount).replace(/[£$€,\s]/g, "")) > 0);
-        const hasTx = Boolean(s.transactionId && String(s.transactionId).trim() !== "");
-        const hasData = hasDesc || hasAmt || hasTx;
+          const hasAmt = Boolean(s.amount && parseFloat(String(s.amount).replace(/[£$€,\s]/g, "")) > 0);
+          const hasTx = Boolean(s.transactionId && String(s.transactionId).trim() !== "");
+          const hasData = hasDesc || hasAmt || hasTx;
           if (hasData) {
             const expLabel = s.description && String(s.description).trim() !== ""
               ? String(s.description).trim()
               : (s.transactionId && String(s.transactionId).trim() !== ""
-                  ? `#${String(s.transactionId).trim()}`
-                  : (isPlaceholderExpense(s) ? "Placeholder" : "Direct cost"));
+                ? `#${String(s.transactionId).trim()}`
+                : (isPlaceholderExpense(s) ? "Placeholder" : "Direct cost"));
             items.push({
               id: `proj_exp_${r.rowNum}_${s.slotNum}`,
               rowNum: r.rowNum,
@@ -983,6 +991,10 @@ export default function JobDetailModal({
       setDraftEdits({});
       setRecentlySaved(true);
       setTimeout(() => setRecentlySaved(false), 3000);
+      if (data.backgroundProvisioning) {
+        setTimeout(() => setReloadTrigger((prev) => prev + 1), 4000);
+        setTimeout(() => setReloadTrigger((prev) => prev + 1), 8000);
+      }
     } catch (err) {
       alert("Error saving job: " + err.message);
     } finally {
@@ -1468,7 +1480,7 @@ export default function JobDetailModal({
 
                     {/* Start Date */}
                     <div>
-                      <label style={{ display: "block", fontSize: "11px", fontWeight: "600", color: "#64748b", marginBottom: "3px" }}>Start Date</label>
+                      <label style={{ display: "block", fontSize: "11px", fontWeight: "600", color: "#64748b", marginBottom: "3px" }}>Start date</label>
                       <JobDateInput
                         value={startDateVal}
                         onChange={(val) => handleDraftFieldChange("startDate", val)}
@@ -1487,21 +1499,56 @@ export default function JobDetailModal({
 
                     {/* End Date */}
                     <div>
-                      <label style={{ display: "block", fontSize: "11px", fontWeight: "600", color: "#64748b", marginBottom: "3px" }}>End Date</label>
-                      <JobDateInput
-                        value={endDateVal}
-                        onChange={(val) => handleDraftFieldChange("endDate", val)}
-                        isDirty={draftEdits.endDate !== undefined}
-                        disabled={isJobLocked}
-                        readOnly={isJobLocked}
-                        title={lockTooltip}
-                        defaultBorder={isJobLocked ? "1px solid #e2e8f0" : "1px solid #cbd5e1"}
-                        defaultBg={isJobLocked ? "#f8fafc" : "#ffffff"}
-                        style={{
-                          width: "100%", padding: "6px 8px", boxSizing: "border-box",
-                          ...(isJobLocked ? { cursor: "not-allowed", color: "#64748b" } : {})
-                        }}
-                      />
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "3px" }}>
+                        <label style={{ display: "block", fontSize: "11px", fontWeight: "600", color: "#64748b", margin: 0 }}>End Date</label>
+                        {isRetainer && !isJobLocked && (
+                          <label style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "10px", fontWeight: "600", color: "#475569", cursor: "pointer", userSelect: "none" }}>
+                            <input
+                              type="checkbox"
+                              checked={isNoEndDateSentinel(endDateVal)}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  handleDraftFieldChange("endDate", NO_END_DATE_SHEET_VALUE);
+                                } else {
+                                  handleDraftFieldChange("endDate", startDateVal || "");
+                                }
+                              }}
+                              style={{ margin: 0, cursor: "pointer" }}
+                            />
+                            No end date
+                          </label>
+                        )}
+                      </div>
+                      {isNoEndDateSentinel(endDateVal) ? (
+                        <input
+                          type="text"
+                          value="No end date"
+                          disabled
+                          readOnly
+                          title={lockTooltip}
+                          style={{
+                            width: "100%", padding: "6px 8px", borderRadius: "5px",
+                            border: draftEdits.endDate !== undefined ? "1px solid #f59e0b" : "1px solid #e2e8f0",
+                            background: "#f8fafc", color: "#64748b", fontSize: "12px", fontWeight: "500",
+                            cursor: "not-allowed", boxSizing: "border-box"
+                          }}
+                        />
+                      ) : (
+                        <JobDateInput
+                          value={endDateVal}
+                          onChange={(val) => handleDraftFieldChange("endDate", val)}
+                          isDirty={draftEdits.endDate !== undefined}
+                          disabled={isJobLocked}
+                          readOnly={isJobLocked}
+                          title={lockTooltip}
+                          defaultBorder={isJobLocked ? "1px solid #e2e8f0" : "1px solid #cbd5e1"}
+                          defaultBg={isJobLocked ? "#f8fafc" : "#ffffff"}
+                          style={{
+                            width: "100%", padding: "6px 8px", boxSizing: "border-box",
+                            ...(isJobLocked ? { cursor: "not-allowed", color: "#64748b" } : {})
+                          }}
+                        />
+                      )}
                     </div>
 
                     {/* % Likelihood - Only for Pipeline jobs */}
@@ -1917,16 +1964,16 @@ export default function JobDetailModal({
                               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
                                 <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                                   {isPlaceholder ? (
-                                      <PlaceholderPill isAuto={isAutoPlaceholder(slot.ref)} size="sm" />
-                                    ) : slot.ref ? (
-                                      <span style={{ fontSize: "13px", fontWeight: "700", color: "#0047AB" }}>
-                                        #{slot.ref}
-                                      </span>
-                                    ) : (
-                                      <span style={{ fontSize: "12px", fontWeight: "600", color: "#475569" }}>
-                                        Invoice
-                                      </span>
-                                    )}
+                                    <PlaceholderPill isAuto={isAutoPlaceholder(slot.ref)} size="sm" />
+                                  ) : slot.ref ? (
+                                    <span style={{ fontSize: "13px", fontWeight: "700", color: "#0047AB" }}>
+                                      #{slot.ref}
+                                    </span>
+                                  ) : (
+                                    <span style={{ fontSize: "12px", fontWeight: "600", color: "#475569" }}>
+                                      Invoice
+                                    </span>
+                                  )}
 
                                   {hasData && slot.status && (
                                     <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "8px", fontWeight: "600", ...pillStyle }}>
@@ -2223,19 +2270,19 @@ export default function JobDetailModal({
                               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
                                 <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                                   {isPlaceholder ? (
-                                      <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                                        {slot.description && !String(slot.description).trim().toUpperCase().startsWith("PLACE") && (
-                                          <span style={{ fontSize: "13px", fontWeight: "700", color: "#0047AB" }}>
-                                            {slot.description}
-                                          </span>
-                                        )}
-                                        <PlaceholderPill isAuto={isAutoPlaceholder(slot.transactionId || slot.description)} size="sm" />
-                                      </div>
-                                    ) : (
-                                      <span style={{ fontSize: "13px", fontWeight: "700", color: "#0047AB" }}>
-                                        {slot.description || (slot.transactionId ? `#${slot.transactionId}` : "Expense")}
-                                      </span>
-                                    )}
+                                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                      {slot.description && !String(slot.description).trim().toUpperCase().startsWith("PLACE") && (
+                                        <span style={{ fontSize: "13px", fontWeight: "700", color: "#0047AB" }}>
+                                          {slot.description}
+                                        </span>
+                                      )}
+                                      <PlaceholderPill isAuto={isAutoPlaceholder(slot.transactionId || slot.description)} size="sm" />
+                                    </div>
+                                  ) : (
+                                    <span style={{ fontSize: "13px", fontWeight: "700", color: "#0047AB" }}>
+                                      {slot.description || (slot.transactionId ? `#${slot.transactionId}` : "Expense")}
+                                    </span>
+                                  )}
 
                                   {hasData && slot.status && (
                                     <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "8px", fontWeight: "600", ...pillStyle }}>

@@ -8,6 +8,7 @@ import {
   normaliseArrayForFingerprint
 } from "./alertMemory.js";
 import { handleFireOutgoingsPull, handleMarkExpenseAssigned, getAllClients } from "./workspaces.js";
+import { provisionRetainerScheduleInBackground } from "./retainers.js";
 import { applyAlertRemovalToTriageData } from "./alertState.js";
 import {
   checkRetainerInvoices_, checkCRMWipe_, checkRevenueMismatch_, checkDirectCostsMismatch_,
@@ -24,9 +25,9 @@ import {
 import { redisClient } from "./redisClient.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { logPrecomputeRun, logFlagSweepRun, logBuildOptionsRun } from "./systemLogs.js";
-import { isPlaceholderInvoice, isPlaceholderExpense, parseYearMonth, parseStaleExpenseDetail, isPipelineJobSuppressed, toSheetDateFormat, hasActiveCrmIntegration, ADMIN_ONLY_ALERT_TYPES } from "../utils/helpers.js";
+import { isPlaceholderInvoice, isPlaceholderExpense, parseYearMonth, parseStaleExpenseDetail, isPipelineJobSuppressed, toSheetDateFormat, hasActiveCrmIntegration, ADMIN_ONLY_ALERT_TYPES, isNoEndDateSentinel } from "../utils/helpers.js";
 import { getSessionUser } from "./authService.js";
-import { matchesClientName, getClientManagerClientMap } from "./userPermissions.js";
+import { matchesClientName, getClientManagerClientMap, isUserAuthorizedForClient, verifyUserAuthorizedForSheet, getCanonicalAcSheetId } from "./userPermissions.js";
 
 const ALERT_MEMORY_TAB = "AlertMemory";
 
@@ -4656,7 +4657,6 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           const crmLikely = crmSrc[7] || "";
 
           // Look up job row in tab for precise cell writes
-          const tabStartRow = tabName === "Pipeline" ? 6 : 1;
           let tabRows = [];
           if (sharedData && tabName === "Confirmed" && sharedData.confirmedDataWide) {
             tabRows = sharedData.confirmedDataWide;
@@ -4672,7 +4672,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           const codeToFind = (projectCode || crmCode).toLowerCase();
           const clientToFind = (client || crmClient).toLowerCase();
           const jobToFind = (jobName || crmJob).toLowerCase();
-          for (let tr = tabName === "Pipeline" ? 5 : 0; tr < tabRows.length; tr++) {
+          for (let tr = 1; tr < tabRows.length; tr++) {
             const r = tabRows[tr] || [];
             const rCode = String(r[2] || "").trim().toLowerCase();
             const rClient = String(r[0] || "").trim().toLowerCase();
@@ -4911,7 +4911,6 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
         const shtLikely = shtArr[7] || "";
 
         // Find the job row in Pipeline/Confirmed by project code (or client+job fallback)
-        const tabStartRow = tabName === "Pipeline" ? 6 : 1;
         let tabRows = [];
         if (sharedData && tabName === "Confirmed" && sharedData.confirmedDataWide) {
           tabRows = sharedData.confirmedDataWide;
@@ -4930,7 +4929,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
         const clientToFind = (shtClient || crmClient).toLowerCase();
         const jobToFind = (shtJob || crmJob).toLowerCase();
 
-        for (let tr = tabStartRow === 6 ? 5 : 0; tr < tabRows.length; tr++) {
+        for (let tr = 1; tr < tabRows.length; tr++) {
           const r = tabRows[tr] || [];
           const rCode = String(r[2] || "").trim().toLowerCase();
           const rClient = String(r[0] || "").trim().toLowerCase();
@@ -6806,16 +6805,27 @@ export async function handleAcceptOption(req, res, sheets) {
       await sheets.spreadsheets.values.append({
         spreadsheetId: automationCommanderSheetId, range: "TriageLog!A:H",
         valueInputOption: "USER_ENTERED",
-        requestBody: { values: [[new Date().toISOString(), alert.type || alert.flagType, `${alert.sheetName}-${alert.rowNumber}`, alert.clientName || "", "", JSON.stringify({ jobName: option.jobName }), "IGNORED", option.title]] },
+        requestBody: { values: [[
+          new Date().toISOString(),
+          sanitizeFormulaInput(String(alert.type || alert.flagType || "")),
+          sanitizeFormulaInput(`${alert.sheetName}-${alert.rowNumber}`),
+          sanitizeFormulaInput(String(alert.clientName || "")),
+          "",
+          sanitizeFormulaInput(JSON.stringify({ jobName: option.jobName })),
+          "IGNORED",
+          sanitizeFormulaInput(String(option.title || ""))
+        ]] },
       });
 
       // Synchronize removal from precomputed cache so it disappears immediately
       try {
+        const sessionUser = getSessionUser(req);
+        const canRemoveClient = (cName) => req.isSystemAuthorized || !sessionUser || sessionUser.isAdmin || isUserAuthorizedForClient(sessionUser, cName);
         const targetIds = [fp, `${alert.flagType || alert.type}-${alert.sheetName}-${alert.rowNumber}`].filter(Boolean);
         const preRaw = await redisClient?.get(PRECOMPUTED_KEY);
         if (preRaw) {
           const pre = JSON.parse(preRaw);
-          applyAlertRemovalToTriageData(pre, targetIds);
+          applyAlertRemovalToTriageData(pre, targetIds, canRemoveClient);
           await redisClient?.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
         }
       } catch (rErr) { }
@@ -6826,8 +6836,11 @@ export async function handleAcceptOption(req, res, sheets) {
     // ── DELETE - blank all cells for the job in Pipeline/Confirmed tab ──
     if (option.matchType === "delete") {
       const tabName = (alert.mode === "Pipeline" || alert.alertType === "crmPipeAppDiscr") ? "Pipeline" : "Confirmed";
-      const jobRowNum = option.jobRow;
-      if (!jobRowNum) return res.status(400).json({ success: false, error: "Cannot delete: job row number not found" });
+      const minJobRow = 2;
+      const jobRowNum = parseInt(option.jobRow, 10);
+      if (!jobRowNum || isNaN(jobRowNum) || jobRowNum < minJobRow) {
+        return res.status(400).json({ success: false, error: "Cannot delete: invalid job row number" });
+      }
 
       console.log(`  → Deleting job row(s) from ${tabName} tab, starting at row ${jobRowNum}`);
       const tabResp = await sheets.spreadsheets.values.get({
@@ -6886,7 +6899,16 @@ export async function handleAcceptOption(req, res, sheets) {
       await sheets.spreadsheets.values.append({
         spreadsheetId: automationCommanderSheetId, range: "TriageLog!A:H",
         valueInputOption: "USER_ENTERED",
-        requestBody: { values: [[new Date().toISOString(), alert.type || alert.flagType, `${alert.sheetName}-${alert.rowNumber}`, alert.clientName || "", "", JSON.stringify({ jobName: option.jobName, rowsCleared: rowsToClear }), "ACCEPTED", option.title]] },
+        requestBody: { values: [[
+          new Date().toISOString(),
+          sanitizeFormulaInput(String(alert.type || alert.flagType || "")),
+          sanitizeFormulaInput(`${alert.sheetName}-${alert.rowNumber}`),
+          sanitizeFormulaInput(String(alert.clientName || "")),
+          "",
+          sanitizeFormulaInput(JSON.stringify({ jobName: option.jobName, rowsCleared: rowsToClear })),
+          "ACCEPTED",
+          sanitizeFormulaInput(String(option.title || ""))
+        ]] },
       });
 
       return res.status(200).json({ success: true, message: `Cleared ${rowsToClear.length} row(s) from ${tabName} tab`, cellsWritten: clearRanges.length });
@@ -6968,17 +6990,19 @@ export async function handleAcceptOption(req, res, sheets) {
       const alertId = `${alert.sheetName}-${alert.rowNumber}`;
       const targetIds = [alertId, fp, `${alert.flagType || alert.type}-${alert.sheetName}-${alert.rowNumber}`, String(rawTxnId).trim()].filter(Boolean);
       try {
+        const sessionUser = getSessionUser(req);
+        const canRemoveClient = (cName) => req.isSystemAuthorized || !sessionUser || sessionUser.isAdmin || isUserAuthorizedForClient(sessionUser, cName);
         const preRaw = await redisClient?.get(PRECOMPUTED_KEY);
         if (preRaw) {
           const pre = JSON.parse(preRaw);
-          applyAlertRemovalToTriageData(pre, targetIds);
+          applyAlertRemovalToTriageData(pre, targetIds, canRemoveClient);
           await redisClient?.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
         }
         if (req.body.sessionId) {
           const sRaw = await redisClient?.get(`triage_alerts:${req.body.sessionId}`);
           if (sRaw) {
             const sData = JSON.parse(sRaw);
-            applyAlertRemovalToTriageData(sData, targetIds);
+            applyAlertRemovalToTriageData(sData, targetIds, canRemoveClient);
             await redisClient?.set(`triage_alerts:${req.body.sessionId}`, JSON.stringify(sData), { EX: 86400 * 7 });
           }
         }
@@ -6997,13 +7021,13 @@ export async function handleAcceptOption(req, res, sheets) {
       const timestamp = new Date().toISOString();
       const logRow = [
         timestamp,
-        alert.type || alert.flagType,
-        `${alert.sheetName}-${alert.rowNumber}`,
-        alert.clientName || "",
-        alert.summary?.amount || "",
-        JSON.stringify({ matchAnalysis: option.matchAnalysis, outgoingsData }),
+        sanitizeFormulaInput(String(alert.type || alert.flagType || "")),
+        sanitizeFormulaInput(`${alert.sheetName}-${alert.rowNumber}`),
+        sanitizeFormulaInput(String(alert.clientName || "")),
+        sanitizeFormulaInput(String(alert.summary?.amount || "")),
+        sanitizeFormulaInput(JSON.stringify({ matchAnalysis: option.matchAnalysis, outgoingsData })),
         "ACCEPTED",
-        `Option: ${option.title}`,
+        sanitizeFormulaInput(`Option: ${option.title}`),
       ];
       await sheets.spreadsheets.values.append({
         spreadsheetId: automationCommanderSheetId,
@@ -7086,7 +7110,7 @@ export async function handleAcceptOption(req, res, sheets) {
       const writeTab = (alert.type === "crm" || alert.sheetName === "CRMComp")
         ? (alert.mode === "Pipeline" ? "Pipeline" : "Confirmed")
         : "Confirmed";
-      const startRow = writeTab === "Pipeline" ? 6 : 2;
+      const startRow = 2;
 
       // Read target tab across full width A1:CR5000 to find next available row safely
       const tabResp = await sheets.spreadsheets.values.get({
@@ -7263,6 +7287,22 @@ export async function handleAcceptOption(req, res, sheets) {
       });
 
       console.log(`  ✅ Created new job at row ${newRow} with ${safeCreateUpdates.length} fields`);
+
+      const createdTypeCell = safeCreateUpdates.find(u => String(u.cell || "").toUpperCase() === `AJ${newRow}`);
+      const isCreatedRetainer =
+        writeTab === "Confirmed" &&
+        (String(option?.newJobData?.projectType || "").trim().toLowerCase() === "retainer" ||
+          String(createdTypeCell?.value || "").trim().toLowerCase() === "retainer");
+      if (isCreatedRetainer) {
+        provisionRetainerScheduleInBackground(sheets, {
+          clientSheetId: alert.clientId,
+          masterSheetId: alert.masterId,
+          clientName: alert.clientName || "",
+          parentRowNum: newRow,
+          client: option?.newJobData?.clientName || "",
+          jobName: option?.newJobData?.jobName || "",
+        });
+      }
 
       // Log to TriageLog
       // Log to TriageLog and update AlertMemory - failures here don't affect the user
@@ -7467,10 +7507,12 @@ export async function handleAcceptOption(req, res, sheets) {
       }
     }
 
-    // Determine which tab to write to based on alert type
-    const writeTab = option.tabName || ((alert.type === "crm" || alert.sheetName === "CRMComp")
+    // Determine which tab to write to based on alert type (strictly allowlisted)
+    const ALLOWED_WRITE_TABS = new Set(["Confirmed", "Pipeline", "Outgoings"]);
+    const defaultWriteTab = (alert.type === "crm" || alert.sheetName === "CRMComp")
       ? (alert.mode === "Pipeline" ? "Pipeline" : "Confirmed")
-      : "Confirmed");
+      : "Confirmed";
+    const writeTab = ALLOWED_WRITE_TABS.has(option.tabName) ? option.tabName : defaultWriteTab;
 
     // Batch write all cells, always prefixed with the tab name
     if (cellUpdates.length > 0) {
@@ -7524,11 +7566,12 @@ export async function handleAcceptOption(req, res, sheets) {
         const colIdx0 = colLetters.split("").reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) - 1;
         return (colIdx0 >= 5 && colIdx0 <= 29) || colIdx0 === 31 || colIdx0 === 40 || (colIdx0 >= 60 && colIdx0 <= 74) || (colIdx0 >= 96 && colIdx0 <= 106);
       };
+      const minAllowedRow = writeTab === "Outgoings" ? 13 : 2;
       const safeCellUpdates = cellUpdates.filter(({ cell }) => {
         const m = String(cell || "").match(/^([A-Z]{1,3})(\d+)$/);
         if (!m) return false;
         const rowNum = parseInt(m[2], 10);
-        if (rowNum < 2) return false;
+        if (rowNum < minAllowedRow) return false;
         if ((writeTab === "Confirmed" || writeTab === "Pipeline") && isProtectedJobCol2(m[1])) return false;
         return true;
       });
@@ -7705,13 +7748,15 @@ export async function handleDeleteJob(req, res, sheets) {
     const targetCode = (option.matchingDetails?.unmatchedJobSummary?.projectCode || "").trim().toLowerCase();
 
     // Pipeline / Confirmed tab: check option.jobRow first
+    const minJobRow = 2;
+    const optJobRow = parseInt(option.jobRow, 10);
     let parentRowIdx = -1;
-    if (option.jobRow && tabRows[option.jobRow - 1]) {
-      parentRowIdx = option.jobRow - 1;
-      console.log(`  Found parent directly from option.jobRow: ${option.jobRow}`);
+    if (!isNaN(optJobRow) && optJobRow >= minJobRow && tabRows[optJobRow - 1]) {
+      parentRowIdx = optJobRow - 1;
+      console.log(`  Found parent directly from option.jobRow: ${optJobRow}`);
     } else {
       let lastSeenClient = "";
-      for (let i = 1; i < tabRows.length; i++) {
+      for (let i = minJobRow - 1; i < tabRows.length; i++) {
         const r = tabRows[i] || [];
         const rClientRaw = String(r[0] || "").trim();
         const rJob = String(r[1] || "").trim().toLowerCase();
@@ -7868,11 +7913,9 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
   // each already naturally produces a single-job result when only one
   // line is present to match, so narrowing the input alone is sufficient
   // and carries none of the risk a rewrite of that logic would.
-  let { clientSheetId, masterSheetId, automationCommanderSheetId: acId, flagType, clientName, targetLine } = req.body;
+  let { clientSheetId, masterSheetId, flagType, clientName, targetLine } = req.body;
+  const acId = getCanonicalAcSheetId();
 
-  if (!acId) {
-    acId = process.env.AUTOMATION_COMMANDER_SHEET_ID || "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
-  }
   if (!flagType) {
     flagType = req.body.alertType;
   }
@@ -7908,6 +7951,19 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
       } catch (lookupErr) {
         console.warn("⚠️ Failed to lookup client sheet IDs in handleAnalyzeNoActionFlag:", lookupErr.message);
       }
+    }
+
+    const sessionUser = getSessionUser(req);
+    if (!req.isSystemAuthorized && sessionUser && !sessionUser.isAdmin) {
+      let boundClient = clientName || "";
+      for (const sid of [clientSheetIdClean, masterSheetIdClean].filter(Boolean)) {
+        const auth = await verifyUserAuthorizedForSheet(sessionUser, sid, boundClient, sheets);
+        if (!auth.authorized) {
+          return res.status(auth.status || 403).json({ success: false, error: auth.error || "Forbidden" });
+        }
+        boundClient = auth.clientName || boundClient;
+      }
+      if (boundClient) clientName = boundClient;
     }
 
     if (!clientSheetIdClean || !masterSheetIdClean || !acIdClean || !flagType) {
@@ -8142,7 +8198,7 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
         // Read Pipeline and Confirmed tabs to verify
         const pipelineResp = await withRetry(() => sheets.spreadsheets.values.get({
           spreadsheetId: clientSheetIdClean,
-          range: "Pipeline!A6:DE5000",
+          range: "Pipeline!A1:DE5000",
         }));
         const pipelineRows = pipelineResp.data.values || [];
 
@@ -8186,14 +8242,14 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
           if (expectCopied) {
             // CRITICAL CHECK: Pipeline col DD must be "Yes"
             // Pipeline data: col A(0)=Client, B(1)=JobName, C(2)=ProjectCode, DD(107)=CopiedToConf?
-            // Pipeline rows start at row 6 in the sheet; our slice starts at A6 so index 0 = row 6
+            // Pipeline rows start at row 2 in the sheet; our slice starts at A1 so index 1 = row 2
             const jobNameLower = job.jobName.toLowerCase();
             const clientParsedLower = job.clientParsed ? job.clientParsed.toLowerCase() : "";
 
             // Primary: use the row number from the AutoLog (most reliable)
             if (job.pipelineRowFromLog) {
-              const prIdx = job.pipelineRowFromLog - 6; // Pipeline data starts at row 6, index 0 = row 6
-              const pr = prIdx >= 0 ? pipelineRows[prIdx] : null;
+              const prIdx = job.pipelineRowFromLog - 1; // Pipeline slice starts at row 1, index 0 = row 1
+              const pr = prIdx >= 1 ? pipelineRows[prIdx] : null;
               if (pr) {
                 const prJobName = String(pr[1] || "").trim();
                 const prClientName = String(pr[0] || "").trim();
@@ -8221,7 +8277,7 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
             // Fallback: search by job name + client name (skipped when job name is blank/placeholder)
             if (!pipelineJob) {
               const jobNameIsBlank = !jobNameLower || jobNameLower === "-";
-              for (let pri = 0; pri < pipelineRows.length; pri++) {
+              for (let pri = 1; pri < pipelineRows.length; pri++) {
                 const pr = pipelineRows[pri];
                 const pJobName = String(pr[1] || "").trim();
                 const pClientName = String(pr[0] || "").trim();
@@ -8233,7 +8289,7 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
                     jobName: pJobName,
                     projectCode: pProjectCode,
                     copiedToConf: String(pr[107] || "").trim(),
-                    rowNumber: pri + 6,
+                    rowNumber: pri + 1,
                     ...extractJobExtras(pr),
                   };
                   break;
@@ -8249,7 +8305,7 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
                   jobName: pJobName,
                   projectCode: String(pr[2] || "").trim(),
                   copiedToConf: String(pr[107] || "").trim(),
-                  rowNumber: pri + 6,
+                  rowNumber: pri + 1,
                   ...extractJobExtras(pr),
                 };
                 break;
@@ -8334,8 +8390,8 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
 
             // Look up Pipeline row - use log row number first, then name search
             if (job.pipelineRowFromLog) {
-              const prIdx = job.pipelineRowFromLog - 6;
-              const pr = prIdx >= 0 ? pipelineRows[prIdx] : null;
+              const prIdx = job.pipelineRowFromLog - 1;
+              const pr = prIdx >= 1 ? pipelineRows[prIdx] : null;
               if (pr) {
                 const prJobName = String(pr[1] || "").trim();
                 const prClientName = String(pr[0] || "").trim();
@@ -8356,7 +8412,7 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
               }
             }
             if (!pipelineJob) {
-              for (let pri = 0; pri < pipelineRows.length; pri++) {
+              for (let pri = 1; pri < pipelineRows.length; pri++) {
                 const pr = pipelineRows[pri];
                 const pJobName = String(pr[1] || "").trim();
                 const pClientName = String(pr[0] || "").trim();
@@ -8366,7 +8422,7 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
                   !clientParsedLower.includes(pClientName.toLowerCase())) continue;
                 pipelineJob = {
                   copiedToConf: String(pr[107] || "").trim(),
-                  rowNumber: pri + 6,
+                  rowNumber: pri + 1,
                   clientName: pClientName,
                   jobName: pJobName,
                   projectCode: String(pr[2] || "").trim(),
@@ -8600,7 +8656,7 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
 
         const retPipelineResp = await withRetry(() => sheets.spreadsheets.values.get({
           spreadsheetId: clientSheetIdClean,
-          range: "Pipeline!A6:BH5000",
+          range: "Pipeline!A1:BH5000",
         }));
         const retPipelineRows = retPipelineResp.data.values || [];
 
@@ -8609,7 +8665,7 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
         for (const job of dedupedJobs) {
           const targetTab = job.tab || "Confirmed"; // default to Confirmed for old-format entries
           const tabRows = targetTab === "Pipeline" ? retPipelineRows : retConfirmedRows;
-          const tabStartRow = targetTab === "Pipeline" ? 6 : 1; // Pipeline data starts at row 6
+          const tabStartRow = 1;
 
           // Find the parent row by matching client name AND job name.
           // If the AutoLog has a row number, try that first (most reliable).
@@ -8678,7 +8734,7 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
               }
             }
             if (fallbackIdx !== -1) {
-              const fallbackStartRow = fallbackTab === "Pipeline" ? 6 : 1;
+              const fallbackStartRow = 1;
               retainerChecks.push({
                 jobName: job.jobName,
                 clientName: job.clientNameFromLog,
@@ -8849,7 +8905,13 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
           const actualChildRows = childRows.length;
           const fmt = (d) => d.toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
           const durationOk = actualChildRows >= expectedChildRows;
-          checks.push({ ok: true, message: `Duration: ${fmt(startDate)} → ${fmt(endDate)} (${monthsDiff} months total, ${periodLabel})` });
+          const isNoEnd = isNoEndDateSentinel(parentRow[38]) || isNoEndDateSentinel(endDate);
+          checks.push({
+            ok: true,
+            message: isNoEnd
+              ? `Duration: ${fmt(startDate)} → No end date (ongoing, ${periodLabel})`
+              : `Duration: ${fmt(startDate)} → ${fmt(endDate)} (${monthsDiff} months total, ${periodLabel})`
+          });
           checks.push({
             ok: durationOk,
             message: `Child rows: ${actualChildRows} found, ${expectedChildRows} expected (${pastAndCurrentRows} past/current + ${futureRows} forward) - ` + (durationOk ? "✓ full coverage" : `✗ ${expectedChildRows - actualChildRows} row(s) missing`),

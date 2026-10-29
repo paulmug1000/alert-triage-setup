@@ -663,7 +663,7 @@ export async function checkPipelineConfirmedOverlap_(clientName, clientSheetId, 
   try {
     const confData = sharedData?.confirmedData || [];
     const pipeData = sharedData?.pipelineData || [];
-    if (confData.length < 2 || pipeData.length < 6) return alerts;
+    if (confData.length < 2 || pipeData.length < 2) return alerts;
 
     const pipeByCode = {}, pipeByJob = {};
     for (let p = 1; p < pipeData.length; p++) {
@@ -2681,9 +2681,11 @@ export async function handleUpdatePartPaidDate(sheets, {
   const timestamp = `${now.getDate()}-${months[now.getMonth()]} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
 
   if (itemType === "invoice") {
-    if (!rowNumber || !slot) {
-      throw new Error("Missing rowNumber or slot for invoice date update");
+    const parsedRowNum = parseInt(rowNumber, 10);
+    if (!rowNumber || isNaN(parsedRowNum) || parsedRowNum < 2 || parsedRowNum > 5000 || !slot) {
+      throw new Error("Missing or invalid rowNumber or slot for invoice date update");
     }
+    rowNumber = parsedRowNum;
     const slotDaysCols = { 1: "AS", 2: "AZ", 3: "BG" };
     const colLetter = slotDaysCols[slot];
     if (!colLetter) throw new Error(`Invalid slot index: ${slot}`);
@@ -2757,6 +2759,16 @@ export async function handleUpdatePartPaidDate(sheets, {
     if (!cellCoord) {
       throw new Error("Missing cellCoord for expense date update");
     }
+    const coordMatch = String(cellCoord).trim().match(/^([A-Z]{1,2})(\d{1,3})$/i);
+    if (!coordMatch) {
+      throw new Error(`Invalid cell coordinate: ${cellCoord}`);
+    }
+    const cleanCellCoord = `${coordMatch[1].toUpperCase()}${parseInt(coordMatch[2], 10)}`;
+    const parsedExpRow = parseInt(coordMatch[2], 10);
+    if (parsedExpRow < 12 || parsedExpRow > 228) {
+      throw new Error(`Invalid Outgoings row in cellCoord: ${cellCoord}`);
+    }
+    cellCoord = cleanCellCoord;
 
     const cellRange = `Outgoings!${cellCoord}`;
     const metaResp = await sheets.spreadsheets.get({

@@ -73,13 +73,21 @@ export function useJobs(initialClient = null) {
     if (initialClient?.crmDrives) return initialClient.crmDrives;
     return "NA";
   });
+  const [noEndDateRetainerMonths, setNoEndDateRetainerMonths] = useState(() => {
+    if (initialClient?.clientSheetId) {
+      const cleanId = cleanSheetId ? cleanSheetId(initialClient.clientSheetId) : initialClient.clientSheetId;
+      const cached = getCachedClientData(cleanId, "jobs_All");
+      if (typeof cached?.data?.noEndDateRetainerMonths === "number") return cached.data.noEndDateRetainerMonths;
+    }
+    return 18;
+  });
 
   useEffect(() => {
     if (jobsClient?.crmTool) setCrmTool(jobsClient.crmTool);
     if (jobsClient?.crmDrives) setCrmDrives(jobsClient.crmDrives);
   }, [jobsClient]);
 
-  const loadJobsData = useCallback(async (client, tabName = "All", bypassCache = false) => {
+  const loadJobsData = useCallback(async (client, tabName = "All", bypassCache = false, silent = false) => {
     if (!client?.clientSheetId) return;
 
     if (client.hasAccountingIntegration !== undefined) {
@@ -98,13 +106,14 @@ export function useJobs(initialClient = null) {
       if (cached.data.existingClients) setExistingClients(cached.data.existingClients);
       if (cached.data.crmTool) setCrmTool(cached.data.crmTool);
       if (cached.data.crmDrives) setCrmDrives(cached.data.crmDrives);
+      if (typeof cached.data.noEndDateRetainerMonths === "number") setNoEndDateRetainerMonths(cached.data.noEndDateRetainerMonths);
       if (cached.data.hasAccountingIntegration !== undefined) setHasAccountingIntegration(Boolean(cached.data.hasAccountingIntegration));
       else if (client.hasAccountingIntegration !== undefined) setHasAccountingIntegration(Boolean(client.hasAccountingIntegration));
       setJobsLoading(false);
       // If cached data is fresh (< 120s), return immediately
       if (!cached.isStale) return;
     } else {
-      setJobsLoading(true);
+      if (!silent) setJobsLoading(true);
     }
 
     // 2. Await in-flight background prefetch if currently running
@@ -121,6 +130,7 @@ export function useJobs(initialClient = null) {
             if (fresh.data.existingClients) setExistingClients(fresh.data.existingClients);
             if (fresh.data.crmTool) setCrmTool(fresh.data.crmTool);
             if (fresh.data.crmDrives) setCrmDrives(fresh.data.crmDrives);
+            if (typeof fresh.data.noEndDateRetainerMonths === "number") setNoEndDateRetainerMonths(fresh.data.noEndDateRetainerMonths);
             if (fresh.data.hasAccountingIntegration !== undefined) setHasAccountingIntegration(Boolean(fresh.data.hasAccountingIntegration));
             else if (client.hasAccountingIntegration !== undefined) setHasAccountingIntegration(Boolean(client.hasAccountingIntegration));
             setJobsLoading(false);
@@ -145,6 +155,7 @@ export function useJobs(initialClient = null) {
         if (data.existingClients) setExistingClients(data.existingClients);
         if (data.crmTool) setCrmTool(data.crmTool);
         if (data.crmDrives) setCrmDrives(data.crmDrives);
+        if (typeof data.noEndDateRetainerMonths === "number") setNoEndDateRetainerMonths(data.noEndDateRetainerMonths);
         if (data.hasAccountingIntegration !== undefined) setHasAccountingIntegration(Boolean(data.hasAccountingIntegration));
         else if (client.hasAccountingIntegration !== undefined) setHasAccountingIntegration(Boolean(client.hasAccountingIntegration));
         setCachedClientData(client.clientSheetId, cacheKey, data);
@@ -170,6 +181,7 @@ export function useJobs(initialClient = null) {
     hasAccountingIntegration,
     crmTool, setCrmTool,
     crmDrives, setCrmDrives,
+    noEndDateRetainerMonths,
     loadJobsData
   };
 }

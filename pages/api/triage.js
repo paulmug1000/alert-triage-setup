@@ -110,11 +110,12 @@ import {
   autoReconcileClientBankTransactions
 } from "../../services/bankTransactionsService";
 import { handleClassifyPLCategory, handleUpdatePartPaidDate } from "../../services/proactiveChecks";
-import { getSessionUser, safeCompareSecret } from "../../services/authService";
+import { getSessionUser, safeCompareSecret, sendOtp, verifyOtp, clearSessionCookie } from "../../services/authService";
 import {
   isUserAuthorizedForClient,
   updateUserDailyAlertsEmail,
   getUserByEmail,
+  getAllUsers,
   resolveClientNameBySheetId,
   verifyUserAuthorizedForSheet,
   getCanonicalAcSheetId,
@@ -123,7 +124,7 @@ import {
   unwrapRequestSheetIds,
   installSheetIdBoundary
 } from "../../services/userPermissions";
-import { matchesClientName, sanitizeSpreadsheetTerms } from "../../utils/helpers";
+import { matchesClientName, sanitizeSpreadsheetTerms, assertTrustedOrigin, isValidGoogleScriptUrl } from "../../utils/helpers";
 
 async function checkTriageClientAuth(sheets, sessionUser, clientNameClaim, sheetIds = []) {
   if (sessionUser?.isAdmin && !isReadOnlySession(sessionUser)) return true;
@@ -134,10 +135,15 @@ async function checkTriageClientAuth(sheets, sessionUser, clientNameClaim, sheet
     .filter(Boolean);
 
   if (validSheetIds.length > 0) {
+    let boundClient = clientNameClaim ? String(clientNameClaim).trim() : "";
     for (const sid of validSheetIds) {
       try {
-        const auth = await verifyUserAuthorizedForSheet(sessionUser, sid, clientNameClaim, sheets);
+        const auth = await verifyUserAuthorizedForSheet(sessionUser, sid, boundClient, sheets);
         if (!auth.authorized) return false;
+        if (auth.clientName) {
+          if (boundClient && !matchesClientName(boundClient, auth.clientName)) return false;
+          boundClient = auth.clientName;
+        }
       } catch (_) {
         return false;
       }
@@ -219,19 +225,19 @@ export default async function handler(req, res) {
 
     // Intercept successful mutation responses to automatically bust corresponding PMA L1/L2 caches
     const PMA_MUTATION_SCOPES = {
-      update_job_field: ["jobs", "invoices", "cash"],
-      update_job_fields: ["jobs", "invoices", "cash"],
+      update_job_field: ["jobs", "retainers", "invoices", "cash"],
+      update_job_fields: ["jobs", "retainers", "invoices", "cash"],
       assign_expense_to_job: ["outgoings", "jobs", "cash"],
       update_expense_slot: ["outgoings", "jobs", "cash"],
       assign_invoice_to_job: ["invoices", "jobs", "cash"],
       update_invoice_slot: ["invoices", "jobs", "cash"],
       move_invoice_to_job: ["invoices", "jobs", "cash"],
       verify_invoice_slot: ["invoices", "jobs"],
-      create_job_from_invoice: ["invoices", "jobs", "cash"],
-      add_new_job: ["jobs", "invoices", "outgoings", "cash"],
-      mark_pipeline_copied: ["jobs", "cash"],
-      mark_pipeline_already_confirmed: ["jobs", "cash"],
-      delete_direct_job: ["jobs", "invoices", "outgoings", "cash"],
+      create_job_from_invoice: ["invoices", "jobs", "retainers", "cash"],
+      add_new_job: ["jobs", "retainers", "invoices", "outgoings", "cash"],
+      mark_pipeline_copied: ["jobs", "retainers", "cash"],
+      mark_pipeline_already_confirmed: ["jobs", "retainers", "cash"],
+      delete_direct_job: ["jobs", "retainers", "invoices", "outgoings", "cash"],
       rename_retainer_job: ["retainers", "jobs", "invoices", "cash"],
       change_retainer_start_date: ["retainers", "jobs", "invoices", "cash"],
       change_retainer_end_date: ["retainers", "jobs", "invoices", "cash"],
@@ -305,7 +311,6 @@ export default async function handler(req, res) {
       "get_cash_cells",
       "get_cash_inbox",
       "get_cash_adjustments",
-      "verify_invoice_slot",
       "eom_get_reporting_data"
     ]);
 
@@ -383,6 +388,9 @@ export default async function handler(req, res) {
       if (!sessionUser) {
         return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
       }
+      if (req.method === "POST" && !assertTrustedOrigin(req, res)) {
+        return;
+      }
 
       // Enforce strict read-only lock across all state-mutating actions for EmailOTP / read-only sessions
       if (isReadOnlySession(sessionUser) && !READ_ONLY_ACTIONS.has(action)) {
@@ -457,7 +465,6 @@ export default async function handler(req, res) {
           b.masterSheetId, q.masterSheetId,
           b.reconSheetId, q.reconSheetId,
           b.reconSheetUrl ? extractSheetIdFromUrl(b.reconSheetUrl) : null,
-          b.cashTabSheetId, q.cashTabSheetId,
           b.payrollClientSheetId, q.payrollClientSheetId,
           b.timeMasterSheetId, q.timeMasterSheetId,
           b.sheetId, q.sheetId,
@@ -722,7 +729,7 @@ export default async function handler(req, res) {
     } else if (action === "toggle_cash_cell_resolved") {
       try {
         const { clientSheetId, cashTabSheetId, sheetRow, colIdx, resolved, clientName, automationCommanderSheetId } = req.body;
-        if (!(await checkTriageClientAuth(sheets, sessionUser, clientName, [clientSheetId, cashTabSheetId]))) {
+        if (!(await checkTriageClientAuth(sheets, sessionUser, clientName, [clientSheetId]))) {
           return res.status(403).json({ success: false, error: "Access denied to this client" });
         }
         const result = await toggleCashCellResolved({
@@ -745,7 +752,7 @@ export default async function handler(req, res) {
     } else if (action === "update_cash_cell_note") {
       try {
         const { clientSheetId, cashTabSheetId, sheetRow, colIdx, note, clientName, automationCommanderSheetId } = req.body;
-        if (!(await checkTriageClientAuth(sheets, sessionUser, clientName, [clientSheetId, cashTabSheetId]))) {
+        if (!(await checkTriageClientAuth(sheets, sessionUser, clientName, [clientSheetId]))) {
           return res.status(403).json({ success: false, error: "Access denied to this client" });
         }
         const result = await updateCashCellNote({
@@ -769,7 +776,7 @@ export default async function handler(req, res) {
     } else if (action === "batch_match_cashflow_actuals") {
       try {
         const { clientSheetId, cashTabSheetId, colIdx, colLetter, adjustments, resolvedRows, clientName, automationCommanderSheetId } = req.body;
-        if (!(await checkTriageClientAuth(sheets, sessionUser, clientName, [clientSheetId, cashTabSheetId]))) {
+        if (!(await checkTriageClientAuth(sheets, sessionUser, clientName, [clientSheetId]))) {
           return res.status(403).json({ success: false, error: "Access denied to this client" });
         }
         const result = await batchMatchCashflowActuals({
@@ -780,7 +787,8 @@ export default async function handler(req, res) {
           adjustments,
           resolvedRows,
           clientName,
-          automationCommanderSheetId
+          automationCommanderSheetId,
+          isAdmin: Boolean(sessionUser?.isAdmin || isSystemAuthorized)
         });
         return res.status(200).json(result);
       } catch (err) {
@@ -1003,6 +1011,9 @@ export default async function handler(req, res) {
         const webAppUrl = await getClientWebAppUrl(sheets, clientName, automationCommanderSheetId);
 
         if (webAppUrl) {
+          if (!isValidGoogleScriptUrl(webAppUrl)) {
+            return res.status(400).json({ success: false, error: "Invalid Master Web App URL configured for client." });
+          }
           const secret = (process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "").trim();
           if (!secret) {
             return res.status(500).json({ success: false, error: "AGENT_TRIGGER_SECRET is not configured on server" });

@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import Spinner from "./Spinner";
 
 export default function OnboardClientModal({ isOpen, onClose, onClientCreated }) {
@@ -6,12 +6,76 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated })
   const [accountingTool, setAccountingTool] = useState("None");
   const [crmTool, setCrmTool] = useState("None");
   const [crmDrives, setCrmDrives] = useState("NA");
+
+  // Folder mode: 'create' | 'existing'
+  const [folderMode, setFolderMode] = useState("create");
+  const [selectedFolder, setSelectedFolder] = useState(null); // { id, name, webViewLink }
+  const [manualFolderInput, setManualFolderInput] = useState("");
+
+  // Folder picker navigation state
+  const [foldersLoading, setFoldersLoading] = useState(false);
+  const [foldersError, setFoldersError] = useState(null);
+  const [foldersList, setFoldersList] = useState([]);
+  const [folderSearch, setFolderSearch] = useState("");
+  const [breadcrumbs, setBreadcrumbs] = useState([
+    { id: "16qLMIFy1GyiEZ4DkKjVaFXOKGQKDW8Cj", name: "Clients" }
+  ]);
+
   const [loading, setLoading] = useState(false);
   const [currentStep, setCurrentStep] = useState("");
   const [error, setError] = useState(null);
   const [createdData, setCreatedData] = useState(null);
 
+  const currentParentId = breadcrumbs[breadcrumbs.length - 1]?.id || "16qLMIFy1GyiEZ4DkKjVaFXOKGQKDW8Cj";
+
+  const loadDriveFolders = useCallback(async (parentId) => {
+    setFoldersLoading(true);
+    setFoldersError(null);
+    try {
+      const res = await fetch(`/api/setup/drive-folders?parentId=${encodeURIComponent(parentId || "")}`);
+      const data = await res.json();
+      if (data.success) {
+        setFoldersList(data.folders || []);
+      } else {
+        throw new Error(data.error || "Failed to load Drive folders.");
+      }
+    } catch (err) {
+      console.error("Error loading Drive folders:", err);
+      setFoldersError(err.message);
+    } finally {
+      setFoldersLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isOpen && folderMode === "existing") {
+      loadDriveFolders(currentParentId);
+    }
+  }, [isOpen, folderMode, currentParentId, loadDriveFolders]);
+
   if (!isOpen) return null;
+
+  const handleNavigateIntoFolder = (folder) => {
+    setFolderSearch("");
+    setBreadcrumbs((prev) => [...prev, { id: folder.id, name: folder.name }]);
+  };
+
+  const handleBreadcrumbClick = (index) => {
+    setFolderSearch("");
+    setBreadcrumbs((prev) => prev.slice(0, index + 1));
+  };
+
+  const handleSelectFolder = (folder) => {
+    setSelectedFolder(folder);
+    setManualFolderInput("");
+    if (!clientName.trim() && folder?.name) {
+      setClientName(folder.name);
+    }
+  };
+
+  const filteredFolders = foldersList.filter((f) =>
+    f.name.toLowerCase().includes(folderSearch.trim().toLowerCase())
+  );
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -20,9 +84,23 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated })
       return;
     }
 
+    const effectiveExistingFolder =
+      folderMode === "existing"
+        ? (manualFolderInput.trim() || selectedFolder?.id || "")
+        : "";
+
+    if (folderMode === "existing" && !effectiveExistingFolder) {
+      setError("Please select an existing client folder from the picker or paste a folder URL/ID.");
+      return;
+    }
+
     setLoading(true);
     setError(null);
-    setCurrentStep("Creating client folder in Google Drive...");
+    setCurrentStep(
+      folderMode === "existing"
+        ? "Provisioning templates into existing Google Drive folder..."
+        : "Creating client folder in Google Drive..."
+    );
 
     try {
       const res = await fetch("/api/setup/provision", {
@@ -32,7 +110,8 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated })
           clientName: clientName.trim(),
           accountingTool,
           crmTool,
-          crmDrives
+          crmDrives,
+          existingFolderId: effectiveExistingFolder
         })
       });
 
@@ -82,7 +161,10 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated })
           background: "#FFFFFF",
           borderRadius: "16px",
           width: "100%",
-          maxWidth: "540px",
+          maxWidth: "580px",
+          maxHeight: "92vh",
+          display: "flex",
+          flexDirection: "column",
           boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)",
           border: "1px solid #E2E8F0",
           overflow: "hidden"
@@ -101,12 +183,12 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated })
         >
           <div>
             <h2 style={{ margin: 0, fontSize: "18px", fontWeight: "700", color: "#0F172A" }}>
-              {createdData ? "Client System Created!" : "➕ Onboard New Client"}
+              {createdData ? "Client system created" : "Onboard new client"}
             </h2>
             <p style={{ margin: "4px 0 0", fontSize: "13px", color: "#64748B" }}>
               {createdData
                 ? "Google Drive folder and templates provisioned successfully."
-                : "Creates Google Drive folder, duplicates templates, and registers in control sheets."}
+                : "Create or select a Google Drive folder, duplicate templates, and register in control sheets."}
             </p>
           </div>
           {!loading && (
@@ -128,7 +210,7 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated })
         </div>
 
         {/* Content */}
-        <div style={{ padding: "24px" }}>
+        <div style={{ padding: "24px", overflowY: "auto" }}>
           {error && (
             <div
               style={{
@@ -142,7 +224,7 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated })
                 marginBottom: "20px"
               }}
             >
-              ⚠️ {error}
+              {error}
             </div>
           )}
 
@@ -150,7 +232,7 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated })
             <div style={{ textAlign: "center", padding: "30px 10px" }}>
               <Spinner size={36} color="#023f98" />
               <p style={{ marginTop: "16px", fontWeight: "700", fontSize: "15px", color: "#0F172A" }}>
-                Provisioning Client System...
+                Provisioning client system...
               </p>
               <p style={{ marginTop: "4px", fontSize: "13px", color: "#64748B" }}>
                 {currentStep || "Duplicating templates and updating KeyInfo links..."}
@@ -171,10 +253,10 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated })
                 }}
               >
                 <p style={{ margin: "0 0 6px", fontWeight: "700", color: "#065F46", fontSize: "14px" }}>
-                  ✓ {createdData.clientName} is ready!
+                  ✓ {createdData.clientName} is ready
                 </p>
                 <p style={{ margin: 0, color: "#047857", fontSize: "12px", lineHeight: "1.5" }}>
-                  All 4 spreadsheets have been created inside the Drive folder and cross-linked. The client is now in Setup Mode.
+                  All 4 spreadsheets have been created inside the Drive folder and cross-linked. The client is now in setup mode.
                 </p>
               </div>
 
@@ -185,7 +267,7 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated })
                   rel="noreferrer"
                   style={{ fontSize: "13px", color: "#0284C7", fontWeight: "600", textDecoration: "none" }}
                 >
-                  📁 Open Google Drive Folder ↗
+                  Open Google Drive folder ↗
                 </a>
                 <a
                   href={createdData.clientUrl}
@@ -193,7 +275,7 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated })
                   rel="noreferrer"
                   style={{ fontSize: "13px", color: "#0284C7", fontWeight: "600", textDecoration: "none" }}
                 >
-                  📊 Open Client Dashboard Sheet ↗
+                  Open client dashboard sheet ↗
                 </a>
                 <a
                   href={createdData.masterUrl}
@@ -201,7 +283,7 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated })
                   rel="noreferrer"
                   style={{ fontSize: "13px", color: "#0284C7", fontWeight: "600", textDecoration: "none" }}
                 >
-                  ⚙️ Open Master Data Engine Sheet ↗
+                  Open master data engine sheet ↗
                 </a>
                 <a
                   href={createdData.reconUrl}
@@ -209,7 +291,7 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated })
                   rel="noreferrer"
                   style={{ fontSize: "13px", color: "#0284C7", fontWeight: "600", textDecoration: "none" }}
                 >
-                  🔍 Open Recon Sheet ↗
+                  Open recon sheet ↗
                 </a>
               </div>
 
@@ -229,7 +311,7 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated })
                     cursor: "pointer"
                   }}
                 >
-                  Open All 3 Sheets
+                  Open all 3 sheets
                 </button>
                 <button
                   type="button"
@@ -246,15 +328,16 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated })
                     cursor: "pointer"
                   }}
                 >
-                  Go to Onboarding Checklist →
+                  Go to onboarding checklist →
                 </button>
               </div>
             </div>
           ) : (
             <form onSubmit={handleSubmit}>
+              {/* Client Name */}
               <div style={{ marginBottom: "16px" }}>
                 <label style={{ display: "block", fontSize: "13px", fontWeight: "700", color: "#334155", marginBottom: "6px" }}>
-                  Client Name <span style={{ color: "#DC2626" }}>*</span>
+                  Client name <span style={{ color: "#DC2626" }}>*</span>
                 </label>
                 <input
                   type="text"
@@ -273,10 +356,245 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated })
                 />
               </div>
 
+              {/* Client Google Drive Folder Option */}
+              <div style={{ marginBottom: "16px" }}>
+                <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#334155", marginBottom: "6px" }}>
+                  Client Google Drive folder
+                </label>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", marginBottom: "10px" }}>
+                  <button
+                    type="button"
+                    onClick={() => setFolderMode("create")}
+                    style={{
+                      padding: "9px 12px",
+                      borderRadius: "8px",
+                      border: folderMode === "create" ? "2px solid #023f98" : "1px solid #CBD5E1",
+                      background: folderMode === "create" ? "#EFF6FF" : "#FFFFFF",
+                      color: folderMode === "create" ? "#023f98" : "#475569",
+                      fontSize: "12px",
+                      fontWeight: "700",
+                      cursor: "pointer",
+                      textAlign: "left"
+                    }}
+                  >
+                    Create a new folder
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setFolderMode("existing")}
+                    style={{
+                      padding: "9px 12px",
+                      borderRadius: "8px",
+                      border: folderMode === "existing" ? "2px solid #023f98" : "1px solid #CBD5E1",
+                      background: folderMode === "existing" ? "#EFF6FF" : "#FFFFFF",
+                      color: folderMode === "existing" ? "#023f98" : "#475569",
+                      fontSize: "12px",
+                      fontWeight: "700",
+                      cursor: "pointer",
+                      textAlign: "left"
+                    }}
+                  >
+                    Use an existing folder
+                  </button>
+                </div>
+
+                {folderMode === "create" ? (
+                  <div
+                    style={{
+                      padding: "10px 14px",
+                      borderRadius: "8px",
+                      background: "#F8FAFC",
+                      border: "1px solid #E2E8F0",
+                      fontSize: "12px",
+                      color: "#64748B"
+                    }}
+                  >
+                    A new folder named <b>{clientName.trim() || "<Client name>"}</b> will be created inside the primary <code>Clients</code> Google Drive folder.
+                  </div>
+                ) : (
+                  <div
+                    style={{
+                      border: "1px solid #CBD5E1",
+                      borderRadius: "10px",
+                      background: "#F8FAFC",
+                      padding: "12px"
+                    }}
+                  >
+                    {/* Breadcrumbs & Search */}
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", marginBottom: "8px", flexWrap: "wrap" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "4px", flexWrap: "wrap", fontSize: "12px" }}>
+                        {breadcrumbs.map((crumb, idx) => (
+                          <React.Fragment key={crumb.id}>
+                            {idx > 0 && <span style={{ color: "#94A3B8" }}>/</span>}
+                            <button
+                              type="button"
+                              onClick={() => handleBreadcrumbClick(idx)}
+                              style={{
+                                background: "transparent",
+                                border: "none",
+                                padding: "2px 4px",
+                                borderRadius: "4px",
+                                fontSize: "12px",
+                                fontWeight: idx === breadcrumbs.length - 1 ? "700" : "500",
+                                color: idx === breadcrumbs.length - 1 ? "#0F172A" : "#0284C7",
+                                cursor: "pointer"
+                              }}
+                            >
+                              {crumb.name}
+                            </button>
+                          </React.Fragment>
+                        ))}
+                      </div>
+                      <input
+                        type="text"
+                        placeholder="Filter folders..."
+                        value={folderSearch}
+                        onChange={(e) => setFolderSearch(e.target.value)}
+                        style={{
+                          padding: "5px 8px",
+                          borderRadius: "6px",
+                          border: "1px solid #CBD5E1",
+                          fontSize: "12px",
+                          width: "160px"
+                        }}
+                      />
+                    </div>
+
+                    {/* Folder Picker List */}
+                    <div
+                      style={{
+                        maxHeight: "170px",
+                        overflowY: "auto",
+                        background: "#FFFFFF",
+                        border: "1px solid #E2E8F0",
+                        borderRadius: "8px",
+                        marginBottom: "10px"
+                      }}
+                    >
+                      {foldersLoading ? (
+                        <div style={{ padding: "20px", textAlign: "center", fontSize: "12px", color: "#64748B", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px" }}>
+                          <Spinner size={14} color="#023f98" />
+                          <span>Loading folders...</span>
+                        </div>
+                      ) : foldersError ? (
+                        <div style={{ padding: "14px", fontSize: "12px", color: "#991B1B" }}>
+                          {foldersError}
+                        </div>
+                      ) : filteredFolders.length === 0 ? (
+                        <div style={{ padding: "18px", textAlign: "center", fontSize: "12px", color: "#94A3B8" }}>
+                          No folders found in this location.
+                        </div>
+                      ) : (
+                        filteredFolders.map((folder) => {
+                          const isSelected = selectedFolder?.id === folder.id && !manualFolderInput.trim();
+                          return (
+                            <div
+                              key={folder.id}
+                              onClick={() => handleSelectFolder(folder)}
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                padding: "8px 12px",
+                                borderBottom: "1px solid #F1F5F9",
+                                background: isSelected ? "#EFF6FF" : "#FFFFFF",
+                                cursor: "pointer"
+                              }}
+                            >
+                              <div style={{ display: "flex", alignItems: "center", gap: "8px", minWidth: 0 }}>
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill={isSelected ? "#023f98" : "#64748B"} stroke="none">
+                                  <path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z" />
+                                </svg>
+                                <span
+                                  style={{
+                                    fontSize: "13px",
+                                    fontWeight: isSelected ? "700" : "500",
+                                    color: isSelected ? "#023f98" : "#1E293B",
+                                    whiteSpace: "nowrap",
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis"
+                                  }}
+                                >
+                                  {folder.name}
+                                </span>
+                              </div>
+                              <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                {isSelected && (
+                                  <span style={{ fontSize: "11px", fontWeight: "700", color: "#023f98" }}>
+                                    Selected
+                                  </span>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleNavigateIntoFolder(folder);
+                                  }}
+                                  title="Browse inside this folder"
+                                  style={{
+                                    padding: "3px 7px",
+                                    borderRadius: "4px",
+                                    border: "1px solid #CBD5E1",
+                                    background: "#F8FAFC",
+                                    color: "#475569",
+                                    fontSize: "11px",
+                                    fontWeight: "600",
+                                    cursor: "pointer"
+                                  }}
+                                >
+                                  Browse →
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+
+                    {/* Selected Folder Summary or Manual Folder URL/ID Input */}
+                    {selectedFolder && !manualFolderInput.trim() && (
+                      <div style={{ marginBottom: "8px", fontSize: "12px", color: "#065F46", background: "#ECFDF5", border: "1px solid #A7F3D0", padding: "6px 10px", borderRadius: "6px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <span>
+                          Selected folder: <b>{selectedFolder.name}</b>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedFolder(null)}
+                          style={{ background: "transparent", border: "none", color: "#047857", fontSize: "11px", fontWeight: "700", cursor: "pointer" }}
+                        >
+                          Clear
+                        </button>
+                      </div>
+                    )}
+
+                    <div>
+                      <label style={{ display: "block", fontSize: "11px", fontWeight: "600", color: "#64748B", marginBottom: "4px" }}>
+                        Or paste an existing Google Drive folder URL / ID:
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="https://drive.google.com/drive/folders/..."
+                        value={manualFolderInput}
+                        onChange={(e) => setManualFolderInput(e.target.value)}
+                        style={{
+                          width: "100%",
+                          padding: "7px 10px",
+                          borderRadius: "6px",
+                          border: "1px solid #CBD5E1",
+                          fontSize: "12px",
+                          background: "#FFFFFF",
+                          boxSizing: "border-box"
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px", marginBottom: "16px" }}>
                 <div>
                   <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#334155", marginBottom: "6px" }}>
-                    Accounting Tool
+                    Accounting tool
                   </label>
                   <select
                     value={accountingTool}
@@ -299,7 +617,7 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated })
 
                 <div>
                   <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#334155", marginBottom: "6px" }}>
-                    CRM Tool
+                    CRM tool
                   </label>
                   <select
                     value={crmTool}
@@ -329,7 +647,7 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated })
 
               <div style={{ marginBottom: "20px" }}>
                 <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#334155", marginBottom: "6px" }}>
-                  CRM Integration Type
+                  CRM integration type
                 </label>
                 <select
                   value={crmDrives}
@@ -348,20 +666,6 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated })
                   <option value="Pipeline">Pipeline (Just pipeline)</option>
                   <option value="PipeAndConf">PipeAndConf (Pipeline and confirmed)</option>
                 </select>
-              </div>
-
-              <div
-                style={{
-                  padding: "12px 14px",
-                  borderRadius: "8px",
-                  background: "#F8FAFC",
-                  border: "1px solid #E2E8F0",
-                  marginBottom: "24px",
-                  fontSize: "12px",
-                  color: "#64748B"
-                }}
-              >
-                <b>Automated destination:</b> Folder will be created inside the primary <code>Clients</code> Google Drive folder.
               </div>
 
               <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
@@ -394,7 +698,7 @@ export default function OnboardClientModal({ isOpen, onClose, onClientCreated })
                     cursor: "pointer"
                   }}
                 >
-                  Provision Client System
+                  Provision client system
                 </button>
               </div>
             </form>

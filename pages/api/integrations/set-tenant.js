@@ -12,6 +12,8 @@ import { getIntegrationTokens, saveIntegrationTokens, getSharedXeroGrant, linkCl
 import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
 import { getSessionUser } from "../../../services/authService.js";
 import { notifyStaffOnClientConnection } from "../../../services/connectionNotifier.js";
+import { isReadOnlySession } from "../../../services/userPermissions.js";
+import { assertTrustedOrigin } from "../../../utils/helpers.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -27,10 +29,13 @@ export default async function handler(req, res) {
   const isSecretValid = Boolean(expectedSecret && providedSecret && providedSecret === expectedSecret);
 
   const sessionUser = getSessionUser(req);
-  const isAdmin = Boolean(sessionUser?.isAdmin);
+  const isAdmin = Boolean(sessionUser?.isAdmin && !isReadOnlySession(sessionUser));
 
   if (!isSecretValid && !isAdmin) {
     return res.status(401).json({ success: false, error: "Unauthorized: Admin session required." });
+  }
+  if (!isSecretValid && !assertTrustedOrigin(req, res)) {
+    return;
   }
 
   const { clientKey, masterSheetId, tool = "xero", tenantId, tenantName } = req.body;

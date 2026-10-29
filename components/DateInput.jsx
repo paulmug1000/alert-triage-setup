@@ -25,12 +25,19 @@ export default function DateInput({
   required = false,
   title,
 }) {
+  const inputRef = React.useRef(null);
+  const isFocusedRef = React.useRef(false);
   const isoValue = React.useMemo(() => toInputDateFormat(value), [value]);
   const isoMin = React.useMemo(() => (min ? toInputDateFormat(min) : undefined), [min]);
   const isoMax = React.useMemo(() => (max ? toInputDateFormat(max) : undefined), [max]);
 
-  const handleChange = (e) => {
-    const rawVal = e.target.value;
+  React.useEffect(() => {
+    if (inputRef.current && !isFocusedRef.current) {
+      inputRef.current.value = isoValue;
+    }
+  }, [isoValue]);
+
+  const emitFormatted = (e, rawVal) => {
     const formatted = rawVal ? toSheetDateFormat(rawVal) : "";
 
     const synthEvent = {
@@ -50,8 +57,38 @@ export default function DateInput({
     }
   };
 
+  const handleChange = (e) => {
+    const rawVal = e.target.value;
+    // While typing a 4-digit year in Chromium (e.g. "0002-11-01", "0020-11-01", "0202-11-01"),
+    // do not round-trip partial years (< 1000) through 2-digit sheet dates mid-keystroke.
+    if (rawVal && /^0\d{3}-/.test(rawVal)) {
+      return;
+    }
+    emitFormatted(e, rawVal);
+  };
+
+  const handleFocus = (e) => {
+    isFocusedRef.current = true;
+    if (onFocus) onFocus(e);
+  };
+
+  const handleBlur = (e) => {
+    isFocusedRef.current = false;
+    const rawVal = e.target.value;
+    const currentFormatted = value ? toSheetDateFormat(value) : "";
+    const nextFormatted = rawVal ? toSheetDateFormat(rawVal) : "";
+    if (nextFormatted !== currentFormatted) {
+      emitFormatted(e, rawVal);
+    }
+    if (inputRef.current) {
+      inputRef.current.value = rawVal ? toInputDateFormat(nextFormatted) : "";
+    }
+    if (onBlur) onBlur(e);
+  };
+
   return (
     <input
+      ref={inputRef}
       type="date"
       id={id}
       name={name}
@@ -61,10 +98,10 @@ export default function DateInput({
       placeholder={placeholder}
       min={isoMin}
       max={isoMax}
-      value={isoValue}
+      defaultValue={isoValue}
       onChange={handleChange}
-      onBlur={onBlur}
-      onFocus={onFocus}
+      onBlur={handleBlur}
+      onFocus={handleFocus}
       onKeyDown={onKeyDown}
       className={className}
       style={{

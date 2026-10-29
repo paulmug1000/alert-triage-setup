@@ -488,7 +488,9 @@ export async function handleAddTaskNote(req, res, sheets) {
     await ensureAlertMemoryTab(sheets, acId);
     const memoryRows = await readAlertMemory(sheets, acId);
     const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
-    if (!memoryRow) return res.status(404).json({ success: false, error: "Task not found" });
+    if (!memoryRow || (memoryRow.status !== "task" && memoryRow.status !== "task_resolved")) {
+      return res.status(404).json({ success: false, error: "Task not found" });
+    }
 
     const sessionUser = getSessionUser(req);
     if (!sessionUser) return res.status(401).json({ success: false, error: "Unauthorized" });
@@ -543,7 +545,7 @@ export async function handleSnoozeTask(req, res, sheets) {
 
     for (const hash of hashes) {
       const memoryRow = findMemoryRow(memoryRows, hash);
-      if (!memoryRow) continue;
+      if (!memoryRow || (memoryRow.status !== "task" && memoryRow.status !== "task_resolved")) continue;
 
       if (!sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, memoryRow.clientName)) {
         continue;
@@ -618,7 +620,9 @@ export async function handleRevertTaskToAlert(req, res, sheets) {
     await ensureAlertMemoryTab(sheets, acId);
     const memoryRows = await readAlertMemory(sheets, acId);
     const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
-    if (!memoryRow) return res.status(404).json({ success: false, error: "Task not found" });
+    if (!memoryRow || (memoryRow.status !== "task" && memoryRow.status !== "task_resolved")) {
+      return res.status(404).json({ success: false, error: "Task not found" });
+    }
 
     const sessionUser = getSessionUser(req);
     if (!sessionUser) return res.status(401).json({ success: false, error: "Unauthorized" });
@@ -657,7 +661,7 @@ export async function handleResolveTask(req, res, sheets) {
 
     for (const hash of hashes) {
       const memoryRow = findMemoryRow(memoryRows, hash);
-      if (!memoryRow) continue;
+      if (!memoryRow || (memoryRow.status !== "task" && memoryRow.status !== "task_resolved")) continue;
 
       if (!sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, memoryRow.clientName)) {
         continue;
@@ -720,7 +724,9 @@ export async function handleUpdateTask(req, res, sheets) {
     await ensureAlertMemoryTab(sheets, acId);
     const memoryRows = await readAlertMemory(sheets, acId);
     const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
-    if (!memoryRow) return res.status(404).json({ success: false, error: "Task not found" });
+    if (!memoryRow || (memoryRow.status !== "task" && memoryRow.status !== "task_resolved")) {
+      return res.status(404).json({ success: false, error: "Task not found" });
+    }
 
     if (!req.isSystemAuthorized && sessionUser && !sessionUser.isAdmin) {
       const rowClient = memoryRow.clientName || memoryRow.client;

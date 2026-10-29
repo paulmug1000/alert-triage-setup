@@ -282,10 +282,15 @@ async function refreshAutoUpdatesSheetMappings(sheets) {
   const rows = resp.data.values || [];
   for (const r of rows) {
     const cName = String(r[0] || "").trim();
+    const reconUrl = String(r[9] || "").trim();
     const clientUrl = String(r[11] || "").trim();
     const masterUrl = String(r[12] || "").trim();
+    const rId = extractSheetIdFromUrl(reconUrl) || reconUrl;
     const cId = extractSheetIdFromUrl(clientUrl) || clientUrl;
     const mId = extractSheetIdFromUrl(masterUrl) || masterUrl;
+    if (rId && cName) {
+      clientSheetIdToNameCache.set(rId, cName);
+    }
     if (cId && cName) {
       clientSheetIdToNameCache.set(cId, cName);
       clientNameToClientIdCache.set(cName.toLowerCase(), cId);
@@ -495,8 +500,8 @@ export function sanitizeFormulaInput(val) {
   // If it's a valid finite number, it is safe (e.g. "-500", "+25.5")
   if (!isNaN(Number(trimmed))) return val;
   // If it starts with formula trigger characters or a leading single quote that Google Sheets strips on USER_ENTERED, neutralize it
-  if (/^['=+\-@\t\r]/.test(trimmed) || /^[\t\r ]/.test(val)) {
-    return `'${val}`;
+  if (/^[\s'’]*[=+\-@]/.test(val)) {
+    return `'${val.replace(/^[\s'’]+/, "")}`;
   }
   return val;
 }

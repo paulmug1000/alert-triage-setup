@@ -57,8 +57,8 @@ export function parseMonthHeader(label) {
  * @param {number} colIdx 0-based column index (0 = A, 1 = B, 9 = J, etc.)
  */
 export function isCashCellEditable(rowNum, colIdx) {
-  // Column A (index 0) is line item labels - never editable
-  if (colIdx < 1) return false;
+  // Column A (index 0) is line item labels - never editable; columns beyond AK (36) are out of bounds
+  if (isNaN(colIdx) || colIdx < 1 || colIdx > 36) return false;
 
   // 1. Whitelisted Single Override Cells
   // B4 (Month 1 Opening balance)
@@ -281,7 +281,7 @@ export async function saveCashBatch({
   for (const up of updates) {
     const rowNum = parseInt(up.sheetRow, 10);
     const colIdx = up.colIdx !== undefined ? parseInt(up.colIdx, 10) : colLetterToNum(up.colLetter) - 1;
-    const colLetter = up.colLetter || colIdxToLetter(colIdx);
+    const colLetter = colIdxToLetter(colIdx);
 
     if (!isCashCellEditable(rowNum, colIdx)) {
       console.warn(`[Cash Save] Skipped protected cell Cash!${colLetter}${rowNum}`);

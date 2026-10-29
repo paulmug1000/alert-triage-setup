@@ -1,5 +1,6 @@
 import { google } from "googleapis";
 import { unwrapSheetId } from "./sheetTokenService.js";
+export { sanitizeFormulaInput } from "../utils/helpers.js";
 
 const _wrappedSheetsClients = new WeakSet();
 

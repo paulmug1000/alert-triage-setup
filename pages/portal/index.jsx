@@ -150,7 +150,7 @@ export default function PortalPage({ initialUser = null }) {
       if (client.clientSheetId !== activeClientSheetIdRef.current) return;
       console.error("Payload fetch error:", err);
       if (!isSilent) {
-        setPayloadError(err.message || "Failed to connect to client sheet");
+        setPayloadError(err.message || "Failed to load dashboard data");
       }
     } finally {
       if (client.clientSheetId === activeClientSheetIdRef.current && !isSilent) {
@@ -213,7 +213,7 @@ export default function PortalPage({ initialUser = null }) {
       if (client.clientSheetId !== activeClientSheetIdRef.current) return;
       console.error("Performance fetch error:", err);
       if (!isSilent) {
-        setPerfError(err.message || "Failed to connect to client sheet");
+        setPerfError(err.message || "Failed to load performance data");
       }
     } finally {
       if (client.clientSheetId === activeClientSheetIdRef.current && !isSilent) {
@@ -252,7 +252,7 @@ export default function PortalPage({ initialUser = null }) {
       if (client.clientSheetId !== activeClientSheetIdRef.current) return;
       console.error("Cashflow fetch error:", err);
       if (!isSilent) {
-        setCashError(err.message || "Failed to connect to client sheet");
+        setCashError(err.message || "Failed to load cashflow data");
       }
     } finally {
       if (client.clientSheetId === activeClientSheetIdRef.current && !isSilent) {
@@ -291,7 +291,7 @@ export default function PortalPage({ initialUser = null }) {
       if (client.clientSheetId !== activeClientSheetIdRef.current) return;
       console.error("Key data fetch error:", err);
       if (!isSilent) {
-        setKeyDataError(err.message || "Failed to connect to client sheet");
+        setKeyDataError(err.message || "Failed to load key data");
       }
     } finally {
       if (client.clientSheetId === activeClientSheetIdRef.current && !isSilent) {
@@ -362,7 +362,7 @@ export default function PortalPage({ initialUser = null }) {
       if (client.clientSheetId !== activeClientSheetIdRef.current) return;
       console.error("Budget fetch error:", err);
       if (!isSilent) {
-        setBudgetError(err.message || "Failed to connect to client sheet");
+        setBudgetError(err.message || "Failed to load budget data");
       }
     } finally {
       if (client.clientSheetId === activeClientSheetIdRef.current && !isSilent) {

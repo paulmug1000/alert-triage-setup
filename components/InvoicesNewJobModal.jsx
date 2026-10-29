@@ -66,6 +66,7 @@ export default function InvoicesNewJobModal({
   const [projectType, setProjectType] = useState("Project");
   const [startDate, setStartDate] = useState(initialStartDate);
   const [endDate, setEndDate] = useState(initialEndDate);
+  const [noEndDate, setNoEndDate] = useState(false);
   const [daysToPay, setDaysToPay] = useState(calculatedDays);
   const [clientDefaultDays, setClientDefaultDays] = useState(defaultDaysFallback);
   const [saving, setSaving] = useState(false);
@@ -106,6 +107,11 @@ export default function InvoicesNewJobModal({
 
   const save = async () => {
     if (!jobName.trim()) { setError("Please enter a job name"); return; }
+    const isRetainerNoEnd = projectType === "Retainer" && noEndDate;
+    if (projectType === "Retainer" && !isRetainerNoEnd && !endDate) {
+      setError("Please enter an end date or tick 'No end date'");
+      return;
+    }
     setSaving(true);
     try {
       const parsedDays = parseInt(String(daysToPay).replace(/[^\d-]/g, ""), 10);
@@ -120,7 +126,9 @@ export default function InvoicesNewJobModal({
           clientName: invoicesClient?.clientName || invoicesClient?.name || "",
           jobName: jobName.trim(), projectCode: projectCode.trim(),
           revenue: parseFloat(revenue) || 0, directCosts: parseFloat(directCosts) || 0,
-          vatYesNo, projectType, startDate, endDate,
+          vatYesNo, projectType, startDate,
+          endDate: isRetainerNoEnd ? "31-Dec-2050" : endDate,
+          noEndDate: isRetainerNoEnd,
           daysToPay: safeDaysToPay,
           invoice: { ...inv, daysToPay: safeDaysToPay },
           automationCommanderSheetId: invoicesClient?.automationCommanderSheetId,
@@ -188,7 +196,20 @@ export default function InvoicesNewJobModal({
             </div>
             <div>
               <label style={labelStyle}>Type{isAdmin ? " (col AJ)" : ""}</label>
-              <select style={inputStyle} value={projectType} onChange={e => setProjectType(e.target.value)}>
+              <select
+                style={inputStyle}
+                value={projectType}
+                onChange={e => {
+                  const nextType = e.target.value;
+                  setProjectType(nextType);
+                  if (nextType === "Retainer" && endDate === initialEndDate) {
+                    setEndDate("");
+                  } else if (nextType === "Project") {
+                    setNoEndDate(false);
+                    if (!endDate && initialEndDate) setEndDate(initialEndDate);
+                  }
+                }}
+              >
                 <option value="Project">Project</option>
                 <option value="Retainer">Retainer</option>
               </select>
@@ -200,8 +221,30 @@ export default function InvoicesNewJobModal({
               <DateInput style={inputStyle} value={startDate} onChange={e => setStartDate(e.target.value)} />
             </div>
             <div>
-              <label style={labelStyle}>End date{isAdmin ? " (col AM)" : ""}</label>
-              <DateInput style={inputStyle} value={endDate} onChange={e => setEndDate(e.target.value)} min={startDate || undefined} />
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "3px" }}>
+                <label style={{ ...labelStyle, marginBottom: 0 }}>End date{isAdmin ? " (col AM)" : ""}</label>
+                {projectType === "Retainer" && (
+                  <label style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "11px", fontWeight: "600", color: "#475569", cursor: "pointer", userSelect: "none" }}>
+                    <input
+                      type="checkbox"
+                      checked={noEndDate}
+                      onChange={e => setNoEndDate(e.target.checked)}
+                      style={{ margin: 0, cursor: "pointer" }}
+                    />
+                    No end date
+                  </label>
+                )}
+              </div>
+              {projectType === "Retainer" && noEndDate ? (
+                <input
+                  type="text"
+                  style={{ ...inputStyle, background: "#f8fafc", color: "#64748b", cursor: "not-allowed" }}
+                  value="No end date"
+                  disabled
+                />
+              ) : (
+                <DateInput style={inputStyle} value={endDate} onChange={e => setEndDate(e.target.value)} min={startDate || undefined} />
+              )}
             </div>
           </div>
           <div>

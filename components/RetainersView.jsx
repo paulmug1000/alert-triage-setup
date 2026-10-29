@@ -6,6 +6,7 @@ import CreateRetainerModal from "./CreateRetainerModal";
 import EditClientSelector from "./EditClientSelector";
 import { useRetainers } from "../hooks/useRetainers";
 import { useAuth } from "../hooks/useAuth";
+import { formatJobEndDateDisplay } from "../utils/helpers";
 
 export default function RetainersView({
   allOutgoingsClients,
@@ -126,7 +127,13 @@ export default function RetainersView({
           clientSheetId={retainersClient?.clientSheetId}
           masterSheetId={retainersClient?.masterSheetId}
           onClose={() => setShowCreateRetainerModal(false)}
-          onCreated={() => loadRetainersJobs(retainersClient)}
+          onCreated={(resData) => {
+            loadRetainersJobs(retainersClient, true);
+            if (resData?.backgroundProvisioning) {
+              setTimeout(() => loadRetainersJobs(retainersClient, true, true), 4000);
+              setTimeout(() => loadRetainersJobs(retainersClient, true, true), 8000);
+            }
+          }}
         />
       )}
       <div
@@ -301,7 +308,7 @@ export default function RetainersView({
                         </td>
                         <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{rIdx === 0 ? job.revenue : ""}</td>
                         <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", whiteSpace: "nowrap" }}>{jr.startDate}</td>
-                        <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", whiteSpace: "nowrap" }}>{jr.endDate}</td>
+                        <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", whiteSpace: "nowrap" }}>{jr.endDate ? formatJobEndDateDisplay(jr.endDate, "") : ""}</td>
                         {jr.invoiceSlots.map(s => {
                           const isEmpty = !s.ref && !s.amount;
                           return (

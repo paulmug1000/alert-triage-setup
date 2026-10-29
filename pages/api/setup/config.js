@@ -116,6 +116,20 @@ export default async function handler(req, res) {
         crmDrives,
         updatedBy: sessionUser.name || sessionUser.email
       });
+      if (!sessionUser.isAdmin && updatedConfig && typeof updatedConfig === "object") {
+        if (updatedConfig.integrations?.xero) {
+          delete updatedConfig.integrations.xero.availableTenants;
+          if (updatedConfig.integrations.xero.metadata) {
+            delete updatedConfig.integrations.xero.metadata.availableTenants;
+          }
+        }
+        if (updatedConfig.accountingStatus) {
+          delete updatedConfig.accountingStatus.availableTenants;
+          if (updatedConfig.accountingStatus.metadata) {
+            delete updatedConfig.accountingStatus.metadata.availableTenants;
+          }
+        }
+      }
 
       return res.status(200).json({ success: true, config: updatedConfig });
     } catch (err) {

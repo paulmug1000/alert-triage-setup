@@ -28,17 +28,37 @@ function sanitizeChecklistStateForUser(state, sessionUser) {
           metadata: t.metadata ? sanitizeSpreadsheetTerms(String(t.metadata)) : t.metadata,
         }
       : t;
-  return {
-    ...state,
-    phases: Array.isArray(state.phases)
-      ? state.phases.map((p) => ({
+  const filteredPhases = Array.isArray(state.phases)
+    ? state.phases
+        .filter((p) => p && p.id !== "phase_1" && !p.adminOnly)
+        .map((p) => ({
           ...p,
           title: p.title ? sanitizeSpreadsheetTerms(p.title) : p.title,
           description: p.description ? sanitizeSpreadsheetTerms(p.description) : p.description,
           tasks: Array.isArray(p.tasks) ? p.tasks.map(sanitizeTask) : p.tasks,
         }))
-      : state.phases,
-    tasks: Array.isArray(state.tasks) ? state.tasks.map(sanitizeTask) : state.tasks,
+    : state.phases;
+  const filteredTasks = Array.isArray(state.tasks)
+    ? state.tasks.filter((t) => t && t.phaseId !== "phase_1").map(sanitizeTask)
+    : state.tasks;
+
+  let totalTasks = 0;
+  let completedCount = 0;
+  if (Array.isArray(filteredPhases)) {
+    filteredPhases.forEach((p) => {
+      totalTasks += Number(p.totalCount) || (Array.isArray(p.tasks) ? p.tasks.length : 0);
+      completedCount += Number(p.completedCount) || 0;
+    });
+  }
+  const progressPercent = totalTasks > 0 ? Math.round((completedCount / totalTasks) * 100) : 0;
+
+  return {
+    ...state,
+    totalTasks,
+    completedCount,
+    progressPercent,
+    phases: filteredPhases,
+    tasks: filteredTasks,
   };
 }
 
@@ -87,6 +107,9 @@ export default async function handler(req, res) {
     const { clientName, masterSheetId, taskId, isCompleted, metadata } = req.body || {};
     if (!clientName || !taskId) {
       return res.status(400).json({ success: false, error: "Missing required clientName or taskId." });
+    }
+    if (!sessionUser.isAdmin && String(taskId).startsWith("p1_")) {
+      return res.status(403).json({ success: false, error: "Step 0 tasks can only be modified by administrators." });
     }
 
     if (!sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, clientName)) {

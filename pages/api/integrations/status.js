@@ -32,7 +32,7 @@ export default async function handler(req, res) {
   installSheetIdBoundary(req, res, sessionUser);
 
   const { all, clientKey, clientName, masterSheetId, refresh, force } = req.query;
-  const forceRefresh = refresh === "true" || force === "true";
+  const forceRefresh = (refresh === "true" || force === "true") && Boolean(sessionUser.isAdmin);
 
   // Mode 1: All Clients Status (for the new Multi-Client Integrations page)
   if (all === "true" || all === "1") {

@@ -8,7 +8,7 @@ import {
 import { createHash } from "crypto";
 import { logPmaActivity } from "./pmaLogger.js";
 import { getSessionUser } from "./authService.js";
-import { isUserAuthorizedForClient } from "./userPermissions.js";
+import { isUserAuthorizedForClient, canAccessPma } from "./userPermissions.js";
 import { matchesClientName, ADMIN_ONLY_ALERT_TYPES, toSheetDateFormat } from "../utils/helpers.js";
 import { getAllClients } from "./workspaces.js";
 
@@ -17,6 +17,10 @@ const PRECOMPUTED_KEY = "triage_precomputed";
 export async function handleBustCache(req, res, sheets) {
   const { fingerprintHash, rowNumber, sheetName, automationCommanderSheetId: acId } = req.body;
   if (!acId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+  const sessionUser = getSessionUser(req, res);
+  if (!req.isSystemAuthorized && (!sessionUser || (!sessionUser.isAdmin && !canAccessPma(sessionUser)))) {
+    return res.status(403).json({ success: false, error: "Forbidden" });
+  }
   try {
     const memoryRows = await readAlertMemory(sheets, acId);
     let row = null;
@@ -26,9 +30,12 @@ export async function handleBustCache(req, res, sheets) {
       row = memoryRows.find(r => r.status === "cached" && r.cachedOptionsJSON && r.alertSummary?.includes(String(rowNumber)));
     }
     if (!row) return res.status(404).json({ success: false, error: "Alert not found in AlertMemory" });
+    if (!req.isSystemAuthorized && sessionUser && !sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, row.clientName)) {
+      return res.status(403).json({ success: false, error: "Forbidden: Not authorized for this client." });
+    }
     await updateAlertMemoryRow(sheets, acId, row.rowIndex, { ...row, cachedOptionsJSON: "" });
     console.log(`  ✅ Cache cleared for row ${row.rowIndex} (${row.fingerprintHash})`);
-    return res.status(200).json({ success: true, fingerprintHash: row.fingerprintHash });
+    return res.status(200).json({ success: true, ...(sessionUser?.isAdmin ? { fingerprintHash: row.fingerprintHash } : {}) });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
   }
@@ -56,6 +63,7 @@ export async function handleGetAlerts(req, res) {
       noActionAlerts = (noActionAlerts || []).filter(isAllowedAlert);
       proactiveAlerts = (proactiveAlerts || []).filter(isAllowedAlert);
       clientsWithFlags = (clientsWithFlags || []).filter(c => assignedList.some(assigned => matchesClientName(assigned, c.clientName)));
+      resolvedNoActionFlags = (resolvedNoActionFlags || []).filter(f => assignedList.some(assigned => matchesClientName(assigned, f?.clientName)));
     }
 
     console.log(`✅ Retrieved ${(alerts || []).length} alerts from Redis for session ${sessionId}`);
@@ -430,9 +438,12 @@ export async function handleRecordDecision(req, res, sheets) {
   const { alert, decision, automationCommanderSheetId } = req.body;
   if (!alert || !decision || !automationCommanderSheetId) return res.status(400).json({ success: false, error: "Missing alert, decision, or acId" });
   const sessionUser = getSessionUser(req, res);
-  if (sessionUser && !sessionUser.isAdmin && alert.clientName && !isUserAuthorizedForClient(sessionUser, alert.clientName)) {
-    return res.status(403).json({ success: false, error: "Forbidden: Not authorized for this client." });
+  if (!req.isSystemAuthorized && sessionUser && !sessionUser.isAdmin) {
+    if (!alert.clientName || !isUserAuthorizedForClient(sessionUser, alert.clientName)) {
+      return res.status(403).json({ success: false, error: "Forbidden: Not authorized for this client." });
+    }
   }
+  const canRemoveClient = (cName) => req.isSystemAuthorized || !sessionUser || sessionUser.isAdmin || isUserAuthorizedForClient(sessionUser, cName);
   try {
     const timestamp = new Date().toISOString();
     const alertAmount = alert.summary?.amount || alert.data?.amount || alert.data?.revenue || "";
@@ -458,9 +469,14 @@ export async function handleRecordDecision(req, res, sheets) {
         const fp = alert.fingerprintHash || buildAlertFingerprint(alert);
         const mr = findMemoryRow(memRows, fp);
         const alertSummary = alert.summary?.summary || `${alert.type || alert.flagType || "alert"} ${alert.summary?.invoiceNo || alert.summary?.description || ""} £${alert.summary?.amount || ""}`.trim();
-        if (mr && (!mr.clientName || !alert.clientName || matchesClientName(alert.clientName, mr.clientName))) {
+        const isMrClientMatch = mr && (
+          (req.isSystemAuthorized || !sessionUser || sessionUser.isAdmin)
+            ? (!mr.clientName || !alert.clientName || matchesClientName(alert.clientName, mr.clientName))
+            : (mr.clientName && alert.clientName && matchesClientName(alert.clientName, mr.clientName))
+        );
+        if (mr && isMrClientMatch) {
           await updateAlertMemoryRow(sheets, automationCommanderSheetId, mr.rowIndex, { ...mr, status: "accepted" });
-        } else {
+        } else if (!mr) {
           await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
             fingerprintHash: fp,
             alertType: alert.type || alert.flagType || "unknown",
@@ -486,14 +502,14 @@ export async function handleRecordDecision(req, res, sheets) {
         const preRaw = await redisClient?.get(PRECOMPUTED_KEY);
         if (preRaw) {
           const pre = JSON.parse(preRaw);
-          applyAlertRemovalToTriageData(pre, targetIds);
+          applyAlertRemovalToTriageData(pre, targetIds, canRemoveClient);
           await redisClient?.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
         }
         if (req.body.sessionId) {
           const sRaw = await redisClient?.get(`triage_alerts:${req.body.sessionId}`);
           if (sRaw) {
             const sData = JSON.parse(sRaw);
-            applyAlertRemovalToTriageData(sData, targetIds);
+            applyAlertRemovalToTriageData(sData, targetIds, canRemoveClient);
             await redisClient?.set(`triage_alerts:${req.body.sessionId}`, JSON.stringify(sData), { EX: 86400 * 7 });
           }
         }
@@ -528,12 +544,12 @@ export async function handleBulkIgnoreAlerts(req, res, sheets) {
     const rowsToUpdate = [];
 
     for (const alert of alertsToIgnore) {
-      if (sessionUser && !sessionUser.isAdmin && alert?.clientName && !isUserAuthorizedForClient(sessionUser, alert.clientName)) {
+      if (!req.isSystemAuthorized && sessionUser && !sessionUser.isAdmin && (!alert?.clientName || !isUserAuthorizedForClient(sessionUser, alert.clientName))) {
         return res.status(403).json({ success: false, error: "Forbidden: Not authorized for one or more alerts in batch." });
       }
       const fingerprintHash = alert.fingerprintHash || buildAlertFingerprint(alert);
       const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
-      if (memoryRow && sessionUser && !sessionUser.isAdmin && memoryRow.clientName && !isUserAuthorizedForClient(sessionUser, memoryRow.clientName)) {
+      if (memoryRow && !req.isSystemAuthorized && sessionUser && !sessionUser.isAdmin && (!memoryRow.clientName || !isUserAuthorizedForClient(sessionUser, memoryRow.clientName))) {
         return res.status(403).json({ success: false, error: "Forbidden: Target AlertMemory row belongs to an unauthorized client." });
       }
       const alertSummary = alert.summary?.summary || `${alert.type || "alert"} ${alert.summary?.invoiceNo || ""} £${alert.summary?.amount || ""}`.trim();
@@ -641,12 +657,13 @@ export async function handleAcknowledgeProactiveAlert(req, res, sheets) {
       });
     }
 
+    const canRemoveClient = (cName) => req.isSystemAuthorized || !sessionUser || sessionUser.isAdmin || isUserAuthorizedForClient(sessionUser, cName);
     if (sessionId) {
       try {
         const sessionData = await redisClient.get(`triage_alerts:${sessionId}`);
         if (sessionData) {
           const parsed = JSON.parse(sessionData);
-          applyAlertRemovalToTriageData(parsed, [alertKey, fingerprintHash]);
+          applyAlertRemovalToTriageData(parsed, [alertKey, fingerprintHash], canRemoveClient);
           await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 86400 * 7 });
         }
       } catch (e) {}
@@ -655,7 +672,7 @@ export async function handleAcknowledgeProactiveAlert(req, res, sheets) {
       const preRaw = await redisClient.get(PRECOMPUTED_KEY);
       if (preRaw) {
         const pre = JSON.parse(preRaw);
-        applyAlertRemovalToTriageData(pre, [alertKey, fingerprintHash]);
+        applyAlertRemovalToTriageData(pre, [alertKey, fingerprintHash], canRemoveClient);
         await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
       }
     } catch (e) {}
@@ -717,12 +734,13 @@ export async function handleResolveProactiveAlert(req, res, sheets) {
       });
     }
 
+    const canRemoveClient = (cName) => req.isSystemAuthorized || !sessionUser || sessionUser.isAdmin || isUserAuthorizedForClient(sessionUser, cName);
     if (sessionId) {
       try {
         const sessionData = await redisClient.get(`triage_alerts:${sessionId}`);
         if (sessionData) {
           const parsed = JSON.parse(sessionData);
-          applyAlertRemovalToTriageData(parsed, [alertKey, fingerprintHash]);
+          applyAlertRemovalToTriageData(parsed, [alertKey, fingerprintHash], canRemoveClient);
           await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 86400 * 7 });
         }
       } catch (e) {}
@@ -731,7 +749,7 @@ export async function handleResolveProactiveAlert(req, res, sheets) {
       const preRaw = await redisClient.get(PRECOMPUTED_KEY);
       if (preRaw) {
         const pre = JSON.parse(preRaw);
-        applyAlertRemovalToTriageData(pre, [alertKey, fingerprintHash]);
+        applyAlertRemovalToTriageData(pre, [alertKey, fingerprintHash], canRemoveClient);
         await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
       }
     } catch (e) {}
@@ -829,12 +847,13 @@ export async function handleBulkAcknowledgeProactiveAlerts(req, res, sheets) {
       await appendAlertMemoryRowsBatch(sheets, acId, appendItems);
     }
 
+    const canRemoveClient = (cName) => req.isSystemAuthorized || !sessionUser || sessionUser.isAdmin || isUserAuthorizedForClient(sessionUser, cName);
     if (sessionId) {
       try {
         const sessionData = await redisClient.get(`triage_alerts:${sessionId}`);
         if (sessionData) {
           const parsed = JSON.parse(sessionData);
-          applyAlertRemovalToTriageData(parsed, hashesToRemove);
+          applyAlertRemovalToTriageData(parsed, hashesToRemove, canRemoveClient);
           await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 86400 * 7 });
         }
       } catch (e) {}
@@ -843,7 +862,7 @@ export async function handleBulkAcknowledgeProactiveAlerts(req, res, sheets) {
       const preRaw = await redisClient.get(PRECOMPUTED_KEY);
       if (preRaw) {
         const pre = JSON.parse(preRaw);
-        applyAlertRemovalToTriageData(pre, hashesToRemove);
+        applyAlertRemovalToTriageData(pre, hashesToRemove, canRemoveClient);
         await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
       }
     } catch (e) {}

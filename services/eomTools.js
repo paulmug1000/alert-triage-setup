@@ -3,8 +3,9 @@ import { redisClient } from "./redisClient";
 import { memoryCache } from "./cacheService";
 import { logPmaActivity } from "./pmaLogger";
 import { getSessionUser } from "./authService";
-import { isUserAuthorizedForClient, sanitizeFormulaInput } from "./userPermissions";
+import { isUserAuthorizedForClient, sanitizeFormulaInput, getCanonicalAcSheetId, verifyUserAuthorizedForSheet } from "./userPermissions";
 import { getAllClients, DEFAULT_AC_SHEET_ID } from "./workspaces";
+import { matchesClientName, sanitizeSpreadsheetTerms } from "../utils/helpers";
 
 // Moved from triage.js local scope
 let eomTabsVerified = false;
@@ -441,8 +442,19 @@ export async function handleEomUpdateTaskStatus(req, res, sheets) {
 }
 
 export async function handleEomUpdateTaskStatusBatch(req, res, sheets) {
-  const { updates, automationCommanderSheetId } = req.body;
-  if (!updates || !updates.length || !automationCommanderSheetId) return res.status(400).json({ success: false, error: "Missing updates" });
+  const { updates } = req.body;
+  const automationCommanderSheetId = getCanonicalAcSheetId();
+  if (!updates || !Array.isArray(updates) || !updates.length || !automationCommanderSheetId) {
+    return res.status(400).json({ success: false, error: "Missing updates" });
+  }
+  const sessionUser = getSessionUser(req);
+  if (sessionUser && !sessionUser.isAdmin) {
+    for (const u of updates) {
+      if (!u || !u.clientName || !isUserAuthorizedForClient(sessionUser, u.clientName)) {
+        return res.status(403).json({ success: false, error: "Forbidden: Not authorized for one or more clients in batch." });
+      }
+    }
+  }
   try {
     const resp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A2:F200000" }));
     const rows = resp.data.values || [];
@@ -713,15 +725,28 @@ export async function handleEomSaveCashBalance(req, res, sheets) {
       details: { clientName: cashClientName, formula, targetCol: targetColLetter, targetRow }
     }).catch(e => console.error("PMA log failed:", e));
 
-    return res.status(200).json({ success: true, formula, targetCol: targetColLetter, targetRow, completedTaskId: typeof completedTaskId === "string" ? completedTaskId : null });
+    const isAdmin = Boolean(getSessionUser(req)?.isAdmin);
+    return res.status(200).json({
+      success: true,
+      ...(isAdmin ? { formula, targetCol: targetColLetter, targetRow } : {}),
+      completedTaskId: typeof completedTaskId === "string" ? completedTaskId : null
+    });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
   }
 }
 
 export async function handleEomCreateDashboardBackup(req, res, sheets) {
-  const { automationCommanderSheetId, clientSheetId, clientName: backupClientName, workMonthKey: backupWorkMonthKey } = req.body;
+  const { clientSheetId, clientName: backupClientName, workMonthKey: backupWorkMonthKey } = req.body;
+  const automationCommanderSheetId = getCanonicalAcSheetId();
   if (!automationCommanderSheetId || !clientSheetId || !backupClientName || !backupWorkMonthKey) return res.status(400).json({ success: false, error: "Missing required fields" });
+  const sessionUser = getSessionUser(req);
+  if (sessionUser && !sessionUser.isAdmin) {
+    const auth = await verifyUserAuthorizedForSheet(sessionUser, clientSheetId, backupClientName, sheets);
+    if (!auth.authorized) {
+      return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
+    }
+  }
   try {
     const clientResp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "AutoUpdates!A2:E500" }));
     const clientRows = clientResp.data.values || [];
@@ -1415,10 +1440,12 @@ export async function autoCompletePlcompTaskByName_(sheets, automationCommanderS
 }
 
 export async function handleEomGetPlCompData(req, res, sheets) {
-  const { clientName, automationCommanderSheetId } = req.body;
+  const { clientName } = req.body;
+  const automationCommanderSheetId = getCanonicalAcSheetId();
   if (!clientName || !automationCommanderSheetId) {
-    return res.status(400).json({ success: false, error: "Missing clientName or automationCommanderSheetId" });
+    return res.status(400).json({ success: false, error: "Missing clientName" });
   }
+  const isAdmin = Boolean(getSessionUser(req)?.isAdmin);
 
   try {
     const clientResp = await withRetry(() => sheets.spreadsheets.values.get({
@@ -1428,12 +1455,18 @@ export async function handleEomGetPlCompData(req, res, sheets) {
     const rows = clientResp.data.values || [];
     const clientRow = rows.find(r => String(r[0] || "").trim() === clientName);
     if (!clientRow) {
-      return res.status(404).json({ success: false, error: `Client "${clientName}" not found in AutoUpdates` });
+      return res.status(404).json({
+        success: false,
+        error: isAdmin ? `Client "${clientName}" not found in AutoUpdates` : `Client "${clientName}" configuration not found.`
+      });
     }
     const masterSheetUrl = clientRow[12];
     const masterSheetId = extractSheetIdFromUrl(masterSheetUrl);
     if (!masterSheetId) {
-      return res.status(400).json({ success: false, error: `No Master Sheet ID found for client "${clientName}"` });
+      return res.status(400).json({
+        success: false,
+        error: isAdmin ? `No Master Sheet ID found for client "${clientName}"` : `Accounting configuration not found for "${clientName}".`
+      });
     }
 
     const [c1Resp, dataResp, f87Resp, t87Resp] = await Promise.all([
@@ -1599,10 +1632,12 @@ export async function handleEomGetPlCompData(req, res, sheets) {
 }
 
 export async function handleEomPullFreshPl(req, res, sheets) {
-  const { clientName, automationCommanderSheetId } = req.body;
+  const { clientName } = req.body;
+  const automationCommanderSheetId = getCanonicalAcSheetId();
   if (!clientName || !automationCommanderSheetId) {
-    return res.status(400).json({ success: false, error: "Missing clientName or automationCommanderSheetId" });
+    return res.status(400).json({ success: false, error: "Missing clientName" });
   }
+  const isAdmin = Boolean(getSessionUser(req)?.isAdmin);
 
   try {
     const clientResp = await withRetry(() => sheets.spreadsheets.values.get({
@@ -1612,11 +1647,23 @@ export async function handleEomPullFreshPl(req, res, sheets) {
     const rows = clientResp.data.values || [];
     const clientRow = rows.find(r => String(r[0] || "").trim() === clientName);
     if (!clientRow) {
-      return res.status(404).json({ success: false, error: `Client "${clientName}" not found in AutoUpdates` });
+      return res.status(404).json({
+        success: false,
+        error: isAdmin ? `Client "${clientName}" not found in AutoUpdates` : `Client "${clientName}" configuration not found.`
+      });
     }
     const webAppUrl = String(clientRow[13] || "").trim();
     if (!webAppUrl) {
-      return res.status(400).json({ success: false, error: `No Master Web App URL configured for "${clientName}" (AutoUpdates column N)` });
+      return res.status(400).json({
+        success: false,
+        error: isAdmin ? `No Master Web App URL configured for "${clientName}" (AutoUpdates column N)` : `Accounting sync service is not configured for "${clientName}".`
+      });
+    }
+    if (!isValidGoogleScriptUrl(webAppUrl)) {
+      return res.status(400).json({
+        success: false,
+        error: isAdmin ? "Invalid Master Web App URL: Target must be a Google Apps Script Web App ending with /exec." : "Invalid accounting sync service endpoint."
+      });
     }
 
     const secret = process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "";
@@ -1633,11 +1680,13 @@ export async function handleEomPullFreshPl(req, res, sheets) {
       console.error(`❌ Master Web App pull_pl failed (HTTP ${gasResp.status}):`, gasText.slice(0, 300));
       return res.status(502).json({
         success: false,
-        error: `Client Master Web App returned HTTP ${gasResp.status} (${gasText.slice(0, 120).replace(/<[^>]*>/g, '').trim() || 'non-JSON'}). Please verify deployment permissions.`
+        error: isAdmin
+          ? `Client Master Web App returned HTTP ${gasResp.status} (${gasText.slice(0, 120).replace(/<[^>]*>/g, '').trim() || 'non-JSON'}). Please verify deployment permissions.`
+          : "Accounting sync service returned an unexpected response. Please contact an administrator."
       });
     }
     if (!gasData.success) {
-      return res.status(200).json({ success: false, error: gasData.error || "P&L pull failed" });
+      return res.status(200).json({ success: false, error: isAdmin ? (gasData.error || "P&L pull failed") : sanitizeSpreadsheetTerms(gasData.error || "P&L pull failed") });
     }
 
     logPmaActivity(sheets, {
@@ -1652,17 +1701,19 @@ export async function handleEomPullFreshPl(req, res, sheets) {
     return res.status(200).json({ success: true, message: gasData.message || "Fresh P&L pulled successfully" });
   } catch (err) {
     console.error("❌ eom_pull_fresh_pl error:", err);
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message) });
   }
 }
 
 export async function handleEomPushOutgoings(req, res, sheets) {
-  const { clientName, selectedMonths, automationCommanderSheetId, workMonthKey, includeUnreconciled } = req.body;
+  const { clientName, selectedMonths, workMonthKey, includeUnreconciled } = req.body;
+  const automationCommanderSheetId = getCanonicalAcSheetId();
   if (!clientName || !automationCommanderSheetId || !Array.isArray(selectedMonths)) {
-    return res.status(400).json({ success: false, error: "Missing clientName, automationCommanderSheetId, or selectedMonths" });
+    return res.status(400).json({ success: false, error: "Missing clientName or selectedMonths" });
   }
 
   const isInclUnrec = includeUnreconciled !== false; // Default: true (Include unreconciled items)
+  const isAdmin = Boolean(getSessionUser(req)?.isAdmin);
 
   try {
     const clientResp = await withRetry(() => sheets.spreadsheets.values.get({
@@ -1672,13 +1723,25 @@ export async function handleEomPushOutgoings(req, res, sheets) {
     const rows = clientResp.data.values || [];
     const clientRow = rows.find(r => String(r[0] || "").trim() === clientName);
     if (!clientRow) {
-      return res.status(404).json({ success: false, error: `Client "${clientName}" not found in AutoUpdates` });
+      return res.status(404).json({
+        success: false,
+        error: isAdmin ? `Client "${clientName}" not found in AutoUpdates` : `Client "${clientName}" configuration not found.`
+      });
     }
     const masterSheetUrl = clientRow[12];
     const masterSheetId = extractSheetIdFromUrl(masterSheetUrl);
     const webAppUrl = String(clientRow[13] || "").trim();
     if (!masterSheetId || !webAppUrl) {
-      return res.status(400).json({ success: false, error: `Missing master sheet ID or Web App URL for "${clientName}"` });
+      return res.status(400).json({
+        success: false,
+        error: isAdmin ? `Missing master sheet ID or Web App URL for "${clientName}"` : `Accounting sync service is not configured for "${clientName}".`
+      });
+    }
+    if (!isValidGoogleScriptUrl(webAppUrl)) {
+      return res.status(400).json({
+        success: false,
+        error: isAdmin ? "Invalid Master Web App URL: Target must be a Google Apps Script Web App ending with /exec." : "Invalid accounting sync service endpoint."
+      });
     }
 
     // 1. Write checkboxes to appropriate range in PLComp
@@ -3793,12 +3856,15 @@ export async function handleEomConfirmOverheadExpenses(req, res, sheets) {
       details: { clientName, masterSheetId: mId, checkedCount, reportMonthKey: effectiveMonthKey, finalisedAt }
     }).catch(() => { });
 
+    const isAdmin = Boolean(getSessionUser(req)?.isAdmin);
     return res.status(200).json({
       success: true,
       finalisedAt,
       reportMonthKey: effectiveMonthKey,
       overheadFinalisedByMonth,
-      message: `Saved ${checkedCount} checked overhead expense categories to MgmtRep!F372:F493 for ${clientName || "client"}.`,
+      message: isAdmin
+        ? `Saved ${checkedCount} checked overhead expense categories to MgmtRep!F372:F493 for ${clientName || "client"}.`
+        : `Saved ${checkedCount} checked overhead expense categories for ${clientName || "client"}.`,
       ...refreshed
     });
   } catch (err) {

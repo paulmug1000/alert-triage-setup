@@ -159,6 +159,29 @@ export async function sendOtp(email, _ignoredAcId, clientIp) {
     }
   }
 
+  // Rate limiting cooldown & lockout check (performed before user lookup to prevent enumeration/DoS)
+  const cooldownKey = `pma_otp_cooldown:${normalizedEmail}`;
+  const attemptsKey = `pma_otp_attempts:${normalizedEmail}`;
+  try {
+    const priorFailedAttempts = parseInt((await redisClient.get(attemptsKey)) || "0", 10) || 0;
+    if (priorFailedAttempts >= 5) {
+      return {
+        success: false,
+        message: "Too many failed verification attempts. Please try again in 15 minutes."
+      };
+    }
+    const inCooldown = await redisClient.get(cooldownKey);
+    if (inCooldown) {
+      const ttl = await redisClient.ttl(cooldownKey);
+      return {
+        success: false,
+        message: `Please wait ${ttl > 0 ? ttl : 60} seconds before requesting another code.`
+      };
+    }
+  } catch (e) {
+    console.warn("⚠️ Redis cooldown check warning:", e.message);
+  }
+
   // Check if user is in Users sheet
   let user = null;
   try {
@@ -170,6 +193,9 @@ export async function sendOtp(email, _ignoredAcId, clientIp) {
 
   if (!user || user.status === "Suspended") {
     console.log(`❌ Auth check failed for email: ${normalizedEmail} (not in Users tab or Suspended)`);
+    try {
+      await redisClient.set(cooldownKey, "1", { EX: COOLDOWN_SECS });
+    } catch {}
     try {
       const sheets = await getSheetsClient();
       const targetClient = user ? (Array.isArray(user.assignedClients) && user.assignedClients.length === 1 ? user.assignedClients[0] : "Multi-Client") : "Unregistered";
@@ -213,29 +239,6 @@ export async function sendOtp(email, _ignoredAcId, clientIp) {
       adminOtpBlocked: true,
       message: "You cannot access Pulse or the Pulse Management Area using a one-time password. Please log in using Google or Microsoft."
     };
-  }
-
-  // Rate limiting cooldown & lockout check
-  const cooldownKey = `pma_otp_cooldown:${normalizedEmail}`;
-  const attemptsKey = `pma_otp_attempts:${normalizedEmail}`;
-  try {
-    const priorFailedAttempts = parseInt((await redisClient.get(attemptsKey)) || "0", 10) || 0;
-    if (priorFailedAttempts >= 5) {
-      return {
-        success: false,
-        message: "Too many failed verification attempts. Please try again in 15 minutes."
-      };
-    }
-    const inCooldown = await redisClient.get(cooldownKey);
-    if (inCooldown) {
-      const ttl = await redisClient.ttl(cooldownKey);
-      return {
-        success: false,
-        message: `Please wait ${ttl > 0 ? ttl : 60} seconds before requesting another code.`
-      };
-    }
-  } catch (e) {
-    console.warn("⚠️ Redis cooldown check warning:", e.message);
   }
 
   // Generate 6-digit numeric OTP code using cryptographically secure PRNG (CWE-330)

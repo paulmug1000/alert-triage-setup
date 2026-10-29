@@ -1,14 +1,16 @@
 import { getSessionUser } from "../../../services/authService.js";
-import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
+import { getSheetsClient, withRetry, colLetterToNum } from "../../../services/sheetsClient.js";
 import { verifyUserAuthorizedForSheet, sanitizeFormulaInput, isReadOnlySession } from "../../../services/userPermissions.js";
 import { redisClient } from "../../../services/redisClient.js";
 import { memoryCache } from "../../../services/cacheService.js";
 import { logPulseActivity } from "../../../services/pulseLogger.js";
+import { assertTrustedOrigin } from "../../../utils/helpers.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ success: false, error: "Method not allowed. Use POST." });
   }
+  if (!assertTrustedOrigin(req, res)) return;
 
   const sessionUser = getSessionUser(req);
   if (!sessionUser) {
@@ -82,14 +84,35 @@ export default async function handler(req, res) {
       if (!/^[A-Z]{1,2}\d{1,4}(:[A-Z]{1,2}\d{1,4})?$/i.test(coordPart)) {
         return res.status(400).json({ success: false, error: `Invalid cell coordinate: ${coordPart}` });
       }
-      if (isSenior && canonicalSheetName === "Outgoings") {
-        const rowNums = (coordPart.match(/\d+/g) || []).map((n) => parseInt(n, 10));
-        const minRow = rowNums.length ? Math.min(...rowNums) : 0;
-        const maxRow = rowNums.length ? Math.max(...rowNums) : 0;
+      const rowNums = (coordPart.match(/\d+/g) || []).map((n) => parseInt(n, 10));
+      const colLetters = (coordPart.match(/[A-Z]+/gi) || []).map((c) => c.toUpperCase());
+      const minRow = rowNums.length ? Math.min(...rowNums) : 0;
+      const maxRow = rowNums.length ? Math.max(...rowNums) : 0;
+      if (minRow < 2) {
+        return res.status(400).json({ success: false, error: "Header row cannot be modified." });
+      }
+      if (canonicalSheetName === "Outgoings") {
         const overlapsDividends = minRow <= 123 && maxRow >= 115;
         const overlapsSalaries = (minRow <= 7 && maxRow >= 6) || (minRow <= 238 && maxRow >= 230);
-        if (overlapsDividends || overlapsSalaries) {
+        if (isSenior && (overlapsDividends || overlapsSalaries)) {
           return res.status(403).json({ success: false, error: "Forbidden: Senior users cannot modify salary or dividend rows" });
+        }
+        const isContractorRange = minRow >= 13 && maxRow <= 110;
+        const isDividendRange = !isSenior && minRow >= 115 && maxRow <= 123;
+        const isExpenseRange = minRow >= 126 && maxRow <= 225;
+        if (!isContractorRange && !isDividendRange && !isExpenseRange) {
+          return res.status(403).json({ success: false, error: "This row is not within an editable section." });
+        }
+        for (const cl of colLetters) {
+          const cIdx = colLetterToNum(cl) - 1;
+          const isEditableCol =
+            (cIdx >= 0 && cIdx <= 5) ||
+            (cIdx >= 6 && cIdx <= 17) ||
+            (cIdx >= 21 && cIdx <= 32) ||
+            (cIdx >= 36 && cIdx <= 47);
+          if (!isEditableCol) {
+            return res.status(403).json({ success: false, error: "Formula and total columns cannot be modified." });
+          }
         }
       }
       const fullRange = `${canonicalSheetName}!${coordPart.toUpperCase()}`;

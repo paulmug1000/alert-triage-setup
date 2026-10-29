@@ -13,11 +13,13 @@ import { getSheetsClient } from "../../../../services/sheetsClient.js";
 import { linkGoogleSheetToClient } from "../../../../services/googleSheetService.js";
 import { updateClientChecklistTask } from "../../../../services/setupService.js";
 import { saveIntegrationTokens, getIntegrationTokens } from "../../../../services/vaultService.js";
+import { assertTrustedOrigin } from "../../../../utils/helpers.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ success: false, error: "Method not allowed" });
   }
+  if (!assertTrustedOrigin(req, res)) return;
 
   const sessionUser = getSessionUser(req);
   if (!sessionUser) {

@@ -108,7 +108,14 @@ export function sanitizeCashAdjustmentInput(val) {
     let stripped = str.slice(1);
     // Strip allowed function names
     stripped = stripped.replace(/\b(SUM|ROUND|ABS|MIN|MAX|AVERAGE|SUBTOTAL|IF|INT)\s*\(/gi, "(");
-    // Strip same-sheet cell coordinates (e.g. E6, $E$6, CD4, E6:E10)
+    // Validate that any cell coordinate only references valid Cash tab columns (B..AK) and rows (1..76)
+    const cellTokens = stripped.match(/\$?[A-Z]+\$?[0-9]+/gi) || [];
+    for (const tok of cellTokens) {
+      if (!/^\$?(?:[B-Z]|A[A-K])\$?(?:[1-9]|[1-6][0-9]|7[0-6])$/i.test(tok)) {
+        return `'${str}`;
+      }
+    }
+    // Strip same-sheet cell coordinates (e.g. E6, $E$6, G6:G10)
     stripped = stripped.replace(/\$?[A-Z]+\$?[0-9]+(:?\$?[A-Z]+\$?[0-9]+)?/gi, "");
     // Strip numbers (integer and decimal)
     stripped = stripped.replace(/[0-9]+(\.[0-9]+)?/g, "");
@@ -432,7 +439,7 @@ export async function getCashflowReconData({
       canAutoCreateTab = availableReconTabs.includes("Template");
 
       if (!hasTargetTab) {
-        reconError = `Recon tab '${reconTabName}' not found in Recon Sheet (available tabs: ${availableReconTabs.filter(t => /^\d{4}$/.test(t)).join(", ") || "none"}). Click 'Create Tab' to auto-provision from Template.`;
+        reconError = `Reconciliation period '${reconTabName}' not found (available periods: ${availableReconTabs.filter(t => /^\d{4}$/.test(t)).join(", ") || "none"}). Click 'Create period' to auto-provision.`;
       } else {
         // Fetch all sections in a single batchGet
         const rangesToFetch = [
@@ -1101,9 +1108,9 @@ export async function updateCashAdjustment({
   const sheets = await getSheetsClient();
   const cleanClientSheetId = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
   const rowNum = parseInt(sheetRow, 10);
-  const ALLOWED_ADJUSTMENT_ROWS = new Set([13, 14, 15, 19, 20, 21]);
+  const ALLOWED_ADJUSTMENT_ROWS = new Set([7, 9, 11, 13, 14, 15, 17, 19, 20, 21, 22, 25, 27, 29, 30]);
   const cleanCol = String(colLetter).trim().toUpperCase();
-  if (!ALLOWED_ADJUSTMENT_ROWS.has(rowNum) || !/^[E-Z]$|^A[A-Z]$/.test(cleanCol)) {
+  if (!ALLOWED_ADJUSTMENT_ROWS.has(rowNum) || !/^[B-Z]$|^A[A-K]$/.test(cleanCol)) {
     throw new Error("Invalid adjustment row or column");
   }
   const cellRange = `Cash!${cleanCol}${rowNum}`;
@@ -1329,8 +1336,8 @@ export async function batchMatchCashflowActuals({
   const cleanClientSheetId = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
   const colIndex = parseInt(colIdx, 10);
   const cleanCol = String(colLetter).trim().toUpperCase();
-  const ALLOWED_ADJUSTMENT_ROWS = new Set([13, 14, 15, 19, 20, 21]);
-  if (!/^[E-Z]$|^A[A-Z]$/.test(cleanCol) || isNaN(colIndex) || colIndex < 1 || colIndex > 50) {
+  const ALLOWED_ADJUSTMENT_ROWS = new Set([7, 9, 11, 13, 14, 15, 17, 19, 20, 21, 22, 25, 27, 29, 30]);
+  if (!/^[B-Z]$|^A[A-K]$/.test(cleanCol) || isNaN(colIndex) || colIndex < 1 || colIndex > 36 || colIndexToLetter(colIndex + 1) !== cleanCol) {
     throw new Error("Invalid Cash column");
   }
 

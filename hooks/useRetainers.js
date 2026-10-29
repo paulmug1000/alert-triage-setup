@@ -30,7 +30,7 @@ export function useRetainers(initialClient = null) {
   const [retainerAlertResolution, setRetainerAlertResolution] = useState(null);
   const [retainerSplitInvoice, setRetainerSplitInvoice] = useState(null);
 
-  const loadRetainersJobs = useCallback(async (client, bypassCache = false) => {
+  const loadRetainersJobs = useCallback(async (client, bypassCache = false, silent = false) => {
     if (!client?.clientSheetId) return;
     const cacheKey = "retainer_jobs";
     const cleanId = cleanSheetId ? cleanSheetId(client.clientSheetId) : String(client.clientSheetId).replace(/.*\/d\/([a-zA-Z0-9-_]+).*/, "$1");
@@ -41,7 +41,7 @@ export function useRetainers(initialClient = null) {
       setRetainersJobsLoading(false);
       if (!cached.isStale) return;
     } else {
-      setRetainersJobsLoading(true);
+      if (!silent) setRetainersJobsLoading(true);
     }
 
     if (!bypassCache && typeof getInFlightPrefetch === "function") {

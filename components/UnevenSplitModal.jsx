@@ -12,7 +12,7 @@ export default function UnevenSplitModal({ editSplit, client, tabName, onClose, 
     if (!d) return null;
     if (d instanceof Date) return isNaN(d.getTime()) ? null : new Date(d.getFullYear(), d.getMonth(), d.getDate());
     const s = String(d).trim();
-    const months = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
+    const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
 
     // 1. ISO format: YYYY-MM-DD
     const isoMatch = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
@@ -124,7 +124,7 @@ export default function UnevenSplitModal({ editSplit, client, tabName, onClose, 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [saving, onClose]);
-  
+
   const validLocked = {};
   let lockedSum = 0;
   let lockedCount = 0;
@@ -142,7 +142,7 @@ export default function UnevenSplitModal({ editSplit, client, tabName, onClose, 
   const evenSplit = unlockedCount > 0 ? (remaining / unlockedCount) : 0;
 
   let validationError = "";
-  if (!startDate || !endDate) validationError = "Please ensure Start Date and End Date are set to split revenue.";
+  if (!startDate || !endDate) validationError = "Please ensure start date and end date are set to split revenue.";
   else if (totalRev <= 0) validationError = "Total Revenue must be greater than zero.";
   else if (lockedSum > totalRev + 0.05) validationError = "Allocated revenue exceeds total job revenue.";
   else if (unlockedCount === 0 && Math.abs(remaining) > 0.05) validationError = "Total allocated revenue does not perfectly match the job revenue.";
@@ -179,7 +179,7 @@ export default function UnevenSplitModal({ editSplit, client, tabName, onClose, 
           colLetter: "AE",
           rowNum: jobRow.rowNum,
           cellRef: `AE${jobRow.rowNum}`,
-          fieldName: "Revenue Split",
+          fieldName: "Revenue split",
           value: splitStr
         }
       ];
@@ -190,7 +190,7 @@ export default function UnevenSplitModal({ editSplit, client, tabName, onClose, 
             colLetter: "AL",
             rowNum: jobRow.rowNum,
             cellRef: `AL${jobRow.rowNum}`,
-            fieldName: "Start Date",
+            fieldName: "Start date",
             value: formatToSheet(jobRow.startDate)
           });
         }
@@ -199,7 +199,7 @@ export default function UnevenSplitModal({ editSplit, client, tabName, onClose, 
             colLetter: "AM",
             rowNum: jobRow.rowNum,
             cellRef: `AM${jobRow.rowNum}`,
-            fieldName: "End Date",
+            fieldName: "End date",
             value: formatToSheet(jobRow.endDate)
           });
         }
@@ -245,15 +245,15 @@ export default function UnevenSplitModal({ editSplit, client, tabName, onClose, 
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 1200, display: "flex", alignItems: "center", justifyContent: "center" }}
-         onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
       <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(92vw, 600px)", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
           <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700" }}>Uneven Revenue Split</h3>
           <button onClick={onClose} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}>×</button>
         </div>
-        
+
         <div style={{ marginBottom: "16px", fontSize: "13px", color: "#555" }}>
-          <strong>Job:</strong> {jobRow.jobName} <br/>
+          <strong>Job:</strong> {jobRow.jobName} <br />
           <strong>Revenue:</strong> £{totalRev.toFixed(2)} | <strong>Dates:</strong> {formatToSheet(jobRow.startDate) || "?"} to {formatToSheet(jobRow.endDate) || "?"}
           {jobRow.hasDraftDates && (
             <span style={{ marginLeft: "8px", fontSize: "11px", color: "#b45309", background: "#fef3c7", border: "1px solid #fde68a", padding: "2px 7px", borderRadius: "4px", fontWeight: "600" }}>
@@ -292,7 +292,7 @@ export default function UnevenSplitModal({ editSplit, client, tabName, onClose, 
                 Remaining £{remaining.toFixed(2)} auto-distributed across {unlockedCount} unlocked months (£{evenSplit.toFixed(2)}/mo).
               </div>
             )}
-            
+
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))", gap: "10px" }}>
               {months.map(m => {
                 const mKey = m.toLowerCase();

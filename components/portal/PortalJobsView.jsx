@@ -20,7 +20,9 @@ import {
   groupExpensesForDisplay,
   getStatusPill,
   toSheetDateFormat,
-  toInputDateFormat
+  toInputDateFormat,
+  NO_END_DATE_SHEET_VALUE,
+  isNoEndDateSentinel
 } from "../../utils/helpers";
 import { parseSplitString, formatSplitString } from "../../services/splitHelper";
 import InvoicesNewJobModal from "../InvoicesNewJobModal";
@@ -233,8 +235,10 @@ export default function PortalJobsView({
   };
 
   const formatDateDdMmmYy = (dateVal) => {
+    if (isNoEndDateSentinel(dateVal)) return "No end date";
     const d = parseDate(dateVal);
     if (!d) return dateVal ? String(dateVal) : "—";
+    if (isNoEndDateSentinel(d)) return "No end date";
     const day = String(d.getDate()).padStart(2, "0");
     const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     const mmm = monthNames[d.getMonth()];
@@ -285,7 +289,8 @@ export default function PortalJobsView({
         (j) =>
           (j.client || "").toLowerCase().includes(q) ||
           (j.jobName || "").toLowerCase().includes(q) ||
-          (j.productLine && j.productLine.toLowerCase().includes(q))
+          (j.productLine && j.productLine.toLowerCase().includes(q)) ||
+          (isNoEndDateSentinel(j.endDate) && "no end date".includes(q))
       );
     }
 
@@ -404,6 +409,7 @@ export default function PortalJobsView({
       directCosts: `${currencySymbol}0`,
       startDate: new Date().toISOString().split("T")[0],
       endDate: "",
+      noEndDate: false,
       productLine: "",
       leadSource: "",
       vat: "Yes",
@@ -440,8 +446,11 @@ export default function PortalJobsView({
       return formatMoney(num, 0, currencySymbol, thousandsSeparator);
     };
 
+    const hasNoEndDate = isNoEndDateSentinel(job?.endDate);
     setEditingJob({
       ...job,
+      endDate: hasNoEndDate ? "" : (job?.endDate || ""),
+      noEndDate: hasNoEndDate,
       revenue: normalizeAmount(job?.revenue),
       directCosts: normalizeAmount(job?.directCosts),
       childRowNumbers: Array.isArray(job.childRowNumbers) ? job.childRowNumbers : [],
@@ -621,7 +630,13 @@ export default function PortalJobsView({
         throw new Error(resData.error || "Failed to confirm job");
       }
       setEditingJob(null);
-      if (onRefresh) onRefresh();
+      if (onRefresh) {
+        onRefresh();
+        if (resData.backgroundProvisioning) {
+          setTimeout(() => onRefresh(), 4000);
+          setTimeout(() => onRefresh(), 8000);
+        }
+      }
     } catch (err) {
       console.error("Confirm job error:", err);
       setSaveError(err.message || "Failed to confirm job");
@@ -706,22 +721,27 @@ export default function PortalJobsView({
       return acc + (isNaN(amt) ? 0 : amt);
     }, 0);
 
-    // Over-allocation check (invoices)
-    if (totalInvoices > jobRevenue + 0.01) {
+    const isRetainerJob = String(editingJob?.projectRetainer || "").toLowerCase() === "retainer";
+    const parsedLikelihoodNum = parseFloat(String(editingJob?.likelihood || "").replace(/[%,\s]/g, ""));
+    const isLikelihood100 = !isNaN(parsedLikelihoodNum) && (parsedLikelihoodNum >= 100 || (parsedLikelihoodNum === 1 && String(editingJob?.likelihood).includes("1")));
+    const isTargetConfirmedJob = String(editingJob?.type || "").toLowerCase() === "confirmed" || isLikelihood100;
+
+    // Over-allocation check (invoices) - skip for Retainers where parent revenue is the monthly fee
+    if (!isRetainerJob && totalInvoices > jobRevenue + 0.01) {
       setSaveError(`Total invoices (${formatGBP(totalInvoices)}) exceed job revenue (${formatGBP(jobRevenue)}). Please adjust the job revenue or your manual placeholders before saving.`);
       return;
     }
 
     // Over-allocation check (direct expenses)
-    if (totalExpenses > jobDirectCosts + 0.01) {
+    if (!isRetainerJob && totalExpenses > jobDirectCosts + 0.01) {
       setSaveError(`Total direct expenses (${formatGBP(totalExpenses)}) exceed job direct costs (${formatGBP(jobDirectCosts)}). Please adjust the job direct costs or your manual placeholders before saving.`);
       return;
     }
 
-    // Under-allocation warning check
+    // Under-allocation warning check (skip invoice gap for Confirmed Retainers as child rows & monthly invoices are created automatically)
     if (!bypassUnderAllocationWarning) {
-      const invGap = jobRevenue > totalInvoices + 0.01 ? jobRevenue - totalInvoices : 0;
-      const expGap = jobDirectCosts > totalExpenses + 0.01 ? jobDirectCosts - totalExpenses : 0;
+      const invGap = (!isRetainerJob || !isTargetConfirmedJob) && jobRevenue > totalInvoices + 0.01 ? jobRevenue - totalInvoices : 0;
+      const expGap = !isRetainerJob && jobDirectCosts > totalExpenses + 0.01 ? jobDirectCosts - totalExpenses : 0;
 
       if (invGap > 0 || expGap > 0) {
         let msg = "";
@@ -760,8 +780,15 @@ export default function PortalJobsView({
       splitStrResult = formatSplitString(splitMonths, vLocked, eSplit);
     }
 
+    const isRetainerSaving = String(editingJob?.projectRetainer || "").toLowerCase() === "retainer";
+    const resolvedEndDateForSave = isRetainerSaving && (editingJob.noEndDate || isNoEndDateSentinel(editingJob.endDate))
+      ? NO_END_DATE_SHEET_VALUE
+      : editingJob.endDate;
+
     const jobToSave = {
       ...editingJob,
+      endDate: resolvedEndDateForSave,
+      noEndDate: Boolean(isRetainerSaving && editingJob.noEndDate),
       splitStr: splitStrResult,
     };
 
@@ -799,7 +826,13 @@ export default function PortalJobsView({
       }
 
       setEditingJob(null);
-      if (onRefresh) onRefresh();
+      if (onRefresh) {
+        onRefresh();
+        if (resData.backgroundProvisioning) {
+          setTimeout(() => onRefresh(), 4000);
+          setTimeout(() => onRefresh(), 8000);
+        }
+      }
     } catch (err) {
       console.error("Save job error:", err);
       setSaveError(err.message || "An error occurred while saving.");
@@ -1491,7 +1524,11 @@ export default function PortalJobsView({
                         onChange={(e) => {
                           if (isEditingCrmDeal) return;
                           const val = e.target.value;
-                          setEditingJob({ ...editingJob, projectRetainer: val });
+                          setEditingJob({
+                            ...editingJob,
+                            projectRetainer: val,
+                            ...(val !== "Retainer" ? { noEndDate: false } : {}),
+                          });
                           if (val === "Retainer") {
                             setEnableSplit(false);
                             setLockedMonths({});
@@ -1644,16 +1681,63 @@ export default function PortalJobsView({
                       />
                     </div>
                     <div title={crmLockedTooltip}>
-                      <label style={formLabelStyle}>End Date *</label>
-                      <input
-                        type="date"
-                        required
-                        disabled={isReadOnly || isEditingCrmDeal}
-                        title={crmLockedTooltip}
-                        value={editingJob.endDate || ""}
-                        onChange={(e) => setEditingJob({ ...editingJob, endDate: e.target.value })}
-                        style={getCrmInputStyle(false)}
-                      />
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "4px" }}>
+                        <label style={{ ...formLabelStyle, marginBottom: 0 }}>End Date *</label>
+                        {String(editingJob.projectRetainer || "").toLowerCase() === "retainer" && (
+                          <label
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "5px",
+                              fontSize: "11.5px",
+                              fontWeight: 600,
+                              color: (isReadOnly || isEditingCrmDeal) ? "#94a3b8" : "#475569",
+                              cursor: (isReadOnly || isEditingCrmDeal) ? "not-allowed" : "pointer",
+                              userSelect: "none",
+                            }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={Boolean(editingJob.noEndDate)}
+                              disabled={isReadOnly || isEditingCrmDeal}
+                              onChange={(e) => {
+                                if (isReadOnly || isEditingCrmDeal) return;
+                                const checked = e.target.checked;
+                                setEditingJob({
+                                  ...editingJob,
+                                  noEndDate: checked,
+                                  endDate: checked ? "" : editingJob.endDate,
+                                });
+                              }}
+                              style={{ margin: 0, cursor: (isReadOnly || isEditingCrmDeal) ? "not-allowed" : "pointer" }}
+                            />
+                            <span>No end date</span>
+                          </label>
+                        )}
+                      </div>
+                      {String(editingJob.projectRetainer || "").toLowerCase() === "retainer" && editingJob.noEndDate ? (
+                        <input
+                          type="text"
+                          disabled
+                          value="No end date"
+                          style={{
+                            ...getCrmInputStyle(false),
+                            backgroundColor: "#f1f5f9",
+                            color: "#64748b",
+                            cursor: "not-allowed",
+                          }}
+                        />
+                      ) : (
+                        <input
+                          type="date"
+                          required
+                          disabled={isReadOnly || isEditingCrmDeal}
+                          title={crmLockedTooltip}
+                          value={editingJob.endDate || ""}
+                          onChange={(e) => setEditingJob({ ...editingJob, endDate: e.target.value, noEndDate: false })}
+                          style={getCrmInputStyle(false)}
+                        />
+                      )}
                     </div>
                     <div title={crmLockedTooltip}>
                       <label style={formLabelStyle}>Product Line</label>

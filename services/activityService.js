@@ -1353,6 +1353,27 @@ export async function fetchAllClientsActivity(sheets, clientsList, forceRefresh 
   return payload;
 }
 
+function sanitizeActivityStructuredObject(obj) {
+  if (!obj || typeof obj !== "object") return obj;
+  if (Array.isArray(obj)) {
+    return obj.map((item) => (typeof item === "string" ? sanitizeSpreadsheetTerms(item) : sanitizeActivityStructuredObject(item)));
+  }
+  const out = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (["cellRef", "sheetRow", "colLetter", "tab", "tabName", "range", "row", "rowNum", "clearedRows"].includes(k)) {
+      continue;
+    }
+    if (typeof v === "string") {
+      out[k] = sanitizeSpreadsheetTerms(v);
+    } else if (v && typeof v === "object") {
+      out[k] = sanitizeActivityStructuredObject(v);
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
 function sanitizeActivityEventsForUser(events, sessionUser) {
   if (!Array.isArray(events) || !sessionUser || sessionUser.isAdmin) return events;
   const hideSalaries = !canViewSalariesAndDividends(sessionUser);
@@ -1360,7 +1381,8 @@ function sanitizeActivityEventsForUser(events, sessionUser) {
     ? events.filter((e) => {
         const cat = String(e?.category || "").toUpperCase();
         if (cat === "SALARIES" || cat === "DIVIDENDS") return false;
-        const text = `${e?.title || ""} ${e?.summary || ""} ${e?.rawSummary || ""} ${e?.rawDetails || ""}`;
+        const detailsText = typeof e?.details === "string" ? e.details : JSON.stringify(e?.details || "");
+        const text = `${e?.title || ""} ${e?.summary || ""} ${e?.action || ""} ${e?.rawSummary || ""} ${e?.rawDetails || ""} ${detailsText}`;
         return !/salar|divid|payroll|wages|director|remuneration|net pay/i.test(text);
       })
     : events;
@@ -1370,17 +1392,13 @@ function sanitizeActivityEventsForUser(events, sessionUser) {
     summary: e.summary ? sanitizeSpreadsheetTerms(e.summary) : e.summary,
     rawSummary: undefined,
     rawDetails: undefined,
+    structuredDetails: e.structuredDetails ? sanitizeActivityStructuredObject(e.structuredDetails) : e.structuredDetails,
     details: Array.isArray(e.details)
-      ? e.details.map((d) => (typeof d === "string" ? sanitizeSpreadsheetTerms(d) : d))
+      ? e.details.map((d) => (typeof d === "string" ? sanitizeSpreadsheetTerms(d) : sanitizeActivityStructuredObject(d)))
       : e.details && typeof e.details === "object"
-      ? {
-          ...e.details,
-          cellRef: undefined,
-          sheetRow: undefined,
-          colLetter: undefined,
-          tab: undefined,
-          range: undefined,
-        }
+      ? sanitizeActivityStructuredObject(e.details)
+      : typeof e.details === "string"
+      ? sanitizeSpreadsheetTerms(e.details)
       : e.details,
   }));
 }

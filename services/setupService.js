@@ -42,27 +42,28 @@ function getChecklistRedisKey(clientName) {
 export const SETUP_PHASES = [
   {
     id: "phase_1",
-    title: "1. Infrastructure & Sheet Linking",
-    description: "Drive folder provisioning, template duplication, cross-linking, and script deployment."
+    title: "Step 0: Infrastructure & sheet linking",
+    description: "Drive folder provisioning, template duplication, cross-linking, and script deployment.",
+    adminOnly: true
   },
   {
     id: "phase_2",
-    title: "2. Settings & Tool Connections",
+    title: "Step 1: Settings & tool connections",
     description: "Core accounting & CRM tool choices, OAuth connections, and financial KeyInfo anchors."
   },
   {
     id: "phase_3",
-    title: "3. Accounting Baseline & Data",
+    title: "Step 2: Accounting baseline & data",
     description: "Chart of Accounts, P&L baselines, starter PL, invoices sync, and outgoings breakdown."
   },
   {
     id: "phase_4",
-    title: "4. Automations & Cadence",
+    title: "Step 3: Automations & cadence",
     description: "CRM data review, trigger scheduling, automation flags, and EoM inclusion."
   },
   {
     id: "phase_5",
-    title: "5. User Access & Go-Live",
+    title: "Step 4: User access & go-live",
     description: "Client user assignment, welcome notifications, and live dashboard launch."
   }
 ];
@@ -351,9 +352,9 @@ export async function saveClientSetupConfig({
           requestBody: {
             valueInputOption: "USER_ENTERED",
             data: [
-              { range: "KeyInfo!Q4", values: [[record.accountingTool]] },
-              { range: "KeyInfo!Q8", values: [[record.crmTool]] },
-              { range: "KeyInfo!Q9", values: [[record.crmDrives]] }
+              { range: "KeyInfo!Q4", values: [[sanitizeFormulaInput(String(record.accountingTool || "None"))]] },
+              { range: "KeyInfo!Q8", values: [[sanitizeFormulaInput(String(record.crmTool || "None"))]] },
+              { range: "KeyInfo!Q9", values: [[sanitizeFormulaInput(String(record.crmDrives || "NA"))]] }
             ]
           }
         })
@@ -744,6 +745,32 @@ export async function ensureClientSetupTabs(sheets, automationCommanderSheetId =
   }
 }
 
+function normalizeSetupPhases(phases = []) {
+  const defaultMap = new Map(DEFAULT_SETUP_PHASES.map(p => [p.id, p]));
+  const legacyTitleMap = {
+    "1. infrastructure & sheet linking": "Step 0: Infrastructure & sheet linking",
+    "0. infrastructure & sheet linking": "Step 0: Infrastructure & sheet linking",
+    "2. settings & tool connections": "Step 1: Settings & tool connections",
+    "1. settings & tool connections": "Step 1: Settings & tool connections",
+    "3. accounting baseline & data": "Step 2: Accounting baseline & data",
+    "2. accounting baseline & data": "Step 2: Accounting baseline & data",
+    "4. automations & cadence": "Step 3: Automations & cadence",
+    "3. automations & cadence": "Step 3: Automations & cadence",
+    "5. user access & go-live": "Step 4: User access & go-live",
+    "4. user access & go-live": "Step 4: User access & go-live"
+  };
+  return (phases || []).map(p => {
+    const def = defaultMap.get(p.id);
+    const lowerTitle = String(p.title || "").trim().toLowerCase();
+    const normalizedTitle = legacyTitleMap[lowerTitle] || p.title || def?.title || p.id;
+    return {
+      ...p,
+      title: normalizedTitle,
+      adminOnly: p.id === "phase_1" || Boolean(p.adminOnly || def?.adminOnly)
+    };
+  });
+}
+
 /**
  * Returns full setup process template (Phases & Tasks catalog) with Redis caching.
  */
@@ -755,7 +782,10 @@ export async function getSetupProcessTemplate(sheets, forceRefresh = false) {
       if (cached) {
         const parsed = JSON.parse(cached);
         if (parsed?.phases?.length && parsed?.tasks?.length) {
-          return parsed;
+          return {
+            ...parsed,
+            phases: normalizeSetupPhases(parsed.phases)
+          };
         }
       }
     } catch (e) {
@@ -829,7 +859,7 @@ export async function getSetupProcessTemplate(sheets, forceRefresh = false) {
       }
     });
 
-    const phases = Array.from(phasesMap.values()).sort((a, b) => a.order - b.order);
+    const phases = normalizeSetupPhases(Array.from(phasesMap.values()).sort((a, b) => a.order - b.order));
     tasks.sort((a, b) => a.order - b.order);
 
     const templateData = { phases, tasks };
@@ -1521,12 +1551,24 @@ export async function saveDeploymentUrl(sheets, { clientName, masterSheetId, dep
  * FULL CLIENT PROVISIONING ENGINE (DRIVE + SHEETS + MULTI-REGISTRY ENROLLMENT)
  * ============================================================================
  */
+function extractDriveFolderId(input) {
+  if (!input) return "";
+  const str = String(input).trim();
+  const folderMatch = str.match(/\/folders\/([a-zA-Z0-9_-]+)/);
+  if (folderMatch && folderMatch[1]) return folderMatch[1];
+  const idParamMatch = str.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  if (idParamMatch && idParamMatch[1]) return idParamMatch[1];
+  if (/^[a-zA-Z0-9_-]{10,}$/.test(str)) return str;
+  return "";
+}
+
 export async function provisionNewClientSystem({
   clientName,
   accountingTool = "None",
   crmTool = "None",
   crmDrives = "NA",
   targetParentFolderId = DEFAULT_CLIENTS_FOLDER_ID,
+  existingFolderId = "",
   userEmail = "Admin"
 }) {
   if (!clientName || !clientName.trim()) {
@@ -1560,18 +1602,40 @@ export async function provisionNewClientSystem({
     throw new Error("Missing template URLs in Row 3 of Clients Version Tracker (Columns L, M, N).");
   }
 
-  // 2. Create Destination Folder in Google Drive
-  console.log(`  📁 Creating Drive folder "${cleanClientName}" inside parent "${targetParentFolderId}"...`);
-  const folderRes = await drive.files.create({
-    requestBody: {
-      name: cleanClientName,
-      mimeType: "application/vnd.google-apps.folder",
-      parents: [targetParentFolderId]
-    },
-    fields: "id, name, webViewLink"
-  });
-  const folderId = folderRes.data.id;
-  const folderUrl = folderRes.data.webViewLink || `https://drive.google.com/drive/folders/${folderId}`;
+  // 2. Use Existing Folder or Create Destination Folder in Google Drive
+  let folderId = "";
+  let folderUrl = "";
+  const parsedExistingId = extractDriveFolderId(existingFolderId);
+
+  if (parsedExistingId) {
+    console.log(`  📁 Using existing Drive folder "${parsedExistingId}" for "${cleanClientName}"...`);
+    const existingMeta = await withRetry(() =>
+      drive.files.get({
+        fileId: parsedExistingId,
+        fields: "id, name, webViewLink, mimeType",
+        supportsAllDrives: true
+      })
+    );
+    if (!existingMeta?.data?.id) {
+      throw new Error("Could not access the specified existing Google Drive folder.");
+    }
+    folderId = existingMeta.data.id;
+    folderUrl = existingMeta.data.webViewLink || `https://drive.google.com/drive/folders/${folderId}`;
+  } else {
+    const parentId = extractDriveFolderId(targetParentFolderId) || DEFAULT_CLIENTS_FOLDER_ID;
+    console.log(`  📁 Creating Drive folder "${cleanClientName}" inside parent "${parentId}"...`);
+    const folderRes = await drive.files.create({
+      requestBody: {
+        name: cleanClientName,
+        mimeType: "application/vnd.google-apps.folder",
+        parents: [parentId]
+      },
+      fields: "id, name, webViewLink",
+      supportsAllDrives: true
+    });
+    folderId = folderRes.data.id;
+    folderUrl = folderRes.data.webViewLink || `https://drive.google.com/drive/folders/${folderId}`;
+  }
 
   // 3. Duplicate Templates into the New Folder
   console.log(`  📋 Copying Client, Master, Recon templates & creating backup sheet...`);

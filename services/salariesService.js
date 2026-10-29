@@ -597,7 +597,11 @@ export async function saveSalaryAmountOverride({
   }
 
   const actualsRow = 300 + sheetRow; // Rows 304 to 353
-  const startColIdx = colLetterToIdx(colLetterStart);
+  const startColIdx = colLetterToIdx(String(colLetterStart || "").trim().toUpperCase());
+  if (isNaN(startColIdx) || startColIdx < 11 || (startColIdx - 11) % 7 !== 0 || amounts.length < 1 || amounts.length > 7 || startColIdx + amounts.length - 1 > 263) {
+    throw new Error("Invalid salary override column range.");
+  }
+  const cleanStartLetter = colIdxToLetter(startColIdx);
   const endColLetter = colIdxToLetter(startColIdx + amounts.length - 1);
 
   const sheets = await getSheetsClient();
@@ -606,7 +610,7 @@ export async function saveSalaryAmountOverride({
   await withRetry(() =>
     sheets.spreadsheets.values.update({
       spreadsheetId: masterSheetId,
-      range: `Salaries!${colLetterStart}${actualsRow}:${endColLetter}${actualsRow}`,
+      range: `Salaries!${cleanStartLetter}${actualsRow}:${endColLetter}${actualsRow}`,
       valueInputOption: "USER_ENTERED",
       requestBody: { values: [sanitized] },
     })
@@ -663,6 +667,9 @@ export async function saveDividendsData({
     Object.entries(monthlyAmounts).forEach(([colLetter, val]) => {
       const cleanCol = String(colLetter || "").trim().toUpperCase();
       if (/^[A-Z]{1,2}$/.test(cleanCol) && val !== undefined) {
+        const colIdx = colLetterToIdx(cleanCol);
+        const isMonthlyCol = (colIdx >= 6 && colIdx <= 17) || (colIdx >= 21 && colIdx <= 32) || (colIdx >= 36 && colIdx <= 47);
+        if (!isMonthlyCol) return;
         data.push({
           range: `Outgoings!${cleanCol}${sheetRow}`,
           values: [[sanitizeFormulaInput(val)]],

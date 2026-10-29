@@ -702,7 +702,7 @@ export default function NavShell({
                         ) : (
                           filteredManageClients.map((c) => {
                             const isSelected = managedClient?.clientName === c.clientName;
-                            const clientHref = `/pma?client=${encodeURIComponent(c.clientName)}${activeNav && activeNav !== "home" ? `&nav=${encodeURIComponent(activeNav)}` : ""}`;
+                            const clientHref = `/pma?manage=${encodeURIComponent(c.clientName)}${activeNav && activeNav !== "home" ? `&nav=${encodeURIComponent(activeNav)}` : ""}`;
                             return (
                               <a
                                 key={c.clientName}

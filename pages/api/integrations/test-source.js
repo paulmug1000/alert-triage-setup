@@ -180,8 +180,8 @@ export default async function handler(req, res) {
 
       // Step 1: Obtain Microsoft OAuth token (from Vault or fallback to Azure App Credentials in X33:X35)
       let accessToken = null;
-      if (clientKey) {
-        const grant = await getIntegrationTokens(clientKey, "excel").catch(() => null);
+      if (clientKey || masterSheetId) {
+        const grant = await getIntegrationTokens({ clientKey, masterSheetId, tool: "excel" }).catch(() => null);
         if (grant && grant.tokens?.accessToken && !grant.tokens.accessToken.startsWith("manual_")) {
           accessToken = grant.tokens.accessToken;
         }

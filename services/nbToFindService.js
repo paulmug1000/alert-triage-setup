@@ -375,11 +375,16 @@ export async function saveNBToFindMonthlyValues({
     throw new Error(`Invalid NBtoFind editable row: ${sheetRow}. Allowed rows are 3, 5, 10, or 25.`);
   }
 
+  const isNbMonthlyCol = (colIdx) =>
+    (colIdx >= 6 && colIdx <= 17) || (colIdx >= 21 && colIdx <= 32) || (colIdx >= 36 && colIdx <= 47);
+
   const updates = [];
   if (monthlyValues && typeof monthlyValues === "object") {
     for (const [colLetter, val] of Object.entries(monthlyValues)) {
       const cleanLetter = String(colLetter).toUpperCase().trim();
       if (!/^[A-Z]{1,2}$/.test(cleanLetter)) continue;
+      const colIdx = colLetterToNum(cleanLetter) - 1;
+      if (!isNbMonthlyCol(colIdx)) continue;
       let cleanVal = String(val ?? "").trim();
       if (rowNum === 25) {
         cleanVal = cleanVal.toLowerCase() === "no" ? "No" : "Yes";
@@ -415,6 +420,7 @@ export async function saveNBToFindMonthlyValues({
       const cleanLetter = String(colLetter).toUpperCase().trim();
       if (!/^[A-Z]{1,2}$/.test(cleanLetter)) continue;
       const colIdx = colLetterToNum(cleanLetter) - 1;
+      if (!isNbMonthlyCol(colIdx)) continue;
       noteRequests.push({
         updateCells: {
           range: {

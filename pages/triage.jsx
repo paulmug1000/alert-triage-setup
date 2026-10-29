@@ -128,7 +128,6 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
   }, [authChecking, isAuthenticated, isPulseOnly, user?.isReadOnly, router]);
 
   const [screen, setScreen] = useState("initial");
-  useEffect(() => { window.scrollTo(0, 0); }, [screen]);
   const [activeNav, setActiveNav] = useState(() => {
     if (initialNav) return initialNav;
     if (typeof window !== "undefined") {
@@ -141,6 +140,11 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
     }
     return "home";
   });
+  useEffect(() => {
+    if (activeNav === "alerts") {
+      window.scrollTo(0, 0);
+    }
+  }, [screen, activeNav]);
   const [setupClientName, setSetupClientName] = useState(() => {
     if (typeof window !== "undefined") {
       const p = new URLSearchParams(window.location.search);
@@ -731,7 +735,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
     if (typeof section === "string" && section.trim()) {
       setSettingsSection(section.trim());
     }
-    if (typeof subsection === "string" && subsection.trim()) {
+    if (typeof subsection === "string") {
       setSettingsSubsection(subsection.trim());
     }
     setActiveNav("settings");
@@ -758,7 +762,13 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
   const handleNavSalaries = () => navigateWithGuard(() => { setActiveNav("salaries"); loadClients(); });
   const handleNavExpenses = () => navigateWithGuard(() => { setActiveNav("expenses"); loadClients(); });
   const handleNavNBToFind = () => navigateWithGuard(() => { setActiveNav("nbtofind"); loadClients(); });
-  const handleNavBudget = () => navigateWithGuard(() => { setActiveNav("budget"); loadClients(); });
+  const handleNavBudget = (clientName = "") => navigateWithGuard(() => {
+    if (typeof clientName === "string" && clientName.trim()) {
+      setEditStickyClient(clientName.trim());
+    }
+    setActiveNav("budget");
+    loadClients();
+  });
   const handleNavCash = () => navigateWithGuard(() => { setActiveNav("cash"); loadClients(); });
   const handleNavViews = (tabId = "fyPerformance") => navigateWithGuard(() => {
     fireOutgoingsPullIfPending();
@@ -830,13 +840,18 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
       const p = new URLSearchParams(window.location.search);
       const navParam = p.get("nav");
       const clientParam = p.get("client");
+      const manageParam = p.get("manage");
       const sectionParam = p.get("section");
       const subsectionParam = p.get("subsection");
       if (clientParam) {
         setSetupClientName(clientParam);
         setSettingsClientName(clientParam);
-        if (!managedClient || managedClient.clientName !== clientParam) {
-          setManagedClient(clientParam);
+      }
+      if (manageParam) {
+        setSetupClientName(manageParam);
+        setSettingsClientName(manageParam);
+        if (!managedClient || managedClient.clientName !== manageParam) {
+          setManagedClient(manageParam);
         }
       }
       if (sectionParam) setSettingsSection(sectionParam);
@@ -1251,6 +1266,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
           initialClientName={managedClient ? managedClient.clientName : setupClientName}
           onSelectClient={setSetupClientName}
           onGoToBudget={handleNavBudget}
+          onGoToTasks={handleNavTasks}
           user={user}
           isAdmin={isAdmin}
           managedClient={managedClient}
@@ -1274,6 +1290,10 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
           initialSection={settingsSection}
           initialSubsection={settingsSubsection}
           onSelectClient={(cName) => setSettingsClientName(cName || "")}
+          onSelectSection={(sec) => {
+            setSettingsSection(sec || "main");
+            setSettingsSubsection("");
+          }}
           onRegisterNavGuard={registerNavGuard}
         />
       );

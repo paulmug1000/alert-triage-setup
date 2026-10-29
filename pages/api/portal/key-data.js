@@ -49,7 +49,7 @@ export default async function handler(req, res) {
   const clientSheetId = String(req.query.clientSheetId || req.body?.clientSheetId || "").trim();
   const clientName = String(req.query.clientName || req.body?.clientName || "").trim();
   const type = String(req.query.type || req.body?.type || "all").toLowerCase().trim();
-  const bypassCache = req.query.bypassCache === "true" || req.body?.bypassCache === true;
+  const bypassCache = (req.query.bypassCache === "true" || req.body?.bypassCache === true) && !sessionUser.isReadOnly;
 
   if (!clientSheetId) {
     return res.status(400).json({ success: false, error: "clientSheetId is required" });
@@ -156,6 +156,8 @@ export default async function handler(req, res) {
             ...data.outgoingsMeta,
             salariesDel: [],
             salariesNonDel: [],
+            profitShareBaseDel: [],
+            profitShareBaseNonDel: [],
           }
         : data.outgoingsMeta,
       outgoings: data.outgoings

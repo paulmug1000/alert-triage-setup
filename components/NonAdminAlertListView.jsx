@@ -207,7 +207,7 @@ export default function NonAdminAlertListView({
                           const selKey = alert.fingerprintHash || alert.alertKey || `${alert.flagType || alert.type}-${alert.sheetName}-${alert.rowNumber || idx}`;
                           return (
                             <button
-                              className="triage-btn"
+                              className="triage-btn pma-alert-card"
                               key={selKey}
                               onClick={() => selectAlert(alert)}
                             style={{
@@ -259,7 +259,7 @@ export default function NonAdminAlertListView({
                       const selKey = alert.fingerprintHash || alert.alertKey || `${alert.flagType || alert.type}-${alert.sheetName}-${alert.rowNumber || idx}`;
                       return (
                         <button
-                          className="triage-btn"
+                          className="triage-btn pma-alert-card"
                           key={selKey}
                           onClick={() => selectAlert(alert)}
                           style={{
@@ -370,7 +370,7 @@ export default function NonAdminAlertListView({
                     }}
                   >
                     <div style={{ minHeight: 0, overflow: "hidden" }}>
-                      <div className="non-admin-alert-card" style={{
+                      <div className="non-admin-alert-card pma-alert-card" style={{
                         padding: "14px 16px",
                         borderRadius: "8px",
                         border: isExiting ? "1px solid #86efac" : "1px solid #cbd5e1",
@@ -382,7 +382,7 @@ export default function NonAdminAlertListView({
                         width: "100%",
                         transition: "background-color 200ms ease, border-color 200ms ease",
                       }}>
-                    <div style={{
+                    <div className="pma-alert-card-title" style={{
                       fontWeight: "600",
                       fontSize: "13.5px",
                       color: "#0f172a",
@@ -512,7 +512,7 @@ export default function NonAdminAlertListView({
                           if (!jobTarget || !onViewJob) return null;
                           return (
                             <button
-                              className="triage-btn"
+                              className="triage-btn pma-alert-card"
                               onClick={() => onViewJob(jobTarget)}
                               style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#0284c7", borderColor: "#bae6fd" }}
                               title={jobTarget.isOutgoings ? "View overhead expense details" : "View and edit job details in pop-up"}
@@ -581,8 +581,8 @@ export default function NonAdminAlertListView({
                     }}
                   >
                     <div style={{ minHeight: 0, overflow: "hidden" }}>
-                      <div className="non-admin-alert-card" style={{ border: isExiting ? "1px solid #86efac" : "1px solid #cbd5e1", borderRadius: "8px", padding: "14px 16px", backgroundColor: isExiting ? "#f0fdf4" : "#ffffff", boxSizing: "border-box", width: "100%", display: "flex", flexDirection: "column", gap: "4px", transition: "background-color 200ms ease, border-color 200ms ease" }}>
-                    <div style={{ fontWeight: "600", fontSize: "13.5px", color: "#0f172a", marginBottom: "2px", wordBreak: "break-word" }}>
+                      <div className="non-admin-alert-card pma-alert-card" style={{ border: isExiting ? "1px solid #86efac" : "1px solid #cbd5e1", borderRadius: "8px", padding: "14px 16px", backgroundColor: isExiting ? "#f0fdf4" : "#ffffff", boxSizing: "border-box", width: "100%", display: "flex", flexDirection: "column", gap: "4px", transition: "background-color 200ms ease, border-color 200ms ease" }}>
+                    <div className="pma-alert-card-title" style={{ fontWeight: "600", fontSize: "13.5px", color: "#0f172a", marginBottom: "2px", wordBreak: "break-word" }}>
                       {getProactiveCardTitle(alert, false)}
                     </div>
 
@@ -793,7 +793,7 @@ export default function NonAdminAlertListView({
                             </select>
 
                             <button
-                              className="triage-btn"
+                              className="triage-btn pma-alert-card"
                               onClick={() => handleApplyPLClassification(alert)}
                               disabled={isApplying}
                               style={{

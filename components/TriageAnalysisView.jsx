@@ -580,7 +580,7 @@ export default function TriageAnalysisView({
           })()}
         </div>
         <div style={styles.alertHeader}>
-          <h2 style={styles.alertTitle}>
+          <h2 className="pma-alert-detail-title" style={styles.alertTitle}>
             {alert.clientName || alert.type || "Financial Alert"}
             {fromCache && (
               <span style={{ display: "flex", alignItems: "center", gap: "8px" }}>
@@ -632,7 +632,7 @@ export default function TriageAnalysisView({
           const key = alert.flagType || alert.alertType || alert.type;
           const fullName = getFlagName(key);
           return (
-            <div style={{ ...styles.alertMetadata, fontSize: "15px", fontWeight: "600", padding: "14px", marginBottom: "16px", color: "#1d4ed8", backgroundColor: "#eff6ff", borderLeft: "4px solid #3b82f6" }}>
+            <div className="pma-alert-detail-banner" style={{ ...styles.alertMetadata, fontSize: "15px", fontWeight: "600", padding: "14px", marginBottom: "16px", color: "#1d4ed8", backgroundColor: "#eff6ff", borderLeft: "4px solid #3b82f6" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span>{fullName}</span>
                 {(alert.firstSeen || alert.lastSeen) && (
@@ -659,12 +659,12 @@ export default function TriageAnalysisView({
         )}
 
         {(isInvoiceType || isExpenseType) && alert.summary && alert.type !== "locked" && (
-          <div style={{
+          <div className="pma-alert-card" style={{
             ...styles.alertSummary, marginBottom: "20px",
             backgroundColor: alert.type === "expense" ? "#f0fdf4" : "#eff6ff",
             borderLeft: `4px solid ${alert.type === "expense" ? "#16a34a" : "#2563eb"}`
           }}>
-            <h3 style={{ fontSize: "17px", fontWeight: "700", marginBottom: "8px", color: alert.type === "expense" ? "#166534" : "#1e40af" }}>
+            <h3 className="pma-alert-detail-title" style={{ fontSize: "17px", fontWeight: "700", marginBottom: "8px", color: alert.type === "expense" ? "#166534" : "#1e40af" }}>
               ⚠ {alert.type === "expense" ? (() => {
                 const expFlags = alert.data?.flags || [];
                 const isMissing = String(expFlags[0] || "").trim() === "1";

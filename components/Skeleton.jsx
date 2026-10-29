@@ -1948,6 +1948,7 @@ export function PmaTransitionSkeleton({ user = null, targetNav = "home", clientN
     >
       {/* Top Bar (#A2C4C9) matching NavShell */}
       <div
+        className="pma-topbar"
         style={{
           background: "#A2C4C9",
           borderBottom: "1px solid #8ab0b6",
@@ -2047,6 +2048,7 @@ export function PmaTransitionSkeleton({ user = null, targetNav = "home", clientN
 
       {/* Secondary Navigation Bar matching NavShell */}
       <div
+        className="pma-navbar"
         style={{
           background: "#ffffff",
           borderBottom: "1px solid #e2e8f0",
@@ -2064,6 +2066,7 @@ export function PmaTransitionSkeleton({ user = null, targetNav = "home", clientN
           return (
             <div
               key={item.key}
+              className="pulse-nav-item"
               style={{
                 padding: "11px 14px",
                 fontSize: "13px",

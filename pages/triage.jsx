@@ -1065,7 +1065,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
       }
 
       return (
-        <div style={styles.container}>
+        <div className="pma-page-container" style={styles.container}>
           <div style={styles.header}>
             <h1 style={styles.title}>Alerts</h1>
             <p style={styles.subtitle}>{error ? error : "Initialising..."}</p>

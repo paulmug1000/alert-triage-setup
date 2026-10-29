@@ -9,7 +9,8 @@ import { useAppGlobals } from "../hooks/useAppGlobals";
 
 // Global styles injected once - handles :hover/:active which React inline styles can't do
 const GLOBAL_STYLES = `
-  html, body { margin: 0; padding: 0; scroll-behavior: auto; font-family: 'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+  html, body { margin: 0; padding: 0; scroll-behavior: auto; font-family: 'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+  *, *::before, *::after, button, input, select, textarea { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
   button, input, select, textarea { font-family: inherit; }
   @keyframes triage-spin { to { transform: rotate(360deg); } }
   @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
@@ -210,6 +211,51 @@ const GLOBAL_STYLES = `
     }
     .pma-topbar-title {
       font-size: 12.5px;
+    }
+  }
+
+  /* Mobile Landscape Mode: match Pulse left/right gutters and keep alert card text compact */
+  @media (orientation: landscape) and (max-height: 520px), (orientation: landscape) and (max-width: 1024px) {
+    .pma-topbar,
+    .pma-navbar,
+    .pma-edit-subbar,
+    .pma-views-subbar,
+    .pma-managed-banner,
+    .pma-page-container {
+      padding-left: max(2.5rem, calc(env(safe-area-inset-left, 0px) + 1.25rem)) !important;
+      padding-right: max(2.5rem, calc(env(safe-area-inset-right, 0px) + 1.25rem)) !important;
+    }
+    .pma-navbar > .pulse-nav-item:first-child,
+    .pma-navbar > div:first-child > .pulse-nav-item {
+      padding-left: 0 !important;
+    }
+    .pma-navbar > .nav-more-btn {
+      padding-right: 0 !important;
+    }
+    .triage-client-card,
+    .pma-alert-card,
+    .non-admin-alert-card {
+      padding: 11px 14px !important;
+      font-size: 12px !important;
+      -webkit-text-size-adjust: 100% !important;
+      text-size-adjust: 100% !important;
+    }
+    .pma-alert-card-title {
+      font-size: 13px !important;
+      line-height: 1.35 !important;
+    }
+    .pma-alert-card-line,
+    .pma-alert-card-body {
+      font-size: 11.5px !important;
+      line-height: 1.4 !important;
+    }
+    .pma-alert-detail-title {
+      font-size: 14.5px !important;
+      line-height: 1.35 !important;
+    }
+    .pma-alert-detail-banner {
+      font-size: 13px !important;
+      padding: 10px 12px !important;
     }
   }
 `;

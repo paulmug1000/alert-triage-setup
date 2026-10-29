@@ -1063,8 +1063,8 @@ export default function AlertSelectionView({
       const isPipeline = ft === "crmPipeAppDiscr";
       const isMismatch = alert.subType === "field_mismatch";
       return (
-        <div style={{ pointerEvents: "none", width: "100%" }}>
-          <div style={{ fontWeight: "600", fontSize: "13.5px", color: "#0f172a", display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: "6px", wordBreak: "break-word" }}>
+        <div className="pma-alert-card-body" style={{ pointerEvents: "none", width: "100%" }}>
+          <div className="pma-alert-card-title" style={{ fontWeight: "600", fontSize: "13.5px", color: "#0f172a", display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: "6px", wordBreak: "break-word" }}>
             <span style={{ wordBreak: "break-word", flex: "1 1 auto" }}>{client}{job ? ` - ${job}` : ""}</span>
             {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(ft) && <AdminBadge show={clientHasManager} />}
           </div>
@@ -1099,8 +1099,8 @@ export default function AlertSelectionView({
       const isPipeline = ft === "crmPipeDashDiscr";
       const mismatchFields = alert.mismatchFields || [];
       return (
-        <div style={{ pointerEvents: "none", width: "100%" }}>
-          <div style={{ fontWeight: "600", fontSize: "13.5px", color: "#0f172a", display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: "6px", wordBreak: "break-word" }}>
+        <div className="pma-alert-card-body" style={{ pointerEvents: "none", width: "100%" }}>
+          <div className="pma-alert-card-title" style={{ fontWeight: "600", fontSize: "13.5px", color: "#0f172a", display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: "6px", wordBreak: "break-word" }}>
             <span style={{ wordBreak: "break-word", flex: "1 1 auto" }}>{client}{job ? ` - ${job}` : ""}</span>
             {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(ft) && <AdminBadge show={clientHasManager} />}
           </div>
@@ -1153,8 +1153,8 @@ export default function AlertSelectionView({
       const activeMismatches = flags.map((v, i) => String(v || "").trim() === "1" && invFlagNames[i] ? invFlagNames[i] : null).filter(Boolean);
 
       return (
-        <div style={{ pointerEvents: "none", width: "100%" }}>
-          <div style={{ fontWeight: "600", fontSize: "13.5px", color: "#0f172a", display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: "6px", wordBreak: "break-word" }}>
+        <div className="pma-alert-card-body" style={{ pointerEvents: "none", width: "100%" }}>
+          <div className="pma-alert-card-title" style={{ fontWeight: "600", fontSize: "13.5px", color: "#0f172a", display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: "6px", wordBreak: "break-word" }}>
             <span style={{ wordBreak: "break-word", flex: "1 1 auto" }}>{title}</span>
             {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(ft) && <AdminBadge show={clientHasManager} />}
           </div>
@@ -1237,8 +1237,8 @@ export default function AlertSelectionView({
       const activeExpMismatches = flags.map((v, i) => String(v || "").trim() === "1" && expFlagNames[i] ? expFlagNames[i] : null).filter(Boolean);
 
       return (
-        <div style={{ pointerEvents: "none", width: "100%" }}>
-          <div style={{ fontWeight: "600", fontSize: "13.5px", color: "#0f172a", display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: "6px", wordBreak: "break-word" }}>
+        <div className="pma-alert-card-body" style={{ pointerEvents: "none", width: "100%" }}>
+          <div className="pma-alert-card-title" style={{ fontWeight: "600", fontSize: "13.5px", color: "#0f172a", display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: "6px", wordBreak: "break-word" }}>
             <span style={{ wordBreak: "break-word", flex: "1 1 auto" }}>{title}</span>
             {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(ft) && <AdminBadge show={clientHasManager} />}
           </div>
@@ -1287,8 +1287,8 @@ export default function AlertSelectionView({
     }
 
     return (
-      <div style={{ pointerEvents: "none", width: "100%" }}>
-        <div style={{ fontWeight: "600", fontSize: "13.5px", color: "#0f172a", display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: "6px", wordBreak: "break-word" }}>
+      <div className="pma-alert-card-body" style={{ pointerEvents: "none", width: "100%" }}>
+        <div className="pma-alert-card-title" style={{ fontWeight: "600", fontSize: "13.5px", color: "#0f172a", display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: "6px", wordBreak: "break-word" }}>
           <span style={{ wordBreak: "break-word", flex: "1 1 auto" }}>{getAlertSummary(alert)}</span>
           {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(ft) && <AdminBadge show={clientHasManager} />}
         </div>
@@ -1471,7 +1471,7 @@ export default function AlertSelectionView({
                                           <div style={{ flex: 1, width: "100%" }}>{renderAlertContent(alert)}</div>
                                         </div>
                                       ) : (
-                                        <button className="triage-btn" key={selKey} onClick={() => selectAlert(alert)}
+                                        <button className="triage-btn pma-alert-card" key={selKey} onClick={() => selectAlert(alert)}
                                           style={{ ...styles.optionButton, display: "block", width: "100%", boxSizing: "border-box", textAlign: "left", padding: "14px 16px", border: "1px solid #cbd5e1", borderRadius: "8px", cursor: "pointer", backgroundColor: "#fff", fontSize: "13px", transition: "all 0.2s" }}
                                           onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "#f8fafc"; e.currentTarget.style.borderColor = "#2563eb"; }}
                                           onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "#fff"; e.currentTarget.style.borderColor = "#cbd5e1"; }}>
@@ -1514,7 +1514,7 @@ export default function AlertSelectionView({
                                   <div style={{ flex: 1, width: "100%" }}>{renderAlertContent(alert)}</div>
                                 </div>
                               ) : (
-                                <button className="triage-btn" key={selKey} onClick={() => selectAlert(alert)}
+                                <button className="triage-btn pma-alert-card" key={selKey} onClick={() => selectAlert(alert)}
                                   style={{ ...styles.optionButton, display: "block", width: "100%", boxSizing: "border-box", textAlign: "left", padding: "14px 16px", border: "1px solid #cbd5e1", borderRadius: "8px", cursor: "pointer", backgroundColor: "#fff", fontSize: "13px", transition: "all 0.2s" }}
                                   onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "#f8fafc"; e.currentTarget.style.borderColor = "#2563eb"; }}
                                   onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "#fff"; e.currentTarget.style.borderColor = "#cbd5e1"; }}>
@@ -1648,7 +1648,7 @@ export default function AlertSelectionView({
                                 }}
                               >
                                 <div style={{ minHeight: 0, overflow: "hidden" }}>
-                                  <div style={{
+                                  <div className="pma-alert-card" style={{
                                     padding: "14px 16px",
                                     borderRadius: "8px",
                                     border: isExiting ? "1px solid #86efac" : (infoBulkMode && isBulkSelected ? "1px solid #7c3aed" : "1px solid #cbd5e1"),
@@ -1660,7 +1660,7 @@ export default function AlertSelectionView({
                                     width: "100%",
                                     transition: "background-color 200ms ease, border-color 200ms ease",
                                   }}>
-                                <div style={{
+                                <div className="pma-alert-card-title" style={{
                                   fontWeight: "600",
                                   fontSize: "13.5px",
                                   color: "#0f172a",
@@ -1995,7 +1995,7 @@ export default function AlertSelectionView({
                                 }}
                               >
                                 <div style={{ minHeight: 0, overflow: "hidden" }}>
-                                  <div style={{ border: isExiting ? "1px solid #86efac" : `1px solid ${proactiveBulkMode && isBulkSelected ? "#7c3aed" : "#cbd5e1"}`, borderRadius: "8px", padding: "14px 16px", backgroundColor: isExiting ? "#f0fdf4" : (proactiveBulkMode && isBulkSelected ? "#ede9fe" : "#ffffff"), boxSizing: "border-box", width: "100%", display: "flex", flexDirection: "column", gap: "4px", transition: "background-color 200ms ease, border-color 200ms ease" }}>
+                                  <div className="pma-alert-card" style={{ border: isExiting ? "1px solid #86efac" : `1px solid ${proactiveBulkMode && isBulkSelected ? "#7c3aed" : "#cbd5e1"}`, borderRadius: "8px", padding: "14px 16px", backgroundColor: isExiting ? "#f0fdf4" : (proactiveBulkMode && isBulkSelected ? "#ede9fe" : "#ffffff"), boxSizing: "border-box", width: "100%", display: "flex", flexDirection: "column", gap: "4px", transition: "background-color 200ms ease, border-color 200ms ease" }}>
                                 {proactiveBulkMode && (
                                   <label style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600", color: "#5b21b6" }}>
                                     <input type="checkbox" checked={isBulkSelected} onChange={() => {
@@ -2008,7 +2008,7 @@ export default function AlertSelectionView({
                                     Select for bulk action
                                   </label>
                                 )}
-                                <div style={{ fontWeight: "600", fontSize: "13.5px", color: "#0f172a", marginBottom: "2px", display: "flex", alignItems: "center" }}>
+                                <div className="pma-alert-card-title" style={{ fontWeight: "600", fontSize: "13.5px", color: "#0f172a", marginBottom: "2px", display: "flex", alignItems: "center" }}>
                                   <span>{getProactiveCardTitle(alert, isAdmin)}</span>
                                   {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(alert.alertType) && <AdminBadge show={clientHasManager} />}
                                 </div>

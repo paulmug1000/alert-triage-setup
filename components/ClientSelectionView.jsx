@@ -298,7 +298,7 @@ export default function ClientSelectionView({
                 <button
                   key={idx}
                   onClick={() => selectClient(client)}
-                  className="triage-client-card no-click-spinner"
+                  className="triage-client-card pma-alert-card no-click-spinner"
                   disabled={selectingClient !== null}
                   style={{
                     ...styles.optionButton,
@@ -312,12 +312,12 @@ export default function ClientSelectionView({
                     opacity: selectingClient !== null && selectingClient !== client.clientName ? 0.5 : 1,
                   }}
                 >
-                  <div style={{ fontWeight: "bold", fontSize: "16px", marginBottom: "6px", display: "flex", alignItems: "center", gap: "8px" }}>
+                  <div className="pma-alert-card-title" style={{ fontWeight: "700", fontSize: "15px", marginBottom: "5px", display: "flex", alignItems: "center", gap: "8px", color: "#0f172a" }}>
                     {selectingClient === client.clientName && <Spinner size={13} />}
                     {client.clientName}
                   </div>
                   {[...actionableLines, ...infoLines, ...proactiveLines].map((lineItem, i) => (
-                    <div key={i} style={{ fontSize: "13px", color: "#1976d2", marginBottom: "2px", display: "flex", alignItems: "center" }}>
+                    <div key={i} className="pma-alert-card-line" style={{ fontSize: "12.5px", color: "#1976d2", marginBottom: "2px", display: "flex", alignItems: "center" }}>
                       <span>• {lineItem.text}</span>
                       {isAdmin && lineItem.isAdminOnly && hasManager && (
                         <span

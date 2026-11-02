@@ -223,14 +223,14 @@ export default function HomeView({
 
   // Sync latest confirmed alert count to localStorage (only when not in managedClient mode)
   useEffect(() => {
-    if (!managedClient && triageComplete && !isLoadingAlerts && totalAlertsCount != null) {
+    if (!managedClient && triageComplete && totalAlertsCount != null) {
       setCachedTotalAlerts(totalAlertsCount);
       try {
         localStorage.setItem("pulse_cached_total_alerts", String(totalAlertsCount));
         localStorage.setItem("pulse_cached_alert_badge", String(totalAlertsCount));
       } catch { }
     }
-  }, [triageComplete, isLoadingAlerts, totalAlertsCount, managedClient]);
+  }, [triageComplete, totalAlertsCount, managedClient]);
 
   // Clients that are not yet fully set up
   const clientsPendingSetup = useMemo(() => {

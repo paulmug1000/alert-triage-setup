@@ -135,7 +135,7 @@ export default function ClientSelectionView({
             ✓ {managedClient ? `No outstanding alerts for ${managedClient.clientName}` : "No outstanding alerts"}
           </div>
           <div style={{ display: "flex", gap: "8px", marginTop: "16px" }}>
-            <button className="triage-btn" onClick={reloadFromCache} disabled={isLoading} style={{ ...styles.buttonSecondary, opacity: isLoading ? 0.5 : 1, display: "inline-flex", alignItems: "center", gap: "6px" }}>
+            <button className="triage-btn" onClick={(e) => { e.currentTarget.blur(); reloadFromCache(false); }} disabled={isLoading} style={{ ...styles.buttonSecondary, opacity: isLoading ? 0.5 : 1, display: "inline-flex", alignItems: "center", gap: "6px" }}>
               {isLoading && !refreshStatus ? <><Spinner size={12} /> Reloading...</> : "⚡ Reload"}
             </button>
             {isAdmin && (
@@ -384,7 +384,7 @@ export default function ClientSelectionView({
               </button>
             )}
             <button className="triage-btn"
-              onClick={reloadFromCache}
+              onClick={(e) => { e.currentTarget.blur(); reloadFromCache(false); }}
               disabled={isLoading}
               style={{ ...styles.buttonSecondary, fontSize: "13px", padding: "6px 14px", opacity: isLoading ? 0.5 : 1, display: "inline-flex", alignItems: "center", gap: "6px" }}
               title="Pull latest data from cache"

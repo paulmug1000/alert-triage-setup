@@ -691,22 +691,32 @@ export async function appendAlertMemoryRowsBatch(sheets, automationCommanderShee
 }
 
 export async function updateAlertMemoryRow(sheets, automationCommanderSheetId, rowIndex, updates) {
-  const compressedOptions = compressOptionsJSON_(updates.cachedOptionsJSON);
+  const { preserveHandledStatus, ...cleanUpdates } = updates || {};
+  let effectiveStatus = cleanUpdates.status;
+  if (preserveHandledStatus && (effectiveStatus === "cached" || effectiveStatus === "pending_automation") && cleanUpdates.fingerprintHash) {
+    const handledMap = await readHandledAlertHashes(sheets, automationCommanderSheetId, false);
+    const existingHandled = handledMap[cleanUpdates.fingerprintHash];
+    if (existingHandled === "accepted" || existingHandled === "ignored" || existingHandled === "task") {
+      console.log(`  🛡️ [updateAlertMemoryRow] Preserving handled status "${existingHandled}" for ${cleanUpdates.fingerprintHash} (row ${rowIndex}) instead of overwriting to "${effectiveStatus}"`);
+      effectiveStatus = existingHandled;
+    }
+  }
+  const compressedOptions = compressOptionsJSON_(cleanUpdates.cachedOptionsJSON);
   const now = new Date().toISOString();
-  const firstSeenVal = updates.firstSeen || now;
-  const lastRecheckedVal = updates.lastRechecked || now;
+  const firstSeenVal = cleanUpdates.firstSeen || now;
+  const lastRecheckedVal = cleanUpdates.lastRechecked || now;
   const values = [
-    updates.fingerprintHash,
-    updates.alertType,
-    updates.clientName,
-    updates.alertSummary,
+    cleanUpdates.fingerprintHash,
+    cleanUpdates.alertType,
+    cleanUpdates.clientName,
+    cleanUpdates.alertSummary,
     compressedOptions,
-    updates.status,
-    updates.ignoreReason || "",
+    effectiveStatus,
+    cleanUpdates.ignoreReason || "",
     firstSeenVal,
     now,
     lastRecheckedVal,
-    updates.dataSnapshot || "",
+    cleanUpdates.dataSnapshot || "",
   ];
   await withRetry(() => sheets.spreadsheets.values.update({
     spreadsheetId: automationCommanderSheetId,
@@ -714,20 +724,21 @@ export async function updateAlertMemoryRow(sheets, automationCommanderSheetId, r
     valueInputOption: "RAW",
     requestBody: { values: [values] },
   }));
-  if (updates.fingerprintHash) {
-    await updateHandledAlertHash(automationCommanderSheetId, updates.fingerprintHash, updates.status);
+  if (cleanUpdates.fingerprintHash) {
+    await updateHandledAlertHash(automationCommanderSheetId, cleanUpdates.fingerprintHash, effectiveStatus);
   }
   await updateAlertMemoryCacheInPlace(automationCommanderSheetId, (cache) => {
     let idx = cache.findIndex(r => r.rowIndex === rowIndex);
-    if (idx === -1 && updates.fingerprintHash) {
-      idx = cache.findIndex(r => r.fingerprintHash === updates.fingerprintHash);
+    if (idx === -1 && cleanUpdates.fingerprintHash) {
+      idx = cache.findIndex(r => r.fingerprintHash === cleanUpdates.fingerprintHash);
     }
     if (idx !== -1) {
       cache[idx] = {
         ...cache[idx],
-        ...updates,
+        ...cleanUpdates,
+        status: effectiveStatus,
         cachedOptionsJSON: compressedOptions !== undefined ? compressedOptions : cache[idx].cachedOptionsJSON,
-        firstSeen: updates.firstSeen || cache[idx].firstSeen || firstSeenVal,
+        firstSeen: cleanUpdates.firstSeen || cache[idx].firstSeen || firstSeenVal,
         lastSeen: now,
         lastRechecked: lastRecheckedVal,
         rowIndex,

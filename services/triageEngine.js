@@ -258,6 +258,11 @@ export async function runBackgroundTriageRefresh({
 let _precomputedMemoryCache = null;
 let _precomputedCachedAt = 0;
 
+export function invalidatePrecomputedMemoryCache() {
+  _precomputedMemoryCache = null;
+  _precomputedCachedAt = 0;
+}
+
 export const FLAG_NAMES = {
   invoiceDashboardDiscr: "Invoice dashboard discr",
   crmPipeDashDiscr: "CRM pipe dash discr",
@@ -1292,11 +1297,11 @@ export async function handleRehashIgnoredAlerts(req, res, sheets) {
 
 export async function handleGetPrecomputed(req, res, sheets) {
   const tStart = Date.now();
-  const { automationCommanderSheetId } = req.body;
+  const { automationCommanderSheetId, bustCache } = req.body;
   try {
     let raw = null;
     let tRedis = 0;
-    if (_precomputedMemoryCache && (Date.now() - _precomputedCachedAt < 60000)) {
+    if (!bustCache && _precomputedMemoryCache && (Date.now() - _precomputedCachedAt < 60000)) {
       raw = _precomputedMemoryCache;
     } else if (redisClient?.isOpen) {
       const t0 = Date.now();
@@ -1566,9 +1571,11 @@ export async function handleStorePrecomputed(req, res, sheets) {
 
     const acIdForMerge = extractSheetIdFromUrl(automationCommanderSheetId) || automationCommanderSheetId;
     let memoryRowsForMerge = null;
+    let existingHandledMap = {};
 
     try {
       await ensureAlertMemoryTab(sheets, acIdForMerge);
+      existingHandledMap = await readHandledAlertHashes(sheets, acIdForMerge, false);
 
       const currentMemoryRows = await readAlertMemory(sheets, acIdForMerge);
       if (currentMemoryRows.length > 2000) {
@@ -1592,6 +1599,10 @@ export async function handleStorePrecomputed(req, res, sheets) {
 
       for (const row of memoryRowsForMerge) {
         if (row.status !== "cached" && row.status !== "pending_automation") continue;
+        if (row.fingerprintHash) {
+          const hStatus = existingHandledMap[row.fingerprintHash];
+          if (hStatus === "accepted" || hStatus === "ignored" || hStatus === "task") continue;
+        }
 
         if (Object.prototype.hasOwnProperty.call(AUTOLOG_TYPE_PATTERNS, row.alertType)) {
           row.category = "info";
@@ -1728,7 +1739,6 @@ export async function handleStorePrecomputed(req, res, sheets) {
             try { analysisResult = JSON.parse(row.cachedOptionsJSON); } catch (e) { analysisResult = null; }
           }
           if (row.fingerprintHash) oldPathFingerprints.add(row.fingerprintHash);
-          oldPathNoActionKeys.add(`${clientMeta.masterSheetId}|||${row.alertType}`);
           newNoActionFromMemory.push({
             clientId: clientMeta.masterSheetId,
             clientSheetId: clientMeta.clientSheetId,
@@ -1845,7 +1855,7 @@ export async function handleStorePrecomputed(req, res, sheets) {
     // Warm up handled hashes map and tasks cache in Redis using rows already in memory!
     if (redisClient?.isOpen && acIdForMerge && memoryRowsForMerge) {
       try {
-        const handledMap = {};
+        const handledMap = { ...existingHandledMap };
         for (const r of memoryRowsForMerge) {
           if (r.status && r.status !== "cached" && r.status !== "pending_automation") {
             handledMap[r.fingerprintHash] = r.status;
@@ -2614,12 +2624,18 @@ export async function handleRunFlagSweep(req, res, sheets) {
           (item.alerts || []).forEach(a => {
             if (a._fingerprint) freshHashes.add(a._fingerprint);
             if (a._legacyFingerprint) freshHashes.add(a._legacyFingerprint);
-            if (item.alertType === "autolog_error" || item.alertType === "infinite_loop") {
+            if (item.category === "proactive") {
               memoryRows.forEach(r => {
                 if (r.clientName === item.clientName && r.alertType === item.alertType) {
                   try {
                     const snap = JSON.parse(r.dataSnapshot || "{}");
-                    if (snap.legacyAlertKey === a.alertKey || (snap.alertKey && snap.alertKey.startsWith(a.alertKey + "|"))) {
+                    const snapKey = snap.alertKey || "";
+                    const snapLegacy = snap.legacyAlertKey || "";
+                    if (
+                      (a.alertKey && (snapLegacy === a.alertKey || snapKey === a.alertKey)) ||
+                      (a.legacyAlertKey && (snapLegacy === a.legacyAlertKey || snapKey === a.legacyAlertKey)) ||
+                      ((item.alertType === "autolog_error" || item.alertType === "infinite_loop") && a.alertKey && snapKey.startsWith(a.alertKey + "|"))
+                    ) {
                       freshHashes.add(r.fingerprintHash);
                     }
                   } catch (e) { }
@@ -2630,7 +2646,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
           const clientExpHashes = allExpenseFreshHashesByClient.get(item.clientName);
           const staleRows = memoryRows.filter(r => {
             if (r.clientName !== item.clientName) return false;
-            const isEligibleStatus = (r.status === "cached" || r.status === "pending_automation" || (item.category === "proactive" && (r.status === "task" || r.status === "accepted")));
+            const isEligibleStatus = (r.status === "cached" || r.status === "pending_automation" || (item.category === "proactive" && r.status === "task"));
             if (!isEligibleStatus) return false;
             if (r.alertType === item.alertType) {
               return !freshHashes.has(r.fingerprintHash);
@@ -2695,7 +2711,8 @@ export async function handleRunFlagSweep(req, res, sheets) {
                   ...pRow,
                   alertType: item.alertType,
                   status: "cached",
-                  lastRechecked: new Date().toISOString()
+                  lastRechecked: new Date().toISOString(),
+                  preserveHandledStatus: true,
                 });
                 console.log(`  ⏰ Woke up pending_automation alert for ${item.clientName}: ${pRow.fingerprintHash}`);
                 pRow.status = "cached";
@@ -2733,15 +2750,15 @@ export async function handleRunFlagSweep(req, res, sheets) {
               if (r.clientName !== item.clientName) return false;
               if (r.fingerprintHash === alert._fingerprint) return true;
               if (alert._legacyFingerprint && r.fingerprintHash === alert._legacyFingerprint) return true;
-              if (item.alertType === "autolog_error" || item.alertType === "infinite_loop") {
-                if (r.alertType === item.alertType) {
-                  try {
-                    const snap = JSON.parse(r.dataSnapshot || "{}");
-                    const k = snap.alertKey || snap.legacyAlertKey || "";
-                    if (k === alert.alertKey || k === alert.legacyAlertKey) return true;
-                    if (alert.alertKey && k.startsWith(alert.alertKey + "|")) return true;
-                  } catch (e) { }
-                }
+              if (item.category === "proactive" && r.alertType === item.alertType) {
+                try {
+                  const snap = JSON.parse(r.dataSnapshot || "{}");
+                  const snapKey = snap.alertKey || "";
+                  const snapLegacy = snap.legacyAlertKey || "";
+                  if (alert.alertKey && (snapKey === alert.alertKey || snapLegacy === alert.alertKey)) return true;
+                  if (alert.legacyAlertKey && (snapKey === alert.legacyAlertKey || snapLegacy === alert.legacyAlertKey)) return true;
+                  if ((item.alertType === "autolog_error" || item.alertType === "infinite_loop") && alert.alertKey && snapKey.startsWith(alert.alertKey + "|")) return true;
+                } catch (e) { }
               }
               return false;
             });
@@ -2791,6 +2808,10 @@ export async function handleRunFlagSweep(req, res, sheets) {
 
             const { _fingerprint, _legacyFingerprint, ...alertForSnapshot } = alert;
             alertForSnapshot.detectedAt = detectedAtIso;
+            if (item.category === "discrepancy") {
+              alertForSnapshot.flagType = item.alertType;
+              alertForSnapshot.alertType = item.alertType;
+            }
 
             if (exRow) {
               // Case 1: Auto-resolved Task that returned
@@ -2977,7 +2998,8 @@ export async function handleRunFlagSweep(req, res, sheets) {
                     fingerprintHash: alert._fingerprint,
                     alertSummary: summary,
                     dataSnapshot: newSnapshotStr,
-                    lastRechecked: detectedAtIso
+                    lastRechecked: detectedAtIso,
+                    preserveHandledStatus: true,
                   });
                   exRow.alertType = item.alertType;
                   exRow.fingerprintHash = alert._fingerprint;
@@ -3212,7 +3234,7 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
           if (row.fingerprintHash !== match._fingerprint) {
             try {
               await updateAlertMemoryRow(sheets, acIdBuild, row.rowIndex, {
-                ...row, fingerprintHash: match._fingerprint
+                ...row, fingerprintHash: match._fingerprint, preserveHandledStatus: true
               });
               row.fingerprintHash = match._fingerprint;
             } catch (e) { }
@@ -3239,17 +3261,23 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
             if (analyzeData.success) {
               if (analyzeData.options) {
                 let updatedSnapshot = row.dataSnapshot;
-                if (analyzeData.previousIgnoreReason) {
-                  try {
-                    const snapObj = JSON.parse(updatedSnapshot || "{}");
+                try {
+                  const snapObj = JSON.parse(updatedSnapshot || "{}");
+                  if (analyzeData.previousIgnoreReason) {
                     snapObj.previousIgnoreReason = analyzeData.previousIgnoreReason;
-                    updatedSnapshot = JSON.stringify(snapObj);
-                  } catch (e) { }
-                }
+                  }
+                  if (match.flagType) {
+                    snapObj.flagType = match.flagType;
+                    snapObj.alertType = match.flagType;
+                  }
+                  updatedSnapshot = JSON.stringify(snapObj);
+                } catch (e) { }
                 await updateAlertMemoryRow(sheets, acIdBuild, row.rowIndex, {
                   ...row,
+                  alertType: match.flagType || row.alertType,
                   cachedOptionsJSON: JSON.stringify(analyzeData.options),
-                  dataSnapshot: updatedSnapshot
+                  dataSnapshot: updatedSnapshot,
+                  preserveHandledStatus: true,
                 });
               }
               built++;
@@ -3332,7 +3360,7 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
           const analyzeData = await analyzeRes.json();
           if (analyzeData.success) {
             await updateAlertMemoryRow(sheets, acIdBuild, row.rowIndex, {
-              ...row, cachedOptionsJSON: JSON.stringify(analyzeData),
+              ...row, cachedOptionsJSON: JSON.stringify(analyzeData), preserveHandledStatus: true,
             });
             richAnalyzed++;
             console.log(`  ✅ ${row.clientName}/${row.alertType}: targeted analysis stored`);

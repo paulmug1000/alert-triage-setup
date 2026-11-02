@@ -101,7 +101,7 @@ export function useTriageEngine({
             return counts;
           }
         }
-      } catch {}
+      } catch { }
     }
     return {};
   });
@@ -178,7 +178,7 @@ export function useTriageEngine({
     try {
       localStorage.setItem("pulse_cached_clients_with_flags", JSON.stringify(scopedFlags));
       localStorage.setItem("pulse_cached_proactive_alerts", JSON.stringify(scopedProactiveAlerts));
-    } catch {}
+    } catch { }
     setAcknowledgedNoAction(new Set());
     setProcessedAlerts(new Set());
 
@@ -202,6 +202,21 @@ export function useTriageEngine({
     setTriageComplete(true);
     onRefreshTasks?.();
   }, [scopeProactive, scopeClients, onRefreshTasks, setScreen]);
+
+  // Keep localStorage cache synchronized whenever clientsWithFlags or proactiveAlerts update after initial load
+  useEffect(() => {
+    if (!triageComplete) return;
+    try {
+      localStorage.setItem("pulse_cached_clients_with_flags", JSON.stringify(clientsWithFlags || []));
+    } catch { }
+  }, [triageComplete, clientsWithFlags]);
+
+  useEffect(() => {
+    if (!triageComplete) return;
+    try {
+      localStorage.setItem("pulse_cached_proactive_alerts", JSON.stringify(proactiveAlerts || []));
+    } catch { }
+  }, [triageComplete, proactiveAlerts]);
 
   const pollRefreshStatus = useCallback(async () => {
     const pollStart = Date.now();
@@ -236,7 +251,7 @@ export function useTriageEngine({
         const preResp = await fetch("/api/triage", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "get_precomputed", automationCommanderSheetId }),
+          body: JSON.stringify({ action: "get_precomputed", automationCommanderSheetId, bustCache: true }),
         });
         const preData = await preResp.json();
         if (isMountedRef.current) {
@@ -344,17 +359,21 @@ export function useTriageEngine({
   };
 
   const reloadFromCache = async (isBackground = false) => {
+    const isBg = isBackground === true;
     try {
-      if (!isBackground) {
+      if (!isBg) {
+        if (typeof document !== "undefined" && document.activeElement instanceof HTMLElement) {
+          document.activeElement.blur();
+        }
         setIsLoading(true);
         setError("");
-        setRefreshStatus("Loading from cache...");
+        setRefreshStatus("");
       }
 
       const preResponse = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "get_precomputed", automationCommanderSheetId }),
+        body: JSON.stringify({ action: "get_precomputed", automationCommanderSheetId, bustCache: !isBg }),
       });
       const preData = await preResponse.json();
 
@@ -368,7 +387,12 @@ export function useTriageEngine({
         scopedProactiveAlerts.forEach(a => { pCounts[a.clientName] = (pCounts[a.clientName] || 0) + 1; });
         setProactiveCountsByClient(pCounts);
         setProactiveLoadedAt(Date.now());
-        setClientsWithFlags(scopeClients(preData.clientsWithFlags || []));
+        const scopedFlags = scopeClients(preData.clientsWithFlags || []);
+        setClientsWithFlags(scopedFlags);
+        try {
+          localStorage.setItem("pulse_cached_clients_with_flags", JSON.stringify(scopedFlags));
+          localStorage.setItem("pulse_cached_proactive_alerts", JSON.stringify(scopedProactiveAlerts));
+        } catch { }
 
         if (preData.noActionAnalysisResults && Object.keys(preData.noActionAnalysisResults).length > 0) {
           const raw = preData.noActionAnalysisResults;
@@ -385,24 +409,24 @@ export function useTriageEngine({
           setPrecomputedNoActionResults(flat);
         }
 
-        if (!isBackground) {
+        if (!isBg) {
           setAcknowledgedNoAction(new Set());
           setProcessedAlerts(new Set());
           setScreen("clientSelection");
           setTriageComplete(true);
         }
         onRefreshTasks?.();
-      } else if (!isBackground) {
+      } else if (!isBg) {
         setError("Cache is empty or stale. Please use '↻ Refresh' to run a full sweep.");
       }
     } catch (err) {
-      if (!isBackground) {
+      if (!isBg) {
         setError("Failed to load from cache: " + err.message);
       } else {
         console.warn("Background cache reload error:", err.message);
       }
     } finally {
-      if (!isBackground) {
+      if (!isBg) {
         setIsLoading(false);
         setRefreshStatus("");
       }
@@ -427,23 +451,23 @@ export function useTriageEngine({
       setSelectedClient(enrichedClient);
       setCurrentClientAlertIndex(0);
       setAcceptError("");
-      
+
       console.log(`Selected client: ${enrichedClient.clientName}`);
       console.log(`  masterSheetId: ${enrichedClient.masterSheetId}`);
       console.log(`  clientSheetId: ${enrichedClient.clientSheetId}`);
-      
+
       console.log(`  Fetching alerts from Redis (sessionId: ${sessionId})`);
       const response = await fetch(`/api/triage?action=get_alerts&sessionId=${sessionId}`);
       const data = await response.json();
-      
+
       if (!data.success || !data.alerts) {
         console.error(`❌ Failed to load alerts from Redis`);
         setAcceptError("Failed to load alerts");
         return;
       }
-      
+
       console.log(`  ✅ Loaded ${data.alerts.length} total alerts from Redis`);
-      
+
       const filteredAlerts = data.alerts.filter(alert => {
         if (alert.clientName !== client.clientName) return false;
         const hash = alert.fingerprintHash || `${alert.flagType || alert.type}-${alert.sheetName}-${alert.rowNumber}`;
@@ -458,11 +482,11 @@ export function useTriageEngine({
         }
         return true;
       });
-      
+
       const filteredNoAction = (data.noActionAlerts || []).filter(
         na => (na.clientName && na.clientName === client.clientName) || na.clientId === client.masterSheetId
       );
-      
+
       if (data.proactiveAlerts) {
         setProactiveAlerts(data.proactiveAlerts);
         const pCounts = {};
@@ -473,7 +497,7 @@ export function useTriageEngine({
 
       console.log(`  📊 Found ${filteredAlerts.length} unprocessed alerts for ${client.clientName}`);
       console.log(`  📋 Found ${filteredNoAction.length} non-actionable flags for ${client.clientName}`);
-      
+
       setClientAlerts(filteredAlerts);
       setClientNoActionAlerts(filteredNoAction);
       setNoActionAnalysisLoading({});
@@ -505,7 +529,7 @@ export function useTriageEngine({
       });
       console.log(`  precomputedForClient keys:`, Object.keys(precomputedForClient));
       setNoActionAnalysis(precomputedForClient);
-      
+
       if (filteredAlerts.length === 0) {
         const clientProactive = (data.proactiveAlerts || []).filter(a => a.clientName === client.clientName);
         const noActionAllDone = filteredNoAction.length === 0 ||
@@ -535,7 +559,7 @@ export function useTriageEngine({
     setBulkSelected(new Set());
     try {
       console.log(`\n📍 selectAlert called for: ${alert.sheetName}-${alert.rowNumber}`);
-      
+
       const alertIndex = clientAlerts.findIndex(a => a.sheetName === alert.sheetName && a.rowNumber === alert.rowNumber);
       if (alertIndex !== -1) {
         setCurrentClientAlertIndex(alertIndex);
@@ -546,9 +570,9 @@ export function useTriageEngine({
       setFromCache(false);
       setShowIgnoreModal(false);
       setIgnoreReason("");
-      
+
       setScreen("triageAnalysis");
-      
+
       // Validate that cached options are complete and do not contain deprecated fallback cards
       const isInvoiceAlert = alert.type === "invoice" || alert.flagType === "invoiceDashboardDiscr" || alert.alertType === "invoiceDashboardDiscr" || alert.sheetName === "InvComp";
       const isInvMissing = String(alert.data?.flags?.[0] || "").trim() === "1";
@@ -598,30 +622,30 @@ export function useTriageEngine({
           automationCommanderSheetId,
         }),
       });
-      
+
       const data = await response.json();
-      
+
       if (!data.success) {
         console.error(`❌ Analysis failed: ${data.error}`);
         setClaudeAnalysis("Error generating options: " + (data.error || "Unknown error"));
         setIsAnalyzing(false);
         return;
       }
-      
+
       console.log(`✅ Generated ${data.options?.length || 0} options${data.fromCache ? " (from cache)" : ""}`);
       setFromCache(!!data.fromCache);
-      const pir = data.previousIgnoreReason; 
+      const pir = data.previousIgnoreReason;
       const formattedPir = pir && typeof pir === "object" ? pir : pir ? { ignoreReason: pir, changeReason: null } : null;
       setPreviousIgnoreReason(formattedPir);
-      
+
       setClientAlerts(prev => {
         const newAlerts = [...prev];
         const idx = newAlerts.findIndex(a => a.sheetName === alert.sheetName && a.rowNumber === alert.rowNumber);
         if (idx !== -1) {
-          newAlerts[idx] = { 
-            ...newAlerts[idx], 
+          newAlerts[idx] = {
+            ...newAlerts[idx],
             options: data.options,
-            previousIgnoreReason: formattedPir 
+            previousIgnoreReason: formattedPir
           };
         }
         return newAlerts;
@@ -645,7 +669,7 @@ export function useTriageEngine({
       console.log(`Accepting option: ${option.title}${mode ? ` (mode: ${mode})` : ""}`);
 
       const action = option.matchType === "delete" ? "delete_job" : "accept_option";
-      
+
       const response = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -657,9 +681,9 @@ export function useTriageEngine({
           automationCommanderSheetId,
         }),
       });
-      
+
       const data = await response.json();
-      
+
       if (!data.success) {
         const isStale = response.status === 409;
         setAcceptError(isStale
@@ -667,9 +691,9 @@ export function useTriageEngine({
           : `Failed to write to sheet: ${data.error || "Unknown error"}`);
         return;
       }
-      
+
       console.log(`✅ Option accepted! ${data.cellsWritten} cells written`);
-      
+
       const alertId = `${alert.sheetName}-${alert.rowNumber}`;
       const uniqueId = alert.fingerprintHash || `${alert.flagType || alert.type}-${alert.sheetName}-${alert.rowNumber}`;
       setProcessedAlerts(new Set([...processedAlerts, uniqueId]));
@@ -679,9 +703,9 @@ export function useTriageEngine({
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ action: "remove_alert", sessionId, alertId }),
-        }).catch(() => {});
+        }).catch(() => { });
       }
-      
+
       const getAlertCategory = (a) => {
         if (!a) return "";
         if (a.type === "invoice" || a.sheetName === "InvComp" || a.flagType === "invoiceDashboardDiscr" || a.alertType === "invoiceDashboardDiscr") return "invoice";
@@ -748,7 +772,7 @@ export function useTriageEngine({
         acceptedFlagType = alert.expenseCategoryType === "passthrough" ? "passThroughDashboardDiscr" : "contractorsDashboardDiscr";
       }
       if (acceptedFlagType === "crm") acceptedFlagType = "crmPipeAppDiscr";
-      
+
       setClientsWithFlags(prev => prev.map(c => {
         if (c.clientName !== selectedClient?.clientName) return c;
         const updatedCounts = { ...c.alertCounts };
@@ -757,7 +781,7 @@ export function useTriageEngine({
         if ((updatedCounts[acceptedFlagType] || 0) === 0) updatedFlags[acceptedFlagType] = false;
         return { ...c, alertCounts: updatedCounts, flags: updatedFlags };
       }));
-      
+
       if (updatedAlerts.length === 0) {
         if (allNoActionResolved()) {
           handlePostClear([], resolvedNoActionFlags);
@@ -800,8 +824,8 @@ export function useTriageEngine({
 
     const groups = computeFlagGroups(client, remainingAlerts);
 
-    const invoiceBlockingFlags  = ["invoiceStaleUnsentChanges"];
-    const crmBlockingFlags      = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete"];
+    const invoiceBlockingFlags = ["invoiceStaleUnsentChanges"];
+    const crmBlockingFlags = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete"];
 
     const invoiceNoActionDone = invoiceBlockingFlags
       .filter(f => activeNoActionAlerts.some(na => na.flagType === f))
@@ -812,26 +836,26 @@ export function useTriageEngine({
 
     const toZeroVisually = {
       invoice: groups.invoice,
-      crm:     groups.crm,
+      crm: groups.crm,
       expense: groups.expense,
     };
     const visualGroups = Object.entries(toZeroVisually).filter(([, v]) => v).map(([k]) => k);
 
     const toClear = {
       invoice: groups.invoice && invoiceNoActionDone,
-      crm:     groups.crm     && crmNoActionDone,
+      crm: groups.crm && crmNoActionDone,
       expense: groups.expense,
     };
     const selected = Object.entries(toClear).filter(([, v]) => v).map(([k]) => k);
 
     const ACTIONABLE_FLAG_TYPE_MAP = {
-      invoice: ["invoiceDashboardDiscr","retainerInvoicesCreated","retainerInvoicesDeleted","invoiceStaleUnsentChanges"],
-      crm:     ["crmPipeDashDiscr","crmPipeAppDiscr","crmConfDashDiscr","crmConfAppDiscr"],
-      expense: ["contractorsDashboardDiscr","passThroughDashboardDiscr","expenseDashboardDiscr","expenseAdded","expenseUnreconGaps"],
+      invoice: ["invoiceDashboardDiscr", "retainerInvoicesCreated", "retainerInvoicesDeleted", "invoiceStaleUnsentChanges"],
+      crm: ["crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr"],
+      expense: ["contractorsDashboardDiscr", "passThroughDashboardDiscr", "expenseDashboardDiscr", "expenseAdded", "expenseUnreconGaps"],
     };
     const FULL_FLAG_TYPE_MAP = {
       invoice: [...ACTIONABLE_FLAG_TYPE_MAP.invoice],
-      crm:     [...ACTIONABLE_FLAG_TYPE_MAP.crm, "crmCopiedConfChecked","crmCopiedConfUnchecked","crmCopiedConfDelete"],
+      crm: [...ACTIONABLE_FLAG_TYPE_MAP.crm, "crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete"],
       expense: [...ACTIONABLE_FLAG_TYPE_MAP.expense],
     };
 
@@ -906,12 +930,12 @@ export function useTriageEngine({
       const validAssignedExp = expenseIds.filter(isIdMatch).length;
       const validAssignedInv = invoiceIds.filter(isIdMatch).length;
       let remAssignedExp = validAssignedExp;
-      
+
       let clientTotal = 0;
 
       Object.entries(c.flags || {}).forEach(([flagKey, isSet]) => {
         if (!isSet || (!isAdmin && ADMIN_ONLY_FLAG_KEYS.has(flagKey))) return;
-        
+
         let count = c.alertCounts?.[flagKey] || 0;
 
         if (ACTIONABLE_FLAG_KEYS_SET.has(flagKey)) {
@@ -935,8 +959,8 @@ export function useTriageEngine({
 
   const computeAlertCheckCount = (clientName, categoriesStr) => {
     const client = (clientsWithFlags || []).find(c => c.clientName === clientName);
-    if (!client) return 0; 
-    
+    if (!client) return 0;
+
     const normClient = String(clientName || "").trim().toLowerCase();
     let assignedSet = new Set();
     for (const [k, s] of Object.entries(assignedByClient || {})) {
@@ -1084,7 +1108,7 @@ export function useTriageEngine({
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ action: "remove_alert", sessionId, alertId }),
-        }).catch(() => {});
+        }).catch(() => { });
       }
 
       const updatedAlerts = clientAlerts.filter((_, idx) => idx !== currentClientAlertIndex);
@@ -1097,7 +1121,7 @@ export function useTriageEngine({
         ignoredFlagType = alert.expenseCategoryType === "passthrough" ? "passThroughDashboardDiscr" : "contractorsDashboardDiscr";
       }
       if (ignoredFlagType === "crm") ignoredFlagType = "crmPipeAppDiscr";
-      
+
       setClientsWithFlags(prev => prev.map(c => {
         if (c.clientName !== selectedClient.clientName) return c;
         const updatedCounts = { ...c.alertCounts };
@@ -1146,9 +1170,9 @@ export function useTriageEngine({
 
   useEffect(() => {
     if (triageComplete && totalAlerts === 0 && noActionCount === 0
-        && proactiveLoadedAt > 0 && proactiveAlerts.length > 0
-        && activeNav !== "tasks" && activeNav !== "overview"
-        && screen === "initial") { 
+      && proactiveLoadedAt > 0 && proactiveAlerts.length > 0
+      && activeNav !== "tasks" && activeNav !== "overview"
+      && screen === "initial") {
       console.log(`📋 Proactive alerts loaded (${proactiveAlerts.length}), redirecting to clientSelection`);
       setScreen("clientSelection");
     }

@@ -17,7 +17,9 @@ const GLOBAL_STYLES = `
   @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
   .refresh-btn { transition: background 0.15s, transform 0.1s; }
   .refresh-btn svg { transform-origin: center; display: block; }
-  .refresh-btn:hover:not(:disabled) { background: rgba(0, 71, 171, 0.08) !important; }
+  @media (hover: hover) and (pointer: fine) {
+    .refresh-btn:hover:not(:disabled) { background: rgba(0, 71, 171, 0.08) !important; }
+  }
   .refresh-btn:active:not(:disabled) { transform: scale(0.92); }
   .refresh-btn:disabled { cursor: wait !important; opacity: 0.7; }
   .pma-edit-subbar, .pma-views-subbar {
@@ -28,15 +30,17 @@ const GLOBAL_STYLES = `
     display: none;
   }
   .triage-btn { transition: filter 0.15s, transform 0.1s, background 0.15s, box-shadow 0.15s !important; }
-  .triage-btn:hover:not(:disabled) { filter: brightness(0.92); box-shadow: 0 2px 6px rgba(0,0,0,0.12); }
+  @media (hover: hover) and (pointer: fine) {
+    .triage-btn:hover:not(:disabled) { filter: brightness(0.92); box-shadow: 0 2px 6px rgba(0,0,0,0.12); }
+    .triage-btn-primary:hover:not(:disabled) { background: #0055aa !important; }
+    .triage-client-card:hover { background: #f0f4ff !important; border-color: #2196f3 !important; box-shadow: 0 2px 8px rgba(33,150,243,0.15) !important; }
+    .pulse-nav-item:hover { color: #0047AB !important; }
+  }
   .triage-btn:active:not(:disabled) { transform: scale(0.97); filter: brightness(0.85); }
   .triage-btn:disabled { cursor: not-allowed !important; opacity: 0.55 !important; }
-  .triage-btn-primary:hover:not(:disabled) { background: #0055aa !important; }
   .triage-client-card { transition: background 0.12s, border-color 0.12s, box-shadow 0.12s !important; }
-  .triage-client-card:hover { background: #f0f4ff !important; border-color: #2196f3 !important; box-shadow: 0 2px 8px rgba(33,150,243,0.15) !important; }
   .triage-client-card:active { background: #e3ecff !important; transform: scale(0.995); }
   .pulse-nav-item { transition: color 0.15s, border-color 0.15s, background 0.15s !important; }
-  .pulse-nav-item:hover { color: #0047AB !important; }
   .pma-page-container {
     width: 100%;
     max-width: 1440px !important;

@@ -11,6 +11,7 @@ import { getSessionUser } from "./authService.js";
 import { isUserAuthorizedForClient, canAccessPma } from "./userPermissions.js";
 import { matchesClientName, ADMIN_ONLY_ALERT_TYPES, toSheetDateFormat } from "../utils/helpers.js";
 import { getAllClients } from "./workspaces.js";
+import { invalidatePrecomputedMemoryCache } from "./triageEngine.js";
 
 const PRECOMPUTED_KEY = "triage_precomputed";
 
@@ -49,7 +50,7 @@ export async function handleGetAlerts(req, res) {
     const sessionData = await redisClient.get(`triage_alerts:${sessionId}`);
     if (!sessionData) return res.status(404).json({ success: false, error: "Session not found" });
     let { alerts, noActionAlerts, proactiveAlerts, clientsWithFlags, resolvedNoActionFlags } = JSON.parse(sessionData);
-    
+
     const sessionUser = getSessionUser(req);
     if (!sessionUser) {
       return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
@@ -81,7 +82,7 @@ export function applyAlertRemovalToTriageData(data, targetIds, allowedClientChec
   const targetList = Array.isArray(targetIds) ? targetIds : Array.from(targetIds || []);
   const targetSet = new Set(targetList.map(String));
   const canRemove = (item) => !allowedClientCheck || allowedClientCheck(item?.clientName);
-  
+
   const removedAlerts = [];
   const keptAlerts = [];
   for (const a of (data.alerts || [])) {
@@ -176,7 +177,7 @@ export async function handleRemoveAlert(req, res) {
     const sessionData = await redisClient.get(`triage_alerts:${sessionId}`);
     if (!sessionData) return res.status(200).json({ success: true, notFound: true });
     const parsed = JSON.parse(sessionData);
-    
+
     const { removedCount } = applyAlertRemovalToTriageData(parsed, targetIds, allowedClientCheck);
     await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 86400 * 7 });
 
@@ -186,6 +187,7 @@ export async function handleRemoveAlert(req, res) {
         const pre = JSON.parse(preRaw);
         applyAlertRemovalToTriageData(pre, targetIds, allowedClientCheck);
         await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
+        invalidatePrecomputedMemoryCache();
       }
     } catch (e) {
       console.warn("Could not sync PRECOMPUTED_KEY in handleRemoveAlert:", e.message);
@@ -210,7 +212,7 @@ export async function handleUpdateSessionFlags(req, res) {
         parsed.noActionAlerts = parsed.noActionAlerts.filter(na => {
           if (na.clientName && na.clientName !== clientName) return true;
           const targetClientId = (parsed.clientsWithFlags || []).find(c => c.clientName === clientName)?.masterSheetId;
-          if (!na.clientName && na.clientId !== targetClientId) return true; 
+          if (!na.clientName && na.clientId !== targetClientId) return true;
           return !keysToZero.has(na.flagType);
         });
       }
@@ -251,6 +253,7 @@ export async function handleUpdateSessionFlags(req, res) {
         richFlags.forEach(flagType => { if (keysToZero.has(flagType)) delete parsed.noActionAnalysisResults[`${clientName}___${flagType}`]; });
       }
       await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(parsed), { EX: 86400 * 7 });
+      invalidatePrecomputedMemoryCache();
     }
     return res.status(200).json({ success: true });
   } catch (err) {
@@ -276,14 +279,15 @@ export async function handleResolveNoActionFlag(req, res, sheets) {
         const acIdClean = extractSheetIdFromUrl(acIdResolve) || acIdResolve;
         const memoryRows = await readAlertMemory(sheets, acIdClean);
         const toAccept = memoryRows.filter(r => {
-          if (r.clientName !== clientName || r.alertType !== flagType || r.status !== "cached") return false;
+          if (r.clientName !== clientName || r.alertType !== flagType || (r.status !== "cached" && r.status !== "pending_automation")) return false;
           if (fingerprintHash) return r.fingerprintHash === fingerprintHash;
-          return true; 
+          return true;
         });
         for (const row of toAccept) {
           await updateAlertMemoryRow(sheets, acIdClean, row.rowIndex, { ...row, status: "accepted" });
         }
-      } catch (amErr) {}
+        invalidatePrecomputedMemoryCache();
+      } catch (amErr) { }
     }
 
     const flagCat = (() => {
@@ -389,6 +393,7 @@ export async function handleBulkResolveNoActionFlags(req, res, sheets) {
             richFlags.forEach(flagType => { if (keysToZero.has(flagType)) delete parsed.noActionAnalysisResults[`${clientName}___${flagType}`]; });
           }
           await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(parsed), { EX: 86400 * 7 });
+          invalidatePrecomputedMemoryCache();
         }
       } catch (preErr) {
         console.warn("⚠️ Failed updating PRECOMPUTED_KEY in handleBulkResolveNoActionFlags:", preErr.message);
@@ -401,11 +406,13 @@ export async function handleBulkResolveNoActionFlags(req, res, sheets) {
         const memoryRows = await readAlertMemory(sheets, acIdClean);
         const hashesSet = new Set(flags.map(f => f.fingerprintHash).filter(Boolean));
         const flagTypesSet = new Set(flags.map(f => f.flagType).filter(Boolean));
+        const clearedSet = new Set(clearedFlagKeys || []);
 
         const toAccept = memoryRows.filter(r => {
-          if (r.clientName !== clientName || r.status !== "cached") return false;
+          if (r.clientName !== clientName || (r.status !== "cached" && r.status !== "pending_automation")) return false;
           if (r.fingerprintHash && hashesSet.has(r.fingerprintHash)) return true;
           if (!r.fingerprintHash && flagTypesSet.has(r.alertType)) return true;
+          if (clearedSet.has(r.alertType)) return true;
           return false;
         });
 
@@ -416,6 +423,7 @@ export async function handleBulkResolveNoActionFlags(req, res, sheets) {
           }));
           await updateAlertMemoryRowsBatch(sheets, acIdClean, updateItems);
         }
+        invalidatePrecomputedMemoryCache();
       } catch (amErr) {
         console.warn("⚠️ AlertMemory update error in handleBulkResolveNoActionFlags:", amErr.message);
       }
@@ -506,6 +514,7 @@ export async function handleRecordDecision(req, res, sheets) {
           const pre = JSON.parse(preRaw);
           applyAlertRemovalToTriageData(pre, targetIds, canRemoveClient);
           await redisClient?.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
+          invalidatePrecomputedMemoryCache();
         }
         if (req.body.sessionId) {
           const sRaw = await redisClient?.get(`triage_alerts:${req.body.sessionId}`);
@@ -529,7 +538,7 @@ export async function handleRecordDecision(req, res, sheets) {
 export async function handleIgnoreAlert(req, res, sheets) {
   const { alert, automationCommanderSheetId } = req.body;
   if (!alert || !automationCommanderSheetId) return res.status(400).json({ success: false, error: "Missing alert or acId" });
-  
+
   // Wrap the single alert in an array and reuse the bulk ignore logic
   req.body.alerts = [alert];
   return handleBulkIgnoreAlerts(req, res, sheets);
@@ -557,20 +566,22 @@ export async function handleBulkIgnoreAlerts(req, res, sheets) {
       const alertSummary = alert.summary?.summary || `${alert.type || "alert"} ${alert.summary?.invoiceNo || ""} £${alert.summary?.amount || ""}`.trim();
       const crmIdentitySnap = alert.type === "crm" ? extractCrmComparisonSnapshot(alert) : null;
       const dataSnapshot = JSON.stringify({
-        alertType:  alert.type || alert.flagType || "", invoiceNo:  alert.summary?.invoiceNo || "",
-        amount:     String(alert.summary?.amount || ""), vatIncluded: String(alert.summary?.vatIncluded || ""),
-        status:     String(alert.summary?.status || ""), sentDate:   String(alert.summary?.sentDate || ""),
-        datePaid:   String(alert.summary?.datePaid || ""), client:     String(alert.summary?.client || ""),
-        job:        String(alert.summary?.job || ""), flagType:   alert.flagType || "",
-        masterSheetId: alert.masterSheetId || "", crmJobName:    crmIdentitySnap?.jobName    || "",
-        crmEndClient:  crmIdentitySnap?.clientName || "", crmFields:     crmIdentitySnap?.fields     || null,
+        alertType: alert.type || alert.flagType || "", invoiceNo: alert.summary?.invoiceNo || "",
+        amount: String(alert.summary?.amount || ""), vatIncluded: String(alert.summary?.vatIncluded || ""),
+        status: String(alert.summary?.status || ""), sentDate: String(alert.summary?.sentDate || ""),
+        datePaid: String(alert.summary?.datePaid || ""), client: String(alert.summary?.client || ""),
+        job: String(alert.summary?.job || ""), flagType: alert.flagType || "",
+        masterSheetId: alert.masterSheetId || "", crmJobName: crmIdentitySnap?.jobName || "",
+        crmEndClient: crmIdentitySnap?.clientName || "", crmFields: crmIdentitySnap?.fields || null,
       });
       if (memoryRow && (!memoryRow.clientName || !alert.clientName || matchesClientName(alert.clientName, memoryRow.clientName))) {
         rowsToUpdate.push({ rowIndex: memoryRow.rowIndex, row: { ...memoryRow, status: "ignored", ignoreReason: ignoreReason || "", dataSnapshot } });
       } else {
-        rowsToAppend.push({ fingerprintHash, alertType: alert.type || alert.flagType || "unknown",
+        rowsToAppend.push({
+          fingerprintHash, alertType: alert.type || alert.flagType || "unknown",
           clientName: alert.clientName || "", alertSummary, cachedOptionsJSON: "",
-          status: "ignored", ignoreReason: ignoreReason || "", dataSnapshot });
+          status: "ignored", ignoreReason: ignoreReason || "", dataSnapshot
+        });
       }
     }
     if (rowsToUpdate.length > 0) {
@@ -579,6 +590,7 @@ export async function handleBulkIgnoreAlerts(req, res, sheets) {
     if (rowsToAppend.length > 0) {
       await appendAlertMemoryRowsBatch(sheets, acId, rowsToAppend);
     }
+    invalidatePrecomputedMemoryCache();
 
     const firstAlert = alertsToIgnore[0];
     const alertCat = (() => {
@@ -622,26 +634,26 @@ export async function handleAcknowledgeProactiveAlert(req, res, sheets) {
       if (clientName && r.clientName !== clientName) return false;
       if (!req.isSystemAuthorized && sessionUser && !sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, r.clientName)) return false;
       if (r.fingerprintHash === fingerprintHash) return true;
-      if (alertKey.startsWith("autolog_error|") || alertKey.startsWith("infinite_loop|")) {
-        try {
-          const s = JSON.parse(r.dataSnapshot || "{}");
-          const k = s.alertKey || s.legacyAlertKey || "";
-          if (k === alertKey || k === alertData?.legacyAlertKey) return true;
-          if (k.startsWith(alertKey + "|")) return true;
-        } catch(e) { return false; }
-      }
+      try {
+        const s = JSON.parse(r.dataSnapshot || "{}");
+        const snapKey = s.alertKey || "";
+        const snapLegacy = s.legacyAlertKey || "";
+        if (snapKey === alertKey || snapLegacy === alertKey) return true;
+        if (alertData?.legacyAlertKey && (snapKey === alertData.legacyAlertKey || snapLegacy === alertData.legacyAlertKey)) return true;
+        if ((alertKey.startsWith("autolog_error|") || alertKey.startsWith("infinite_loop|")) && snapKey.startsWith(alertKey + "|")) return true;
+      } catch (e) { return false; }
       return false;
     });
 
     if (candidateMatches.length > 0) {
       const primaryRow = candidateMatches[0];
       let snap = {};
-      try { snap = JSON.parse(primaryRow.dataSnapshot || "{}"); } catch(e) {}
+      try { snap = JSON.parse(primaryRow.dataSnapshot || "{}"); } catch (e) { }
       if (alertData) snap = { ...snap, ...alertData };
-      await updateAlertMemoryRow(sheets, acId, primaryRow.rowIndex, { 
-        ...primaryRow, 
+      await updateAlertMemoryRow(sheets, acId, primaryRow.rowIndex, {
+        ...primaryRow,
         fingerprintHash,
-        status: "accepted", 
+        status: "accepted",
         clientName: clientName || primaryRow.clientName || "",
         dataSnapshot: JSON.stringify(snap)
       });
@@ -668,7 +680,7 @@ export async function handleAcknowledgeProactiveAlert(req, res, sheets) {
           applyAlertRemovalToTriageData(parsed, [alertKey, fingerprintHash], canRemoveClient);
           await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 86400 * 7 });
         }
-      } catch (e) {}
+      } catch (e) { }
     }
     try {
       const preRaw = await redisClient.get(PRECOMPUTED_KEY);
@@ -677,7 +689,8 @@ export async function handleAcknowledgeProactiveAlert(req, res, sheets) {
         applyAlertRemovalToTriageData(pre, [alertKey, fingerprintHash], canRemoveClient);
         await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
       }
-    } catch (e) {}
+    } catch (e) { }
+    invalidatePrecomputedMemoryCache();
 
     const alertCat = (() => {
       const t = String(alertKey || "").toLowerCase();
@@ -720,14 +733,14 @@ export async function handleResolveProactiveAlert(req, res, sheets) {
     if (row && !req.isSystemAuthorized && sessionUser && !sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, row.clientName)) {
       return res.status(403).json({ success: false, error: "Forbidden: Access denied to this client's alert." });
     }
-    
+
     if (row) {
       let snap = row.dataSnapshot;
       try {
         const parsed = JSON.parse(snap || "{}");
         parsed.resolution = resolution;
         snap = JSON.stringify(parsed);
-      } catch(e) {}
+      } catch (e) { }
       await updateAlertMemoryRow(sheets, acId, row.rowIndex, { ...row, status: "accepted", clientName: clientName || row.clientName || "", dataSnapshot: snap });
     } else {
       await appendAlertMemoryRow(sheets, acId, {
@@ -745,7 +758,7 @@ export async function handleResolveProactiveAlert(req, res, sheets) {
           applyAlertRemovalToTriageData(parsed, [alertKey, fingerprintHash], canRemoveClient);
           await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 86400 * 7 });
         }
-      } catch (e) {}
+      } catch (e) { }
     }
     try {
       const preRaw = await redisClient.get(PRECOMPUTED_KEY);
@@ -754,7 +767,8 @@ export async function handleResolveProactiveAlert(req, res, sheets) {
         applyAlertRemovalToTriageData(pre, [alertKey, fingerprintHash], canRemoveClient);
         await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
       }
-    } catch (e) {}
+    } catch (e) { }
+    invalidatePrecomputedMemoryCache();
 
     const alertCat = (() => {
       const t = String(alertKey || "").toLowerCase();
@@ -795,7 +809,7 @@ export async function handleBulkAcknowledgeProactiveAlerts(req, res, sheets) {
     const hashesToRemove = [];
     const updateBatchItems = [];
     const appendItems = [];
-    
+
     for (const alertKey of alertKeys) {
       const fingerprintHash = createHash("sha256").update(alertKey).digest("hex").substring(0, 16);
       hashesToRemove.push(alertKey, fingerprintHash);
@@ -809,7 +823,7 @@ export async function handleBulkAcknowledgeProactiveAlerts(req, res, sheets) {
             const k = s.alertKey || s.legacyAlertKey || "";
             if (k === alertKey) return true;
             if (k.startsWith(alertKey + "|")) return true;
-          } catch(e) { return false; }
+          } catch (e) { return false; }
         }
         return false;
       });
@@ -818,11 +832,11 @@ export async function handleBulkAcknowledgeProactiveAlerts(req, res, sheets) {
         const primaryRow = candidateMatches[0];
         updateBatchItems.push({
           rowIndex: primaryRow.rowIndex,
-          updates: { 
-            ...primaryRow, 
+          updates: {
+            ...primaryRow,
             fingerprintHash,
-            status: "accepted", 
-            clientName: clientName || primaryRow.clientName || "" 
+            status: "accepted",
+            clientName: clientName || primaryRow.clientName || ""
           }
         });
         for (const dup of candidateMatches.slice(1)) {
@@ -858,7 +872,7 @@ export async function handleBulkAcknowledgeProactiveAlerts(req, res, sheets) {
           applyAlertRemovalToTriageData(parsed, hashesToRemove, canRemoveClient);
           await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 86400 * 7 });
         }
-      } catch (e) {}
+      } catch (e) { }
     }
     try {
       const preRaw = await redisClient.get(PRECOMPUTED_KEY);
@@ -867,7 +881,8 @@ export async function handleBulkAcknowledgeProactiveAlerts(req, res, sheets) {
         applyAlertRemovalToTriageData(pre, hashesToRemove, canRemoveClient);
         await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
       }
-    } catch (e) {}
+    } catch (e) { }
+    invalidatePrecomputedMemoryCache();
 
     logPmaActivity(sheets, {
       automationCommanderSheetId: acId,
@@ -930,13 +945,13 @@ export async function handleGetIgnoredAlerts(req, res, sheets) {
       .filter(r => r.status === "ignored" || (r.status === "superseded" && r.ignoreReason))
       .map(r => ({
         fingerprintHash: r.fingerprintHash,
-        alertType:       r.alertType,
-        clientName:      r.clientName,
-        alertSummary:    r.alertSummary,
-        ignoreReason:    r.ignoreReason,
-        firstSeen:       r.firstSeen,
-        lastSeen:        r.lastSeen,
-        status:          r.status,
+        alertType: r.alertType,
+        clientName: r.clientName,
+        alertSummary: r.alertSummary,
+        ignoreReason: r.ignoreReason,
+        firstSeen: r.firstSeen,
+        lastSeen: r.lastSeen,
+        status: r.status,
       }));
 
     const sessionUser = getSessionUser(req);
@@ -964,18 +979,18 @@ export async function handleGetProactiveAlerts(req, res, sheets) {
     await ensureAlertMemoryTab(sheets, acId);
     const all = await readAlertMemory(sheets, acId);
     const metaFields = [
-      "jobName","endClientName","confirmedRow","revenue","startDate","endDate",
-      "frequencyDays","lastInvoiceDate","expectedByDate","timestamp","sequenceType","summary","jobInfo","detailsSnippet",
-      "childRowNum","clientJobStr","pipelineRow","likelihood","copiedToConf","jobType",
-      "possibleMatchInvoiceNo","possibleMatchAmount","possibleMatchSentDate","possibleMatchConfidence","possibleMatchConfirmedRow","possibleMatchVatAmount","possibleMatchStatus","possibleMatchCase",
-      "uninvoicedAmount","projectCode","draftCount","draftTotal","stableJobKey","isRetainer","tab",
-      "directCosts","unreceivedAmount","placeholderCount","placeholderTotal",
-      "totalInvoiced","totalExpenses","diff","childExp","expectedForRow",
-      "categoryName","cleanName","quarantineRow",
-      "slotNum","invoiceRef","amount","sentDate",
-      "errorSnippet","occurrenceCount","category","rawSnippet","entityKey","fieldName","transition1","transition2","conflictType","suggestion","rawLogSnippet","invoiceNo"
+      "jobName", "endClientName", "confirmedRow", "revenue", "startDate", "endDate",
+      "frequencyDays", "lastInvoiceDate", "expectedByDate", "timestamp", "sequenceType", "summary", "jobInfo", "detailsSnippet",
+      "childRowNum", "clientJobStr", "pipelineRow", "likelihood", "copiedToConf", "jobType",
+      "possibleMatchInvoiceNo", "possibleMatchAmount", "possibleMatchSentDate", "possibleMatchConfidence", "possibleMatchConfirmedRow", "possibleMatchVatAmount", "possibleMatchStatus", "possibleMatchCase",
+      "uninvoicedAmount", "projectCode", "draftCount", "draftTotal", "stableJobKey", "isRetainer", "tab",
+      "directCosts", "unreceivedAmount", "placeholderCount", "placeholderTotal",
+      "totalInvoiced", "totalExpenses", "diff", "childExp", "expectedForRow",
+      "categoryName", "cleanName", "quarantineRow",
+      "slotNum", "invoiceRef", "amount", "sentDate",
+      "errorSnippet", "occurrenceCount", "category", "rawSnippet", "entityKey", "fieldName", "transition1", "transition2", "conflictType", "suggestion", "rawLogSnippet", "invoiceNo"
     ];
-      
+
     let active = all
       .filter(r => r.category === "proactive" && r.status === "cached")
       .map(r => {
@@ -1002,7 +1017,7 @@ export async function handleGetProactiveAlerts(req, res, sheets) {
           const snap = JSON.parse(r.dataSnapshot || "{}");
           const jobKey = snap.stableJobKey || snap.metadata?.stableJobKey;
           if (jobKey) completedRevenueKeys.add(`${r.clientName}:::${jobKey}`);
-        } catch (e) {}
+        } catch (e) { }
       }
     });
 
@@ -1085,14 +1100,14 @@ export async function handleGetProactiveAlerts(req, res, sheets) {
                       rowIndex: origMemRow.rowIndex,
                       updates: { ...origMemRow, dataSnapshot: JSON.stringify(snap) }
                     });
-                  } catch (e) {}
+                  } catch (e) { }
                 }
               }
             }
           }
         }
         if (memoryUpdates.length > 0) {
-          await updateAlertMemoryRowsBatch(sheets, acId, memoryUpdates).catch(() => {});
+          await updateAlertMemoryRowsBatch(sheets, acId, memoryUpdates).catch(() => { });
         }
       } catch (healErr) {
         console.warn("Could not self-heal proactive alert endDate:", healErr.message);

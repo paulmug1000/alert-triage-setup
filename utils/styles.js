@@ -4,15 +4,17 @@ export const GLOBAL_STYLES = `
   button, input, select, textarea { font-family: inherit; }
   @keyframes triage-spin { to { transform: rotate(360deg); } }
   .triage-btn { transition: filter 0.15s, transform 0.1s, background 0.15s, box-shadow 0.15s, border-color 0.15s, color 0.15s !important; }
-  .triage-btn:hover:not(:disabled) { filter: brightness(0.95); box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08); }
+  @media (hover: hover) and (pointer: fine) {
+    .triage-btn:hover:not(:disabled) { filter: brightness(0.95); box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08); }
+    .triage-btn-primary:hover:not(:disabled) { background: #003b8e !important; }
+    .triage-client-card:hover { background: #f0f7ff !important; border-color: #0047AB !important; box-shadow: 0 2px 8px rgba(0, 71, 171, 0.12) !important; }
+    .pulse-nav-item:hover { color: #0047AB !important; }
+  }
   .triage-btn:active:not(:disabled) { transform: scale(0.98); filter: brightness(0.9); }
   .triage-btn:disabled { cursor: not-allowed !important; opacity: 0.55 !important; }
-  .triage-btn-primary:hover:not(:disabled) { background: #003b8e !important; }
   .triage-client-card { transition: background 0.12s, border-color 0.12s, box-shadow 0.12s !important; }
-  .triage-client-card:hover { background: #f0f7ff !important; border-color: #0047AB !important; box-shadow: 0 2px 8px rgba(0, 71, 171, 0.12) !important; }
   .triage-client-card:active { background: #e0effe !important; transform: scale(0.998); }
   .pulse-nav-item { transition: color 0.15s, border-color 0.15s, background 0.15s !important; }
-  .pulse-nav-item:hover { color: #0047AB !important; }
   .pma-page-container {
     width: 100%;
     max-width: 1440px !important;

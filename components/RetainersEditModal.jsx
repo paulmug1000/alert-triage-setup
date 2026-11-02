@@ -54,8 +54,20 @@ export default function RetainersEditModal({ job, clientName, clientSheetId, mas
     );
   }, [job]);
 
-  const minSplitMonth = React.useMemo(() => {
+  const { minSplitMonth, latestInvoicedMonthLabel, minSplitMonthLabel } = React.useMemo(() => {
+    const monthNames = [
+      "January", "February", "March", "April", "May", "June",
+      "July", "August", "September", "October", "November", "December",
+    ];
+    const fmtMonthLabel = (ym) => {
+      if (!ym) return "";
+      const [y, m] = ym.split("-").map(Number);
+      if (!y || !m) return ym;
+      return `${monthNames[m - 1]} ${y}`;
+    };
+
     let latestMonth = jobStartISO ? jobStartISO.slice(0, 7) : "";
+    let latestSentMonth = "";
     if (job?.rows) {
       for (const r of job.rows) {
         for (const s of (r.invoiceSlots || [])) {
@@ -63,17 +75,26 @@ export default function RetainersEditModal({ job, clientName, clientSheetId, mas
           const status = String(s.status || "").trim().toLowerCase();
           if ((ref && !isPlaceholderInvoice(ref)) || status.includes("sent") || status.includes("paid")) {
             const sentISO = sheetDateToISO(s.sentDate);
-            if (sentISO && sentISO.slice(0, 7) > latestMonth) {
-              latestMonth = sentISO.slice(0, 7);
+            if (sentISO) {
+              const ym = sentISO.slice(0, 7);
+              if (ym > latestMonth) latestMonth = ym;
+              if (ym > latestSentMonth) latestSentMonth = ym;
             }
           }
         }
       }
     }
-    if (!latestMonth) return "";
+    if (!latestMonth) {
+      return { minSplitMonth: "", latestInvoicedMonthLabel: "", minSplitMonthLabel: "" };
+    }
     const [y, m] = latestMonth.split("-").map(Number);
     const nextDate = new Date(y, m, 1);
-    return `${nextDate.getFullYear()}-${String(nextDate.getMonth() + 1).padStart(2, "0")}`;
+    const computedMin = `${nextDate.getFullYear()}-${String(nextDate.getMonth() + 1).padStart(2, "0")}`;
+    return {
+      minSplitMonth: computedMin,
+      latestInvoicedMonthLabel: fmtMonthLabel(latestSentMonth),
+      minSplitMonthLabel: fmtMonthLabel(computedMin),
+    };
   }, [job, jobStartISO]);
 
   const currentRevenueClean = String(job.revenue || "").replace(/[^\d.-]/g, "");
@@ -441,6 +462,15 @@ export default function RetainersEditModal({ job, clientName, clientSheetId, mas
                   min={minSplitMonth || undefined}
                   max={jobEndISO ? jobEndISO.slice(0, 7) : undefined}
                 />
+                {latestInvoicedMonthLabel && minSplitMonthLabel ? (
+                  <div style={{ fontSize: "11px", color: "#6b7280", marginTop: "5px", lineHeight: 1.4 }}>
+                    Note: Months up to and including <strong>{latestInvoicedMonthLabel}</strong> cannot be selected because an invoice has already been sent for {latestInvoicedMonthLabel}. The earliest month you can split from is <strong>{minSplitMonthLabel}</strong>.
+                  </div>
+                ) : minSplitMonthLabel ? (
+                  <div style={{ fontSize: "11px", color: "#6b7280", marginTop: "5px", lineHeight: 1.4 }}>
+                    Note: Splitting takes effect from <strong>{minSplitMonthLabel}</strong> onwards. To change the monthly amount from the very start of the retainer, go back and edit the monthly amount directly.
+                  </div>
+                ) : null}
               </div>
               <div>
                 <label style={labelStyle}>New monthly amount (£)</label>

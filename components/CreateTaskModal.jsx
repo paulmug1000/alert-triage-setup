@@ -155,7 +155,11 @@ export default function CreateTaskModal() {
         setClientAlerts(updatedAlerts);
 
         let ft = taskModalAlert.flagType || taskModalAlert.alertType || taskModalAlert.type || "";
-        if (ft === "invoice") ft = "invoiceDashboardDiscr"; if (ft === "expense") ft = "expenseDashboardDiscr"; if (ft === "crm") ft = "crmPipeAppDiscr";
+        if (ft === "invoice") ft = "invoiceDashboardDiscr";
+        if (ft === "expense" || ft === "expenseDashboardDiscr") {
+          ft = taskModalAlert.expenseCategoryType === "passthrough" ? "passThroughDashboardDiscr" : "contractorsDashboardDiscr";
+        }
+        if (ft === "crm") ft = "crmPipeAppDiscr";
         
         setClientsWithFlags(prev => (prev || []).map(c => {
           if (c.clientName !== selectedClient?.clientName) return c;

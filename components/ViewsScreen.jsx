@@ -123,6 +123,9 @@ export default function ViewsScreen({
       return cached;
     }
 
+    setLoadingPayload(true);
+    setPayloadError(null);
+
     if (!bypassCache && typeof getInFlightPrefetch === "function") {
       const inFlight = getInFlightPrefetch(`portal_payload_${cleanId}`);
       if (inFlight) {
@@ -139,8 +142,6 @@ export default function ViewsScreen({
       }
     }
 
-    setLoadingPayload(true);
-    setPayloadError(null);
     try {
       const url = `/api/portal/payload?clientSheetId=${encodeURIComponent(cid)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? `&bypassCache=true&_t=${Date.now()}` : ""}`;
       const res = await fetch(url);
@@ -172,6 +173,9 @@ export default function ViewsScreen({
       return cached;
     }
 
+    setLoadingPerf(true);
+    setPerfError(null);
+
     if (!bypassCache && typeof getInFlightPrefetch === "function") {
       const inFlight = getInFlightPrefetch(`portal_perf_${cleanId}`);
       if (inFlight) {
@@ -188,8 +192,6 @@ export default function ViewsScreen({
       }
     }
 
-    setLoadingPerf(true);
-    setPerfError(null);
     try {
       const url = `/api/portal/performance?clientSheetId=${encodeURIComponent(cid)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? `&bypassCache=true&_t=${Date.now()}` : ""}`;
       const res = await fetch(url);
@@ -223,6 +225,9 @@ export default function ViewsScreen({
       return cached;
     }
 
+    setLoadingCash(true);
+    setCashError(null);
+
     if (!bypassCache && typeof getInFlightPrefetch === "function") {
       const inFlight = getInFlightPrefetch(`portal_cash_${cleanId}`);
       if (inFlight) {
@@ -239,8 +244,6 @@ export default function ViewsScreen({
       }
     }
 
-    setLoadingCash(true);
-    setCashError(null);
     try {
       const url = `/api/portal/cash?clientSheetId=${encodeURIComponent(cid)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? `&bypassCache=true&_t=${Date.now()}` : ""}`;
       const res = await fetch(url);
@@ -274,6 +277,9 @@ export default function ViewsScreen({
       return cached;
     }
 
+    setLoadingKeyData(true);
+    setKeyDataError(null);
+
     if (!bypassCache && typeof getInFlightPrefetch === "function") {
       const inFlight = getInFlightPrefetch(`portal_key_${cleanId}`);
       if (inFlight) {
@@ -290,8 +296,6 @@ export default function ViewsScreen({
       }
     }
 
-    setLoadingKeyData(true);
-    setKeyDataError(null);
     try {
       const url = `/api/portal/key-data?clientSheetId=${encodeURIComponent(cid)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? `&bypassCache=true&_t=${Date.now()}` : ""}`;
       const res = await fetch(url);
@@ -325,6 +329,9 @@ export default function ViewsScreen({
       return cached;
     }
 
+    setLoadingBudget(true);
+    setBudgetError(null);
+
     if (!bypassCache && typeof getInFlightPrefetch === "function") {
       const inFlight = getInFlightPrefetch(`portal_budget_${cleanId}`);
       if (inFlight) {
@@ -340,9 +347,6 @@ export default function ViewsScreen({
         } catch { }
       }
     }
-
-    setLoadingBudget(true);
-    setBudgetError(null);
     try {
       const url = `/api/portal/budget?clientSheetId=${encodeURIComponent(cid)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? `&bypassCache=true&_t=${Date.now()}` : ""}`;
       const res = await fetch(url);
@@ -546,6 +550,7 @@ export default function ViewsScreen({
       {!selectedClient && (
         <EditClientSelector
           clients={allClients || []}
+          loading={(allClients || []).length === 0}
           onSelectClient={(c) => handleSelectClient(c)}
           title="Select a client to view their dashboard:"
         />

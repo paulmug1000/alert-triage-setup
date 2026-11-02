@@ -160,7 +160,7 @@ export default function InvoicesView({
     invoicesInboxLoading,
     invoicesPlacing, setInvoicesPlacing, invoicesPlacingRef,
     invoicesJobs, setInvoicesJobs,
-    invoicesJobsLoading,
+    invoicesJobsLoading, setInvoicesJobsLoading,
     invoicesShowAll, setInvoicesShowAll,
     invoicesSavingCell, setInvoicesSavingCell,
     hasAccountingIntegration,
@@ -1004,7 +1004,7 @@ export default function InvoicesView({
               if (updatedCounts["invoiceDashboardDiscr"] === 0) updatedFlags.invoiceDashboardDiscr = false;
               return { ...c, alertCounts: updatedCounts, flags: updatedFlags };
             }));
-            await loadInvoicesJobs(invoicesClient, invoicesShowAll);
+            await loadInvoicesJobs(invoicesClient, invoicesShowAll, false, true);
           }}
         />
       )}
@@ -1187,14 +1187,15 @@ export default function InvoicesView({
                 )}
                 <button
                   className="triage-btn"
+                  disabled={invoicesJobsLoading || invoicesInboxLoading}
                   onClick={() => {
-                    loadInvoicesInbox(invoicesClient);
-                    loadInvoicesJobs(invoicesClient, invoicesShowAll);
+                    loadInvoicesInbox(invoicesClient, true);
+                    loadInvoicesJobs(invoicesClient, invoicesShowAll, false, true);
                   }}
-                  style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 12px" }}
+                  style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 12px", display: "inline-flex", alignItems: "center", gap: "6px", opacity: (invoicesJobsLoading || invoicesInboxLoading) ? 0.7 : 1 }}
                   title={isAdmin ? "Refresh jobs and invoices from live sheets" : "Refresh jobs and invoices"}
                 >
-                  ↻ Refresh
+                  {(invoicesJobsLoading || invoicesInboxLoading) ? <><Spinner size={12} color="#475569" /> Refreshing...</> : "↻ Refresh"}
                 </button>
               </div>
             )}
@@ -1205,13 +1206,24 @@ export default function InvoicesView({
           <EditClientSelector
             clients={allOutgoingsClients || []}
             onSelectClient={(c) => {
-              setInvoicesClient(c);
-              onSelectClient?.(c);
-              loadInvoicesInbox(c);
-              loadInvoicesJobs(c, false);
+              const targetName = String(c?.clientName || c?.name || "").trim().toLowerCase();
+              const fullC =
+                (allOutgoingsClients || []).find(item => String(item.clientName || "").trim().toLowerCase() === targetName && item.clientSheetId) ||
+                (clientsWithFlags || []).find(item => String(item.clientName || "").trim().toLowerCase() === targetName && item.clientSheetId) ||
+                c;
+              prevInitialClientRef.current = fullC;
+              setInvoicesClient(fullC);
+              setInvoicesJobs(null);
+              setInvoicesInbox([]);
+              setInvoicesJobsLoading(true);
+              onSelectClient?.(fullC);
               setInvoicesShowAll(false);
+              if (fullC.clientSheetId) {
+                loadInvoicesInbox(fullC);
+                loadInvoicesJobs(fullC, false);
+              }
             }}
-            loading={invoicesJobsLoading || invoicesInboxLoading}
+            loading={(allOutgoingsClients || []).length === 0}
             title="Select a client to view and edit invoices:"
             renderExtra={(c) => {
               const hasFlag = clientsWithFlags?.some(
@@ -1313,14 +1325,15 @@ export default function InvoicesView({
                   )}
                   <button
                     className="triage-btn"
+                    disabled={invoicesJobsLoading || invoicesInboxLoading}
                     onClick={() => {
-                      loadInvoicesInbox(invoicesClient);
-                      loadInvoicesJobs(invoicesClient, invoicesShowAll);
+                      loadInvoicesInbox(invoicesClient, true);
+                      loadInvoicesJobs(invoicesClient, invoicesShowAll, false, true);
                     }}
-                    style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 12px" }}
+                    style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 12px", display: "inline-flex", alignItems: "center", gap: "6px", opacity: (invoicesJobsLoading || invoicesInboxLoading) ? 0.7 : 1 }}
                     title={isAdmin ? "Refresh jobs and invoices from live sheets" : "Refresh jobs and invoices"}
                   >
-                    ↻ Refresh
+                    {(invoicesJobsLoading || invoicesInboxLoading) ? <><Spinner size={12} color="#475569" /> Refreshing...</> : "↻ Refresh"}
                   </button>
                 </div>
               )}
@@ -1329,9 +1342,15 @@ export default function InvoicesView({
             {invoicesSubTab === "byJob" && (
               <div style={{ background: "#fff", border: `1px solid ${invoicesInbox.length > 0 ? "#ffc107" : "#e0e0e0"}`, borderRadius: "10px", padding: "14px 16px", marginBottom: "16px" }}>
                 <div style={{ fontSize: "13px", fontWeight: "700", color: invoicesInbox.length > 0 ? "#e65100" : "#888", marginBottom: invoicesInbox.length > 0 ? "6px" : "0" }}>
-                  {invoicesInboxLoading ? "Loading..." : invoicesInbox.length > 0
-                    ? `Unmatched invoices (${invoicesInbox.length}) - select an invoice, then place against a job`
-                    : "No unmatched invoices"}
+                  {invoicesInboxLoading && invoicesInbox.length === 0 ? (
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: "8px", color: "#1d4ed8" }}>
+                      <Spinner size={13} color="#2563eb" /> Synchronising unmatched invoices from accounting...
+                    </span>
+                  ) : invoicesInbox.length > 0 ? (
+                    `Unmatched invoices (${invoicesInbox.length}) - select an invoice, then place against a job`
+                  ) : (
+                    "No unmatched invoices - inbox is clear ✓"
+                  )}
                 </div>
                 {invoicesInbox.length > 0 && (
                   <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
@@ -1374,10 +1393,16 @@ export default function InvoicesView({
               </div>
             )}
 
-            {invoicesJobsLoading && (
-              <PmaInvoicesTableSkeleton />
+            {(invoicesJobsLoading || !invoicesJobs) && !invoicesJobs && (
+              <div>
+                <div style={{ display: "flex", alignItems: "center", gap: "10px", padding: "10px 16px", marginBottom: "12px", background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: "8px", color: "#1e40af", fontSize: "13px", fontWeight: 600 }}>
+                  <Spinner size={14} color="#2563eb" />
+                  <span>Loading confirmed jobs and invoice allocations for {invoicesClient?.clientName || "client"}...</span>
+                </div>
+                <PmaInvoicesTableSkeleton />
+              </div>
             )}
-            {!invoicesJobsLoading && invoicesJobs && (
+            {invoicesJobs && (
               <>
                 {invoicesSubTab === "byJob" && (
                   <>
@@ -1422,11 +1447,16 @@ export default function InvoicesView({
                           fontSize: "12px",
                           fontWeight: "600",
                           color: "#1e293b",
-                          cursor: "pointer",
+                          cursor: invoicesJobsLoading ? "default" : "pointer",
                           boxShadow: "0 1px 2px rgba(0,0,0,0.05)",
-                          transition: "all 0.15s ease"
+                          transition: "all 0.15s ease",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "6px",
+                          opacity: invoicesJobsLoading ? 0.7 : 1,
                         }}
                       >
+                        {invoicesJobsLoading && <Spinner size={11} color="#1e293b" />}
                         {invoicesShowAll ? "Show only uninvoiced jobs" : "Show all jobs"}
                       </button>
                     </div>
@@ -1718,8 +1748,18 @@ export default function InvoicesView({
                                               .map(s => ({ ...s, rowNum: jr.rowNum, slotNum: s.slotNum, client: job.client, jobName: job.jobName, isRetainer: true }))
                                             : getJobInvoiceItems(job, false);
                                           const displayInvoiceItems = groupSlotItemsForDisplay(rawRowInvoices, "invoice");
+                                          const isNewRowPlacing = invoicesSavingCell === `newrow-${job.client}|||${job.jobName}`;
+                                          const isAnyRowPlacing = isNewRowPlacing || (job.rows || []).some(r => String(invoicesSavingCell || "").startsWith(`${r.rowNum}-`));
+                                          const isSavingIntoEmptyOrNewSlot = isAnyRowPlacing && !displayInvoiceItems.some(item => `${item.rowNum}-${item.slotNum}` === invoicesSavingCell);
 
                                           if (displayInvoiceItems.length === 0) {
+                                            if (isAnyRowPlacing) {
+                                              return (
+                                                <div style={{ display: "inline-flex", alignItems: "center", gap: "6px", padding: "5px 10px", borderRadius: "6px", background: "#eff6ff", border: "1px solid #bfdbfe", color: "#1d4ed8", fontSize: "11px", fontWeight: 600 }}>
+                                                  <Spinner size={11} color="#2563eb" /> Placing invoice...
+                                                </div>
+                                              );
+                                            }
                                             return (
                                               <span style={{ color: "#94a3b8", fontSize: "11px", fontStyle: "italic" }}>
                                                 No invoices found.
@@ -1819,6 +1859,11 @@ export default function InvoicesView({
                                                   </div>
                                                 );
                                               })}
+                                              {isSavingIntoEmptyOrNewSlot && (
+                                                <div style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 8px", borderRadius: "6px", background: "#eff6ff", border: "1px solid #bfdbfe", color: "#1d4ed8", fontSize: "11px", fontWeight: 600 }}>
+                                                  <Spinner size={11} color="#2563eb" /> Placing invoice...
+                                                </div>
+                                              )}
                                             </div>
                                           );
                                         })()}
@@ -1827,6 +1872,11 @@ export default function InvoicesView({
                                       {/* Actions Column */}
                                       <td style={{ padding: "8px 10px", verticalAlign: "top", textAlign: "center" }}>
                                         <div style={{ display: "flex", flexDirection: "column", gap: "6px", alignItems: "stretch", width: "100%", maxWidth: "160px", margin: "0 auto" }}>
+                                          {(invoicesSavingCell === `newrow-${job.client}|||${job.jobName}` || (job.rows || []).some(r => String(invoicesSavingCell || "").startsWith(`${r.rowNum}-`))) && (
+                                            <div style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "6px", padding: "5px 10px", borderRadius: "6px", background: "#eff6ff", border: "1px solid #bfdbfe", color: "#1d4ed8", fontSize: "11px", fontWeight: 600 }}>
+                                              <Spinner size={11} color="#2563eb" /> Saving...
+                                            </div>
+                                          )}
                                           {/* Option A: Prominent button when an inbox item is currently selected for placing */}
                                           {invoicesPlacing && (
                                             <button
@@ -2089,7 +2139,7 @@ export default function InvoicesView({
                                           <div style={{ height: "100%", minHeight: "36px", display: "flex", alignItems: "center", justifyContent: "center" }}>
                                             <Spinner size={12} color="#1a56db" />
                                           </div>
-                                        ) : isLastRowOfJob && !jobHasEmptySlot && isPlacing && (
+                                        ) : isLastRowOfJob && !jobHasEmptySlot && Boolean(invoicesPlacing) && (
                                           <div
                                             title="Add more space for this job"
                                             onClick={async () => {

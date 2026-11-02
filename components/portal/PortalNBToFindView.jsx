@@ -27,6 +27,12 @@ export default function PortalNBToFindView({
   const mode = nbData?.mode || data?.mode || data?.outgoingsMeta?.mode || "Revenue";
   const isRevenueMode = String(mode).toLowerCase() === "revenue";
   const modeTermLower = isRevenueMode ? "revenue" : "income";
+  const directCostsMode =
+    nbData?.directCostsMode ||
+    data?.directCostsMode ||
+    data?.outgoingsMeta?.directCostsMode ||
+    (isRevenueMode ? "Contractors" : "Pass-through");
+  const dcTerm = directCostsMode === "Pass-through" ? "pass-through costs" : "direct costs";
 
   const fyLabels = useMemo(() => {
     if (data?.outgoings?.fyLabels) return data.outgoings.fyLabels;
@@ -103,7 +109,7 @@ export default function PortalNBToFindView({
 
     if (isRevenueMode && monthlyDirectCosts.length > 0) {
       rows.push([
-        "NB to find direct costs",
+        `NB to find ${dcTerm}`,
         ...monthHeaders.map((_, mIdx) => monthlyDirectCosts[mIdx] || `${currencySymbol}0`),
         formatGBP(totalDirectCosts),
       ]);
@@ -388,7 +394,7 @@ export default function PortalNBToFindView({
                   </td>
                 </tr>
 
-                {/* Row 23: NB to Find Direct Costs (Shown in Revenue mode only) */}
+                {/* Row 23: NB to Find Direct / Pass-through Costs (Shown in Revenue mode only) */}
                 {isRevenueMode && (
                   <tr style={{ background: "#f8fafc" }}>
                     <td
@@ -402,7 +408,7 @@ export default function PortalNBToFindView({
                         zIndex: 1,
                       }}
                     >
-                      NB to find direct costs
+                      NB to find {dcTerm}
                     </td>
 
                     {monthHeaders.map((_, mIdx) => {

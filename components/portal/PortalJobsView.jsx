@@ -247,6 +247,39 @@ export default function PortalJobsView({
   };
 
   const jobsData = data?.jobs;
+  const [showZeroPercentJobs, setShowZeroPercentJobs] = useState(false);
+
+  const isZeroPercentPipelineJob = (j) => {
+    if (!j || j.type !== "Pipeline") return false;
+    const lik = typeof j.likelihoodNum === "number" && !isNaN(j.likelihoodNum)
+      ? j.likelihoodNum
+      : (parseFloat(String(j.likelihood || "").replace("%", "")) || 0);
+    return Math.abs(lik) < 0.001;
+  };
+
+  const visibleJobCounts = useMemo(() => {
+    if (!jobsData?.all) {
+      return {
+        all: 0,
+        confirmed: jobsData?.confirmedCount || 0,
+        pipeline: jobsData?.pipelineCount || 0,
+      };
+    }
+    const baseList = jobsData.all
+      .map((j) => {
+        const key = j.id !== undefined ? j.id : (j.parentId !== undefined ? j.parentId : j.rowNumber);
+        return (key !== undefined && optimisticJobs[key]) ? { ...j, ...optimisticJobs[key] } : j;
+      })
+      .filter((j) => showZeroPercentJobs || !isZeroPercentPipelineJob(j));
+
+    const confirmed = baseList.filter((j) => j.type === "Confirmed").length;
+    const pipeline = baseList.filter((j) => j.type === "Pipeline").length;
+    return {
+      all: baseList.length,
+      confirmed,
+      pipeline,
+    };
+  }, [jobsData, optimisticJobs, showZeroPercentJobs]);
 
   const productLineOptions = useMemo(() => {
     const fromApi = data?.formOptions?.productLines || [];
@@ -270,6 +303,11 @@ export default function PortalJobsView({
       const key = j.id !== undefined ? j.id : (j.parentId !== undefined ? j.parentId : j.rowNumber);
       return (key !== undefined && optimisticJobs[key]) ? { ...j, ...optimisticJobs[key] } : j;
     });
+
+    // Exclude 0% pipeline jobs unless showZeroPercentJobs is checked
+    if (!showZeroPercentJobs) {
+      list = list.filter((j) => !isZeroPercentPipelineJob(j));
+    }
 
     // Filter by type
     if (filterType === "confirmed") {
@@ -364,7 +402,7 @@ export default function PortalJobsView({
     });
 
     return list;
-  }, [jobsData, filterType, searchTerm, sortBy, optimisticJobs]);
+  }, [jobsData, filterType, searchTerm, sortBy, optimisticJobs, showZeroPercentJobs]);
 
   const rawSymbol =
     (propCurrencySymbol && propCurrencySymbol !== "£" ? propCurrencySymbol : null) ||
@@ -1048,9 +1086,9 @@ export default function PortalJobsView({
         {/* Type Filter Buttons */}
         <div className="portal-filter-pills" style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
           {[
-            { id: "all", label: `All (${jobsData?.all?.length || 0})` },
-            { id: "confirmed", label: `Confirmed (${jobsData?.confirmedCount || 0})` },
-            { id: "pipeline", label: `Pipeline (${jobsData?.pipelineCount || 0})` },
+            { id: "all", label: `All (${visibleJobCounts.all})` },
+            { id: "confirmed", label: `Confirmed (${visibleJobCounts.confirmed})` },
+            { id: "pipeline", label: `Pipeline (${visibleJobCounts.pipeline})` },
             { id: "project", label: "Projects" },
             { id: "retainer", label: "Retainers" },
           ].map((tab) => (
@@ -1078,7 +1116,41 @@ export default function PortalJobsView({
         </div>
 
         {/* Search & Sort */}
-        <div className="portal-search-sort" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+        <div className="portal-search-sort" style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+          <label
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "6px",
+              fontSize: "12px",
+              fontWeight: 500,
+              color: showZeroPercentJobs ? "#0047AB" : "#475569",
+              cursor: "pointer",
+              userSelect: "none",
+              padding: "4px 8px",
+              borderRadius: "6px",
+              background: showZeroPercentJobs ? "#eff6ff" : "#ffffff",
+              border: `1px solid ${showZeroPercentJobs ? "#93c5fd" : "#cbd5e1"}`,
+            }}
+            title="Include pipeline jobs with 0% likelihood in the list"
+          >
+            <input
+              type="checkbox"
+              checked={showZeroPercentJobs}
+              onChange={(e) => {
+                setShowZeroPercentJobs(e.target.checked);
+                setCurrentPage(1);
+              }}
+              style={{
+                cursor: "pointer",
+                accentColor: "#0047AB",
+                width: "13px",
+                height: "13px",
+                margin: 0,
+              }}
+            />
+            <span>Show 0% jobs</span>
+          </label>
           <input
             type="text"
             placeholder="Search jobs or clients..."
@@ -1625,6 +1697,9 @@ export default function PortalJobsView({
                         onChange={(e) => setEditingJob({ ...editingJob, revenue: e.target.value })}
                         style={getCrmInputStyle(false)}
                       />
+                      <div style={{ fontSize: "11px", color: "#64748b", marginTop: "3px" }}>
+                        For retainers, enter the monthly amount
+                      </div>
                     </div>
                     <div title={crmLockedTooltip}>
                       <label style={formLabelStyle}>Direct Costs (excl. VAT) *</label>

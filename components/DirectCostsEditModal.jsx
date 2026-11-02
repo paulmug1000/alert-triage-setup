@@ -127,7 +127,7 @@ export default function DirectCostsEditModal({
         status: isLocked ? (slot.status || status) : (isPlaceholder ? (slot.status || "") : status),
         transactionId: isLocked ? (slot.transactionId || transactionId) : transactionId,
       }, data);
-      close();
+      onClose();
     } catch (e) { console.error("update_expense_slot save error:", e); }
     finally { setSaving(false); }
   };
@@ -153,7 +153,7 @@ export default function DirectCostsEditModal({
       onUpdateJobs(rowNum, slotNum, {
         description: "", amount: "", vat: "", date: "", daysToPay: "", status: "", transactionId: ""
       }, data);
-      close();
+      onClose();
     } catch (e) { console.error("update_expense_slot delete error:", e); }
     finally { setSaving(false); }
   };
@@ -374,8 +374,8 @@ export default function DirectCostsEditModal({
               <button onClick={() => setConfirmingDelete(false)} disabled={saving}
                 style={{ padding: "7px 14px", background: "#f5f5f5", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>Cancel</button>
               <button onClick={doDelete} disabled={saving}
-                style={{ padding: "7px 14px", background: "#dc2626", color: "#fff", border: "none", borderRadius: "6px", cursor: saving ? "default" : "pointer", fontSize: "13px", fontWeight: "600", opacity: saving ? 0.7 : 1 }}>
-                {saving ? "Deleting..." : "Yes, delete"}
+                style={{ padding: "7px 14px", background: "#dc2626", color: "#fff", border: "none", borderRadius: "6px", cursor: saving ? "default" : "pointer", fontSize: "13px", fontWeight: "600", opacity: saving ? 0.7 : 1, display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                {saving ? <><Spinner size={12} color="#fff" /> Deleting...</> : "Yes, delete"}
               </button>
             </div>
           </div>
@@ -399,8 +399,8 @@ export default function DirectCostsEditModal({
               <button onClick={close} disabled={saving}
                 style={{ padding: "8px 16px", background: "#f5f5f5", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>Cancel</button>
               <button onClick={save} disabled={saving}
-                style={{ padding: "8px 22px", background: saving ? "#4caf50" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: saving ? "default" : "pointer", fontSize: "13px", fontWeight: "600", opacity: saving ? 0.8 : 1 }}>
-                {saving ? "Saving..." : "Save changes"}
+                style={{ padding: "8px 22px", background: saving ? "#4caf50" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: saving ? "default" : "pointer", fontSize: "13px", fontWeight: "600", opacity: saving ? 0.8 : 1, display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                {saving ? <><Spinner size={12} color="#fff" /> Saving...</> : "Save changes"}
               </button>
             </div>
           </div>

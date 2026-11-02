@@ -78,22 +78,36 @@ export default function NBToFindView({
   const [singleCellValue, setSingleCellValue] = useState("");
   const [singleCellNoteValue, setSingleCellNoteValue] = useState("");
 
+  const [savingAction, setSavingAction] = useState(null);
+
   // Resolve active client
   useEffect(() => {
     if (managedClient) {
       const match = (allOutgoingsClients || []).find(
         (c) => c.clientName?.toLowerCase() === managedClient.clientName?.toLowerCase()
       ) || managedClient;
-      setSelectedClient(match);
+      setSelectedClient((prev) => {
+        if (prev?.clientName?.toLowerCase() !== match?.clientName?.toLowerCase()) {
+          setNbData(null);
+          setLoading(true);
+        }
+        return match;
+      });
       return;
     }
     if (initialClient) {
       const targetStr = typeof initialClient === "string" ? initialClient.toLowerCase() : initialClient?.clientName?.toLowerCase();
       const match = (allOutgoingsClients || []).find(
         (c) => c.clientName?.toLowerCase() === targetStr
-      );
+      ) || (typeof initialClient === "object" ? initialClient : null);
       if (match) {
-        setSelectedClient(match);
+        setSelectedClient((prev) => {
+          if (prev?.clientName?.toLowerCase() !== match?.clientName?.toLowerCase()) {
+            setNbData(null);
+            setLoading(true);
+          }
+          return match;
+        });
         return;
       }
     }
@@ -113,7 +127,7 @@ export default function NBToFindView({
   };
 
   // Fetch NBtoFind Data with caching
-  const fetchNBData = useCallback(async (client, bypassCache = false) => {
+  const fetchNBData = useCallback(async (client, bypassCache = false, silent = false) => {
     if (!client || !client.clientSheetId) return;
     const cleanId = cleanSheetId ? cleanSheetId(client.clientSheetId) : client.clientSheetId;
 
@@ -126,7 +140,7 @@ export default function NBToFindView({
       setDirectCostsPct(cached.data.settings?.directCostsPercentage || "0%");
       setLoading(false);
       if (!cached.isStale) return;
-    } else {
+    } else if (!silent) {
       setLoading(true);
     }
 
@@ -199,6 +213,13 @@ export default function NBToFindView({
   const modeTerm = revenueFocus === "Income" ? "Income" : "Revenue";
   const modeTermLower = modeTerm.toLowerCase();
   const isRevenueMode = modeTerm === "Revenue";
+  const directCostsMode =
+    nbData?.directCostsMode ||
+    nbData?.settings?.directCostsMode ||
+    selectedClient?.directCostsMode ||
+    (isRevenueMode ? "Contractors" : "Pass-through");
+  const dcTerm = directCostsMode === "Pass-through" ? "pass-through costs" : "direct costs";
+  const dcTermCap = directCostsMode === "Pass-through" ? "Pass-through costs" : "Direct costs";
 
   const rawSymbol = nbData?.currencySymbol || selectedClient?.currencySymbol || "£";
   const currencySymbol = rawSymbol === "EUR" ? "€" : rawSymbol === "GBP" ? "£" : rawSymbol === "USD" ? "$" : rawSymbol;
@@ -214,9 +235,10 @@ export default function NBToFindView({
   };
 
   // ── SAVE SETTINGS (Cell A9, Cell A12 and/or Cell A21) ───────────────────────
-  const handleSaveSettings = async (newTargets, newBudget, newDirectPct) => {
+  const handleSaveSettings = async (newTargets, newBudget, newDirectPct, actionKey = "settings") => {
     if (!selectedClient || !isAdmin) return;
     setSaving(true);
+    setSavingAction(actionKey);
     setError(null);
     try {
       const res = await fetch("/api/pma/nbtofind", {
@@ -233,13 +255,14 @@ export default function NBToFindView({
       });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || "Failed to save settings");
-      await fetchNBData(selectedClient, true);
+      await fetchNBData(selectedClient, true, true);
       showSuccess("Updated New Business configuration settings.");
     } catch (err) {
       console.error("Save settings error:", err);
       setError(err.message || "Failed to save settings");
     } finally {
       setSaving(false);
+      setSavingAction(null);
     }
   };
 
@@ -248,6 +271,7 @@ export default function NBToFindView({
     if (!selectedClient || !isAdmin) return;
     const nextVal = currentVal === "Yes" ? "No" : "Yes";
     setSaving(true);
+    setSavingAction(`month-${colLetter}`);
     setError(null);
     try {
       const res = await fetch("/api/pma/nbtofind", {
@@ -266,12 +290,13 @@ export default function NBToFindView({
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || "Failed to update month status");
       showSuccess(isSysAdmin ? `Updated ${colLetter}25 to ${nextVal}.` : `Updated month status to ${nextVal}.`);
-      await fetchNBData(selectedClient, true);
+      await fetchNBData(selectedClient, true, true);
     } catch (err) {
       console.error("Toggle month error:", err);
       setError(err.message || "Failed to update month status");
     } finally {
       setSaving(false);
+      setSavingAction(null);
     }
   };
 
@@ -279,6 +304,7 @@ export default function NBToFindView({
   const handleSaveAllTargets = async () => {
     if (!selectedClient || !isAdmin) return;
     setSaving(true);
+    setSavingAction("all-targets");
     setError(null);
     try {
       const res = await fetch("/api/pma/nbtofind", {
@@ -296,12 +322,13 @@ export default function NBToFindView({
       if (!res.ok || !data.success) throw new Error(data.error || "Failed to save targets");
       setEditingTargets(false);
       showSuccess(`Saved monthly ${modeTermLower} targets${isSysAdmin ? ` (Row ${editingTargetsRow})` : ""} successfully.`);
-      await fetchNBData(selectedClient, true);
+      await fetchNBData(selectedClient, true, true);
     } catch (err) {
       console.error("Save targets error:", err);
       setError(err.message || "Failed to save targets");
     } finally {
       setSaving(false);
+      setSavingAction(null);
     }
   };
 
@@ -309,6 +336,7 @@ export default function NBToFindView({
   const handleSaveSingleCell = async () => {
     if (!selectedClient || !editingSingleCell || !isAdmin) return;
     setSaving(true);
+    setSavingAction("single-cell");
     setError(null);
     try {
       const res = await fetch("/api/pma/nbtofind", {
@@ -331,12 +359,13 @@ export default function NBToFindView({
       if (!res.ok || !data.success) throw new Error(data.error || "Failed to update value");
       setEditingSingleCell(null);
       showSuccess(`Updated ${editingSingleCell.label} amount.`);
-      await fetchNBData(selectedClient, true);
+      await fetchNBData(selectedClient, true, true);
     } catch (err) {
       console.error("Save single cell error:", err);
       setError(err.message || "Failed to update value");
     } finally {
       setSaving(false);
+      setSavingAction(null);
     }
   };
 
@@ -577,10 +606,13 @@ export default function NBToFindView({
         <EditClientSelector
           clients={allOutgoingsClients}
           onSelectClient={(c) => {
+            setNbData(null);
+            setError(null);
+            setLoading(true);
             setSelectedClient(c);
             onSelectClient?.(c);
           }}
-          loading={loading}
+          loading={(allOutgoingsClients || []).length === 0}
           title="Select a client to view and edit new business to find:"
         />
       )}
@@ -627,7 +659,7 @@ export default function NBToFindView({
         </div>
       )}
 
-      {selectedClient && (loading || !nbData) && !error && (
+      {(selectedClient || managedClient) && (loading || !nbData) && !nbData && !error && (
         <PmaNBToFindSkeleton />
       )}
 
@@ -682,7 +714,7 @@ export default function NBToFindView({
                           disabled={saving || loading}
                           onClick={() => {
                             setTargetsSetting("Yes");
-                            handleSaveSettings("Yes", undefined, undefined);
+                            handleSaveSettings("Yes", undefined, undefined, "targets");
                           }}
                           style={{
                             padding: "4px 14px",
@@ -700,7 +732,7 @@ export default function NBToFindView({
                             gap: "5px",
                           }}
                         >
-                          {saving && targetsSetting === "Yes" && <Spinner size={12} color="#ffffff" />}
+                          {savingAction === "targets" && targetsSetting === "Yes" && <Spinner size={12} color="#ffffff" />}
                           <span>Yes</span>
                         </button>
                         <button
@@ -708,7 +740,7 @@ export default function NBToFindView({
                           disabled={saving || loading}
                           onClick={() => {
                             setTargetsSetting("No");
-                            handleSaveSettings("No", undefined, undefined);
+                            handleSaveSettings("No", undefined, undefined, "targets");
                           }}
                           style={{
                             padding: "4px 14px",
@@ -726,12 +758,12 @@ export default function NBToFindView({
                             gap: "5px",
                           }}
                         >
-                          {saving && targetsSetting === "No" && <Spinner size={12} color="#ffffff" />}
+                          {savingAction === "targets" && targetsSetting === "No" && <Spinner size={12} color="#ffffff" />}
                           <span>No</span>
                         </button>
                       </div>
 
-                      {saving || loading ? (
+                      {savingAction === "targets" ? (
                         <div
                           style={{
                             display: "inline-flex",
@@ -797,7 +829,7 @@ export default function NBToFindView({
                               disabled={saving || loading}
                               onClick={() => {
                                 setBudgetSetting("Yes");
-                                handleSaveSettings(undefined, "Yes", undefined);
+                                handleSaveSettings(undefined, "Yes", undefined, "budget");
                               }}
                               style={{
                                 padding: "4px 14px",
@@ -815,7 +847,7 @@ export default function NBToFindView({
                                 gap: "5px",
                               }}
                             >
-                              {saving && budgetSetting === "Yes" && <Spinner size={12} color="#ffffff" />}
+                              {savingAction === "budget" && budgetSetting === "Yes" && <Spinner size={12} color="#ffffff" />}
                               <span>Yes</span>
                             </button>
                             <button
@@ -823,7 +855,7 @@ export default function NBToFindView({
                               disabled={saving || loading}
                               onClick={() => {
                                 setBudgetSetting("No");
-                                handleSaveSettings(undefined, "No", undefined);
+                                handleSaveSettings(undefined, "No", undefined, "budget");
                               }}
                               style={{
                                 padding: "4px 14px",
@@ -841,12 +873,12 @@ export default function NBToFindView({
                                 gap: "5px",
                               }}
                             >
-                              {saving && budgetSetting === "No" && <Spinner size={12} color="#ffffff" />}
+                              {savingAction === "budget" && budgetSetting === "No" && <Spinner size={12} color="#ffffff" />}
                               <span>No</span>
                             </button>
                           </div>
 
-                          {saving || loading ? (
+                          {savingAction === "budget" ? (
                             <div
                               style={{
                                 display: "inline-flex",
@@ -911,10 +943,10 @@ export default function NBToFindView({
                     </div>
                   )}
                   <div style={{ fontSize: "14px", fontWeight: 700, color: "#1e293b", marginTop: isSysAdmin ? "4px" : 0 }}>
-                    NB direct costs as a percentage?
+                    NB {dcTerm} as a percentage?
                   </div>
                   <div style={{ fontSize: "12px", color: "#64748b", marginTop: "4px" }}>
-                    When 0%, no direct costs are deducted. Set a custom % to apply direct cost allocations.
+                    When 0%, no {dcTerm} are deducted. Set a custom % to apply {dcTerm.replace(/s$/, "")} allocations.
                   </div>
                 </div>
 
@@ -925,9 +957,11 @@ export default function NBToFindView({
                         type="text"
                         value={directCostsPct}
                         onChange={(e) => setDirectCostsPct(e.target.value)}
-                        onBlur={() => handleSaveSettings(undefined, undefined, directCostsPct)}
                         onKeyDown={(e) => {
-                          if (e.key === "Enter") handleSaveSettings(undefined, undefined, directCostsPct);
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            handleSaveSettings(undefined, undefined, directCostsPct, "pct");
+                          }
                         }}
                         style={{
                           width: "60px",
@@ -942,7 +976,7 @@ export default function NBToFindView({
                       />
                       <button
                         type="button"
-                        onClick={() => handleSaveSettings(undefined, undefined, directCostsPct)}
+                        onClick={() => handleSaveSettings(undefined, undefined, directCostsPct, "pct")}
                         disabled={saving || loading}
                         style={{
                           padding: "4px 10px",
@@ -959,7 +993,7 @@ export default function NBToFindView({
                           gap: "5px",
                         }}
                       >
-                        {saving && <Spinner size={12} color="#ffffff" />}
+                        {savingAction === "pct" && <Spinner size={12} color="#ffffff" />}
                         <span>Save</span>
                       </button>
                       <div style={{ display: "flex", gap: "4px" }}>
@@ -970,7 +1004,7 @@ export default function NBToFindView({
                             disabled={saving || loading}
                             onClick={() => {
                               setDirectCostsPct(pct);
-                              handleSaveSettings(undefined, undefined, pct);
+                              handleSaveSettings(undefined, undefined, pct, "pct");
                             }}
                             style={{
                               padding: "3px 6px",
@@ -1019,7 +1053,7 @@ export default function NBToFindView({
                 </div>
                 {isRevenueMode && (
                   <div style={{ marginTop: "4px", display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                    <span style={{ fontSize: "12px", color: "#475569" }}>NB Direct Costs to Use:</span>
+                    <span style={{ fontSize: "12px", color: "#475569" }}>NB {dcTerm} to use:</span>
                     <span style={{ fontSize: "13px", fontWeight: 700, color: "#dc2626" }}>{fyRow23?.total || `${currencySymbol}0`}</span>
                   </div>
                 )}
@@ -1211,12 +1245,12 @@ export default function NBToFindView({
                     </tr>
                   )}
 
-                  {/* Row 5: NB to find direct costs (Visible & Editable in all modes ONLY IF in Revenue mode) */}
+                  {/* Row 5: NB to find direct/pass-through costs (Visible & Editable in all modes ONLY IF in Revenue mode) */}
                   {isRevenueMode && fyRow5 && (
                     <tr style={{ background: "#ffffff", borderBottom: "1px solid #e2e8f0" }}>
                       <td style={{ padding: "9px 14px", textAlign: "left", fontWeight: 600, color: "#1e293b" }}>
                         <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                          <span>NB to find direct costs</span>
+                          <span>NB to find {dcTerm}</span>
                           <span style={{ fontSize: "10px", background: "#eff6ff", color: "#1d4ed8", padding: "1px 5px", borderRadius: "4px", fontWeight: 700 }}>
                             {isSysAdmin ? "Editable (Row 5)" : "Editable"}
                           </span>
@@ -1232,7 +1266,7 @@ export default function NBToFindView({
                                 colLetter: m.colLetter,
                                 label: m.monthLabel,
                                 value: m.value,
-                                title: "NB to find direct costs",
+                                title: `NB to find ${dcTerm}`,
                                 note: m.note || "",
                               });
                               setSingleCellValue(normalizeCurrency(m.value));
@@ -1253,7 +1287,7 @@ export default function NBToFindView({
                           onMouseLeave={(e) => {
                             if (isAdmin) e.currentTarget.style.background = "transparent";
                           }}
-                          title={isAdmin ? `Click to edit ${m.monthLabel} direct costs & note` : undefined}
+                          title={isAdmin ? `Click to edit ${m.monthLabel} ${dcTerm} & note` : undefined}
                         >
                           <CellNoteIndicator note={m.note} />
                           {m.value || "-"}
@@ -1485,10 +1519,13 @@ export default function NBToFindView({
                   borderRadius: "6px",
                   fontSize: "13px",
                   fontWeight: 700,
-                  cursor: "pointer",
+                  cursor: saving ? "default" : "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
                 }}
               >
-                {saving ? "Saving..." : "Save All Targets"}
+                {saving ? <><Spinner size={12} color="#fff" /> Saving...</> : "Save all targets"}
               </button>
             </div>
           </div>
@@ -1529,7 +1566,7 @@ export default function NBToFindView({
             </p>
             <div style={{ marginBottom: "16px" }}>
               <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "#334155", marginBottom: "4px" }}>
-                {editingSingleCell.rowNum === 5 ? "Direct costs amount" : `${modeTerm} target amount`} ({currencySymbol})
+                {editingSingleCell.rowNum === 5 ? `${dcTermCap} amount` : `${modeTerm} target amount`} ({currencySymbol})
               </label>
               <input
                 type="text"
@@ -1600,10 +1637,13 @@ export default function NBToFindView({
                   borderRadius: "4px",
                   fontSize: "12px",
                   fontWeight: 600,
-                  cursor: "pointer",
+                  cursor: saving ? "default" : "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
                 }}
               >
-                {saving ? "Saving..." : "Save"}
+                {saving ? <><Spinner size={12} color="#fff" /> Saving...</> : "Save"}
               </button>
             </div>
           </div>

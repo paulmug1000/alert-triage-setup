@@ -14,6 +14,7 @@ export default function KeyInfoSettingsForm({ masterSheetId, clientName, onSaved
   const [vatRate, setVatRate] = useState("20%");
   const [payeCycle, setPayeCycle] = useState("Monthly");
   const [revenueFocus, setRevenueFocus] = useState("Income");
+  const [directCostsMode, setDirectCostsMode] = useState("Contractors");
   const [profitShare, setProfitShare] = useState("0%");
   const [contractorMethod, setContractorMethod] = useState("Notes metadata");
 
@@ -35,6 +36,7 @@ export default function KeyInfoSettingsForm({ masterSheetId, clientName, onSaved
           if (s.vatRate) setVatRate(s.vatRate);
           if (s.payeCycle) setPayeCycle(s.payeCycle);
           if (s.revenueFocus) setRevenueFocus(s.revenueFocus);
+          if (s.directCostsMode) setDirectCostsMode(s.revenueFocus === "Income" ? "Pass-through" : s.directCostsMode);
           if (s.profitShare) setProfitShare(s.profitShare);
           if (s.contractorMethod) setContractorMethod(s.contractorMethod);
         }
@@ -72,6 +74,7 @@ export default function KeyInfoSettingsForm({ masterSheetId, clientName, onSaved
             vatRate,
             payeCycle,
             revenueFocus,
+            directCostsMode: revenueFocus === "Income" ? "Pass-through" : directCostsMode,
             profitShare,
             contractorMethod
           }
@@ -205,11 +208,40 @@ export default function KeyInfoSettingsForm({ masterSheetId, clientName, onSaved
           </label>
           <select
             value={revenueFocus}
-            onChange={(e) => setRevenueFocus(e.target.value)}
+            onChange={(e) => {
+              const nextVal = e.target.value;
+              setRevenueFocus(nextVal);
+              if (nextVal === "Income") setDirectCostsMode("Pass-through");
+            }}
             style={{ width: "100%", padding: "8px 10px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "13px", background: "#FFFFFF", boxSizing: "border-box" }}
           >
             <option value="Income">Income (Default)</option>
             <option value="Revenue">Revenue</option>
+          </select>
+        </div>
+
+        {/* Direct Costs Considered As */}
+        <div>
+          <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#334155", marginBottom: "4px" }}>
+            Direct costs considered as{isAdmin ? " (D8)" : ""}
+          </label>
+          <select
+            value={revenueFocus === "Income" ? "Pass-through" : directCostsMode}
+            disabled={revenueFocus === "Income"}
+            onChange={(e) => setDirectCostsMode(e.target.value)}
+            style={{
+              width: "100%",
+              padding: "8px 10px",
+              borderRadius: "6px",
+              border: "1px solid #CBD5E1",
+              fontSize: "13px",
+              background: revenueFocus === "Income" ? "#F1F5F9" : "#FFFFFF",
+              color: revenueFocus === "Income" ? "#64748B" : "#0F172A",
+              boxSizing: "border-box"
+            }}
+          >
+            <option value="Contractors" disabled={revenueFocus === "Income"}>Contractors</option>
+            <option value="Pass-through">Pass-through</option>
           </select>
         </div>
 

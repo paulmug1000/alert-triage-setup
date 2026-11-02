@@ -135,7 +135,9 @@ export function applyAlertRemovalToTriageData(data, targetIds, allowedClientChec
     if (!cName) continue;
     let flagKey = a.flagType || a.alertType || a.type;
     if (flagKey === "invoice") flagKey = "invoiceDashboardDiscr";
-    if (flagKey === "expense") flagKey = "expenseDashboardDiscr";
+    if (flagKey === "expense" || flagKey === "expenseDashboardDiscr") {
+      flagKey = a.expenseCategoryType === "passthrough" ? "passThroughDashboardDiscr" : "contractorsDashboardDiscr";
+    }
     if (flagKey === "crm") flagKey = a.alertType || "crmPipeAppDiscr";
     if (!removedCountsByClientFlag[cName]) removedCountsByClientFlag[cName] = {};
     removedCountsByClientFlag[cName][flagKey] = (removedCountsByClientFlag[cName][flagKey] || 0) + 1;

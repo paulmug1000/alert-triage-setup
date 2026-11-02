@@ -226,6 +226,11 @@ export default function ScenariosView({
         jobs: pipelineJobs,
         outgoingsMeta: keyData?.outgoingsMeta,
         nbtofind: keyData?.nbtofind,
+        mode: performanceData?.mode || keyData?.outgoingsMeta?.mode,
+        directCostsMode:
+          performanceData?.directCostsMode ||
+          keyData?.outgoingsMeta?.directCostsMode ||
+          keyData?.nbtofind?.directCostsMode,
         profitShareSwitch: keyData?.outgoingsMeta?.profitShareSwitch,
         profitSharePct: keyData?.outgoingsMeta?.profitSharePct,
         scenarioMeta: mutatedYearData?.scenarioMeta,
@@ -358,13 +363,18 @@ export default function ScenariosView({
       jobs: pipelineJobs,
       outgoingsMeta: keyData?.outgoingsMeta,
       nbtofind: keyData?.nbtofind,
+      mode: performanceData?.mode || keyData?.outgoingsMeta?.mode,
+      directCostsMode:
+        performanceData?.directCostsMode ||
+        keyData?.outgoingsMeta?.directCostsMode ||
+        keyData?.nbtofind?.directCostsMode,
       profitShareSwitch: keyData?.outgoingsMeta?.profitShareSwitch,
       profitSharePct: keyData?.outgoingsMeta?.profitSharePct,
       yearIndex: activeYearIdx,
       currencySymbol,
       thousandsSeparator,
     });
-  }, [activeYear, confirmedJobIds, disabledJobIds, adjs, pipelineJobs, keyData?.outgoingsMeta, keyData?.nbtofind, activeYearIdx, currencySymbol, thousandsSeparator]);
+  }, [activeYear, confirmedJobIds, disabledJobIds, adjs, pipelineJobs, performanceData?.mode, performanceData?.directCostsMode, keyData?.outgoingsMeta, keyData?.nbtofind, activeYearIdx, currencySymbol, thousandsSeparator]);
 
   const mutatedRows = mutatedYearData?.rows || activeYear?.rows || [];
 
@@ -393,6 +403,11 @@ export default function ScenariosView({
           jobs: pipelineJobs,
           outgoingsMeta: keyData?.outgoingsMeta,
           nbtofind: keyData?.nbtofind,
+          mode: performanceData?.mode || keyData?.outgoingsMeta?.mode,
+          directCostsMode:
+            performanceData?.directCostsMode ||
+            keyData?.outgoingsMeta?.directCostsMode ||
+            keyData?.nbtofind?.directCostsMode,
           profitShareSwitch: keyData?.outgoingsMeta?.profitShareSwitch,
           profitSharePct: keyData?.outgoingsMeta?.profitSharePct,
           scenarioMeta: mutatedYearData?.scenarioMeta,
@@ -821,7 +836,11 @@ export default function ScenariosView({
                     (prevLbl.includes("operating profit %") || prevLbl.includes("operating profit margin")) &&
                     (nextLbl.includes("staff costs to") || nextLbl.includes("staff ratio"));
 
-                  if (!label || label.toLowerCase() === "hide") {
+                  if (label && label.toLowerCase() === "hide") {
+                    return null;
+                  }
+
+                  if (!label) {
                     const spacerHeight = isOpToStaffGap ? 18 : 6;
                     return (
                       <tr key={rIdx} style={{ height: `${spacerHeight}px`, lineHeight: 0 }}>
@@ -1203,7 +1222,7 @@ export default function ScenariosView({
                 {/* Additional Revenue Inputs */}
                 <tr style={{ borderBottom: "1px solid #f1f5f9", background: "#ffffff" }}>
                   <td className="scenario-col-first" style={{ padding: "6px 10px", color: "#0047AB", position: "sticky", left: 0, background: "#ffffff", zIndex: 2, whiteSpace: "nowrap", width: "240px", minWidth: "240px", maxWidth: "240px", boxShadow: "2px 0 3px rgba(0,0,0,0.02)" }}>
-                    Addl. revenue
+                    {isIncomeMode ? "Addl. income" : "Addl. revenue"}
                   </td>
                   {headerMonths.map((_, mIdx) => {
                     const st = String(activeYear?.statusValues?.[mIdx] || "").trim().toLowerCase();
@@ -1512,9 +1531,9 @@ export default function ScenariosView({
                   Revenue
                 </th>
 
-                {/* Column 10: Direct costs */}
+                {/* Column 10: Direct / Pass-through costs */}
                 <th style={{ padding: "10px 12px", borderBottom: "1px solid #cbd5e1", textAlign: "right", fontWeight: 600 }}>
-                  Direct costs
+                  {isIncomeMode || scenariosConfig?.directCostsMode === "Pass-through" ? "Pass-through costs" : "Direct costs"}
                 </th>
               </tr>
             </thead>

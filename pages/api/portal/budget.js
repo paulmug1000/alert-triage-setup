@@ -109,7 +109,7 @@ export default async function handler(req, res) {
       });
     }
 
-    const [budgetResp, appDataResp, mathResp] = await Promise.all([
+    const [budgetResp, appDataResp, mathResp, keyInfoResp] = await Promise.all([
       withRetry(() =>
         sheets.spreadsheets.values.get({
           spreadsheetId: clientSheetId,
@@ -131,11 +131,26 @@ export default async function handler(req, res) {
           valueRenderOption: "UNFORMATTED_VALUE",
         })
       ),
+      withRetry(() =>
+        sheets.spreadsheets.values.batchGet({
+          spreadsheetId: clientSheetId,
+          ranges: ["KeyInfo!B15", "KeyInfo!D8"],
+          valueRenderOption: "FORMATTED_VALUE",
+        })
+      ),
     ]);
 
     const budgetDisp = budgetResp.data?.values || [];
     const appDataDisp = appDataResp.data?.values || [];
     const budgetMath = mathResp.data?.values || [];
+    const mode = String(keyInfoResp.data?.valueRanges?.[0]?.values?.[0]?.[0] || "Revenue").trim();
+    const rawDirectCostsMode = String(keyInfoResp.data?.valueRanges?.[1]?.values?.[0]?.[0] || "Contractors").trim();
+    const directCostsMode =
+      mode.toLowerCase() === "income"
+        ? "Pass-through"
+        : rawDirectCostsMode === "Pass-through"
+        ? "Pass-through"
+        : "Contractors";
 
     if (budgetDisp.length === 0) {
       return res.status(200).json({
@@ -193,8 +208,12 @@ export default async function handler(req, res) {
       const rows = [];
       const numRows = Math.min(budgetDisp.length, 47);
       for (let r = 2; r < numRows; r++) {
-        const rowLabel = String(budgetDisp[r]?.[0] || "").trim();
+        let rowLabel = String(budgetDisp[r]?.[0] || "").trim();
         if (!rowLabel) continue;
+        if (r === 29 && mode.toLowerCase() !== "income") {
+          if (directCostsMode === "Contractors") continue;
+          if (directCostsMode === "Pass-through") rowLabel = "Pass-through costs";
+        }
 
         const rowValues = [];
         for (let m = 0; m < 12; m++) {
@@ -236,6 +255,8 @@ export default async function handler(req, res) {
     const budgetPayload = {
       _cachedAt: new Date().toISOString(),
       hasBudget: true,
+      mode,
+      directCostsMode,
       currentYearIdx,
       years: parsedYears,
       rawVals: budgetDisp,

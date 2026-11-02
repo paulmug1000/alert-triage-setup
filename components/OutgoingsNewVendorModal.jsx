@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import Spinner from "./Spinner";
 
 export default function OutgoingsNewVendorModal({ newVendorData = {}, outgoingsClient, onClose, onCreated }) {
   const exp = newVendorData?.exp || null;
@@ -90,11 +91,11 @@ export default function OutgoingsNewVendorModal({ newVendorData = {}, outgoingsC
             : "A new vendor will be added to the Contractors section of Outgoings."}
         </p>
         <div style={{ display: "flex", gap: "8px", marginTop: "16px", justifyContent: "flex-end" }}>
-          <button onClick={onClose}
+          <button onClick={onClose} disabled={saving}
             style={{ padding: "8px 16px", background: "#f5f5f5", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>Cancel</button>
           <button onClick={save} disabled={saving || !vendorName.trim()}
-            style={{ padding: "8px 22px", background: saving || !vendorName.trim() ? "#ccc" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: saving ? "default" : "pointer", fontSize: "13px", fontWeight: "600" }}>
-            {saving ? "Creating..." : "Create vendor"}
+            style={{ padding: "8px 22px", background: saving || !vendorName.trim() ? "#ccc" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: saving ? "default" : "pointer", fontSize: "13px", fontWeight: "600", display: "inline-flex", alignItems: "center", gap: "6px" }}>
+            {saving ? <><Spinner size={12} color="#fff" /> Creating...</> : "Create vendor"}
           </button>
         </div>
       </div>

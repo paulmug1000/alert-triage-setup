@@ -36,6 +36,17 @@ export default function BudgetView({
     return !allLabels.some((l) => l.includes("confirmed income") || l.includes("total income"));
   }, [keyData, allFYData]);
 
+  const directCostsMode = useMemo(() => {
+    if (!isRevMode) return "Pass-through";
+    const m =
+      data?.directCostsMode ||
+      keyData?.outgoingsMeta?.directCostsMode ||
+      keyData?.directCostsMode ||
+      allFYData?.directCostsMode ||
+      "Contractors";
+    return String(m).trim() === "Pass-through" ? "Pass-through" : "Contractors";
+  }, [isRevMode, data?.directCostsMode, keyData, allFYData?.directCostsMode]);
+
   const rawVals = data?.rawVals || [];
   const mathVals = data?.mathVals || rawVals;
 
@@ -191,7 +202,10 @@ export default function BudgetView({
   const nb = getRowData(isRevMode ? 6 : 22);
 
   const staffDel = getRowData(28);
-  const dirCosts = isRevMode ? getRowData(29) : new Array(13).fill(0);
+  const dirCosts =
+    isRevMode && directCostsMode === "Pass-through"
+      ? getRowData(29)
+      : new Array(13).fill(0);
   const expDel = getRowData(isRevMode ? 30 : 29);
 
   const staffNonDel = getRowData(39);
@@ -265,8 +279,8 @@ export default function BudgetView({
 
   addSectionHeader("Costs of sale");
   addDataRow("Staff costs - delivery", staffDel, true, false, false, "#ffffff", "#0047AB");
-  if (isRevMode) {
-    addDataRow("Direct costs", dirCosts, true, false, false, "#ffffff", "#0047AB");
+  if (isRevMode && directCostsMode === "Pass-through") {
+    addDataRow("Pass-through costs", dirCosts, true, false, false, "#ffffff", "#0047AB");
   }
   addDataRow("Other expenses - delivery", expDel, true, false, false, "#ffffff", "#0047AB");
   addSpacer(4);
@@ -820,42 +834,42 @@ export default function BudgetView({
                   );
                 })}
               </tbody>
-          </table>
+            </table>
+          </div>
         </div>
+
+        {selectedYearIdx < 2 && (
+          <button
+            type="button"
+            className="fy-nav-arrow-right"
+            onClick={() => setUserYearIdx(Math.min(2, selectedYearIdx + 1))}
+            title="Next Year"
+            style={{
+              position: "absolute",
+              right: "-42px",
+              top: "50%",
+              transform: "translateY(-50%)",
+              background: "transparent",
+              color: "#a2c4c9",
+              border: "none",
+              fontSize: "2.8rem",
+              fontWeight: "bold",
+              cursor: "pointer",
+              padding: "0",
+              zIndex: 10,
+              lineHeight: 1,
+              userSelect: "none",
+              transition: "color 0.2s",
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.color = "#8fb5bb")}
+            onMouseLeave={(e) => (e.currentTarget.style.color = "#a2c4c9")}
+          >
+            ›
+          </button>
+        )}
       </div>
 
-      {selectedYearIdx < 2 && (
-        <button
-          type="button"
-          className="fy-nav-arrow-right"
-          onClick={() => setUserYearIdx(Math.min(2, selectedYearIdx + 1))}
-          title="Next Year"
-          style={{
-            position: "absolute",
-            right: "-42px",
-            top: "50%",
-            transform: "translateY(-50%)",
-            background: "transparent",
-            color: "#a2c4c9",
-            border: "none",
-            fontSize: "2.8rem",
-            fontWeight: "bold",
-            cursor: "pointer",
-            padding: "0",
-            zIndex: 10,
-            lineHeight: 1,
-            userSelect: "none",
-            transition: "color 0.2s",
-          }}
-          onMouseEnter={(e) => (e.currentTarget.style.color = "#8fb5bb")}
-          onMouseLeave={(e) => (e.currentTarget.style.color = "#a2c4c9")}
-        >
-          ›
-        </button>
-      )}
-    </div>
-
-    <style jsx>{`
+      <style jsx>{`
       @media (orientation: landscape) and (max-width: 1024px) {
         .fy-table-scroll-wrapper {
           margin: 0 !important;
@@ -885,6 +899,6 @@ export default function BudgetView({
         }
       }
     `}</style>
-  </div>
+    </div>
   );
 }

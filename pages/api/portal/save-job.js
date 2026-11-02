@@ -136,6 +136,27 @@ async function findAndMoveBlankRow(sheets, spreadsheetId, sheetId, sheetName, in
   const targetRow = insertAfterRow + 1;
 
   if (blankRowToMove === targetRow) {
+    await withRetry(() =>
+      sheets.spreadsheets.batchUpdate({
+        spreadsheetId,
+        requestBody: {
+          requests: [
+            {
+              updateDimensionProperties: {
+                range: {
+                  sheetId,
+                  dimension: "ROWS",
+                  startIndex: targetRow - 1,
+                  endIndex: targetRow,
+                },
+                properties: { hiddenByUser: false },
+                fields: "hiddenByUser",
+              },
+            },
+          ],
+        },
+      })
+    );
     return targetRow;
   }
 
@@ -144,6 +165,18 @@ async function findAndMoveBlankRow(sheets, spreadsheetId, sheetId, sheetName, in
       spreadsheetId,
       requestBody: {
         requests: [
+          {
+            updateDimensionProperties: {
+              range: {
+                sheetId,
+                dimension: "ROWS",
+                startIndex: blankRowToMove - 1,
+                endIndex: blankRowToMove,
+              },
+              properties: { hiddenByUser: false },
+              fields: "hiddenByUser",
+            },
+          },
           {
             moveDimension: {
               source: {
@@ -891,6 +924,40 @@ export default async function handler(req, res) {
         (s) => s.properties?.sheetId === sheetId
       );
       const existingRowGroups = currentSheetObj?.rowGroups || [];
+      const groupRequests = [];
+
+      // Ensure parent row and any cleared excess child rows are unhidden
+      if (parentRow >= 3) {
+        groupRequests.push({
+          updateDimensionProperties: {
+            range: {
+              sheetId,
+              dimension: "ROWS",
+              startIndex: parentRow - 1,
+              endIndex: parentRow,
+            },
+            properties: { hiddenByUser: false },
+            fields: "hiddenByUser",
+          },
+        });
+      }
+      if (existingChildRows.length > totalChildRowsNeeded) {
+        for (let i = totalChildRowsNeeded; i < existingChildRows.length; i++) {
+          const clearedRowNum = existingChildRows[i];
+          groupRequests.push({
+            updateDimensionProperties: {
+              range: {
+                sheetId,
+                dimension: "ROWS",
+                startIndex: clearedRowNum - 1,
+                endIndex: clearedRowNum,
+              },
+              properties: { hiddenByUser: false },
+              fields: "hiddenByUser",
+            },
+          });
+        }
+      }
 
       if (actualChildRows.length > 0) {
         const childStartIndex = actualChildRows[0] - 1; // 0-based inclusive
@@ -905,18 +972,21 @@ export default async function handler(req, res) {
         );
 
         if (!exactMatch) {
-          const deleteReqs = overlappingGroups.map((g) => ({
-            deleteDimensionGroup: {
-              range: {
-                sheetId,
-                dimension: "ROWS",
-                startIndex: g.range.startIndex,
-                endIndex: g.range.endIndex,
+          const wasCollapsed = overlappingGroups.some((g) => g.collapsed);
+          for (const g of overlappingGroups) {
+            groupRequests.push({
+              deleteDimensionGroup: {
+                range: {
+                  sheetId,
+                  dimension: "ROWS",
+                  startIndex: g.range.startIndex,
+                  endIndex: g.range.endIndex,
+                },
               },
-            },
-          }));
+            });
+          }
 
-          const addReq = {
+          groupRequests.push({
             addDimensionGroup: {
               range: {
                 sheetId,
@@ -925,16 +995,52 @@ export default async function handler(req, res) {
                 endIndex: childEndIndex,
               },
             },
-          };
+          });
 
-          await withRetry(() =>
-            sheets.spreadsheets.batchUpdate({
-              spreadsheetId: clientSheetId,
-              requestBody: {
-                requests: [...deleteReqs, addReq],
+          if (wasCollapsed) {
+            groupRequests.push(
+              {
+                updateDimensionGroup: {
+                  dimensionGroup: {
+                    range: {
+                      sheetId,
+                      dimension: "ROWS",
+                      startIndex: childStartIndex,
+                      endIndex: childEndIndex,
+                    },
+                    depth: 1,
+                    collapsed: true,
+                  },
+                  fields: "collapsed",
+                },
               },
-            })
-          );
+              {
+                updateDimensionProperties: {
+                  range: {
+                    sheetId,
+                    dimension: "ROWS",
+                    startIndex: childStartIndex,
+                    endIndex: childEndIndex,
+                  },
+                  properties: { hiddenByUser: true },
+                  fields: "hiddenByUser",
+                },
+              }
+            );
+          } else {
+            groupRequests.push({
+              updateDimensionProperties: {
+                range: {
+                  sheetId,
+                  dimension: "ROWS",
+                  startIndex: childStartIndex,
+                  endIndex: childEndIndex,
+                },
+                properties: { hiddenByUser: false },
+                fields: "hiddenByUser",
+              },
+            });
+          }
         }
       } else {
         // If 0 child rows, remove any old dimension group covering rows immediately below parentRow
@@ -943,26 +1049,42 @@ export default async function handler(req, res) {
           (g) => g.range?.startIndex === parentIndex0
         );
         if (coveringGroup) {
-          await withRetry(() =>
-            sheets.spreadsheets.batchUpdate({
-              spreadsheetId: clientSheetId,
-              requestBody: {
-                requests: [
-                  {
-                    deleteDimensionGroup: {
-                      range: {
-                        sheetId,
-                        dimension: "ROWS",
-                        startIndex: coveringGroup.range.startIndex,
-                        endIndex: coveringGroup.range.endIndex,
-                      },
-                    },
-                  },
-                ],
+          groupRequests.push(
+            {
+              deleteDimensionGroup: {
+                range: {
+                  sheetId,
+                  dimension: "ROWS",
+                  startIndex: coveringGroup.range.startIndex,
+                  endIndex: coveringGroup.range.endIndex,
+                },
               },
-            })
+            },
+            {
+              updateDimensionProperties: {
+                range: {
+                  sheetId,
+                  dimension: "ROWS",
+                  startIndex: coveringGroup.range.startIndex,
+                  endIndex: coveringGroup.range.endIndex,
+                },
+                properties: { hiddenByUser: false },
+                fields: "hiddenByUser",
+              },
+            }
           );
         }
+      }
+
+      if (groupRequests.length > 0) {
+        await withRetry(() =>
+          sheets.spreadsheets.batchUpdate({
+            spreadsheetId: clientSheetId,
+            requestBody: {
+              requests: groupRequests,
+            },
+          })
+        );
       }
     } catch (groupErr) {
       console.warn("⚠️ Row grouping warning (non-fatal):", groupErr.message);

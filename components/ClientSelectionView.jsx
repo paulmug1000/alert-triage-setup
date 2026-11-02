@@ -22,6 +22,7 @@ export default function ClientSelectionView({
   const auth = useAuth();
   const currentUser = user || auth.user;
   const isAdmin = !!(currentUser?.isAdmin || currentUser?.role === "Admin");
+  const [debugAction, setDebugAction] = React.useState(null);
 
   const isFlagVisible = (flagKey) => isAdmin || !ADMIN_ONLY_FLAG_KEYS.has(flagKey);
   const isProactiveVisible = (alertType) => isAdmin || !ADMIN_ONLY_PROACTIVE_TYPES.has(alertType);
@@ -65,9 +66,10 @@ export default function ClientSelectionView({
     automationCommanderSheetId, setDebugResult, debugResult
   } = useAppGlobals();
   const ACTIONABLE_FLAG_KEYS = [
-    "invoiceDashboardDiscr", "expenseDashboardDiscr",
+    "invoiceDashboardDiscr", "contractorsDashboardDiscr", "passThroughDashboardDiscr", "expenseDashboardDiscr",
     "crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr",
   ];
+  const EXPENSE_DISCR_KEYS = new Set(["contractorsDashboardDiscr", "passThroughDashboardDiscr", "expenseDashboardDiscr"]);
 
   const getValidAssignedCounts = (client) => {
     if (!client) return { validAssignedExp: 0, validAssignedInv: 0 };
@@ -98,12 +100,17 @@ export default function ClientSelectionView({
 
   const totalAlertsCount = authorizedClientsWithFlags.reduce((total, c) => {
     const { validAssignedExp, validAssignedInv } = getValidAssignedCounts(c);
+    let remAssignedExp = validAssignedExp;
     let clientTotal = 0;
     Object.entries(c.flags || {}).forEach(([flagKey, isSet]) => {
       if (!isSet || !isFlagVisible(flagKey)) return;
       let count = c.alertCounts?.[flagKey] || 0;
       if (ACTIONABLE_FLAG_KEYS.includes(flagKey)) {
-        if (flagKey === "expenseDashboardDiscr") count = Math.max(0, count - validAssignedExp);
+        if (EXPENSE_DISCR_KEYS.has(flagKey)) {
+          const deduct = Math.min(count, remAssignedExp);
+          count -= deduct;
+          remAssignedExp -= deduct;
+        }
         if (flagKey === "invoiceDashboardDiscr") count = Math.max(0, count - validAssignedInv);
         clientTotal += count;
       } else {
@@ -114,7 +121,7 @@ export default function ClientSelectionView({
   }, 0) + authorizedProactiveAlerts.length;
 
   // State 1: All alerts have been resolved
-  if (totalAlertsCount === 0 && proactiveLoadedAt > 0) {
+  if (totalAlertsCount === 0 && proactiveLoadedAt > 0 && !isLoading) {
     return (
       <div className="pma-page-container" style={styles.container}>
         <div style={styles.header}>
@@ -128,12 +135,12 @@ export default function ClientSelectionView({
             ✓ {managedClient ? `No outstanding alerts for ${managedClient.clientName}` : "No outstanding alerts"}
           </div>
           <div style={{ display: "flex", gap: "8px", marginTop: "16px" }}>
-            <button className="triage-btn" onClick={reloadFromCache} disabled={isLoading} style={{ ...styles.buttonSecondary, opacity: isLoading ? 0.5 : 1 }}>
-              ⚡ Reload
+            <button className="triage-btn" onClick={reloadFromCache} disabled={isLoading} style={{ ...styles.buttonSecondary, opacity: isLoading ? 0.5 : 1, display: "inline-flex", alignItems: "center", gap: "6px" }}>
+              {isLoading && !refreshStatus ? <><Spinner size={12} /> Reloading...</> : "⚡ Reload"}
             </button>
             {isAdmin && (
-              <button className="triage-btn" onClick={() => refreshTriage(true)} disabled={isLoading} style={{ ...styles.buttonSecondary, opacity: isLoading ? 0.5 : 1 }}>
-                {isLoading ? <><Spinner />{refreshStatus || "Refreshing..."}</> : "↻ Refresh"}
+              <button className="triage-btn" onClick={() => refreshTriage(true)} disabled={isLoading} style={{ ...styles.buttonSecondary, opacity: isLoading ? 0.5 : 1, display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                {isLoading ? <><Spinner size={12} />{refreshStatus || "Refreshing..."}</> : "↻ Refresh"}
               </button>
             )}
             {!isSingleClientUser && managedClient && onClearManagedClient && (
@@ -148,7 +155,7 @@ export default function ClientSelectionView({
   }
 
   // State 2: Checking for alerts
-  if (totalAlertsCount === 0 && proactiveLoadedAt === 0) {
+  if (totalAlertsCount === 0 && proactiveLoadedAt === 0 && !isLoading) {
     return <PmaAlertsSkeleton />;
   }
 
@@ -239,11 +246,16 @@ export default function ClientSelectionView({
               return combinedClientList;
             })().filter(client => {
               const { validAssignedExp, validAssignedInv } = getValidAssignedCounts(client);
+              let remAssignedExp = validAssignedExp;
 
               const hasVisibleActionable = ACTIONABLE_FLAG_KEYS.some(key => {
                 if (!client.flags?.[key] || !isFlagVisible(key)) return false;
                 let count = client.alertCounts?.[key] || 0;
-                if (key === "expenseDashboardDiscr") count = Math.max(0, count - validAssignedExp);
+                if (EXPENSE_DISCR_KEYS.has(key)) {
+                  const deduct = Math.min(count, remAssignedExp);
+                  count -= deduct;
+                  remAssignedExp -= deduct;
+                }
                 if (key === "invoiceDashboardDiscr") count = Math.max(0, count - validAssignedInv);
                 return count > 0;
               });
@@ -251,12 +263,17 @@ export default function ClientSelectionView({
               return hasVisibleActionable || hasInfoFlags || (authorizedProactiveCountsByClient[client.clientName] || 0) > 0;
             }).map((client, idx) => {
               const { validAssignedExp, validAssignedInv } = getValidAssignedCounts(client);
+              let remAssignedExp = validAssignedExp;
 
               const actionableLines = ACTIONABLE_FLAG_KEYS
                 .filter(key => client.flags?.[key] && isFlagVisible(key))
                 .map(key => {
                   let count = client.alertCounts?.[key] || 0;
-                  if (key === "expenseDashboardDiscr") count = Math.max(0, count - validAssignedExp);
+                  if (EXPENSE_DISCR_KEYS.has(key)) {
+                    const deduct = Math.min(count, remAssignedExp);
+                    count -= deduct;
+                    remAssignedExp -= deduct;
+                  }
                   if (key === "invoiceDashboardDiscr") count = Math.max(0, count - validAssignedInv);
                   if (count === 0) return null;
                   const label = getFlagName(key);
@@ -369,19 +386,19 @@ export default function ClientSelectionView({
             <button className="triage-btn"
               onClick={reloadFromCache}
               disabled={isLoading}
-              style={{ ...styles.buttonSecondary, fontSize: "13px", padding: "6px 14px", opacity: isLoading ? 0.5 : 1 }}
+              style={{ ...styles.buttonSecondary, fontSize: "13px", padding: "6px 14px", opacity: isLoading ? 0.5 : 1, display: "inline-flex", alignItems: "center", gap: "6px" }}
               title="Pull latest data from cache"
             >
-              ⚡ Reload
+              {isLoading && !refreshStatus ? <><Spinner size={12} /> Reloading...</> : "⚡ Reload"}
             </button>
             {isAdmin && (
               <button className="triage-btn"
                 onClick={() => refreshTriage(true)}
                 disabled={isLoading}
-                style={{ ...styles.buttonSecondary, fontSize: "13px", padding: "6px 14px", opacity: isLoading ? 0.5 : 1 }}
+                style={{ ...styles.buttonSecondary, fontSize: "13px", padding: "6px 14px", opacity: isLoading ? 0.5 : 1, display: "inline-flex", alignItems: "center", gap: "6px" }}
                 title="Run full alert sweep"
               >
-                {isLoading ? <><Spinner />{refreshStatus || "Refreshing..."}</> : "↻ Refresh"}
+                {isLoading ? <><Spinner size={12} />{refreshStatus || "Refreshing..."}</> : "↻ Refresh"}
               </button>
             )}
           </div>
@@ -394,11 +411,15 @@ export default function ClientSelectionView({
               <input value={debugClientName} onChange={e => setDebugClientName(e.target.value)}
                 placeholder="Client name (blank = all)"
                 style={{ flex: 1, fontSize: "12px", padding: "6px 8px", borderRadius: "4px", border: "1px solid #444", background: "#2d2d4e", color: "#e0e0e0" }} />
-              <button className="triage-btn" onClick={runDebug} disabled={debugLoading}
-                style={{ background: "#0066cc", color: "white", border: "none", borderRadius: "4px", padding: "6px 14px", fontSize: "12px", cursor: "pointer" }}>
-                {debugLoading ? "Running..." : "Run"}
+              <button className="triage-btn" onClick={async () => {
+                setDebugAction("run");
+                try { await runDebug(); } finally { setDebugAction(null); }
+              }} disabled={debugLoading}
+                style={{ background: "#0066cc", color: "white", border: "none", borderRadius: "4px", padding: "6px 14px", fontSize: "12px", cursor: debugLoading ? "default" : "pointer", display: "inline-flex", alignItems: "center", gap: "5px" }}>
+                {(debugLoading && (!debugAction || debugAction === "run")) ? <><Spinner size={11} color="#fff" /> Running...</> : "Run"}
               </button>
               <button className="triage-btn" onClick={async () => {
+                setDebugAction("dedupe");
                 setDebugLoading(true);
                 try {
                   const res = await fetch("/api/triage", {
@@ -407,12 +428,13 @@ export default function ClientSelectionView({
                   });
                   setDebugResult(await res.json());
                 } catch (e) { setDebugResult({ error: e.message }); }
-                finally { setDebugLoading(false); }
+                finally { setDebugLoading(false); setDebugAction(null); }
               }} disabled={debugLoading}
-                style={{ background: "#dc2626", color: "white", border: "none", borderRadius: "4px", padding: "6px 10px", fontSize: "12px", cursor: "pointer" }}>
-                🧹 Dedupe
+                style={{ background: "#dc2626", color: "white", border: "none", borderRadius: "4px", padding: "6px 10px", fontSize: "12px", cursor: debugLoading ? "default" : "pointer", display: "inline-flex", alignItems: "center", gap: "5px" }}>
+                {debugAction === "dedupe" ? <><Spinner size={11} color="#fff" /> Deduping...</> : "🧹 Dedupe"}
               </button>
               <button className="triage-btn" onClick={async () => {
+                setDebugAction("rehash");
                 setDebugLoading(true);
                 try {
                   const res = await fetch("/api/triage", {
@@ -421,10 +443,10 @@ export default function ClientSelectionView({
                   });
                   setDebugResult(await res.json());
                 } catch (e) { setDebugResult({ error: e.message }); }
-                finally { setDebugLoading(false); }
+                finally { setDebugLoading(false); setDebugAction(null); }
               }} disabled={debugLoading}
-                style={{ background: "#0369a1", color: "white", border: "none", borderRadius: "4px", padding: "6px 10px", fontSize: "12px", cursor: "pointer" }}>
-                🔄 Rehash
+                style={{ background: "#0369a1", color: "white", border: "none", borderRadius: "4px", padding: "6px 10px", fontSize: "12px", cursor: debugLoading ? "default" : "pointer", display: "inline-flex", alignItems: "center", gap: "5px" }}>
+                {debugAction === "rehash" ? <><Spinner size={11} color="#fff" /> Rehashing...</> : "🔄 Rehash"}
               </button>
             </div>
             {debugResult && (

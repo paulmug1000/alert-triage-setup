@@ -565,21 +565,25 @@ export function revalidateClientsSetupInBackground(clients = []) {
         } catch {}
 
         const lastSynced = config?.sheetSyncedAt ? new Date(config.sheetSyncedAt).getTime() : 0;
-        const isStale = (now - lastSynced) > ONE_HOUR;
+        const isStale = (now - lastSynced) > ONE_HOUR || !config?.directCostsMode;
 
         if (isStale) {
           try {
             const sheets = await getSheetsClient();
             const res = await withRetry(() =>
-              sheets.spreadsheets.values.get({
+              sheets.spreadsheets.values.batchGet({
                 spreadsheetId: c.masterSheetId,
-                range: "KeyInfo!Q4:Q9"
+                ranges: ["KeyInfo!Q4:Q9", "KeyInfo!B15", "KeyInfo!D8"]
               })
             );
-            const rows = res.data.values || [];
+            const valueRanges = res.data.valueRanges || [];
+            const rows = valueRanges[0]?.values || [];
             const sheetQ4 = (rows[0] && rows[0][0]) ? String(rows[0][0]).trim() : "None";
             const sheetQ8 = (rows[4] && rows[4][0]) ? String(rows[4][0]).trim() : "None";
             const sheetQ9 = (rows[5] && rows[5][0]) ? String(rows[5][0]).trim() : "NA";
+            const sheetB15 = String(valueRanges[1]?.values?.[0]?.[0] || "Revenue").trim();
+            const rawD8 = String(valueRanges[2]?.values?.[0]?.[0] || "Contractors").trim();
+            const sheetD8 = sheetB15 === "Income" ? "Pass-through" : (rawD8 === "Pass-through" ? "Pass-through" : "Contractors");
 
             if (sheetQ4 !== config?.accountingTool || sheetQ8 !== config?.crmTool || sheetQ9 !== config?.crmDrives) {
               console.log(`🔄 Setup Background Sync: Updated tools for "${c.clientName}" in Redis: Acc=${sheetQ4}, CRM=${sheetQ8}`);
@@ -594,6 +598,8 @@ export function revalidateClientsSetupInBackground(clients = []) {
               accountingTool: sheetQ4,
               crmTool: sheetQ8,
               crmDrives: sheetQ9,
+              revenueFocus: sheetB15,
+              directCostsMode: sheetD8,
               sheetSyncedAt: new Date().toISOString(),
               updatedAt: config?.updatedAt || new Date().toISOString()
             };
@@ -1347,6 +1353,7 @@ export async function getMasterKeyInfoSettings(sheets, masterSheetId) {
     payeCycle: getCell(12, 2),       // B12: PAYE cycle
     payeQuarterMonths: getCell(13, 2), // B13: PAYE quarterly months
     revenueFocus: getCell(15, 2),    // B15: Revenue or income focus
+    directCostsMode: getCell(15, 2) === "Income" ? "Pass-through" : (getCell(8, 4) === "Pass-through" ? "Pass-through" : "Contractors"), // D8: Job direct costs treatment
     profitShare: getCell(11, 6),     // F11: Profit share %
     contractorMethod: getCell(20, 2),// B20: Cashflow contractors method
     masterDeploymentUrl: getCell(29, 24) // X29: Master deployment URL
@@ -1367,6 +1374,11 @@ export async function saveMasterKeyInfoSettings(sheets, { masterSheetId, clientN
   if (settings.vatRate !== undefined) updates.push({ range: "KeyInfo!B9", values: [[sanitizeFormulaInput(String(settings.vatRate))]] });
   if (settings.payeCycle !== undefined) updates.push({ range: "KeyInfo!B12", values: [[sanitizeFormulaInput(String(settings.payeCycle))]] });
   if (settings.revenueFocus !== undefined) updates.push({ range: "KeyInfo!B15", values: [[sanitizeFormulaInput(String(settings.revenueFocus))]] });
+  if (settings.directCostsMode !== undefined || settings.revenueFocus !== undefined) {
+    const rf = settings.revenueFocus || "Revenue";
+    const dcm = rf === "Income" ? "Pass-through" : (settings.directCostsMode === "Pass-through" ? "Pass-through" : "Contractors");
+    updates.push({ range: "KeyInfo!D8", values: [[sanitizeFormulaInput(String(dcm))]] });
+  }
   if (settings.profitShare !== undefined) updates.push({ range: "KeyInfo!F11", values: [[sanitizeFormulaInput(String(settings.profitShare))]] });
   if (settings.contractorMethod !== undefined) updates.push({ range: "KeyInfo!B20", values: [[sanitizeFormulaInput(String(settings.contractorMethod))]] });
 
@@ -1391,6 +1403,26 @@ export async function saveMasterKeyInfoSettings(sheets, { masterSheetId, clientN
       metadata: "Configured via PMA Settings Form",
       userEmail
     });
+    if (redisClient?.isOpen && (settings.directCostsMode !== undefined || settings.revenueFocus !== undefined)) {
+      try {
+        const setupKey = getSetupRedisKey(clientName);
+        let existingSetup = {};
+        const rawSetup = await redisClient.get(setupKey);
+        if (rawSetup) existingSetup = JSON.parse(rawSetup);
+        const rf = settings.revenueFocus || existingSetup.revenueFocus || "Revenue";
+        const dcm = rf === "Income" ? "Pass-through" : (settings.directCostsMode === "Pass-through" ? "Pass-through" : "Contractors");
+        await redisClient.set(setupKey, JSON.stringify({
+          ...existingSetup,
+          clientName,
+          masterSheetId,
+          revenueFocus: rf,
+          directCostsMode: dcm,
+          sheetSyncedAt: new Date().toISOString()
+        }));
+        const allClientKeys = await redisClient.keys("pulse:all_clients:*");
+        if (allClientKeys.length > 0) await redisClient.del(allClientKeys);
+      } catch {}
+    }
   }
 
   logPmaActivity({

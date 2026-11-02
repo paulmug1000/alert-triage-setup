@@ -25,7 +25,8 @@ import {
   groupSlotItemsForDisplay,
   NO_END_DATE_SHEET_VALUE,
   isNoEndDateSentinel,
-  formatJobEndDateDisplay
+  formatJobEndDateDisplay,
+  stripCurrency
 } from "../utils/helpers";
 
 export const parseSheetDate = (dStr) => {
@@ -854,7 +855,7 @@ export default function JobsView({
     jobsTab, setJobsTab,
     jobsSortBy, setJobsSortBy,
     jobsData, setJobsData,
-    jobsLoading,
+    jobsLoading, setJobsLoading,
     jobsExpanded, setJobsExpanded,
     jobsEditSplit, setJobsEditSplit,
     productLines,
@@ -1103,7 +1104,7 @@ export default function JobsView({
       slot: {
         ref: defaultRef,
         amount: defaultAmt,
-        status: "Placeholder",
+        status: "",
         sentDate: "",
         daysToPay: 30
       },
@@ -1165,7 +1166,7 @@ export default function JobsView({
         vat: "Yes",
         date: "",
         daysToPay: 30,
-        status: "Placeholder",
+        status: "",
         transactionId: ""
       },
       jobName: parentRow.jobName || job.jobName,
@@ -1504,7 +1505,7 @@ export default function JobsView({
       });
 
       // Reload jobs data
-      await loadJobsData(jobsClient, "All");
+      await loadJobsData(jobsClient, "All", true, true);
     } catch (err) {
       console.error("Unconfirm job error:", err);
       setActionError(`Failed to unconfirm ${job.jobName || "job"}: ${err.message}`);
@@ -1605,7 +1606,7 @@ export default function JobsView({
       });
 
       // Reload jobs data
-      await loadJobsData(jobsClient, "All");
+      await loadJobsData(jobsClient, "All", true, true);
     } catch (err) {
       console.error("Mark already confirmed error:", err);
       setActionError(`Failed to mark ${job.jobName || "job"} as already confirmed: ${err.message}`);
@@ -1640,32 +1641,6 @@ export default function JobsView({
     }
     rowNums.forEach((rn) => recentlyDeletedJobRowsRef.current.get(tabLower).add(`${Number(rn)}:${String(parentRow?.client || job.client || "").trim().toLowerCase()}:${String(parentRow?.jobName || job.jobName || "").trim().toLowerCase()}`));
 
-    // 2. Immediately remove job optimistically from local jobsData state
-    setJobsData((prev) => {
-      if (!prev || !Array.isArray(prev)) return prev;
-      return prev.filter((j) => {
-        const k = getJobKey(j);
-        if (k === jobKey || j.id === jobKey || j.id === job.id) return false;
-        const jTab = (j.tabName || j.rows?.[0]?.tabName || "").toLowerCase();
-        const jRow = Number(j.rows?.[0]?.rowNum);
-        if (jTab === tabLower && rowNums.map(Number).includes(jRow)) return false;
-        return true;
-      });
-    });
-
-    // 3. Close delete modal immediately and clear selection / draft states
-    setDeletingJob(null);
-    setExpandedJobIds((prev) => {
-      const next = new Set(prev);
-      next.delete(jobKey);
-      return next;
-    });
-    setDraftEdits((prev) => {
-      const next = { ...prev };
-      delete next[jobKey];
-      return next;
-    });
-
     setDeletingJobKeys((prev) => new Set(prev).add(jobKey));
     setActionError(null);
 
@@ -1689,6 +1664,30 @@ export default function JobsView({
         throw new Error(resData.error || "Failed to delete job");
       }
 
+      // Remove job from local jobsData state and close modal
+      setJobsData((prev) => {
+        if (!prev || !Array.isArray(prev)) return prev;
+        return prev.filter((j) => {
+          const k = getJobKey(j);
+          if (k === jobKey || j.id === jobKey || j.id === job.id) return false;
+          const jTab = (j.tabName || j.rows?.[0]?.tabName || "").toLowerCase();
+          const jRow = Number(j.rows?.[0]?.rowNum);
+          if (jTab === tabLower && rowNums.map(Number).includes(jRow)) return false;
+          return true;
+        });
+      });
+      setExpandedJobIds((prev) => {
+        const next = new Set(prev);
+        next.delete(jobKey);
+        return next;
+      });
+      setDraftEdits((prev) => {
+        const next = { ...prev };
+        delete next[jobKey];
+        return next;
+      });
+      setDeletingJob(null);
+
       if (resData.unassignedInvoices && resData.unassignedInvoices.length > 0) {
         const unassignedRefs = new Set(resData.unassignedInvoices.map(inv => String(inv.invoiceNo || "").trim().toLowerCase()));
         if (setAssignedAppIds) {
@@ -1706,12 +1705,13 @@ export default function JobsView({
       }
 
       // Reload jobs data from server to keep counts and surrounding data synchronized
-      await loadJobsData(jobsClient, "All");
+      await loadJobsData(jobsClient, "All", true, true);
     } catch (err) {
       console.error("Delete job error:", err);
       setActionError(`Failed to delete ${job.jobName || "job"}: ${err.message}`);
+      setDeletingJob(null);
       // Re-sync with server if error occurred
-      await loadJobsData(jobsClient, "All");
+      await loadJobsData(jobsClient, "All", true, true);
     } finally {
       setDeletingJobKeys((prev) => {
         const next = new Set(prev);
@@ -1871,6 +1871,15 @@ export default function JobsView({
       }
 
       // Optimistically update local jobsData
+      const invUpdatesMap = new Map();
+      (data.invoiceSlotUpdates || []).forEach((u) => {
+        invUpdatesMap.set(`${u.rowNum}_${u.slotNum}`, u);
+      });
+      const expUpdatesMap = new Map();
+      (data.expenseSlotUpdates || []).forEach((u) => {
+        expUpdatesMap.set(`${u.rowNum}_${u.slotNum}`, u);
+      });
+
       setJobsData((prevJobs) => {
         if (!prevJobs) return prevJobs;
         return prevJobs.map((j) => {
@@ -1884,6 +1893,18 @@ export default function JobsView({
                 nextRow[f] = nextVal;
               }
             });
+            if (invUpdatesMap.size > 0 && Array.isArray(nextRow.invoiceSlots)) {
+              nextRow.invoiceSlots = nextRow.invoiceSlots.map((sl) => {
+                const match = invUpdatesMap.get(`${r.rowNum}_${sl.slotNum}`);
+                return match ? { ...sl, ...match } : sl;
+              });
+            }
+            if (expUpdatesMap.size > 0 && Array.isArray(nextRow.expenseSlots)) {
+              nextRow.expenseSlots = nextRow.expenseSlots.map((sl) => {
+                const match = expUpdatesMap.get(`${r.rowNum}_${sl.slotNum}`);
+                return match ? { ...sl, ...match } : sl;
+              });
+            }
             return nextRow;
           });
           return {
@@ -2232,6 +2253,20 @@ export default function JobsView({
         })
       });
       const inlineData = await inlineRes.json().catch(() => ({}));
+      if (inlineData?.invoiceSlotUpdates?.length > 0 || inlineData?.expenseSlotUpdates?.length > 0) {
+        const invMap = new Map((inlineData.invoiceSlotUpdates || []).map(u => [`${u.rowNum}_${u.slotNum}`, u]));
+        const expMap = new Map((inlineData.expenseSlotUpdates || []).map(u => [`${u.rowNum}_${u.slotNum}`, u]));
+        setJobsData((prev) =>
+          (prev || []).map((job) => ({
+            ...job,
+            rows: (job.rows || []).map((r) => ({
+              ...r,
+              invoiceSlots: (r.invoiceSlots || []).map((sl) => invMap.get(`${r.rowNum}_${sl.slotNum}`) ? { ...sl, ...invMap.get(`${r.rowNum}_${sl.slotNum}`) } : sl),
+              expenseSlots: (r.expenseSlots || []).map((sl) => expMap.get(`${r.rowNum}_${sl.slotNum}`) ? { ...sl, ...expMap.get(`${r.rowNum}_${sl.slotNum}`) } : sl),
+            }))
+          }))
+        );
+      }
       if (inlineData?.backgroundProvisioning) {
         setTimeout(() => loadJobsData(jobsClient, "All", true, true), 4000);
         setTimeout(() => loadJobsData(jobsClient, "All", true, true), 8000);
@@ -2728,6 +2763,22 @@ export default function JobsView({
               const newKey = `${tabLower}_${targetRow}`;
               setRecentlySavedKeys((prev) => new Set(prev).add(newKey));
               setExpandedJobIds((prev) => new Set(prev).add(newKey));
+
+              const scrollToNewJob = () => {
+                const el = document.getElementById(`pma-job-row-${newKey}`);
+                if (el) {
+                  el.scrollIntoView({ behavior: "smooth", block: "center" });
+                  return true;
+                }
+                return false;
+              };
+              setTimeout(scrollToNewJob, 120);
+              setTimeout(scrollToNewJob, 600);
+              setTimeout(scrollToNewJob, 1500);
+            }
+
+            if (resData?.newJob && isJobZeroPercent(resData.newJob)) {
+              setShowZeroPercentJobs(true);
             }
 
             // Optimistically insert the newly created job into jobsData so it is visible at 0ms
@@ -2903,11 +2954,20 @@ export default function JobsView({
           <EditClientSelector
             clients={allOutgoingsClients || []}
             onSelectClient={(c) => {
-              setJobsClient(c);
-              onSelectClient?.(c);
-              loadJobsData(c, "All");
+              const targetName = String(c?.clientName || c?.name || "").trim().toLowerCase();
+              const fullC =
+                (allOutgoingsClients || []).find(item => String(item.clientName || "").trim().toLowerCase() === targetName && item.clientSheetId) ||
+                c;
+              prevInitialClientRef.current = fullC;
+              setJobsClient(fullC);
+              setJobsData(null);
+              setJobsLoading(true);
+              onSelectClient?.(fullC);
+              if (fullC.clientSheetId) {
+                loadJobsData(fullC, "All");
+              }
             }}
-            loading={jobsLoading}
+            loading={(allOutgoingsClients || []).length === 0}
             title="Select a client to view and manage jobs:"
           />
         )}
@@ -3065,7 +3125,7 @@ export default function JobsView({
                       {/* Refresh Button */}
                       <button
                         type="button"
-                        onClick={() => loadJobsData(jobsClient, "All")}
+                        onClick={() => loadJobsData(jobsClient, "All", true)}
                         disabled={jobsLoading}
                         style={{
                           background: "none",
@@ -3073,15 +3133,16 @@ export default function JobsView({
                           padding: "5px 10px",
                           borderRadius: "6px",
                           color: "#475569",
-                          cursor: "pointer",
+                          cursor: jobsLoading ? "default" : "pointer",
                           fontSize: "12px",
                           fontWeight: "500",
                           display: "inline-flex",
                           alignItems: "center",
-                          gap: "5px"
+                          gap: "5px",
+                          opacity: jobsLoading ? 0.7 : 1
                         }}
                       >
-                        {jobsLoading ? <><Spinner size={12} /> Refreshing</> : "↻ Refresh"}
+                        {jobsLoading ? <><Spinner size={12} color="#475569" /> Refreshing...</> : "↻ Refresh"}
                       </button>
                     </div>
                   </div>
@@ -3315,6 +3376,8 @@ export default function JobsView({
                             <React.Fragment key={jobKey}>
                               {/* Main Job Row */}
                               <tr
+                                id={`pma-job-row-${jobKey}`}
+                                data-job-key={jobKey}
                                 onClick={(e) => {
                                   // Don't toggle if user clicked directly inside an input, select, or button
                                   const tag = e.target.tagName.toLowerCase();
@@ -4195,6 +4258,7 @@ export default function JobsView({
                                                             boxSizing: "border-box",
                                                             maxWidth: "100%",
                                                             overflow: "hidden",
+                                                            flexShrink: 0,
                                                             display: "flex",
                                                             flexDirection: "column",
                                                             gap: "5px"
@@ -4313,6 +4377,7 @@ export default function JobsView({
                                                           boxSizing: "border-box",
                                                           maxWidth: "100%",
                                                           overflow: "hidden",
+                                                          flexShrink: 0,
                                                           display: "flex",
                                                           flexDirection: "column",
                                                           gap: "5px",
@@ -4547,6 +4612,7 @@ export default function JobsView({
                                                             boxSizing: "border-box",
                                                             maxWidth: "100%",
                                                             overflow: "hidden",
+                                                            flexShrink: 0,
                                                             display: "flex",
                                                             flexDirection: "column",
                                                             gap: "5px"
@@ -4653,6 +4719,7 @@ export default function JobsView({
                                                           boxSizing: "border-box",
                                                           maxWidth: "100%",
                                                           overflow: "hidden",
+                                                          flexShrink: 0,
                                                           display: "flex",
                                                           flexDirection: "column",
                                                           gap: "5px",
@@ -5075,11 +5142,11 @@ export default function JobsView({
                       </select>
                     </div>
                     <button
-                      onClick={() => loadJobsData(jobsClient, jobsTab)}
+                      onClick={() => loadJobsData(jobsClient, jobsTab, true)}
                       disabled={jobsLoading}
-                      style={{ background: "none", border: "none", color: "#666", cursor: "pointer", fontSize: "13px", display: "inline-flex", alignItems: "center", gap: "4px" }}
+                      style={{ background: "none", border: "none", color: "#666", cursor: jobsLoading ? "default" : "pointer", fontSize: "13px", display: "inline-flex", alignItems: "center", gap: "4px", opacity: jobsLoading ? 0.7 : 1 }}
                     >
-                      {jobsLoading ? <><Spinner size={12} /> Refreshing</> : "↻ Refresh"}
+                      {jobsLoading ? <><Spinner size={12} color="#666" /> Refreshing...</> : "↻ Refresh"}
                     </button>
                   </div>
                 </div>

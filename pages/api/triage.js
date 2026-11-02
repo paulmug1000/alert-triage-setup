@@ -449,7 +449,8 @@ export default async function handler(req, res) {
         "build_cached_alert_options",
         "trigger_refresh",
         "sync_all_master_script_secrets",
-        "bust_cache"
+        "bust_cache",
+        "analyze_alert_ai"
       ]);
       if (ADMIN_ONLY_TRIAGE_ACTIONS.has(action) && !sessionUser.isAdmin) {
         return res.status(403).json({ success: false, error: "Forbidden: Admin privileges required for this action." });
@@ -1169,6 +1170,9 @@ export default async function handler(req, res) {
     } else if (action === "bust_cache") {
       return await handleBustCache(req, res, sheets);
     } else if (action === "analyze_alert_ai") {
+      if (!sessionUser || !sessionUser.isAdmin || sessionUser.role !== "Admin") {
+        return res.status(403).json({ success: false, error: "Forbidden: Admin privileges required" });
+      }
       req.body.action = "analyze_alert";
       req.body.forceAI = true;
       return await handleAnalyzeAlert(req, res, sheets);

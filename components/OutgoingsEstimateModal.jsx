@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
+import Spinner from "./Spinner";
 import { toSheetDateFormat, toInputDateFormat } from "../utils/helpers";
 
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -190,11 +191,11 @@ export default function OutgoingsEstimateModal({ estimateData, outgoingsData, up
           </div>
         </div>
         <div style={{ display: "flex", gap: "8px", marginTop: "20px", justifyContent: "flex-end" }}>
-          <button onClick={onClose}
+          <button onClick={onClose} disabled={saving}
             style={{ padding: "8px 16px", background: "#f5f5f5", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>Cancel</button>
           <button onClick={save} disabled={!amount || saving}
-            style={{ padding: "8px 22px", background: !amount ? "#ccc" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: !amount ? "default" : "pointer", fontSize: "13px", fontWeight: "600" }}>
-            {saving ? "Adding..." : "Add estimate"}
+            style={{ padding: "8px 22px", background: !amount ? "#ccc" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: !amount || saving ? "default" : "pointer", fontSize: "13px", fontWeight: "600", display: "inline-flex", alignItems: "center", gap: "6px" }}>
+            {saving ? <><Spinner size={12} color="#fff" /> Adding...</> : "Add estimate"}
           </button>
         </div>
       </div>

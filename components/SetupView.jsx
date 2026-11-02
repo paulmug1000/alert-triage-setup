@@ -1308,7 +1308,7 @@ export default function SetupView({
                     <button
                       type="button"
                       onClick={() => loadConfig(selectedClient)}
-                      disabled={saving}
+                      disabled={saving || loading}
                       style={{
                         padding: "10px 18px",
                         borderRadius: "8px",
@@ -1317,10 +1317,13 @@ export default function SetupView({
                         fontSize: "14px",
                         fontWeight: "600",
                         border: "1px solid #CBD5E1",
-                        cursor: "pointer"
+                        cursor: saving || loading ? "wait" : "pointer",
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "6px"
                       }}
                     >
-                      Discard changes
+                      {loading ? <><Spinner size={14} /> Reloading...</> : "Discard changes"}
                     </button>
                     <button
                       type="submit"

@@ -442,9 +442,10 @@ export default function SettingsView({
                         style={{
                           padding: "8px 20px", background: (!agentRunClient || agentRunStatus === "running" || !Object.values(agentRunTypes).some(Boolean)) ? "#ccc" : "#0066cc",
                           color: "#fff", border: "none", borderRadius: "6px",
-                          cursor: (!agentRunClient || agentRunStatus === "running") ? "default" : "pointer", fontSize: "13px", fontWeight: "600"
+                          cursor: (!agentRunClient || agentRunStatus === "running") ? "default" : "pointer", fontSize: "13px", fontWeight: "600",
+                          display: "inline-flex", alignItems: "center", gap: "6px"
                         }}>
-                        {agentRunStatus === "running" ? "Running..." : "Run"}
+                        {agentRunStatus === "running" ? <><Spinner size={12} color="#fff" /> Running...</> : "Run"}
                       </button>
                       {agentRunMsg && (
                         <span style={{ fontSize: "13px", fontWeight: 500, color: agentRunStatus === "success" ? "#166534" : agentRunStatus === "error" ? "#dc2626" : "#2563eb" }}>{agentRunMsg}</span>
@@ -544,9 +545,9 @@ export default function SettingsView({
                             The end-to-end flow of alerts: Detection (Sweep) → AI & Logic (Build) → App Cache (Precompute).
                           </p>
                         </div>
-                        <button className="triage-btn" onClick={() => { loadFlagSweepLog(); loadBuildOptionsLog(); loadPrecomputeLog(); }}
-                          style={{ background: "#f0f0f0", color: "#1a1a1a", border: "1px solid #ddd", padding: "6px 12px", borderRadius: "6px", fontSize: "12px", cursor: "pointer", whiteSpace: "nowrap" }}>
-                          ↻ Refresh Logs
+                        <button className="triage-btn" disabled={flagSweepLogLoading || buildOptionsLogLoading || precomputeLogLoading} onClick={() => { loadFlagSweepLog(); loadBuildOptionsLog(); loadPrecomputeLog(); }}
+                          style={{ background: "#f0f0f0", color: "#1a1a1a", border: "1px solid #ddd", padding: "6px 12px", borderRadius: "6px", fontSize: "12px", cursor: (flagSweepLogLoading || buildOptionsLogLoading || precomputeLogLoading) ? "wait" : "pointer", whiteSpace: "nowrap", display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                          {(flagSweepLogLoading || buildOptionsLogLoading || precomputeLogLoading) ? <><Spinner size={12} /> Refreshing...</> : "↻ Refresh logs"}
                         </button>
                       </div>
 
@@ -692,7 +693,8 @@ export default function SettingsView({
                         {
                           group: "Expense",
                           items: [
-                            { key: "expenseDashboardDiscr", name: "Expense dashboard discrepancy", kind: "actionable" },
+                            { key: "contractorsDashboardDiscr", name: "Contractors discrepancy", kind: "actionable" },
+                            { key: "passThroughDashboardDiscr", name: "Pass-through discrepancy", kind: "actionable" },
                             { key: "expenseAdded", name: "Expense added", kind: "info" },
                             { key: "expenseUnreconGaps", name: "Stale unreceived expense date changed", kind: "info" },
                           ],
@@ -891,7 +893,7 @@ export default function SettingsView({
                           transition: "all 0.15s ease"
                         }}
                       >
-                        {securityLogsLoading ? <Spinner size={12} color="#0066cc" /> : "↻"} Refresh Log
+                        {securityLogsLoading ? <><Spinner size={12} color="#0066cc" /> Refreshing...</> : "↻ Refresh log"}
                       </button>
                     </div>
 
@@ -1161,8 +1163,8 @@ export default function SettingsView({
                           } catch (e) { setDiagError(e.message); }
                           finally { setDiagLoading(false); }
                         }}
-                        style={{ padding: "8px 16px", background: diagLoading ? "#ccc" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", fontSize: "13px", fontWeight: "600", cursor: diagLoading ? "default" : "pointer", whiteSpace: "nowrap" }}>
-                        {diagLoading ? "Running..." : "Run diagnostic"}
+                        style={{ padding: "8px 16px", background: diagLoading ? "#ccc" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", fontSize: "13px", fontWeight: "600", cursor: diagLoading ? "default" : "pointer", whiteSpace: "nowrap", display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                        {diagLoading ? <><Spinner size={12} color="#fff" /> Running...</> : "Run diagnostic"}
                       </button>
                     </div>
 

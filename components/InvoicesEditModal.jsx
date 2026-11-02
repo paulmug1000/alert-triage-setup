@@ -245,7 +245,7 @@ export default function InvoicesEditModal({
         daysToPay: parseInt(daysToPay) || 30,
         status
       }, data);
-      close();
+      onClose();
     } catch (e) { console.error("update_invoice_slot save error:", e); }
     finally { setSaving(false); }
   };
@@ -349,7 +349,7 @@ export default function InvoicesEditModal({
         onUpdateInvoiceJobs(rowNum, slotNum, { ref: "", amount: "", sentDate: "", daysToPay: "", status: "" });
       }
 
-      close();
+      onClose();
     } catch (e) {
       console.error("move_invoice_to_job error:", e);
       alert("Error moving invoice: " + e.message);
@@ -409,7 +409,7 @@ export default function InvoicesEditModal({
       onUpdateInvoiceJobs(rowNum, slotNum, {
         ref: "", amount: "", sentDate: "", daysToPay: "", status: ""
       });
-      close();
+      onClose();
     } catch (e) { console.error("update_invoice_slot delete error:", e); }
     finally { setSaving(false); }
   };
@@ -533,6 +533,7 @@ export default function InvoicesEditModal({
                 filteredTargetJobs.map(j => {
                   const jKey = `${j.client}|||${j.jobName}`;
                   const rev = parseFloat(String(j.rows?.[0]?.revenue || "0").replace(/[£$€,\s]/g, "")) || 0;
+                  const isMovingToThis = saving && selectedTargetJob && selectedTargetJob.jobName === j.jobName && selectedTargetJob.client === j.client;
                   return (
                     <div
                       key={jKey}
@@ -541,7 +542,7 @@ export default function InvoicesEditModal({
                         padding: "10px 14px",
                         borderBottom: "1px solid #e2e8f0",
                         cursor: saving ? "default" : "pointer",
-                        backgroundColor: "#ffffff",
+                        backgroundColor: isMovingToThis ? "#eff6ff" : "#ffffff",
                         display: "flex",
                         justifyContent: "space-between",
                         alignItems: "center",
@@ -551,7 +552,10 @@ export default function InvoicesEditModal({
                       onMouseLeave={e => { if (!saving) e.currentTarget.style.backgroundColor = "#ffffff"; }}
                     >
                       <div>
-                        <div style={{ fontWeight: "600", fontSize: "13px", color: "#1e293b" }}>{j.jobName}</div>
+                        <div style={{ fontWeight: "600", fontSize: "13px", color: "#1e293b", display: "flex", alignItems: "center", gap: "6px" }}>
+                          {j.jobName}
+                          {isMovingToThis && <span style={{ fontSize: "11px", color: "#2563eb", display: "inline-flex", alignItems: "center", gap: "4px" }}><Spinner size={11} color="#2563eb" /> Moving...</span>}
+                        </div>
                         <div style={{ fontSize: "11px", color: "#64748b" }}>
                           {j.client}{j.projectCode ? ` · ${j.projectCode}` : ""}
                         </div>
@@ -892,9 +896,9 @@ export default function InvoicesEditModal({
                     type="button"
                     onClick={doDelete}
                     disabled={saving}
-                    style={{ padding: "7px 12px", background: "#fee2e2", border: "1px solid #fecaca", borderRadius: "6px", cursor: saving ? "default" : "pointer", fontSize: "12.5px", color: "#b91c1c", fontWeight: "600", opacity: saving ? 0.7 : 1 }}
+                    style={{ padding: "7px 12px", background: "#fee2e2", border: "1px solid #fecaca", borderRadius: "6px", cursor: saving ? "default" : "pointer", fontSize: "12.5px", color: "#b91c1c", fontWeight: "600", opacity: saving ? 0.7 : 1, display: "inline-flex", alignItems: "center", gap: "6px" }}
                   >
-                    {saving ? "Deleting..." : "Delete from job anyway"}
+                    {saving ? <><Spinner size={12} color="#b91c1c" /> Deleting...</> : "Delete from job anyway"}
                   </button>
                 </div>
               </div>
@@ -922,8 +926,8 @@ export default function InvoicesEditModal({
                   <button onClick={close} disabled={saving}
                     style={{ padding: "8px 16px", background: "#f5f5f5", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>Cancel</button>
                   <button onClick={handleSaveClick} disabled={saving}
-                    style={{ padding: "8px 22px", background: saving ? "#4caf50" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: saving ? "default" : "pointer", fontSize: "13px", fontWeight: "600", opacity: saving ? 0.8 : 1 }}>
-                    {saving ? "Saving..." : "Save changes"}
+                    style={{ padding: "8px 22px", background: saving ? "#4caf50" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: saving ? "default" : "pointer", fontSize: "13px", fontWeight: "600", opacity: saving ? 0.8 : 1, display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                    {saving ? <><Spinner size={12} color="#fff" /> Saving...</> : "Save changes"}
                   </button>
                 </div>
               </div>

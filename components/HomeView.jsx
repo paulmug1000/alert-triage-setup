@@ -45,12 +45,19 @@ function resolveCrmStatus(crmTool, statusObj = {}) {
 
 const ACTIONABLE_FLAG_KEYS = [
   "invoiceDashboardDiscr",
+  "contractorsDashboardDiscr",
+  "passThroughDashboardDiscr",
   "expenseDashboardDiscr",
   "crmPipeDashDiscr",
   "crmPipeAppDiscr",
   "crmConfDashDiscr",
   "crmConfAppDiscr",
 ];
+const EXPENSE_DISCR_KEYS = new Set([
+  "contractorsDashboardDiscr",
+  "passThroughDashboardDiscr",
+  "expenseDashboardDiscr",
+]);
 
 export default function HomeView({
   clients = [],
@@ -173,13 +180,18 @@ export default function HomeView({
       const invoiceIds = c.activeInvoiceIds || [];
       const validAssignedExp = expenseIds.filter(isIdMatch).length;
       const validAssignedInv = invoiceIds.filter(isIdMatch).length;
+      let remAssignedExp = validAssignedExp;
 
       let clientTotal = 0;
       Object.entries(c.flags || {}).forEach(([flagKey, isSet]) => {
         if (!isSet || (!isAdmin && ADMIN_ONLY_FLAG_KEYS.has(flagKey))) return;
         let count = c.alertCounts?.[flagKey] || 0;
         if (ACTIONABLE_FLAG_KEYS.includes(flagKey)) {
-          if (flagKey === "expenseDashboardDiscr") count = Math.max(0, count - validAssignedExp);
+          if (EXPENSE_DISCR_KEYS.has(flagKey)) {
+            const deduct = Math.min(count, remAssignedExp);
+            count -= deduct;
+            remAssignedExp -= deduct;
+          }
           if (flagKey === "invoiceDashboardDiscr") count = Math.max(0, count - validAssignedInv);
           clientTotal += count;
         } else {

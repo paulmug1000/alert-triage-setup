@@ -80,6 +80,7 @@ export default function ExpensesView({
   const [newExpName, setNewExpName] = useState("");
   const [newExpVat, setNewExpVat] = useState("No");
   const [newExpDelivery, setNewExpDelivery] = useState("0%"); // "0%" | "100%"
+  const [savingRowAction, setSavingRowAction] = useState(null);
 
   // Resolve active client
   useEffect(() => {
@@ -87,16 +88,28 @@ export default function ExpensesView({
       const match = (allOutgoingsClients || []).find(
         (c) => c.clientName?.toLowerCase() === managedClient.clientName?.toLowerCase()
       ) || managedClient;
-      setSelectedClient(match);
+      setSelectedClient((prev) => {
+        if (prev?.clientName?.toLowerCase() !== match?.clientName?.toLowerCase()) {
+          setExpensesData(null);
+          setLoading(true);
+        }
+        return match;
+      });
       return;
     }
     if (initialClient) {
       const targetStr = typeof initialClient === "string" ? initialClient.toLowerCase() : initialClient?.clientName?.toLowerCase();
       const match = (allOutgoingsClients || []).find(
         (c) => c.clientName?.toLowerCase() === targetStr
-      );
+      ) || (typeof initialClient === "object" ? initialClient : null);
       if (match) {
-        setSelectedClient(match);
+        setSelectedClient((prev) => {
+          if (prev?.clientName?.toLowerCase() !== match?.clientName?.toLowerCase()) {
+            setExpensesData(null);
+            setLoading(true);
+          }
+          return match;
+        });
         return;
       }
     }
@@ -116,7 +129,7 @@ export default function ExpensesView({
   };
 
   // Fetch Expenses Data with caching
-  const fetchExpenses = useCallback(async (client, bypassCache = false) => {
+  const fetchExpenses = useCallback(async (client, bypassCache = false, silent = false) => {
     if (!client || !client.clientSheetId) return;
     const cleanId = cleanSheetId ? cleanSheetId(client.clientSheetId) : client.clientSheetId;
 
@@ -126,7 +139,7 @@ export default function ExpensesView({
       setSelectedFyIdx(cached.data.defaultFyIndex ?? 0);
       setLoading(false);
       if (!cached.isStale) return;
-    } else {
+    } else if (!silent) {
       setLoading(true);
     }
 
@@ -218,6 +231,7 @@ export default function ExpensesView({
   const handleToggleVat = async (exp, newVat) => {
     if (!selectedClient || !isAdmin) return;
     setSaving(true);
+    setSavingRowAction(`vat-${exp.sheetRow}`);
     setError(null);
     try {
       const res = await fetch("/api/pma/expenses", {
@@ -236,12 +250,13 @@ export default function ExpensesView({
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || "Failed to update VAT");
       showSuccess(`Updated VAT for "${exp.category}" to ${newVat}.`);
-      await fetchExpenses(selectedClient, true);
+      await fetchExpenses(selectedClient, true, true);
     } catch (err) {
       console.error("Update VAT error:", err);
       setError(err.message || "Failed to update VAT");
     } finally {
       setSaving(false);
+      setSavingRowAction(null);
     }
   };
 
@@ -249,6 +264,7 @@ export default function ExpensesView({
   const handleMoveDelivery = async (exp, targetIsDelivery) => {
     if (!selectedClient || !isAdmin) return;
     setSaving(true);
+    setSavingRowAction(`move-${exp.sheetRow}`);
     setError(null);
     try {
       const res = await fetch("/api/pma/expenses", {
@@ -265,12 +281,13 @@ export default function ExpensesView({
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || "Failed to move expense");
       showSuccess(`Moved "${exp.category}" to ${targetIsDelivery ? "Delivery" : "Non-delivery"}.`);
-      await fetchExpenses(selectedClient, true);
+      await fetchExpenses(selectedClient, true, true);
     } catch (err) {
       console.error("Move expense error:", err);
       setError(err.message || "Failed to move expense");
     } finally {
       setSaving(false);
+      setSavingRowAction(null);
       setDraggingRow(null);
       setDragOverSection(null);
     }
@@ -299,7 +316,7 @@ export default function ExpensesView({
       if (!res.ok || !data.success) throw new Error(data.error || "Failed to update category name");
       setEditingCategory(null);
       showSuccess(`Updated category to "${categoryNameInput}".`);
-      await fetchExpenses(selectedClient, true);
+      await fetchExpenses(selectedClient, true, true);
     } catch (err) {
       console.error("Save category name error:", err);
       setError(err.message || "Failed to update category name");
@@ -334,7 +351,7 @@ export default function ExpensesView({
       if (!res.ok || !data.success) throw new Error(data.error || "Failed to update amount");
       setEditingCell(null);
       showSuccess(`Updated ${editingCell.label} amount for "${editingCell.category}".`);
-      await fetchExpenses(selectedClient, true);
+      await fetchExpenses(selectedClient, true, true);
     } catch (err) {
       console.error("Save amount error:", err);
       setError(err.message || "Failed to update amount");
@@ -366,7 +383,7 @@ export default function ExpensesView({
       if (!res.ok || !data.success) throw new Error(data.error || "Failed to add expense");
       setNewExpName("");
       showSuccess(`Added new expense "${newExpName.trim()}" successfully.`);
-      await fetchExpenses(selectedClient, true);
+      await fetchExpenses(selectedClient, true, true);
     } catch (err) {
       console.error("Add expense error:", err);
       setError(err.message || "Failed to add expense");
@@ -434,13 +451,16 @@ export default function ExpensesView({
                 borderRadius: "4px",
                 padding: "2px 6px",
                 fontSize: "11px",
-                cursor: "pointer",
+                cursor: saving ? "default" : "pointer",
                 color: exp.isDelivery ? "#475569" : "#166534",
                 fontWeight: 700,
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
               }}
               title={exp.isDelivery ? "Click to move to non-delivery" : "Click to move to Delivery"}
             >
-              {exp.isDelivery ? "↓" : "↑"}
+              {savingRowAction === `move-${exp.sheetRow}` ? <Spinner size={10} color="#2563eb" /> : (exp.isDelivery ? "↓" : "↑")}
             </button>
           )}
         </td>
@@ -749,10 +769,13 @@ export default function ExpensesView({
         <EditClientSelector
           clients={allOutgoingsClients}
           onSelectClient={(c) => {
+            setExpensesData(null);
+            setError(null);
+            setLoading(true);
             setSelectedClient(c);
             onSelectClient?.(c);
           }}
-          loading={loading}
+          loading={(allOutgoingsClients || []).length === 0}
           title="Select a client to view and edit expenses:"
         />
       )}
@@ -799,7 +822,7 @@ export default function ExpensesView({
         </div>
       )}
 
-      {selectedClient && (loading || !expensesData) && !error && (
+      {(selectedClient || managedClient) && (loading || !expensesData) && !expensesData && !error && (
         <PmaExpensesTableSkeleton />
       )}
 
@@ -1313,10 +1336,13 @@ export default function ExpensesView({
                   borderRadius: "4px",
                   fontSize: "12px",
                   fontWeight: 600,
-                  cursor: "pointer",
+                  cursor: saving ? "default" : "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
                 }}
               >
-                {saving ? "Saving..." : "Save"}
+                {saving ? <><Spinner size={12} color="#fff" /> Saving...</> : "Save"}
               </button>
             </div>
           </div>
@@ -1408,10 +1434,13 @@ export default function ExpensesView({
                   borderRadius: "4px",
                   fontSize: "12px",
                   fontWeight: 600,
-                  cursor: "pointer",
+                  cursor: saving ? "default" : "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
                 }}
               >
-                {saving ? "Saving..." : "Save"}
+                {saving ? <><Spinner size={12} color="#fff" /> Saving...</> : "Save"}
               </button>
             </div>
           </div>

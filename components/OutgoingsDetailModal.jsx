@@ -1,13 +1,14 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import Spinner from "./Spinner";
 import { formatCurrency, JobDateInput, toSheetDateFormat } from "./JobsView";
 import { useAppGlobals } from "../hooks/useAppGlobals";
-import { stripRowInfo, isPlaceholderExpense } from "../utils/helpers";
+import { stripRowInfo, isPlaceholderExpense, parseSheetDate } from "../utils/helpers";
 
 export default function OutgoingsDetailModal({
   isOpen,
   target,
   onClose,
+  onDeleted,
   isAdmin = false
 }) {
   const { allClientsMap } = useAppGlobals();
@@ -22,7 +23,11 @@ export default function OutgoingsDetailModal({
   const [loadingCellData, setLoadingCellData] = useState(false);
   const [saving, setSaving] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deletedSuccess, setDeletedSuccess] = useState(false);
   const [userEdited, setUserEdited] = useState(false);
+  const userEditedRef = useRef(false);
 
   const resolvedClientInfo = useMemo(() => {
     let client = (target?.client && typeof target.client === "object") ? { ...target.client } : {};
@@ -82,7 +87,11 @@ export default function OutgoingsDetailModal({
       setExistingBlocks([]);
       setLoadingCellData(false);
       setSavedSuccess(false);
+      setConfirmingDelete(false);
+      setDeleting(false);
+      setDeletedSuccess(false);
       setUserEdited(false);
+      userEditedRef.current = false;
       return;
     }
 
@@ -98,7 +107,11 @@ export default function OutgoingsDetailModal({
     setPayDateVal(initPay);
     setAppIdVal(initAppId);
     setSavedSuccess(false);
+    setConfirmingDelete(false);
+    setDeleting(false);
+    setDeletedSuccess(false);
     setUserEdited(false);
+    userEditedRef.current = false;
 
     // Initial column & row determination
     let col = "";
@@ -120,6 +133,46 @@ export default function OutgoingsDetailModal({
 
     let cancelled = false;
 
+    const computeDefaultDatesForMonth = (monthObjOrStr, invTimingStr = "Curr", payTimingStr = "Curr") => {
+      const mNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+      let baseDate = null;
+      if (monthObjOrStr && typeof monthObjOrStr === "object" && monthObjOrStr.isoMonth) {
+        baseDate = parseSheetDate(`${monthObjOrStr.isoMonth}-01`);
+      }
+      if (!baseDate && monthObjOrStr) {
+        const rawStr = typeof monthObjOrStr === "object" ? (monthObjOrStr.label || "") : String(monthObjOrStr);
+        baseDate = parseSheetDate(rawStr.replace(/sept/i, "Sep"));
+      }
+      if (!baseDate) return { rec: "", pay: "" };
+
+      const yr = baseDate.getFullYear();
+      const mIdx = baseDate.getMonth();
+      const today = new Date();
+      const currentMonthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+
+      const recDate = new Date(yr, mIdx, 1);
+      if (String(invTimingStr || "Curr").trim().toLowerCase().includes("next")) {
+        recDate.setMonth(recDate.getMonth() + 1);
+      }
+      recDate.setDate(5);
+      if (recDate < currentMonthStart) {
+        recDate.setFullYear(today.getFullYear(), today.getMonth(), 5);
+      }
+
+      const payDate = new Date(yr, mIdx, 1);
+      if (String(payTimingStr || "Curr").trim().toLowerCase().includes("next")) {
+        payDate.setMonth(payDate.getMonth() + 1);
+      }
+      payDate.setDate(28);
+      if (payDate < currentMonthStart) {
+        const targetPayMonth = today.getDate() > 20 ? today.getMonth() + 1 : today.getMonth();
+        payDate.setFullYear(today.getFullYear(), targetPayMonth, 28);
+      }
+
+      const fmt = (d) => `${d.getDate()}-${mNames[d.getMonth()]}-${String(d.getFullYear()).slice(-2)}`;
+      return { rec: fmt(recDate), pay: fmt(payDate) };
+    };
+
     const hydrateFromSheet = async () => {
       setLoadingCellData(true);
       try {
@@ -128,24 +181,43 @@ export default function OutgoingsDetailModal({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             action: "get_outgoings",
-            clientSheetId: resolvedClientInfo.clientSheetId
+            clientSheetId: resolvedClientInfo.clientSheetId,
+            bypassCache: true
           })
         });
         const data = await res.json();
         if (cancelled || !data.success) return;
 
         const months = data.months || [];
-        const contractors = data.contractors || [];
+        const allRows = [...(data.contractors || []), ...(data.extraOutgoingsRows || [])];
 
-        // 1. Resolve column letter from month
-        let col = resolvedColLetter;
+        // 1. Resolve column letter from cellCoord or month
+        let col = "";
+        let initialRow = target.rowNum ? parseInt(target.rowNum, 10) : null;
+        if (target.cellCoord) {
+          const match = String(target.cellCoord).match(/^([A-Za-z]+)(\d+)$/);
+          if (match) {
+            col = match[1].toUpperCase();
+            initialRow = parseInt(match[2], 10);
+          }
+        }
+
+        let matchedMonth = null;
+        if (col) {
+          matchedMonth = months.find(m => m.colLetter === col) || null;
+        }
         if (!col && target.month && months.length > 0) {
-          const cleanTargetMonth = String(target.month).replace(/[-_,\s]/g, "").toLowerCase();
-          const matchedMonth = months.find(m => {
-            const cleanLabel = String(m.label || "").replace(/[-_,\s]/g, "").toLowerCase();
+          const parsedTargetDate = parseSheetDate(String(target.month).replace(/sept/i, "Sep"));
+          const targetIsoMonth = parsedTargetDate
+            ? `${parsedTargetDate.getFullYear()}-${String(parsedTargetDate.getMonth() + 1).padStart(2, "0")}`
+            : "";
+          const cleanTargetMonth = String(target.month).replace(/sept/gi, "sep").replace(/[-_,\s]/g, "").toLowerCase();
+          matchedMonth = months.find(m => {
+            if (targetIsoMonth && m.isoMonth === targetIsoMonth) return true;
+            const cleanLabel = String(m.label || "").replace(/sept/gi, "sep").replace(/[-_,\s]/g, "").toLowerCase();
             const cleanIso = String(m.isoMonth || "").replace(/[-_,\s]/g, "").toLowerCase();
             return cleanLabel === cleanTargetMonth || cleanIso === cleanTargetMonth ||
-                   cleanLabel.includes(cleanTargetMonth) || cleanTargetMonth.includes(cleanLabel);
+              cleanLabel.includes(cleanTargetMonth) || cleanTargetMonth.includes(cleanLabel);
           });
           if (matchedMonth) {
             col = matchedMonth.colLetter;
@@ -153,41 +225,67 @@ export default function OutgoingsDetailModal({
           }
         }
 
-        // 2. Resolve contractor and sheet row
-        const targetRow = resolvedSheetRow || (target.rowNum ? parseInt(target.rowNum, 10) : null);
+        // 2. Resolve contractor / outgoings row
         const targetContractor = String(target.contractor || "").trim().toLowerCase();
 
         let matchedContractor = null;
-        if (targetRow) {
-          matchedContractor = contractors.find(c => c.sheetRow === targetRow);
+        if (initialRow) {
+          matchedContractor = allRows.find(c => c.sheetRow === initialRow);
         }
         if (!matchedContractor && targetContractor) {
-          matchedContractor = contractors.find(c => {
+          matchedContractor = allRows.find(c => {
             const cName = String(c.name || "").trim().toLowerCase();
-            return cName === targetContractor || cName.includes(targetContractor) || targetContractor.includes(cName);
+            return cName === targetContractor;
+          }) || allRows.find(c => {
+            const cName = String(c.name || "").trim().toLowerCase();
+            return cName.includes(targetContractor) || targetContractor.includes(cName);
           });
         }
 
+        const targetAppId = target.appId;
+        const targetAmountNum = parseFloat(String(target.amount || "").replace(/[£$€,\s]/g, ""));
+
         if (matchedContractor) {
-          if (!resolvedSheetRow) {
-            setResolvedSheetRow(matchedContractor.sheetRow);
+          setResolvedSheetRow(matchedContractor.sheetRow);
+
+          // If col was not resolved yet, search cells in matchedContractor for a matching block
+          if (!col && matchedContractor.cells) {
+            for (const [cLetter, cInfo] of Object.entries(matchedContractor.cells)) {
+              const cBlocks = cInfo?.blocks || [];
+              if (cBlocks.length === 0) continue;
+              const hasMatch = cBlocks.some(b => {
+                if (targetAppId && targetAppId !== "UNRECON-GAP" && b.appId === targetAppId) return true;
+                if (!isNaN(targetAmountNum) && targetAmountNum > 0 && Math.abs((parseFloat(b.amount) || 0) - targetAmountNum) < 0.05) return true;
+                return false;
+              });
+              if (hasMatch) {
+                col = cLetter;
+                matchedMonth = months.find(m => m.colLetter === col) || null;
+                setResolvedColLetter(col);
+                break;
+              }
+            }
           }
 
           // 3. Inspect cell in contractor row
+          const estDefaults = computeDefaultDatesForMonth(
+            matchedMonth || target.month,
+            matchedContractor.invTiming || "Curr",
+            matchedContractor.payTiming || "Curr"
+          );
+
           if (col && matchedContractor.cells && matchedContractor.cells[col]) {
             const cellInfo = matchedContractor.cells[col];
             const blocks = cellInfo.blocks || [];
             setExistingBlocks(blocks);
 
             // Find matching block
-            const targetAppId = target.appId;
-            const targetAmountNum = parseFloat(String(target.amount || "").replace(/[£$€,\s]/g, ""));
             let matchedBlock = null;
             if (targetAppId && targetAppId !== "UNRECON-GAP") {
               matchedBlock = blocks.find(b => b.appId === targetAppId);
             }
             if (!matchedBlock && !isNaN(targetAmountNum) && targetAmountNum > 0) {
-              matchedBlock = blocks.find(b => Math.abs(b.amount - targetAmountNum) < 0.05);
+              matchedBlock = blocks.find(b => Math.abs((parseFloat(b.amount) || 0) - targetAmountNum) < 0.05);
             }
             if (!matchedBlock && blocks.length > 0) {
               matchedBlock = blocks[0];
@@ -195,19 +293,36 @@ export default function OutgoingsDetailModal({
 
             if (matchedBlock) {
               if (matchedBlock.appId) setAppIdVal(matchedBlock.appId);
-              if (!userEdited) {
+              if (!userEditedRef.current) {
                 if (matchedBlock.description) setDescription(matchedBlock.description);
-                if (matchedBlock.amount && (!amountVal || amountVal === "0.00" || amountVal === "0")) {
+                if (matchedBlock.amount) {
                   setAmountVal(String(matchedBlock.amount));
                 }
-                if (matchedBlock.recDate && !recDateVal) setRecDateVal(matchedBlock.recDate);
-                if (matchedBlock.payDate && !payDateVal) setPayDateVal(matchedBlock.payDate);
+                const resolvedRec = matchedBlock.recDate || target.recDate || estDefaults.rec;
+                const resolvedPay = matchedBlock.payDate || target.payDate || estDefaults.pay;
+                if (resolvedRec) setRecDateVal(resolvedRec);
+                if (resolvedPay) setPayDateVal(resolvedPay);
               }
-            } else if (cellInfo.value && (!amountVal || amountVal === "0.00" || amountVal === "0") && !userEdited) {
-              const parsedVal = parseFloat(String(cellInfo.value).replace(/[£$€,\s]/g, ""));
-              if (!isNaN(parsedVal)) setAmountVal(String(parsedVal));
+            } else if (!userEditedRef.current) {
+              if (cellInfo.value) {
+                const parsedVal = parseFloat(String(cellInfo.value).replace(/[£$€,\s]/g, ""));
+                if (!isNaN(parsedVal) && parsedVal > 0) setAmountVal(String(parsedVal));
+              }
+              const resolvedRec = target.recDate || estDefaults.rec;
+              const resolvedPay = target.payDate || estDefaults.pay;
+              if (resolvedRec) setRecDateVal(resolvedRec);
+              if (resolvedPay) setPayDateVal(resolvedPay);
             }
+          } else if (!userEditedRef.current) {
+            const resolvedRec = target.recDate || estDefaults.rec;
+            const resolvedPay = target.payDate || estDefaults.pay;
+            if (resolvedRec) setRecDateVal(resolvedRec);
+            if (resolvedPay) setPayDateVal(resolvedPay);
           }
+        } else if (!userEditedRef.current) {
+          const estDefaults = computeDefaultDatesForMonth(matchedMonth || target.month, "Curr", "Curr");
+          if (!target.recDate && estDefaults.rec) setRecDateVal(estDefaults.rec);
+          if (!target.payDate && estDefaults.pay) setPayDateVal(estDefaults.pay);
         }
       } catch (err) {
         console.error("Failed to hydrate outgoings cell data:", err);
@@ -221,7 +336,7 @@ export default function OutgoingsDetailModal({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, target, resolvedClientInfo.clientSheetId, resolvedColLetter, resolvedSheetRow]);
+  }, [isOpen, target, resolvedClientInfo.clientSheetId]);
 
   // Handle Escape key
   useEffect(() => {
@@ -255,7 +370,10 @@ export default function OutgoingsDetailModal({
       let blocks;
       if (existingBlocks && existingBlocks.length > 0) {
         const curAppId = appIdVal || target.appId;
-        const matchIdx = existingBlocks.findIndex(b => curAppId && b.appId === curAppId);
+        let matchIdx = existingBlocks.findIndex(b => curAppId && curAppId !== "UNRECON-GAP" && b.appId === curAppId);
+        if (matchIdx < 0 && parsedAmount > 0) {
+          matchIdx = existingBlocks.findIndex(b => Math.abs((parseFloat(b.amount) || 0) - parsedAmount) < 0.05);
+        }
         const idxToUpdate = matchIdx >= 0 ? matchIdx : 0;
         blocks = existingBlocks.map((b, i) => {
           if (i === idxToUpdate) {
@@ -284,6 +402,10 @@ export default function OutgoingsDetailModal({
         ];
       }
 
+      const newCellTotal = blocks
+        .filter(b => !String(b.appId || "").startsWith("UNRECON-GAP"))
+        .reduce((sum, b) => sum + (parseFloat(b.amount) || 0), 0);
+
       const res = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -296,7 +418,7 @@ export default function OutgoingsDetailModal({
           cellRef: `${colLetter}${sheetRow}`,
           colLetter,
           sheetRow,
-          cellTotal: parsedAmount,
+          cellTotal: newCellTotal,
           blocks
         })
       });
@@ -304,12 +426,70 @@ export default function OutgoingsDetailModal({
       const data = await res.json();
       if (!data.success) throw new Error(data.error || "Failed to update outgoings entry");
 
+      setExistingBlocks(blocks);
       setSavedSuccess(true);
       setTimeout(() => setSavedSuccess(false), 3500);
     } catch (err) {
       alert("Error saving outgoings entry: " + err.message);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleDeleteOutgoings = async () => {
+    if (!canSave) return;
+    setDeleting(true);
+    setSavedSuccess(false);
+
+    try {
+      const parsedAmount = parseFloat(String(amountVal).replace(/[£$€,\s]/g, "")) || 0;
+      let updatedBlocks = [];
+      if (existingBlocks && existingBlocks.length > 0) {
+        const curAppId = appIdVal || target.appId;
+        let matchIdx = existingBlocks.findIndex(b => curAppId && curAppId !== "UNRECON-GAP" && b.appId === curAppId);
+        if (matchIdx < 0 && parsedAmount > 0) {
+          matchIdx = existingBlocks.findIndex(b => Math.abs((parseFloat(b.amount) || 0) - parsedAmount) < 0.05);
+        }
+        if (matchIdx < 0) matchIdx = 0;
+        updatedBlocks = existingBlocks.filter((_, i) => i !== matchIdx);
+      }
+
+      const newCellTotal = updatedBlocks
+        .filter(b => !String(b.appId || "").startsWith("UNRECON-GAP"))
+        .reduce((sum, b) => sum + (parseFloat(b.amount) || 0), 0);
+
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "update_outgoing_note",
+          clientSheetId: resolvedClientInfo.clientSheetId,
+          clientName: resolvedClientInfo.client?.clientName || target.client?.clientName || target.clientName || "",
+          contractorName: target.contractor || description,
+          masterSheetId: resolvedClientInfo.client?.masterSheetId || target.client?.masterSheetId || "",
+          cellRef: `${colLetter}${sheetRow}`,
+          colLetter,
+          sheetRow,
+          cellTotal: newCellTotal,
+          blocks: updatedBlocks,
+          ...(updatedBlocks.length === 0 ? { topNote: "" } : {})
+        })
+      });
+
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || "Failed to delete outgoings entry");
+
+      setExistingBlocks(updatedBlocks);
+      setConfirmingDelete(false);
+      setDeletedSuccess(true);
+      onDeleted?.(target);
+      setTimeout(() => {
+        onClose();
+      }, 600);
+    } catch (err) {
+      alert("Error deleting outgoings entry: " + err.message);
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -366,7 +546,7 @@ export default function OutgoingsDetailModal({
                   border: "1px solid #fde68a"
                 }}
               >
-                {isAdmin ? "Outgoings Entry" : "Expense Entry"}
+                {isAdmin ? "Outgoings contractor" : "Contractor"}
               </span>
               <h2 style={{ margin: 0, fontSize: "17px", fontWeight: "700", color: "#0f172a" }}>
                 {target.contractor || "Contractor / Overhead Expense"}
@@ -447,7 +627,7 @@ export default function OutgoingsDetailModal({
               }}
             >
               <div style={{ fontSize: "12px", fontWeight: "700", color: "#0369a1", marginBottom: "6px" }}>
-                Date Movement Updates
+                Date changes
               </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
                 {target.changes.map((ch, idx) => (
@@ -481,13 +661,13 @@ export default function OutgoingsDetailModal({
             }}
           >
             <div style={{ fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.04em", color: "#64748b", marginBottom: "12px" }}>
-              Expense Details
+              Expense details
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
               <div>
                 <label style={{ display: "block", fontSize: "11px", fontWeight: "600", color: "#64748b", marginBottom: "3px" }}>
-                  Contractor / Description
+                  Contractor / description
                 </label>
                 <input
                   type="text"
@@ -495,6 +675,7 @@ export default function OutgoingsDetailModal({
                   onChange={(e) => {
                     setDescription(e.target.value);
                     setUserEdited(true);
+                    userEditedRef.current = true;
                   }}
                   style={{
                     width: "100%", padding: "6px 8px", borderRadius: "5px",
@@ -514,6 +695,7 @@ export default function OutgoingsDetailModal({
                   onChange={(e) => {
                     setAmountVal(e.target.value);
                     setUserEdited(true);
+                    userEditedRef.current = true;
                   }}
                   placeholder="0.00"
                   style={{
@@ -526,13 +708,14 @@ export default function OutgoingsDetailModal({
 
               <div>
                 <label style={{ display: "block", fontSize: "11px", fontWeight: "600", color: "#64748b", marginBottom: "3px" }}>
-                  Received Date
+                  Received date
                 </label>
                 <JobDateInput
                   value={recDateVal}
                   onChange={(val) => {
                     setRecDateVal(val);
                     setUserEdited(true);
+                    userEditedRef.current = true;
                   }}
                   defaultBorder="1px solid #cbd5e1"
                   defaultBg="#ffffff"
@@ -542,13 +725,14 @@ export default function OutgoingsDetailModal({
 
               <div>
                 <label style={{ display: "block", fontSize: "11px", fontWeight: "600", color: "#64748b", marginBottom: "3px" }}>
-                  Pay Date
+                  Pay date
                 </label>
                 <JobDateInput
                   value={payDateVal}
                   onChange={(val) => {
                     setPayDateVal(val);
                     setUserEdited(true);
+                    userEditedRef.current = true;
                   }}
                   defaultBorder="1px solid #cbd5e1"
                   defaultBg="#ffffff"
@@ -559,7 +743,7 @@ export default function OutgoingsDetailModal({
 
             {(appIdVal || target.appId) && (
               <div style={{ marginTop: "12px", paddingTop: "10px", borderTop: "1px solid #f1f5f9", fontSize: "11px", color: "#64748b" }}>
-                <strong>App ID / Identifier:</strong>{" "}
+                <strong>App ID:</strong>{" "}
                 <span style={{ fontFamily: isPlaceholderExpense(appIdVal || target.appId) ? "inherit" : "monospace", color: isPlaceholderExpense(appIdVal || target.appId) ? "#6b21a8" : "#334155", fontWeight: isPlaceholderExpense(appIdVal || target.appId) ? 600 : "normal" }}>
                   {isPlaceholderExpense(appIdVal || target.appId) ? "Placeholder - auto" : (appIdVal || target.appId)}
                 </span>
@@ -568,7 +752,7 @@ export default function OutgoingsDetailModal({
 
             {target.rawText && (
               <div style={{ marginTop: "8px", fontSize: "11px", color: "#64748b" }}>
-                <strong>Alert Log Entry:</strong>{" "}
+                <strong>Alert log entry:</strong>{" "}
                 {(() => {
                   const cleaned = String(target.rawText).replace(/\s*[-–]\s*$/, "").trim();
                   return isAdmin ? cleaned : stripRowInfo(cleaned);
@@ -592,7 +776,11 @@ export default function OutgoingsDetailModal({
           }}
         >
           <div>
-            {savedSuccess ? (
+            {deletedSuccess ? (
+              <span style={{ fontSize: "12px", color: "#16a34a", fontWeight: "700" }}>
+                ✓ Expense deleted
+              </span>
+            ) : savedSuccess ? (
               <span style={{ fontSize: "12px", color: "#16a34a", fontWeight: "700" }}>
                 {isAdmin ? "✓ Outgoings cell updated successfully" : "✓ Expense updated successfully"}
               </span>
@@ -605,7 +793,7 @@ export default function OutgoingsDetailModal({
             )}
           </div>
 
-          <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+          <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
             {isAdmin && resolvedClientInfo.clientSheetId && (
               <button
                 type="button"
@@ -623,15 +811,77 @@ export default function OutgoingsDetailModal({
                   cursor: "pointer"
                 }}
               >
-                📊 Open Outgoings Sheet
+                Open Outgoings sheet
               </button>
+            )}
+
+            {canSave && (
+              confirmingDelete ? (
+                <div style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                  <button
+                    type="button"
+                    onClick={handleDeleteOutgoings}
+                    disabled={deleting || saving}
+                    style={{
+                      padding: "6px 14px",
+                      borderRadius: "6px",
+                      border: "none",
+                      background: "#dc2626",
+                      color: "#ffffff",
+                      fontSize: "12px",
+                      fontWeight: "600",
+                      cursor: deleting ? "wait" : "pointer",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "6px"
+                    }}
+                  >
+                    {deleting ? <><Spinner size={12} color="#ffffff" /> Deleting...</> : "Confirm delete"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmingDelete(false)}
+                    disabled={deleting}
+                    style={{
+                      padding: "6px 12px",
+                      borderRadius: "6px",
+                      border: "1px solid #cbd5e1",
+                      background: "#ffffff",
+                      color: "#475569",
+                      fontSize: "12px",
+                      fontWeight: "600",
+                      cursor: "pointer"
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setConfirmingDelete(true)}
+                  disabled={saving || deleting}
+                  style={{
+                    padding: "6px 14px",
+                    borderRadius: "6px",
+                    border: "1px solid #fecaca",
+                    background: "#fef2f2",
+                    color: "#dc2626",
+                    fontSize: "12px",
+                    fontWeight: "600",
+                    cursor: "pointer"
+                  }}
+                >
+                  Delete expense
+                </button>
+              )
             )}
 
             {canSave && (
               <button
                 type="button"
                 onClick={handleSaveOutgoings}
-                disabled={saving}
+                disabled={saving || deleting}
                 style={{
                   padding: "6px 16px",
                   borderRadius: "6px",
@@ -646,7 +896,7 @@ export default function OutgoingsDetailModal({
                   gap: "6px"
                 }}
               >
-                {saving ? <><Spinner size={12} color="#ffffff" /> Saving...</> : "💾 Save Expense"}
+                {saving ? <><Spinner size={12} color="#ffffff" /> Saving...</> : "Save expense"}
               </button>
             )}
 

@@ -80,6 +80,7 @@ export async function fetchNBToFindData(clientName, clientSheetId, bypassCache =
           "NBtoFind!A1:AV25",
           "KeyInfo!B15",
           "KeyInfo!C4:D5",
+          "KeyInfo!D8",
         ],
         valueRenderOption: "FORMATTED_VALUE",
       });
@@ -98,6 +99,7 @@ export async function fetchNBToFindData(clientName, clientSheetId, bypassCache =
   const gridRowData = gridResponse.data?.sheets?.[0]?.data?.[0]?.rowData || [];
   const keyInfoB15 = String(valueRanges[1]?.values?.[0]?.[0] || "").trim();
   const currencyRows = valueRanges[2]?.values || [];
+  const keyInfoD8 = String(valueRanges[3]?.values?.[0]?.[0] || "").trim();
 
   const rawCurrencySymbol = String(currencyRows?.[0]?.[1] || (currencyRows?.[0]?.[0] && currencyRows?.[0]?.[0] !== "Tracker currency" ? currencyRows?.[0]?.[0] : "") || "£").trim() || "£";
   let currencySymbol = rawCurrencySymbol;
@@ -113,6 +115,13 @@ export async function fetchNBToFindData(clientName, clientSheetId, bypassCache =
   const inferredFromSheet = row3LabelRaw.includes("income") ? "Income" : row3LabelRaw.includes("revenue") ? "Revenue" : "Revenue";
   const revenueFocus = keyInfoB15.toLowerCase() === "income" ? "Income" : keyInfoB15.toLowerCase() === "revenue" ? "Revenue" : inferredFromSheet;
   const modeTerm = revenueFocus; // "Income" | "Revenue"
+  const directCostsMode =
+    modeTerm === "Income"
+      ? "Pass-through"
+      : keyInfoD8.toLowerCase().includes("pass")
+      ? "Pass-through"
+      : "Contractors";
+  const dcTerm = directCostsMode === "Pass-through" ? "pass-through costs" : "direct costs";
 
   const row1 = rows[0] || [];
 
@@ -206,9 +215,10 @@ export async function fetchNBToFindData(clientName, clientSheetId, bypassCache =
 
   // Row 3: New business to find income/revenue (manual inputs)
   const row3 = extractRowData(2, `New business to find ${modeTerm.toLowerCase()}`);
-  // Row 5: New business to find direct costs (manual inputs in revenue mode)
-  const row5 = extractRowData(4, "NB to find direct costs");
-  row5.label = "NB to find direct costs";
+  // Row 5: New business to find direct/pass-through costs (manual inputs in revenue mode)
+  const row5 = extractRowData(4, `NB to find ${dcTerm}`);
+  row5.label = `NB to find ${dcTerm}`;
+  Object.values(row5.fyData).forEach((fy) => { fy.label = `NB to find ${dcTerm}`; });
   // Row 10: Total income/revenue target
   const row10 = extractRowData(9, `Total ${modeTerm.toLowerCase()} target`);
   // Row 12: Use budget for income/revenue targets? (Budget values)
@@ -218,10 +228,14 @@ export async function fetchNBToFindData(clientName, clientSheetId, bypassCache =
   const row14 = extractRowData(13, "NB to find figure based on target");
   // Row 18: NB to find figure to use (Final target figure)
   const row18 = extractRowData(17, "NB to find figure to use");
-  // Row 20: NB direct costs as a percentage
-  const row20 = extractRowData(19, "NB direct costs calculation");
-  // Row 23: NB to find direct costs to use
-  const row23 = extractRowData(22, "NB to find direct costs to use");
+  // Row 20: NB direct/pass-through costs as a percentage
+  const row20 = extractRowData(19, `NB ${dcTerm} calculation`);
+  row20.label = `NB ${dcTerm} calculation`;
+  Object.values(row20.fyData).forEach((fy) => { fy.label = `NB ${dcTerm} calculation`; });
+  // Row 23: NB to find direct/pass-through costs to use
+  const row23 = extractRowData(22, `NB to find ${dcTerm} to use`);
+  row23.label = `NB to find ${dcTerm} to use`;
+  Object.values(row23.fyData).forEach((fy) => { fy.label = `NB to find ${dcTerm} to use`; });
 
   // Row 25: "Use NB to find?" Yes/No dropdown for each month
   const row25Raw = rows[24] || [];
@@ -248,6 +262,7 @@ export async function fetchNBToFindData(clientName, clientSheetId, bypassCache =
     clientSheetId,
     revenueFocus,
     modeTerm,
+    directCostsMode,
     currencySymbol,
     thousandsSeparator,
     defaultFyIndex,
@@ -258,6 +273,7 @@ export async function fetchNBToFindData(clientName, clientSheetId, bypassCache =
       directCostsPercentage,     // Cell A21
       revenueFocus,
       modeTerm,
+      directCostsMode,
     },
     sections: {
       row3,

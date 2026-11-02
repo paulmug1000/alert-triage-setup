@@ -17,6 +17,14 @@ import HomeView from "../components/HomeView";
 import AuthGateView from "../components/AuthGateView";
 import InvoicesView from "../components/InvoicesView";
 import OutgoingsView from "../components/OutgoingsView";
+import JobsView from "../components/JobsView";
+import RetainersView from "../components/RetainersView";
+import SalariesView from "../components/SalariesView";
+import ExpensesView from "../components/ExpensesView";
+import NBToFindView from "../components/NBToFindView";
+import BudgetView from "../components/BudgetView";
+import CashEditView from "../components/CashEditView";
+import ViewsScreen from "../components/ViewsScreen";
 
 // Secondary views code-split via next/dynamic to reduce PMA bundle size
 const AppLogView = dynamic(() => import("../components/AppLogView"), { loading: () => <PmaActivitySkeleton /> });
@@ -24,18 +32,10 @@ const ActivityView = dynamic(() => import("../components/ActivityView"), { loadi
 const IgnoredAlertsView = dynamic(() => import("../components/IgnoredAlertsView"), { loading: () => <PmaAlertsSkeleton /> });
 const TasksView = dynamic(() => import("../components/TasksView"), { loading: () => <PmaTasksSkeleton /> });
 const CreateTaskModal = dynamic(() => import("../components/CreateTaskModal"));
-const JobsView = dynamic(() => import("../components/JobsView"), { loading: () => <PmaJobsTableSkeleton /> });
-const RetainersView = dynamic(() => import("../components/RetainersView"), { loading: () => <PmaRetainersTableSkeleton /> });
-const SalariesView = dynamic(() => import("../components/SalariesView"), { loading: () => <PmaSalariesSkeleton /> });
-const ExpensesView = dynamic(() => import("../components/ExpensesView"), { loading: () => <PmaExpensesTableSkeleton /> });
-const NBToFindView = dynamic(() => import("../components/NBToFindView"), { loading: () => <PmaNBToFindSkeleton /> });
-const BudgetView = dynamic(() => import("../components/BudgetView"), { loading: () => <BudgetSkeleton /> });
-const CashEditView = dynamic(() => import("../components/CashEditView"), { loading: () => <PmaOutgoingsTableSkeleton /> });
 const ToolsView = dynamic(() => import("../components/ToolsView"), { loading: () => <PmaSetupOverviewSkeleton /> });
 const SettingsView = dynamic(() => import("../components/SettingsView"), { loading: () => <PmaSetupOverviewSkeleton /> });
 const IntegrationsView = dynamic(() => import("../components/IntegrationsView"), { loading: () => <PmaIntegrationsSkeleton /> });
 const SetupView = dynamic(() => import("../components/SetupView"), { loading: () => <PmaSetupOverviewSkeleton /> });
-const ViewsScreen = dynamic(() => import("../components/ViewsScreen"), { loading: () => <PmaHomeSkeleton /> });
 import { useAuth } from "../hooks/useAuth";
 import { useOverview } from "../hooks/useOverview";
 import { TaskProvider, useTasks } from "../contexts/TaskContext";
@@ -268,6 +268,12 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
     setAlertAssignOverlay({ mode: "outgoings", client: resolved });
   };
 
+  const handleNavPassThroughForClient = (client) => {
+    loadClients();
+    const resolved = resolveFullClient(client);
+    setAlertAssignOverlay({ mode: "passthrough", client: resolved });
+  };
+
   const {
     navTaskCount, setNavTaskCount, snoozedTaskCount, setSnoozedTaskCount,
     showTaskModal, setShowTaskModal, taskModalAlert, setTaskModalAlert,
@@ -318,7 +324,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
       try {
         const stored = localStorage.getItem("pulse_cached_integrations_data");
         if (stored) return JSON.parse(stored);
-      } catch {}
+      } catch { }
     }
     return { allClients: [], sharedXero: null };
   });
@@ -342,7 +348,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
         setIntegrationsRawData(payload);
         try {
           localStorage.setItem("pulse_cached_integrations_data", JSON.stringify(payload));
-        } catch {}
+        } catch { }
       }
     } catch (e) {
       console.warn("triage: failed to fetch integration statuses for badge", e);
@@ -353,14 +359,14 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
     setIntegrationsRawData(payload);
     try {
       localStorage.setItem("pulse_cached_integrations_data", JSON.stringify(payload));
-    } catch {}
+    } catch { }
   }, []);
 
   useEffect(() => {
     if (initialIntegrations && Array.isArray(initialIntegrations.allClients) && initialIntegrations.allClients.length > 0) {
       try {
         localStorage.setItem("pulse_cached_integrations_data", JSON.stringify(initialIntegrations));
-      } catch {}
+      } catch { }
       return;
     }
     if (isAuthenticated && user?.email) {
@@ -378,7 +384,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
       managedClient?.clientName
     );
     if (typeof window !== "undefined" && !managedClient) {
-      try { localStorage.setItem("pulse_cached_integrations_badge", String(count)); } catch {}
+      try { localStorage.setItem("pulse_cached_integrations_badge", String(count)); } catch { }
     }
     return count;
   }, [integrationsRawData, managedClient, cachedIntegrationsAttentionCount]);
@@ -387,10 +393,10 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
     if (!managedClient?.clientName) return null;
     const targetName = managedClient.clientName.toLowerCase();
     const ACTIONABLE_FLAG_KEYS_SET = new Set([
-      "invoiceDashboardDiscr", "expenseDashboardDiscr",
+      "invoiceDashboardDiscr", "contractorsDashboardDiscr", "passThroughDashboardDiscr", "expenseDashboardDiscr",
       "crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr",
     ]);
-    const EXPENSE_TYPES = new Set(["expenseDashboardDiscr"]);
+    const EXPENSE_TYPES = new Set(["contractorsDashboardDiscr", "passThroughDashboardDiscr", "expenseDashboardDiscr"]);
     const INVOICE_TYPES = new Set(["invoiceDashboardDiscr"]);
 
     const client = (triageEngine.clientsWithFlags || []).find(
@@ -421,12 +427,17 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
       const invoiceIds = client.activeInvoiceIds || [];
       const validAssignedExp = expenseIds.filter(isIdMatch).length;
       const validAssignedInv = invoiceIds.filter(isIdMatch).length;
+      let remAssignedExp = validAssignedExp;
 
       Object.entries(client.flags || {}).forEach(([flagKey, isSet]) => {
         if (!isSet || (!isAdmin && ADMIN_ONLY_FLAG_KEYS.has(flagKey))) return;
         let count = client.alertCounts?.[flagKey] || 0;
         if (ACTIONABLE_FLAG_KEYS_SET.has(flagKey)) {
-          if (EXPENSE_TYPES.has(flagKey)) count = Math.max(0, count - validAssignedExp);
+          if (EXPENSE_TYPES.has(flagKey)) {
+            const deduct = Math.min(count, remAssignedExp);
+            count -= deduct;
+            remAssignedExp -= deduct;
+          }
           if (INVOICE_TYPES.has(flagKey)) count = Math.max(0, count - validAssignedInv);
           flagCount += count;
         } else {
@@ -448,7 +459,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
       try {
         localStorage.setItem("pulse_cached_alert_badge", String(currentLiveAlertCount));
         localStorage.setItem("pulse_cached_total_alerts", String(currentLiveAlertCount));
-      } catch {}
+      } catch { }
     }
   }, [triageEngine.triageComplete, currentLiveAlertCount, managedClient]);
 
@@ -500,6 +511,62 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
   const [allClientsLoaded, setAllClientsLoaded] = useState(
     Boolean(Array.isArray(initialClients) && initialClients.length > 0)
   );
+
+  // Sync allOutgoingsClients from allClientsMap whenever allClientsMap arrives first
+  useEffect(() => {
+    const mapValues = Object.values(allClientsMap || {}).filter(c => c && c.clientName);
+    if (mapValues.length > 0) {
+      setAllOutgoingsClients(prev => {
+        if (!Array.isArray(prev) || prev.length === 0) {
+          return mapValues;
+        }
+        let changed = false;
+        const next = prev.map(c => {
+          const fromMap = allClientsMap[c.clientName];
+          if (fromMap && !c.clientSheetId && fromMap.clientSheetId) {
+            changed = true;
+            return { ...fromMap, ...c, clientSheetId: fromMap.clientSheetId, masterSheetId: c.masterSheetId || fromMap.masterSheetId };
+          }
+          return c;
+        });
+        return changed ? next : prev;
+      });
+    }
+  }, [allClientsMap]);
+
+  useEffect(() => {
+    if (activeNav === "alerts" && selectedClient && typeof appGlobals?.preloadClientData === "function") {
+      const resolved = resolveFullClient(selectedClient);
+      if (resolved?.clientSheetId) {
+        appGlobals.preloadClientData(resolved);
+      }
+    }
+  }, [activeNav, selectedClient?.clientName, selectedClient?.clientSheetId, allOutgoingsClients?.length]);
+
+  // When a user chooses a client on any Edit screen, preload the rest of that client's data in the background
+  // (matching the behavior of Manage mode)
+  const lastPreloadedEditClientKeyRef = React.useRef("");
+  const allClientsMapCount = Object.keys(allClientsMap || {}).length;
+  useEffect(() => {
+    if (!editStickyClient?.clientName && !editStickyClient?.clientSheetId) {
+      lastPreloadedEditClientKeyRef.current = "";
+      return;
+    }
+    const resolved = resolveFullClient(editStickyClient);
+    if (!resolved?.clientSheetId) return;
+    const key = `${resolved.clientSheetId}::${resolved.masterSheetId || ""}`;
+    if (lastPreloadedEditClientKeyRef.current === key) return;
+    lastPreloadedEditClientKeyRef.current = key;
+    if (managedClient?.clientSheetId !== resolved.clientSheetId) {
+      preloadClientData?.(resolved);
+    }
+  }, [
+    editStickyClient,
+    allOutgoingsClients?.length,
+    allClientsMapCount,
+    managedClient?.clientSheetId,
+    preloadClientData
+  ]);
 
   // Single client access check: only non-admins who only have access to a single client
   const isSingleClientUser = Boolean(
@@ -586,14 +653,14 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
     setAlertAssignOverlay(null);
   };
 
-  const clientsLoadedRef = useRef(Boolean(Array.isArray(initialClients) && initialClients.length > 0));
+  const clientsLoadedRef = useRef(Boolean(Array.isArray(initialClients) && initialClients.length > 0 && initialClients.every(c => c.directCostsMode)));
   const clientsLoadingRef = useRef(false);
 
   useEffect(() => {
     if (Array.isArray(initialClients) && initialClients.length > 0) {
       try {
         localStorage.setItem("pulse_cached_all_clients", JSON.stringify(initialClients));
-      } catch {}
+      } catch { }
       if (setAllClientsMap) {
         const map = {};
         for (const c of initialClients) {
@@ -620,7 +687,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
           setAllOutgoingsClients(data.clients);
           try {
             localStorage.setItem("pulse_cached_all_clients", JSON.stringify(data.clients));
-          } catch {}
+          } catch { }
           if (data.clientsMap && setAllClientsMap) {
             setAllClientsMap(data.clientsMap);
           }
@@ -646,7 +713,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
               setAllClientsLoaded(true);
             }
           }
-        } catch {}
+        } catch { }
       })
       .finally(() => {
         clientsLoadingRef.current = false;
@@ -756,6 +823,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
   });
   const handleNavTools = () => navigateWithGuard(() => { setActiveNav("tools"); loadClients(); });
   const handleNavOutgoings = () => navigateWithGuard(() => { setActiveNav("outgoings"); loadClients(); });
+  const handleNavPassThrough = () => navigateWithGuard(() => { setActiveNav("passthrough"); loadClients(); });
   const handleNavInvoices = () => navigateWithGuard(() => { setActiveNav("invoices"); loadClients(); });
   const handleNavJobs = () => navigateWithGuard(() => { setActiveNav("jobs"); loadClients(); });
   const handleNavRetainers = () => navigateWithGuard(() => { setActiveNav("retainers"); loadClients(); });
@@ -939,9 +1007,9 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
       <PortalShell
         clientName={singleAssignedName}
         clients={[]}
-        onSelectClient={() => {}}
+        onSelectClient={() => { }}
         activeView="month"
-        onSelectView={() => {}}
+        onSelectView={() => { }}
         user={user}
         onLogout={logout}
         hasBudget={true}
@@ -1045,6 +1113,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
             setActiveNav={setActiveNav}
             onNavInvoices={handleNavInvoicesForClient}
             onNavOutgoings={handleNavOutgoingsForClient}
+            onNavPassThrough={handleNavPassThroughForClient}
             isAdmin={isAdmin}
             user={user}
             managedClient={managedClient}
@@ -1090,10 +1159,56 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
       );
     }
 
-    // ── OUTGOINGS SCREEN ────────────────────────────────────────────────────────
+    // ── OUTGOINGS / CONTRACTORS SCREEN ──────────────────────────────────────────
     if (activeNav === "outgoings") {
       return (
         <OutgoingsView
+          key="contractors"
+          screenMode="contractors"
+          allOutgoingsClients={allOutgoingsClients}
+          styles={styles}
+          withModal={withModal}
+          isAdmin={isAdmin}
+          managedClient={managedClient}
+          onClearManagedClient={handleClearManagedClient}
+          initialClient={outgoingsInitialClient || editStickyClient}
+          onSelectClient={(c) => {
+            setEditStickyClient(c);
+            if (!c) setOutgoingsInitialClient(null);
+          }}
+        />
+      );
+    }
+
+    // ── PASS-THROUGH COSTS SCREEN ───────────────────────────────────────────────
+    if (activeNav === "passthrough") {
+      const activePassThroughClient = managedClient || outgoingsInitialClient || editStickyClient;
+      const fullMatched = activePassThroughClient?.clientName
+        ? ((allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === activePassThroughClient.clientName.toLowerCase()) || activePassThroughClient)
+        : null;
+      if (fullMatched && fullMatched.directCostsMode && fullMatched.directCostsMode !== "Pass-through") {
+        return (
+          <OutgoingsView
+            key="contractors-fallback"
+            screenMode="contractors"
+            allOutgoingsClients={allOutgoingsClients}
+            styles={styles}
+            withModal={withModal}
+            isAdmin={isAdmin}
+            managedClient={managedClient}
+            onClearManagedClient={handleClearManagedClient}
+            initialClient={outgoingsInitialClient || editStickyClient}
+            onSelectClient={(c) => {
+              setEditStickyClient(c);
+              if (!c) setOutgoingsInitialClient(null);
+            }}
+          />
+        );
+      }
+      return (
+        <OutgoingsView
+          key="passthrough"
+          screenMode="passthrough"
           allOutgoingsClients={allOutgoingsClients}
           styles={styles}
           withModal={withModal}
@@ -1382,6 +1497,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
         onActivity={handleNavActivity}
         onAppLog={handleNavAppLog}
         onOutgoings={handleNavOutgoings}
+        onPassThrough={handleNavPassThrough}
         onInvoices={handleNavInvoices}
         onRetainers={handleNavRetainers}
         onJobs={handleNavJobs}
@@ -1402,6 +1518,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
         onLogout={logout}
         clients={allOutgoingsClients}
         managedClient={managedClient}
+        activeEditClient={editStickyClient || outgoingsInitialClient || invoicesInitialClient}
         isSingleClientUser={isSingleClientUser}
         singleClient={singleClient}
         onSelectManagedClient={(c) => navigateWithGuard(() => setManagedClient(c))}
@@ -1448,7 +1565,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
               className="pma-assign-overlay-dialog"
               role="dialog"
               aria-modal="true"
-              aria-label={alertAssignOverlay.mode === "invoices" ? "Assign invoices" : "Assign expenses"}
+              aria-label={alertAssignOverlay.mode === "invoices" ? "Assign invoices" : alertAssignOverlay.mode === "passthrough" ? "Assign pass-through costs" : "Assign contractor costs"}
               style={{
                 width: "min(96vw, 1680px)",
                 height: "92vh",
@@ -1506,7 +1623,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
                   </span>
                   <div style={{ display: "flex", alignItems: "baseline", gap: "10px", flexWrap: "wrap" }}>
                     <h2 style={{ margin: 0, fontSize: "18px", fontWeight: 700, color: "#0f172a" }}>
-                      {alertAssignOverlay.mode === "invoices" ? "Assign invoices" : "Assign expenses"}
+                      {alertAssignOverlay.mode === "invoices" ? "Assign invoices" : alertAssignOverlay.mode === "passthrough" ? "Assign pass-through costs" : "Assign contractor costs"}
                     </h2>
                     {alertAssignOverlay.client?.clientName && (
                       <span
@@ -1591,6 +1708,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
                     />
                   ) : (
                     <OutgoingsView
+                      screenMode={alertAssignOverlay.mode === "passthrough" ? "passthrough" : "contractors"}
                       allOutgoingsClients={allOutgoingsClients}
                       styles={styles}
                       isAdmin={isAdmin}

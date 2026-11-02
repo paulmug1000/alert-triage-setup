@@ -365,12 +365,14 @@ export default function PerformanceFYView({
     exportRows.push([`Performance: ${activeYear?.fyLabel || activeYear?.displayTitle}`]);
     exportRows.push([]);
     exportRows.push(["Metric", ...(activeYear?.headerMonths || []), "", "Total"]);
-    tableRows.forEach((r) => {
-      if (r.type === "section") {
-        exportRows.push([r.label]);
-      } else if (r.type !== "spacer") {
-        const rowVals = (r.monthValues || []).map((v) => v.formatted);
-        exportRows.push([r.label, ...rowVals, "", r.totalValue?.formatted || ""]);
+    (activeYear?.rows || []).forEach((r) => {
+      const lbl = String(r.label || "").trim();
+      if (!lbl || lbl.toLowerCase() === "hide") return;
+      const rowStyle = getRowStyle(lbl);
+      if (rowStyle.isHeader) {
+        exportRows.push([lbl]);
+      } else {
+        exportRows.push([lbl, ...(r.monthlyValues || []), "", r.totalVal || ""]);
       }
     });
 
@@ -682,8 +684,12 @@ export default function PerformanceFYView({
                   (prevLbl.includes("operating profit %") || prevLbl.includes("operating profit margin")) &&
                   (nextLbl.includes("staff costs to") || nextLbl.includes("staff ratio"));
 
+                if (label && label.toLowerCase() === "hide") {
+                  return null;
+                }
+
                 // Spacer rows (Clean white for label column, exact continuous shading for month & total columns)
-                if (!label || label.toLowerCase() === "hide") {
+                if (!label) {
                   const spacerHeight = isOpToStaffGap ? 18 : 6;
                   return (
                     <tr key={rIdx} style={{ height: `${spacerHeight}px`, lineHeight: 0 }}>

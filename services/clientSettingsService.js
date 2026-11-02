@@ -110,6 +110,11 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
         if (parsed?.crm?.excel?.azureClientSecret) {
           parsed.crm.excel.azureClientSecret = "••••••••";
         }
+        if (parsed?.customisation) {
+          const rf = String(parsed.customisation.revenueFocus || "Revenue").trim();
+          const dcm = String(parsed.customisation.directCostsMode || "Contractors").trim();
+          parsed.customisation.directCostsMode = rf === "Income" ? "Pass-through" : (dcm === "Pass-through" ? "Pass-through" : "Contractors");
+        }
         return { ...parsed, fromCache: true };
       }
     } catch (err) {
@@ -162,7 +167,8 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
     "AppData!W42:W44",     // [0] W42 Staff costs ratio, W43 Cash menu, W44 Budget
     "AppData!G59",         // [1] Cashflow chart toggle
     "AppData!G71",         // [2] Last 12 months chart
-    "AppData!I71"          // [3] Trendlines
+    "AppData!I71",         // [3] Trendlines
+    "Outgoings!A112"       // [4] Making up Cost of Sale %
   ];
 
   const [masterResp, masterFormulaResp, clientResp] = await Promise.all([
@@ -244,11 +250,12 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
   const formulaA120 = String(masterFormulaResp.data?.values?.[0]?.[0] || "");
   const isKpiParentFormula = formulaA120.toLowerCase().includes("importrange");
 
-  // Client AppData ranges
+  // Client AppData & Outgoings ranges
   const appDataW = cVals[0]?.values || [];
   const appDataG59 = cVals[1]?.values?.[0]?.[0] || "";
   const appDataG71 = cVals[2]?.values?.[0]?.[0] || "";
   const appDataI71 = cVals[3]?.values?.[0]?.[0] || "";
+  const outgoingsA112 = String(cVals[4]?.values?.[0]?.[0] ?? "0%").trim() || "0%";
 
   // --------------------------------------------------------------------------
   // Parse Accounting Categories Mapping (BA2:BA180)
@@ -385,6 +392,9 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
     // 2. CUSTOMISATION
     customisation: {
       revenueFocus: String(keyA1F20[14]?.[1] || "Revenue").trim(), // B15
+      directCostsMode: String(keyA1F20[14]?.[1] || "Revenue").trim() === "Income"
+        ? "Pass-through"
+        : (String(keyA1F20[7]?.[3] || "Contractors").trim() === "Pass-through" ? "Pass-through" : "Contractors"), // D8
       taxPaymentMethod: String(keyA1F20[9]?.[1] || "Standard").trim(), // B10
       currencySymbol: String(keyA1F20[3]?.[3] || "£").trim(),      // D4
       thousandsSeparator: String(keyA1F20[4]?.[3] || ",").trim(),  // D5
@@ -392,6 +402,7 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
       profitSharePercent: String(keyA1F20[10]?.[5] || "0%").trim(), // F11
       profitShareAccrual: String(keyA1F20[11]?.[5] || "Monthly").trim(), // F12
       profitSharePayment: String(keyA1F20[12]?.[5] || "YearlyM13").trim(), // F13
+      makingUpCostOfSalePercent: outgoingsA112, // Client Outgoings!A112
       kpiColouring: {
         isParentFormula: isKpiParentFormula,
         parentTemplateUrl: keyE1,
@@ -643,7 +654,12 @@ export async function saveClientSettings({
 
   // 2. CUSTOMISATION (KeyInfo)
   if (settings.customisation) {
-    addMasterCell("KeyInfo!B15", settings.customisation.revenueFocus);
+    const revFocus = String(settings.customisation.revenueFocus || "Revenue").trim();
+    const dcMode = revFocus === "Income"
+      ? "Pass-through"
+      : (settings.customisation.directCostsMode === "Pass-through" ? "Pass-through" : "Contractors");
+    addMasterCell("KeyInfo!B15", revFocus);
+    addMasterCell("KeyInfo!D8", dcMode);
     addMasterCell("KeyInfo!B10", settings.customisation.taxPaymentMethod);
     addMasterCell("KeyInfo!D4", settings.customisation.currencySymbol);
     addMasterCell("KeyInfo!D5", settings.customisation.thousandsSeparator);
@@ -651,6 +667,16 @@ export async function saveClientSettings({
     addMasterCell("KeyInfo!F11", settings.customisation.profitSharePercent);
     addMasterCell("KeyInfo!F12", settings.customisation.profitShareAccrual);
     addMasterCell("KeyInfo!F13", settings.customisation.profitSharePayment);
+    if (settings.customisation.makingUpCostOfSalePercent !== undefined && settings.customisation.makingUpCostOfSalePercent !== null) {
+      let rawCosPct = String(settings.customisation.makingUpCostOfSalePercent).trim();
+      if (rawCosPct !== "" && !rawCosPct.includes("%") && /^-?\d+(\.\d+)?$/.test(rawCosPct)) {
+        const numVal = parseFloat(rawCosPct);
+        if (numVal >= 1 || numVal === 0) {
+          rawCosPct = `${rawCosPct}%`;
+        }
+      }
+      addClientCell("Outgoings!A112", rawCosPct);
+    }
 
     // KPI Colouring Rules
     if (resetKpiToParent) {
@@ -1002,6 +1028,29 @@ export async function saveClientSettings({
   if (redisClient?.isOpen) {
     try {
       await redisClient.del(redisKey);
+      if (settings.customisation) {
+        const cleanKey = String(clientName || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
+        const setupKey = `pulse:setup:${cleanKey}`;
+        let existingSetup = {};
+        try {
+          const rawSetup = await redisClient.get(setupKey);
+          if (rawSetup) existingSetup = JSON.parse(rawSetup);
+        } catch {}
+        const revFocus = String(settings.customisation.revenueFocus || "Revenue").trim();
+        const dcMode = revFocus === "Income"
+          ? "Pass-through"
+          : (settings.customisation.directCostsMode === "Pass-through" ? "Pass-through" : "Contractors");
+        await redisClient.set(setupKey, JSON.stringify({
+          ...existingSetup,
+          clientName,
+          masterSheetId,
+          revenueFocus: revFocus,
+          directCostsMode: dcMode,
+          sheetSyncedAt: savedAt
+        }));
+        const allClientKeys = await redisClient.keys("pulse:all_clients:*");
+        if (allClientKeys.length > 0) await redisClient.del(allClientKeys);
+      }
     } catch (err) {
       console.warn("⚠️ Failed to invalidate Redis settings cache after save:", err.message);
     }

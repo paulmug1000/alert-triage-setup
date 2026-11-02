@@ -154,13 +154,41 @@ export function inferFrequency_(sortedDates) {
   return closest;
 }
 
-export async function findPossibleRetainerInvoice_(masterSheetId, clientSheetId, endClientName, expectedDate, sharedData, sheets) {
+export async function findPossibleRetainerInvoice_(masterSheetId, clientSheetId, endClientName, expectedDate, sharedData, sheets, currentRetainerParentIdx = -1) {
   try {
     let invData = [];
     try {
       const resp = await sheets.spreadsheets.values.get({ spreadsheetId: masterSheetId, range: "InvComp!A6:K5000" });
       invData = resp.data.values || [];
     } catch(e) { return null; }
+
+    let confData = sharedData?.confirmedData;
+    if (!confData) {
+      try {
+        const confResp = await sheets.spreadsheets.values.get({ spreadsheetId: clientSheetId, range: "Confirmed!A1:BH5000" });
+        confData = confResp.data.values || [];
+      } catch(e) { confData = []; }
+    }
+
+    // Collect invoice refs already attached to the current retainer job so we do not propose them as unattached/changed matches
+    const sameJobRefs = new Set();
+    if (currentRetainerParentIdx >= 1 && confData && confData[currentRetainerParentIdx]) {
+      const pRow = confData[currentRetainerParentIdx];
+      const pClient = String(pRow[0] || "").trim();
+      const pJob = String(pRow[1] || "").trim();
+      const refCols = [42, 49, 56];
+      for (let jr = currentRetainerParentIdx; jr < confData.length; jr++) {
+        const jrow = confData[jr] || [];
+        if (jr > currentRetainerParentIdx) {
+          if (String(jrow[0] || "").trim() !== pClient || String(jrow[1] || "").trim() !== pJob) break;
+          if (jrow[32] || jrow[37] || jrow[38]) break;
+        }
+        for (const rc of refCols) {
+          const ref = String(jrow[rc] || "").trim();
+          if (ref && !isPlaceholderInvoice(ref)) sameJobRefs.add(ref.toUpperCase());
+        }
+      }
+    }
 
     const windowMs = 7 * 24 * 60 * 60 * 1000;
     const expectedTime = expectedDate.getTime();
@@ -180,6 +208,7 @@ export async function findPossibleRetainerInvoice_(masterSheetId, clientSheetId,
       if (Math.abs(sentDate.getTime() - expectedTime) > windowMs) continue;
 
       const invoiceNo    = String(row[5] || "").trim();
+      if (invoiceNo && sameJobRefs.has(invoiceNo.toUpperCase())) continue;
       const invoiceAmt   = parseFloat(String(row[2] || "0").replace(/[£$€,\s]/g, "")) || 0;
       const totalExclVAT = parseFloat(String(row[3] || "0").replace(/[£$€,\s]/g, "")) || 0;
       const vatAmount    = parseFloat(String(row[4] || "0").replace(/[£$€,\s]/g, "")) || 0;
@@ -200,14 +229,6 @@ export async function findPossibleRetainerInvoice_(masterSheetId, clientSheetId,
       invoiceNo: best.invoiceNo, amount: best.amount, sentDate: fmtDate(best.sentDate),
       vatAmount: best.vatAmount || 0, status: best.status || "", confidence: "medium", attachedToRow: null,
     };
-
-    let confData = sharedData?.confirmedData;
-    if (!confData) {
-      try {
-        const confResp = await sheets.spreadsheets.values.get({ spreadsheetId: clientSheetId, range: "Confirmed!A1:BH5000" });
-        confData = confResp.data.values || [];
-      } catch(e) { confData = []; }
-    }
 
     if (confData && confData.length > 0) {
       const refCols = [42, 49, 56];
@@ -291,36 +312,117 @@ export async function checkRetainerInvoices_(clientName, clientSheetId, masterSh
       const sentInvoices = [];
       collectSentInvoices_(row, sentInvoices);
 
-      let childRowCount = 0;
+      const childRows = [];
       for (let cr = r + 1; cr < data.length; cr++) {
         const childRow = data[cr];
         const childClient  = String(childRow[0] || "").trim();
         const childJob     = String(childRow[1] || "").trim();
         if ((childRow[32] || childRow[37] || childRow[38]) && (childClient !== clientNameRow || childJob !== jobName)) break;
         if (childClient !== clientNameRow || childJob !== jobName) break;
+        if (childRow[32] || childRow[37] || childRow[38]) break;
         collectSentInvoices_(childRow, sentInvoices);
-        childRowCount++;
+        childRows.push({ crIndex: cr, sheetRow: cr + 1, row: childRow });
       }
 
-      if (sentInvoices.length === 0) {
-        let hasUnsentScheduled = false;
-        let unsentSendDate = null;
-        for (let checkRow2 = r + 1; checkRow2 < data.length; checkRow2++) {
-          const cr2 = data[checkRow2];
-          if ((cr2[32] || cr2[37] || cr2[38]) && (String(cr2[0]||"").trim() !== clientNameRow || String(cr2[1]||"").trim() !== jobName)) break;
-          if (String(cr2[0]||"").trim() !== clientNameRow || String(cr2[1]||"").trim() !== jobName) break;
-          const slots2 = [{ sentIdx: 43, refIdx: 42 }, { sentIdx: 50, refIdx: 49 }, { sentIdx: 57, refIdx: 56 }];
-          for (let s2 = 0; s2 < slots2.length; s2++) {
-            const sentVal2 = cr2[slots2[s2].sentIdx];
-            const refVal2  = String(cr2[slots2[s2].refIdx] || "").trim();
-            if (!sentVal2) continue;
-            const sentDate2 = parseConfirmedDate_(sentVal2);
-            if (!sentDate2) continue;
-            if (sentDate2 < today && !refVal2) { hasUnsentScheduled = true; unsentSendDate = sentDate2; }
+      const contractMonths = Math.max(1, Math.round((endDate.getTime() - (startDate ? startDate.getTime() : endDate.getTime())) / (30.4375 * 24 * 60 * 60 * 1000)));
+      const monthlyRevenue = parseFloat(String(revenue || "0").replace(/[£$€,\s]/g, "")) || 0;
+      const totalContractValue = monthlyRevenue * contractMonths;
+
+      let totalInvoiced = sumRealInvSlotAmounts_(row).total;
+      for (let cj = 0; cj < childRows.length; cj++) {
+        totalInvoiced += sumRealInvSlotAmounts_(childRows[cj].row).total;
+      }
+
+      if (totalContractValue > 0 && totalInvoiced >= totalContractValue * 0.95) continue;
+
+      // Determine schedule interval and untouched future anchor so child rows whose Send Date was rolled
+      // forward to the 28th of a subsequent month by updateStaleUnsentInvoices still retain their true scheduled month
+      const currentMonthVal = today.getFullYear() * 12 + today.getMonth();
+      const parsedChildDates = childRows.map(cr => parseConfirmedDate_(cr.row[43]));
+      const validChildDates = parsedChildDates.filter(Boolean);
+      let intervalMonths = 1;
+      if (validChildDates.length >= 2) {
+        const d1 = validChildDates[validChildDates.length - 2];
+        const d2 = validChildDates[validChildDates.length - 1];
+        const calcInt = Math.round(Math.ceil(Math.abs(d2.getTime() - d1.getTime()) / 86400000) / 30);
+        if (calcInt > 0) intervalMonths = calcInt;
+      }
+
+      let anchorChildIdx = -1;
+      let anchorMonthVal = null;
+      for (let m = childRows.length - 1; m >= 0; m--) {
+        const d = parsedChildDates[m];
+        if (!d) continue;
+        const mVal = d.getFullYear() * 12 + d.getMonth();
+        if (mVal > currentMonthVal) {
+          anchorChildIdx = m;
+          anchorMonthVal = mVal;
+          break;
+        }
+      }
+      if (anchorChildIdx === -1) {
+        for (let m = 0; m < childRows.length; m++) {
+          const d = parsedChildDates[m];
+          const ref1 = String(childRows[m].row[42] || "").trim();
+          if (d && ref1 && !isPlaceholderInvoice(ref1)) {
+            anchorChildIdx = m;
+            anchorMonthVal = d.getFullYear() * 12 + d.getMonth();
+            break;
           }
         }
-        if (!hasUnsentScheduled) continue;
-        const possibleMatch1 = await findPossibleRetainerInvoice_(masterSheetId, clientSheetId, clientNameRow, unsentSendDate, sharedData, sheets);
+      }
+
+      // Check all child rows in sequence for any overdue uninvoiced row (even if later rows already have Sent/Paid invoices)
+      let hasUnsentScheduled = false;
+      let unsentSendDate = null;
+      for (let k = 0; k < childRows.length; k++) {
+        const cr2 = childRows[k].row;
+        const slots2 = [{ sentIdx: 43, refIdx: 42 }, { sentIdx: 50, refIdx: 49 }, { sentIdx: 57, refIdx: 56 }];
+        let rowHasRealInv = false;
+        for (let s2 = 0; s2 < slots2.length; s2++) {
+          const rVal = String(cr2[slots2[s2].refIdx] || "").trim();
+          if (rVal && !isPlaceholderInvoice(rVal)) {
+            rowHasRealInv = true;
+            break;
+          }
+        }
+        if (rowHasRealInv) continue;
+
+        for (let s2 = 0; s2 < slots2.length; s2++) {
+          const sentVal2 = cr2[slots2[s2].sentIdx];
+          const refVal2  = String(cr2[slots2[s2].refIdx] || "").trim();
+          if (!sentVal2 || (refVal2 && !isPlaceholderInvoice(refVal2))) continue;
+          const rawSentDate2 = parseConfirmedDate_(sentVal2);
+          if (!rawSentDate2) continue;
+
+          let effectiveSendDate2 = rawSentDate2;
+          if (s2 === 0) {
+            let schedMonthVal = null;
+            if (anchorChildIdx !== -1 && anchorMonthVal !== null) {
+              schedMonthVal = anchorMonthVal - (anchorChildIdx - k) * intervalMonths;
+            } else if (startDate) {
+              schedMonthVal = startDate.getFullYear() * 12 + startDate.getMonth() + k * intervalMonths;
+            }
+            const rawMonthVal = rawSentDate2.getFullYear() * 12 + rawSentDate2.getMonth();
+            if (schedMonthVal !== null && rawMonthVal > schedMonthVal) {
+              const schedYear = Math.floor(schedMonthVal / 12);
+              const schedMonth0 = ((schedMonthVal % 12) + 12) % 12;
+              const maxDay = new Date(schedYear, schedMonth0 + 1, 0).getDate();
+              effectiveSendDate2 = new Date(schedYear, schedMonth0, Math.min(28, maxDay));
+            }
+          }
+
+          if (effectiveSendDate2 < today) {
+            hasUnsentScheduled = true;
+            unsentSendDate = effectiveSendDate2;
+            break;
+          }
+        }
+        if (hasUnsentScheduled) break;
+      }
+
+      if (hasUnsentScheduled) {
+        const possibleMatch1 = await findPossibleRetainerInvoice_(masterSheetId, clientSheetId, clientNameRow, unsentSendDate, sharedData, sheets, r);
         let detail1 = `${clientNameRow} - ${jobName}: invoice was scheduled for ${fmtDate(unsentSendDate)} but has no reference number - it may not have been sent yet.`;
         if (possibleMatch1) {
           detail1 += `\nPossible match: invoice ${possibleMatch1.invoiceNo} for £${possibleMatch1.amount.toFixed(2)} was sent to ${clientNameRow} on ${possibleMatch1.sentDate} (confidence: ${possibleMatch1.confidence})${possibleMatch1.attachedToRow ? ` - already attached to Confirmed row ${possibleMatch1.attachedToRow}` : " - not yet attached to any job in Confirmed"}. This may mean the retainer value has changed.`;
@@ -343,23 +445,11 @@ export async function checkRetainerInvoices_(clientName, clientSheetId, masterSh
         continue;
       }
 
+      if (sentInvoices.length === 0) continue;
+
       sentInvoices.sort((a, b) => a.getTime() - b.getTime());
       const lastInvoice = sentInvoices[sentInvoices.length - 1];
-      const contractMonths = Math.max(1, Math.round((endDate.getTime() - (startDate ? startDate.getTime() : endDate.getTime())) / (30.4375 * 24 * 60 * 60 * 1000)));
-      const monthlyRevenue = parseFloat(String(revenue || "0").replace(/[£$€,\s]/g, "")) || 0;
-      const totalContractValue = monthlyRevenue * contractMonths;
-
-      let totalInvoiced = 0;
-      const allJobRows = [row];
-      for (let ar = r + 1; ar < data.length; ar++) {
-        if (String(data[ar][0]||"").trim() !== clientNameRow || String(data[ar][1]||"").trim() !== jobName) break;
-        allJobRows.push(data[ar]);
-      }
-      for (let aj = 0; aj < allJobRows.length; aj++) {
-        totalInvoiced += sumRealInvSlotAmounts_(allJobRows[aj]).total;
-      }
-
-      if (totalContractValue > 0 && totalInvoiced >= totalContractValue * 0.95) continue;
+      const allJobRows = [row, ...childRows.map(cr => cr.row)];
 
       let frequencyDays = 30;
       if (sentInvoices.length >= 2) {
@@ -389,8 +479,18 @@ export async function checkRetainerInvoices_(clientName, clientSheetId, masterSh
       expectedBy.setHours(0, 0, 0, 0);
       const nextPeriodStart = new Date(lastInvoice.getTime() + frequencyDays * 24 * 60 * 60 * 1000);
 
-      if (today > expectedBy && endDate > nextPeriodStart) {
-        const possibleMatch2 = await findPossibleRetainerInvoice_(masterSheetId, clientSheetId, clientNameRow, expectedBy, sharedData, sheets);
+      // Account for 1-month arrears retainers where the final invoice is expected up to 1 interval after endDate
+      const isArrearsSchedule = Boolean(
+        startDate &&
+        validChildDates.length > 0 &&
+        validChildDates[0].getTime() > new Date(startDate.getFullYear(), startDate.getMonth() + intervalMonths, 0, 23, 59, 59).getTime()
+      );
+      const effectiveEndForSchedule = isArrearsSchedule
+        ? new Date(endDate.getFullYear(), endDate.getMonth() + intervalMonths + 1, 0, 23, 59, 59)
+        : endDate;
+
+      if (today > expectedBy && effectiveEndForSchedule > nextPeriodStart) {
+        const possibleMatch2 = await findPossibleRetainerInvoice_(masterSheetId, clientSheetId, clientNameRow, expectedBy, sharedData, sheets, r);
         let detail2 = `${clientNameRow} - ${jobName}, last invoice sent ${fmtDate(lastInvoice)}, next one had been expected by ${fmtDate(expectedBy)}. Check whether retainer has ended.`;
         let possibleMatchCase = "";
         if (possibleMatch2) {
@@ -815,6 +915,21 @@ export async function checkUninvoicedNewJobs_(clientName, clientSheetId, sharedD
       }
 
       if (!hasRealInvoice) {
+        const isRetainerJob = isRetainer || jobRows.length > 1;
+        // If this is a retainer whose first child row is scheduled in arrears (e.g. 1 month after startDate)
+        // and that first scheduled invoice date (+ 5 days grace) has not yet passed, do not prematurely flag uninvoiced_new_job
+        if (isRetainerJob && jobRows.length > 1) {
+          const firstChildDate = parseConfirmedDate_(jobRows[1].row?.[43]);
+          if (firstChildDate && today.getTime() <= (firstChildDate.getTime() + 5 * 86400000)) {
+            const secondChildDate = jobRows.length > 2 ? parseConfirmedDate_(jobRows[2].row?.[43]) : null;
+            const notRolledPastSecond = !secondChildDate || firstChildDate.getTime() < secondChildDate.getTime();
+            if (notRolledPastSecond) {
+              r += jobRows.length;
+              continue;
+            }
+          }
+        }
+        const resolvedJobType = isRetainerJob ? "Retainer" : "Project";
         const stableKey = buildStableJobKey_(jobClient, jobName, projectCode, startVal, endVal);
         alerts.push({
           alertType: "uninvoiced_new_job",
@@ -824,7 +939,8 @@ export async function checkUninvoicedNewJobs_(clientName, clientSheetId, sharedD
           heading: "Job started over a month ago with no invoices sent",
           detail: `${jobClient} | ${jobName} (Row ${r + 1})${projectCode ? ` [${projectCode}]` : ""}: job started ${fmtDate(startDate)} (over a month ago) but no real invoices have been recorded yet. All invoice slots are empty or contain manual placeholders.`,
           jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1, revenue: String(revenueAmt), startDate: fmtDate(startDate),
-          metadata: { jobClient, jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1, revenue: String(revenueAmt), startDate: fmtDate(startDate), stableJobKey: stableKey },
+          jobType: resolvedJobType, isRetainer: isRetainerJob,
+          metadata: { jobClient, jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1, revenue: String(revenueAmt), startDate: fmtDate(startDate), stableJobKey: stableKey, jobType: resolvedJobType, isRetainer: isRetainerJob },
         });
       }
       r += jobRows.length;
@@ -1287,10 +1403,21 @@ export async function checkAutoLogErrors_(clientName, masterSheetId, sharedData)
   try {
     const rawData = sharedData?.autoLogData || [];
     const data = rawData.slice(0, 100);
-    if (!data.length) return alerts;
+    const gasLocks = sharedData?.gasLocks || null;
+    if (!data.length && !gasLocks) return alerts;
 
     const errorRegex = /error:\s*([^\n\r]+)/i;
     const errorsBySignature = new Map();
+
+    const normalizeSignature = (text) =>
+      String(text || "")
+        .replace(/\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}[^\s]*/g, "")
+        .replace(/;\s*started at\s+\d{1,2}:\d{2}/gi, "")
+        .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toLowerCase()
+        .slice(0, 80);
 
     for (let r = 0; r < data.length; r++) {
       const row = data[r];
@@ -1332,14 +1459,7 @@ export async function checkAutoLogErrors_(clientName, masterSheetId, sharedData)
       rawErrorText = rawErrorText.replace(/[\r\n]+/g, " ").trim();
       if (!rawErrorText) continue;
 
-      const cleanSignature = rawErrorText
-        .replace(/\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}[^\s]*/g, "")
-        .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "")
-        .replace(/\s+/g, " ")
-        .trim()
-        .toLowerCase()
-        .slice(0, 80);
-
+      const cleanSignature = normalizeSignature(rawErrorText);
       const tsStr = timestamp instanceof Date ? timestamp.toISOString() : String(timestamp || "");
       const detailsText = (details || rawErrorText).slice(0, 500);
 
@@ -1355,6 +1475,25 @@ export async function checkAutoLogErrors_(clientName, masterSheetId, sharedData)
       } else {
         const item = errorsBySignature.get(cleanSignature);
         item.count += 1;
+      }
+    }
+
+    // Also include any stale/timed-out GAS lock detected in DataChgAlert!B4:I4 before AutoLog self-heal completes
+    if (gasLocks && typeof gasLocks === "object") {
+      for (const lockKey of ["invoice", "expense", "crm"]) {
+        const staleTimeout = gasLocks[lockKey]?.staleTimeout;
+        if (!staleTimeout || !staleTimeout.errorText) continue;
+        const cleanSig = normalizeSignature(staleTimeout.errorText);
+        if (!errorsBySignature.has(cleanSig)) {
+          errorsBySignature.set(cleanSig, {
+            latestTs: staleTimeout.startedAt || new Date().toISOString(),
+            count: 1,
+            category: staleTimeout.category || lockKey.toUpperCase(),
+            summary: staleTimeout.summary || "Error: Sequence Timeout",
+            errorText: staleTimeout.errorText,
+            detailsSnippet: `Error: ${staleTimeout.errorText}`,
+          });
+        }
       }
     }
 

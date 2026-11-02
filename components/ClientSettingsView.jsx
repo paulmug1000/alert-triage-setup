@@ -40,6 +40,7 @@ const CURRENCY_SYMBOL_OPTIONS = ["£", "$", "€"];
 const THOUSANDS_SEPARATOR_OPTIONS = [",", "."];
 const INVOICE_METHOD_OPTIONS = ["Whole", "Lines"];
 const REVENUE_FOCUS_OPTIONS = ["Revenue", "Income"];
+const DIRECT_COSTS_MODE_OPTIONS = ["Contractors", "Pass-through"];
 const PAYE_CYCLE_OPTIONS = ["Monthly", "Quarterly"];
 const YES_NO_OPTIONS = ["Yes", "No"];
 
@@ -2960,7 +2961,17 @@ export default function ClientSettingsView({
                         </label>
                         <select
                           value={settings.customisation?.revenueFocus || "Revenue"}
-                          onChange={(e) => updateSettingsField(prev => ({ ...prev, customisation: { ...prev.customisation, revenueFocus: e.target.value } }))}
+                          onChange={(e) => {
+                            const nextFocus = e.target.value;
+                            updateSettingsField(prev => ({
+                              ...prev,
+                              customisation: {
+                                ...prev.customisation,
+                                revenueFocus: nextFocus,
+                                directCostsMode: nextFocus === "Income" ? "Pass-through" : (prev.customisation?.directCostsMode || "Contractors")
+                              }
+                            }));
+                          }}
                           style={{ width: "100%", padding: "8px 12px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "13px", boxSizing: "border-box" }}
                         >
                           {REVENUE_FOCUS_OPTIONS.map(opt => (
@@ -2968,6 +2979,39 @@ export default function ClientSettingsView({
                           ))}
                         </select>
                         {renderCellRef("KeyInfo!B15")}
+                      </div>
+
+                      <div>
+                        <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "4px" }}>
+                          Direct costs considered as
+                        </label>
+                        <select
+                          value={(settings.customisation?.revenueFocus || "Revenue") === "Income" ? "Pass-through" : (settings.customisation?.directCostsMode || "Contractors")}
+                          disabled={(settings.customisation?.revenueFocus || "Revenue") === "Income"}
+                          onChange={(e) => updateSettingsField(prev => ({ ...prev, customisation: { ...prev.customisation, directCostsMode: e.target.value } }))}
+                          style={{
+                            width: "100%",
+                            padding: "8px 12px",
+                            borderRadius: "6px",
+                            border: "1px solid #CBD5E1",
+                            fontSize: "13px",
+                            boxSizing: "border-box",
+                            background: (settings.customisation?.revenueFocus || "Revenue") === "Income" ? "#F1F5F9" : "#FFFFFF",
+                            color: (settings.customisation?.revenueFocus || "Revenue") === "Income" ? "#64748B" : "#0F172A"
+                          }}
+                        >
+                          {DIRECT_COSTS_MODE_OPTIONS.map(opt => (
+                            <option key={opt} value={opt} disabled={(settings.customisation?.revenueFocus || "Revenue") === "Income" && opt === "Contractors"}>
+                              {opt}
+                            </option>
+                          ))}
+                        </select>
+                        {(settings.customisation?.revenueFocus || "Revenue") === "Income" && (
+                          <div style={{ fontSize: "11px", color: "#64748B", marginTop: "4px" }}>
+                            Clients in income mode must use pass-through.
+                          </div>
+                        )}
+                        {renderCellRef("KeyInfo!D8")}
                       </div>
 
                       <div>
@@ -3378,8 +3422,31 @@ export default function ClientSettingsView({
                   <div style={{ marginBottom: "20px", borderBottom: "1px solid #F1F5F9", paddingBottom: "12px" }}>
                     <h3 style={{ margin: "0 0 4px", fontSize: "18px", fontWeight: "700", color: "#0F172A" }}>Customisation</h3>
                     <p style={{ margin: 0, fontSize: "13px", color: "#64748B" }}>
-                      Health KPI colouring thresholds determining green, orange, and red indicators across the dashboard.
+                      Cost of sale target percentage and health KPI colouring thresholds across the dashboard.
                     </p>
+                  </div>
+
+                  {/* Making up Cost of Sale % (Client Sheet Outgoings!A112) */}
+                  <div style={{ background: "#F8FAFC", borderRadius: "10px", border: "1px solid #E2E8F0", padding: "18px", marginBottom: "20px" }}>
+                    <div style={{ maxWidth: "360px" }}>
+                      <label style={{ fontSize: "13px", fontWeight: "700", color: "#0F172A", display: "block", marginBottom: "6px" }}>
+                        Making up Cost of Sale %
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="e.g. 0% or 55%"
+                        value={settings.customisation?.makingUpCostOfSalePercent ?? "0%"}
+                        onChange={(e) => updateSettingsField(prev => ({
+                          ...prev,
+                          customisation: {
+                            ...prev.customisation,
+                            makingUpCostOfSalePercent: e.target.value
+                          }
+                        }))}
+                        style={{ width: "100%", padding: "8px 12px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "13px", background: "#FFFFFF", boxSizing: "border-box" }}
+                      />
+                      {renderCellRef("Outgoings!A112 (Client sheet)")}
+                    </div>
                   </div>
 
                   {/* KPI Colouring Rules Card */}
@@ -3404,6 +3471,7 @@ export default function ClientSettingsView({
                           <button
                             type="button"
                             onClick={handleResetKpi}
+                            disabled={saving || loading}
                             style={{
                               padding: "5px 10px",
                               fontSize: "11px",
@@ -3412,10 +3480,13 @@ export default function ClientSettingsView({
                               background: "#FFFFFF",
                               border: "1px solid #CBD5E1",
                               borderRadius: "6px",
-                              cursor: "pointer"
+                              cursor: saving || loading ? "wait" : "pointer",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "5px"
                             }}
                           >
-                            ↺ Reset to system defaults
+                            {saving ? <><Spinner size={11} color="#0066CC" /> Resetting...</> : "↺ Reset to system defaults"}
                           </button>
                         )}
                       </div>
@@ -3623,7 +3694,9 @@ export default function ClientSettingsView({
                   <div style={{ marginBottom: "20px", borderBottom: "1px solid #F1F5F9", paddingBottom: "12px" }}>
                     <h3 style={{ margin: "0 0 4px", fontSize: "18px", fontWeight: "700", color: "#0F172A" }}>Accounting categories & mappings</h3>
                     <p style={{ margin: 0, fontSize: "13px", color: "#64748B" }}>
-                      Configure bank accounts, category classifications for P&L, pass-through, and staff costs.
+                      {((settings.customisation?.revenueFocus || "Revenue") === "Income" || settings.customisation?.directCostsMode === "Pass-through")
+                        ? "Configure bank accounts, category classifications for P&L, pass-through, and staff costs."
+                        : "Configure bank accounts, category classifications for P&L, contractors, and staff costs."}
                     </p>
                   </div>
 
@@ -4243,7 +4316,9 @@ export default function ClientSettingsView({
                           Manual category tracking
                         </h4>
                         <p style={{ margin: 0, fontSize: "12px", color: "#64748B" }}>
-                          Select categories from your Chart of Accounts to track contractors and other pass-through outgoings.
+                          {((settings.customisation?.revenueFocus || "Revenue") === "Income" || settings.customisation?.directCostsMode === "Pass-through")
+                            ? "Select categories from your Chart of Accounts to track contractors and other pass-through outgoings."
+                            : "Select categories from your Chart of Accounts to track contractor outgoings."}
                         </p>
                         {coaMsg && (
                           <div style={{ marginTop: "4px", fontSize: "12px", color: "#166534", fontWeight: "600" }}>
@@ -4308,21 +4383,23 @@ export default function ClientSettingsView({
                         })}
                       </div>
 
-                      <div style={{ background: "#FFFFFF", padding: "14px", borderRadius: "8px", border: "1px solid #E2E8F0", minWidth: 0, width: "100%", boxSizing: "border-box" }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px", minWidth: 0, gap: "6px" }}>
-                          <label style={{ fontSize: "12px", fontWeight: "700", color: "#1E293B", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                            Other pass-through (max 17)
-                          </label>
-                          {renderCellRef("KeyInfo!AT24:AT40")}
+                      {((settings.customisation?.revenueFocus || "Revenue") === "Income" || settings.customisation?.directCostsMode === "Pass-through") && (
+                        <div style={{ background: "#FFFFFF", padding: "14px", borderRadius: "8px", border: "1px solid #E2E8F0", minWidth: 0, width: "100%", boxSizing: "border-box" }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px", minWidth: 0, gap: "6px" }}>
+                            <label style={{ fontSize: "12px", fontWeight: "700", color: "#1E293B", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              Other pass-through (max 17)
+                            </label>
+                            {renderCellRef("KeyInfo!AT24:AT40")}
+                          </div>
+                          {renderProgressiveDropdowns({
+                            items: settings.accounting?.passThroughManual,
+                            max: 17,
+                            options: settings.accounting?.chartOfAccounts || [],
+                            emptyOptionText: "-- Select pass-through account --",
+                            onChange: (next) => updateSettingsField(prev => ({ ...prev, accounting: { ...prev.accounting, passThroughManual: next } }))
+                          })}
                         </div>
-                        {renderProgressiveDropdowns({
-                          items: settings.accounting?.passThroughManual,
-                          max: 17,
-                          options: settings.accounting?.chartOfAccounts || [],
-                          emptyOptionText: "-- Select pass-through account --",
-                          onChange: (next) => updateSettingsField(prev => ({ ...prev, accounting: { ...prev.accounting, passThroughManual: next } }))
-                        })}
-                      </div>
+                      )}
                     </div>
                   </div>
 
@@ -5355,7 +5432,7 @@ export default function ClientSettingsView({
 
                       <div>
                         <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "4px" }}>
-                          No end date retainer months (bookings &amp; pipeline)
+                          Number of months to include in retainer total revenue calculations, when “no end date” is selected
                         </label>
                         <input
                           type="number"

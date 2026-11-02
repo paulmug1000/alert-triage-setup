@@ -10,8 +10,8 @@ export function normaliseForFingerprint(val) {
   if (typeof val !== "string") return String(val ?? "");
   const m = val.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2}|\d{4})$/);
   if (m) {
-    const day  = m[1].padStart(2, "0");
-    const mon  = m[2];
+    const day = m[1].padStart(2, "0");
+    const mon = m[2];
     const year = m[3].length === 4 ? m[3].slice(-2) : m[3];
     return `${day}-${mon}-${year}`;
   }
@@ -33,17 +33,21 @@ export function buildAlertFingerprint(alert) {
   if (alert.alertKey) {
     return createHash("sha256").update(alert.alertKey).digest("hex").substring(0, 16);
   }
+  const rawFlagType = alert.flagType || alert.alertType || "";
+  const canonicalFlagType = (alert.type === "expense" && (rawFlagType === "contractorsDashboardDiscr" || rawFlagType === "passThroughDashboardDiscr" || rawFlagType === "expenseDashboardDiscr"))
+    ? "expenseDashboardDiscr"
+    : rawFlagType;
   const parts = [];
   parts.push(alert.clientName || "");
   parts.push(alert.type || "");
-  parts.push(alert.flagType || alert.alertType || "");
+  parts.push(canonicalFlagType);
 
   if (alert.data) {
     if (alert.data.accounting) parts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.accounting)));
-    if (alert.data.confirmed)  parts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.confirmed)));
-    if (alert.data.crmData)    parts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.crmData)));
-    if (alert.data.sheetData)  parts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.sheetData)));
-    if (alert.data.flags)      parts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.flags)));
+    if (alert.data.confirmed) parts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.confirmed)));
+    if (alert.data.crmData) parts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.crmData)));
+    if (alert.data.sheetData) parts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.sheetData)));
+    if (alert.data.flags) parts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.flags)));
   }
 
   const raw = parts.join("|");
@@ -54,16 +58,20 @@ export function buildAlertFingerprintLegacy(alert) {
   if (alert.legacyAlertKey) {
     return createHash("sha256").update(alert.legacyAlertKey).digest("hex").substring(0, 16);
   }
+  const rawFlagType = alert.flagType || alert.alertType || "";
+  const canonicalFlagType = (alert.type === "expense" && (rawFlagType === "contractorsDashboardDiscr" || rawFlagType === "passThroughDashboardDiscr" || rawFlagType === "expenseDashboardDiscr"))
+    ? "expenseDashboardDiscr"
+    : rawFlagType;
   const parts = [];
   parts.push(alert.type || "");
-  parts.push(alert.flagType || alert.alertType || "");
+  parts.push(canonicalFlagType);
 
   if (alert.data) {
     if (alert.data.accounting) parts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.accounting)));
-    if (alert.data.confirmed)  parts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.confirmed)));
-    if (alert.data.crmData)    parts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.crmData)));
-    if (alert.data.sheetData)  parts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.sheetData)));
-    if (alert.data.flags)      parts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.flags)));
+    if (alert.data.confirmed) parts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.confirmed)));
+    if (alert.data.crmData) parts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.crmData)));
+    if (alert.data.sheetData) parts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.sheetData)));
+    if (alert.data.flags) parts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.flags)));
   }
 
   const raw = parts.join("|");
@@ -99,7 +107,7 @@ export async function updateHandledAlertHashesBatch(automationCommanderSheetId, 
       const cached = await redisClient.get(cacheKey);
       let map = {};
       if (cached) {
-        try { map = JSON.parse(cached); } catch (e) {}
+        try { map = JSON.parse(cached); } catch (e) { }
       }
       for (const [hash, status] of Object.entries(statusByHash)) {
         if (status === "cached" || status === "pending_automation") {
@@ -219,18 +227,18 @@ export async function readAlertMemory(sheets, automationCommanderSheetId) {
 
   const parsed = rows.slice(1).map((row, i) => ({
     rowIndex: i + 2,
-    fingerprintHash:  row[0] || "",
-    alertType:        row[1] || "",
-    clientName:       row[2] || "",
-    alertSummary:     row[3] || "",
-    cachedOptionsJSON:row[4] || "",
-    status:           row[5] || "cached",
-    ignoreReason:     row[6] || "",
-    firstSeen:        row[7] || "",
-    lastSeen:         row[8] || "",
-    lastRechecked:    row[9] || "",
-    dataSnapshot:     row[10] || "",
-    category:         row[11] || "discrepancy",
+    fingerprintHash: row[0] || "",
+    alertType: row[1] || "",
+    clientName: row[2] || "",
+    alertSummary: row[3] || "",
+    cachedOptionsJSON: row[4] || "",
+    status: row[5] || "cached",
+    ignoreReason: row[6] || "",
+    firstSeen: row[7] || "",
+    lastSeen: row[8] || "",
+    lastRechecked: row[9] || "",
+    dataSnapshot: row[10] || "",
+    category: row[11] || "discrepancy",
   }));
 
   try {
@@ -288,30 +296,30 @@ export function extractCrmComparisonSnapshot(alert) {
 
   const variant = alert.alertType || alert.flagType || "";
   const isDash = variant === "crmPipeDashDiscr" || variant === "crmConfDashDiscr";
-  const isApp  = variant === "crmPipeAppDiscr"  || variant === "crmConfAppDiscr";
+  const isApp = variant === "crmPipeAppDiscr" || variant === "crmConfAppDiscr";
   if (!isDash && !isApp) return null;
 
   const clean = v => (v === null || v === undefined ? "" : String(v)).trim();
 
   let primaryClient, primaryJob, fallbackClient, fallbackJob;
   if (isDash) {
-    primaryClient  = clean(crmData[0]);   primaryJob  = clean(crmData[1]);
+    primaryClient = clean(crmData[0]); primaryJob = clean(crmData[1]);
     fallbackClient = clean(sheetData[1]); fallbackJob = clean(sheetData[2]);
   } else {
-    primaryClient  = clean(sheetData[0]); primaryJob  = clean(sheetData[1]);
-    fallbackClient = clean(crmData[1]);   fallbackJob = clean(crmData[2]);
+    primaryClient = clean(sheetData[0]); primaryJob = clean(sheetData[1]);
+    fallbackClient = clean(crmData[1]); fallbackJob = clean(crmData[2]);
   }
 
-  const jobName    = primaryJob || fallbackJob;
+  const jobName = primaryJob || fallbackJob;
   const clientName = primaryClient || fallbackClient;
   if (!jobName) return null;
 
   const FIELD_INDEX = [
-    { key: "revenue",     idx: 3 },
+    { key: "revenue", idx: 3 },
     { key: "directCosts", idx: 4 },
-    { key: "startDate",   idx: 5 },
-    { key: "endDate",     idx: 6 },
-    { key: "likelihood",  idx: 7 },
+    { key: "startDate", idx: 5 },
+    { key: "endDate", idx: 6 },
+    { key: "likelihood", idx: 7 },
   ];
   const fields = {};
   for (const f of FIELD_INDEX) {
@@ -329,16 +337,16 @@ export async function findPreviousIgnoreReason(memoryRows, alert) {
     if (supersededRows.length === 0) return null;
 
     const alertClient = (alert.clientName || "").toLowerCase().trim();
-    const alertType   = (alert.type || alert.flagType || "").toLowerCase();
-    const alertInvNo  = (alert.summary?.invoiceNo || "").trim();
-    const alertRef    = (alert.summary?.reference || "").trim();
+    const alertType = (alert.type || alert.flagType || "").toLowerCase();
+    const alertInvNo = (alert.summary?.invoiceNo || "").trim();
+    const alertRef = (alert.summary?.reference || "").trim();
 
     const alertFlagType = (alert.flagType || alert.alertType || "").trim();
-    const crmIdentity    = alertType === "crm" ? extractCrmComparisonSnapshot(alert) : null;
+    const crmIdentity = alertType === "crm" ? extractCrmComparisonSnapshot(alert) : null;
 
     for (const row of supersededRows) {
       if ((row.clientName || "").toLowerCase().trim() !== alertClient) continue;
-      
+
       const rowType = (row.alertType || "").toLowerCase().trim();
       if (rowType !== alertType && rowType !== alertFlagType.toLowerCase()) continue;
 
@@ -349,15 +357,15 @@ export async function findPreviousIgnoreReason(memoryRows, alert) {
         try {
           snap = JSON.parse(row.dataSnapshot);
           const snapInvNo = (snap.invoiceNo || "").trim();
-          const snapRef   = (snap.reference || "").trim();
+          const snapRef = (snap.reference || "").trim();
           if (alertInvNo && snapInvNo && snapInvNo === alertInvNo) matched = true;
-          if (alertRef   && snapRef   && snapRef   === alertRef)   matched = true;
+          if (alertRef && snapRef && snapRef === alertRef) matched = true;
 
           if (!matched && alertType === "crm" && crmIdentity && crmIdentity.jobName) {
-            const snapFlagType  = (snap.flagType || "").trim();
-            const snapJobName   = (snap.crmJobName || "").toLowerCase().trim();
+            const snapFlagType = (snap.flagType || "").trim();
+            const snapJobName = (snap.crmJobName || "").toLowerCase().trim();
             const snapEndClient = (snap.crmEndClient || "").toLowerCase().trim();
-            const jobMatches    = snapJobName && snapJobName === crmIdentity.jobName.toLowerCase().trim();
+            const jobMatches = snapJobName && snapJobName === crmIdentity.jobName.toLowerCase().trim();
             const clientMatches = !crmIdentity.clientName || !snapEndClient
               || snapEndClient === crmIdentity.clientName.toLowerCase().trim();
             if (alertFlagType && snapFlagType && alertFlagType === snapFlagType && jobMatches && clientMatches) {
@@ -369,7 +377,7 @@ export async function findPreviousIgnoreReason(memoryRows, alert) {
 
       if (!matched) {
         if (alertInvNo && (row.alertSummary || "").includes(alertInvNo)) matched = true;
-        if (alertRef   && (row.alertSummary || "").includes(alertRef))   matched = true;
+        if (alertRef && (row.alertSummary || "").includes(alertRef)) matched = true;
       }
 
       if (!matched) continue;
@@ -378,43 +386,43 @@ export async function findPreviousIgnoreReason(memoryRows, alert) {
       try {
         if (snap && Object.keys(snap).length > 0) {
           const changes = [];
-          const snapAmt    = parseFloat(String(snap.amount || "").replace(/[£$€,]/g, "")) || null;
+          const snapAmt = parseFloat(String(snap.amount || "").replace(/[£$€,]/g, "")) || null;
           const currentAmt = parseFloat(String(alert.summary?.amount || "").replace(/[£$€,]/g, "")) || null;
           if (snapAmt !== null && currentAmt !== null && Math.abs(snapAmt - currentAmt) > 0.005) {
             changes.push(`amount changed from £${snapAmt.toFixed(2)} to £${currentAmt.toFixed(2)}`);
           }
 
-          const snapVAT    = parseFloat(String(snap.vatIncluded || "").replace(/[£$€,]/g, "")) || null;
+          const snapVAT = parseFloat(String(snap.vatIncluded || "").replace(/[£$€,]/g, "")) || null;
           const currentVAT = parseFloat(String(alert.summary?.vatIncluded || "").replace(/[£$€,]/g, "")) || null;
           if (snapVAT !== null && currentVAT !== null && Math.abs(snapVAT - currentVAT) > 0.005) {
             changes.push(`VAT changed from £${snapVAT.toFixed(2)} to £${currentVAT.toFixed(2)}`);
           }
 
-          const snapStatus    = (snap.status || "").trim();
+          const snapStatus = (snap.status || "").trim();
           const currentStatus = (alert.summary?.status || "").trim();
           if (snapStatus && currentStatus && snapStatus !== currentStatus) {
             changes.push(`status changed from "${snapStatus}" to "${currentStatus}"`);
           }
 
-          const snapSent    = (snap.sentDate || "").trim();
+          const snapSent = (snap.sentDate || "").trim();
           const currentSent = (alert.summary?.sentDate || "").trim();
           if (snapSent && currentSent && snapSent !== currentSent) {
             changes.push(`sent date changed from "${snapSent}" to "${currentSent}"`);
           }
 
-          const snapPaid    = (snap.datePaid || "").trim();
+          const snapPaid = (snap.datePaid || "").trim();
           const currentPaid = (alert.summary?.datePaid || "").trim();
           if (snapPaid && currentPaid && snapPaid !== currentPaid) {
             changes.push(`date paid changed from "${snapPaid}" to "${currentPaid}"`);
           }
 
-          const snapClient    = (snap.client || "").trim();
+          const snapClient = (snap.client || "").trim();
           const currentClient = (alert.summary?.client || "").trim();
           if (snapClient && currentClient && snapClient !== currentClient) {
             changes.push(`client changed from "${snapClient}" to "${currentClient}"`);
           }
 
-          const snapJob    = (snap.job || "").trim();
+          const snapJob = (snap.job || "").trim();
           const currentJob = (alert.summary?.job || "").trim();
           if (snapJob && currentJob && snapJob !== currentJob) {
             changes.push(`job changed from "${snapJob}" to "${currentJob}"`);
@@ -427,7 +435,7 @@ export async function findPreviousIgnoreReason(memoryRows, alert) {
             };
             for (const key of Object.keys(FIELD_LABELS)) {
               const before = snap.crmFields[key];
-              const after  = crmIdentity.fields[key];
+              const after = crmIdentity.fields[key];
               if (!before || !after) continue;
               if (before.crm && after.crm && before.crm !== after.crm) {
                 changes.push(`${FIELD_LABELS[key]} (CRM) changed from "${before.crm}" to "${after.crm}"`);
@@ -461,7 +469,7 @@ export function compressOptionsJSON_(jsonStr) {
   try {
     const options = JSON.parse(jsonStr);
     if (!Array.isArray(options)) return jsonStr;
-    
+
     const seenJobs = new Set();
     const compressed = options.map(opt => {
       if (!opt.jobRow || !opt.jobRowsData) return opt;
@@ -472,7 +480,7 @@ export function compressOptionsJSON_(jsonStr) {
       seenJobs.add(opt.jobRow);
       return opt;
     });
-    
+
     return JSON.stringify(compressed, (k, v) => (v === "" || v === null) ? undefined : v);
   } catch (e) {
     return jsonStr;
@@ -486,14 +494,14 @@ export async function updateAlertMemoryCacheInPlace(automationCommanderSheetId, 
     try {
       const cached = await redisClient.get(`pulse:alert_memory:${automationCommanderSheetId}`);
       if (cached) cache = JSON.parse(cached);
-    } catch (e) {}
+    } catch (e) { }
   }
   if (cache) {
     updateFn(cache);
     _alertMemoryMemoryCache = cache;
     _alertMemoryCachedAt = now;
     if (redisClient?.isOpen && automationCommanderSheetId) {
-      redisClient.set(`pulse:alert_memory:${automationCommanderSheetId}`, JSON.stringify(cache), { EX: 86400 * 7 }).catch(() => {});
+      redisClient.set(`pulse:alert_memory:${automationCommanderSheetId}`, JSON.stringify(cache), { EX: 86400 * 7 }).catch(() => { });
     }
   }
 }
@@ -523,7 +531,9 @@ export async function appendAlertMemoryRow(sheets, automationCommanderSheetId, p
 
   cachedOptionsJSON = compressOptionsJSON_(cachedOptionsJSON);
 
-  if (alertType === "expense") alertType = "expenseDashboardDiscr";
+  if (alertType === "expense" || alertType === "expenseDashboardDiscr") {
+    alertType = payload.expenseCategoryType === "passthrough" ? "passThroughDashboardDiscr" : "contractorsDashboardDiscr";
+  }
   if (alertType === "crm") alertType = "crmPipeAppDiscr";
 
   const now = new Date().toISOString();
@@ -540,7 +550,7 @@ export async function appendAlertMemoryRow(sheets, automationCommanderSheetId, p
       values: [[
         fingerprintHash, alertType, clientName, alertSummary,
         cachedOptionsJSON, status, ignoreReason || "", firstSeen, lastSeen,
-        lastRechecked, 
+        lastRechecked,
         dataSnapshot || "",
         normalizedCategory,
       ]],
@@ -608,7 +618,9 @@ export async function appendAlertMemoryRowsBatch(sheets, automationCommanderShee
 
     cachedOptionsJSON = compressOptionsJSON_(cachedOptionsJSON);
 
-    if (alertType === "expense") alertType = "expenseDashboardDiscr";
+    if (alertType === "expense" || alertType === "expenseDashboardDiscr") {
+      alertType = payload.expenseCategoryType === "passthrough" ? "passThroughDashboardDiscr" : "contractorsDashboardDiscr";
+    }
     if (alertType === "crm") alertType = "crmPipeAppDiscr";
 
     const firstSeen = payload.firstSeen || now;
@@ -620,7 +632,7 @@ export async function appendAlertMemoryRowsBatch(sheets, automationCommanderShee
       rowValues: [
         fingerprintHash, alertType, clientName, alertSummary,
         cachedOptionsJSON, status, ignoreReason || "", firstSeen, lastSeen,
-        lastRechecked, 
+        lastRechecked,
         dataSnapshot || "",
         normalizedCategory,
       ],
@@ -689,10 +701,10 @@ export async function updateAlertMemoryRow(sheets, automationCommanderSheetId, r
     updates.clientName,
     updates.alertSummary,
     compressedOptions,
-    updates.status,    
+    updates.status,
     updates.ignoreReason || "",
     firstSeenVal,
-    now, 
+    now,
     lastRecheckedVal,
     updates.dataSnapshot || "",
   ];
@@ -738,7 +750,7 @@ export async function updateAlertMemoryRowsBatch(sheets, automationCommanderShee
       updates.status,
       updates.ignoreReason || "",
       updates.firstSeen || now,
-      now, 
+      now,
       updates.lastRechecked || now,
       updates.dataSnapshot || "",
     ];
@@ -801,18 +813,18 @@ export async function compactAlertMemory(sheets, automationCommanderSheetId, opt
 
   const existingRows = rawRows.slice(1).map((row, i) => ({
     rowIndex: i + 2,
-    fingerprintHash:  row[0] || "",
-    alertType:        row[1] || "",
-    clientName:       row[2] || "",
-    alertSummary:     row[3] || "",
-    cachedOptionsJSON:row[4] || "",
-    status:           row[5] || "cached",
-    ignoreReason:     row[6] || "",
-    firstSeen:        row[7] || "",
-    lastSeen:         row[8] || "",
-    lastRechecked:    row[9] || "",
-    dataSnapshot:     row[10] || "",
-    category:         row[11] || "discrepancy",
+    fingerprintHash: row[0] || "",
+    alertType: row[1] || "",
+    clientName: row[2] || "",
+    alertSummary: row[3] || "",
+    cachedOptionsJSON: row[4] || "",
+    status: row[5] || "cached",
+    ignoreReason: row[6] || "",
+    firstSeen: row[7] || "",
+    lastSeen: row[8] || "",
+    lastRechecked: row[9] || "",
+    dataSnapshot: row[10] || "",
+    category: row[11] || "discrepancy",
   }));
 
   const now = Date.now();
@@ -1080,8 +1092,8 @@ export async function deleteAlertMemoryRows(sheets, automationCommanderSheetId, 
       range: {
         sheetId,
         dimension: "ROWS",
-        startIndex: rowIndex - 1, 
-        endIndex: rowIndex,       
+        startIndex: rowIndex - 1,
+        endIndex: rowIndex,
       },
     },
   }));

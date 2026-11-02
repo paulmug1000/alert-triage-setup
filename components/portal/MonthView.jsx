@@ -238,8 +238,16 @@ export default function MonthView({
   };
 
   const isRevMode =
-    String(keyData?.outgoingsMeta?.mode || "").toLowerCase() !== "income" &&
+    String(keyData?.outgoingsMeta?.mode || payload?.mode || payload?.clientInfo?.mode || "").toLowerCase() !== "income" &&
     !currMonth?.tableRows?.some((r) => r.label && String(r.label).toLowerCase().includes("confirmed income"));
+  const rawDirectCostsMode =
+    payload?.directCostsMode ||
+    payload?.clientInfo?.directCostsMode ||
+    keyData?.outgoingsMeta?.directCostsMode ||
+    keyData?.nbtofind?.directCostsMode ||
+    performanceData?.directCostsMode ||
+    "";
+  const isPassThroughMode = isRevMode && String(rawDirectCostsMode).toLowerCase().includes("pass");
   const primaryLabel = isRevMode ? "Revenue" : "Income";
 
   // Build timeline and compute At A Glance metrics + sparklines
@@ -451,535 +459,539 @@ export default function MonthView({
             }}
           >
             <div className="month-table-wrapper" style={{ position: "relative", display: "inline-block", width: "410px" }}>
-          {/* Left Arrow (Visible for curr and next) */}
-          {(activePeriod === "curr" || activePeriod === "next") && (
-            <button
-              type="button"
-              className="month-nav-arrow-left"
-              onClick={() => setActivePeriod((p) => (p === "next" ? "curr" : "prev"))}
-              style={{
-                position: "absolute",
-                left: "-42px",
-                top: "50%",
-                transform: "translateY(-50%)",
-                background: "transparent",
-                border: "none",
-                color: "#a2c4c9",
-                fontSize: "2.8rem",
-                fontWeight: "bold",
-                lineHeight: 1,
-                cursor: "pointer",
-                padding: 0,
-                zIndex: 10,
-                transition: "color 0.2s",
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.color = "#0047AB"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.color = "#a2c4c9"; }}
-              title="Previous Month"
-            >
-              ‹
-            </button>
-          )}
+              {/* Left Arrow (Visible for curr and next) */}
+              {(activePeriod === "curr" || activePeriod === "next") && (
+                <button
+                  type="button"
+                  className="month-nav-arrow-left"
+                  onClick={() => setActivePeriod((p) => (p === "next" ? "curr" : "prev"))}
+                  style={{
+                    position: "absolute",
+                    left: "-42px",
+                    top: "50%",
+                    transform: "translateY(-50%)",
+                    background: "transparent",
+                    border: "none",
+                    color: "#a2c4c9",
+                    fontSize: "2.8rem",
+                    fontWeight: "bold",
+                    lineHeight: 1,
+                    cursor: "pointer",
+                    padding: 0,
+                    zIndex: 10,
+                    transition: "color 0.2s",
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.color = "#0047AB"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.color = "#a2c4c9"; }}
+                  title="Previous Month"
+                >
+                  ‹
+                </button>
+              )}
 
-          <table
-            className="month-blueprint-table"
-            style={{
-              width: "410px",
-              borderCollapse: "separate",
-              borderSpacing: 0,
-              background: "#ffffff",
-              borderRadius: "8px",
-              overflow: "hidden",
-              border: "1px solid #e2e8f0",
-              boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
-              fontFamily: "'Kumbh Sans', sans-serif"
-            }}
-          >
-            <colgroup>
-              <col className="month-col-label" style={{ width: "290px" }} />
-              <col className="month-col-val" style={{ width: "120px" }} />
-            </colgroup>
-            <tbody>
-              {(currMonth?.tableRows || currMonth?.rows || []).map((row, i) => {
-                const label = String(row.label || "").trim();
-                const value = String(row.value || "").trim();
-                const isHide = label.toLowerCase() === "hide";
+              <table
+                className="month-blueprint-table"
+                style={{
+                  width: "410px",
+                  borderCollapse: "separate",
+                  borderSpacing: 0,
+                  background: "#ffffff",
+                  borderRadius: "8px",
+                  overflow: "hidden",
+                  border: "1px solid #e2e8f0",
+                  boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
+                  fontFamily: "'Kumbh Sans', sans-serif"
+                }}
+              >
+                <colgroup>
+                  <col className="month-col-label" style={{ width: "290px" }} />
+                  <col className="month-col-val" style={{ width: "120px" }} />
+                </colgroup>
+                <tbody>
+                  {(currMonth?.tableRows || currMonth?.rows || []).map((row, i) => {
+                    let label = String(row.label || "").trim();
+                    const lowerLabel = label.toLowerCase();
+                    if ((i === 12 && isRevMode) || lowerLabel === "direct costs" || lowerLabel === "pass-through costs") {
+                      label = isPassThroughMode ? "Pass-through costs" : "Hide";
+                    }
+                    const value = String(row.value || "").trim();
+                    const isHide = label.toLowerCase() === "hide";
 
-                // Spacers
-                const spacers = [6, 7, 9, 14, 16, 18, 20, 24, 26, 28, 30, 32];
-                const isSpacer = spacers.includes(i) || (!label && !value);
+                    // Spacers
+                    const spacers = [6, 7, 9, 14, 16, 18, 20, 24, 26, 28, 30, 32];
+                    const isSpacer = spacers.includes(i) || (!label && !value);
 
-                const normLabel = label.toLowerCase().trim();
-                const isSectionHeader =
-                  ["revenue", "income", "costs of sale", "cost of sales", "overheads"].includes(normLabel) ||
-                  i === 2 ||
-                  i === 10 ||
-                  i === 21;
+                    const normLabel = label.toLowerCase().trim();
+                    const isSectionHeader =
+                      ["revenue", "income", "costs of sale", "cost of sales", "overheads"].includes(normLabel) ||
+                      i === 2 ||
+                      i === 10 ||
+                      i === 21;
 
-                const isTotalRevenue = normLabel === "total revenue" || normLabel === "total income" || i === 8;
-                const isGrossProfit = normLabel === "gross profit" || i === 17;
-                const isTotalOverheads = normLabel === "total overheads" || i === 25;
-                const isOpProfit = normLabel === "operating profit" || i === 29;
-                const isTotalCosts = normLabel === "total costs of sale" || normLabel === "total cost of sales" || i === 15;
-                const isPercentage = normLabel.includes("%") || normLabel.includes("margin") || normLabel.includes("ratio") || [19, 27, 31, 33].includes(i);
-                const isMajor = isTotalRevenue || isGrossProfit || isTotalOverheads || isOpProfit;
+                    const isTotalRevenue = normLabel === "total revenue" || normLabel === "total income" || i === 8;
+                    const isGrossProfit = normLabel === "gross profit" || i === 17;
+                    const isTotalOverheads = normLabel === "total overheads" || i === 25;
+                    const isOpProfit = normLabel === "operating profit" || i === 29;
+                    const isTotalCosts = normLabel === "total costs of sale" || normLabel === "total cost of sales" || i === 15;
+                    const isPercentage = normLabel.includes("%") || normLabel.includes("margin") || normLabel.includes("ratio") || [19, 27, 31, 33].includes(i);
+                    const isMajor = isTotalRevenue || isGrossProfit || isTotalOverheads || isOpProfit;
 
-                // KPI margin row accent bars
-                let marginAccentBar = null;
-                if (i === 19 || normLabel.includes("gross profit margin") || normLabel.includes("gross profit %")) {
-                  marginAccentBar = "#e69138";
-                } else if (i === 27 || normLabel.includes("overheads as %") || normLabel.includes("overheads %")) {
-                  marginAccentBar = "#45818e";
-                } else if (i === 31 || normLabel.includes("operating profit %")) {
-                  marginAccentBar = "#1155cc";
-                } else if (i === 33 || normLabel.includes("staff ratio") || normLabel.includes("staff costs to")) {
-                  marginAccentBar = "#64748b";
-                }
+                    // KPI margin row accent bars
+                    let marginAccentBar = null;
+                    if (i === 19 || normLabel.includes("gross profit margin") || normLabel.includes("gross profit %")) {
+                      marginAccentBar = "#e69138";
+                    } else if (i === 27 || normLabel.includes("overheads as %") || normLabel.includes("overheads %")) {
+                      marginAccentBar = "#45818e";
+                    } else if (i === 31 || normLabel.includes("operating profit %")) {
+                      marginAccentBar = "#1155cc";
+                    } else if (i === 33 || normLabel.includes("staff ratio") || normLabel.includes("staff costs to")) {
+                      marginAccentBar = "#64748b";
+                    }
 
-                let bgColor = "#ffffff";
-                let textColor = "#0047AB";
-                let isBold = false;
-                let isItalic = false;
-                let fontSize = isPercentage ? 11 : 11.5;
-                let rowHeight = isMajor ? 32 : isPercentage ? 21 : 24;
+                    let bgColor = "#ffffff";
+                    let textColor = "#0047AB";
+                    let isBold = false;
+                    let isItalic = false;
+                    let fontSize = isPercentage ? 11 : 11.5;
+                    let rowHeight = isMajor ? 32 : isPercentage ? 21 : 24;
 
-                // Detect 18px gap between Operating profit % and Staff ratio
-                const isOpToStaffGap = i === 32;
+                    // Detect 18px gap between Operating profit % and Staff ratio
+                    const isOpToStaffGap = i === 32;
 
-                if (isSpacer) {
-                  const spacerHeight = isOpToStaffGap ? 18 : 6;
-                  return (
-                    <tr key={i} style={{ height: `${spacerHeight}px`, lineHeight: 0 }}>
-                      <td style={{ padding: 0, border: "none", background: "#ffffff" }} />
-                      <td style={{ padding: 0, border: "none", background: "rgba(0, 71, 171, 0.04)", borderLeft: "1px solid #cbd5e1" }} />
-                    </tr>
-                  );
-                }
+                    if (isSpacer) {
+                      const spacerHeight = isOpToStaffGap ? 18 : 6;
+                      return (
+                        <tr key={i} style={{ height: `${spacerHeight}px`, lineHeight: 0 }}>
+                          <td style={{ padding: 0, border: "none", background: "#ffffff" }} />
+                          <td style={{ padding: 0, border: "none", background: "rgba(0, 71, 171, 0.04)", borderLeft: "1px solid #cbd5e1" }} />
+                        </tr>
+                      );
+                    }
 
-                if (isHide) {
-                  return null;
-                }
+                    if (isHide) {
+                      return null;
+                    }
 
-                if (i === 0) {
-                  // Top Header (Current Month)
-                  bgColor = "#0047AB";
-                  textColor = "#ffffff";
-                  isBold = true;
-                  fontSize = 13;
-                  rowHeight = 31;
-                } else if (i === 1) {
-                  // Status (Forecast vs Actual)
-                  isItalic = true;
-                  fontSize = 10.5;
-                  textColor = "#666666";
-                  bgColor = "#ffffff";
-                } else if (isSectionHeader) {
-                  bgColor = "#ffffff";
-                  textColor = "#0047AB";
-                  isBold = true;
-                  fontSize = 11;
-                  rowHeight = 24;
-                } else if (isTotalRevenue) {
-                  bgColor = "#9900ff";
-                  textColor = "#ffffff";
-                  isBold = true;
-                  fontSize = 14;
-                  rowHeight = 32;
-                } else if (isTotalCosts) {
-                  bgColor = "#ffffff";
-                  textColor = "#0047AB";
-                  isBold = true;
-                  fontSize = 11.5;
-                  rowHeight = 24;
-                } else if (isGrossProfit) {
-                  bgColor = "#e69138";
-                  textColor = "#ffffff";
-                  isBold = true;
-                  fontSize = 14;
-                  rowHeight = 32;
-                } else if (isTotalOverheads) {
-                  bgColor = "#45818e";
-                  textColor = "#ffffff";
-                  isBold = true;
-                  fontSize = 14;
-                  rowHeight = 32;
-                } else if (isOpProfit) {
-                  bgColor = "#1155cc";
-                  textColor = "#ffffff";
-                  isBold = true;
-                  fontSize = 14;
-                  rowHeight = 32;
-                } else if (isPercentage) {
-                  bgColor = "#ffffff";
-                  textColor = "#0047AB";
-                  isItalic = true;
-                  fontSize = 11;
-                }
+                    if (i === 0) {
+                      // Top Header (Current Month)
+                      bgColor = "#0047AB";
+                      textColor = "#ffffff";
+                      isBold = true;
+                      fontSize = 13;
+                      rowHeight = 31;
+                    } else if (i === 1) {
+                      // Status (Forecast vs Actual)
+                      isItalic = true;
+                      fontSize = 10.5;
+                      textColor = "#666666";
+                      bgColor = "#ffffff";
+                    } else if (isSectionHeader) {
+                      bgColor = "#ffffff";
+                      textColor = "#0047AB";
+                      isBold = true;
+                      fontSize = 11;
+                      rowHeight = 24;
+                    } else if (isTotalRevenue) {
+                      bgColor = "#9900ff";
+                      textColor = "#ffffff";
+                      isBold = true;
+                      fontSize = 14;
+                      rowHeight = 32;
+                    } else if (isTotalCosts) {
+                      bgColor = "#ffffff";
+                      textColor = "#0047AB";
+                      isBold = true;
+                      fontSize = 11.5;
+                      rowHeight = 24;
+                    } else if (isGrossProfit) {
+                      bgColor = "#e69138";
+                      textColor = "#ffffff";
+                      isBold = true;
+                      fontSize = 14;
+                      rowHeight = 32;
+                    } else if (isTotalOverheads) {
+                      bgColor = "#45818e";
+                      textColor = "#ffffff";
+                      isBold = true;
+                      fontSize = 14;
+                      rowHeight = 32;
+                    } else if (isOpProfit) {
+                      bgColor = "#1155cc";
+                      textColor = "#ffffff";
+                      isBold = true;
+                      fontSize = 14;
+                      rowHeight = 32;
+                    } else if (isPercentage) {
+                      bgColor = "#ffffff";
+                      textColor = "#0047AB";
+                      isItalic = true;
+                      fontSize = 11;
+                    }
 
-                // Dynamic KPI threshold badge for the value column
-                const threshBg = isPercentage ? getThresholdBg(i, label, value) : null;
+                    // Dynamic KPI threshold badge for the value column
+                    const threshBg = isPercentage ? getThresholdBg(i, label, value) : null;
 
-                // Deep dive clickability
-                const isBlockedRow =
-                  isTotalOverheads ||
-                  normLabel.includes("overheads as %") ||
-                  normLabel.includes("overheads %");
-                const ddType = !isSpacer && !isHide && !isBlockedRow && !isSectionHeader ? getDeepDiveType(label) : null;
-                const isClickable = Boolean(ddType && value && value !== "£0" && value !== `${currencySymbol}0` && value !== "0" && value !== "—" && value !== "");
+                    // Deep dive clickability
+                    const isBlockedRow =
+                      isTotalOverheads ||
+                      normLabel.includes("overheads as %") ||
+                      normLabel.includes("overheads %");
+                    const ddType = !isSpacer && !isHide && !isBlockedRow && !isSectionHeader ? getDeepDiveType(label) : null;
+                    const isClickable = Boolean(ddType && value && value !== "£0" && value !== `${currencySymbol}0` && value !== "0" && value !== "—" && value !== "");
 
-                let displayVal = value;
-                if (i === 1 && typeof value === "string") {
-                  if (value.toUpperCase() === "ACTUAL") displayVal = "Actual";
-                  else if (value.toUpperCase() === "FORECAST") displayVal = "Forecast";
-                } else if (!isSectionHeader) {
-                  displayVal = formatCurrencyString(value, null, currencySymbol, thousandsSeparator);
-                }
+                    let displayVal = value;
+                    if (i === 1 && typeof value === "string") {
+                      if (value.toUpperCase() === "ACTUAL") displayVal = "Actual";
+                      else if (value.toUpperCase() === "FORECAST") displayVal = "Forecast";
+                    } else if (!isSectionHeader) {
+                      displayVal = formatCurrencyString(value, null, currencySymbol, thousandsSeparator);
+                    }
 
-                return (
-                  <tr
-                    key={i}
-                    style={{
-                      height: `${rowHeight}px`,
-                      background: (isMajor || i === 0) ? bgColor : "#ffffff",
-                      borderBottom: i === 0 ? "none" : i === 1 ? "1px solid #cbd5e1" : isMajor ? "2px solid #cbd5e1" : "1px solid #f1f5f9",
-                    }}
-                  >
-                    {/* Column A: Line Item */}
-                    <td
-                      style={{
-                        padding: i === 0 ? "6px 12px" : isSectionHeader ? "5px 8px" : isPercentage ? "2px 8px" : "4px 8px",
-                        paddingLeft: isPercentage
-                          ? "20px"
-                          : isSectionHeader
-                          ? "8px"
-                          : (isMajor || i === 0)
-                          ? "12px"
-                          : "16px",
-                        textAlign: "left",
-                        color: (isMajor || i === 0) ? "#ffffff" : textColor,
-                        fontWeight: isBold ? 700 : 400,
-                        fontStyle: isItalic ? "italic" : "normal",
-                        fontSize: `${fontSize}px`,
-                        textTransform: isSectionHeader ? "uppercase" : "none",
-                        letterSpacing: isSectionHeader ? "0.5px" : "normal",
-                        borderLeft: isPercentage && marginAccentBar ? `4px solid ${marginAccentBar}` : "none",
-                        background: (isMajor || i === 0) ? bgColor : "#ffffff",
-                        borderBottom: i === 0 ? "none" : i === 1 ? "1px solid #cbd5e1" : isMajor ? "2px solid #cbd5e1" : "1px solid #f1f5f9",
-                      }}
-                    >
-                      {i === 0 ? (label || "") : isSectionHeader ? label.toUpperCase() : label}
-                    </td>
-
-                    {/* Column B: Amount (Shaded like Total column with continuous dividing line) */}
-                    <td
-                      onClick={(e) => isClickable && handleCellClick(e, label, value)}
-                      style={{
-                        padding: i === 0 ? "6px 16px" : isPercentage ? "1px 6px" : "4px 16px",
-                        textAlign: "right",
-                        background: (isMajor || i === 0) ? bgColor : "rgba(0, 71, 171, 0.04)",
-                        borderLeft: "1px solid #cbd5e1",
-                        borderBottom: i === 0 ? "none" : i === 1 ? "1px solid #cbd5e1" : isMajor ? "2px solid #cbd5e1" : "1px solid #f1f5f9",
-                        color: (isMajor || i === 0) ? "#ffffff" : i === 1 ? "#64748b" : "#0047AB",
-                        fontWeight: isBold ? 700 : 400,
-                        fontStyle: isItalic ? "italic" : "normal",
-                        fontSize: `${fontSize}px`,
-                        cursor: isClickable ? "pointer" : "default",
-                        textDecoration: isClickable ? "underline dashed #0047AB 1px" : "none",
-                        textUnderlineOffset: isClickable ? "3px" : "initial",
-                        width: "120px",
-                        fontVariantNumeric: "tabular-nums",
-                      }}
-                      onMouseEnter={(e) => {
-                        if (isClickable) e.currentTarget.style.filter = "brightness(0.95)";
-                      }}
-                      onMouseLeave={(e) => {
-                        if (isClickable) e.currentTarget.style.filter = "none";
-                      }}
-                    >
-                      {isPercentage && threshBg ? (
-                        <div
+                    return (
+                      <tr
+                        key={i}
+                        style={{
+                          height: `${rowHeight}px`,
+                          background: (isMajor || i === 0) ? bgColor : "#ffffff",
+                          borderBottom: i === 0 ? "none" : i === 1 ? "1px solid #cbd5e1" : isMajor ? "2px solid #cbd5e1" : "1px solid #f1f5f9",
+                        }}
+                      >
+                        {/* Column A: Line Item */}
+                        <td
                           style={{
-                            display: "inline-block",
-                            padding: "1.5px 8px",
-                            borderRadius: "4px",
-                            background: threshBg,
-                            color: "#0047AB",
-                            border: "1.5px solid rgba(0, 71, 171, 0.04)",
-                            fontStyle: "italic",
-                            fontWeight: 700,
-                            boxSizing: "border-box",
+                            padding: i === 0 ? "6px 12px" : isSectionHeader ? "5px 8px" : isPercentage ? "2px 8px" : "4px 8px",
+                            paddingLeft: isPercentage
+                              ? "20px"
+                              : isSectionHeader
+                                ? "8px"
+                                : (isMajor || i === 0)
+                                  ? "12px"
+                                  : "16px",
+                            textAlign: "left",
+                            color: (isMajor || i === 0) ? "#ffffff" : textColor,
+                            fontWeight: isBold ? 700 : 400,
+                            fontStyle: isItalic ? "italic" : "normal",
+                            fontSize: `${fontSize}px`,
+                            textTransform: isSectionHeader ? "uppercase" : "none",
+                            letterSpacing: isSectionHeader ? "0.5px" : "normal",
+                            borderLeft: isPercentage && marginAccentBar ? `4px solid ${marginAccentBar}` : "none",
+                            background: (isMajor || i === 0) ? bgColor : "#ffffff",
+                            borderBottom: i === 0 ? "none" : i === 1 ? "1px solid #cbd5e1" : isMajor ? "2px solid #cbd5e1" : "1px solid #f1f5f9",
                           }}
                         >
-                          {displayVal || ""}
-                        </div>
-                      ) : (
-                        isSectionHeader ? "" : displayVal || ""
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                          {i === 0 ? (label || "") : isSectionHeader ? label.toUpperCase() : label}
+                        </td>
 
-          {/* Right Arrow (Visible for curr and prev) */}
-          {(activePeriod === "curr" || activePeriod === "prev") && (
-            <button
-              type="button"
-              className="month-nav-arrow-right"
-              onClick={() => setActivePeriod((p) => (p === "prev" ? "curr" : "next"))}
+                        {/* Column B: Amount (Shaded like Total column with continuous dividing line) */}
+                        <td
+                          onClick={(e) => isClickable && handleCellClick(e, label, value)}
+                          style={{
+                            padding: i === 0 ? "6px 16px" : isPercentage ? "1px 6px" : "4px 16px",
+                            textAlign: "right",
+                            background: (isMajor || i === 0) ? bgColor : "rgba(0, 71, 171, 0.04)",
+                            borderLeft: "1px solid #cbd5e1",
+                            borderBottom: i === 0 ? "none" : i === 1 ? "1px solid #cbd5e1" : isMajor ? "2px solid #cbd5e1" : "1px solid #f1f5f9",
+                            color: (isMajor || i === 0) ? "#ffffff" : i === 1 ? "#64748b" : "#0047AB",
+                            fontWeight: isBold ? 700 : 400,
+                            fontStyle: isItalic ? "italic" : "normal",
+                            fontSize: `${fontSize}px`,
+                            cursor: isClickable ? "pointer" : "default",
+                            textDecoration: isClickable ? "underline dashed #0047AB 1px" : "none",
+                            textUnderlineOffset: isClickable ? "3px" : "initial",
+                            width: "120px",
+                            fontVariantNumeric: "tabular-nums",
+                          }}
+                          onMouseEnter={(e) => {
+                            if (isClickable) e.currentTarget.style.filter = "brightness(0.95)";
+                          }}
+                          onMouseLeave={(e) => {
+                            if (isClickable) e.currentTarget.style.filter = "none";
+                          }}
+                        >
+                          {isPercentage && threshBg ? (
+                            <div
+                              style={{
+                                display: "inline-block",
+                                padding: "1.5px 8px",
+                                borderRadius: "4px",
+                                background: threshBg,
+                                color: "#0047AB",
+                                border: "1.5px solid rgba(0, 71, 171, 0.04)",
+                                fontStyle: "italic",
+                                fontWeight: 700,
+                                boxSizing: "border-box",
+                              }}
+                            >
+                              {displayVal || ""}
+                            </div>
+                          ) : (
+                            isSectionHeader ? "" : displayVal || ""
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+
+              {/* Right Arrow (Visible for curr and prev) */}
+              {(activePeriod === "curr" || activePeriod === "prev") && (
+                <button
+                  type="button"
+                  className="month-nav-arrow-right"
+                  onClick={() => setActivePeriod((p) => (p === "prev" ? "curr" : "next"))}
+                  style={{
+                    position: "absolute",
+                    right: "-42px",
+                    top: "50%",
+                    transform: "translateY(-50%)",
+                    background: "transparent",
+                    border: "none",
+                    color: "#a2c4c9",
+                    fontSize: "2.8rem",
+                    fontWeight: "bold",
+                    lineHeight: 1,
+                    cursor: "pointer",
+                    padding: 0,
+                    zIndex: 10,
+                    transition: "color 0.2s",
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.color = "#0047AB"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.color = "#a2c4c9"; }}
+                  title="Next Month"
+                >
+                  ›
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Right Column: "At a glance" + "Last 12 months" Chart */}
+        <div className="home-col-right">
+          {/* "At a glance" Card */}
+          <div
+            className="home-glance-card"
+            style={{
+              background: "#ffffff",
+              borderRadius: "8px",
+              border: "1px solid #e2e8f0",
+              padding: "20px 24px",
+              boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
+            }}
+          >
+            <div
               style={{
-                position: "absolute",
-                right: "-42px",
-                top: "50%",
-                transform: "translateY(-50%)",
-                background: "transparent",
-                border: "none",
-                color: "#a2c4c9",
-                fontSize: "2.8rem",
-                fontWeight: "bold",
-                lineHeight: 1,
-                cursor: "pointer",
-                padding: 0,
-                zIndex: 10,
-                transition: "color 0.2s",
+                fontSize: "12px",
+                fontWeight: 700,
+                letterSpacing: "0.8px",
+                textTransform: "uppercase",
+                color: "#64748b",
+                marginBottom: "18px",
+                fontFamily: "'Kumbh Sans', sans-serif",
               }}
-              onMouseEnter={(e) => { e.currentTarget.style.color = "#0047AB"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.color = "#a2c4c9"; }}
-              title="Next Month"
             >
-              ›
-            </button>
+              {glanceMonthHeading}
+            </div>
+
+            <div className="glance-grid">
+              {/* Column 1: Income / Revenue */}
+              <div className="glance-col-revenue" style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                <div>
+                  <h4 style={{ margin: "0 0 4px 0", color: "#0047AB", fontSize: "16px", fontWeight: 700, fontFamily: "'Kumbh Sans', sans-serif" }}>
+                    {primaryLabel}
+                  </h4>
+                  <div style={{ fontSize: "19px", fontWeight: 700, color: "#0f172a", letterSpacing: "-0.5px", fontFamily: "'Kumbh Sans', sans-serif" }}>
+                    {glanceMetrics.revDisplay}
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", flexDirection: "column", gap: "3px", minHeight: "38px", justifyContent: "flex-start" }}>
+                  {glanceMetrics.revMoM !== null && (
+                    <DeltaRow
+                      isPositive={glanceMetrics.revMoM >= 0}
+                      valueText={`${glanceMetrics.revMoM >= 0 ? "" : "-"}${Math.round(Math.abs(glanceMetrics.revMoM))}%`}
+                      periodText="pr. month"
+                    />
+                  )}
+                  {glanceMetrics.revYoY !== null && (
+                    <DeltaRow
+                      isPositive={glanceMetrics.revYoY >= 0}
+                      valueText={`${glanceMetrics.revYoY >= 0 ? "" : "-"}${Math.round(Math.abs(glanceMetrics.revYoY))}%`}
+                      periodText="pr. year"
+                    />
+                  )}
+                </div>
+
+                <Sparkline data={glanceMetrics.revSeries} id="rev-spark" />
+              </div>
+
+              {/* Column 2: Gross profit */}
+              <div className="glance-col-gp" style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                <div>
+                  <h4 style={{ margin: "0 0 4px 0", color: "#0047AB", fontSize: "16px", fontWeight: 700, fontFamily: "'Kumbh Sans', sans-serif" }}>
+                    Gross profit
+                  </h4>
+                  <div style={{ fontSize: "19px", fontWeight: 700, color: "#0f172a", letterSpacing: "-0.5px", fontFamily: "'Kumbh Sans', sans-serif" }}>
+                    {glanceMetrics.gpDisplay}
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", flexDirection: "column", gap: "3px", minHeight: "38px", justifyContent: "flex-start" }}>
+                  {glanceMetrics.gpMoM !== null && (
+                    <DeltaRow
+                      isPositive={glanceMetrics.gpMoM >= 0}
+                      valueText={`${glanceMetrics.gpMoM >= 0 ? "" : "-"}${Math.round(Math.abs(glanceMetrics.gpMoM))}%`}
+                      periodText="pr. month"
+                    />
+                  )}
+                  {glanceMetrics.gpYoY !== null && (
+                    <DeltaRow
+                      isPositive={glanceMetrics.gpYoY >= 0}
+                      valueText={`${glanceMetrics.gpYoY >= 0 ? "" : "-"}${Math.round(Math.abs(glanceMetrics.gpYoY))}%`}
+                      periodText="pr. year"
+                    />
+                  )}
+                </div>
+
+                <Sparkline data={glanceMetrics.gpSeries} id="gp-spark" />
+
+                {/* Margin Section */}
+                <div style={{ marginTop: "14px", paddingTop: "12px", borderTop: "1px solid #f1f5f9", display: "flex", flexDirection: "column", gap: "10px" }}>
+                  <div style={{ fontSize: "17px", fontWeight: 700, color: "#0f172a", fontFamily: "'Kumbh Sans', sans-serif" }}>
+                    {glanceMetrics.gpMarginDisplay}
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: "3px", minHeight: "38px", justifyContent: "flex-start" }}>
+                    {glanceMetrics.prevMonthPoint && (
+                      <DeltaRow
+                        isPositive={glanceMetrics.currentPoint.gpMargin >= glanceMetrics.prevMonthPoint.gpMargin}
+                        valueText={`from ${Math.round(glanceMetrics.prevMonthPoint.gpMargin * 100)}%`}
+                        periodText="prev month"
+                      />
+                    )}
+                    {glanceMetrics.prevYearPoint && (
+                      <DeltaRow
+                        isPositive={glanceMetrics.currentPoint.gpMargin >= glanceMetrics.prevYearPoint.gpMargin}
+                        valueText={`from ${Math.round(glanceMetrics.prevYearPoint.gpMargin * 100)}%`}
+                        periodText="prev year"
+                      />
+                    )}
+                  </div>
+
+                  <Sparkline data={glanceMetrics.gpMarginSeries} id="gp-margin-spark" />
+                </div>
+              </div>
+
+              {/* Column 3: Operating profit */}
+              <div className="glance-col-op" style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                <div>
+                  <h4 style={{ margin: "0 0 4px 0", color: "#0047AB", fontSize: "16px", fontWeight: 700, fontFamily: "'Kumbh Sans', sans-serif" }}>
+                    Operating profit
+                  </h4>
+                  <div style={{ fontSize: "19px", fontWeight: 700, color: "#0f172a", letterSpacing: "-0.5px", fontFamily: "'Kumbh Sans', sans-serif" }}>
+                    {glanceMetrics.opDisplay}
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", flexDirection: "column", gap: "3px", minHeight: "38px", justifyContent: "flex-start" }}>
+                  {glanceMetrics.opMoM !== null && (
+                    <DeltaRow
+                      isPositive={glanceMetrics.opMoM >= 0}
+                      valueText={`${glanceMetrics.opMoM >= 0 ? "" : "-"}${Math.round(Math.abs(glanceMetrics.opMoM))}%`}
+                      periodText="pr. month"
+                    />
+                  )}
+                  {glanceMetrics.opYoY !== null && (
+                    <DeltaRow
+                      isPositive={glanceMetrics.opYoY >= 0}
+                      valueText={`${glanceMetrics.opYoY >= 0 ? "" : "-"}${Math.round(Math.abs(glanceMetrics.opYoY))}%`}
+                      periodText="pr. year"
+                    />
+                  )}
+                </div>
+
+                <Sparkline data={glanceMetrics.opSeries} id="op-spark" />
+
+                {/* Margin Section */}
+                <div style={{ marginTop: "14px", paddingTop: "12px", borderTop: "1px solid #f1f5f9", display: "flex", flexDirection: "column", gap: "10px" }}>
+                  <div style={{ fontSize: "17px", fontWeight: 700, color: "#0f172a", fontFamily: "'Kumbh Sans', sans-serif" }}>
+                    {glanceMetrics.opMarginDisplay}
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: "3px", minHeight: "38px", justifyContent: "flex-start" }}>
+                    {glanceMetrics.prevMonthPoint && (
+                      <DeltaRow
+                        isPositive={glanceMetrics.currentPoint.opMargin >= glanceMetrics.prevMonthPoint.opMargin}
+                        valueText={`from ${Math.round(glanceMetrics.prevMonthPoint.opMargin * 100)}%`}
+                        periodText="prev month"
+                      />
+                    )}
+                    {glanceMetrics.prevYearPoint && (
+                      <DeltaRow
+                        isPositive={glanceMetrics.currentPoint.opMargin >= glanceMetrics.prevYearPoint.opMargin}
+                        valueText={`from ${Math.round(glanceMetrics.prevYearPoint.opMargin * 100)}%`}
+                        periodText="prev year"
+                      />
+                    )}
+                  </div>
+
+                  <Sparkline data={glanceMetrics.opMarginSeries} id="op-margin-spark" />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* "Last 12 months" Performance Chart Card */}
+          {chartData?.showChart && chartData?.months?.length > 0 && (
+            <div
+              className="home-chart-card"
+              style={{
+                background: "#ffffff",
+                borderRadius: "8px",
+                border: "1px solid #e2e8f0",
+                padding: "20px 24px",
+                boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
+                display: "flex",
+                flexDirection: "column",
+                flex: "1 1 0%",
+                minHeight: 0,
+                boxSizing: "border-box",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: "12px",
+                  fontWeight: 700,
+                  letterSpacing: "0.8px",
+                  textTransform: "uppercase",
+                  color: "#64748b",
+                  marginBottom: "18px",
+                  textAlign: "left",
+                  fontFamily: "'Kumbh Sans', sans-serif",
+                }}
+              >
+                Last 12 months
+              </div>
+
+              <HomeLineChart
+                months={chartData.months}
+                revenue={chartData.revenue || []}
+                grossProfit={chartData.grossProfit || []}
+                operatingProfit={chartData.operatingProfit || []}
+                showTrendlines={chartData.showTrendlines}
+                label1={chartData.label1 || primaryLabel}
+                label2={chartData.label2 || "Gross profit"}
+                label3={chartData.label3 || "Operating profit"}
+                currencySymbol={currencySymbol}
+                thousandsSeparator={thousandsSeparator}
+              />
+            </div>
           )}
         </div>
       </div>
-    </div>
 
-    {/* Right Column: "At a glance" + "Last 12 months" Chart */}
-    <div className="home-col-right">
-      {/* "At a glance" Card */}
-      <div
-        className="home-glance-card"
-        style={{
-          background: "#ffffff",
-          borderRadius: "8px",
-          border: "1px solid #e2e8f0",
-          padding: "20px 24px",
-          boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
-        }}
-      >
-        <div
-          style={{
-            fontSize: "12px",
-            fontWeight: 700,
-            letterSpacing: "0.8px",
-            textTransform: "uppercase",
-            color: "#64748b",
-            marginBottom: "18px",
-            fontFamily: "'Kumbh Sans', sans-serif",
-          }}
-        >
-          {glanceMonthHeading}
-        </div>
-
-        <div className="glance-grid">
-          {/* Column 1: Income / Revenue */}
-          <div className="glance-col-revenue" style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-            <div>
-              <h4 style={{ margin: "0 0 4px 0", color: "#0047AB", fontSize: "16px", fontWeight: 700, fontFamily: "'Kumbh Sans', sans-serif" }}>
-                {primaryLabel}
-              </h4>
-              <div style={{ fontSize: "19px", fontWeight: 700, color: "#0f172a", letterSpacing: "-0.5px", fontFamily: "'Kumbh Sans', sans-serif" }}>
-                {glanceMetrics.revDisplay}
-              </div>
-            </div>
-
-            <div style={{ display: "flex", flexDirection: "column", gap: "3px", minHeight: "38px", justifyContent: "flex-start" }}>
-              {glanceMetrics.revMoM !== null && (
-                <DeltaRow
-                  isPositive={glanceMetrics.revMoM >= 0}
-                  valueText={`${glanceMetrics.revMoM >= 0 ? "" : "-"}${Math.round(Math.abs(glanceMetrics.revMoM))}%`}
-                  periodText="pr. month"
-                />
-              )}
-              {glanceMetrics.revYoY !== null && (
-                <DeltaRow
-                  isPositive={glanceMetrics.revYoY >= 0}
-                  valueText={`${glanceMetrics.revYoY >= 0 ? "" : "-"}${Math.round(Math.abs(glanceMetrics.revYoY))}%`}
-                  periodText="pr. year"
-                />
-              )}
-            </div>
-
-            <Sparkline data={glanceMetrics.revSeries} id="rev-spark" />
-          </div>
-
-          {/* Column 2: Gross profit */}
-          <div className="glance-col-gp" style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-            <div>
-              <h4 style={{ margin: "0 0 4px 0", color: "#0047AB", fontSize: "16px", fontWeight: 700, fontFamily: "'Kumbh Sans', sans-serif" }}>
-                Gross profit
-              </h4>
-              <div style={{ fontSize: "19px", fontWeight: 700, color: "#0f172a", letterSpacing: "-0.5px", fontFamily: "'Kumbh Sans', sans-serif" }}>
-                {glanceMetrics.gpDisplay}
-              </div>
-            </div>
-
-            <div style={{ display: "flex", flexDirection: "column", gap: "3px", minHeight: "38px", justifyContent: "flex-start" }}>
-              {glanceMetrics.gpMoM !== null && (
-                <DeltaRow
-                  isPositive={glanceMetrics.gpMoM >= 0}
-                  valueText={`${glanceMetrics.gpMoM >= 0 ? "" : "-"}${Math.round(Math.abs(glanceMetrics.gpMoM))}%`}
-                  periodText="pr. month"
-                />
-              )}
-              {glanceMetrics.gpYoY !== null && (
-                <DeltaRow
-                  isPositive={glanceMetrics.gpYoY >= 0}
-                  valueText={`${glanceMetrics.gpYoY >= 0 ? "" : "-"}${Math.round(Math.abs(glanceMetrics.gpYoY))}%`}
-                  periodText="pr. year"
-                />
-              )}
-            </div>
-
-            <Sparkline data={glanceMetrics.gpSeries} id="gp-spark" />
-
-            {/* Margin Section */}
-            <div style={{ marginTop: "14px", paddingTop: "12px", borderTop: "1px solid #f1f5f9", display: "flex", flexDirection: "column", gap: "10px" }}>
-              <div style={{ fontSize: "17px", fontWeight: 700, color: "#0f172a", fontFamily: "'Kumbh Sans', sans-serif" }}>
-                {glanceMetrics.gpMarginDisplay}
-              </div>
-
-              <div style={{ display: "flex", flexDirection: "column", gap: "3px", minHeight: "38px", justifyContent: "flex-start" }}>
-                {glanceMetrics.prevMonthPoint && (
-                  <DeltaRow
-                    isPositive={glanceMetrics.currentPoint.gpMargin >= glanceMetrics.prevMonthPoint.gpMargin}
-                    valueText={`from ${Math.round(glanceMetrics.prevMonthPoint.gpMargin * 100)}%`}
-                    periodText="prev month"
-                  />
-                )}
-                {glanceMetrics.prevYearPoint && (
-                  <DeltaRow
-                    isPositive={glanceMetrics.currentPoint.gpMargin >= glanceMetrics.prevYearPoint.gpMargin}
-                    valueText={`from ${Math.round(glanceMetrics.prevYearPoint.gpMargin * 100)}%`}
-                    periodText="prev year"
-                  />
-                )}
-              </div>
-
-              <Sparkline data={glanceMetrics.gpMarginSeries} id="gp-margin-spark" />
-            </div>
-          </div>
-
-          {/* Column 3: Operating profit */}
-          <div className="glance-col-op" style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-            <div>
-              <h4 style={{ margin: "0 0 4px 0", color: "#0047AB", fontSize: "16px", fontWeight: 700, fontFamily: "'Kumbh Sans', sans-serif" }}>
-                Operating profit
-              </h4>
-              <div style={{ fontSize: "19px", fontWeight: 700, color: "#0f172a", letterSpacing: "-0.5px", fontFamily: "'Kumbh Sans', sans-serif" }}>
-                {glanceMetrics.opDisplay}
-              </div>
-            </div>
-
-            <div style={{ display: "flex", flexDirection: "column", gap: "3px", minHeight: "38px", justifyContent: "flex-start" }}>
-              {glanceMetrics.opMoM !== null && (
-                <DeltaRow
-                  isPositive={glanceMetrics.opMoM >= 0}
-                  valueText={`${glanceMetrics.opMoM >= 0 ? "" : "-"}${Math.round(Math.abs(glanceMetrics.opMoM))}%`}
-                  periodText="pr. month"
-                />
-              )}
-              {glanceMetrics.opYoY !== null && (
-                <DeltaRow
-                  isPositive={glanceMetrics.opYoY >= 0}
-                  valueText={`${glanceMetrics.opYoY >= 0 ? "" : "-"}${Math.round(Math.abs(glanceMetrics.opYoY))}%`}
-                  periodText="pr. year"
-                />
-              )}
-            </div>
-
-            <Sparkline data={glanceMetrics.opSeries} id="op-spark" />
-
-            {/* Margin Section */}
-            <div style={{ marginTop: "14px", paddingTop: "12px", borderTop: "1px solid #f1f5f9", display: "flex", flexDirection: "column", gap: "10px" }}>
-              <div style={{ fontSize: "17px", fontWeight: 700, color: "#0f172a", fontFamily: "'Kumbh Sans', sans-serif" }}>
-                {glanceMetrics.opMarginDisplay}
-              </div>
-
-              <div style={{ display: "flex", flexDirection: "column", gap: "3px", minHeight: "38px", justifyContent: "flex-start" }}>
-                {glanceMetrics.prevMonthPoint && (
-                  <DeltaRow
-                    isPositive={glanceMetrics.currentPoint.opMargin >= glanceMetrics.prevMonthPoint.opMargin}
-                    valueText={`from ${Math.round(glanceMetrics.prevMonthPoint.opMargin * 100)}%`}
-                    periodText="prev month"
-                  />
-                )}
-                {glanceMetrics.prevYearPoint && (
-                  <DeltaRow
-                    isPositive={glanceMetrics.currentPoint.opMargin >= glanceMetrics.prevYearPoint.opMargin}
-                    valueText={`from ${Math.round(glanceMetrics.prevYearPoint.opMargin * 100)}%`}
-                    periodText="prev year"
-                  />
-                )}
-              </div>
-
-              <Sparkline data={glanceMetrics.opMarginSeries} id="op-margin-spark" />
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* "Last 12 months" Performance Chart Card */}
-      {chartData?.showChart && chartData?.months?.length > 0 && (
-        <div
-          className="home-chart-card"
-          style={{
-            background: "#ffffff",
-            borderRadius: "8px",
-            border: "1px solid #e2e8f0",
-            padding: "20px 24px",
-            boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
-            display: "flex",
-            flexDirection: "column",
-            flex: "1 1 0%",
-            minHeight: 0,
-            boxSizing: "border-box",
-          }}
-        >
-          <div
-            style={{
-              fontSize: "12px",
-              fontWeight: 700,
-              letterSpacing: "0.8px",
-              textTransform: "uppercase",
-              color: "#64748b",
-              marginBottom: "18px",
-              textAlign: "left",
-              fontFamily: "'Kumbh Sans', sans-serif",
-            }}
-          >
-            Last 12 months
-          </div>
-
-          <HomeLineChart
-            months={chartData.months}
-            revenue={chartData.revenue || []}
-            grossProfit={chartData.grossProfit || []}
-            operatingProfit={chartData.operatingProfit || []}
-            showTrendlines={chartData.showTrendlines}
-            label1={chartData.label1 || primaryLabel}
-            label2={chartData.label2 || "Gross profit"}
-            label3={chartData.label3 || "Operating profit"}
-            currencySymbol={currencySymbol}
-            thousandsSeparator={thousandsSeparator}
-          />
-        </div>
-      )}
-    </div>
-  </div>
-
-  <style jsx global>{`
+      <style jsx global>{`
     .home-workspace-grid {
       display: grid;
       grid-template-columns: 410px 1fr;
@@ -1134,8 +1146,8 @@ export default function MonthView({
       }
     }
   `}</style>
-</div>
-);
+    </div>
+  );
 }
 
 // Lightweight, responsive SVG Sparkline with soft gradient fill
@@ -1400,248 +1412,248 @@ function HomeLineChart({
             display: "block"
           }}
         >
-        <defs>
-          <linearGradient id="v2RevGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#9900ff" stopOpacity="0.22" />
-            <stop offset="100%" stopColor="#9900ff" stopOpacity="0.0" />
-          </linearGradient>
-          <linearGradient id="v2GpGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#e69138" stopOpacity="0.20" />
-            <stop offset="100%" stopColor="#e69138" stopOpacity="0.0" />
-          </linearGradient>
-          <linearGradient id="v2OpGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#1155cc" stopOpacity="0.22" />
-            <stop offset="100%" stopColor="#1155cc" stopOpacity="0.0" />
-          </linearGradient>
-        </defs>
+          <defs>
+            <linearGradient id="v2RevGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#9900ff" stopOpacity="0.22" />
+              <stop offset="100%" stopColor="#9900ff" stopOpacity="0.0" />
+            </linearGradient>
+            <linearGradient id="v2GpGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#e69138" stopOpacity="0.20" />
+              <stop offset="100%" stopColor="#e69138" stopOpacity="0.0" />
+            </linearGradient>
+            <linearGradient id="v2OpGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#1155cc" stopOpacity="0.22" />
+              <stop offset="100%" stopColor="#1155cc" stopOpacity="0.0" />
+            </linearGradient>
+          </defs>
 
-        {/* Y Grid lines */}
-        {yTicks.map((tick, i) => {
-          const y = getY(tick);
-          return (
-            <g key={i}>
-              <line
-                x1={padding.left}
-                y1={y}
-                x2={width - padding.right}
-                y2={y}
-                stroke={tick === 0 ? "#94a3b8" : "#f1f5f9"}
-                strokeWidth={tick === 0 ? "1.5" : "1"}
-              />
+          {/* Y Grid lines */}
+          {yTicks.map((tick, i) => {
+            const y = getY(tick);
+            return (
+              <g key={i}>
+                <line
+                  x1={padding.left}
+                  y1={y}
+                  x2={width - padding.right}
+                  y2={y}
+                  stroke={tick === 0 ? "#94a3b8" : "#f1f5f9"}
+                  strokeWidth={tick === 0 ? "1.5" : "1"}
+                />
+                <text
+                  className="home-chart-axis-label"
+                  x={padding.left - 8}
+                  y={y + 6}
+                  textAnchor="end"
+                  fontSize="15.3"
+                  fill="#64748b"
+                  fontFamily="'Kumbh Sans', sans-serif"
+                >
+                  {formatShortMoney(tick)}
+                </text>
+              </g>
+            );
+          })}
+
+          {/* Area Gradient Glows under lines */}
+          {revArea && <path d={revArea} fill="url(#v2RevGrad)" />}
+          {gpArea && <path d={gpArea} fill="url(#v2GpGrad)" />}
+          {opArea && <path d={opArea} fill="url(#v2OpGrad)" />}
+
+          {/* X Ticks (Month labels) */}
+          {months.map((m, i) => {
+            const x = getX(i);
+            const shortMonth = String(m).split(" ")[0]; // e.g. "Oct"
+            return (
               <text
+                key={i}
                 className="home-chart-axis-label"
-                x={padding.left - 8}
-                y={y + 6}
-                textAnchor="end"
+                x={x}
+                y={height - 10}
+                textAnchor="middle"
                 fontSize="15.3"
                 fill="#64748b"
                 fontFamily="'Kumbh Sans', sans-serif"
               >
-                {formatShortMoney(tick)}
+                {shortMonth}
               </text>
+            );
+          })}
+
+          {/* Trendlines (linear regression, dashed lines matching series colors) */}
+          {showTrendlines && months.length > 1 && (
+            <g className="chart-trendlines">
+              {revTrend.length > 0 && (
+                <line
+                  x1={getX(0)}
+                  y1={getY(revTrend[0])}
+                  x2={getX(months.length - 1)}
+                  y2={getY(revTrend[months.length - 1])}
+                  stroke="#9900ff"
+                  strokeWidth="1.5"
+                  strokeDasharray="5 5"
+                  strokeLinecap="round"
+                  opacity="0.85"
+                >
+                  <title>{label1} Trend</title>
+                </line>
+              )}
+              {gpTrend.length > 0 && (
+                <line
+                  x1={getX(0)}
+                  y1={getY(gpTrend[0])}
+                  x2={getX(months.length - 1)}
+                  y2={getY(gpTrend[months.length - 1])}
+                  stroke="#e69138"
+                  strokeWidth="1.5"
+                  strokeDasharray="5 5"
+                  strokeLinecap="round"
+                  opacity="0.85"
+                >
+                  <title>{label2} Trend</title>
+                </line>
+              )}
+              {opTrend.length > 0 && (
+                <line
+                  x1={getX(0)}
+                  y1={getY(opTrend[0])}
+                  x2={getX(months.length - 1)}
+                  y2={getY(opTrend[months.length - 1])}
+                  stroke="#1155cc"
+                  strokeWidth="1.5"
+                  strokeDasharray="5 5"
+                  strokeLinecap="round"
+                  opacity="0.85"
+                >
+                  <title>{label3} Trend</title>
+                </line>
+              )}
             </g>
-          );
-        })}
+          )}
 
-        {/* Area Gradient Glows under lines */}
-        {revArea && <path d={revArea} fill="url(#v2RevGrad)" />}
-        {gpArea && <path d={gpArea} fill="url(#v2GpGrad)" />}
-        {opArea && <path d={opArea} fill="url(#v2OpGrad)" />}
-
-        {/* X Ticks (Month labels) */}
-        {months.map((m, i) => {
-          const x = getX(i);
-          const shortMonth = String(m).split(" ")[0]; // e.g. "Oct"
-          return (
-            <text
-              key={i}
-              className="home-chart-axis-label"
-              x={x}
-              y={height - 10}
-              textAnchor="middle"
-              fontSize="15.3"
-              fill="#64748b"
-              fontFamily="'Kumbh Sans', sans-serif"
-            >
-              {shortMonth}
-            </text>
-          );
-        })}
-
-        {/* Trendlines (linear regression, dashed lines matching series colors) */}
-        {showTrendlines && months.length > 1 && (
-          <g className="chart-trendlines">
-            {revTrend.length > 0 && (
-              <line
-                x1={getX(0)}
-                y1={getY(revTrend[0])}
-                x2={getX(months.length - 1)}
-                y2={getY(revTrend[months.length - 1])}
-                stroke="#9900ff"
-                strokeWidth="1.5"
-                strokeDasharray="5 5"
-                strokeLinecap="round"
-                opacity="0.85"
-              >
-                <title>{label1} Trend</title>
-              </line>
-            )}
-            {gpTrend.length > 0 && (
-              <line
-                x1={getX(0)}
-                y1={getY(gpTrend[0])}
-                x2={getX(months.length - 1)}
-                y2={getY(gpTrend[months.length - 1])}
-                stroke="#e69138"
-                strokeWidth="1.5"
-                strokeDasharray="5 5"
-                strokeLinecap="round"
-                opacity="0.85"
-              >
-                <title>{label2} Trend</title>
-              </line>
-            )}
-            {opTrend.length > 0 && (
-              <line
-                x1={getX(0)}
-                y1={getY(opTrend[0])}
-                x2={getX(months.length - 1)}
-                y2={getY(opTrend[months.length - 1])}
-                stroke="#1155cc"
-                strokeWidth="1.5"
-                strokeDasharray="5 5"
-                strokeLinecap="round"
-                opacity="0.85"
-              >
-                <title>{label3} Trend</title>
-              </line>
-            )}
-          </g>
-        )}
-
-        {/* Revenue line */}
-        <path
-          d={revPath}
-          fill="none"
-          stroke="#9900ff"
-          strokeWidth="2.2"
-          strokeLinecap="round"
-        />
-
-        {/* Gross Profit line */}
-        <path
-          d={gpPath}
-          fill="none"
-          stroke="#e69138"
-          strokeWidth="2.2"
-          strokeLinecap="round"
-        />
-
-        {/* Operating Profit line */}
-        <path
-          d={opPath}
-          fill="none"
-          stroke="#1155cc"
-          strokeWidth="2.2"
-          strokeLinecap="round"
-        />
-
-        {/* Vertical guide line on hover */}
-        {hoveredPoint && (
-          <line
-            x1={hoveredPoint.cx}
-            y1={padding.top}
-            x2={hoveredPoint.cx}
-            y2={padding.top + chartH}
-            stroke="#94a3b8"
-            strokeWidth="1"
-            strokeDasharray="3 3"
-            strokeOpacity="0.6"
-            pointerEvents="none"
+          {/* Revenue line */}
+          <path
+            d={revPath}
+            fill="none"
+            stroke="#9900ff"
+            strokeWidth="2.2"
+            strokeLinecap="round"
           />
-        )}
 
-        {/* Interactive Data Points and Column Hover Zones */}
-        {months.map((m, i) => {
-          const revVal = revenue[i] !== undefined ? revenue[i] : 0;
-          const gpVal = grossProfit[i] !== undefined ? grossProfit[i] : 0;
-          const opVal = operatingProfit[i] !== undefined ? operatingProfit[i] : 0;
-          const cx = getX(i);
-          const cyRev = getY(revVal);
-          const cyGp = getY(gpVal);
-          const cyOp = getY(opVal);
-          const isHovered = hoveredPoint?.idx === i;
-          const colW = chartW / Math.max(months.length - 1, 1);
-          const gpMargin = revVal ? Math.round((gpVal / revVal) * 100) : null;
-          const opMargin = revVal ? Math.round((opVal / revVal) * 100) : null;
+          {/* Gross Profit line */}
+          <path
+            d={gpPath}
+            fill="none"
+            stroke="#e69138"
+            strokeWidth="2.2"
+            strokeLinecap="round"
+          />
 
-          const triggerHover = (activeCy) => {
-            setHoveredPoint({
-              idx: i,
-              month: m,
-              revVal,
-              gpVal,
-              opVal,
-              gpMargin,
-              opMargin,
-              cx,
-              cy: activeCy !== undefined ? activeCy : Math.min(cyRev, cyGp, cyOp),
-            });
-          };
+          {/* Operating Profit line */}
+          <path
+            d={opPath}
+            fill="none"
+            stroke="#1155cc"
+            strokeWidth="2.2"
+            strokeLinecap="round"
+          />
 
-          return (
-            <g key={i}>
-              {/* Invisible full-height hit area for effortless hovering across the month */}
-              <rect
-                x={cx - colW / 2}
-                y={padding.top}
-                width={colW}
-                height={chartH}
-                fill="transparent"
-                style={{ cursor: "pointer" }}
-                onMouseEnter={() => triggerHover(Math.min(cyRev, cyGp, cyOp))}
-                onMouseMove={() => triggerHover(Math.min(cyRev, cyGp, cyOp))}
-                onClick={() => triggerHover(Math.min(cyRev, cyGp, cyOp))}
-              />
+          {/* Vertical guide line on hover */}
+          {hoveredPoint && (
+            <line
+              x1={hoveredPoint.cx}
+              y1={padding.top}
+              x2={hoveredPoint.cx}
+              y2={padding.top + chartH}
+              stroke="#94a3b8"
+              strokeWidth="1"
+              strokeDasharray="3 3"
+              strokeOpacity="0.6"
+              pointerEvents="none"
+            />
+          )}
 
-              {/* Revenue circle */}
-              <circle
-                cx={cx}
-                cy={cyRev}
-                r={isHovered ? "5" : "3"}
-                fill="#9900ff"
-                stroke="#ffffff"
-                strokeWidth={isHovered ? "2" : "1.5"}
-                style={{ cursor: "pointer", transition: "r 0.15s ease" }}
-                onMouseEnter={() => triggerHover(cyRev)}
-              />
+          {/* Interactive Data Points and Column Hover Zones */}
+          {months.map((m, i) => {
+            const revVal = revenue[i] !== undefined ? revenue[i] : 0;
+            const gpVal = grossProfit[i] !== undefined ? grossProfit[i] : 0;
+            const opVal = operatingProfit[i] !== undefined ? operatingProfit[i] : 0;
+            const cx = getX(i);
+            const cyRev = getY(revVal);
+            const cyGp = getY(gpVal);
+            const cyOp = getY(opVal);
+            const isHovered = hoveredPoint?.idx === i;
+            const colW = chartW / Math.max(months.length - 1, 1);
+            const gpMargin = revVal ? Math.round((gpVal / revVal) * 100) : null;
+            const opMargin = revVal ? Math.round((opVal / revVal) * 100) : null;
 
-              {/* Gross profit circle */}
-              <circle
-                cx={cx}
-                cy={cyGp}
-                r={isHovered ? "5" : "3"}
-                fill="#e69138"
-                stroke="#ffffff"
-                strokeWidth={isHovered ? "2" : "1.5"}
-                style={{ cursor: "pointer", transition: "r 0.15s ease" }}
-                onMouseEnter={() => triggerHover(cyGp)}
-              />
+            const triggerHover = (activeCy) => {
+              setHoveredPoint({
+                idx: i,
+                month: m,
+                revVal,
+                gpVal,
+                opVal,
+                gpMargin,
+                opMargin,
+                cx,
+                cy: activeCy !== undefined ? activeCy : Math.min(cyRev, cyGp, cyOp),
+              });
+            };
 
-              {/* Operating profit circle */}
-              <circle
-                cx={cx}
-                cy={cyOp}
-                r={isHovered ? "5" : "3"}
-                fill="#1155cc"
-                stroke="#ffffff"
-                strokeWidth={isHovered ? "2" : "1.5"}
-                style={{ cursor: "pointer", transition: "r 0.15s ease" }}
-                onMouseEnter={() => triggerHover(cyOp)}
-              />
-            </g>
-          );
-        })}
+            return (
+              <g key={i}>
+                {/* Invisible full-height hit area for effortless hovering across the month */}
+                <rect
+                  x={cx - colW / 2}
+                  y={padding.top}
+                  width={colW}
+                  height={chartH}
+                  fill="transparent"
+                  style={{ cursor: "pointer" }}
+                  onMouseEnter={() => triggerHover(Math.min(cyRev, cyGp, cyOp))}
+                  onMouseMove={() => triggerHover(Math.min(cyRev, cyGp, cyOp))}
+                  onClick={() => triggerHover(Math.min(cyRev, cyGp, cyOp))}
+                />
+
+                {/* Revenue circle */}
+                <circle
+                  cx={cx}
+                  cy={cyRev}
+                  r={isHovered ? "5" : "3"}
+                  fill="#9900ff"
+                  stroke="#ffffff"
+                  strokeWidth={isHovered ? "2" : "1.5"}
+                  style={{ cursor: "pointer", transition: "r 0.15s ease" }}
+                  onMouseEnter={() => triggerHover(cyRev)}
+                />
+
+                {/* Gross profit circle */}
+                <circle
+                  cx={cx}
+                  cy={cyGp}
+                  r={isHovered ? "5" : "3"}
+                  fill="#e69138"
+                  stroke="#ffffff"
+                  strokeWidth={isHovered ? "2" : "1.5"}
+                  style={{ cursor: "pointer", transition: "r 0.15s ease" }}
+                  onMouseEnter={() => triggerHover(cyGp)}
+                />
+
+                {/* Operating profit circle */}
+                <circle
+                  cx={cx}
+                  cy={cyOp}
+                  r={isHovered ? "5" : "3"}
+                  fill="#1155cc"
+                  stroke="#ffffff"
+                  strokeWidth={isHovered ? "2" : "1.5"}
+                  style={{ cursor: "pointer", transition: "r 0.15s ease" }}
+                  onMouseEnter={() => triggerHover(cyOp)}
+                />
+              </g>
+            );
+          })}
         </svg>
 
         {/* Interactive Popup Breakdown Tooltip */}
@@ -1655,8 +1667,8 @@ function HomeLineChart({
                 hoveredPoint.idx === 0
                   ? (hoveredPoint.cy < 90 ? "translate(-15%, 12px)" : "translate(-15%, -115%)")
                   : hoveredPoint.idx === months.length - 1
-                  ? (hoveredPoint.cy < 90 ? "translate(-85%, 12px)" : "translate(-85%, -115%)")
-                  : (hoveredPoint.cy < 90 ? "translate(-50%, 12px)" : "translate(-50%, -115%)"),
+                    ? (hoveredPoint.cy < 90 ? "translate(-85%, 12px)" : "translate(-85%, -115%)")
+                    : (hoveredPoint.cy < 90 ? "translate(-50%, 12px)" : "translate(-50%, -115%)"),
               background: "#0f172a",
               color: "#ffffff",
               padding: "8px 12px",

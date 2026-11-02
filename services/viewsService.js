@@ -200,15 +200,31 @@ export async function getClientViewData({ clientSheetId, masterSheetId, tab, byp
   const curYear = now.getFullYear();
 
   if (tab === "dashboard") {
-    const res = await withRetry(() => sheets.spreadsheets.get({
-      spreadsheetId: cleanClientId,
-      ranges: ["Dashboard!A1:AX54"],
-      fields: FIELDS,
-    }));
+    const [res, keyInfoRes] = await Promise.all([
+      withRetry(() => sheets.spreadsheets.get({
+        spreadsheetId: cleanClientId,
+        ranges: ["Dashboard!A1:AX54"],
+        fields: FIELDS,
+      })),
+      withRetry(() => sheets.spreadsheets.values.batchGet({
+        spreadsheetId: cleanClientId,
+        ranges: ["KeyInfo!B15", "KeyInfo!D8"],
+        valueRenderOption: "FORMATTED_VALUE",
+      })).catch(() => ({ data: { valueRanges: [] } })),
+    ]);
 
     const rowData = res.data.sheets[0]?.data[0]?.rowData || [];
     const matrix = rowData.map(r => (r.values || []).map(parseCell));
     const row0 = (rowData[0]?.values || []).map(c => c?.formattedValue || "");
+
+    const rawMode = String(keyInfoRes.data?.valueRanges?.[0]?.values?.[0]?.[0] || "Revenue").trim();
+    const isIncomeMode = rawMode.toLowerCase() === "income";
+    const rawDirectCostsMode = String(keyInfoRes.data?.valueRanges?.[1]?.values?.[0]?.[0] || "Contractors").trim();
+    const directCostsMode = isIncomeMode
+      ? "Pass-through"
+      : rawDirectCostsMode === "Pass-through"
+      ? "Pass-through"
+      : "Contractors";
 
     const fyConfigs = [
       { label: row0[19] || "FY1", totalCol: 19, monthCols: Array.from({ length: 12 }, (_, i) => 6 + i) },
@@ -233,6 +249,8 @@ export async function getClientViewData({ clientSheetId, masterSheetId, tab, byp
       tab: "dashboard",
       fyConfigs,
       defaultFyIndex,
+      isIncomeMode,
+      directCostsMode,
       matrix, // row 0: month headers, row 1: status headers, row 2..53: data
     });
   }
@@ -358,10 +376,11 @@ export async function getClientViewData({ clientSheetId, masterSheetId, tab, byp
         ranges: ["Budget!A1:AX253"],
         fields: FIELDS,
       })),
-      withRetry(() => sheets.spreadsheets.values.get({
+      withRetry(() => sheets.spreadsheets.values.batchGet({
         spreadsheetId: targetMasterId,
-        range: "KeyInfo!B15",
-      })).catch(() => ({ data: { values: [["Revenue"]] } }))
+        ranges: ["KeyInfo!B15", "KeyInfo!D8"],
+        valueRenderOption: "FORMATTED_VALUE",
+      })).catch(() => ({ data: { valueRanges: [] } }))
     ]);
 
     const rowData = budgetRes.data.sheets[0]?.data[0]?.rowData || [];
@@ -386,8 +405,14 @@ export async function getClientViewData({ clientSheetId, masterSheetId, tab, byp
       });
     });
 
-    const rawMode = String(keyInfoRes.data?.values?.[0]?.[0] || "").trim();
+    const rawMode = String(keyInfoRes.data?.valueRanges?.[0]?.values?.[0]?.[0] || "Revenue").trim();
     const isIncomeMode = rawMode.toLowerCase() === "income";
+    const rawDirectCostsMode = String(keyInfoRes.data?.valueRanges?.[1]?.values?.[0]?.[0] || "Contractors").trim();
+    const directCostsMode = isIncomeMode
+      ? "Pass-through"
+      : rawDirectCostsMode === "Pass-through"
+      ? "Pass-through"
+      : "Contractors";
 
     return saveAndReturn({
       success: true,
@@ -395,6 +420,7 @@ export async function getClientViewData({ clientSheetId, masterSheetId, tab, byp
       fyConfigs,
       defaultFyIndex,
       isIncomeMode,
+      directCostsMode,
       matrix, // rows 0 to 252 (Budget rows 1 to 253)
     });
   }

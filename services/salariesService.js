@@ -116,7 +116,7 @@ export async function getSalariesData({ clientName, masterSheetId, clientSheetId
     ),
     withRetry(() =>
       sheets.spreadsheets.get({
-        spreadsheetId: masterSheetId,
+        spreadsheetId: clientSheetId || masterSheetId,
         ranges: ["Salaries!A4:I53"],
         fields: "sheets.data.rowData.values(formattedValue,note)",
       })
@@ -127,6 +127,8 @@ export async function getSalariesData({ clientName, masterSheetId, clientSheetId
         ranges: [
           "Outgoings!A1:BA1",
           "Outgoings!A118:BA121",
+          "Salaries!A4:I53",
+          "Salaries!L4:JC53",
         ],
         valueRenderOption: "FORMATTED_VALUE",
       })
@@ -135,25 +137,43 @@ export async function getSalariesData({ clientName, masterSheetId, clientSheetId
 
   const masterRanges = masterBatchResp.data.valueRanges || [];
   const masterHeaders = masterRanges[0]?.values || [];
-  const employeesRaw = masterRanges[1]?.values || [];
+  const masterEmployeesRaw = masterRanges[1]?.values || [];
   const effectiveAmountsRaw = masterRanges[2]?.values || [];
   const totalsRaw = masterRanges[3]?.values || [];
   const summaryRaw = masterRanges[4]?.values || [];
   const forecastAmountsRaw = masterRanges[5]?.values || [];
-  const actualAmountsRaw = masterRanges[6]?.values || [];
+  const masterActualAmountsRaw = masterRanges[6]?.values || [];
 
   const employeeRowData = employeesGetResp.data?.sheets?.[0]?.data?.[0]?.rowData || [];
 
   const clientRanges = clientBatchResp.data.valueRanges || [];
   const outgoingsHeaders = clientRanges[0]?.values?.[0] || [];
   const outgoingsDividendsRaw = clientRanges[1]?.values || [];
+  const clientEmployeesRaw = clientRanges[2]?.values || [];
+  const clientActualAmountsRaw = clientRanges[3]?.values || [];
+
+  // Auto-heal Master Sheet Salaries!A3 IMPORTRANGE if static values in A4:J54 caused a #REF! error
+  const cellA3Val = String(masterHeaders[2]?.[0] || "").trim();
+  if (cellA3Val.startsWith("#REF!") && masterSheetId && clientSheetId && masterSheetId !== clientSheetId) {
+    withRetry(() =>
+      sheets.spreadsheets.values.clear({
+        spreadsheetId: masterSheetId,
+        range: "Salaries!A4:J54",
+      })
+    ).catch((err) => {
+      console.warn("Failed to auto-clear blocking cells in Master Salaries!A4:J54:", err?.message);
+    });
+  }
+
+  const employeesRaw = clientEmployeesRaw.length > 0 ? clientEmployeesRaw : masterEmployeesRaw;
+  const actualAmountsRaw = clientActualAmountsRaw.length > 0 ? clientActualAmountsRaw : masterActualAmountsRaw;
 
   // =========================================================================
-  // PARSE MASTER SHEET: EMPLOYEES (A4:I53)
+  // PARSE SALARIES: EMPLOYEES (A4:I53)
   // =========================================================================
   const employees = [];
   for (let i = 0; i < 50; i++) {
-    const row = employeesRaw[i] || [];
+    const row = employeesRaw[i] || masterEmployeesRaw[i] || [];
     const rowCells = employeeRowData[i]?.values || [];
     const sheetRow = 4 + i;
     const name = String(row[0] || "").trim();
@@ -166,16 +186,24 @@ export async function getSalariesData({ clientName, masterSheetId, clientSheetId
     const studentLoan = String(row[7] || "").trim();
     const pension = String(row[8] || "").trim();
 
+    // Consolidate onto a single employee note attached to the Name cell (index 0),
+    // falling back to any legacy field notes if Name note is empty.
+    const rawNameNote = rowCells[0]?.note || "";
+    const legacyNotes = [1, 2, 3, 4, 5, 6, 7, 8]
+      .map((idx) => String(rowCells[idx]?.note || "").trim())
+      .filter(Boolean);
+    const combinedNameNote = rawNameNote || legacyNotes.join(" | ");
+
     const notes = {
-      name: rowCells[0]?.note || "",
-      role: rowCells[1]?.note || "",
-      fteSalary: rowCells[2]?.note || "",
-      fte: rowCells[3]?.note || "",
-      startDate: rowCells[4]?.note || "",
-      endDate: rowCells[5]?.note || "",
-      deliveryPct: rowCells[6]?.note || "",
-      studentLoan: rowCells[7]?.note || "",
-      pension: rowCells[8]?.note || "",
+      name: combinedNameNote,
+      role: "",
+      fteSalary: "",
+      fte: "",
+      startDate: "",
+      endDate: "",
+      deliveryPct: "",
+      studentLoan: "",
+      pension: "",
     };
 
     employees.push({
@@ -514,6 +542,7 @@ export async function saveEmployeeData({
   }
 
   const sheets = await getSheetsClient();
+  const targetSheetId = clientSheetId || masterSheetId;
 
   const vals = [
     sanitizeFormulaInput(employeeData.name || ""),
@@ -527,47 +556,64 @@ export async function saveEmployeeData({
     sanitizeFormulaInput(employeeData.pension || ""),
   ];
 
-  await withRetry(() =>
-    sheets.spreadsheets.values.update({
-      spreadsheetId: masterSheetId,
-      range: `Salaries!A${sheetRow}:I${sheetRow}`,
-      valueInputOption: "USER_ENTERED",
-      requestBody: { values: [vals] },
-    })
-  );
+  const writePromises = [
+    withRetry(() =>
+      sheets.spreadsheets.values.update({
+        spreadsheetId: targetSheetId,
+        range: `Salaries!A${sheetRow}:I${sheetRow}`,
+        valueInputOption: "USER_ENTERED",
+        requestBody: { values: [vals] },
+      })
+    ),
+  ];
 
-  // Update cell notes if provided
-  if (employeeData.notes && typeof employeeData.notes === "object") {
-    const gid = await getSheetGid(sheets, masterSheetId, "Salaries");
-    const colKeys = ["name", "role", "fteSalary", "fte", "startDate", "endDate", "deliveryPct", "studentLoan", "pension"];
-    const noteRequests = [];
-    colKeys.forEach((key, colIdx) => {
-      if (employeeData.notes[key] !== undefined) {
-        noteRequests.push({
-          updateCells: {
-            range: {
-              sheetId: gid,
-              startRowIndex: sheetRow - 1,
-              endRowIndex: sheetRow,
-              startColumnIndex: colIdx,
-              endColumnIndex: colIdx + 1,
+  // Update single employee note attached to the Name cell (column A) and clear legacy field notes (columns B-I)
+  if (employeeData.notes && typeof employeeData.notes === "object" && employeeData.notes.name !== undefined) {
+    writePromises.push(
+      (async () => {
+        const gid = await getSheetGid(sheets, targetSheetId, "Salaries");
+        const nameNote = String(employeeData.notes.name ?? "");
+        await withRetry(() =>
+          sheets.spreadsheets.batchUpdate({
+            spreadsheetId: targetSheetId,
+            requestBody: {
+              requests: [
+                {
+                  updateCells: {
+                    range: {
+                      sheetId: gid,
+                      startRowIndex: sheetRow - 1,
+                      endRowIndex: sheetRow,
+                      startColumnIndex: 0,
+                      endColumnIndex: 9,
+                    },
+                    rows: [
+                      {
+                        values: [
+                          { note: nameNote },
+                          { note: "" },
+                          { note: "" },
+                          { note: "" },
+                          { note: "" },
+                          { note: "" },
+                          { note: "" },
+                          { note: "" },
+                          { note: "" },
+                        ],
+                      },
+                    ],
+                    fields: "note",
+                  },
+                },
+              ],
             },
-            rows: [{ values: [{ note: String(employeeData.notes[key] ?? "") }] }],
-            fields: "note",
-          },
-        });
-      }
-    });
-
-    if (noteRequests.length > 0) {
-      await withRetry(() =>
-        sheets.spreadsheets.batchUpdate({
-          spreadsheetId: masterSheetId,
-          requestBody: { requests: noteRequests },
-        })
-      );
-    }
+          })
+        );
+      })()
+    );
   }
+
+  await Promise.all(writePromises);
 
   await invalidateSalariesCache(masterSheetId, clientSheetId);
 
@@ -596,7 +642,8 @@ export async function saveSalaryAmountOverride({
     throw new Error("sheetRow must be between 4 and 53.");
   }
 
-  const actualsRow = 300 + sheetRow; // Rows 304 to 353
+  const targetSheetId = clientSheetId || masterSheetId;
+  const targetRow = clientSheetId ? sheetRow : 300 + sheetRow; // Client Sheet uses rows 4..53 (imported to Master 304..353)
   const startColIdx = colLetterToIdx(String(colLetterStart || "").trim().toUpperCase());
   if (isNaN(startColIdx) || startColIdx < 11 || (startColIdx - 11) % 7 !== 0 || amounts.length < 1 || amounts.length > 7 || startColIdx + amounts.length - 1 > 263) {
     throw new Error("Invalid salary override column range.");
@@ -609,8 +656,8 @@ export async function saveSalaryAmountOverride({
 
   await withRetry(() =>
     sheets.spreadsheets.values.update({
-      spreadsheetId: masterSheetId,
-      range: `Salaries!${cleanStartLetter}${actualsRow}:${endColLetter}${actualsRow}`,
+      spreadsheetId: targetSheetId,
+      range: `Salaries!${cleanStartLetter}${targetRow}:${endColLetter}${targetRow}`,
       valueInputOption: "USER_ENTERED",
       requestBody: { values: [sanitized] },
     })
@@ -621,7 +668,7 @@ export async function saveSalaryAmountOverride({
   await logPmaActivity({
     userEmail: sessionUser?.email || "unknown",
     action: "UPDATE_SALARY_OVERRIDE",
-    details: `Updated salary override row ${actualsRow} col ${colLetterStart} for client ${clientName}`,
+    details: `Updated salary override row ${targetRow} col ${colLetterStart} for client ${clientName}`,
   }).catch(() => {});
 
   return { success: true, message: "Salary amount override saved." };

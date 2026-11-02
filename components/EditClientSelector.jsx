@@ -45,7 +45,7 @@ export default function EditClientSelector({
         boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)",
       }}
     >
-      {loading ? (
+      {loading && sortedClients.length === 0 ? (
         <EditClientSelectorSkeleton />
       ) : (
         <>
@@ -124,6 +124,7 @@ export default function EditClientSelector({
                 <button
                   key={c.clientName || c.name}
                   type="button"
+                  className="edit-client-card-btn no-click-spinner"
                   onClick={() => onSelectClient(c)}
                   style={{
                     textAlign: "left",
@@ -147,7 +148,6 @@ export default function EditClientSelector({
                     e.currentTarget.style.borderColor = "#0047AB";
                     e.currentTarget.style.color = "#0047AB";
                     e.currentTarget.style.transform = "translateY(-1px)";
-                    preloadClientData?.(c);
                   }}
                   onMouseLeave={(e) => {
                     e.currentTarget.style.backgroundColor = "#ffffff";

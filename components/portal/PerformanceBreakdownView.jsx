@@ -104,16 +104,35 @@ export default function PerformanceBreakdownView({
   const activePeriod = periodOptions.find((p) => p.key === selectedPeriodKey) || periodOptions[0] || null;
 
   const isIncomeMode = useMemo(() => {
+    if (data?.mode) return String(data.mode).toLowerCase() === "income";
+    if (keyData?.outgoingsMeta?.mode) return String(keyData.outgoingsMeta.mode).toLowerCase() === "income";
     // Check if client sheet uses income instead of revenue in headers/labels
     const allLabels = (years[0]?.rows || []).map((r) => String(r.label || "").toLowerCase());
     return allLabels.some((l) => l.includes("confirmed income") || l.includes("total income"));
-  }, [years]);
+  }, [data?.mode, keyData?.outgoingsMeta?.mode, years]);
+
+  const directCostsMode = useMemo(() => {
+    if (isIncomeMode) return "Pass-through";
+    const rawMode =
+      data?.directCostsMode ||
+      keyData?.outgoingsMeta?.directCostsMode ||
+      keyData?.nbtofind?.directCostsMode ||
+      "";
+    if (String(rawMode).toLowerCase().includes("pass")) return "Pass-through";
+    if (String(rawMode).toLowerCase().includes("contractor")) return "Contractors";
+    const allLabels = (years[0]?.rows || []).map((r) => String(r.label || "").toLowerCase());
+    if (allLabels.some((l) => l.includes("pass-through"))) return "Pass-through";
+    return "Contractors";
+  }, [isIncomeMode, data?.directCostsMode, keyData?.outgoingsMeta?.directCostsMode, keyData?.nbtofind?.directCostsMode, years]);
+
+  const showDirectCostsOption = !isIncomeMode && directCostsMode === "Pass-through";
+  const directCostsLabel = directCostsMode === "Pass-through" ? "Pass-through costs" : "Direct costs";
 
   useEffect(() => {
-    if (isIncomeMode && breakdownType === "dirCosts") {
+    if (!showDirectCostsOption && breakdownType === "dirCosts") {
       setBreakdownType("confRev");
     }
-  }, [isIncomeMode, breakdownType]);
+  }, [showDirectCostsOption, breakdownType]);
 
   const currencySymbol = propCurrencySymbol || keyData?.currencySymbol || "£";
   const thousandsSeparator = propThousandsSeparator || keyData?.thousandsSeparator || ",";
@@ -166,7 +185,7 @@ export default function PerformanceBreakdownView({
       periodLabel: activePeriod.label,
       monthIndex: isFY ? -1 : activePeriod.monthIdx,
       cellValue,
-      yearIndex: yIdx + 1,
+      yearIndex: yIdx,
       targetDate,
       aggregateCount: isFY ? 12 : 1,
       keyData,
@@ -244,7 +263,7 @@ export default function PerformanceBreakdownView({
         : breakdownType === "pipeRev"
           ? isIncomeMode ? "Pipeline income" : "Pipeline revenue"
           : breakdownType === "dirCosts"
-            ? "Direct costs"
+            ? directCostsLabel
             : breakdownType === "staffDel"
               ? "Delivery staff costs"
               : breakdownType === "staffNonDel"
@@ -344,7 +363,7 @@ export default function PerformanceBreakdownView({
         >
           <option value="confRev">{isIncomeMode ? "Confirmed income" : "Confirmed revenue"}</option>
           <option value="pipeRev">{isIncomeMode ? "Pipeline income" : "Pipeline revenue"}</option>
-          {!isIncomeMode && <option value="dirCosts">Direct costs</option>}
+          {showDirectCostsOption && <option value="dirCosts">{directCostsLabel}</option>}
           <option value="staffDel">Delivery staff costs</option>
           <option value="staffNonDel">Non-delivery staff costs</option>
           <option value="expDel">Delivery expenses</option>
@@ -433,7 +452,7 @@ export default function PerformanceBreakdownView({
           style={{
             display: "flex",
             justifyContent: "flex-end",
-            paddingBottom: "10px",
+            padding: "0 17px 10px 16px",
             borderBottom: "1px solid #f1f5f9",
             marginBottom: "12px",
           }}
@@ -544,7 +563,7 @@ export default function PerformanceBreakdownView({
                               <div
                                 key={iIdx}
                                 style={{
-                                  padding: "11px 18px 11px 32px",
+                                  padding: "11px 16px 11px 32px",
                                   borderBottom: iIdx === sec.items.length - 1 ? "none" : "1px solid #f1f5f9",
                                   display: "flex",
                                   justifyContent: "space-between",
@@ -553,7 +572,12 @@ export default function PerformanceBreakdownView({
                                 }}
                               >
                                 <div style={{ color: "#1e293b", fontWeight: 500, paddingRight: "10px" }}>
-                                  {item.name}{item.role ? ` – ${item.role}` : ""}
+                                  <div>{item.name}{item.role ? ` – ${item.role}` : ""}</div>
+                                  {item.detail && (
+                                    <div style={{ fontSize: "11.5px", color: "#64748b", fontWeight: 400, fontStyle: "italic", marginTop: "2px" }}>
+                                      {item.detail}
+                                    </div>
+                                  )}
                                 </div>
                                 <div style={{ fontWeight: 600, color: "#0047AB", whiteSpace: "nowrap" }}>
                                   {formatMoney(item.amount)}
@@ -781,7 +805,7 @@ export default function PerformanceBreakdownView({
                     display: "flex",
                     justifyContent: "space-between",
                     alignItems: "flex-start",
-                    padding: "12px 0",
+                    padding: "12px 17px 12px 16px",
                     borderBottom: "1px solid #f1f5f9",
                   }}
                 >

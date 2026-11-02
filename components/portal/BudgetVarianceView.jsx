@@ -92,6 +92,17 @@ export default function BudgetVarianceView({
     return !allLabels.some((l) => l.includes("confirmed income") || l.includes("total income"));
   }, [keyData, years]);
 
+  const directCostsMode = useMemo(() => {
+    if (!isRevMode) return "Pass-through";
+    const m =
+      data?.directCostsMode ||
+      keyData?.outgoingsMeta?.directCostsMode ||
+      keyData?.directCostsMode ||
+      allFYData?.directCostsMode ||
+      "Contractors";
+    return String(m).trim() === "Pass-through" ? "Pass-through" : "Contractors";
+  }, [isRevMode, data?.directCostsMode, keyData, allFYData?.directCostsMode]);
+
   const currencySymbol = propCurrencySymbol || keyData?.currencySymbol || "£";
   const thousandsSeparator = propThousandsSeparator || keyData?.thousandsSeparator || ",";
 
@@ -142,6 +153,9 @@ export default function BudgetVarianceView({
     const r = activeYear?.rows?.find((row) => {
       const l = cleanStr(row.label);
       if (l.includes(target)) return true;
+      if (target === "direct costs" || target === "pass-through costs") {
+        return l.includes("direct costs") || l.includes("pass-through costs");
+      }
       if (target === "staff costs - delivery") {
         return l.includes("staff costs") && l.includes("delivery") && !l.includes("non");
       }
@@ -179,9 +193,10 @@ export default function BudgetVarianceView({
     const staffDel = isBud
       ? getBud(28, "staff costs - delivery")
       : getAct("staff costs - delivery");
-    const dirCosts = isRevMode
-      ? (isBud ? getBud(29, "direct costs") : getAct("direct costs"))
-      : new Array(12).fill(0);
+    const dirCosts =
+      isRevMode && directCostsMode === "Pass-through"
+        ? (isBud ? getBud(29, "pass-through costs") : getAct("pass-through costs"))
+        : new Array(12).fill(0);
     const expDel = isBud
       ? getBud(isRevMode ? 30 : 29, "other expenses - delivery")
       : getAct("other expenses - delivery");
@@ -428,8 +443,8 @@ export default function BudgetVarianceView({
 
   addSectionHeader("Costs of sale");
   addDataRow("Staff costs - delivery", "staffDel", true, false, false, true);
-  if (isRevMode) {
-    addDataRow("Direct costs", "dirCosts", true, false, false, true);
+  if (isRevMode && directCostsMode === "Pass-through") {
+    addDataRow("Pass-through costs", "dirCosts", true, false, false, true);
   }
   addDataRow("Other expenses - delivery", "expDel", true, false, false, true);
   addSpacer(4);
@@ -1398,7 +1413,7 @@ export default function BudgetVarianceView({
         )}
       </div>
 
-    <style jsx>{`
+      <style jsx>{`
       @media (orientation: landscape) and (max-width: 1024px) {
         .fy-table-scroll-wrapper {
           margin: 0 !important;
@@ -1428,6 +1443,6 @@ export default function BudgetVarianceView({
         }
       }
     `}</style>
-  </div>
+    </div>
   );
 }

@@ -1,4 +1,6 @@
-import React, { useEffect } from "react";
+import React, { useEffect, useState } from "react";
+import Spinner from "./Spinner";
+import Skeleton from "./Skeleton";
 import { useIgnoredAlerts } from "../hooks/useIgnoredAlerts";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useTriage } from "../contexts/TriageContext";
@@ -7,6 +9,7 @@ export default function IgnoredAlertsView({ styles }) {
   const { automationCommanderSheetId } = useAppGlobals();
   const { acceptError, setAcceptError, setScreen } = useTriage();
   const { ignoredAlerts, isLoadingIgnored, isUnignoring, unignoreAlert, loadIgnoredAlerts } = useIgnoredAlerts(automationCommanderSheetId, setAcceptError);
+  const [isFixingHashes, setIsFixingHashes] = useState(false);
 
   useEffect(() => {
     loadIgnoredAlerts();
@@ -15,7 +18,7 @@ export default function IgnoredAlertsView({ styles }) {
   return (
     <div className="pma-page-container" style={styles.container}>
       <div style={styles.header}>
-        <h1 style={styles.title}>Ignored Alerts</h1>
+        <h1 style={styles.title}>Ignored alerts</h1>
         <p style={styles.subtitle}>Alerts permanently excluded from triage</p>
       </div>
 
@@ -23,7 +26,17 @@ export default function IgnoredAlertsView({ styles }) {
         {acceptError && <div style={styles.errorBanner}>{acceptError}</div>}
 
         {isLoadingIgnored ? (
-          <p style={styles.loadingText}>Loading ignored alerts...</p>
+          <div style={{ display: "flex", flexDirection: "column", gap: "10px", padding: "8px 0" }}>
+            {[0, 1, 2].map((i) => (
+              <div key={i} style={{ padding: "14px 16px", border: "1px solid #e2e8f0", borderRadius: "6px", background: "#f8fafc", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "16px" }}>
+                <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "6px" }}>
+                  <Skeleton width="65%" height="15px" />
+                  <Skeleton width="40%" height="12px" />
+                </div>
+                <Skeleton width="90px" height="30px" borderRadius="6px" />
+              </div>
+            ))}
+          </div>
         ) : ignoredAlerts.length === 0 ? (
           <div style={{ textAlign: "center", padding: "24px", color: "#666" }}>
             No ignored alerts yet.
@@ -54,10 +67,13 @@ export default function IgnoredAlertsView({ styles }) {
                     disabled={isUnignoring === a.fingerprintHash}
                     style={{
                       ...styles.unignoreButton,
-                      opacity: isUnignoring === a.fingerprintHash ? 0.5 : 1,
+                      opacity: isUnignoring === a.fingerprintHash ? 0.6 : 1,
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "6px",
                     }}
                   >
-                    {isUnignoring === a.fingerprintHash ? "Restoring..." : "↩ Un-ignore"}
+                    {isUnignoring === a.fingerprintHash ? <><Spinner size={11} /> Restoring...</> : "↩ Un-ignore"}
                   </button>
                 </div>
               </div>
@@ -70,10 +86,12 @@ export default function IgnoredAlertsView({ styles }) {
             onClick={() => { setAcceptError(""); setScreen("clientSelection"); }}
             style={styles.buttonSecondary}
           >
-            ← Back to Clients
+            ← Back to clients
           </button>
           <button className="triage-btn"
+            disabled={isFixingHashes}
             onClick={async () => {
+              setIsFixingHashes(true);
               try {
                 setAcceptError("");
                 const r = await fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
@@ -85,11 +103,12 @@ export default function IgnoredAlertsView({ styles }) {
                   setAcceptError(`Failed: ${d.error}`);
                 }
               } catch (e) { setAcceptError(`Error: ${e.message}`); }
+              finally { setIsFixingHashes(false); }
             }}
-            style={{ ...styles.buttonSecondary, fontSize: "13px" }}
+            style={{ ...styles.buttonSecondary, fontSize: "13px", display: "inline-flex", alignItems: "center", gap: "6px", opacity: isFixingHashes ? 0.7 : 1 }}
             title="Fix ignored alerts that reappeared after a system update"
           >
-            🔧 Fix stale hashes
+            {isFixingHashes ? <><Spinner size={12} /> Fixing hashes...</> : "🔧 Fix stale hashes"}
           </button>
         </div>
       </div>

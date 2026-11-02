@@ -116,6 +116,10 @@ export default function CashflowBreakdownView({
     return allLabels.some((l) => l.includes("confirmed income") || l.includes("total income"));
   }, [keyData, data]);
 
+  const isPassThrough = useMemo(() => {
+    return isIncomeMode || keyData?.outgoingsMeta?.directCostsMode === "Pass-through";
+  }, [isIncomeMode, keyData]);
+
   const cashCategories = useMemo(() => {
     return [
       { id: "cashConfInc", name: "Confirmed cash incoming" },
@@ -123,18 +127,12 @@ export default function CashflowBreakdownView({
       { id: "cashInvoicesSent", name: "Invoices sent" },
       { id: "cashSalaries", name: "Salary payments" },
       { id: "cashContractors", name: "Contractor payments" },
-      ...(!isIncomeMode ? [{ id: "cashDirCosts", name: "Direct cost payments" }] : []),
+      { id: "cashDirCosts", name: isPassThrough ? "Pass-through cost payments" : "Direct cost payments" },
       { id: "cashOutgoings", name: "Other expenses" },
       { id: "cashTaxes", name: "Tax payments" },
       { id: "cashOther", name: "Other cash movements" },
     ];
-  }, [isIncomeMode]);
-
-  useEffect(() => {
-    if (isIncomeMode && activeCategory === "cashDirCosts") {
-      setActiveCategory("cashConfInc");
-    }
-  }, [isIncomeMode, activeCategory]);
+  }, [isPassThrough]);
 
   // Determine initial month: closest to current calendar date
   const defaultMonthIdx = useMemo(() => {
@@ -1079,7 +1077,7 @@ export default function CashflowBreakdownView({
               style={{
                 display: "flex",
                 justifyContent: "flex-end",
-                paddingBottom: "10px",
+                padding: "0 17px 10px 16px",
                 borderBottom: "1px solid #f1f5f9",
                 marginBottom: "12px",
               }}

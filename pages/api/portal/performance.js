@@ -97,7 +97,14 @@ export default async function handler(req, res) {
     const formattedResp = await withRetry(() =>
       sheets.spreadsheets.values.batchGet({
         spreadsheetId: clientSheetId,
-        ranges: ["AppData!A1:CR35", "AppData!Z42:Z59", "AppData!W40:W44", "KeyInfo!C4:D5"],
+        ranges: [
+          "AppData!A1:CR35",
+          "AppData!Z42:Z59",
+          "AppData!W40:W44",
+          "KeyInfo!C4:D5",
+          "KeyInfo!B15",
+          "KeyInfo!D8",
+        ],
         valueRenderOption: "FORMATTED_VALUE",
       })
     );
@@ -106,6 +113,17 @@ export default async function handler(req, res) {
     const thresholdsRaw = (formattedResp.data.valueRanges?.[1]?.values || []).map((r) => r[0] || "");
     const toggles = formattedResp.data.valueRanges?.[2]?.values || [];
     const keyInfoRows = formattedResp.data.valueRanges?.[3]?.values || [];
+    const modeRows = formattedResp.data.valueRanges?.[4]?.values || [];
+    const directCostsModeRows = formattedResp.data.valueRanges?.[5]?.values || [];
+
+    const mode = String(modeRows[0]?.[0] || "Revenue").trim();
+    const rawDirectCostsMode = String(directCostsModeRows[0]?.[0] || "Contractors").trim();
+    const directCostsMode =
+      mode.toLowerCase() === "income"
+        ? "Pass-through"
+        : rawDirectCostsMode === "Pass-through"
+        ? "Pass-through"
+        : "Contractors";
 
     const currencySymbol = String(keyInfoRows[0]?.[1] || (keyInfoRows[0]?.[0] && keyInfoRows[0]?.[0] !== "Tracker currency" ? keyInfoRows[0]?.[0] : "") || "£").trim() || "£";
     const thousandsSeparator = String(keyInfoRows[1]?.[1] || (keyInfoRows[1]?.[0] && keyInfoRows[1]?.[0] !== "Thous. separator" ? keyInfoRows[1]?.[0] : "") || ",").trim() || ",";
@@ -167,6 +185,13 @@ export default async function handler(req, res) {
     const lineItemLabels = [];
     for (let i = 0; i < numRows; i++) {
       lineItemLabels.push(appDataDisp[i]?.[0] !== undefined ? String(appDataDisp[i][0]).trim() : "");
+    }
+    if (mode.toLowerCase() !== "income" && lineItemLabels.length > 12) {
+      if (directCostsMode === "Contractors") {
+        lineItemLabels[12] = "Hide";
+      } else if (directCostsMode === "Pass-through") {
+        lineItemLabels[12] = "Pass-through costs";
+      }
     }
 
     // Build the 4 year blocks
@@ -237,6 +262,8 @@ export default async function handler(req, res) {
       _cachedAt: new Date().toISOString(),
       currencySymbol,
       thousandsSeparator,
+      mode,
+      directCostsMode,
       version,
       showExtraRows,
       numRows,

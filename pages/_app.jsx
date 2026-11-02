@@ -31,88 +31,6 @@ export default function App({ Component, pageProps }) {
     };
   }, [router]);
 
-  // Universal button feedback across Pulse and PMA:
-  // Adds physical press animation and in-button spinner on click indicating the action is happening
-  useEffect(() => {
-    const handleButtonClick = (e) => {
-      const btn = e.target.closest("button");
-      if (!btn || btn.disabled) return;
-
-      // Never apply universal user feedback (spinner or animation) to the menu bar or login box in either PMA or Pulse
-      const isMenuBar = Boolean(
-        btn.closest("header") ||
-        btn.closest("nav") ||
-        btn.closest(".pma-topbar") ||
-        btn.closest(".pma-navbar") ||
-        btn.closest(".portal-header-bar-inner") ||
-        btn.closest(".portal-nav-dropdown") ||
-        btn.closest(".nav-more-dropdown") ||
-        btn.closest(".pma-pulse-dropdown") ||
-        btn.closest(".pma-profile-dropdown") ||
-        btn.closest(".portal-mobile-menu") ||
-        btn.closest(".client-views-tabs") ||
-        btn.closest(".login-box") ||
-        btn.classList.contains("pulse-nav-item") ||
-        btn.classList.contains("nav-more-btn") ||
-        btn.classList.contains("pma-pulse-btn") ||
-        btn.classList.contains("pma-profile-btn") ||
-        btn.classList.contains("client-views-tab") ||
-        btn.classList.contains("no-click-spinner") ||
-        btn.classList.contains("triage-client-card") ||
-        btn.classList.contains("refresh-btn") ||
-        btn.getAttribute("title")?.toLowerCase()?.includes("refresh")
-      );
-      if (isMenuBar) return;
-
-      btn.classList.add("pulse-btn-clicked");
-
-      // Check if button already contains a spinner or loading icon, or is a refresh button
-      const isRefresh = Boolean(
-        btn.classList.contains("refresh-btn") ||
-        btn.getAttribute("title")?.toLowerCase()?.includes("refresh") ||
-        btn.querySelector("svg path[d*='M23 4v6h-6']")
-      );
-      const hasSpinner = btn.querySelector(".pulse-click-spinner, svg[class*='spin'], svg[style*='spin']");
-      if (!hasSpinner && !btn.classList.contains("no-click-spinner") && !isRefresh) {
-        const isIconOnly = btn.textContent.trim().length === 0;
-        const spinner = document.createElement("span");
-        spinner.className = "pulse-click-spinner";
-
-        if (isIconOnly) {
-          spinner.setAttribute(
-            "style",
-            "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,0.35);border-radius:inherit;pointer-events:none;z-index:2;"
-          );
-          spinner.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" style="animation:pulse-spin 0.6s linear infinite;flex-shrink:0"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" stroke-opacity="0.3"/><path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg>`;
-        } else {
-          spinner.setAttribute(
-            "style",
-            "display:inline-flex;align-items:center;vertical-align:middle;margin-left:6px;pointer-events:none;flex-shrink:0;"
-          );
-          spinner.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" style="animation:pulse-spin 0.6s linear infinite;flex-shrink:0"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" stroke-opacity="0.3"/><path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg>`;
-        }
-
-        if (isIconOnly && window.getComputedStyle(btn).position === "static") {
-          btn.style.position = "relative";
-        }
-
-        btn.appendChild(spinner);
-
-        setTimeout(() => {
-          spinner.remove();
-          btn.classList.remove("pulse-btn-clicked");
-        }, 650);
-      } else {
-        setTimeout(() => {
-          btn.classList.remove("pulse-btn-clicked");
-        }, 300);
-      }
-    };
-
-    document.addEventListener("click", handleButtonClick, true);
-    return () => document.removeEventListener("click", handleButtonClick, true);
-  }, []);
-
   return (
     <>
       <Head>
@@ -159,6 +77,8 @@ export default function App({ Component, pageProps }) {
         .portal-mobile-menu button,
         .client-views-tabs button,
         .client-views-tab,
+        .edit-client-card-btn,
+        .triage-client-card,
         .refresh-btn {
           transform: none !important;
           filter: none !important;

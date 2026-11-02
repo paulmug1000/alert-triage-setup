@@ -3,6 +3,42 @@ import Spinner from "../Spinner";
 import PlaceholderPill, { isAutoPlaceholder } from "../PlaceholderPill";
 import { isPlaceholderExpense, toSheetDateFormat, toInputDateFormat } from "../../utils/helpers";
 
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function computeDefaultContractorDates(monthLabel, recTimingStr, payTimingStr) {
+  const mMatch = String(monthLabel || "").trim().match(/([a-zA-Z]{3})[\s\-]?(\d{2,4})/);
+  if (!mMatch) return { rec: "", pay: "" };
+  const mIdx = MONTH_NAMES.findIndex((m) => m.toLowerCase() === mMatch[1].toLowerCase());
+  let yr = parseInt(mMatch[2], 10);
+  if (yr < 100) yr += 2000;
+  if (mIdx === -1 || isNaN(yr)) return { rec: "", pay: "" };
+
+  const today = new Date();
+  const currentMonthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+
+  const recDate = new Date(yr, mIdx, 1);
+  if (String(recTimingStr || "Curr").trim().toLowerCase().includes("next")) {
+    recDate.setMonth(recDate.getMonth() + 1);
+  }
+  recDate.setDate(5);
+  if (recDate < currentMonthStart) {
+    recDate.setFullYear(today.getFullYear(), today.getMonth(), 5);
+  }
+
+  const payDate = new Date(yr, mIdx, 1);
+  if (String(payTimingStr || "Curr").trim().toLowerCase().includes("next")) {
+    payDate.setMonth(payDate.getMonth() + 1);
+  }
+  payDate.setDate(28);
+  if (payDate < currentMonthStart) {
+    const targetPayMonth = today.getDate() > 20 ? today.getMonth() + 1 : today.getMonth();
+    payDate.setFullYear(today.getFullYear(), targetPayMonth, 28);
+  }
+
+  const fmt = (d) => `${d.getDate()}-${MONTH_NAMES[d.getMonth()]}-${String(d.getFullYear()).slice(-2)}`;
+  return { rec: fmt(recDate), pay: fmt(payDate) };
+}
+
 function generateAutoPlaceholderId(contractorName, dateStr) {
   const cleanName = String(contractorName || "Row").trim().replace(/[^a-zA-Z0-9]/g, "");
   const shortCode = cleanName.slice(0, 5) || "Vend";
@@ -42,11 +78,16 @@ export default function ContractorExpenseModal({
 
   React.useEffect(() => {
     if (isOpen && contractor) {
+      const defaults = computeDefaultContractorDates(
+        monthLabel,
+        contractor?.invTiming || contractor?.recTiming || "Curr",
+        contractor?.payTiming || "Curr"
+      );
       setDescription(item?.description || item?.rawDesc || "");
       setAmount(item?.amount !== undefined ? String(item.amount) : "");
       setVat(item?.vat || contractor?.vatSetting || "Yes");
-      setRecDate(item?.recDate ? toInputDateFormat(item.recDate) : "");
-      setPayDate(item?.payDate ? toInputDateFormat(item.payDate) : "");
+      setRecDate(toInputDateFormat(item?.recDate || defaults.rec) || "");
+      setPayDate(toInputDateFormat(item?.payDate || defaults.pay) || "");
       const dateMatch = String(monthLabel || "").match(/([a-zA-Z]{3})[\s\-]?(\d{2,4})/);
       const dateStr = dateMatch ? `${dateMatch[1]}-${dateMatch[2].slice(-2)}` : "Entry";
       setCurrentAppId(item?.appId !== undefined ? item.appId : generateManualPlaceholderId(contractor.name, dateStr));

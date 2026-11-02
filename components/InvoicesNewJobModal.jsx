@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect } from "react";
+import Spinner from "./Spinner";
 import { stripCurrency, parseSheetDate, toSheetDateFormat, calculatePaymentDate } from "../utils/helpers";
 import { useAuth } from "../hooks/useAuth";
 import DateInput from "./DateInput";
@@ -142,8 +143,8 @@ export default function InvoicesNewJobModal({
       }
 
       // Trigger all the state updates back in the parent component
-      onSuccess(inv);
-      close();
+      await onSuccess(inv);
+      onClose();
     } catch (e) { setError(e.message); setSaving(false); }
   };
 
@@ -180,6 +181,9 @@ export default function InvoicesNewJobModal({
             <div>
               <label style={labelStyle}>Revenue (£{isAdmin ? ", col AG" : ""})</label>
               <input style={inputStyle} type="number" step="0.01" value={revenue} onChange={e => setRevenue(e.target.value)} />
+              <div style={{ fontSize: "11px", color: "#64748b", marginTop: "3px" }}>
+                For retainers, enter the monthly amount
+              </div>
             </div>
             <div>
               <label style={labelStyle}>Direct costs (£{isAdmin ? ", col AH" : ""})</label>
@@ -276,8 +280,8 @@ export default function InvoicesNewJobModal({
           <button onClick={close} disabled={saving}
             style={{ padding: "8px 16px", background: "#f5f5f5", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>Cancel</button>
           <button onClick={save} disabled={saving || !jobName.trim()}
-            style={{ padding: "8px 22px", background: saving ? "#4caf50" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: saving ? "default" : "pointer", fontSize: "13px", fontWeight: "600", opacity: saving ? 0.8 : 1 }}>
-            {saving ? "Creating..." : "Create job"}
+            style={{ padding: "8px 22px", background: saving ? "#4caf50" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: saving ? "default" : "pointer", fontSize: "13px", fontWeight: "600", opacity: saving ? 0.8 : 1, display: "inline-flex", alignItems: "center", gap: "6px" }}>
+            {saving ? <><Spinner size={12} color="#fff" /> Creating...</> : "Create job"}
           </button>
         </div>
       </div>

@@ -172,7 +172,7 @@ export function useJobs(initialClient = null) {
     jobsTab, setJobsTab,
     jobsSortBy, setJobsSortBy,
     jobsData, setJobsData,
-    jobsLoading,
+    jobsLoading, setJobsLoading,
     jobsExpanded, setJobsExpanded,
     jobsEditSplit, setJobsEditSplit,
     productLines, setProductLines,

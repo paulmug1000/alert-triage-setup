@@ -109,64 +109,64 @@ export default async function handler(req, res) {
     };
     const cleanTxByMonth = data.outgoings?.transactionsByMonth
       ? Object.fromEntries(
-          Object.entries(data.outgoings.transactionsByMonth).map(([fy, fyData]) => [
-            fy,
-            Array.isArray(fyData)
-              ? fyData.map((monthArr) =>
-                  Array.isArray(monthArr) ? monthArr.filter((tx) => !isRestrictedTx(tx)) : monthArr
-                )
-              : fyData && typeof fyData === "object"
+        Object.entries(data.outgoings.transactionsByMonth).map(([fy, fyData]) => [
+          fy,
+          Array.isArray(fyData)
+            ? fyData.map((monthArr) =>
+              Array.isArray(monthArr) ? monthArr.filter((tx) => !isRestrictedTx(tx)) : monthArr
+            )
+            : fyData && typeof fyData === "object"
               ? Object.fromEntries(
-                  Object.entries(fyData)
-                    .filter(([cat]) => !isRestrictedCat(cat))
-                    .map(([k, v]) => [k, Array.isArray(v) ? v.filter((tx) => !isRestrictedTx(tx)) : v])
-                )
+                Object.entries(fyData)
+                  .filter(([cat]) => !isRestrictedCat(cat))
+                  .map(([k, v]) => [k, Array.isArray(v) ? v.filter((tx) => !isRestrictedTx(tx)) : v])
+              )
               : fyData,
-          ])
-        )
+        ])
+      )
       : data.outgoings?.transactionsByMonth;
     const cleanReconMonths = data.outgoings?.reconMonths
       ? Object.fromEntries(
-          Object.entries(data.outgoings.reconMonths).map(([m, rm]) => [
-            m,
-            rm && typeof rm === "object"
-              ? {
-                  ...rm,
-                  bankOutgoings: Array.isArray(rm.bankOutgoings)
-                    ? rm.bankOutgoings.filter((tx) => !isRestrictedTx(tx))
-                    : rm.bankOutgoings,
-                  unreconciledItems: Array.isArray(rm.unreconciledItems)
-                    ? rm.unreconciledItems.filter((tx) => !isRestrictedTx(tx))
-                    : rm.unreconciledItems,
-                  categoryComparisons: Array.isArray(rm.categoryComparisons)
-                    ? rm.categoryComparisons.filter(
-                        (cc) => !isRestrictedCat(cc?.category || cc?.name || cc?.label)
-                      )
-                    : rm.categoryComparisons,
-                }
-              : rm,
-          ])
-        )
+        Object.entries(data.outgoings.reconMonths).map(([m, rm]) => [
+          m,
+          rm && typeof rm === "object"
+            ? {
+              ...rm,
+              bankOutgoings: Array.isArray(rm.bankOutgoings)
+                ? rm.bankOutgoings.filter((tx) => !isRestrictedTx(tx))
+                : rm.bankOutgoings,
+              unreconciledItems: Array.isArray(rm.unreconciledItems)
+                ? rm.unreconciledItems.filter((tx) => !isRestrictedTx(tx))
+                : rm.unreconciledItems,
+              categoryComparisons: Array.isArray(rm.categoryComparisons)
+                ? rm.categoryComparisons.filter(
+                  (cc) => !isRestrictedCat(cc?.category || cc?.name || cc?.label)
+                )
+                : rm.categoryComparisons,
+            }
+            : rm,
+        ])
+      )
       : data.outgoings?.reconMonths;
     return {
       ...data,
       salaries: null,
       outgoingsMeta: data.outgoingsMeta
         ? {
-            ...data.outgoingsMeta,
-            salariesDel: [],
-            salariesNonDel: [],
-            profitShareBaseDel: [],
-            profitShareBaseNonDel: [],
-          }
+          ...data.outgoingsMeta,
+          salariesDel: [],
+          salariesNonDel: [],
+          profitShareBaseDel: [],
+          profitShareBaseNonDel: [],
+        }
         : data.outgoingsMeta,
       outgoings: data.outgoings
         ? {
-            ...data.outgoings,
-            dividends: null,
-            transactionsByMonth: cleanTxByMonth,
-            reconMonths: cleanReconMonths,
-          }
+          ...data.outgoings,
+          dividends: null,
+          transactionsByMonth: cleanTxByMonth,
+          reconMonths: cleanReconMonths,
+        }
         : data.outgoings,
     };
   };
@@ -178,7 +178,7 @@ export default async function handler(req, res) {
   // Purge existing cache on explicit refresh
   if (bypassCache) {
     memoryCache.del(cacheKey);
-    redisClient.del(cacheKey).catch(() => {});
+    redisClient.del(cacheKey).catch(() => { });
   }
 
   // 1. Check L1 Memory Cache
@@ -250,6 +250,7 @@ export default async function handler(req, res) {
     batchRanges.push("KeyInfo!C23:C26"); // Product lines
     batchRanges.push("KeyInfo!F11:F12"); // Profit share % and switch
     batchRanges.push("KeyInfo!B15");     // Mode (Revenue vs Income)
+    batchRanges.push("KeyInfo!D8");      // Direct costs mode (Contractors vs Pass-through)
     batchRanges.push("KeyInfo!B20");     // Contractor source
     batchRanges.push("KeyInfo!D15:D16"); // Split method (D15) & split enabled (D16)
     batchRanges.push("KeyInfo!D1");      // Master Sheet URL
@@ -279,6 +280,7 @@ export default async function handler(req, res) {
     const productLinesRows = valueRanges[rangeIdx++]?.values || [];
     const profitShareRows = valueRanges[rangeIdx++]?.values || [];
     const modeRows = valueRanges[rangeIdx++]?.values || [];
+    const directCostsModeRows = valueRanges[rangeIdx++]?.values || [];
     const contractorSourceRows = valueRanges[rangeIdx++]?.values || [];
     const splitInfoRows = valueRanges[rangeIdx++]?.values || [];
     const masterUrlRows = valueRanges[rangeIdx++]?.values || [];
@@ -309,6 +311,13 @@ export default async function handler(req, res) {
     const profitSharePct = parseFloat(String(profitSharePctRaw).replace("%", "")) / 100 || 0;
     const profitShareSwitch = String(profitShareRows[1]?.[0] || "").trim();
     const mode = String(modeRows[0]?.[0] || "Revenue").trim();
+    const rawDirectCostsMode = String(directCostsModeRows[0]?.[0] || "Contractors").trim();
+    const directCostsMode =
+      mode.toLowerCase() === "income"
+        ? "Pass-through"
+        : rawDirectCostsMode === "Pass-through"
+          ? "Pass-through"
+          : "Contractors";
     const contractorSource = String(contractorSourceRows[0]?.[0] || "Cell Values").trim();
     const isNotesMode = contractorSource.toLowerCase().includes("notes");
     const masterUrl = String(masterUrlRows[0]?.[0] || "").trim();
@@ -454,7 +463,7 @@ export default async function handler(req, res) {
         }
 
         const isParent = (revenue && String(revenue).trim() !== "" && Math.abs(parseMoney(revenue)) > 0.001) ||
-                         (directCosts && String(directCosts).trim() !== "" && Math.abs(parseMoney(directCosts)) > 0.001);
+          (directCosts && String(directCosts).trim() !== "" && Math.abs(parseMoney(directCosts)) > 0.001);
 
         if (isParent) {
           const projectRetainer = getValueByHeader(row, colMap, ["project / retainer", "proj / ret"]) || "Project";
@@ -1394,6 +1403,7 @@ export default async function handler(req, res) {
       makingUpCosPct: 0,
       salariesDel: [],
       salariesNonDel: [],
+      directCostsAsContractors: [],
       makingUpCosBase: [],
       makingUpCosBaseConf: [],
       makingUpCosHardZero: [],
@@ -1407,6 +1417,7 @@ export default async function handler(req, res) {
       profitSharePct,
       profitShareSwitch,
       mode,
+      directCostsMode,
     };
 
     const makingUpCosPctRaw = outgoingsRows[111] ? outgoingsRows[111][0] : "0%";
@@ -1419,11 +1430,12 @@ export default async function handler(req, res) {
 
     for (let yi = 0; yi < yearBlocks.length; yi++) {
       const blk = yearBlocks[yi];
-      const sDel = [], sNonDel = [], mCos = [], mCosConf = [], mCosHz = [], psDel = [], psNonDel = [];
+      const sDel = [], sNonDel = [], dcContr = [], mCos = [], mCosConf = [], mCosHz = [], psDel = [], psNonDel = [];
       for (let j = 0; j < blk.count; j++) {
         const cIdx = blk.start + j;
         sDel.push(outgoingsRows[5] ? (parseFloat(String(outgoingsRows[5][cIdx] || 0).replace(/[£,]/g, "")) || 0) : 0);
         sNonDel.push(outgoingsRows[6] ? (parseFloat(String(outgoingsRows[6][cIdx] || 0).replace(/[£,]/g, "")) || 0) : 0);
+        dcContr.push(outgoingsRows[8] ? (parseFloat(String(outgoingsRows[8][cIdx] || 0).replace(/[£,]/g, "")) || 0) : 0);
         mCos.push(outgoingsRows[110] ? (parseFloat(String(outgoingsRows[110][cIdx] || 0).replace(/[£,]/g, "")) || 0) : 0);
         mCosConf.push(outgoingsRows[244] ? (parseFloat(String(outgoingsRows[244][cIdx] || 0).replace(/[£,]/g, "")) || 0) : 0);
         const indicator = outgoingsRows[111] ? String(outgoingsRows[111][cIdx] || "").toUpperCase().trim() : "";
@@ -1433,6 +1445,7 @@ export default async function handler(req, res) {
       }
       outgoingsMeta.salariesDel.push(sDel);
       outgoingsMeta.salariesNonDel.push(sNonDel);
+      outgoingsMeta.directCostsAsContractors.push(dcContr);
       outgoingsMeta.makingUpCosBase.push(mCos);
       outgoingsMeta.makingUpCosBaseConf.push(mCosConf);
       outgoingsMeta.makingUpCosHardZero.push(mCosHz);
@@ -1494,6 +1507,7 @@ export default async function handler(req, res) {
         },
         currentYear: currentOutgoingsYear,
         mode,
+        directCostsMode,
         isRevenueMode: mode.toLowerCase() === "revenue",
         allocations: {
           1: nbY1,
@@ -1519,6 +1533,7 @@ export default async function handler(req, res) {
         },
       },
       mode,
+      directCostsMode,
       formOptions: {
         leadSources,
         productLines,

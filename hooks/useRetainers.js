@@ -87,7 +87,7 @@ export function useRetainers(initialClient = null) {
       const data = await res.json();
       if (data.success) {
         setTidyResult({ success: true, moves: data.moves });
-        loadRetainersJobs(retainersClient);
+        loadRetainersJobs(retainersClient, true);
       } else {
         setTidyResult({ success: false, error: data.error });
       }

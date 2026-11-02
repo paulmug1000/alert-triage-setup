@@ -285,7 +285,7 @@ export default function AddExpenseModal({ clientSheetId, clientName, onClose, on
               }}
             >
               {isSubmitting ? <Spinner size={14} color="#ffffff" /> : null}
-              <span>{isSubmitting ? "Saving..." : "Save Expense"}</span>
+              <span>{isSubmitting ? "Saving..." : "Save expense"}</span>
             </button>
           </div>
         </form>

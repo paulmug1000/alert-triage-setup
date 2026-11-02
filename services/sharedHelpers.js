@@ -101,7 +101,11 @@ export async function setMasterSwitch(sheets, spreadsheetId, sheetName, value) {
   console.log(`  ⏭ ${sheetName} switch left ON (permanent mode - not turning off)`);
 }
 
-export async function setCRMMode(sheets, spreadsheetId, mode) {
+export async function setCRMMode(sheets, spreadsheetId, mode, currentMode = null) {
+  if (currentMode !== null && String(currentMode).trim() === mode) {
+    console.log(`  ✅ CRMComp!B2 already set to ${mode} - skipping write and delay`);
+    return;
+  }
   await sheets.spreadsheets.values.update({
     spreadsheetId,
     range: "CRMComp!B2",
@@ -113,7 +117,8 @@ export async function setCRMMode(sheets, spreadsheetId, mode) {
   await new Promise(r => setTimeout(r, 1000));
 }
 
-export const GAS_LOCK_STALE_MS = 30 * 60 * 1000; // 30 minutes
+export const GAS_LOCK_STALE_MS = 10 * 60 * 1000; // 10 minutes (GAS hard execution limit is 6m)
+export const GAS_LOCK_FORCE_CLEAR_MS = 30 * 60 * 1000; // 30 minutes fallback clear if GAS trigger has not self-healed
 
 export async function checkAllGASLocks(sheets, masterSheetId, cachedData = null) {
   const result = { invoice: { locked: false }, expense: { locked: false }, crm: { locked: false } };
@@ -129,27 +134,46 @@ export async function checkAllGASLocks(sheets, masterSheetId, cachedData = null)
       }));
       row = (resp.data.values || [[]])[0] || [];
     }
+    const metaByType = {
+      invoice: { category: "INVOICES", label: "Invoice Sequence" },
+      expense: { category: "EXPENSES", label: "Expenses Sequence" },
+      crm:     { category: "CRM",      label: "CRM Sequence" },
+    };
     const check = async (fIdx, tIdx, name, fCell, tCell) => {
       const flag = String(row[fIdx] || "").trim().toUpperCase();
       const tsRaw = row[tIdx];
       if (flag !== "YES") return { locked: false };
       if (tsRaw) {
         const tsDate = new Date(tsRaw);
-        if (!isNaN(tsDate) && (Date.now() - tsDate.getTime()) > GAS_LOCK_STALE_MS) {
-          console.log(`  ⚠️ GAS lock for ${name} is stale - clearing`);
-          try {
-            await withRetry(() => sheets.spreadsheets.values.batchUpdate({
-              spreadsheetId: masterSheetId,
-              requestBody: {
-                data: [
-                  { range: `DataChgAlert!${fCell}`, values: [["NO"]] },
-                  { range: `DataChgAlert!${tCell}`, values: [[""]] },
-                ],
-                valueInputOption: "RAW"
-              }
-            }));
-          } catch (e) {}
-          return { locked: false };
+        const ageMs = !isNaN(tsDate) ? (Date.now() - tsDate.getTime()) : 0;
+        if (!isNaN(tsDate) && ageMs > GAS_LOCK_STALE_MS) {
+          const meta = metaByType[name] || { category: name.toUpperCase(), label: `${name} Sequence` };
+          const startedIso = tsDate.toISOString();
+          const staleTimeout = {
+            category: meta.category,
+            label: meta.label,
+            startedAt: startedIso,
+            summary: `Error: ${meta.label} Timeout`,
+            errorText: `${meta.label} - Execution timed out or terminated unexpectedly (exceeded GAS 6-minute execution limit).`,
+          };
+          if (ageMs > GAS_LOCK_FORCE_CLEAR_MS) {
+            console.log(`  ⚠️ GAS lock for ${name} is >30m stale - clearing in DataChgAlert`);
+            try {
+              await withRetry(() => sheets.spreadsheets.values.batchUpdate({
+                spreadsheetId: masterSheetId,
+                requestBody: {
+                  data: [
+                    { range: `DataChgAlert!${fCell}`, values: [["NO"]] },
+                    { range: `DataChgAlert!${tCell}`, values: [[""]] },
+                  ],
+                  valueInputOption: "RAW"
+                }
+              }));
+            } catch (e) {}
+          } else {
+            console.log(`  ⚠️ GAS lock for ${name} is >10m stale (${Math.round(ageMs / 60000)}m) - treating as timed out`);
+          }
+          return { locked: false, staleTimeout };
         }
       }
       return { locked: true, message: `The ${name} automation sequence is currently running for this client.` };

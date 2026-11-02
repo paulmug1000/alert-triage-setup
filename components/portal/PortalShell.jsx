@@ -3,6 +3,7 @@ import Link from "next/link";
 import { useRouter } from "next/router";
 import { SYSTEM_VERSION, getSystemCopyright } from "../../config/version";
 import { PmaTransitionSkeleton } from "../Skeleton";
+import { useModalScrollLock } from "../../hooks/useModalScrollLock";
 
 export default function PortalShell({
   clientName,
@@ -19,6 +20,7 @@ export default function PortalShell({
   children
 }) {
   const router = useRouter();
+  useModalScrollLock();
   const [openDropdown, setOpenDropdown] = useState(null); // 'perf' | 'cash' | 'keyData' | 'analysis' | 'user' | 'client' | null
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [navigatingToPma, setNavigatingToPma] = useState(false);

@@ -342,9 +342,23 @@ export default async function handler(req, res) {
       })
     );
 
-    // Group child rows in Pipeline sheet
-    if (pipelineChildRows.length > 0) {
-      try {
+    // Group child rows in Pipeline sheet and ensure target rows in Pipeline are visible
+    try {
+      const pipeRequests = [
+        {
+          updateDimensionProperties: {
+            range: {
+              sheetId: pipelineSheetId,
+              dimension: "ROWS",
+              startIndex: pipelineRow - 1,
+              endIndex: pipelineRow,
+            },
+            properties: { hiddenByUser: false },
+            fields: "hiddenByUser",
+          },
+        },
+      ];
+      if (pipelineChildRows.length > 0) {
         const childStartIndex = pipelineChildRows[0] - 1;
         const childEndIndex = pipelineChildRows[pipelineChildRows.length - 1];
         const existingPipeGroups = pipelineSheetObj.rowGroups || [];
@@ -356,18 +370,20 @@ export default async function handler(req, res) {
         );
 
         if (!exactMatch) {
-          const deleteReqs = overlappingGroups.map((g) => ({
-            deleteDimensionGroup: {
-              range: {
-                sheetId: pipelineSheetId,
-                dimension: "ROWS",
-                startIndex: g.range.startIndex,
-                endIndex: g.range.endIndex,
+          for (const g of overlappingGroups) {
+            pipeRequests.push({
+              deleteDimensionGroup: {
+                range: {
+                  sheetId: pipelineSheetId,
+                  dimension: "ROWS",
+                  startIndex: g.range.startIndex,
+                  endIndex: g.range.endIndex,
+                },
               },
-            },
-          }));
+            });
+          }
 
-          const addReq = {
+          pipeRequests.push({
             addDimensionGroup: {
               range: {
                 sheetId: pipelineSheetId,
@@ -376,20 +392,33 @@ export default async function handler(req, res) {
                 endIndex: childEndIndex,
               },
             },
-          };
-
-          await withRetry(() =>
-            sheets.spreadsheets.batchUpdate({
-              spreadsheetId: clientSheetId,
-              requestBody: {
-                requests: [...deleteReqs, addReq],
-              },
-            })
-          );
+          });
         }
-      } catch (groupErr) {
-        console.warn("⚠️ Grouping child rows in Pipeline warning (non-fatal):", groupErr.message);
+        pipeRequests.push({
+          updateDimensionProperties: {
+            range: {
+              sheetId: pipelineSheetId,
+              dimension: "ROWS",
+              startIndex: childStartIndex,
+              endIndex: childEndIndex,
+            },
+            properties: { hiddenByUser: false },
+            fields: "hiddenByUser",
+          },
+        });
       }
+      if (pipeRequests.length > 0) {
+        await withRetry(() =>
+          sheets.spreadsheets.batchUpdate({
+            spreadsheetId: clientSheetId,
+            requestBody: {
+              requests: pipeRequests,
+            },
+          })
+        );
+      }
+    } catch (groupErr) {
+      console.warn("⚠️ Grouping child rows in Pipeline warning (non-fatal):", groupErr.message);
     }
 
     // 7. Clear data from Confirmed sheet
@@ -410,9 +439,10 @@ export default async function handler(req, res) {
       );
     }
 
-    // If Confirmed had a dimension group for the child rows, remove it
-    if (confirmedChildRows.length > 0) {
-      try {
+    // If Confirmed had a dimension group for the child rows, remove it and unhide cleared rows
+    try {
+      const confCleanupReqs = [];
+      if (confirmedChildRows.length > 0) {
         const childStartIndex = confirmedChildRows[0] - 1;
         const childEndIndex = confirmedChildRows[confirmedChildRows.length - 1];
         const existingConfGroups = confirmedSheetObj.rowGroups || [];
@@ -420,29 +450,58 @@ export default async function handler(req, res) {
           (g) => g.range?.startIndex <= childStartIndex && g.range?.endIndex >= childEndIndex
         );
         if (groupToDelete) {
-          await withRetry(() =>
-            sheets.spreadsheets.batchUpdate({
-              spreadsheetId: clientSheetId,
-              requestBody: {
-                requests: [
-                  {
-                    deleteDimensionGroup: {
-                      range: {
-                        sheetId: confirmedSheetId,
-                        dimension: "ROWS",
-                        startIndex: groupToDelete.range.startIndex,
-                        endIndex: groupToDelete.range.endIndex,
-                      },
-                    },
-                  },
-                ],
+          confCleanupReqs.push(
+            {
+              deleteDimensionGroup: {
+                range: {
+                  sheetId: confirmedSheetId,
+                  dimension: "ROWS",
+                  startIndex: groupToDelete.range.startIndex,
+                  endIndex: groupToDelete.range.endIndex,
+                },
               },
-            })
+            },
+            {
+              updateDimensionProperties: {
+                range: {
+                  sheetId: confirmedSheetId,
+                  dimension: "ROWS",
+                  startIndex: groupToDelete.range.startIndex,
+                  endIndex: groupToDelete.range.endIndex,
+                },
+                properties: { hiddenByUser: false },
+                fields: "hiddenByUser",
+              },
+            }
           );
         }
-      } catch (delGroupErr) {
-        console.warn("⚠️ Delete dimension group in Confirmed warning (non-fatal):", delGroupErr.message);
       }
+      for (const rNum of clearRowRanges) {
+        confCleanupReqs.push({
+          updateDimensionProperties: {
+            range: {
+              sheetId: confirmedSheetId,
+              dimension: "ROWS",
+              startIndex: rNum - 1,
+              endIndex: rNum,
+            },
+            properties: { hiddenByUser: false },
+            fields: "hiddenByUser",
+          },
+        });
+      }
+      if (confCleanupReqs.length > 0) {
+        await withRetry(() =>
+          sheets.spreadsheets.batchUpdate({
+            spreadsheetId: clientSheetId,
+            requestBody: {
+              requests: confCleanupReqs,
+            },
+          })
+        );
+      }
+    } catch (delGroupErr) {
+      console.warn("⚠️ Delete dimension group in Confirmed warning (non-fatal):", delGroupErr.message);
     }
 
     // 8. Invalidate In-Memory and Redis caches

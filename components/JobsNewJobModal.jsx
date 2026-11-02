@@ -631,6 +631,9 @@ export default function JobsNewJobModal({
                   placeholder="0.00"
                   required
                 />
+                <div style={{ fontSize: "11px", color: "#64748b", marginTop: "3px" }}>
+                  For retainers, enter the monthly amount
+                </div>
               </div>
 
               <div>
@@ -1108,7 +1111,7 @@ export default function JobsNewJobModal({
                   <span style={{ fontSize: "16px" }}>📦</span>
                   <div>
                     <span style={{ fontSize: "13px", fontWeight: "700", color: "#854d0e" }}>
-                      Direct Costs & Expenses (Optional)
+                      Direct costs (Optional)
                     </span>
                     <span style={{ fontSize: "11px", color: "#ca8a04", marginLeft: "8px" }}>
                       {expenseActiveCount > 0

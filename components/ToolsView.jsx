@@ -591,7 +591,10 @@ export default function ToolsView({
     }
   };
 
+  const [eomActionBusy, setEomActionBusy] = useState("");
+
   const handleEomSaveNotes = (task, targetClientName = eomDetailClient) => {
+    setEomActionBusy(`notes_${task.taskId}`);
     fetch("/api/triage", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -605,11 +608,13 @@ export default function ToolsView({
         if (d.success) { setEomEditingNotesFor(""); reloadEomClientTasks(); }
         else setEomClientTasksError(d.error || "Failed to save notes");
       })
-      .catch(e => setEomClientTasksError(e.message));
+      .catch(e => setEomClientTasksError(e.message))
+      .finally(() => setEomActionBusy(""));
   };
 
   const handleEomSaveName = (task, targetClientName = eomDetailClient) => {
     if (!eomNameDraft.trim()) return;
+    setEomActionBusy(`name_${task.taskId}`);
     fetch("/api/triage", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -622,7 +627,8 @@ export default function ToolsView({
         if (d.success) { setEomEditingNameFor(""); reloadEomClientTasks(); }
         else setEomClientTasksError(d.error || "Failed to save name");
       })
-      .catch(e => setEomClientTasksError(e.message));
+      .catch(e => setEomClientTasksError(e.message))
+      .finally(() => setEomActionBusy(""));
   };
 
   const handleEomSaveNotelet = async () => {
@@ -651,7 +657,8 @@ export default function ToolsView({
   };
 
   const handleEomToggleTaskActive = (task) => {
-    fetch("/api/triage", {
+    setEomActionBusy(`toggle_${task.taskId}`);
+    return fetch("/api/triage", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         action: "eom_save_client_task", taskId: task.taskId, clientName: eomDetailClient,
@@ -664,7 +671,11 @@ export default function ToolsView({
         if (d.success) reloadEomClientTasks();
         else setEomClientTasksError(d.error || "Failed to update task");
       })
-      .catch(e => setEomClientTasksError(e.message));
+      .catch(e => setEomClientTasksError(e.message))
+      .finally(() => {
+        setEomActionBusy("");
+        setEomDeactivateConfirm(null);
+      });
   };
 
   const persistEomTaskOrder = (draggedTaskId, targetTaskId, targetClientName = eomDetailClient) => {
@@ -719,6 +730,7 @@ export default function ToolsView({
 
   const handleEomSaveTemplateEdit = (templateId) => {
     if (!eomTemplateDraft.name.trim()) return;
+    setEomActionBusy(`tpl_${templateId}`);
     fetch("/api/triage", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -735,7 +747,8 @@ export default function ToolsView({
           reloadEomTemplateManager();
         }
       })
-      .catch(e => console.error("eom_save_template error:", e));
+      .catch(e => console.error("eom_save_template error:", e))
+      .finally(() => setEomActionBusy(""));
   };
 
   const handleEomCreateTemplate = () => {
@@ -778,6 +791,7 @@ export default function ToolsView({
   };
 
   const handleSaveDefaultTaskEdit = (defaultTaskId) => {
+    setEomActionBusy(`deftask_${defaultTaskId}`);
     fetch("/api/triage", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -799,11 +813,13 @@ export default function ToolsView({
           setEomDefaultTasksError(d.error || "Failed to save default task");
         }
       })
-      .catch(e => setEomDefaultTasksError(e.message));
+      .catch(e => setEomDefaultTasksError(e.message))
+      .finally(() => setEomActionBusy(""));
   };
 
   const handleDeleteDefaultTask = (defaultTaskId) => {
     if (!confirm("Are you sure you want to remove this task from the default EoM tasks list?")) return;
+    setEomActionBusy(`deldef_${defaultTaskId}`);
     fetch("/api/triage", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -817,7 +833,8 @@ export default function ToolsView({
         if (d.success) loadDefaultTasks();
         else setEomDefaultTasksError(d.error || "Failed to delete default task");
       })
-      .catch(e => setEomDefaultTasksError(e.message));
+      .catch(e => setEomDefaultTasksError(e.message))
+      .finally(() => setEomActionBusy(""));
   };
 
   const handleAddNewDefaultTask = () => {
@@ -929,8 +946,8 @@ export default function ToolsView({
               <div style={styles.modalButtons}>
                 <button className="triage-btn" onClick={() => setEomEditingNotelet(null)} disabled={eomNoteletSaving} style={styles.buttonSecondary}>Cancel</button>
                 <button className="triage-btn" onClick={handleEomSaveNotelet} disabled={eomNoteletSaving}
-                  style={{ background: "#0066cc", color: "white", border: "none", borderRadius: "6px", padding: "9px 18px", fontWeight: "600", fontSize: "13px", cursor: "pointer", opacity: eomNoteletSaving ? 0.5 : 1 }}>
-                  {eomNoteletSaving ? "Saving..." : "Save note"}
+                  style={{ background: "#0066cc", color: "white", border: "none", borderRadius: "6px", padding: "9px 18px", fontWeight: "600", fontSize: "13px", cursor: eomNoteletSaving ? "default" : "pointer", opacity: eomNoteletSaving ? 0.7 : 1, display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                  {eomNoteletSaving ? <><Spinner size={12} color="#fff" /> Saving...</> : "Save note"}
                 </button>
               </div>
             </div>
@@ -939,18 +956,18 @@ export default function ToolsView({
       })()}
 
       {eomDeactivateConfirm && (
-        <div style={styles.modalOverlay} onClick={e => { if (e.target === e.currentTarget) setEomDeactivateConfirm(null); }}>
+        <div style={styles.modalOverlay} onClick={e => { if (e.target === e.currentTarget && !eomActionBusy) setEomDeactivateConfirm(null); }}>
           <div style={styles.modalCard}>
             <h3 style={styles.modalTitle}>Stop tracking this task?</h3>
             <p style={styles.modalSubtitle}>
               &quot;{eomDeactivateConfirm.name}&quot; will stop appearing on {eomDetailClient}&apos;s checklist. It won&apos;t be deleted - you can reactivate it later from the inactive tasks list.
             </p>
             <div style={{ display: "flex", gap: "10px", marginTop: "14px" }}>
-              <button onClick={() => { handleEomToggleTaskActive(eomDeactivateConfirm); setEomDeactivateConfirm(null); }}
-                style={{ padding: "8px 16px", background: "#dc2626", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "13px", fontWeight: "600" }}>
-                Stop tracking
+              <button disabled={eomActionBusy === `toggle_${eomDeactivateConfirm.taskId}`} onClick={() => handleEomToggleTaskActive(eomDeactivateConfirm)}
+                style={{ padding: "8px 16px", background: "#dc2626", color: "#fff", border: "none", borderRadius: "6px", cursor: eomActionBusy === `toggle_${eomDeactivateConfirm.taskId}` ? "default" : "pointer", opacity: eomActionBusy === `toggle_${eomDeactivateConfirm.taskId}` ? 0.7 : 1, fontSize: "13px", fontWeight: "600", display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                {eomActionBusy === `toggle_${eomDeactivateConfirm.taskId}` ? <><Spinner size={12} color="#fff" /> Stopping...</> : "Stop tracking"}
               </button>
-              <button onClick={() => setEomDeactivateConfirm(null)}
+              <button disabled={eomActionBusy === `toggle_${eomDeactivateConfirm.taskId}`} onClick={() => setEomDeactivateConfirm(null)}
                 style={{ padding: "8px 16px", background: "none", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>
                 Cancel
               </button>
@@ -1528,11 +1545,11 @@ export default function ToolsView({
                         </div>
                       )}
                       <div style={{ display: "flex", gap: "8px" }}>
-                        <button onClick={() => handleEomSaveTemplateEdit(tpl.templateId)}
-                          style={{ padding: "5px 12px", background: "#0066cc", color: "#fff", border: "none", borderRadius: "5px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
-                          Save
+                        <button disabled={eomActionBusy === `tpl_${tpl.templateId}`} onClick={() => handleEomSaveTemplateEdit(tpl.templateId)}
+                          style={{ padding: "5px 12px", background: "#0066cc", color: "#fff", border: "none", borderRadius: "5px", cursor: eomActionBusy === `tpl_${tpl.templateId}` ? "default" : "pointer", opacity: eomActionBusy === `tpl_${tpl.templateId}` ? 0.7 : 1, fontSize: "12px", fontWeight: "600", display: "inline-flex", alignItems: "center", gap: "5px" }}>
+                          {eomActionBusy === `tpl_${tpl.templateId}` ? <><Spinner size={11} color="#fff" /> Saving...</> : "Save"}
                         </button>
-                        <button onClick={() => setEomEditingTemplateId("")}
+                        <button disabled={eomActionBusy === `tpl_${tpl.templateId}`} onClick={() => setEomEditingTemplateId("")}
                           style={{ padding: "5px 12px", background: "none", border: "1px solid #ddd", borderRadius: "5px", cursor: "pointer", fontSize: "12px" }}>
                           Cancel
                         </button>
@@ -1612,10 +1629,10 @@ export default function ToolsView({
                   )}
                   <div style={{ display: "flex", gap: "8px" }}>
                     <button disabled={eomAddingNewTemplateSaving} onClick={handleEomCreateTemplate}
-                      style={{ padding: "6px 14px", background: eomAddingNewTemplateSaving ? "#ccc" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: eomAddingNewTemplateSaving ? "default" : "pointer", fontSize: "12px", fontWeight: "600" }}>
-                      {eomAddingNewTemplateSaving ? "Saving..." : "Add"}
+                      style={{ padding: "6px 14px", background: "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: eomAddingNewTemplateSaving ? "default" : "pointer", opacity: eomAddingNewTemplateSaving ? 0.7 : 1, fontSize: "12px", fontWeight: "600", display: "inline-flex", alignItems: "center", gap: "5px" }}>
+                      {eomAddingNewTemplateSaving ? <><Spinner size={11} color="#fff" /> Saving...</> : "Add"}
                     </button>
-                    <button onClick={() => { setEomAddingNewTemplate(false); setEomNewTplName(""); setEomNewTplNotes(""); setEomNewTplLinkedFunction(""); setEomNewTplAlertCategories(""); }}
+                    <button disabled={eomAddingNewTemplateSaving} onClick={() => { setEomAddingNewTemplate(false); setEomNewTplName(""); setEomNewTplNotes(""); setEomNewTplLinkedFunction(""); setEomNewTplAlertCategories(""); }}
                       style={{ padding: "6px 14px", background: "none", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "12px" }}>
                       Cancel
                     </button>
@@ -1740,11 +1757,11 @@ export default function ToolsView({
                       </div>
 
                       <div style={{ display: "flex", gap: "8px" }}>
-                        <button onClick={() => handleSaveDefaultTaskEdit(task.defaultTaskId)}
-                          style={{ padding: "6px 14px", background: "#0066cc", color: "#fff", border: "none", borderRadius: "5px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
-                          Save
+                        <button disabled={eomActionBusy === `deftask_${task.defaultTaskId}`} onClick={() => handleSaveDefaultTaskEdit(task.defaultTaskId)}
+                          style={{ padding: "6px 14px", background: "#0066cc", color: "#fff", border: "none", borderRadius: "5px", cursor: eomActionBusy === `deftask_${task.defaultTaskId}` ? "default" : "pointer", opacity: eomActionBusy === `deftask_${task.defaultTaskId}` ? 0.7 : 1, fontSize: "12px", fontWeight: "600", display: "inline-flex", alignItems: "center", gap: "5px" }}>
+                          {eomActionBusy === `deftask_${task.defaultTaskId}` ? <><Spinner size={11} color="#fff" /> Saving...</> : "Save"}
                         </button>
-                        <button onClick={() => setEomEditingDefaultTaskId("")}
+                        <button disabled={eomActionBusy === `deftask_${task.defaultTaskId}`} onClick={() => setEomEditingDefaultTaskId("")}
                           style={{ padding: "6px 14px", background: "none", border: "1px solid #ddd", borderRadius: "5px", cursor: "pointer", fontSize: "12px" }}>
                           Cancel
                         </button>
@@ -1767,11 +1784,12 @@ export default function ToolsView({
                       </div>
                       <div style={{ display: "flex", alignItems: "center", gap: "6px" }} onClick={e => e.stopPropagation()}>
                         <button
+                          disabled={eomActionBusy === `deldef_${task.defaultTaskId}`}
                           onClick={() => handleDeleteDefaultTask(task.defaultTaskId)}
                           title="Remove this default task"
-                          style={{ background: "none", border: "none", color: "#94a3b8", cursor: "pointer", fontSize: "14px", padding: "2px 6px" }}
+                          style={{ background: "none", border: "none", color: "#94a3b8", cursor: eomActionBusy === `deldef_${task.defaultTaskId}` ? "default" : "pointer", fontSize: "14px", padding: "2px 6px", display: "inline-flex", alignItems: "center" }}
                         >
-                          ✕
+                          {eomActionBusy === `deldef_${task.defaultTaskId}` ? <Spinner size={11} /> : "✕"}
                         </button>
                       </div>
                     </div>
@@ -1851,11 +1869,12 @@ export default function ToolsView({
                     <button
                       disabled={eomAddingDefaultTaskSaving}
                       onClick={handleAddNewDefaultTask}
-                      style={{ padding: "6px 14px", background: eomAddingDefaultTaskSaving ? "#ccc" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: eomAddingDefaultTaskSaving ? "default" : "pointer", fontSize: "12px", fontWeight: "600" }}
+                      style={{ padding: "6px 14px", background: "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: eomAddingDefaultTaskSaving ? "default" : "pointer", opacity: eomAddingDefaultTaskSaving ? 0.7 : 1, fontSize: "12px", fontWeight: "600", display: "inline-flex", alignItems: "center", gap: "5px" }}
                     >
-                      {eomAddingDefaultTaskSaving ? "Saving..." : "Add to Defaults"}
+                      {eomAddingDefaultTaskSaving ? <><Spinner size={11} color="#fff" /> Saving...</> : "Add to defaults"}
                     </button>
                     <button
+                      disabled={eomAddingDefaultTaskSaving}
                       onClick={() => { setEomAddingDefaultTask(false); setEomNewDefaultTaskTemplateId(""); setEomNewDefaultTaskName(""); setEomNewDefaultTaskNotes(""); }}
                       style={{ padding: "6px 14px", background: "none", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "12px" }}
                     >
@@ -1979,8 +1998,10 @@ export default function ToolsView({
                         <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
                           <input value={eomNameDraft} onChange={e => setEomNameDraft(e.target.value)} autoFocus
                             style={{ flex: 1, padding: "4px 7px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "13px", fontWeight: "600" }} />
-                          <button onClick={() => handleEomSaveName(t)} style={{ padding: "4px 9px", background: "#0066cc", color: "#fff", border: "none", borderRadius: "5px", cursor: "pointer", fontSize: "11px", fontWeight: "600" }}>Save</button>
-                          <button onClick={() => setEomEditingNameFor("")} style={{ padding: "4px 9px", background: "none", border: "1px solid #ddd", borderRadius: "5px", cursor: "pointer", fontSize: "11px" }}>Cancel</button>
+                          <button disabled={eomActionBusy === `name_${t.taskId}`} onClick={() => handleEomSaveName(t)} style={{ padding: "4px 9px", background: "#0066cc", color: "#fff", border: "none", borderRadius: "5px", cursor: eomActionBusy === `name_${t.taskId}` ? "default" : "pointer", opacity: eomActionBusy === `name_${t.taskId}` ? 0.7 : 1, fontSize: "11px", fontWeight: "600", display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                            {eomActionBusy === `name_${t.taskId}` ? <><Spinner size={10} color="#fff" /> Saving...</> : "Save"}
+                          </button>
+                          <button disabled={eomActionBusy === `name_${t.taskId}`} onClick={() => setEomEditingNameFor("")} style={{ padding: "4px 9px", background: "none", border: "1px solid #ddd", borderRadius: "5px", cursor: "pointer", fontSize: "11px" }}>Cancel</button>
                         </div>
                       ) : (
                         <span onClick={t.templateId ? undefined : () => { setEomEditingNameFor(t.taskId); setEomNameDraft(t.name); }}
@@ -2092,8 +2113,10 @@ export default function ToolsView({
                       <div style={{ marginTop: "8px", display: "flex", gap: "8px" }}>
                         <input value={eomNotesDraft} onChange={e => setEomNotesDraft(e.target.value)} placeholder="Client-specific notes..."
                           style={{ flex: 1, padding: "5px 8px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "12px" }} />
-                        <button onClick={() => handleEomSaveNotes(t)} style={{ padding: "5px 10px", background: "#0066cc", color: "#fff", border: "none", borderRadius: "5px", cursor: "pointer", fontSize: "11px" }}>Save</button>
-                        <button onClick={() => setEomEditingNotesFor("")} style={{ padding: "5px 10px", background: "none", border: "1px solid #ddd", borderRadius: "5px", cursor: "pointer", fontSize: "11px" }}>Cancel</button>
+                        <button disabled={eomActionBusy === `notes_${t.taskId}`} onClick={() => handleEomSaveNotes(t)} style={{ padding: "5px 10px", background: "#0066cc", color: "#fff", border: "none", borderRadius: "5px", cursor: eomActionBusy === `notes_${t.taskId}` ? "default" : "pointer", opacity: eomActionBusy === `notes_${t.taskId}` ? 0.7 : 1, fontSize: "11px", display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                          {eomActionBusy === `notes_${t.taskId}` ? <><Spinner size={10} color="#fff" /> Saving...</> : "Save"}
+                        </button>
+                        <button disabled={eomActionBusy === `notes_${t.taskId}`} onClick={() => setEomEditingNotesFor("")} style={{ padding: "5px 10px", background: "none", border: "1px solid #ddd", borderRadius: "5px", cursor: "pointer", fontSize: "11px" }}>Cancel</button>
                       </div>
                     ) : (
                       <div onClick={() => { setEomEditingNotesFor(t.taskId); setEomNotesDraft(t.clientNotes || ""); }}
@@ -2111,7 +2134,7 @@ export default function ToolsView({
                     onClick={() => handleApplyDefaultTasksToClient(eomDetailClient)}
                     style={{ padding: "6px 14px", background: "#f0fdf4", border: "1px solid #bbf7d0", color: "#166534", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}
                   >
-                    📋 Apply Default EoM Tasks
+                    📋 Apply default EoM tasks
                   </button>
                 </div>
               )}
@@ -2123,7 +2146,9 @@ export default function ToolsView({
                 {inactiveTasks.map(t => (
                   <div key={t.taskId} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", color: "#aaa" }}>
                     <span>{t.name}</span>
-                    <button onClick={() => handleEomToggleTaskActive(t)} style={{ background: "none", border: "none", color: "#0066cc", cursor: "pointer", fontSize: "11px" }}>Reactivate</button>
+                    <button disabled={eomActionBusy === `toggle_${t.taskId}`} onClick={() => handleEomToggleTaskActive(t)} style={{ background: "none", border: "none", color: "#0066cc", cursor: eomActionBusy === `toggle_${t.taskId}` ? "default" : "pointer", fontSize: "11px", display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                      {eomActionBusy === `toggle_${t.taskId}` ? <><Spinner size={10} /> Reactivating...</> : "Reactivate"}
+                    </button>
                   </div>
                 ))}
               </details>
@@ -2175,10 +2200,10 @@ export default function ToolsView({
                     style={{ width: "100%", padding: "7px 10px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "13px", marginBottom: "10px", boxSizing: "border-box" }} />
                   <div style={{ display: "flex", gap: "8px" }}>
                     <button disabled={eomAddTaskSaving} onClick={handleEomAddTask}
-                      style={{ padding: "6px 14px", background: eomAddTaskSaving ? "#ccc" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: eomAddTaskSaving ? "default" : "pointer", fontSize: "12px", fontWeight: "600" }}>
-                      {eomAddTaskSaving ? "Saving..." : "Add"}
+                      style={{ padding: "6px 14px", background: "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: eomAddTaskSaving ? "default" : "pointer", opacity: eomAddTaskSaving ? 0.7 : 1, fontSize: "12px", fontWeight: "600", display: "inline-flex", alignItems: "center", gap: "5px" }}>
+                      {eomAddTaskSaving ? <><Spinner size={11} color="#fff" /> Saving...</> : "Add"}
                     </button>
-                    <button onClick={() => { setEomAddTaskMode(""); setEomNewTaskTemplateId(""); setEomNewTaskName(""); setEomNewTaskNotes(""); setEomCreatingNewTemplate(false); setEomNewTemplateName(""); }}
+                    <button disabled={eomAddTaskSaving} onClick={() => { setEomAddTaskMode(""); setEomNewTaskTemplateId(""); setEomNewTaskName(""); setEomNewTaskNotes(""); setEomCreatingNewTemplate(false); setEomNewTemplateName(""); }}
                       style={{ padding: "6px 14px", background: "none", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "12px" }}>
                       Cancel
                     </button>
@@ -2314,7 +2339,7 @@ export default function ToolsView({
                       {f.result.importedEmployees && f.result.importedEmployees.length > 0 && (
                         <div style={{ marginBottom: "16px", overflowX: "auto" }}>
                           <div style={{ fontSize: "13px", fontWeight: "700", color: "#1e293b", marginBottom: "8px" }}>
-                            Imported Employee Data ({f.result.importedEmployees.length} employee{f.result.importedEmployees.length !== 1 ? "s" : ""})
+                            Imported employee data ({f.result.importedEmployees.length} employee{f.result.importedEmployees.length !== 1 ? "s" : ""})
                           </div>
                           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px", border: "1px solid #e2e8f0", borderRadius: "8px", overflow: "hidden", background: "#fff" }}>
                             <thead>
@@ -2357,7 +2382,7 @@ export default function ToolsView({
                             </tbody>
                             <tfoot>
                               <tr style={{ background: "#f8fafc", borderTop: "2px solid #cbd5e1", fontWeight: 700 }}>
-                                <td style={{ padding: "8px 10px", color: "#0f172a" }}>Total Imported</td>
+                                <td style={{ padding: "8px 10px", color: "#0f172a" }}>Total imported</td>
                                 {f.result.columnsSummary ? (
                                   f.result.columnsSummary.map(col => (
                                     <td key={col.key} style={{ padding: "8px 10px", textAlign: "right", color: "#0f172a", fontFamily: "monospace" }}>
@@ -2369,7 +2394,7 @@ export default function ToolsView({
                                 )}
                               </tr>
                               <tr style={{ background: "#f1f5f9", fontWeight: 700 }}>
-                                <td style={{ padding: "8px 10px", color: "#334155" }}>{isAdmin ? "Sheet Total (Row 55)" : "Pulse total"}</td>
+                                <td style={{ padding: "8px 10px", color: "#334155" }}>{isAdmin ? "Sheet total (Row 55)" : "Pulse total"}</td>
                                 {f.result.columnsSummary ? (
                                   f.result.columnsSummary.map(col => (
                                     <td key={col.key} style={{ padding: "8px 10px", textAlign: "right", color: "#334155", fontFamily: "monospace" }}>
@@ -2403,36 +2428,6 @@ export default function ToolsView({
                                 )}
                               </tr>
                             </tfoot>
-                          </table>
-                        </div>
-                      )}
-
-                      {f.result.totalsCheck && (
-                        <div style={{ marginBottom: "12px" }}>
-                          <div style={{ fontSize: "12px", fontWeight: "700", color: "#444", marginBottom: "6px" }}>
-                            Totals check <span style={{ fontWeight: "400", color: "#888" }}>
-                              ({f.result.totalsSource === "document" ? "from a totals row on the document" : "AI-calculated - no totals row found on the document"})
-                            </span>
-                          </div>
-                          <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "12px" }}>
-                            <thead>
-                              <tr style={{ borderBottom: "2px solid #e0e0e0" }}>
-                                {["Category", "Document", "Written", "Diff", ""].map(h => (
-                                  <th key={h} style={{ padding: "5px 8px", textAlign: "left", fontWeight: "600", color: "#555" }}>{h}</th>
-                                ))}
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {f.result.totalsCheck.map(row => (
-                                <tr key={row.category} style={{ borderBottom: "1px solid #f0f0f0" }}>
-                                  <td style={{ padding: "5px 8px" }}>{categoryLabels[row.category] || row.category}</td>
-                                  <td style={{ padding: "5px 8px" }}>£{row.documentTotal.toFixed(2)}</td>
-                                  <td style={{ padding: "5px 8px" }}>£{row.writtenTotal.toFixed(2)}</td>
-                                  <td style={{ padding: "5px 8px", color: row.reconciled ? "#166534" : "#dc2626" }}>£{row.diff.toFixed(2)}</td>
-                                  <td style={{ padding: "5px 8px" }}>{row.reconciled ? "✓" : "⚠️"}</td>
-                                </tr>
-                              ))}
-                            </tbody>
                           </table>
                         </div>
                       )}

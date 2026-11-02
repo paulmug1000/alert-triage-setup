@@ -61,6 +61,23 @@ export const parseSheetDate = (dStr) => {
   return isNaN(d.getTime()) ? null : d;
 };
 
+const sheetDateToIso = (dStr) => {
+  const d = parseSheetDate(dStr);
+  if (!d) return "";
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+};
+
+const isoToSheetDate = (isoStr) => {
+  if (!isoStr) return "";
+  const d = parseSheetDate(isoStr);
+  if (!d) return isoStr;
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  return `${d.getDate()}-${months[d.getMonth()]}-${d.getFullYear()}`;
+};
+
 const formatCurrency = (val) => {
   if (val === null || val === undefined || val === "") return "£0.00";
   const s = String(val).trim();
@@ -150,6 +167,7 @@ export default function SalariesView({
   const [editingEmployee, setEditingEmployee] = useState(null); // { sheetRow, employeeData }
   const [editingDividendMonth, setEditingDividendMonth] = useState(null); // { sheetRow, colLetter, label, value }
   const [editingDividendPct, setEditingDividendPct] = useState(false);
+  const [savingDividendPct, setSavingDividendPct] = useState(false);
   const [dividendPctInput, setDividendPctInput] = useState(() => salariesData?.dividends?.fyConfigs?.[salariesData?.dividends?.defaultFyIndex ?? 0]?.row118?.deliveryPct || "0%");
 
   // Resolve active client from managedClient or initialClient
@@ -158,16 +176,28 @@ export default function SalariesView({
       const match = (allOutgoingsClients || []).find(
         (c) => c.clientName?.toLowerCase() === managedClient.clientName?.toLowerCase()
       ) || managedClient;
-      setSelectedClient(match);
+      setSelectedClient((prev) => {
+        if (prev?.clientName?.toLowerCase() !== match?.clientName?.toLowerCase()) {
+          setSalariesData(null);
+          setLoading(true);
+        }
+        return match;
+      });
       return;
     }
     if (initialClient) {
       const clientNameStr = typeof initialClient === "string" ? initialClient : initialClient?.clientName;
       const match = (allOutgoingsClients || []).find(
         (c) => c.clientName?.toLowerCase() === clientNameStr?.toLowerCase()
-      );
+      ) || (typeof initialClient === "object" ? initialClient : null);
       if (match) {
-        setSelectedClient(match);
+        setSelectedClient((prev) => {
+          if (prev?.clientName?.toLowerCase() !== match?.clientName?.toLowerCase()) {
+            setSalariesData(null);
+            setLoading(true);
+          }
+          return match;
+        });
         return;
       }
     }
@@ -187,7 +217,7 @@ export default function SalariesView({
   };
 
   // Fetch Salaries Data with in-memory caching
-  const fetchSalaries = useCallback(async (client, bypassCache = false) => {
+  const fetchSalaries = useCallback(async (client, bypassCache = false, silent = false) => {
     if (!client || !client.masterSheetId || !client.clientSheetId) return;
     const cleanId = cleanSheetId ? cleanSheetId(client.clientSheetId) : client.clientSheetId;
 
@@ -199,7 +229,7 @@ export default function SalariesView({
       setDividendPctInput(cached.data.dividends?.fyConfigs?.[cached.data.dividends?.defaultFyIndex ?? 0]?.row118?.deliveryPct || "0%");
       setLoading(false);
       if (!cached.isStale) return;
-    } else {
+    } else if (!silent) {
       setLoading(true);
     }
 
@@ -293,9 +323,32 @@ export default function SalariesView({
       if (!res.ok || !data.success) {
         throw new Error(data.error || "Failed to save employee");
       }
+      // Optimistically update employee in salariesData so the list updates immediately without flashing
+      setSalariesData((prev) => {
+        if (!prev?.employees) return prev;
+        const nextEmployees = prev.employees.map((emp) =>
+          emp.sheetRow === updatedEmp.sheetRow
+            ? {
+                ...emp,
+                name: String(updatedEmp.name || "").trim(),
+                role: String(updatedEmp.role || "").trim(),
+                fteSalary: String(updatedEmp.fteSalary || "").trim(),
+                fte: String(updatedEmp.fte || "").trim(),
+                startDate: String(updatedEmp.startDate || "").trim(),
+                endDate: String(updatedEmp.endDate || "").trim(),
+                deliveryPct: String(updatedEmp.deliveryPct || "").trim(),
+                studentLoan: String(updatedEmp.studentLoan || "").trim(),
+                pension: String(updatedEmp.pension || "").trim(),
+                notes: { ...(emp.notes || {}), name: String(updatedEmp.notes?.name || "") },
+                isPopulated: !!String(updatedEmp.name || "").trim(),
+              }
+            : emp
+        );
+        return { ...prev, employees: nextEmployees };
+      });
       setEditingEmployee(null);
       showSuccess(`Saved employee "${updatedEmp.name || (isSysAdmin ? "Row " + updatedEmp.sheetRow : "employee")}" successfully.`);
-      await fetchSalaries(selectedClient, true);
+      fetchSalaries(selectedClient, true, true);
     } catch (err) {
       console.error("Save employee error:", err);
       setError(err.message || "Error saving employee");
@@ -308,6 +361,7 @@ export default function SalariesView({
   const handleSaveDividendPct = async () => {
     if (!selectedClient) return;
     setSaving(true);
+    setSavingDividendPct(true);
     setError(null);
     try {
       const res = await fetch("/api/pma/salaries", {
@@ -328,12 +382,13 @@ export default function SalariesView({
       }
       setEditingDividendPct(false);
       showSuccess("Updated Dividends Delivery % successfully.");
-      await fetchSalaries(selectedClient, true);
+      await fetchSalaries(selectedClient, true, true);
     } catch (err) {
       console.error("Save dividend pct error:", err);
       setError(err.message || "Error saving delivery %");
     } finally {
       setSaving(false);
+      setSavingDividendPct(false);
     }
   };
 
@@ -363,7 +418,7 @@ export default function SalariesView({
       }
       setEditingDividendMonth(null);
       showSuccess("Updated dividend amount successfully.");
-      await fetchSalaries(selectedClient, true);
+      await fetchSalaries(selectedClient, true, true);
     } catch (err) {
       console.error("Save dividend amount error:", err);
       setError(err.message || "Error saving dividend amount");
@@ -479,19 +534,19 @@ export default function SalariesView({
           transition: "background 0.1s",
         }}
       >
-        <td style={{ padding: "6px 10px", color: "#94a3b8", fontWeight: 600 }}>{isSysAdmin ? emp.sheetRow : emp.index + 1}</td>
-        <td style={{ position: "relative", padding: "6px 10px", fontWeight: 600, color: isFormer ? "#475569" : "#1e293b", whiteSpace: "nowrap" }}>
+        <td style={{ padding: "5px 4px", color: "#94a3b8", fontWeight: 600, fontSize: "11px" }}>{isSysAdmin ? emp.sheetRow : emp.index + 1}</td>
+        <td style={{ position: "relative", padding: "5px 5px", fontWeight: 600, color: isFormer ? "#475569" : "#1e293b", whiteSpace: "normal", wordBreak: "break-word", lineHeight: 1.25, maxWidth: "115px", minWidth: "75px" }}>
           <CellNoteIndicator note={emp.notes?.name} />
-          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "4px", flexWrap: "wrap" }}>
             <span>{emp.name}</span>
             {isFormer && (
               <span
                 style={{
-                  fontSize: "10px",
+                  fontSize: "9px",
                   fontWeight: 700,
                   background: "#f1f5f9",
                   color: "#64748b",
-                  padding: "1px 5px",
+                  padding: "1px 4px",
                   borderRadius: "4px",
                   border: "1px solid #e2e8f0",
                 }}
@@ -501,34 +556,28 @@ export default function SalariesView({
             )}
           </div>
         </td>
-        <td style={{ position: "relative", padding: "6px 10px", color: "#475569", whiteSpace: "nowrap" }}>
-          <CellNoteIndicator note={emp.notes?.role} />
+        <td style={{ position: "relative", padding: "5px 5px", color: "#475569", whiteSpace: "normal", wordBreak: "break-word", lineHeight: 1.25, maxWidth: "105px", minWidth: "68px" }}>
           {emp.role || "-"}
         </td>
-        <td style={{ position: "relative", padding: "6px 10px", textAlign: "right", color: "#0f172a", fontWeight: 600 }}>
-          <CellNoteIndicator note={emp.notes?.fteSalary} />
+        <td style={{ position: "relative", padding: "5px 4px", textAlign: "right", color: "#0f172a", fontWeight: 600, whiteSpace: "nowrap" }}>
           {emp.fteSalary ? formatCurrency(emp.fteSalary) : "-"}
         </td>
-        <td style={{ position: "relative", padding: "6px 8px", textAlign: "center", color: "#475569" }}>
-          <CellNoteIndicator note={emp.notes?.fte} />
+        <td style={{ position: "relative", padding: "5px 3px", textAlign: "center", color: "#475569", whiteSpace: "nowrap" }}>
           {emp.fte || "-"}
         </td>
-        <td style={{ position: "relative", padding: "6px 8px", color: "#64748b", whiteSpace: "nowrap" }}>
-          <CellNoteIndicator note={emp.notes?.startDate} />
+        <td style={{ position: "relative", padding: "5px 4px", color: "#64748b", whiteSpace: "nowrap", fontSize: "11px" }}>
           {emp.startDate || "-"}
         </td>
-        <td style={{ position: "relative", padding: "6px 8px", color: isFormer ? "#b91c1c" : "#64748b", fontWeight: isFormer ? 600 : 400, whiteSpace: "nowrap" }}>
-          <CellNoteIndicator note={emp.notes?.endDate} />
+        <td style={{ position: "relative", padding: "5px 4px", color: isFormer ? "#b91c1c" : "#64748b", fontWeight: isFormer ? 600 : 400, whiteSpace: "nowrap", fontSize: "11px" }}>
           {emp.endDate || "-"}
         </td>
-        <td style={{ position: "relative", padding: "6px 8px", textAlign: "center" }}>
-          <CellNoteIndicator note={emp.notes?.deliveryPct} />
+        <td style={{ position: "relative", padding: "5px 3px", textAlign: "center", whiteSpace: "nowrap" }}>
           <span
             style={{
               display: "inline-block",
-              padding: "1px 6px",
+              padding: "1px 4px",
               borderRadius: "4px",
-              fontSize: "11px",
+              fontSize: "10.5px",
               fontWeight: 600,
               background: emp.deliveryPct === "100%" ? "#dcfce7" : emp.deliveryPct === "0%" ? "#f1f5f9" : "#e0f2fe",
               color: emp.deliveryPct === "100%" ? "#166534" : emp.deliveryPct === "0%" ? "#475569" : "#0369a1",
@@ -537,16 +586,14 @@ export default function SalariesView({
             {emp.deliveryPct || "0%"}
           </span>
         </td>
-        <td style={{ position: "relative", padding: "6px 8px", textAlign: "center", color: "#64748b" }}>
-          <CellNoteIndicator note={emp.notes?.studentLoan} />
+        <td style={{ position: "relative", padding: "5px 3px", textAlign: "center", color: "#64748b" }}>
           {emp.studentLoan === "Yes" ? <span style={{ color: "#d97706", fontWeight: 700 }}>Y</span> : "N"}
         </td>
-        <td style={{ position: "relative", padding: "6px 8px", textAlign: "center", color: "#64748b" }}>
-          <CellNoteIndicator note={emp.notes?.pension} />
+        <td style={{ position: "relative", padding: "5px 3px", textAlign: "center", color: "#64748b" }}>
           {emp.pension === "Yes" ? <span style={{ color: "#166534", fontWeight: 700 }}>Y</span> : "N"}
         </td>
         {isAdmin && (
-          <td style={{ padding: "6px 8px", textAlign: "center" }}>
+          <td style={{ padding: "5px 3px", textAlign: "center" }}>
             <button
               type="button"
               onClick={() => setEditingEmployee({ ...emp })}
@@ -554,7 +601,7 @@ export default function SalariesView({
                 background: "#f1f5f9",
                 border: "1px solid #cbd5e1",
                 borderRadius: "4px",
-                padding: "2px 6px",
+                padding: "2px 5px",
                 fontSize: "11px",
                 cursor: "pointer",
                 color: "#0047AB",
@@ -695,10 +742,13 @@ export default function SalariesView({
         <EditClientSelector
           clients={allOutgoingsClients}
           onSelectClient={(c) => {
+            setSalariesData(null);
+            setError(null);
+            setLoading(true);
             setSelectedClient(c);
             onSelectClient?.(c);
           }}
-          loading={loading}
+          loading={(allOutgoingsClients || []).length === 0}
           title="Select a client to view and manage salaries:"
         />
       )}
@@ -745,7 +795,7 @@ export default function SalariesView({
         </div>
       )}
 
-      {selectedClient && (loading || !salariesData) && !error && (
+      {(selectedClient || managedClient) && (loading || !salariesData) && !salariesData && !error && (
         <PmaSalariesSkeleton />
       )}
 
@@ -763,11 +813,11 @@ export default function SalariesView({
               marginBottom: "28px",
             }}
           >
-            {/* ── LEFT PANEL: EMPLOYEE INFORMATION (MAX 50% WIDTH) ── */}
+            {/* ── LEFT PANEL: EMPLOYEE INFORMATION (MAX 54% WIDTH) ── */}
             <div
               style={{
-                flex: "1 1 540px",
-                maxWidth: "50%",
+                flex: "1.12 1 560px",
+                maxWidth: "54%",
                 minWidth: "320px",
                 background: "#ffffff",
                 borderRadius: "8px",
@@ -879,21 +929,21 @@ export default function SalariesView({
 
               {/* Employees Table Container */}
               <div style={{ overflowX: "auto", overflowY: "auto", maxHeight: "680px", flex: 1 }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px", textAlign: "left" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "11.5px", textAlign: "left" }}>
                   <thead>
                     <tr style={{ background: "#f1f5f9", position: "sticky", top: 0, zIndex: 10, borderBottom: "1px solid #cbd5e1" }}>
-                      <th style={{ padding: "8px 10px", fontWeight: 700, color: "#475569", width: "35px" }}>#</th>
-                      <th style={{ padding: "8px 10px", fontWeight: 700, color: "#475569" }}>Name</th>
-                      <th style={{ padding: "8px 10px", fontWeight: 700, color: "#475569" }}>Role</th>
-                      <th style={{ padding: "8px 10px", fontWeight: 700, color: "#475569", textAlign: "right" }}>FTE Salary</th>
-                      <th style={{ padding: "8px 8px", fontWeight: 700, color: "#475569", textAlign: "center" }}>FTE</th>
-                      <th style={{ padding: "8px 8px", fontWeight: 700, color: "#475569" }}>Start</th>
-                      <th style={{ padding: "8px 8px", fontWeight: 700, color: "#475569" }}>End</th>
-                      <th style={{ padding: "8px 8px", fontWeight: 700, color: "#475569", textAlign: "center" }}>Del %</th>
-                      <th style={{ padding: "8px 8px", fontWeight: 700, color: "#475569", textAlign: "center" }}>Loan</th>
-                      <th style={{ padding: "8px 8px", fontWeight: 700, color: "#475569", textAlign: "center" }}>Pens</th>
+                      <th style={{ padding: "6px 4px", fontWeight: 700, color: "#475569", width: "24px" }}>#</th>
+                      <th style={{ padding: "6px 5px", fontWeight: 700, color: "#475569", maxWidth: "115px" }}>Name</th>
+                      <th style={{ padding: "6px 5px", fontWeight: 700, color: "#475569", maxWidth: "105px" }}>Role</th>
+                      <th style={{ padding: "6px 4px", fontWeight: 700, color: "#475569", textAlign: "right", whiteSpace: "nowrap" }}>FTE salary</th>
+                      <th style={{ padding: "6px 3px", fontWeight: 700, color: "#475569", textAlign: "center" }}>FTE</th>
+                      <th style={{ padding: "6px 4px", fontWeight: 700, color: "#475569" }}>Start</th>
+                      <th style={{ padding: "6px 4px", fontWeight: 700, color: "#475569" }}>End</th>
+                      <th style={{ padding: "6px 3px", fontWeight: 700, color: "#475569", textAlign: "center", whiteSpace: "nowrap" }}>Del %</th>
+                      <th style={{ padding: "6px 3px", fontWeight: 700, color: "#475569", textAlign: "center" }}>Loan</th>
+                      <th style={{ padding: "6px 3px", fontWeight: 700, color: "#475569", textAlign: "center" }}>Pens</th>
                       {isAdmin && (
-                        <th style={{ padding: "8px 8px", fontWeight: 700, color: "#475569", textAlign: "center", width: "45px" }}>
+                        <th style={{ padding: "6px 3px", fontWeight: 700, color: "#475569", textAlign: "center", width: "32px" }}>
                           Edit
                         </th>
                       )}
@@ -1353,9 +1403,11 @@ export default function SalariesView({
                           type="text"
                           value={dividendPctInput}
                           onChange={(e) => setDividendPctInput(e.target.value)}
-                          onBlur={handleSaveDividendPct}
                           onKeyDown={(e) => {
-                            if (e.key === "Enter") handleSaveDividendPct();
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              handleSaveDividendPct();
+                            }
                           }}
                           style={{
                             width: "55px",
@@ -1372,7 +1424,7 @@ export default function SalariesView({
                         <button
                           type="button"
                           onClick={handleSaveDividendPct}
-                          disabled={saving}
+                          disabled={saving || savingDividendPct}
                           style={{
                             padding: "3px 8px",
                             fontSize: "11px",
@@ -1381,10 +1433,13 @@ export default function SalariesView({
                             color: "#fff",
                             border: "none",
                             borderRadius: "4px",
-                            cursor: "pointer",
+                            cursor: (saving || savingDividendPct) ? "default" : "pointer",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "4px",
                           }}
                         >
-                          Save
+                          {savingDividendPct ? <><Spinner size={10} color="#fff" /> Saving...</> : "Save"}
                         </button>
                       </div>
                     ) : (
@@ -1762,9 +1817,9 @@ export default function SalariesView({
                     Start date
                   </label>
                   <input
-                    type="text"
-                    value={editingEmployee.startDate || ""}
-                    onChange={(e) => setEditingEmployee({ ...editingEmployee, startDate: e.target.value })}
+                    type="date"
+                    value={sheetDateToIso(editingEmployee.startDate)}
+                    onChange={(e) => setEditingEmployee({ ...editingEmployee, startDate: isoToSheetDate(e.target.value) })}
                     style={{
                       width: "100%",
                       padding: "7px 10px",
@@ -1773,18 +1828,17 @@ export default function SalariesView({
                       fontSize: "13px",
                       boxSizing: "border-box",
                     }}
-                    placeholder="DD-Mon-YYYY"
                   />
                 </div>
 
                 <div>
                   <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "#475569", marginBottom: "4px" }}>
-                    End Date
+                    End date
                   </label>
                   <input
-                    type="text"
-                    value={editingEmployee.endDate || ""}
-                    onChange={(e) => setEditingEmployee({ ...editingEmployee, endDate: e.target.value })}
+                    type="date"
+                    value={sheetDateToIso(editingEmployee.endDate)}
+                    onChange={(e) => setEditingEmployee({ ...editingEmployee, endDate: isoToSheetDate(e.target.value) })}
                     style={{
                       width: "100%",
                       padding: "7px 10px",
@@ -1793,7 +1847,6 @@ export default function SalariesView({
                       fontSize: "13px",
                       boxSizing: "border-box",
                     }}
-                    placeholder="DD-Mon-YYYY (optional)"
                   />
                 </div>
 
@@ -1824,7 +1877,7 @@ export default function SalariesView({
                       checked={editingEmployee.studentLoan === "Yes"}
                       onChange={(e) => setEditingEmployee({ ...editingEmployee, studentLoan: e.target.checked ? "Yes" : "No" })}
                     />
-                    Student Loan?
+                    Student loan?
                   </label>
 
                   <label style={{ fontSize: "12px", fontWeight: 600, color: "#475569", display: "flex", alignItems: "center", gap: "6px" }}>
@@ -1838,210 +1891,30 @@ export default function SalariesView({
                 </div>
               </div>
 
-              {/* ── Expandable Cell Notes Section ── */}
+              {/* ── Single Employee Note Section (attached to Name field) ── */}
               <div style={{ marginTop: "14px", borderTop: "1px solid #e2e8f0", paddingTop: "12px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
-                  <span style={{ fontSize: "12px", fontWeight: 700, color: "#334155" }}>
-                    {isSysAdmin ? "Cell notes (Google Sheet notes)" : "Notes"}
-                  </span>
-                  <span style={{ fontSize: "11px", color: "#64748b" }}>
-                    Optional note per field
-                  </span>
-                </div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
-                  <div>
-                    <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "#64748b", marginBottom: "3px" }}>
-                      Name note
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="Add note for name..."
-                      value={editingEmployee.notes?.name || ""}
-                      onChange={(e) =>
-                        setEditingEmployee({
-                          ...editingEmployee,
-                          notes: { ...(editingEmployee.notes || {}), name: e.target.value },
-                        })
-                      }
-                      style={{
-                        width: "100%",
-                        padding: "5px 8px",
-                        borderRadius: "4px",
-                        border: "1px solid #cbd5e1",
-                        fontSize: "12px",
-                        boxSizing: "border-box",
-                      }}
-                    />
-                  </div>
-                  <div>
-                    <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "#64748b", marginBottom: "3px" }}>
-                      Role note
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="Add note for role..."
-                      value={editingEmployee.notes?.role || ""}
-                      onChange={(e) =>
-                        setEditingEmployee({
-                          ...editingEmployee,
-                          notes: { ...(editingEmployee.notes || {}), role: e.target.value },
-                        })
-                      }
-                      style={{
-                        width: "100%",
-                        padding: "5px 8px",
-                        borderRadius: "4px",
-                        border: "1px solid #cbd5e1",
-                        fontSize: "12px",
-                        boxSizing: "border-box",
-                      }}
-                    />
-                  </div>
-                  <div>
-                    <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "#64748b", marginBottom: "3px" }}>
-                      FTE salary note
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="Add note for salary..."
-                      value={editingEmployee.notes?.fteSalary || ""}
-                      onChange={(e) =>
-                        setEditingEmployee({
-                          ...editingEmployee,
-                          notes: { ...(editingEmployee.notes || {}), fteSalary: e.target.value },
-                        })
-                      }
-                      style={{
-                        width: "100%",
-                        padding: "5px 8px",
-                        borderRadius: "4px",
-                        border: "1px solid #cbd5e1",
-                        fontSize: "12px",
-                        boxSizing: "border-box",
-                      }}
-                    />
-                  </div>
-                  <div>
-                    <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "#64748b", marginBottom: "3px" }}>
-                      FTE note
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="Add note for FTE..."
-                      value={editingEmployee.notes?.fte || ""}
-                      onChange={(e) =>
-                        setEditingEmployee({
-                          ...editingEmployee,
-                          notes: { ...(editingEmployee.notes || {}), fte: e.target.value },
-                        })
-                      }
-                      style={{
-                        width: "100%",
-                        padding: "5px 8px",
-                        borderRadius: "4px",
-                        border: "1px solid #cbd5e1",
-                        fontSize: "12px",
-                        boxSizing: "border-box",
-                      }}
-                    />
-                  </div>
-                  <div>
-                    <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "#64748b", marginBottom: "3px" }}>
-                      Start date note
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="Add note for start date..."
-                      value={editingEmployee.notes?.startDate || ""}
-                      onChange={(e) =>
-                        setEditingEmployee({
-                          ...editingEmployee,
-                          notes: { ...(editingEmployee.notes || {}), startDate: e.target.value },
-                        })
-                      }
-                      style={{
-                        width: "100%",
-                        padding: "5px 8px",
-                        borderRadius: "4px",
-                        border: "1px solid #cbd5e1",
-                        fontSize: "12px",
-                        boxSizing: "border-box",
-                      }}
-                    />
-                  </div>
-                  <div>
-                    <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "#64748b", marginBottom: "3px" }}>
-                      End date note
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="Add note for end date..."
-                      value={editingEmployee.notes?.endDate || ""}
-                      onChange={(e) =>
-                        setEditingEmployee({
-                          ...editingEmployee,
-                          notes: { ...(editingEmployee.notes || {}), endDate: e.target.value },
-                        })
-                      }
-                      style={{
-                        width: "100%",
-                        padding: "5px 8px",
-                        borderRadius: "4px",
-                        border: "1px solid #cbd5e1",
-                        fontSize: "12px",
-                        boxSizing: "border-box",
-                      }}
-                    />
-                  </div>
-                  <div>
-                    <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "#64748b", marginBottom: "3px" }}>
-                      Delivery % note
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="Add note for delivery %..."
-                      value={editingEmployee.notes?.deliveryPct || ""}
-                      onChange={(e) =>
-                        setEditingEmployee({
-                          ...editingEmployee,
-                          notes: { ...(editingEmployee.notes || {}), deliveryPct: e.target.value },
-                        })
-                      }
-                      style={{
-                        width: "100%",
-                        padding: "5px 8px",
-                        borderRadius: "4px",
-                        border: "1px solid #cbd5e1",
-                        fontSize: "12px",
-                        boxSizing: "border-box",
-                      }}
-                    />
-                  </div>
-                  <div>
-                    <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "#64748b", marginBottom: "3px" }}>
-                      Student loan note
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="Add note for student loan..."
-                      value={editingEmployee.notes?.studentLoan || ""}
-                      onChange={(e) =>
-                        setEditingEmployee({
-                          ...editingEmployee,
-                          notes: { ...(editingEmployee.notes || {}), studentLoan: e.target.value },
-                        })
-                      }
-                      style={{
-                        width: "100%",
-                        padding: "5px 8px",
-                        borderRadius: "4px",
-                        border: "1px solid #cbd5e1",
-                        fontSize: "12px",
-                        boxSizing: "border-box",
-                      }}
-                    />
-                  </div>
-                </div>
+                <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "#475569", marginBottom: "4px" }}>
+                  Note
+                </label>
+                <input
+                  type="text"
+                  placeholder="Add an optional note for this employee..."
+                  value={editingEmployee.notes?.name || ""}
+                  onChange={(e) =>
+                    setEditingEmployee({
+                      ...editingEmployee,
+                      notes: { ...(editingEmployee.notes || {}), name: e.target.value },
+                    })
+                  }
+                  style={{
+                    width: "100%",
+                    padding: "7px 10px",
+                    borderRadius: "6px",
+                    border: "1px solid #cbd5e1",
+                    fontSize: "13px",
+                    boxSizing: "border-box",
+                  }}
+                />
               </div>
 
               <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", marginTop: "18px" }}>
@@ -2080,7 +1953,7 @@ export default function SalariesView({
                   }}
                 >
                   {saving && <Spinner size={14} color="#ffffff" />}
-                  Save Employee
+                  Save
                 </button>
               </div>
             </form>
@@ -2172,10 +2045,13 @@ export default function SalariesView({
                   color: "#fff",
                   fontSize: "12px",
                   fontWeight: 600,
-                  cursor: "pointer",
+                  cursor: saving ? "default" : "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
                 }}
               >
-                {saving ? "Saving..." : "Save"}
+                {saving ? <><Spinner size={12} color="#fff" /> Saving...</> : "Save"}
               </button>
             </div>
           </div>

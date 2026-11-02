@@ -326,6 +326,18 @@ export default async function handler(req, res) {
     try {
       const preWriteStructReqs = [
         {
+          updateDimensionProperties: {
+            range: {
+              sheetId: confirmedSheetId,
+              dimension: "ROWS",
+              startIndex: targetParentRow - 1,
+              endIndex: targetParentRow,
+            },
+            properties: { hiddenByUser: false },
+            fields: "hiddenByUser",
+          },
+        },
+        {
           repeatCell: {
             range: {
               sheetId: confirmedSheetId,
@@ -385,19 +397,46 @@ export default async function handler(req, res) {
             },
           });
           if (isRetainer) {
-            preWriteStructReqs.push({
-              updateDimensionGroup: {
-                dimensionGroup: {
+            preWriteStructReqs.push(
+              {
+                updateDimensionGroup: {
+                  dimensionGroup: {
+                    range: {
+                      sheetId: confirmedSheetId,
+                      dimension: "ROWS",
+                      startIndex: childStartIndex,
+                      endIndex: childEndIndex,
+                    },
+                    depth: 1,
+                    collapsed: true,
+                  },
+                  fields: "collapsed",
+                },
+              },
+              {
+                updateDimensionProperties: {
                   range: {
                     sheetId: confirmedSheetId,
                     dimension: "ROWS",
                     startIndex: childStartIndex,
                     endIndex: childEndIndex,
                   },
-                  depth: 1,
-                  collapsed: true,
+                  properties: { hiddenByUser: true },
+                  fields: "hiddenByUser",
                 },
-                fields: "collapsed",
+              }
+            );
+          } else {
+            preWriteStructReqs.push({
+              updateDimensionProperties: {
+                range: {
+                  sheetId: confirmedSheetId,
+                  dimension: "ROWS",
+                  startIndex: childStartIndex,
+                  endIndex: childEndIndex,
+                },
+                properties: { hiddenByUser: false },
+                fields: "hiddenByUser",
               },
             });
           }

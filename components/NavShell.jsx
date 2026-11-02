@@ -6,6 +6,7 @@ import Spinner from "./Spinner";
 import PortalShell from "./portal/PortalShell";
 import { MonthViewSkeleton } from "./Skeleton";
 import { useAppGlobals } from "../hooks/useAppGlobals";
+import { useModalScrollLock } from "../hooks/useModalScrollLock";
 
 // Global styles injected once - handles :hover/:active which React inline styles can't do
 const GLOBAL_STYLES = `
@@ -275,15 +276,16 @@ if (typeof document !== "undefined") {
 export default function NavShell({
   activeNav, activeViewTab = "fyPerformance", onSelectViewTab,
   onHome, onAlerts, onOverview, onTasks, onActivity, onAppLog,
-  onOutgoings, onInvoices, onRetainers, onJobs, onSalaries, onExpenses, onNBToFind, onBudget, onCash, onViews, onTools, onIntegrations, onSetup, onSettings,
+  onOutgoings, onPassThrough, onInvoices, onRetainers, onJobs, onSalaries, onExpenses, onNBToFind, onBudget, onCash, onViews, onTools, onIntegrations, onSetup, onSettings,
   homeAlertCount, taskCount, integrationsCount, user, onLogout, clients = [],
-  managedClient, onSelectManagedClient, onClearManagedClient,
+  managedClient, activeEditClient, onSelectManagedClient, onClearManagedClient,
   isSingleClientUser: propIsSingleClientUser, singleClient: propSingleClient,
   onBeforeNavigateToPulse,
   children
 }) {
   const router = useRouter();
   const { preloadClientData } = useAppGlobals();
+  useModalScrollLock();
   const isAdmin = !user?.isReadOnly && !!(user?.isAdmin || user?.role === "Admin");
   const [showMore, setShowMore] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
@@ -298,6 +300,7 @@ export default function NavShell({
   const [clientsLoading, setClientsLoading] = useState(false);
   const [clientSearch, setClientSearch] = useState("");
   const [manageClientSearch, setManageClientSearch] = useState("");
+  const [signingOut, setSigningOut] = useState(false);
 
   const isSingleClientUser = Boolean(
     propIsSingleClientUser ?? (
@@ -475,6 +478,15 @@ export default function NavShell({
     }
   };
 
+  const contextClient = managedClient || (isSingleClientUser ? singleClient : null) || activeEditClient;
+  const matchedContextClient = contextClient?.clientName
+    ? (portalClients.find((c) => c.clientName?.toLowerCase() === contextClient.clientName.toLowerCase()) || contextClient)
+    : null;
+  const effectiveContextDcMode = matchedContextClient?.directCostsMode || contextClient?.directCostsMode;
+  const showPassThroughNav = matchedContextClient
+    ? effectiveContextDcMode === "Pass-through"
+    : portalClients.some((c) => c.directCostsMode === "Pass-through");
+
   const allNavItems = [
     { key: "home", label: "Home", handler: onHome },
     { key: "alerts", label: "Alerts", handler: onAlerts, badge: homeAlertCount },
@@ -486,6 +498,7 @@ export default function NavShell({
       children: [
         { key: "jobs", label: "Jobs", handler: onJobs },
         { key: "outgoings", label: "Contractors", handler: onOutgoings },
+        ...(showPassThroughNav ? [{ key: "passthrough", label: "Pass-through costs", handler: onPassThrough }] : []),
         { key: "invoices", label: "Invoices", handler: onInvoices },
         { key: "retainers", label: "Retainers", handler: onRetainers },
         { key: "salaries", label: "Salaries", handler: onSalaries },
@@ -736,7 +749,6 @@ export default function NavShell({
                                   boxSizing: "border-box"
                                 }}
                                 onMouseEnter={(e) => {
-                                  preloadClientData?.(c);
                                   if (!isSelected) {
                                     e.currentTarget.style.background = "#f0f7ff";
                                     e.currentTarget.style.color = "#0047AB";
@@ -1015,14 +1027,21 @@ export default function NavShell({
                   {onLogout && (
                     <button
                       type="button"
-                      onClick={() => {
-                        setProfileDropdownOpen(false);
-                        onLogout();
+                      disabled={signingOut}
+                      onClick={async () => {
+                        setSigningOut(true);
+                        try {
+                          await onLogout();
+                        } finally {
+                          setSigningOut(false);
+                          setProfileDropdownOpen(false);
+                        }
                       }}
                       style={{
                         width: "100%",
                         display: "flex",
                         alignItems: "center",
+                        gap: "8px",
                         padding: "0.65rem 1rem",
                         fontSize: "13px",
                         fontWeight: 600,
@@ -1030,14 +1049,14 @@ export default function NavShell({
                         background: "transparent",
                         border: "none",
                         borderTop: "1px solid #e2e8f0",
-                        cursor: "pointer",
+                        cursor: signingOut ? "wait" : "pointer",
                         textAlign: "left",
                         transition: "background 0.15s"
                       }}
-                      onMouseEnter={(e) => { e.currentTarget.style.background = "#fee2e2"; }}
+                      onMouseEnter={(e) => { if (!signingOut) e.currentTarget.style.background = "#fee2e2"; }}
                       onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
                     >
-                      Sign out
+                      {signingOut ? <><Spinner size={12} color="#ef4444" /> Signing out...</> : "Sign out"}
                     </button>
                   )}
                 </div>

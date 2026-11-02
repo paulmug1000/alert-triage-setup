@@ -568,7 +568,7 @@ export function getAlertSummary(alert) {
     const inv = alert.summary;
     const vatLabel = inv?.vatIncluded && inv.vatIncluded > 0 ? " +VAT" : " (no VAT)";
     return `Invoice #${inv?.invoiceNo || inv?.reference || "?"} - £${inv?.amount?.toFixed(2) || "?"}${vatLabel}`;
-  } else if (alert.type === "expense" || alert.flagType === "expenseDashboardDiscr") {
+  } else if (alert.type === "expense" || alert.flagType === "expenseDashboardDiscr" || alert.flagType === "contractorsDashboardDiscr" || alert.flagType === "passThroughDashboardDiscr") {
     const exp = alert.summary;
     const vat = parseFloat(String(exp?.vatAmount || "0").replace(/[£$€,\s]/g, "")) || 0;
     const vatLabel = vat > 0 ? " +VAT" : " (no VAT)";
@@ -745,13 +745,50 @@ export const getFlagName = (flagKey) => {
     "crmCopiedConfDelete": "CRM copied to conf box DELETE",
     "retainerInvoicesCreated": "Retainer invoices created",
     "retainerInvoicesDeleted": "Retainer invoices deleted",
-    "expenseDashboardDiscr": "Expense discrepancy",
+    "contractorsDashboardDiscr": "Contractors discrepancies",
+    "passThroughDashboardDiscr": "Pass-through discrepancies",
+    "expenseDashboardDiscr": "Contractors discrepancies",
     "expenseAdded": "Expense added",
     "expenseUnreconGaps": "Stale unreceived expense date changed",
     "invoiceStaleUnsentChanges": "Stale unsent invoice send date changed",
   };
   return flagNames[flagKey] || flagKey;
 };
+
+export function matchesExpenseCategoryEntry(rawAcct, categoryEntry) {
+  const acct = String(rawAcct || "").trim().toLowerCase();
+  const entry = String(categoryEntry || "").trim().toLowerCase();
+  if (!acct || !entry) return false;
+  if (acct === entry) return true;
+  const acctParts = acct.split(" - ");
+  const entryParts = entry.split(" - ");
+  const acctCode = acctParts.length > 1 ? acctParts[0].trim() : "";
+  const acctName = acctParts.length > 1 ? acctParts.slice(1).join(" - ").trim() : acct;
+  const entryCode = entryParts.length > 1 ? entryParts[0].trim() : "";
+  const entryName = entryParts.length > 1 ? entryParts.slice(1).join(" - ").trim() : entry;
+  if (acctCode && entryCode && acctCode === entryCode) return true;
+  if (acctName && entryName && acctName === entryName) return true;
+  return false;
+}
+
+export function classifyExpenseCategory(accountName, contractorsList = [], passThroughList = [], directCostsMode = "Contractors") {
+  const mode = String(directCostsMode || "Contractors").trim() === "Pass-through" ? "Pass-through" : "Contractors";
+  if (mode !== "Pass-through") {
+    return { flagType: "contractorsDashboardDiscr", expenseCategoryType: "contractor" };
+  }
+  const isPassThrough = (passThroughList || []).some(entry => matchesExpenseCategoryEntry(accountName, entry));
+  if (isPassThrough) {
+    return { flagType: "passThroughDashboardDiscr", expenseCategoryType: "passthrough" };
+  }
+  const isContractor = (contractorsList || []).some(entry => matchesExpenseCategoryEntry(accountName, entry));
+  if (isContractor) {
+    return { flagType: "contractorsDashboardDiscr", expenseCategoryType: "contractor" };
+  }
+  if ((contractorsList || []).filter(Boolean).length === 0 && (passThroughList || []).filter(Boolean).length > 0) {
+    return { flagType: "passThroughDashboardDiscr", expenseCategoryType: "passthrough" };
+  }
+  return { flagType: "contractorsDashboardDiscr", expenseCategoryType: "contractor" };
+}
 
 export const RICH_NOACTION_FLAG_GROUP = {
   crmCopiedConfChecked: "crm",
@@ -765,11 +802,11 @@ export const RICH_NOACTION_FLAG_GROUP = {
 
 export const ALERT_CATEGORY_FLAGS = {
   invoice: ["invoiceDashboardDiscr", "invoiceStaleUnsentChanges"],
-  expense: ["expenseDashboardDiscr", "expenseAdded", "expenseUnreconGaps"],
+  expense: ["contractorsDashboardDiscr", "passThroughDashboardDiscr", "expenseDashboardDiscr", "expenseAdded", "expenseUnreconGaps"],
   crm: ["crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr"],
 };
 
-export const EXPENSE_SUPPRESSIBLE = new Set(["expenseDashboardDiscr"]);
+export const EXPENSE_SUPPRESSIBLE = new Set(["contractorsDashboardDiscr", "passThroughDashboardDiscr", "expenseDashboardDiscr"]);
 
 /**
  * Match assigned client identifier against an actual client name.
@@ -1049,18 +1086,20 @@ export function parseStaleExpenseDetail(detail = "") {
     if (res.changeText) {
       const parts = res.changeText.split(/,\s*/);
       res.changes = parts.map(p => {
-        const arrowMatch = p.match(/(Rec|Pay):\s*([A-Za-z0-9-]+)\s*->\s*([A-Za-z0-9-]+)/i);
+        const arrowMatch = p.match(/(Rec(?:\s*Date)?|Pay(?:\s*Date)?):\s*([A-Za-z0-9-\/]+)\s*(?:->|→)\s*([A-Za-z0-9-\/]+)/i);
         if (arrowMatch) {
-          const type = arrowMatch[1];
+          const rawType = arrowMatch[1].trim();
+          const isPay = rawType.toLowerCase().startsWith("pay");
+          const type = isPay ? "Pay" : "Rec";
           const from = arrowMatch[2];
           const to = arrowMatch[3];
-          if (type.toLowerCase() === "rec") res.recDate = to;
-          if (type.toLowerCase() === "pay") res.payDate = to;
+          if (!isPay) res.recDate = to;
+          if (isPay) res.payDate = to;
           return {
             type,
             from,
             to,
-            label: `${type.toLowerCase() === "pay" ? "Pay Date" : "Receive Date"}: ${from} → ${to}`
+            label: `${isPay ? "Pay date" : "Receive date"}: ${from} → ${to}`
           };
         }
         return { label: p.replace(/->/g, " → ") };
@@ -1115,13 +1154,18 @@ export function parseInfoAlertDetail(flagType, detail = "") {
   // 1. Stale Invoices
   if (flagType === "invoiceStaleUnsentChanges" || clean.includes("Stale Invoice")) {
     const res = { tab: "Confirmed" };
-    const confMatch = clean.match(/\[([A-Za-z]+)\]\s*(?:Stale Invoice\s*[-–:]\s*)?(?:Row\s*(\d+),\s*)?([^|]+)\|\s*([^,]+),\s*Slot\s*(\d+):\s*Date moved\s*([\d\-A-Za-z]+)\s*->\s*([\d\-A-Za-z]+)/i);
+    const confMatch = clean.match(/\[([A-Za-z]+)\]\s*(?:Stale Invoice\s*[-–:]\s*)?(?:Row\s*(\d+),\s*)?([^|]+)\|\s*([^,]+),\s*Slot\s*(\d+):\s*(?:£([0-9.,]+)\s*[-–]\s*)?Date moved\s*([\d\-A-Za-z]+)\s*->\s*([\d\-A-Za-z]+)/i);
     if (confMatch) {
       res.tab = confMatch[1] || "Confirmed";
       res.rowNum = confMatch[2] ? parseInt(confMatch[2], 10) : null;
       res.confirmedRow = res.rowNum;
       res.client = confMatch[3] ? confMatch[3].trim() : "";
       let rawJob = confMatch[4] ? confMatch[4].trim() : "";
+      const jobTypeMatch = rawJob.match(/\((Project|Retainer)\)\s*$/i);
+      if (jobTypeMatch) {
+        res.jobType = jobTypeMatch[1].charAt(0).toUpperCase() + jobTypeMatch[1].slice(1).toLowerCase();
+        rawJob = rawJob.replace(/\((Project|Retainer)\)\s*$/i, "").trim();
+      }
       const pCodeMatch = rawJob.match(/\[([A-Za-z0-9_-]+)\]/);
       if (pCodeMatch) {
         res.projectCode = pCodeMatch[1];
@@ -1129,11 +1173,15 @@ export function parseInfoAlertDetail(flagType, detail = "") {
       }
       res.job = rawJob;
       res.slot = confMatch[5] ? parseInt(confMatch[5], 10) : null;
+      if (confMatch[6]) {
+        const amtNum = parseFloat(String(confMatch[6]).replace(/,/g, ""));
+        res.invoiceAmount = !isNaN(amtNum) ? `£${amtNum.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : `£${confMatch[6].trim()}`;
+      }
       res.changes = [{
         type: "Send",
-        from: confMatch[6] ? confMatch[6].trim() : "",
-        to: confMatch[7] ? confMatch[7].trim() : "",
-        label: `Send Date: ${confMatch[6] ? confMatch[6].trim() : ""} → ${confMatch[7] ? confMatch[7].trim() : ""}`
+        from: confMatch[7] ? confMatch[7].trim() : "",
+        to: confMatch[8] ? confMatch[8].trim() : "",
+        label: `Send Date: ${confMatch[7] ? confMatch[7].trim() : ""} → ${confMatch[8] ? confMatch[8].trim() : ""}`
       }];
       res.highlight = "Stale unsent invoice send date moved forward to current month.";
       return res;
@@ -1318,6 +1366,45 @@ export function parseInfoAlertDetail(flagType, detail = "") {
 
   res.rawText = clean.replace(/^\[[^\]]+\]\s*/, "");
   return res;
+}
+
+/**
+ * Checks whether a "Stale unsent invoice send date changed" (invoiceStaleUnsentChanges) alert
+ * should be blocked/suppressed because an active "Expected retainer invoice not found at current retainer amount"
+ * (retainer_invoice) alert exists for the same job. Once the expected retainer alert is cleared,
+ * this returns false so the stale unsent alert appears if still present.
+ */
+export function isStaleInvoiceSuppressedByRetainerAlert(na, proactiveAlerts = []) {
+  if (!na || na.flagType !== "invoiceStaleUnsentChanges") return false;
+  if (!Array.isArray(proactiveAlerts) || proactiveAlerts.length === 0) return false;
+
+  const parsed = parseInfoAlertDetail(na.flagType, na.flagDetail || na.alertSummary || "");
+  const naTenant = String(na.clientName || "").trim().toLowerCase();
+  const naEndClient = String(parsed.client || na.analysisResult?.results?.[0]?.jobClient || na.analysisResult?.results?.[0]?.clientName || "").trim().toLowerCase();
+  const naJob = String(parsed.job || na.analysisResult?.results?.[0]?.jobName || "").trim().toLowerCase();
+  const naRow = parsed.confirmedRow || parsed.rowNum || na.analysisResult?.results?.[0]?.rowNum;
+
+  return proactiveAlerts.some((pa) => {
+    if (!pa || pa.alertType !== "retainer_invoice") return false;
+    const m = pa.metadata || {};
+    // Match expected retainer invoice not found at current retainer amount (or any active expected retainer invoice alert for this job)
+    const paTenant = String(pa.clientName || "").trim().toLowerCase();
+    if (naTenant && paTenant && naTenant !== paTenant) return false;
+
+    const paEndClient = String(m.endClientName || pa.endClientName || "").trim().toLowerCase();
+    const paJob = String(m.jobName || pa.jobName || "").trim().toLowerCase();
+    const paRow = m.confirmedRow || pa.confirmedRow;
+
+    if (naJob && paJob && naJob === paJob) {
+      if (!naEndClient || !paEndClient || naEndClient === paEndClient) {
+        return true;
+      }
+    }
+    if (naRow && paRow && Number(naRow) === Number(paRow)) {
+      return true;
+    }
+    return false;
+  });
 }
 
 /**

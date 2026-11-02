@@ -556,7 +556,7 @@ export function useTriageEngine({
       const isDupInvoice = Boolean(alert.isDuplicateInvoice || String(alert.data?.flags?.[4] || "").trim() === "1" || (alert.spreadsheetItems && alert.spreadsheetItems.length > 1));
       const isCrmAlert = alert.type === "crm" || alert.sheetName === "CRMComp" || Boolean(alert.alertType?.startsWith("crm")) || Boolean(alert.flagType?.startsWith("crm"));
       const isCrmMismatch = isCrmAlert && alert.subType === "field_mismatch";
-      const isExpAlert = alert.type === "expense" || alert.sheetName === "DirComp" || alert.flagType === "expenseDashboardDiscr" || alert.alertType === "expenseDashboardDiscr";
+      const isExpAlert = alert.type === "expense" || alert.sheetName === "DirComp" || alert.flagType === "expenseDashboardDiscr" || alert.flagType === "contractorsDashboardDiscr" || alert.flagType === "passThroughDashboardDiscr" || alert.alertType === "expenseDashboardDiscr" || alert.alertType === "contractorsDashboardDiscr" || alert.alertType === "passThroughDashboardDiscr";
       const isExpMismatch = isExpAlert && String(alert.data?.flags?.[0] || "").trim() !== "1";
 
       const hasStaleOrIncompleteCache = alert.options && alert.options.length > 0 && alert.options.some(opt => {
@@ -682,6 +682,14 @@ export function useTriageEngine({
         }).catch(() => {});
       }
       
+      const getAlertCategory = (a) => {
+        if (!a) return "";
+        if (a.type === "invoice" || a.sheetName === "InvComp" || a.flagType === "invoiceDashboardDiscr" || a.alertType === "invoiceDashboardDiscr") return "invoice";
+        if (a.type === "expense" || a.sheetName === "DirComp" || (String(a.flagType || "").includes("Discr") && !String(a.flagType || "").startsWith("crm"))) return "expense";
+        return a.type || a.sheetName || "";
+      };
+      const resolvedCategory = option.matchType !== "ignore" ? getAlertCategory(alert) : "";
+
       const targetFingerprint = alert.fingerprintHash;
       const targetSheetRow = `${alert.sheetName}-${alert.rowNumber}`;
       const targetTxn = alert.summary?.transactionId || alert.summary?.appId || option.outgoingsData?.transactionId || option.outgoingsData?.appId;
@@ -689,18 +697,56 @@ export function useTriageEngine({
         addAssignedAppId(targetTxn, selectedClient?.clientName);
       }
 
-      const updatedAlerts = clientAlerts.filter(a => {
-        if (targetFingerprint && a.fingerprintHash === targetFingerprint) return false;
-        if (targetSheetRow && `${a.sheetName}-${a.rowNumber}` === targetSheetRow) return false;
-        const aTxn = a.summary?.transactionId || a.summary?.appId;
-        if (targetTxn && aTxn && String(aTxn) === String(targetTxn)) return false;
-        return true;
-      });
+      const siblingAlertsToRegenerate = [];
+      const updatedAlerts = clientAlerts
+        .filter(a => {
+          if (targetFingerprint && a.fingerprintHash === targetFingerprint) return false;
+          if (targetSheetRow && `${a.sheetName}-${a.rowNumber}` === targetSheetRow) return false;
+          const aTxn = a.summary?.transactionId || a.summary?.appId;
+          if (targetTxn && aTxn && String(aTxn) === String(targetTxn)) return false;
+          return true;
+        })
+        .map(a => {
+          if (resolvedCategory && getAlertCategory(a) === resolvedCategory) {
+            const invalidated = { ...a, options: null };
+            siblingAlertsToRegenerate.push(invalidated);
+            return invalidated;
+          }
+          return a;
+        });
       setClientAlerts(updatedAlerts);
+
+      if (siblingAlertsToRegenerate.length > 0 && automationCommanderSheetId) {
+        siblingAlertsToRegenerate.forEach((sibAlert) => {
+          fetch("/api/triage", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "analyze_alert",
+              alert: sibAlert,
+              automationCommanderSheetId,
+              forceRefresh: true
+            }),
+          })
+            .then(r => r.json())
+            .then(resData => {
+              if (resData?.success && Array.isArray(resData.options)) {
+                setClientAlerts(prev => prev.map(item =>
+                  (item.sheetName === sibAlert.sheetName && item.rowNumber === sibAlert.rowNumber)
+                    ? { ...item, options: resData.options }
+                    : item
+                ));
+              }
+            })
+            .catch(() => { });
+        });
+      }
 
       let acceptedFlagType = alert.flagType || alert.alertType || alert.type || "";
       if (acceptedFlagType === "invoice") acceptedFlagType = "invoiceDashboardDiscr";
-      if (acceptedFlagType === "expense") acceptedFlagType = "expenseDashboardDiscr";
+      if (acceptedFlagType === "expense" || acceptedFlagType === "expenseDashboardDiscr") {
+        acceptedFlagType = alert.expenseCategoryType === "passthrough" ? "passThroughDashboardDiscr" : "contractorsDashboardDiscr";
+      }
       if (acceptedFlagType === "crm") acceptedFlagType = "crmPipeAppDiscr";
       
       setClientsWithFlags(prev => prev.map(c => {
@@ -781,7 +827,7 @@ export function useTriageEngine({
     const ACTIONABLE_FLAG_TYPE_MAP = {
       invoice: ["invoiceDashboardDiscr","retainerInvoicesCreated","retainerInvoicesDeleted","invoiceStaleUnsentChanges"],
       crm:     ["crmPipeDashDiscr","crmPipeAppDiscr","crmConfDashDiscr","crmConfAppDiscr"],
-      expense: ["expenseDashboardDiscr","expenseAdded","expenseUnreconGaps"],
+      expense: ["contractorsDashboardDiscr","passThroughDashboardDiscr","expenseDashboardDiscr","expenseAdded","expenseUnreconGaps"],
     };
     const FULL_FLAG_TYPE_MAP = {
       invoice: [...ACTIONABLE_FLAG_TYPE_MAP.invoice],
@@ -846,10 +892,10 @@ export function useTriageEngine({
   const liveAlertCount = useMemo(() => {
     const isAdmin = Boolean(user?.isAdmin || user?.role === "Admin");
     const ACTIONABLE_FLAG_KEYS_SET = new Set([
-      "invoiceDashboardDiscr", "expenseDashboardDiscr",
+      "invoiceDashboardDiscr", "contractorsDashboardDiscr", "passThroughDashboardDiscr", "expenseDashboardDiscr",
       "crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr",
     ]);
-    const EXPENSE_TYPES = new Set(["expenseDashboardDiscr"]);
+    const EXPENSE_TYPES = new Set(["contractorsDashboardDiscr", "passThroughDashboardDiscr", "expenseDashboardDiscr"]);
     const INVOICE_TYPES = new Set(["invoiceDashboardDiscr"]);
 
     return clientsWithFlags.reduce((total, c) => {
@@ -859,6 +905,7 @@ export function useTriageEngine({
       const invoiceIds = c.activeInvoiceIds || [];
       const validAssignedExp = expenseIds.filter(isIdMatch).length;
       const validAssignedInv = invoiceIds.filter(isIdMatch).length;
+      let remAssignedExp = validAssignedExp;
       
       let clientTotal = 0;
 
@@ -869,7 +916,9 @@ export function useTriageEngine({
 
         if (ACTIONABLE_FLAG_KEYS_SET.has(flagKey)) {
           if (EXPENSE_TYPES.has(flagKey)) {
-            count = Math.max(0, count - validAssignedExp);
+            const deduct = Math.min(count, remAssignedExp);
+            count -= deduct;
+            remAssignedExp -= deduct;
           }
           if (INVOICE_TYPES.has(flagKey)) {
             count = Math.max(0, count - validAssignedInv);
@@ -918,10 +967,15 @@ export function useTriageEngine({
 
     const categories = (categoriesStr || "").split(",").filter(Boolean);
     let total = 0;
+    let remAssignedExp = validAssignedExp;
     categories.forEach(cat => {
       (ALERT_CATEGORY_FLAGS[cat] || []).forEach(flagKey => {
         let count = client.alertCounts?.[flagKey] || 0;
-        if (EXPENSE_SUPPRESSIBLE.has(flagKey)) count = Math.max(0, count - validAssignedExp);
+        if (EXPENSE_SUPPRESSIBLE.has(flagKey)) {
+          const deduct = Math.min(count, remAssignedExp);
+          count -= deduct;
+          remAssignedExp -= deduct;
+        }
         if (flagKey === "invoiceDashboardDiscr") count = Math.max(0, count - validAssignedInv);
         total += count;
       });
@@ -936,13 +990,13 @@ export function useTriageEngine({
     const invoiceAlertTypes = new Set(["invoiceDashboardDiscr", "invoiceStaleUnsentChanges", "retainerInvoicesCreated", "retainerInvoicesDeleted"]);
     const crmAlertTypes = new Set(["crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr",
       "crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete"]);
-    const expenseAlertTypes = new Set(["expenseDashboardDiscr", "expenseAdded", "expenseUnreconGaps"]);
+    const expenseAlertTypes = new Set(["contractorsDashboardDiscr", "passThroughDashboardDiscr", "expenseDashboardDiscr", "expenseAdded", "expenseUnreconGaps"]);
 
     const remaining = remainingAlerts || [];
     const hasInvoiceFlag = !!(f.invoiceDashboardDiscr || f.invoiceStaleUnsentChanges || f.retainerInvoicesCreated || f.retainerInvoicesDeleted);
     const hasCRMFlag = !!(f.crmPipeDashDiscr || f.crmPipeAppDiscr || f.crmConfDashDiscr || f.crmConfAppDiscr ||
       f.crmCopiedConfChecked || f.crmCopiedConfUnchecked || f.crmCopiedConfDelete);
-    const hasExpenseFlag = !!(f.expenseDashboardDiscr || f.expenseAdded || f.expenseUnreconGaps);
+    const hasExpenseFlag = !!(f.contractorsDashboardDiscr || f.passThroughDashboardDiscr || f.expenseDashboardDiscr || f.expenseAdded || f.expenseUnreconGaps);
 
     const remainingInvoice = remaining.some(a => invoiceAlertTypes.has(a.flagType || a.type));
     const remainingCRM = remaining.some(a => crmAlertTypes.has(a.flagType || a.type));
@@ -1039,7 +1093,9 @@ export function useTriageEngine({
 
       let ignoredFlagType = alert.flagType || alert.alertType || alert.type || "";
       if (ignoredFlagType === "invoice") ignoredFlagType = "invoiceDashboardDiscr";
-      if (ignoredFlagType === "expense") ignoredFlagType = "expenseDashboardDiscr";
+      if (ignoredFlagType === "expense" || ignoredFlagType === "expenseDashboardDiscr") {
+        ignoredFlagType = alert.expenseCategoryType === "passthrough" ? "passThroughDashboardDiscr" : "contractorsDashboardDiscr";
+      }
       if (ignoredFlagType === "crm") ignoredFlagType = "crmPipeAppDiscr";
       
       setClientsWithFlags(prev => prev.map(c => {

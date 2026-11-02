@@ -239,47 +239,6 @@ export default function DeepDivePopover({
           }}
         />
 
-        {/* Header: Clean White Layout Matching Original WebApp */}
-        <div
-          style={{
-            background: "#ffffff",
-            padding: "14px 18px",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            borderBottom: "1px solid #e5e7eb",
-            flexShrink: 0,
-          }}
-        >
-          <div style={{ fontSize: "16px", fontWeight: 700, color: "#0047AB", letterSpacing: "-0.2px" }}>
-            {title}
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: "12px", flexShrink: 0 }}>
-            {total !== undefined && (
-              <div style={{ fontSize: "16px", fontWeight: 700, color: "#0047AB", whiteSpace: "nowrap" }}>
-                {formatGBP(total)}
-              </div>
-            )}
-            <button
-              type="button"
-              onClick={onClose}
-              aria-label="Close"
-              style={{
-                background: "transparent",
-                border: "none",
-                color: "#64748b",
-                fontSize: "18px",
-                cursor: "pointer",
-                padding: "2px 6px",
-                borderRadius: "4px",
-                lineHeight: 1
-              }}
-            >
-              ✕
-            </button>
-          </div>
-        </div>
-
         {/* Content Area */}
         <div
           className="deep-dive-content-area"
@@ -287,378 +246,242 @@ export default function DeepDivePopover({
             flex: 1,
             minHeight: 0,
             overflowY: "auto",
-            padding: hasSections ? "12px 12px 8px 12px" : "6px 0 8px 0",
+            padding: hasSections ? "0 12px 8px 12px" : "0 0 8px 0",
           }}
         >
-        {/* Render Sections (Staff Costs etc. with Expandable Cards) */}
-        {hasSections ? (
-          <div>
-            {sections.map((sec, sIdx) => {
-              const secKey = sec.key || sIdx;
-              const isAccordion = Boolean(sec.isAccordion);
-              const isExpanded = Boolean(openAccordions[secKey]);
-              const isAdjustment = Boolean(sec.isAdjustment);
-
-              if (isAdjustment) {
-                return (
-                  <div
-                    key={secKey}
-                    style={{
-                      display: "flex",
-                      alignItems: "flex-start",
-                      justifyContent: "space-between",
-                      gap: "20px",
-                      padding: "8px 14px",
-                      color: "#64748b",
-                      fontStyle: "italic",
-                      fontSize: "12px",
-                      borderTop: "1px dashed #e5e7eb",
-                      marginTop: "6px",
-                    }}
-                  >
-                    <span style={{ flex: 1, minWidth: 0, lineHeight: 1.4 }}>{sec.title}</span>
-                    <span style={{ fontWeight: 600, color: "#0047AB", whiteSpace: "nowrap", flexShrink: 0, minWidth: "95px", textAlign: "right" }}>{formatGBP(sec.amount)}</span>
-                  </div>
-                );
-              }
-
-              if (isAccordion) {
-                return (
-                  <div
-                    key={secKey}
-                    style={{
-                      border: "1px solid #e5e7eb",
-                      borderRadius: "6px",
-                      background: "#ffffff",
-                      marginBottom: "8px",
-                      overflow: "hidden",
-                    }}
-                  >
-                    <div
-                      onClick={() => toggleAccordion(secKey)}
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "center",
-                        gap: "20px",
-                        padding: "10px 14px",
-                        background: "#f8fafc",
-                        cursor: "pointer",
-                        fontWeight: 600,
-                        color: "#0047AB",
-                        fontSize: "14px",
-                        userSelect: "none",
-                      }}
-                    >
-                      <div style={{ display: "flex", alignItems: "center", gap: "8px", flex: 1, minWidth: 0 }}>
-                        <span
-                          style={{
-                            fontSize: "10px",
-                            transition: "transform 0.15s",
-                            transform: isExpanded ? "rotate(0deg)" : "rotate(-90deg)",
-                            display: "inline-block",
-                          }}
-                        >
-                          ▼
-                        </span>
-                        <span>{sec.title}</span>
-                      </div>
-                      <span style={{ whiteSpace: "nowrap", flexShrink: 0, minWidth: "95px", textAlign: "right" }}>{formatGBP(sec.amount)}</span>
-                    </div>
-
-                    {isExpanded && (
-                      <div style={{ borderTop: "1px solid #e5e7eb" }}>
-                        {(!sec.items || sec.items.length === 0) ? (
-                          isLoading ? (
-                            <DeepDiveSkeleton rows={2} />
-                          ) : (
-                            <div style={{ padding: "10px 14px", color: "#94a3b8", fontSize: "12px" }}>
-                              None in this period
-                            </div>
-                          )
-                        ) : (
-                          sec.items.map((item, iIdx) => (
-                            <div
-                              key={iIdx}
-                              style={{
-                                padding: "10px 14px",
-                                borderBottom: iIdx === sec.items.length - 1 ? "none" : "1px solid #f1f5f9",
-                                display: "flex",
-                                justifyContent: "space-between",
-                                alignItems: "flex-start",
-                                gap: "20px",
-                                fontSize: "13px",
-                              }}
-                            >
-                              <div style={{ color: "#111827", fontWeight: 500, flex: 1, minWidth: 0, lineHeight: 1.4 }}>
-                                {item.name}{item.role ? ` – ${item.role}` : ""}
-                              </div>
-                              <div style={{ fontWeight: 600, color: "#0047AB", whiteSpace: "nowrap", flexShrink: 0, minWidth: "95px", textAlign: "right" }}>
-                                {formatGBP(item.amount)}
-                              </div>
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    )}
-                  </div>
-                );
-              }
-
-              if (sec.isAdjustment) {
-                return (
-                  <div
-                    key={secKey}
-                    style={{
-                      border: "1px dashed #cbd5e1",
-                      borderRadius: "6px",
-                      background: "#f8fafc",
-                      marginBottom: "8px",
-                      padding: "8px 14px",
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "flex-start",
-                      gap: "20px",
-                      fontSize: "13px",
-                    }}
-                  >
-                    <span style={{ color: "#64748b", fontStyle: "italic", fontSize: "12px", flex: 1, minWidth: 0, lineHeight: 1.4 }}>{sec.title}</span>
-                    <span style={{ fontWeight: 700, color: "#0047AB", whiteSpace: "nowrap", flexShrink: 0, minWidth: "95px", textAlign: "right" }}>{formatGBP(sec.amount)}</span>
-                  </div>
-                );
-              }
-
-              // Flat Section (e.g. Dividends as salary, Making up CoS, Profit share)
-              return (
-                <div
-                  key={secKey}
-                  style={{
-                    border: "1px solid #e5e7eb",
-                    borderRadius: "6px",
-                    background: "#f8fafc",
-                    marginBottom: "8px",
-                    padding: "10px 14px",
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    gap: "20px",
-                    fontWeight: 600,
-                    color: "#0047AB",
-                    fontSize: "14px",
-                    userSelect: "none",
-                  }}
-                >
-                  <span style={{ flex: 1, minWidth: 0 }}>{sec.title}</span>
-                  <span style={{ whiteSpace: "nowrap", flexShrink: 0, minWidth: "95px", textAlign: "right" }}>{formatGBP(sec.amount)}</span>
-                </div>
-              );
-            })}
-            <div className="deep-dive-mobile-spacer" />
+          {/* Sticky Header Inside Scroll Container So Total Right-Aligns Exactly With Item Figures */}
+          <div
+            style={{
+              position: "sticky",
+              top: 0,
+              zIndex: 2,
+              background: "#ffffff",
+              margin: hasSections ? "0 -12px 12px -12px" : "0 0 6px 0",
+              padding: hasSections ? "14px 27px 14px 16px" : "14px 16px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: "20px",
+              borderBottom: "1px solid #e5e7eb",
+            }}
+          >
+            <div style={{ fontSize: "16px", fontWeight: 700, color: "#0047AB", letterSpacing: "-0.2px", flex: 1, minWidth: 0 }}>
+              {title}
+            </div>
+            {total !== undefined && (
+              <div style={{ fontSize: "16px", fontWeight: 700, color: "#0047AB", whiteSpace: "nowrap", flexShrink: 0, minWidth: "95px", textAlign: "right" }}>
+                {formatGBP(total)}
+              </div>
+            )}
           </div>
-        ) : (
-          /* Render Regular List (Revenue, Expenses, Cash receipts, Net Payroll/HMRC/Pension) */
-          <div>
-            {filteredItems.length === 0 ? (
-              isLoading ? (
-                <DeepDiveSkeleton rows={4} />
-              ) : (
-                <div style={{ padding: "2rem 1rem", textAlign: "center", color: "#64748b", fontSize: "13px" }}>
-                  No individual items recorded for this period
-                </div>
-              )
-            ) : (
-              filteredItems.map((item, idx) => {
-                const isAdjustment =
-                  item.name === "Manual adjustment" ||
-                  String(item.name || "").startsWith("Manual adjustment") ||
-                  item.name === "Rounding adjustment" ||
-                  item.name === "Scenario adjustment" ||
-                  item.name === "Manual scenario adjustment";
+
+          {/* Render Sections (Staff Costs etc. with Expandable Cards) */}
+          {hasSections ? (
+            <div>
+              {sections.map((sec, sIdx) => {
+                const secKey = sec.key || sIdx;
+                const isAccordion = Boolean(sec.isAccordion);
+                const isExpanded = Boolean(openAccordions[secKey]);
+                const isAdjustment = Boolean(sec.isAdjustment);
 
                 if (isAdjustment) {
                   return (
                     <div
-                      key={idx}
+                      key={secKey}
                       style={{
-                        padding: "8px 16px",
-                        borderTop: "1px dashed #cbd5e1",
-                        background: "#f8fafc",
                         display: "flex",
                         alignItems: "flex-start",
                         justifyContent: "space-between",
                         gap: "20px",
+                        padding: "8px 15px 8px 14px",
+                        color: "#64748b",
+                        fontStyle: "italic",
                         fontSize: "12px",
+                        borderTop: "1px dashed #e5e7eb",
+                        marginTop: "6px",
                       }}
                     >
-                      <div style={{ color: "#64748b", fontStyle: "italic", fontSize: "11.5px", flex: 1, minWidth: 0, lineHeight: 1.4 }}>
-                        {item.name}
-                      </div>
-                      <div
-                        style={{
-                          fontWeight: 700,
-                          color: "#0047AB",
-                          fontSize: "13px",
-                          whiteSpace: "nowrap",
-                          flexShrink: 0,
-                          minWidth: "95px",
-                          textAlign: "right",
-                        }}
-                      >
-                        {formatGBP(item.amount)}
-                      </div>
+                      <span style={{ flex: 1, minWidth: 0, lineHeight: 1.4 }}>{sec.title}</span>
+                      <span style={{ fontWeight: 600, color: "#0047AB", whiteSpace: "nowrap", flexShrink: 0, minWidth: "95px", textAlign: "right" }}>{formatGBP(sec.amount)}</span>
                     </div>
                   );
                 }
 
-                if (item.isTransaction) {
-                  const isCashTxn = Boolean(item.isCash);
-                  const dateDisplay = isCashTxn && item.paidDate
-                    ? (item.date && item.date !== item.paidDate ? `Paid: ${item.paidDate} (Inv: ${item.date})` : `Paid: ${item.paidDate}`)
-                    : (item.date || "—");
-
+                if (isAccordion) {
                   return (
                     <div
-                      key={idx}
+                      key={secKey}
                       style={{
-                        display: "flex",
-                        alignItems: "flex-start",
-                        justifyContent: "space-between",
-                        gap: "20px",
-                        padding: "7px 18px",
-                        borderBottom: idx === filteredItems.length - 1 ? "none" : "1px dashed #e2e8f0",
-                        fontSize: "11.5px",
-                      }}
-                    >
-                      <div style={{ flex: 1, minWidth: 0, paddingRight: "4px" }}>
-                        <div style={{ color: "#0f172a", fontWeight: 500, display: "flex", alignItems: "center", gap: "5px", flexWrap: "wrap" }}>
-                          <span style={{ color: "#64748b", fontSize: "10.5px" }}>{dateDisplay}</span>
-                          <span>{item.supplier}</span>
-                          {item.isUnreconciled && (
-                            <span
-                              style={{
-                                fontSize: "9px",
-                                padding: "1px 4px",
-                                background: "#fef3c7",
-                                color: "#92400e",
-                                border: "1px solid #fde68a",
-                                borderRadius: "3px",
-                                fontWeight: 600,
-                              }}
-                              title="Unreconciled bank statement line from Cashflow Reconciliation"
-                            >
-                              Pending Recon
-                            </span>
-                          )}
-                        </div>
-                        {item.ref ? (
-                          <div style={{ color: "#94a3b8", fontSize: "10px", marginTop: "1px" }}>
-                            Ref: {item.ref}
-                            {isCashTxn
-                              ? ((item.net !== undefined ? ` • Net: ${formatGBP(item.net)}` : "") + (item.vat > 0 ? ` • VAT: ${formatGBP(item.vat)}` : ""))
-                              : (item.vat > 0 ? ` • Gross: ${formatGBP(item.gross)}` : "")
-                            }
-                          </div>
-                        ) : (
-                          isCashTxn ? (
-                            (item.net !== undefined || item.vat > 0) && (
-                              <div style={{ color: "#94a3b8", fontSize: "10px", marginTop: "1px" }}>
-                                {item.net !== undefined ? `Net: ${formatGBP(item.net)}` : ""}{item.vat > 0 ? ` • VAT: ${formatGBP(item.vat)}` : ""}
-                              </div>
-                            )
-                          ) : (
-                            item.vat > 0 && (
-                              <div style={{ color: "#94a3b8", fontSize: "10px", marginTop: "1px" }}>
-                                Gross: {formatGBP(item.gross)}
-                              </div>
-                            )
-                          )
-                        )}
-                      </div>
-                      <div
-                        style={{
-                          fontWeight: 600,
-                          color: isCashTxn ? "#0047AB" : "#334155",
-                          whiteSpace: "nowrap",
-                          flexShrink: 0,
-                          minWidth: "95px",
-                          textAlign: "right",
-                        }}
-                      >
-                        {formatGBP(isCashTxn ? (item.amount !== undefined ? item.amount : -Math.abs(item.gross || 0)) : (item.net !== undefined ? item.net : (item.amount || item.gross || 0)))}
-                      </div>
-                    </div>
-                  );
-                }
-
-                const hasTxns = Array.isArray(item.transactions) && item.transactions.length > 0;
-                const itemKey = `pop_cat_${idx}_${item.name}`;
-                const isSearchMatchInTxns = Boolean(
-                  searchTerm.trim() &&
-                  item.transactions?.some(
-                    (t) =>
-                      (t.supplier && t.supplier.toLowerCase().includes(searchTerm.toLowerCase().trim())) ||
-                      (t.ref && t.ref.toLowerCase().includes(searchTerm.toLowerCase().trim()))
-                  )
-                );
-                const isExpanded = Boolean(openAccordions[itemKey]) || isSearchMatchInTxns;
-
-                if (hasTxns) {
-                  const unrecCount = item.transactions.filter((t) => t.isUnreconciled).length;
-                  const displayedTxns =
-                    searchTerm.trim() && !item.name.toLowerCase().includes(searchTerm.toLowerCase().trim())
-                      ? item.transactions.filter(
-                          (t) =>
-                            (t.supplier && t.supplier.toLowerCase().includes(searchTerm.toLowerCase().trim())) ||
-                            (t.ref && t.ref.toLowerCase().includes(searchTerm.toLowerCase().trim()))
-                        )
-                      : item.transactions;
-
-                  return (
-                    <div
-                      key={idx}
-                      style={{
-                        borderBottom: idx === filteredItems.length - 1 ? "none" : "1px solid #f1f5f9",
+                        border: "1px solid #e5e7eb",
+                        borderRadius: "6px",
+                        background: "#ffffff",
+                        marginBottom: "8px",
+                        overflow: "hidden",
                       }}
                     >
                       <div
-                        onClick={() => toggleAccordion(itemKey)}
+                        onClick={() => toggleAccordion(secKey)}
                         style={{
-                          padding: "9px 16px",
                           display: "flex",
-                          alignItems: "center",
                           justifyContent: "space-between",
+                          alignItems: "center",
                           gap: "20px",
-                          fontSize: "12px",
+                          padding: "10px 14px",
+                          background: "#f8fafc",
                           cursor: "pointer",
-                          background: isExpanded ? "#f8fafc" : "transparent",
-                          transition: "background 0.15s ease",
+                          fontWeight: 600,
+                          color: "#0047AB",
+                          fontSize: "14px",
                           userSelect: "none",
                         }}
                       >
-                        <div style={{ display: "flex", alignItems: "center", gap: "8px", flex: 1, minWidth: 0, flexWrap: "wrap" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px", flex: 1, minWidth: 0 }}>
                           <span
                             style={{
-                              fontSize: "9px",
-                              color: "#64748b",
-                              transition: "transform 0.15s ease",
+                              fontSize: "10px",
+                              transition: "transform 0.15s",
                               transform: isExpanded ? "rotate(0deg)" : "rotate(-90deg)",
                               display: "inline-block",
                             }}
                           >
                             ▼
                           </span>
-                          <span style={{ fontWeight: 600, color: "#111827" }}>{item.name}</span>
-                          <span
-                            style={{
-                              fontSize: "10.5px",
-                              padding: "1px 5px",
-                              borderRadius: "8px",
-                              background: "#f1f5f9",
-                              color: "#64748b",
-                            }}
-                          >
-                            {item.transactions.length}
-                          </span>
+                          <span>{sec.title}</span>
+                        </div>
+                        <span style={{ whiteSpace: "nowrap", flexShrink: 0, minWidth: "95px", textAlign: "right" }}>{formatGBP(sec.amount)}</span>
+                      </div>
+
+                      {isExpanded && (
+                        <div style={{ borderTop: "1px solid #e5e7eb" }}>
+                          {(!sec.items || sec.items.length === 0) ? (
+                            isLoading ? (
+                              <DeepDiveSkeleton rows={2} />
+                            ) : (
+                              <div style={{ padding: "10px 14px", color: "#94a3b8", fontSize: "12px" }}>
+                                None in this period
+                              </div>
+                            )
+                          ) : (
+                            sec.items.map((item, iIdx) => (
+                              <div
+                                key={iIdx}
+                                style={{
+                                  padding: "10px 14px",
+                                  borderBottom: iIdx === sec.items.length - 1 ? "none" : "1px solid #f1f5f9",
+                                  display: "flex",
+                                  justifyContent: "space-between",
+                                  alignItems: "flex-start",
+                                  gap: "20px",
+                                  fontSize: "13px",
+                                }}
+                              >
+                                <div style={{ color: "#111827", fontWeight: 500, flex: 1, minWidth: 0, lineHeight: 1.4 }}>
+                                  <div>{item.name}{item.role ? ` – ${item.role}` : ""}</div>
+                                  {item.detail && (
+                                    <div style={{ fontSize: "11px", color: "#64748b", fontWeight: 400, marginTop: "2px" }}>
+                                      {item.detail}
+                                    </div>
+                                  )}
+                                </div>
+                                <div style={{ fontWeight: 600, color: "#0047AB", whiteSpace: "nowrap", flexShrink: 0, minWidth: "95px", textAlign: "right" }}>
+                                  {formatGBP(item.amount)}
+                                </div>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
+
+                if (sec.isAdjustment) {
+                  return (
+                    <div
+                      key={secKey}
+                      style={{
+                        border: "1px dashed #cbd5e1",
+                        borderRadius: "6px",
+                        background: "#f8fafc",
+                        marginBottom: "8px",
+                        padding: "8px 14px",
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "flex-start",
+                        gap: "20px",
+                        fontSize: "13px",
+                      }}
+                    >
+                      <span style={{ color: "#64748b", fontStyle: "italic", fontSize: "12px", flex: 1, minWidth: 0, lineHeight: 1.4 }}>{sec.title}</span>
+                      <span style={{ fontWeight: 700, color: "#0047AB", whiteSpace: "nowrap", flexShrink: 0, minWidth: "95px", textAlign: "right" }}>{formatGBP(sec.amount)}</span>
+                    </div>
+                  );
+                }
+
+                // Flat Section (e.g. Dividends as salary, Making up CoS, Profit share)
+                return (
+                  <div
+                    key={secKey}
+                    style={{
+                      border: "1px solid #e5e7eb",
+                      borderRadius: "6px",
+                      background: "#f8fafc",
+                      marginBottom: "8px",
+                      padding: "10px 14px",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      gap: "20px",
+                      fontWeight: 600,
+                      color: "#0047AB",
+                      fontSize: "14px",
+                      userSelect: "none",
+                    }}
+                  >
+                    <span style={{ flex: 1, minWidth: 0 }}>{sec.title}</span>
+                    <span style={{ whiteSpace: "nowrap", flexShrink: 0, minWidth: "95px", textAlign: "right" }}>{formatGBP(sec.amount)}</span>
+                  </div>
+                );
+              })}
+              <div className="deep-dive-mobile-spacer" />
+            </div>
+          ) : (
+            /* Render Regular List (Revenue, Expenses, Cash receipts, Net Payroll/HMRC/Pension) */
+            <div>
+              {filteredItems.length === 0 ? (
+                isLoading ? (
+                  <DeepDiveSkeleton rows={4} />
+                ) : (
+                  <div style={{ padding: "2rem 1rem", textAlign: "center", color: "#64748b", fontSize: "13px" }}>
+                    No individual items recorded for this period
+                  </div>
+                )
+              ) : (
+                filteredItems.map((item, idx) => {
+                  const isAdjustment =
+                    item.name === "Manual adjustment" ||
+                    String(item.name || "").startsWith("Manual adjustment") ||
+                    item.name === "Rounding adjustment" ||
+                    item.name === "Scenario adjustment" ||
+                    item.name === "Manual scenario adjustment";
+
+                  if (isAdjustment) {
+                    return (
+                      <div
+                        key={idx}
+                        style={{
+                          padding: "8px 16px",
+                          borderTop: "1px dashed #cbd5e1",
+                          background: "#f8fafc",
+                          display: "flex",
+                          alignItems: "flex-start",
+                          justifyContent: "space-between",
+                          gap: "20px",
+                          fontSize: "12px",
+                        }}
+                      >
+                        <div style={{ color: "#64748b", fontStyle: "italic", fontSize: "11.5px", flex: 1, minWidth: 0, lineHeight: 1.4 }}>
+                          {item.name}
                         </div>
                         <div
                           style={{
@@ -674,169 +497,336 @@ export default function DeepDivePopover({
                           {formatGBP(item.amount)}
                         </div>
                       </div>
+                    );
+                  }
 
-                      {isExpanded && (
-                        <div style={{ background: "#f8fafc", padding: "4px 16px 8px 24px", borderTop: "1px solid #f1f5f9" }}>
-                          {displayedTxns.map((t, tIdx) => {
-                            const isCashTxn = Boolean(t.isCash || item.isCash);
-                            const dateDisplay = isCashTxn && t.paidDate
-                              ? (t.date && t.date !== t.paidDate ? `Paid: ${t.paidDate} (Inv: ${t.date})` : `Paid: ${t.paidDate}`)
-                              : (t.date || "—");
+                  if (item.isTransaction) {
+                    const isCashTxn = Boolean(item.isCash);
+                    const dateDisplay = isCashTxn && item.paidDate
+                      ? (item.date && item.date !== item.paidDate ? `Paid: ${item.paidDate} (Inv: ${item.date})` : `Paid: ${item.paidDate}`)
+                      : (item.date || "—");
 
-                            return (
-                              <div
-                                key={tIdx}
+                    return (
+                      <div
+                        key={idx}
+                        style={{
+                          display: "flex",
+                          alignItems: "flex-start",
+                          justifyContent: "space-between",
+                          gap: "20px",
+                          padding: "7px 16px",
+                          borderBottom: idx === filteredItems.length - 1 ? "none" : "1px dashed #e2e8f0",
+                          fontSize: "11.5px",
+                        }}
+                      >
+                        <div style={{ flex: 1, minWidth: 0, paddingRight: "4px" }}>
+                          <div style={{ color: "#0f172a", fontWeight: 500, display: "flex", alignItems: "center", gap: "5px", flexWrap: "wrap" }}>
+                            <span style={{ color: "#64748b", fontSize: "10.5px" }}>{dateDisplay}</span>
+                            <span>{item.supplier}</span>
+                            {item.isUnreconciled && (
+                              <span
                                 style={{
-                                  display: "flex",
-                                  alignItems: "flex-start",
-                                  justifyContent: "space-between",
-                                  gap: "20px",
-                                  padding: "5px 0",
-                                  borderBottom: tIdx === item.transactions.length - 1 ? "none" : "1px dashed #e2e8f0",
-                                  fontSize: "11px",
+                                  fontSize: "9px",
+                                  padding: "1px 4px",
+                                  background: "#fef3c7",
+                                  color: "#92400e",
+                                  border: "1px solid #fde68a",
+                                  borderRadius: "3px",
+                                  fontWeight: 600,
                                 }}
+                                title="Unreconciled bank statement line from Cashflow Reconciliation"
                               >
-                                <div style={{ flex: 1, minWidth: 0, paddingRight: "4px" }}>
-                                  <div style={{ color: "#0f172a", fontWeight: 500, display: "flex", alignItems: "center", gap: "4px" }}>
-                                    <span style={{ color: "#64748b", fontSize: "10px" }}>{dateDisplay}</span>
-                                    <span>{t.supplier}</span>
-                                    {t.isUnreconciled && (
-                                      <span
-                                        style={{
-                                          fontSize: "9px",
-                                          padding: "1px 4px",
-                                          background: "#fef3c7",
-                                          color: "#92400e",
-                                          border: "1px solid #fde68a",
-                                          borderRadius: "3px",
-                                          fontWeight: 600,
-                                        }}
-                                        title="Unreconciled bank statement line from Cashflow Reconciliation"
-                                      >
-                                        Pending Recon
-                                      </span>
-                                    )}
-                                  </div>
-                                  {t.ref ? (
-                                    <div style={{ color: "#94a3b8", fontSize: "10px" }}>
-                                      Ref: {t.ref}
-                                      {isCashTxn
-                                        ? ((t.net !== undefined ? ` • Net: ${formatGBP(t.net)}` : "") + (t.vat > 0 ? ` • VAT: ${formatGBP(t.vat)}` : ""))
-                                        : (t.vat > 0 ? ` • Gross: ${formatGBP(t.gross)}` : "")
-                                      }
-                                    </div>
-                                  ) : (
-                                    isCashTxn ? (
-                                      (t.net !== undefined || t.vat > 0) && (
-                                        <div style={{ color: "#94a3b8", fontSize: "10px" }}>
-                                          {t.net !== undefined ? `Net: ${formatGBP(t.net)}` : ""}{t.vat > 0 ? ` • VAT: ${formatGBP(t.vat)}` : ""}
-                                        </div>
-                                      )
-                                    ) : (
-                                      t.vat > 0 && (
-                                        <div style={{ color: "#94a3b8", fontSize: "10px" }}>
-                                          Gross: {formatGBP(t.gross)}
-                                        </div>
-                                      )
-                                    )
-                                  )}
-                                </div>
-                                <div
-                                  style={{
-                                    fontWeight: 600,
-                                    color: isCashTxn ? "#0047AB" : "#334155",
-                                    whiteSpace: "nowrap",
-                                    flexShrink: 0,
-                                    minWidth: "95px",
-                                    textAlign: "right",
-                                  }}
-                                >
-                                  {formatGBP(isCashTxn ? (t.amount !== undefined ? t.amount : -Math.abs(t.gross || 0)) : (t.net !== undefined ? t.net : (t.amount || t.gross || 0)))}
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  );
-                }
-
-                const hasCashMeta = Boolean(item.payDateStr || item.desc || item.status);
-
-                return (
-                  <div
-                    key={idx}
-                    style={{
-                      padding: "8px 16px",
-                      borderBottom: idx === filteredItems.length - 1 ? "none" : "1px solid #f1f5f9",
-                      display: "flex",
-                      alignItems: "flex-start",
-                      justifyContent: "space-between",
-                      gap: "20px",
-                      fontSize: "12px",
-                    }}
-                  >
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontWeight: 600, color: "#111827", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap", lineHeight: 1.35 }}>
-                        {item.client ? (
-                          <span>
-                            <span style={{ fontWeight: 600, color: "#0f172a" }}>{item.client}</span>
-                            <span style={{ color: "#64748b" }}> – {item.name}</span>
-                          </span>
-                        ) : (
-                          <span>{item.name}</span>
-                        )}
-                        {/* Note: All pill labels/badges removed per user instruction */}
-                      </div>
-
-                      {hasCashMeta ? (
-                        <div style={{ color: "#64748b", fontSize: "11px", marginTop: "2px", lineHeight: 1.35 }}>
-                          {item.isPipeline ? (
-                            <span>Expected: {item.payDateStr}</span>
+                                Pending Recon
+                              </span>
+                            )}
+                          </div>
+                          {item.ref ? (
+                            <div style={{ color: "#94a3b8", fontSize: "10px", marginTop: "1px" }}>
+                              Ref: {item.ref}
+                              {isCashTxn
+                                ? ((item.net !== undefined ? ` • Net: ${formatGBP(item.net)}` : "") + (item.vat > 0 ? ` • VAT: ${formatGBP(item.vat)}` : ""))
+                                : (item.vat > 0 ? ` • Gross: ${formatGBP(item.gross)}` : "")
+                              }
+                            </div>
                           ) : (
-                            <span>
-                              {item.desc && item.desc !== item.name && (
-                                <>
-                                  <em style={{ fontStyle: "normal", color: "#475569" }}>{item.desc}</em>
-                                  <span> | </span>
-                                </>
-                              )}
-                              Expected: {item.payDateStr}
-                              {item.status ? ` | ${item.isPartPayment && item.status.toLowerCase() === "paid" ? "Paid (part)" : item.status}` : ""}
-                            </span>
+                            isCashTxn ? (
+                              (item.net !== undefined || item.vat > 0) && (
+                                <div style={{ color: "#94a3b8", fontSize: "10px", marginTop: "1px" }}>
+                                  {item.net !== undefined ? `Net: ${formatGBP(item.net)}` : ""}{item.vat > 0 ? ` • VAT: ${formatGBP(item.vat)}` : ""}
+                                </div>
+                              )
+                            ) : (
+                              item.vat > 0 && (
+                                <div style={{ color: "#94a3b8", fontSize: "10px", marginTop: "1px" }}>
+                                  Gross: {formatGBP(item.gross)}
+                                </div>
+                              )
+                            )
                           )}
                         </div>
-                      ) : item.detail ? (
-                        <div style={{ color: "#64748b", fontSize: "11px", marginTop: "2px", lineHeight: 1.35 }}>
-                          {item.detail}
+                        <div
+                          style={{
+                            fontWeight: 600,
+                            color: isCashTxn ? "#0047AB" : "#334155",
+                            whiteSpace: "nowrap",
+                            flexShrink: 0,
+                            minWidth: "95px",
+                            textAlign: "right",
+                          }}
+                        >
+                          {formatGBP(isCashTxn ? (item.amount !== undefined ? item.amount : -Math.abs(item.gross || 0)) : (item.net !== undefined ? item.net : (item.amount || item.gross || 0)))}
                         </div>
-                      ) : null}
-                    </div>
+                      </div>
+                    );
+                  }
 
+                  const hasTxns = Array.isArray(item.transactions) && item.transactions.length > 0;
+                  const itemKey = `pop_cat_${idx}_${item.name}`;
+                  const isSearchMatchInTxns = Boolean(
+                    searchTerm.trim() &&
+                    item.transactions?.some(
+                      (t) =>
+                        (t.supplier && t.supplier.toLowerCase().includes(searchTerm.toLowerCase().trim())) ||
+                        (t.ref && t.ref.toLowerCase().includes(searchTerm.toLowerCase().trim()))
+                    )
+                  );
+                  const isExpanded = Boolean(openAccordions[itemKey]) || isSearchMatchInTxns;
+
+                  if (hasTxns) {
+                    const unrecCount = item.transactions.filter((t) => t.isUnreconciled).length;
+                    const displayedTxns =
+                      searchTerm.trim() && !item.name.toLowerCase().includes(searchTerm.toLowerCase().trim())
+                        ? item.transactions.filter(
+                          (t) =>
+                            (t.supplier && t.supplier.toLowerCase().includes(searchTerm.toLowerCase().trim())) ||
+                            (t.ref && t.ref.toLowerCase().includes(searchTerm.toLowerCase().trim()))
+                        )
+                        : item.transactions;
+
+                    return (
+                      <div
+                        key={idx}
+                        style={{
+                          borderBottom: idx === filteredItems.length - 1 ? "none" : "1px solid #f1f5f9",
+                        }}
+                      >
+                        <div
+                          onClick={() => toggleAccordion(itemKey)}
+                          style={{
+                            padding: "9px 16px",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            gap: "20px",
+                            fontSize: "12px",
+                            cursor: "pointer",
+                            background: isExpanded ? "#f8fafc" : "transparent",
+                            transition: "background 0.15s ease",
+                            userSelect: "none",
+                          }}
+                        >
+                          <div style={{ display: "flex", alignItems: "center", gap: "8px", flex: 1, minWidth: 0, flexWrap: "wrap" }}>
+                            <span
+                              style={{
+                                fontSize: "9px",
+                                color: "#64748b",
+                                transition: "transform 0.15s ease",
+                                transform: isExpanded ? "rotate(0deg)" : "rotate(-90deg)",
+                                display: "inline-block",
+                              }}
+                            >
+                              ▼
+                            </span>
+                            <span style={{ fontWeight: 600, color: "#111827" }}>{item.name}</span>
+                            <span
+                              style={{
+                                fontSize: "10.5px",
+                                padding: "1px 5px",
+                                borderRadius: "8px",
+                                background: "#f1f5f9",
+                                color: "#64748b",
+                              }}
+                            >
+                              {item.transactions.length}
+                            </span>
+                          </div>
+                          <div
+                            style={{
+                              fontWeight: 700,
+                              color: "#0047AB",
+                              fontSize: "13px",
+                              whiteSpace: "nowrap",
+                              flexShrink: 0,
+                              minWidth: "95px",
+                              textAlign: "right",
+                            }}
+                          >
+                            {formatGBP(item.amount)}
+                          </div>
+                        </div>
+
+                        {isExpanded && (
+                          <div style={{ background: "#f8fafc", padding: "4px 16px 8px 24px", borderTop: "1px solid #f1f5f9" }}>
+                            {displayedTxns.map((t, tIdx) => {
+                              const isCashTxn = Boolean(t.isCash || item.isCash);
+                              const dateDisplay = isCashTxn && t.paidDate
+                                ? (t.date && t.date !== t.paidDate ? `Paid: ${t.paidDate} (Inv: ${t.date})` : `Paid: ${t.paidDate}`)
+                                : (t.date || "—");
+
+                              return (
+                                <div
+                                  key={tIdx}
+                                  style={{
+                                    display: "flex",
+                                    alignItems: "flex-start",
+                                    justifyContent: "space-between",
+                                    gap: "20px",
+                                    padding: "5px 0",
+                                    borderBottom: tIdx === item.transactions.length - 1 ? "none" : "1px dashed #e2e8f0",
+                                    fontSize: "11px",
+                                  }}
+                                >
+                                  <div style={{ flex: 1, minWidth: 0, paddingRight: "4px" }}>
+                                    <div style={{ color: "#0f172a", fontWeight: 500, display: "flex", alignItems: "center", gap: "4px" }}>
+                                      <span style={{ color: "#64748b", fontSize: "10px" }}>{dateDisplay}</span>
+                                      <span>{t.supplier}</span>
+                                      {t.isUnreconciled && (
+                                        <span
+                                          style={{
+                                            fontSize: "9px",
+                                            padding: "1px 4px",
+                                            background: "#fef3c7",
+                                            color: "#92400e",
+                                            border: "1px solid #fde68a",
+                                            borderRadius: "3px",
+                                            fontWeight: 600,
+                                          }}
+                                          title="Unreconciled bank statement line from Cashflow Reconciliation"
+                                        >
+                                          Pending Recon
+                                        </span>
+                                      )}
+                                    </div>
+                                    {t.ref ? (
+                                      <div style={{ color: "#94a3b8", fontSize: "10px" }}>
+                                        Ref: {t.ref}
+                                        {isCashTxn
+                                          ? ((t.net !== undefined ? ` • Net: ${formatGBP(t.net)}` : "") + (t.vat > 0 ? ` • VAT: ${formatGBP(t.vat)}` : ""))
+                                          : (t.vat > 0 ? ` • Gross: ${formatGBP(t.gross)}` : "")
+                                        }
+                                      </div>
+                                    ) : (
+                                      isCashTxn ? (
+                                        (t.net !== undefined || t.vat > 0) && (
+                                          <div style={{ color: "#94a3b8", fontSize: "10px" }}>
+                                            {t.net !== undefined ? `Net: ${formatGBP(t.net)}` : ""}{t.vat > 0 ? ` • VAT: ${formatGBP(t.vat)}` : ""}
+                                          </div>
+                                        )
+                                      ) : (
+                                        t.vat > 0 && (
+                                          <div style={{ color: "#94a3b8", fontSize: "10px" }}>
+                                            Gross: {formatGBP(t.gross)}
+                                          </div>
+                                        )
+                                      )
+                                    )}
+                                  </div>
+                                  <div
+                                    style={{
+                                      fontWeight: 600,
+                                      color: isCashTxn ? "#0047AB" : "#334155",
+                                      whiteSpace: "nowrap",
+                                      flexShrink: 0,
+                                      minWidth: "95px",
+                                      textAlign: "right",
+                                    }}
+                                  >
+                                    {formatGBP(isCashTxn ? (t.amount !== undefined ? t.amount : -Math.abs(t.gross || 0)) : (t.net !== undefined ? t.net : (t.amount || t.gross || 0)))}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  }
+
+                  const hasCashMeta = Boolean(item.payDateStr || item.desc || item.status);
+
+                  return (
                     <div
+                      key={idx}
                       style={{
-                        fontWeight: 700,
-                        color: "#0047AB",
-                        whiteSpace: "nowrap",
-                        flexShrink: 0,
-                        minWidth: "95px",
-                        textAlign: "right",
-                        fontSize: "13px",
+                        padding: "8px 16px",
+                        borderBottom: idx === filteredItems.length - 1 ? "none" : "1px solid #f1f5f9",
+                        display: "flex",
+                        alignItems: "flex-start",
+                        justifyContent: "space-between",
+                        gap: "20px",
+                        fontSize: "12px",
                       }}
                     >
-                      {formatGBP(item.amount)}
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontWeight: 600, color: "#111827", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap", lineHeight: 1.35 }}>
+                          {item.client ? (
+                            <span>
+                              <span style={{ fontWeight: 600, color: "#0f172a" }}>{item.client}</span>
+                              <span style={{ color: "#64748b" }}> – {item.name}</span>
+                            </span>
+                          ) : (
+                            <span>{item.name}</span>
+                          )}
+                          {/* Note: All pill labels/badges removed per user instruction */}
+                        </div>
+
+                        {hasCashMeta ? (
+                          <div style={{ color: "#64748b", fontSize: "11px", marginTop: "2px", lineHeight: 1.35 }}>
+                            {item.isPipeline ? (
+                              <span>Expected: {item.payDateStr}</span>
+                            ) : (
+                              <span>
+                                {item.desc && item.desc !== item.name && (
+                                  <>
+                                    <em style={{ fontStyle: "normal", color: "#475569" }}>{item.desc}</em>
+                                    <span> | </span>
+                                  </>
+                                )}
+                                Expected: {item.payDateStr}
+                                {item.status ? ` | ${item.isPartPayment && item.status.toLowerCase() === "paid" ? "Paid (part)" : item.status}` : ""}
+                              </span>
+                            )}
+                          </div>
+                        ) : item.detail ? (
+                          <div style={{ color: "#64748b", fontSize: "11px", marginTop: "2px", lineHeight: 1.35 }}>
+                            {item.detail}
+                          </div>
+                        ) : null}
+                      </div>
+
+                      <div
+                        style={{
+                          fontWeight: 700,
+                          color: "#0047AB",
+                          whiteSpace: "nowrap",
+                          flexShrink: 0,
+                          minWidth: "95px",
+                          textAlign: "right",
+                          fontSize: "13px",
+                        }}
+                      >
+                        {formatGBP(item.amount)}
+                      </div>
                     </div>
-                  </div>
-                );
-              })
-            )}
-            <div className="deep-dive-mobile-spacer" />
-          </div>
-        )}
+                  );
+                })
+              )}
+              <div className="deep-dive-mobile-spacer" />
+            </div>
+          )}
+        </div>
       </div>
     </div>
-  </div>
   );
 
   return createPortal(popoverMarkup, document.body);

@@ -10,15 +10,16 @@ export function AppGlobalsProvider({ children }) {
   const [allClientsMap, setAllClientsMap] = useState(() => {
     if (typeof window !== "undefined") {
       try {
+        const sessionUser = window.__PULSE_SESSION_USER__;
         const isSysAdmin = Boolean(
-          !window.__PULSE_SESSION_USER__?.isReadOnly &&
-          (window.__PULSE_SESSION_USER__?.isAdmin || window.__PULSE_SESSION_USER__?.role === "Admin")
+          !sessionUser?.isReadOnly &&
+          (sessionUser?.isAdmin || sessionUser?.role === "Admin")
         );
         const stored = localStorage.getItem("pulse_cached_all_clients");
         if (stored) {
           const list = JSON.parse(stored);
           if (Array.isArray(list) && list.length > 0) {
-            const hasLegacyRawId = !isSysAdmin && list.some(
+            const hasLegacyRawId = Boolean(sessionUser) && !isSysAdmin && list.some(
               (c) =>
                 (c?.clientSheetId && !String(c.clientSheetId).startsWith("ws_")) ||
                 (c?.masterSheetId && !String(c.masterSheetId).startsWith("ws_"))
@@ -42,14 +43,16 @@ export function AppGlobalsProvider({ children }) {
   const [managedClient, setManagedClientState] = useState(() => {
     if (typeof window !== "undefined") {
       try {
+        const sessionUser = window.__PULSE_SESSION_USER__;
         const isSysAdmin = Boolean(
-          !window.__PULSE_SESSION_USER__?.isReadOnly &&
-          (window.__PULSE_SESSION_USER__?.isAdmin || window.__PULSE_SESSION_USER__?.role === "Admin")
+          !sessionUser?.isReadOnly &&
+          (sessionUser?.isAdmin || sessionUser?.role === "Admin")
         );
         const stored = localStorage.getItem("pma_managed_client");
         if (!stored) return null;
         const parsed = JSON.parse(stored);
         if (
+          Boolean(sessionUser) &&
           !isSysAdmin &&
           parsed &&
           ((parsed.clientSheetId && !String(parsed.clientSheetId).startsWith("ws_")) ||
@@ -376,12 +379,13 @@ export function AppGlobalsProvider({ children }) {
     } finally {
       isProcessingQueueRef.current = false;
 
-      // If more tasks remain for this client, schedule next one with polite 1.2s pacing gap
-      if (queueRef.current.length > 0 && activeClientIdRef.current === currentClientId) {
+      // If more tasks remain for the active client, schedule next one (immediately if client changed, or with 1.2s pacing gap)
+      if (queueRef.current.length > 0 && activeClientIdRef.current) {
         if (queueTimerRef.current) clearTimeout(queueTimerRef.current);
+        const delayMs = activeClientIdRef.current === currentClientId ? 1200 : 50;
         queueTimerRef.current = setTimeout(() => {
           runNextQueueTask();
-        }, 1200);
+        }, delayMs);
       }
     }
   }, [getCachedClientData]);
@@ -519,7 +523,8 @@ export function AppGlobalsProvider({ children }) {
     };
 
     // ── PRIORITY 2: Core screens (Jobs, Contractors, Invoices, Retainers)
-    enqueue(`jobs_${cleanClientId}`, 2, "jobs_All", async () => {
+    const jobsKey = `jobs_${cleanClientId}`;
+    const jobsFetcher = async () => {
       const res = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -528,7 +533,15 @@ export function AppGlobalsProvider({ children }) {
       const d = await res.json();
       if (d.success) setCachedClientData(cleanClientId, "jobs_All", d);
       return d;
-    });
+    };
+    const cachedJobs = getCachedClientData(cleanClientId, "jobs_All");
+    if ((!cachedJobs || cachedJobs.isStale) && !inFlightPrefetchesRef.current.has(jobsKey)) {
+      if (foregroundActiveCountRef.current === 0) {
+        safeFetchOnce(jobsKey, jobsFetcher);
+      } else {
+        enqueue(jobsKey, 2, "jobs_All", jobsFetcher);
+      }
+    }
 
     enqueue(`outgoings_${cleanClientId}`, 2, "outgoings", async () => {
       const res = await fetch("/api/triage", {
@@ -553,6 +566,17 @@ export function AppGlobalsProvider({ children }) {
         return d;
       });
     }
+
+    enqueue(`direct_costs_jobs_${cleanClientId}`, 2, "direct_costs_jobs_active", async () => {
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "get_direct_costs_jobs", clientSheetId: cleanClientId, showAll: false })
+      });
+      const d = await res.json();
+      if (d.success) setCachedClientData(cleanClientId, "direct_costs_jobs_active", d);
+      return d;
+    });
 
     enqueue(`inv_jobs_${cleanClientId}`, 2, "invoice_jobs_active", async () => {
       const res = await fetch("/api/triage", {
@@ -693,13 +717,16 @@ export function AppGlobalsProvider({ children }) {
 
     // Start sequential processing loop
     scheduleNextQueueTask();
-  }, [cleanSheetId, getCachedClientData, setCachedClientData, scheduleNextQueueTask]);
+  }, [cleanSheetId, getCachedClientData, setCachedClientData, safeFetchOnce, scheduleNextQueueTask]);
 
   // Automatically trigger background preloading whenever managedClient changes
+  const prevManagedClientIdRef = useRef(null);
   useEffect(() => {
     if (managedClient?.clientSheetId) {
+      prevManagedClientIdRef.current = managedClient.clientSheetId;
       preloadClientData(managedClient);
-    } else {
+    } else if (prevManagedClientIdRef.current) {
+      prevManagedClientIdRef.current = null;
       activeClientIdRef.current = null;
       if (queueTimerRef.current) clearTimeout(queueTimerRef.current);
       queueRef.current = [];

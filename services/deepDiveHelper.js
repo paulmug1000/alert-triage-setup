@@ -471,7 +471,7 @@ export const DeepDiveEngine = {
           list.push({
             name: String(name).trim(),
             role: String(role || "").trim(),
-            amount: Math.round(totalCost * applicablePct),
+            amount: Math.round(totalCost * applicablePct * 100) / 100,
             totalCost: totalCost,
             pct: applicablePct,
           });
@@ -493,7 +493,7 @@ export const DeepDiveEngine = {
         const applicablePct = isDelivery ? delPct : (1 - delPct);
         if (applicablePct <= 0.001) return;
         const monthlyCost = s.actualAnnualCost / 12;
-        const amt = Math.round(monthlyCost * applicablePct);
+        const amt = Math.round(monthlyCost * applicablePct * 100) / 100;
         if (amt > 0) {
           list.push({
             name: s.name,
@@ -600,9 +600,9 @@ export const DeepDiveEngine = {
         const applicablePct = isDelivery ? delPct : 1 - delPct;
         if (applicablePct <= 0.001) return;
 
-        const allocs = d.allocations?.[foundY] || d.monthlyAllocations || [];
+        const allocs = d.rawAllocations?.[foundY] || d.allocations?.[foundY] || d.rawMonthlyAllocations || d.monthlyAllocations || [];
         const rawAmt = parseMoney(allocs[foundC] || 0);
-        const amt = Math.round(rawAmt * applicablePct);
+        const amt = Math.round(rawAmt * applicablePct * 100) / 100;
         if (Math.abs(amt) > 0.01) {
           list.push({
             name: d.name || "Dividends as salary",
@@ -827,14 +827,16 @@ export const CashDeepDiveEngine = {
     const results = [];
     if (!allJobs) return results;
 
-    const isPipelineType = type === "cashPipeInc" || type === "pipeCash";
+    const isPipelineType = type === "cashPipeInc" || type === "pipeCash" || type === "cashPipeInflow";
     const isDirCash = type === "cashDirCosts" || type.includes("dirCash");
+    const isDirExcl = type === "dirCash_excl" || type === "cashDirCostsExcl";
+    const isConfOnly = type === "cashConfInc" || type === "confCash" || type === "cashConfInflow" || isDirExcl;
 
     // Build multi-occurrence reference map to detect part-payments across slots/jobs
     const refCounts = new Map();
     allJobs.forEach((j) => {
       const isJP = String(j.type || "").toLowerCase() === "pipeline";
-      if (!isPipelineType && isJP) return;
+      if (isConfOnly && isJP) return;
       if (isPipelineType && !isJP) return;
 
       const pfx = isDirCash ? "dirInv" : "inv";
@@ -851,9 +853,8 @@ export const CashDeepDiveEngine = {
 
     allJobs.forEach((job) => {
       const isJobPipeline = String(job.type || "").toLowerCase() === "pipeline";
-      if (!isPipelineType && isJobPipeline) return;
+      if (isConfOnly && isJobPipeline) return;
       if (isPipelineType && !isJobPipeline) return;
-      if (isDirCash && isJobPipeline) return;
 
       const isRetainer = String(job.projectRetainer || "").toLowerCase().includes("retainer");
       const hasMultipleInvoices = !!job.inv2Amount || !!job.inv3Amount || !!job.inv2SendDate || !!job.inv3SendDate;
@@ -1515,7 +1516,15 @@ export function getDeepDiveType(rowLabel = "") {
   if (l.includes("pipeline revenue") || l.includes("pipeline income") || l.includes("pipeline opportunity")) return "pipeRev";
   if (l.includes("staff costs - delivery") || l.includes("delivery staff")) return "staffDel";
   if (l.includes("staff costs - non-delivery") || l.includes("non-delivery staff")) return "staffNonDel";
-  if (l.includes("direct cost payments") || l.includes("direct costs") || l === "direct cost") return "dirCosts";
+  if (
+    l.includes("direct cost payments") ||
+    l.includes("direct costs") ||
+    l === "direct cost" ||
+    l.includes("pass-through costs") ||
+    l === "pass-through cost"
+  ) {
+    return "dirCosts";
+  }
   if (l.includes("other expenses - delivery") || l.includes("delivery expenses")) return "expDel";
   if (l.includes("other expenses - non-delivery") || l.includes("non-delivery expenses")) return "expNonDel";
   if (l.includes("dividends as salary") || l === "dividends") return "dividends";
@@ -1579,6 +1588,51 @@ export function buildDeepDiveData({
     String(keyData?.outgoingsMeta?.mode || "").toLowerCase() === "income" ||
     String(periodLabel || "").toLowerCase().includes("income") ||
     String(ddType || "").toLowerCase().includes("inc");
+  const rawDirectCostsMode =
+    keyData?.outgoingsMeta?.directCostsMode ||
+    keyData?.directCostsMode ||
+    keyData?.nbtofind?.directCostsMode ||
+    "Contractors";
+  const directCostsMode = effectiveIncomeMode
+    ? "Pass-through"
+    : String(rawDirectCostsMode).trim() === "Pass-through"
+    ? "Pass-through"
+    : "Contractors";
+
+  const calcNbDirectCosts = (startDateObj, numMonths) => {
+    if (effectiveIncomeMode || !keyData?.nbtofind?.directCosts) return 0;
+    const baseY = startDateObj.getFullYear();
+    const baseM = startDateObj.getMonth();
+    let totalNbDc = 0;
+    for (let i = 0; i < numMonths; i++) {
+      const currDate = new Date(baseY, baseM + i, 1);
+      let foundY = yearIndex;
+      let foundC = (mIdx + i) % 12;
+      const hdrSource = keyData.nbtofind?.headers || keyData.outgoings?.headers;
+      if (hdrSource) {
+        for (const y of [1, 2, 3]) {
+          const hdrs = hdrSource[y] || [];
+          for (let c = 0; c < hdrs.length; c++) {
+            const hd = DeepDiveEngine.parseHeaderDate(hdrs[c]);
+            if (hd && hd.getFullYear() === currDate.getFullYear() && hd.getMonth() === currDate.getMonth()) {
+              foundY = y;
+              foundC = c;
+              break;
+            }
+          }
+        }
+      }
+      if (isScenarioView && scenariosConfig?.adjs?.nbChecked && scenariosConfig.adjs.nbChecked[foundC] === false) {
+        continue;
+      }
+      const dcArr =
+        keyData.nbtofind.directCosts[foundY] ||
+        keyData.nbtofind.directCosts[`y${foundY}`] ||
+        [];
+      totalNbDc += parseMoney(dcArr[foundC] || 0);
+    }
+    return Math.round(totalNbDc);
+  };
 
   // 1. Confirmed Revenue / Income
   if (ddType === "confRev") {
@@ -1594,19 +1648,23 @@ export function buildDeepDiveData({
     }
 
     const totalJobs = items.reduce((s, i) => s + i.amount, 0);
-    let drift = Math.round(parseMoney(cellValue) - totalJobs);
-    if (Math.abs(drift) > 0 && Math.abs(drift) <= 2 && items.length > 0) {
-      let maxIdx = 0;
-      for (let k = 1; k < items.length; k++) {
-        if (items[k].amount > items[maxIdx].amount) maxIdx = k;
+    let manualRevAdj = 0;
+    if (isScenarioView && scenariosConfig?.scenarioMeta?.adjRev) {
+      if (count > 1) {
+        manualRevAdj = scenariosConfig.scenarioMeta.adjRev.reduce((s, v) => s + (Number(v) || 0), 0);
+      } else if (monthIndex >= 0 && monthIndex < 12) {
+        manualRevAdj = Number(scenariosConfig.scenarioMeta.adjRev[monthIndex]) || 0;
       }
-      items[maxIdx].amount += drift;
-      drift = 0;
     }
-    if (isScenarioView && Math.abs(drift) > 2) {
-      items.push({ name: "Manual scenario adjustment", amount: drift });
-    } else if (!isScenarioView && Math.abs(drift) > 2) {
-      items.push({ name: "Rounding adjustment", amount: drift });
+    if (isScenarioView && Math.abs(manualRevAdj) >= 0.01) {
+      items.push({ name: "Manual scenario adjustment", amount: manualRevAdj });
+    }
+    let drift = Math.round((parseMoney(cellValue) - (totalJobs + manualRevAdj)) * 100) / 100;
+    if (Math.abs(drift) > 2) {
+      items.push({
+        name: isScenarioView && !scenariosConfig?.scenarioMeta ? "Manual scenario adjustment" : "Rounding adjustment",
+        amount: drift,
+      });
     }
 
     return {
@@ -1708,9 +1766,9 @@ export function buildDeepDiveData({
         } else if (!isDel && keyData.outgoingsMeta.salariesNonDel?.[foundYIdx]) {
           actualSalaries += parseMoney(keyData.outgoingsMeta.salariesNonDel[foundYIdx][foundMIdx]);
         }
-      } else {
-        // Fallback to yearIndex - 1 and (mIdx + i)
-        const fallbackY = Math.max(0, yearIndex - 1);
+      } else if (!keyData.outgoings?.headers && yearIndex >= 1 && yearIndex <= 3) {
+        // Fallback to yearIndex - 1 and (mIdx + i) when headers are absent
+        const fallbackY = yearIndex - 1;
         const fallbackM = (mIdx + i) % 12;
         if (isDel && keyData.outgoingsMeta?.salariesDel?.[fallbackY]) {
           actualSalaries += parseMoney(keyData.outgoingsMeta.salariesDel[fallbackY][fallbackM]);
@@ -1720,7 +1778,7 @@ export function buildDeepDiveData({
       }
     }
 
-    const allowanceDiff = Math.round(actualSalaries - calcSalTotal);
+    const allowanceDiff = Math.round((actualSalaries - calcSalTotal) * 100) / 100;
     if (Math.abs(allowanceDiff) > 2) {
       salaries.push({
         name: "Employment allowance",
@@ -1729,20 +1787,9 @@ export function buildDeepDiveData({
         totalCost: allowanceDiff,
         pct: 1,
       });
-      calcSalTotal += allowanceDiff;
-    } else if (allowanceDiff !== 0) {
-      // Absorb small £1-£2 penny rounding difference into salaries so calcSalTotal matches actualSalaries exactly
-      if (salaries.length > 0) {
-        let maxIdx = 0;
-        for (let sIdx = 1; sIdx < salaries.length; sIdx++) {
-          if (salaries[sIdx].amount > salaries[maxIdx].amount) maxIdx = sIdx;
-        }
-        salaries[maxIdx].amount += allowanceDiff;
-        salaries[maxIdx].totalCost += allowanceDiff;
-      }
-      calcSalTotal += allowanceDiff;
+      calcSalTotal = Math.round((calcSalTotal + allowanceDiff) * 100) / 100;
     }
-    const salTotal = calcSalTotal;
+    const salTotal = Math.round(calcSalTotal * 100) / 100;
 
     // B. Dividends as salary
     const dividends = [];
@@ -1774,11 +1821,11 @@ export function buildDeepDiveData({
             }
           }
         }
-        const allocs = d.allocations?.[foundY] || d.monthlyAllocations || [];
+        const allocs = d.rawAllocations?.[foundY] || d.allocations?.[foundY] || d.rawMonthlyAllocations || d.monthlyAllocations || [];
         rawAmt += parseMoney(allocs[foundC] || 0);
       }
 
-      const amt = Math.round(rawAmt * applicablePct);
+      const amt = Math.round(rawAmt * applicablePct * 100) / 100;
       if (amt > 0) {
         dividends.push({
           name: d.name || "Dividends as salary",
@@ -1789,7 +1836,7 @@ export function buildDeepDiveData({
         });
       }
     });
-    const divTotal = dividends.reduce((s, d) => s + d.amount, 0);
+    const divTotal = Math.round(dividends.reduce((s, d) => s + d.amount, 0) * 100) / 100;
 
     // C. Contractors
     const contractors = [];
@@ -1821,11 +1868,11 @@ export function buildDeepDiveData({
             }
           }
         }
-        const allocs = c.allocations?.[foundY] || c.monthlyAllocations || [];
+        const allocs = c.rawAllocations?.[foundY] || c.allocations?.[foundY] || c.rawMonthlyAllocations || c.monthlyAllocations || [];
         rawAmt += parseMoney(allocs[foundC] || 0);
       }
 
-      const amt = Math.round(rawAmt * applicablePct);
+      const amt = Math.round(rawAmt * applicablePct * 100) / 100;
       if (amt > 0) {
         contractors.push({
           name: c.name,
@@ -1836,7 +1883,48 @@ export function buildDeepDiveData({
         });
       }
     });
-    const conTotal = contractors.reduce((s, c) => s + c.amount, 0);
+
+    if (isDel && !effectiveIncomeMode && directCostsMode === "Contractors") {
+      const allJobs = keyData.jobs?.all || [...(keyData.jobs?.confirmed || []), ...(keyData.jobs?.pipeline || [])];
+      let jobDcItems = [];
+      if (count > 1) {
+        jobDcItems = DeepDiveEngine.aggregatePeriods(effectiveDate, count, (d) =>
+          DeepDiveEngine.getJobsForMonth(allJobs, d, "dirCosts", effectiveIncomeMode, isScenarioView, scenariosConfig)
+        );
+      } else {
+        jobDcItems = DeepDiveEngine.getJobsForMonth(allJobs, effectiveDate, "dirCosts", effectiveIncomeMode, isScenarioView, scenariosConfig);
+      }
+      jobDcItems.forEach((jItem) => {
+        const amt = Math.round((jItem.amount || 0) * 100) / 100;
+        if (Math.abs(amt) >= 0.01) {
+          const jobLabel = jItem.client ? `${jItem.client} – ${jItem.name}` : jItem.name;
+          const jobDetail = jItem.status === "pipeline"
+            ? `${jItem.likelihood || "50%"} likelihood • ${jItem.detail || ""}`
+            : (jItem.detail || "");
+          contractors.push({
+            name: jobLabel,
+            role: "",
+            detail: jobDetail,
+            amount: amt,
+            totalCost: amt,
+            pct: 1,
+          });
+        }
+      });
+      const nbDcAmt = calcNbDirectCosts(effectiveDate, monthCount);
+      if (Math.abs(nbDcAmt) >= 0.01) {
+        contractors.push({
+          name: "New business to find",
+          role: "",
+          detail: "Direct costs on new business to find",
+          amount: nbDcAmt,
+          totalCost: nbDcAmt,
+          pct: 1,
+        });
+      }
+    }
+
+    const conTotal = Math.round(contractors.reduce((s, c) => s + c.amount, 0) * 100) / 100;
 
     // D. Additional staff costs: Making up CoS & Profit share
     let cosTotal = 0;
@@ -1863,45 +1951,47 @@ export function buildDeepDiveData({
         }
       }
 
-      if (foundYIdx === -1) {
-        foundYIdx = Math.max(0, yearIndex - 1);
+      if (foundYIdx === -1 && !keyData.outgoings?.headers && yearIndex >= 1 && yearIndex <= 3) {
+        foundYIdx = yearIndex - 1;
         foundMIdx = (mIdx + i) % 12;
       }
 
-      if (isScenarioView && scenariosConfig?.scenarioMeta) {
-        const sm = scenariosConfig.scenarioMeta;
-        if (isDel) {
-          cosTotal += (sm.mCos?.[foundMIdx] !== undefined)
-            ? sm.mCos[foundMIdx]
-            : parseMoney(keyData.outgoingsMeta?.makingUpCosBase?.[foundYIdx]?.[foundMIdx] || 0);
-          psTotal += (sm.psDel?.[foundMIdx] !== undefined)
-            ? sm.psDel[foundMIdx]
-            : parseMoney(keyData.outgoingsMeta?.profitShareBaseDel?.[foundYIdx]?.[foundMIdx] || 0);
-          manualStaffAdjTotal += sm.adjDelStaff?.[foundMIdx] || 0;
+      if (foundYIdx !== -1 && foundMIdx !== -1) {
+        if (isScenarioView && scenariosConfig?.scenarioMeta) {
+          const sm = scenariosConfig.scenarioMeta;
+          if (isDel) {
+            cosTotal += (sm.mCos?.[foundMIdx] !== undefined)
+              ? sm.mCos[foundMIdx]
+              : parseMoney(keyData.outgoingsMeta?.makingUpCosBase?.[foundYIdx]?.[foundMIdx] || 0);
+            psTotal += (sm.psDel?.[foundMIdx] !== undefined)
+              ? sm.psDel[foundMIdx]
+              : parseMoney(keyData.outgoingsMeta?.profitShareBaseDel?.[foundYIdx]?.[foundMIdx] || 0);
+            manualStaffAdjTotal += sm.adjDelStaff?.[foundMIdx] || 0;
+          } else {
+            psTotal += (sm.psNonDel?.[foundMIdx] !== undefined)
+              ? sm.psNonDel[foundMIdx]
+              : parseMoney(keyData.outgoingsMeta?.profitShareBaseNonDel?.[foundYIdx]?.[foundMIdx] || 0);
+            manualStaffAdjTotal += sm.adjNonDelStaff?.[foundMIdx] || 0;
+          }
         } else {
-          psTotal += (sm.psNonDel?.[foundMIdx] !== undefined)
-            ? sm.psNonDel[foundMIdx]
-            : parseMoney(keyData.outgoingsMeta?.profitShareBaseNonDel?.[foundYIdx]?.[foundMIdx] || 0);
-          manualStaffAdjTotal += sm.adjNonDelStaff?.[foundMIdx] || 0;
-        }
-      } else {
-        if (isDel && keyData.outgoingsMeta?.makingUpCosBase?.[foundYIdx]) {
-          cosTotal += parseMoney(keyData.outgoingsMeta.makingUpCosBase[foundYIdx][foundMIdx] || 0);
-        }
+          if (isDel && keyData.outgoingsMeta?.makingUpCosBase?.[foundYIdx]) {
+            cosTotal += parseMoney(keyData.outgoingsMeta.makingUpCosBase[foundYIdx][foundMIdx] || 0);
+          }
 
-        if (keyData.outgoingsMeta) {
-          const psArr = isDel
-            ? keyData.outgoingsMeta.profitShareBaseDel?.[foundYIdx]
-            : keyData.outgoingsMeta.profitShareBaseNonDel?.[foundYIdx];
-          if (psArr) {
-            psTotal += parseMoney(psArr[foundMIdx] || 0);
+          if (keyData.outgoingsMeta) {
+            const psArr = isDel
+              ? keyData.outgoingsMeta.profitShareBaseDel?.[foundYIdx]
+              : keyData.outgoingsMeta.profitShareBaseNonDel?.[foundYIdx];
+            if (psArr) {
+              psTotal += parseMoney(psArr[foundMIdx] || 0);
+            }
           }
         }
       }
     }
-    cosTotal = Math.round(cosTotal);
-    psTotal = Math.round(psTotal);
-    manualStaffAdjTotal = Math.round(manualStaffAdjTotal);
+    cosTotal = Math.round(cosTotal * 100) / 100;
+    psTotal = Math.round(psTotal * 100) / 100;
+    manualStaffAdjTotal = Math.round(manualStaffAdjTotal * 100) / 100;
 
     // Build expandable and flat sections matching original WebApp (WebApp.html lines 16428-16520)
     const sections = [];
@@ -1986,20 +2076,7 @@ export function buildDeepDiveData({
     // Drift / Rounding adjustment is strictly restricted to full users (WebApp.html line 16513)
     if (!isRestricted) {
       let calculatedTotal = salTotal + divTotal + conTotal + cosTotal + psTotal + manualStaffAdjTotal;
-      let drift = Math.round(targetCellVal - calculatedTotal);
-
-      // If minor rounding drift (<= £2), absorb into the largest section so no rounding error exists
-      if (Math.abs(drift) > 0 && Math.abs(drift) <= 2 && sections.length > 0) {
-        let maxSec = sections[0];
-        for (let s = 1; s < sections.length; s++) {
-          if (!sections[s].isAdjustment && sections[s].amount > maxSec.amount) {
-            maxSec = sections[s];
-          }
-        }
-        maxSec.amount += drift;
-        calculatedTotal += drift;
-        drift = 0;
-      }
+      let drift = Math.round((targetCellVal - calculatedTotal) * 100) / 100;
 
       if (isScenarioView && Math.abs(drift) > 2) {
         sections.push({
@@ -2027,7 +2104,7 @@ export function buildDeepDiveData({
     };
   }
 
-  // 5. Direct Costs / Contractors
+  // 5. Direct Costs / Pass-through Costs
   if (ddType === "dirCosts") {
     const allJobs = keyData.jobs?.all || [...(keyData.jobs?.confirmed || []), ...(keyData.jobs?.pipeline || [])];
     let items = [];
@@ -2040,24 +2117,26 @@ export function buildDeepDiveData({
       items = DeepDiveEngine.getJobsForMonth(allJobs, effectiveDate, "dirCosts", effectiveIncomeMode, isScenarioView, scenariosConfig);
     }
 
-    const totalJobs = items.reduce((s, i) => s + i.amount, 0);
-    let drift = Math.round(parseMoney(cellValue) - totalJobs);
-    if (Math.abs(drift) > 0 && Math.abs(drift) <= 2 && items.length > 0) {
-      let maxIdx = 0;
-      for (let k = 1; k < items.length; k++) {
-        if (items[k].amount > items[maxIdx].amount) maxIdx = k;
-      }
-      items[maxIdx].amount += drift;
-      drift = 0;
+    const nbDcAmt = calcNbDirectCosts(effectiveDate, count > 1 ? count : 1);
+    if (Math.abs(nbDcAmt) >= 0.01) {
+      items.push({
+        name: "New business to find",
+        client: "",
+        detail: directCostsMode === "Pass-through"
+          ? "Pass-through costs on new business to find"
+          : "Direct costs on new business to find",
+        amount: nbDcAmt,
+      });
     }
-    if (isScenarioView && Math.abs(drift) > 2) {
-      items.push({ name: "Manual scenario adjustment", amount: drift });
-    } else if (!isScenarioView && Math.abs(drift) > 2) {
+
+    const totalJobs = items.reduce((s, i) => s + i.amount, 0);
+    let drift = Math.round((parseMoney(cellValue) - totalJobs) * 100) / 100;
+    if (Math.abs(drift) > 2) {
       items.push({ name: "Rounding adjustment", amount: drift });
     }
 
     return {
-      title: "Direct costs",
+      title: directCostsMode === "Pass-through" ? "Pass-through costs" : "Direct costs",
       period: periodLabel,
       total: cellValue,
       items,
@@ -2107,16 +2186,18 @@ export function buildDeepDiveData({
             }
           }
         }
-        const allocs = e.allocations?.[foundY] || e.monthlyAllocations || [];
-        const monthAllocAmt = parseMoney(allocs[foundC] || 0);
-        amt += monthAllocAmt;
+        const allocs = e.rawAllocations?.[foundY] || e.allocations?.[foundY] || e.rawMonthlyAllocations || e.monthlyAllocations || [];
+        let monthAllocAmt = parseMoney(allocs[foundC] || 0);
 
         // Extract transactions for this month matching category name
         const mList = txnsByMonth[foundY]?.[foundC] || [];
         let matchedInMonth = false;
+        let txnMonthSum = 0;
         mList.forEach((t) => {
           if (normCategory(t.c) === eNorm) {
             matchedInMonth = true;
+            const tAmt = t.n !== undefined ? Number(t.n) : Number(t.g || 0);
+            txnMonthSum += isNaN(tAmt) ? 0 : tAmt;
             categoryTxns.push({
               date: t.d || "",
               supplier: t.s || "",
@@ -2130,6 +2211,17 @@ export function buildDeepDiveData({
             });
           }
         });
+
+        // If the sheet cell was rounded to the nearest pound when written, but matched transactions carry exact pence
+        if (
+          matchedInMonth &&
+          Math.abs(monthAllocAmt - Math.round(monthAllocAmt)) < 0.001 &&
+          Math.abs(txnMonthSum - monthAllocAmt) <= 1 &&
+          Math.abs(txnMonthSum - Math.round(txnMonthSum)) >= 0.001
+        ) {
+          monthAllocAmt = Math.round(txnMonthSum * 100) / 100;
+        }
+        amt += monthAllocAmt;
 
         // Synthesize a transaction entry for depreciation expenses if no actual one exists
         const isMonthReconciled =
@@ -2153,7 +2245,7 @@ export function buildDeepDiveData({
       return {
         name: e.name,
         detail: "", // No VAT or timing info per instruction
-        amount: Math.round(amt),
+        amount: Math.round(amt * 100) / 100,
         transactions: categoryTxns,
       };
     }).filter((item) => item.amount > 0 || (item.transactions && item.transactions.length > 0));
@@ -2231,25 +2323,32 @@ export function buildDeepDiveData({
       items.push({
         name,
         detail: "",
-        amount: Math.round(sumAmt),
+        amount: Math.round(sumAmt * 100) / 100,
         transactions: txns,
       });
     });
 
     const totalExp = items.reduce((s, i) => s + i.amount, 0);
-    let drift = Math.round(parseMoney(cellValue) - totalExp);
-    if (Math.abs(drift) > 0 && Math.abs(drift) <= 2 && items.length > 0) {
-      let maxIdx = 0;
-      for (let k = 1; k < items.length; k++) {
-        if (items[k].amount > items[maxIdx].amount) maxIdx = k;
+    let manualExpAdj = 0;
+    if (isScenarioView && scenariosConfig?.scenarioMeta) {
+      const adjArr = isDel ? scenariosConfig.scenarioMeta.adjDelExp : scenariosConfig.scenarioMeta.adjNonDelExp;
+      if (adjArr) {
+        if (count > 1) {
+          manualExpAdj = adjArr.reduce((s, v) => s + (Number(v) || 0), 0);
+        } else if (monthIndex >= 0 && monthIndex < 12) {
+          manualExpAdj = Number(adjArr[monthIndex]) || 0;
+        }
       }
-      items[maxIdx].amount += drift;
-      drift = 0;
     }
-    if (isScenarioView && Math.abs(drift) > 2) {
-      items.push({ name: "Manual scenario adjustment", amount: drift });
-    } else if (!isScenarioView && Math.abs(drift) > 2) {
-      items.push({ name: "Rounding adjustment", amount: drift });
+    if (isScenarioView && Math.abs(manualExpAdj) >= 0.01) {
+      items.push({ name: "Manual scenario adjustment", amount: manualExpAdj });
+    }
+    let drift = Math.round((parseMoney(cellValue) - (totalExp + manualExpAdj)) * 100) / 100;
+    if (Math.abs(drift) > 2) {
+      items.push({
+        name: isScenarioView && !scenariosConfig?.scenarioMeta ? "Manual scenario adjustment" : "Rounding adjustment",
+        amount: drift,
+      });
     }
 
     // Sort categories alphabetically by name, keeping any adjustment line at the bottom
@@ -2275,13 +2374,13 @@ export function buildDeepDiveData({
     const dividends = keyData.outgoings?.dividends || [];
     const items = dividends
       .map((d) => {
-        const allocs = d.allocations?.[yearIndex] || d.monthlyAllocations || [];
+        const allocs = d.rawAllocations?.[yearIndex] || d.allocations?.[yearIndex] || d.rawMonthlyAllocations || d.monthlyAllocations || [];
         const amt = isFYTotal
           ? d.totals?.[yearIndex] || 0
           : parseMoney(allocs[monthIndex] || "0");
         return {
           name: d.name,
-          amount: Math.round(amt),
+          amount: Math.round(amt * 100) / 100,
         };
       })
       .filter((item) => item.amount > 0);
@@ -2406,8 +2505,9 @@ export function buildDeepDiveData({
   }
 
   // 11. Cash Contractors (Matching WebApp.html lines 17132-17149)
-  if (ddType === "cashContractors" || ddType === "conCash" || ddType === "conCash_incl") {
-    const list = CashDeepDiveEngine.getOutgoingsCash(effectiveDate, "conCash_incl", keyData);
+  if (ddType === "cashContractors" || ddType === "conCash" || ddType === "conCash_incl" || ddType === "conCash_excl") {
+    const actualConType = ddType === "conCash_excl" ? "conCash_excl" : "conCash_incl";
+    const list = CashDeepDiveEngine.getOutgoingsCash(effectiveDate, actualConType, keyData);
     const targetCellVal = parseMoney(cellValue);
     const total = list.reduce((sum, item) => sum + item.amount, 0);
     const drift = Math.round(targetCellVal - total);
@@ -2428,10 +2528,11 @@ export function buildDeepDiveData({
     };
   }
 
-  // 12. Cash Direct Costs (Matching WebApp.html lines 17118-17131)
-  if (ddType === "cashDirCosts" || ddType === "dirCash" || ddType === "dirCash_incl") {
+  // 12. Cash Direct / Pass-through Costs (Matching WebApp.html lines 17118-17131)
+  if (ddType === "cashDirCosts" || ddType === "dirCash" || ddType === "dirCash_incl" || ddType === "dirCash_excl" || ddType === "cashDirCostsExcl") {
     const allJobs = keyData.jobs?.all || [...(keyData.jobs?.confirmed || []), ...(keyData.jobs?.pipeline || [])];
-    const jobCash = CashDeepDiveEngine.getJobCash(allJobs, effectiveDate, "cashDirCosts");
+    const actualDirType = (ddType === "dirCash_excl" || ddType === "cashDirCostsExcl") ? "dirCash_excl" : "cashDirCosts";
+    const jobCash = CashDeepDiveEngine.getJobCash(allJobs, effectiveDate, actualDirType);
     const targetCellVal = parseMoney(cellValue);
     const sumItems = jobCash.reduce((s, i) => s + i.amount, 0);
     const drift = Math.round(targetCellVal - sumItems);
@@ -2455,8 +2556,9 @@ export function buildDeepDiveData({
       });
     }
 
+    const isPassThroughCash = effectiveIncomeMode || keyData?.outgoingsMeta?.directCostsMode === "Pass-through";
     return {
-      title: "Direct cost payments",
+      title: isPassThroughCash ? "Pass-through cost payments" : "Direct cost payments",
       period: periodLabel,
       total: cellValue,
       items,
@@ -2636,7 +2738,7 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
   if (!activeYear || !activeYear.rows) return null;
   const yearData = JSON.parse(JSON.stringify(activeYear));
   const rows = yearData.rows;
-  const headerMonths = yearData.headerMonths || [];
+  const headerMonths = yearData.headerMonths || yearData.months || [];
 
   const ccySymbol = scenariosConfig.currencySymbol || yearData.currencySymbol || getCurrencySymbol();
   const ccySep = scenariosConfig.thousandsSeparator || yearData.thousandsSeparator || getThousandsSeparator();
@@ -2678,17 +2780,36 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
   const outgoingsMeta = scenariosConfig.outgoingsMeta || {};
   const nbtofind = scenariosConfig.nbtofind || {};
   const yearIdx = scenariosConfig.yearIndex !== undefined ? scenariosConfig.yearIndex : 2;
-  const outIdx = Math.max(0, yearIdx - 1);
+  const outIdx = yearIdx - 1;
 
-  // Determine mode directly from row 12
+  // Determine mode and directCostsMode
   const row12Label = String(rows[12]?.label || "").toLowerCase();
-  const isRevMode = row12Label.includes("direct");
+  const modeStr = String(
+    scenariosConfig.mode ||
+    outgoingsMeta.mode ||
+    nbtofind.mode ||
+    (String(rows[8]?.label || rows[3]?.label || "").toLowerCase().includes("income") ? "Income" : "Revenue")
+  ).trim().toLowerCase();
+  const isRevMode = modeStr !== "income";
+  const rawDcMode = String(
+    scenariosConfig.directCostsMode ||
+    outgoingsMeta.directCostsMode ||
+    nbtofind.directCostsMode ||
+    (row12Label.includes("pass-through") ? "Pass-through" : "Contractors")
+  ).trim();
+  const directCostsMode = !isRevMode
+    ? "Pass-through"
+    : rawDcMode === "Pass-through"
+    ? "Pass-through"
+    : "Contractors";
+  const isContractorsDirectMode = isRevMode && directCostsMode === "Contractors";
+  const otherExpDelRowIdx = String(rows[12]?.label || "").toLowerCase().includes("other expenses") ? 12 : 13;
 
   // Calculate New Business Direct Costs deduction array respecting monthly checkboxes (Revenue mode only)
   const nbDCDeduction = new Array(12).fill(0);
   if (isRevMode && yearIdx > 0 && nbtofind?.directCosts) {
     const nbDcYearKey = `y${yearIdx}`;
-    const nbDcArr = nbtofind.directCosts[nbDcYearKey] || [];
+    const nbDcArr = nbtofind.directCosts[nbDcYearKey] || nbtofind.directCosts[yearIdx] || [];
     for (let m = 0; m < 12; m++) {
       if (!adjs.nbChecked[m]) {
         nbDCDeduction[m] = parseMoney(nbDcArr[m] || 0);
@@ -2780,9 +2901,14 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
 
       let newTotalRev = getOldVal(8) + (exactNewConfRev - exactOldConfRev) + (exactNewPipeRev - exactOldPipeRev) + (exactNewNB - exactOldNB);
 
+      let exactOldDC = 0;
       let exactNewDC = 0;
       if (isRevMode) {
-        const exactOldDC = getOldVal(12);
+        exactOldDC = isContractorsDirectMode
+          ? (outIdx >= 0 && outgoingsMeta.directCostsAsContractors?.[outIdx] !== undefined
+              ? parseMoney(outgoingsMeta.directCostsAsContractors[outIdx][m])
+              : getOldVal(12))
+          : getOldVal(12);
         const exactNbDCDeduction = nbDCDeduction[m] || 0;
         exactNewDC = Math.max(0, exactOldDC - exactDCDeduction - exactNbDCDeduction + exactAssumedConfDCAdd);
         deltaDC = Math.round(exactNewDC) - Math.round(exactOldDC);
@@ -2798,34 +2924,37 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
       adjNonDelExp = Math.round(exactAdjNonDelExp);
 
       let salaryDel = 0, salaryNonDel = 0;
-      if (outgoingsMeta.salariesDel && outgoingsMeta.salariesDel[outIdx]) {
+      if (outIdx >= 0 && outgoingsMeta.salariesDel && outgoingsMeta.salariesDel[outIdx]) {
         salaryDel = parseMoney(outgoingsMeta.salariesDel[outIdx][m]);
       }
-      if (outgoingsMeta.salariesNonDel && outgoingsMeta.salariesNonDel[outIdx]) {
+      if (outIdx >= 0 && outgoingsMeta.salariesNonDel && outgoingsMeta.salariesNonDel[outIdx]) {
         salaryNonDel = parseMoney(outgoingsMeta.salariesNonDel[outIdx][m]);
       }
 
       let baseM = 0, basePS_del = 0, basePS_nonDel = 0, forceZeroM = false;
       let M_tgt = outgoingsMeta.makingUpCosPct || 0;
 
-      if (outgoingsMeta.makingUpCosBase && outgoingsMeta.makingUpCosBase[outIdx]) {
+      if (outIdx >= 0 && outgoingsMeta.makingUpCosBase && outgoingsMeta.makingUpCosBase[outIdx]) {
         baseM = parseMoney(outgoingsMeta.makingUpCosBase[outIdx][m]);
       }
-      if (outgoingsMeta.profitShareBaseDel && outgoingsMeta.profitShareBaseDel[outIdx]) {
+      if (outIdx >= 0 && outgoingsMeta.profitShareBaseDel && outgoingsMeta.profitShareBaseDel[outIdx]) {
         basePS_del = parseMoney(outgoingsMeta.profitShareBaseDel[outIdx][m]);
       }
-      if (outgoingsMeta.profitShareBaseNonDel && outgoingsMeta.profitShareBaseNonDel[outIdx]) {
+      if (outIdx >= 0 && outgoingsMeta.profitShareBaseNonDel && outgoingsMeta.profitShareBaseNonDel[outIdx]) {
         basePS_nonDel = parseMoney(outgoingsMeta.profitShareBaseNonDel[outIdx][m]);
       }
-      if (outgoingsMeta.makingUpCosHardZero && outgoingsMeta.makingUpCosHardZero[outIdx]) {
+      if (outIdx >= 0 && outgoingsMeta.makingUpCosHardZero && outgoingsMeta.makingUpCosHardZero[outIdx]) {
         if (outgoingsMeta.makingUpCosHardZero[outIdx][m] === true) forceZeroM = true;
       }
 
-      let newDirectCosts = isRevMode ? exactNewDC : 0;
-      let newOtherExpDel = isRevMode ? (getOldVal(13) + exactAdjDelExp) : (getOldVal(12) + exactAdjDelExp);
+      let newDirectCosts = isRevMode && !isContractorsDirectMode ? exactNewDC : 0;
+      let newOtherExpDel = getOldVal(otherExpDelRowIdx) + exactAdjDelExp;
       let newOtherExpNonDel = getOldVal(23) + exactAdjNonDelExp;
 
-      let trueStaffDel = (getOldVal(11) - baseM - basePS_del) + adjDelStaffRaw;
+      let trueStaffDel =
+        (getOldVal(11) - baseM - basePS_del) +
+        (isContractorsDirectMode ? (exactNewDC - exactOldDC) : 0) +
+        adjDelStaffRaw;
       let trueStaffNonDel = (getOldVal(22) - basePS_nonDel) + adjNonDelStaffRaw;
 
       let pBase = newTotalRev - newDirectCosts - newOtherExpDel - newOtherExpNonDel - trueStaffDel - trueStaffNonDel;
@@ -2890,7 +3019,9 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
       scenarioMeta.adjNonDelExp[m] = adjNonDelExp;
       scenarioMeta.adjRev[m] = adjs.rev[m] || 0;
 
-      adjDelStaff = Math.round((M - baseM) + (B_del - basePS_del) + adjDelStaffRaw);
+      adjDelStaff =
+        Math.round((M - baseM) + (B_del - basePS_del) + adjDelStaffRaw) +
+        (isContractorsDirectMode ? deltaDC : 0);
       adjNonDelStaff = Math.round((B_nonDel - basePS_nonDel) + adjNonDelStaffRaw);
 
       sumDeltaConfRev += deltaConfRev;
@@ -2935,12 +3066,12 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
     applyDelta(11, adjDelStaff); // Staff costs delivery
 
     let deltaCOS = 0;
-    if (isRevMode) {
-      applyDelta(12, deltaDC); // Direct costs
-      applyDelta(13, adjDelExp); // Other expenses - delivery
+    if (isRevMode && !isContractorsDirectMode) {
+      applyDelta(12, deltaDC); // Pass-through costs
+      applyDelta(otherExpDelRowIdx, adjDelExp); // Other expenses - delivery
       deltaCOS = deltaDC + adjDelStaff + adjDelExp;
     } else {
-      applyDelta(12, adjDelExp);
+      applyDelta(otherExpDelRowIdx, adjDelExp);
       deltaCOS = adjDelStaff + adjDelExp;
     }
     applyDelta(15, deltaCOS); // Total Costs of Sale

@@ -7,7 +7,12 @@ import {
   getHandledFingerprintHashes_, findPreviousIgnoreReason,
   normaliseArrayForFingerprint
 } from "./alertMemory.js";
-import { handleFireOutgoingsPull, handleMarkExpenseAssigned, getAllClients } from "./workspaces.js";
+import {
+  handleFireOutgoingsPull, handleMarkExpenseAssigned, getAllClients,
+  resolveLiveInvoiceSlot_, resolveLiveExpenseSlot_,
+  adjustJobInvoicePlaceholders_, adjustJobExpensePlaceholders_,
+  isAutoInvoicePlaceholderRef_, isAutoExpensePlaceholderId_
+} from "./workspaces.js";
 import { provisionRetainerScheduleInBackground } from "./retainers.js";
 import { applyAlertRemovalToTriageData } from "./alertState.js";
 import {
@@ -58,6 +63,53 @@ export async function setTriageRefreshStatus(statusObj, ttlSecs = 600) {
     await redisClient.set(PMA_TRIAGE_REFRESH_STATUS_KEY, JSON.stringify(statusObj), { EX: ttlSecs });
   } catch (err) {
     console.error("Error setting triage refresh status:", err);
+  }
+}
+
+async function syncRefreshedAlertOptionsToRedis_(alert, fingerprintHash, options) {
+  if (!alert || !Array.isArray(options)) return;
+  try {
+    if (!redisClient?.isOpen) await redisClient.connect();
+    const preRaw = await redisClient.get(PRECOMPUTED_KEY);
+    if (!preRaw) return;
+    const pre = JSON.parse(preRaw);
+    let updated = false;
+    const matchAlert = (a) => {
+      if (!a) return false;
+      if (fingerprintHash && a.fingerprintHash && a.fingerprintHash === fingerprintHash) return true;
+      if (alert.id && a.id && alert.id === a.id) return true;
+      return (
+        a.sheetName === alert.sheetName &&
+        Number(a.rowNumber) === Number(alert.rowNumber) &&
+        (!alert.clientName || !a.clientName || matchesClientName(alert.clientName, a.clientName))
+      );
+    };
+    if (Array.isArray(pre.alerts)) {
+      for (const a of pre.alerts) {
+        if (matchAlert(a)) {
+          a.options = options;
+          updated = true;
+        }
+      }
+    }
+    if (pre.clientAlerts && typeof pre.clientAlerts === "object") {
+      for (const cKey of Object.keys(pre.clientAlerts)) {
+        const list = pre.clientAlerts[cKey]?.alerts;
+        if (Array.isArray(list)) {
+          for (const a of list) {
+            if (matchAlert(a)) {
+              a.options = options;
+              updated = true;
+            }
+          }
+        }
+      }
+    }
+    if (updated) {
+      await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
+    }
+  } catch (err) {
+    console.warn("syncRefreshedAlertOptionsToRedis_ error (non-fatal):", err.message);
   }
 }
 
@@ -217,11 +269,48 @@ export const FLAG_NAMES = {
   crmCopiedConfDelete: "CRM copied to conf box DELETE",
   retainerInvoicesCreated: "Retainer invoices created",
   retainerInvoicesDeleted: "Retainer invoices deleted",
-  expenseDashboardDiscr: "Expense dashboard discr",
+  contractorsDashboardDiscr: "Contractors discrepancies",
+  passThroughDashboardDiscr: "Pass-through discrepancies",
+  expenseDashboardDiscr: "Contractors discrepancies",
   expenseAdded: "Expense added",
   expenseUnreconGaps: "Stale unreceived expense date changed",
   invoiceStaleUnsentChanges: "Stale unsent invoice send date changed",
 };
+
+export function matchesExpenseCategoryEntry(rawAcct, categoryEntry) {
+  const acct = String(rawAcct || "").trim().toLowerCase();
+  const entry = String(categoryEntry || "").trim().toLowerCase();
+  if (!acct || !entry) return false;
+  if (acct === entry) return true;
+  const acctParts = acct.split(" - ");
+  const entryParts = entry.split(" - ");
+  const acctCode = acctParts.length > 1 ? acctParts[0].trim() : "";
+  const acctName = acctParts.length > 1 ? acctParts.slice(1).join(" - ").trim() : acct;
+  const entryCode = entryParts.length > 1 ? entryParts[0].trim() : "";
+  const entryName = entryParts.length > 1 ? entryParts.slice(1).join(" - ").trim() : entry;
+  if (acctCode && entryCode && acctCode === entryCode) return true;
+  if (acctName && entryName && acctName === entryName) return true;
+  return false;
+}
+
+export function classifyExpenseCategory(accountName, contractorsList = [], passThroughList = [], directCostsMode = "Contractors") {
+  const mode = String(directCostsMode || "Contractors").trim() === "Pass-through" ? "Pass-through" : "Contractors";
+  if (mode !== "Pass-through") {
+    return { flagType: "contractorsDashboardDiscr", expenseCategoryType: "contractor" };
+  }
+  const isPassThrough = (passThroughList || []).some(entry => matchesExpenseCategoryEntry(accountName, entry));
+  if (isPassThrough) {
+    return { flagType: "passThroughDashboardDiscr", expenseCategoryType: "passthrough" };
+  }
+  const isContractor = (contractorsList || []).some(entry => matchesExpenseCategoryEntry(accountName, entry));
+  if (isContractor) {
+    return { flagType: "contractorsDashboardDiscr", expenseCategoryType: "contractor" };
+  }
+  if ((contractorsList || []).filter(Boolean).length === 0 && (passThroughList || []).filter(Boolean).length > 0) {
+    return { flagType: "passThroughDashboardDiscr", expenseCategoryType: "passthrough" };
+  }
+  return { flagType: "contractorsDashboardDiscr", expenseCategoryType: "contractor" };
+}
 
 export function parseAutomationTime_(str) {
   if (!str) return 0;
@@ -274,7 +363,7 @@ export function evaluateAutomationStatus_(alertType, category, clientMeta, detec
     autoLastRun = clientMeta.invAutoLastRunMs;
   } else if (alertType.startsWith("crm")) {
     autoLastRun = clientMeta.crmAutoLastRunMs;
-  } else if (alertType.startsWith("expense") || expenseDependent.includes(alertType)) {
+  } else if (alertType.startsWith("expense") || alertType === "contractorsDashboardDiscr" || alertType === "passThroughDashboardDiscr" || expenseDependent.includes(alertType)) {
     autoLastRun = clientMeta.expAutoLastRunMs;
   } else {
     return "cached";
@@ -555,17 +644,45 @@ export async function readInvCompAlerts(sheets, spreadsheetId, cachedData = null
   }
 }
 
-export async function readDirCompAlerts(sheets, spreadsheetId, cachedData = null) {
+export async function readDirCompAlerts(sheets, spreadsheetId, cachedData = null, categoryConfig = null) {
   try {
     console.log(`\n📖 Reading DirComp alerts from ${spreadsheetId}...`);
     let allRows = [];
-    if (cachedData) {
+    let resolvedCategoryConfig = categoryConfig;
+    if (cachedData && resolvedCategoryConfig) {
       allRows = cachedData;
+    } else if (cachedData && !resolvedCategoryConfig) {
+      allRows = cachedData;
+      try {
+        const cfgResp = await withRetry(() => sheets.spreadsheets.values.batchGet({
+          spreadsheetId,
+          ranges: ["KeyInfo!B15", "KeyInfo!D8", "KeyInfo!AT4:AT22", "KeyInfo!AT24:AT40"],
+        }));
+        const cfgRanges = cfgResp.data.valueRanges || [];
+        const revFocus = String(cfgRanges[0]?.values?.[0]?.[0] || "Revenue").trim();
+        const rawDcMode = String(cfgRanges[1]?.values?.[0]?.[0] || "Contractors").trim();
+        resolvedCategoryConfig = {
+          directCostsMode: revFocus.toLowerCase() === "income" ? "Pass-through" : (rawDcMode === "Pass-through" ? "Pass-through" : "Contractors"),
+          contractorsList: (cfgRanges[2]?.values || []).map(r => String(r?.[0] || "").trim()).filter(Boolean),
+          passThroughList: (cfgRanges[3]?.values || []).map(r => String(r?.[0] || "").trim()).filter(Boolean),
+        };
+      } catch (e) {
+        resolvedCategoryConfig = { directCostsMode: "Contractors", contractorsList: [], passThroughList: [] };
+      }
     } else {
-      const dataResponse = await withRetry(() => sheets.spreadsheets.values.get({
-        spreadsheetId, range: "DirComp!A5:AV1000",
+      const dataResponse = await withRetry(() => sheets.spreadsheets.values.batchGet({
+        spreadsheetId,
+        ranges: ["DirComp!A5:AV1000", "KeyInfo!B15", "KeyInfo!D8", "KeyInfo!AT4:AT22", "KeyInfo!AT24:AT40"],
       }));
-      allRows = dataResponse.data.values || [];
+      const valueRanges = dataResponse.data.valueRanges || [];
+      allRows = valueRanges[0]?.values || [];
+      const revFocus = String(valueRanges[1]?.values?.[0]?.[0] || "Revenue").trim();
+      const rawDcMode = String(valueRanges[2]?.values?.[0]?.[0] || "Contractors").trim();
+      resolvedCategoryConfig = {
+        directCostsMode: revFocus.toLowerCase() === "income" ? "Pass-through" : (rawDcMode === "Pass-through" ? "Pass-through" : "Contractors"),
+        contractorsList: (valueRanges[3]?.values || []).map(r => String(r?.[0] || "").trim()).filter(Boolean),
+        passThroughList: (valueRanges[4]?.values || []).map(r => String(r?.[0] || "").trim()).filter(Boolean),
+      };
     }
     const headers = allRows[0] || [];
     const rows = allRows.slice(1);
@@ -575,12 +692,23 @@ export async function readDirCompAlerts(sheets, spreadsheetId, cachedData = null
       if (!row || row.length === 0) continue;
       const hasDiscrepancy = [40, 42, 43, 44, 45, 46, 47].some((idx) => String(row[idx] || "").trim() === "1");
       if (hasDiscrepancy) {
+        const accounting = (() => { const s = row.slice(0, 10); while (s.length < 10) s.push(""); return s; })();
+        const { flagType, expenseCategoryType } = classifyExpenseCategory(
+          accounting[4],
+          resolvedCategoryConfig?.contractorsList || [],
+          resolvedCategoryConfig?.passThroughList || [],
+          resolvedCategoryConfig?.directCostsMode || "Contractors"
+        );
         const alert = {
           type: "expense",
+          flagType,
+          alertType: flagType,
+          expenseCategoryType,
+          directCostsMode: resolvedCategoryConfig?.directCostsMode || "Contractors",
           sheetName: "DirComp",
           rowNumber: 7 + rowIdx,
           data: {
-            accounting: (() => { const s = row.slice(0, 10); while (s.length < 10) s.push(""); return s; })(),
+            accounting,
             confirmed: (() => { const s = row.slice(23, 34); while (s.length < 11) s.push(""); return s; })(),
             flags: (() => { const s = row.slice(40, 48); while (s.length < 8) s.push(""); return s; })(),
           },
@@ -601,16 +729,28 @@ export async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes,
   try {
     console.log(`\n📖 Reading CRMComp alerts (${mode} mode) for ${alertTypes.join(", ")}...`);
     let triageSettings = null;
+    let currentB2 = null;
     const dcaSheetId = masterSheetId || spreadsheetId;
     try {
       const batchResp = await withRetry(() => sheets.spreadsheets.values.batchGet({
         spreadsheetId: dcaSheetId,
-        ranges: ["DataChgAlert!C59:C66", "DataChgAlert!F59:F66", "DataChgAlert!C72:C79", "DataChgAlert!F72:F79", "KeyInfo!Q8"]
+        ranges: ["DataChgAlert!C59:C66", "DataChgAlert!F59:F66", "DataChgAlert!C72:C79", "DataChgAlert!F72:F79", "KeyInfo!Q8:Q9", "DataChgAlert!B4:I4", "CRMComp!B2"]
       }));
       const ranges = batchResp.data.valueRanges || [];
       const crmToolVal = String(ranges[4]?.values?.[0]?.[0] || "").trim();
+      const crmModeVal = String(ranges[4]?.values?.[1]?.[0] || "").trim();
+      currentB2 = String(ranges[6]?.values?.[0]?.[0] || "").trim();
       if (!hasActiveCrmIntegration(crmToolVal)) {
         console.log(`  ⏭ Client has no active CRM integration ("${crmToolVal || "None"}") - skipping CRMComp alerts.`);
+        return [];
+      }
+      if (mode === "Confirmed" && crmModeVal.toLowerCase() !== "pipeandconf" && crmModeVal.toLowerCase() !== "confirmed") {
+        console.log(`  ⏭ Client CRM scope is "${crmModeVal || "Pipeline"}" (Pipeline-only) - skipping Confirmed CRMComp alerts.`);
+        return [];
+      }
+      const liveLocks = await checkAllGASLocks(sheets, dcaSheetId, ranges[5]?.values || []);
+      if (liveLocks.crm?.locked) {
+        console.log(`  ⏭ GAS CRM sequence is currently active - skipping CRMComp alert read (${mode}) to avoid mutating CRMComp!B2.`);
         return [];
       }
       const SETTING_ROWS = ["missing_job", "client_mismatch", "job_name_mismatch", "revenue_mismatch",
@@ -623,7 +763,7 @@ export async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes,
       triageSettings = { dashPipe: parseSettings(ranges[0]?.values || []), dashConf: parseSettings(ranges[1]?.values || []), crmPipe: parseSettings(ranges[2]?.values || []), crmConf: parseSettings(ranges[3]?.values || []) };
     } catch (e) { }
 
-    await setCRMMode(sheets, spreadsheetId, mode);
+    await setCRMMode(sheets, spreadsheetId, mode, currentB2);
     const alerts = [];
     let dashData = [];
     let appData = [];
@@ -806,7 +946,7 @@ export async function handleDebugCompareTriage(req, res, sheets) {
     const invAlerts = clientFlags.invoiceDashboardDiscr
       ? await readInvCompAlerts(sheets, debugSheetIdClean).catch(e => { console.log(`  ⚠ InvComp read error: ${e.message}`); return []; })
       : [];
-    const dirAlerts = clientFlags.expenseDashboardDiscr
+    const dirAlerts = (clientFlags.contractorsDashboardDiscr || clientFlags.passThroughDashboardDiscr || clientFlags.expenseDashboardDiscr)
       ? await readDirCompAlerts(sheets, debugSheetIdClean).catch(e => { console.log(`  ⚠ DirComp read error: ${e.message}`); return []; })
       : [];
 
@@ -823,7 +963,7 @@ export async function handleDebugCompareTriage(req, res, sheets) {
       : [];
 
     invAlerts.forEach(a => { a.clientName = debugClientName; a.clientId = clientSheetId; a.flagType = a.flagType || "invoiceDashboardDiscr"; });
-    dirAlerts.forEach(a => { a.clientName = debugClientName; a.clientId = clientSheetId; a.flagType = a.flagType || "expenseDashboardDiscr"; });
+    dirAlerts.forEach(a => { a.clientName = debugClientName; a.clientId = clientSheetId; a.flagType = a.flagType || "contractorsDashboardDiscr"; });
     crmPipeAlerts.forEach(a => { a.clientName = debugClientName; a.clientId = clientSheetId; if (!a.flagType) a.flagType = a.alertType || "crmPipeAppDiscr"; });
     crmConfAlerts.forEach(a => { a.clientName = debugClientName; a.clientId = clientSheetId; a.masterSheetId; if (!a.flagType) a.flagType = a.alertType || "crmConfAppDiscr"; });
 
@@ -1239,6 +1379,8 @@ export async function handleGetPrecomputed(req, res, sheets) {
 
     const alertCountsByClientAndFlag = {};
     const activeExpenseIdsByClient = {};
+    const activeContractorExpenseIdsByClient = {};
+    const activePassThroughExpenseIdsByClient = {};
     const activeInvoiceIdsByClient = {};
 
     for (const alert of scopedAlerts) {
@@ -1246,7 +1388,9 @@ export async function handleGetPrecomputed(req, res, sheets) {
       let flagKey = alert.flagType || alert.alertType || alert.type;
 
       if (flagKey === "invoice") flagKey = "invoiceDashboardDiscr";
-      if (flagKey === "expense") flagKey = "expenseDashboardDiscr";
+      if (flagKey === "expense" || flagKey === "expenseDashboardDiscr") {
+        flagKey = alert.expenseCategoryType === "passthrough" ? "passThroughDashboardDiscr" : "contractorsDashboardDiscr";
+      }
       if (flagKey === "crm") flagKey = alert.flagType || alert.alertType || "crmPipeAppDiscr";
 
       alert.flagType = flagKey;
@@ -1255,7 +1399,7 @@ export async function handleGetPrecomputed(req, res, sheets) {
       if (!alertCountsByClientAndFlag[key]) alertCountsByClientAndFlag[key] = {};
       alertCountsByClientAndFlag[key][flagKey] = (alertCountsByClientAndFlag[key][flagKey] || 0) + 1;
 
-      if (flagKey === "expenseDashboardDiscr") {
+      if (flagKey === "contractorsDashboardDiscr" || flagKey === "passThroughDashboardDiscr" || flagKey === "expenseDashboardDiscr") {
         const txId = alert.summary?.transactionId || alert.summary?.appId || alert.summary?.reference || alert.summary?.id;
         if (txId !== undefined && txId !== null && txId !== "") {
           if (!activeExpenseIdsByClient[key]) activeExpenseIdsByClient[key] = [];
@@ -1263,6 +1407,15 @@ export async function handleGetPrecomputed(req, res, sheets) {
           const clean = s.replace(/^#/, "");
           activeExpenseIdsByClient[key].push(s);
           if (clean !== s) activeExpenseIdsByClient[key].push(clean);
+          if (flagKey === "passThroughDashboardDiscr") {
+            if (!activePassThroughExpenseIdsByClient[key]) activePassThroughExpenseIdsByClient[key] = [];
+            activePassThroughExpenseIdsByClient[key].push(s);
+            if (clean !== s) activePassThroughExpenseIdsByClient[key].push(clean);
+          } else {
+            if (!activeContractorExpenseIdsByClient[key]) activeContractorExpenseIdsByClient[key] = [];
+            activeContractorExpenseIdsByClient[key].push(s);
+            if (clean !== s) activeContractorExpenseIdsByClient[key].push(clean);
+          }
         }
       }
       if (flagKey === "invoiceDashboardDiscr") {
@@ -1307,6 +1460,9 @@ export async function handleGetPrecomputed(req, res, sheets) {
     const clientsWithUpdatedCounts = clientsSource.map(c => {
       const counts = alertCountsByClientAndFlag[c.clientName] || {};
       const updatedFlags = { ...(c.flags || {}) };
+      for (const flagKey of Object.keys(counts)) {
+        if (counts[flagKey] > 0) updatedFlags[flagKey] = true;
+      }
       for (const flagKey of Object.keys(updatedFlags)) {
         if (!counts[flagKey] || counts[flagKey] <= 0) {
           updatedFlags[flagKey] = false;
@@ -1318,6 +1474,8 @@ export async function handleGetPrecomputed(req, res, sheets) {
         flags: updatedFlags,
         alertCounts: counts,
         activeExpenseIds: activeExpenseIdsByClient[c.clientName] || [],
+        activeContractorExpenseIds: activeContractorExpenseIdsByClient[c.clientName] || [],
+        activePassThroughExpenseIds: activePassThroughExpenseIdsByClient[c.clientName] || [],
         activeInvoiceIds: activeInvoiceIdsByClient[c.clientName] || [],
       };
     });
@@ -1371,6 +1529,8 @@ export async function handleGetPrecomputed(req, res, sheets) {
         flags: c.flags,
         alertCounts: c.alertCounts || {},
         activeExpenseIds: c.activeExpenseIds || [],
+        activeContractorExpenseIds: c.activeContractorExpenseIds || [],
+        activePassThroughExpenseIds: c.activePassThroughExpenseIds || [],
         activeInvoiceIds: c.activeInvoiceIds || [],
       })),
       computedAt: data.computedAt,
@@ -1489,8 +1649,19 @@ export async function handleStorePrecomputed(req, res, sheets) {
 
           if (row.fingerprintHash) oldPathFingerprints.add(row.fingerprintHash);
 
+          let mappedFlagType = row.alertType;
+          if (mappedFlagType === "invoice") mappedFlagType = alertObj.flagType || "invoiceDashboardDiscr";
+          if (mappedFlagType === "expense" || mappedFlagType === "expenseDashboardDiscr") {
+            mappedFlagType = (alertObj.flagType && alertObj.flagType !== "expenseDashboardDiscr")
+              ? alertObj.flagType
+              : (alertObj.expenseCategoryType === "passthrough" ? "passThroughDashboardDiscr" : "contractorsDashboardDiscr");
+          }
+          if (mappedFlagType === "crm") mappedFlagType = alertObj.flagType || alertObj.alertType || "crmPipeAppDiscr";
+
           newAlertsFromMemory.push({
             ...alertObj,
+            flagType: mappedFlagType,
+            alertType: mappedFlagType,
             fingerprintHash: row.fingerprintHash,
             clientName: row.clientName,
             clientId: liveMeta.clientSheetId || alertObj.clientId || alertObj.clientSheetId || "",
@@ -1501,11 +1672,6 @@ export async function handleStorePrecomputed(req, res, sheets) {
           });
 
           if (!extraFlagsByClient.has(row.clientName)) extraFlagsByClient.set(row.clientName, {});
-
-          let mappedFlagType = row.alertType;
-          if (mappedFlagType === "invoice") mappedFlagType = alertObj.flagType || "invoiceDashboardDiscr";
-          if (mappedFlagType === "expense") mappedFlagType = alertObj.flagType || "expenseDashboardDiscr";
-          if (mappedFlagType === "crm") mappedFlagType = alertObj.flagType || alertObj.alertType || "crmPipeAppDiscr";
 
           extraFlagsByClient.get(row.clientName)[mappedFlagType] = true;
 
@@ -1881,11 +2047,25 @@ export async function isExpensePlaceholderStillActive_(line, clientSheetId, shar
 
   // 2. Outgoings tab check:
   if (line.includes("[Outgoings]")) {
-    const oMatch = line.match(/\[Outgoings\]\s*(?:(?:[A-Za-z]{3}\s*\d{2}\s*[-–]\s*)?(.+?)(?:\s*\((?:Row\s*)?(\d+)\))?:\s*(?:£[0-9.,]+\s*[-–]\s*)?Updated stale placeholder date|(?:Row\s*(\d+),\s*)?([^:]+):\s*Updated stale Placeholder\/Gap date)/i);
+    const oMatch = line.match(/\[Outgoings\]\s*(?:(?:([A-Za-z]{3}\s*\d{2,4})\s*[-–]\s*)?(.+?)(?:\s*\((?:Row\s*)?(\d+)\))?:\s*(?:£[0-9.,]+\s*[-–]\s*)?Updated stale placeholder date|(?:Row\s*(\d+),\s*)?([^:]+):\s*Updated stale Placeholder\/Gap date)/i);
     if (!oMatch) return true;
-    const contractor = (oMatch[1] || oMatch[4] || "").trim().toLowerCase();
-    const rowNum = parseInt(oMatch[2] || oMatch[3] || "0", 10);
+    const monthLabel = (oMatch[1] || "").trim();
+    const contractor = (oMatch[2] || oMatch[5] || "").trim().toLowerCase();
+    const rowNum = parseInt(oMatch[3] || oMatch[4] || "0", 10);
     if (!contractor) return true;
+
+    // Ignore initial blank-date backfills (e.g. "Rec: ->5-Dec-26, Pay: ->28-Dec-26" with no previous date before "->")
+    const hasPriorRec = /Rec:\s*[\d\-A-Za-z]+\s*->/i.test(line);
+    const hasPriorPay = /Pay:\s*[\d\-A-Za-z]+\s*->/i.test(line);
+    if ((/Rec:\s*->/i.test(line) || /Pay:\s*->/i.test(line)) && !hasPriorRec && !hasPriorPay) {
+      return false;
+    }
+
+    const normMonthKey = (mStr) => {
+      const m = String(mStr || "").trim().match(/^([A-Za-z]{3})[\s\-]*(\d{2,4})$/);
+      if (!m) return String(mStr || "").replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+      return `${m[1].toLowerCase()}${m[2].slice(-2)}`;
+    };
 
     try {
       let actualRowNum = rowNum;
@@ -1905,23 +2085,47 @@ export async function isExpensePlaceholderStillActive_(line, clientSheetId, shar
 
       const noteResp = await withRetry(() => sheets.spreadsheets.get({
         spreadsheetId: clientSheetId,
-        ranges: [`Outgoings!A${actualRowNum}:AZ${actualRowNum}`],
-        fields: "sheets(data(rowData(values(note))))",
+        ranges: ["Outgoings!A1:AZ1", `Outgoings!A${actualRowNum}:AZ${actualRowNum}`],
+        fields: "sheets(data(rowData(values(note,formattedValue))))",
       }));
-      const rowCells = noteResp?.data?.sheets?.[0]?.data?.[0]?.rowData?.[0]?.values || [];
-      let hasUnresolved = false;
-      for (const cell of rowCells) {
-        const note = String(cell.note || "");
-        if (note.includes("PLACE-EXP") || note.includes("MANUAL-ENTRY") || note.includes("UNRECON-GAP") || note.includes("PLACE-GAP") || note.includes("MANUAL-GAP")) {
-          const statusMatch = note.match(/\{Status:\s*(.*?)\}/i);
-          const st = statusMatch ? statusMatch[1].trim().toLowerCase() : "";
-          if (st !== "paid" && st !== "complete") {
-            hasUnresolved = true;
+      const gridData = noteResp?.data?.sheets?.[0]?.data || [];
+      const headerCells = gridData[0]?.rowData?.[0]?.values || [];
+      const rowCells = gridData[1]?.rowData?.[0]?.values || [];
+
+      let targetColIdx = -1;
+      if (monthLabel) {
+        const targetKey = normMonthKey(monthLabel);
+        for (let c = 0; c < headerCells.length; c++) {
+          const hVal = String(headerCells[c]?.formattedValue || "").trim();
+          if (hVal && normMonthKey(hVal) === targetKey) {
+            targetColIdx = c;
             break;
           }
         }
       }
-      return hasUnresolved; // If no unresolved placeholders, it is resolved!
+
+      const cellsToInspect = targetColIdx !== -1 ? [rowCells[targetColIdx] || {}] : rowCells;
+      let hasUnresolved = false;
+      for (const cell of cellsToInspect) {
+        const valNum = parseFloat(String(cell?.formattedValue || "").replace(/[^0-9.-]/g, ""));
+        if (isNaN(valNum) || Math.abs(valNum) < 0.001) continue;
+        const note = String(cell?.note || "");
+        if (note.includes("PLACE-EXP") || note.includes("MANUAL-ENTRY") || note.includes("UNRECON-GAP") || note.includes("PLACE-GAP") || note.includes("MANUAL-GAP")) {
+          const rawBlocks = note.split(/(?=\{App ID:)/i);
+          for (const blk of rawBlocks) {
+            if (blk.includes("PLACE-EXP") || blk.includes("MANUAL-ENTRY") || blk.includes("UNRECON-GAP") || blk.includes("PLACE-GAP") || blk.includes("MANUAL-GAP")) {
+              const statusMatch = blk.match(/\{Status:\s*(.*?)\}/i);
+              const st = statusMatch ? statusMatch[1].trim().toLowerCase() : "";
+              if (st !== "paid" && st !== "complete") {
+                hasUnresolved = true;
+                break;
+              }
+            }
+          }
+          if (hasUnresolved) break;
+        }
+      }
+      return hasUnresolved; // If no unresolved placeholders in the target month cell, it is resolved!
     } catch (e) {
       return true;
     }
@@ -1978,23 +2182,37 @@ export async function handleRunFlagSweep(req, res, sheets) {
 
         console.log(`  📦 Batch fetching static data for ${client.clientName}...`);
         let batchData = {};
+        let masterBatchSuccess = false;
         try {
           const batchResp = await sheets.spreadsheets.values.batchGet({
             spreadsheetId: client.masterSheetId,
             ranges: [
               "DataChgAlert!B4:I4",
-              "KeyInfo!Q8",
+              "KeyInfo!Q8:Q9",
               (hasInvoice && actionableDue) ? "InvComp!A5:BD1000" : "DataChgAlert!A1",
               (hasExpense && actionableDue) ? "DirComp!A5:AV1000" : "DataChgAlert!A1",
-              (infoDue || proactiveDue) ? "AutoLog!A2:D200" : "DataChgAlert!A1"
+              (actionableDue || infoDue || proactiveDue) ? "AutoLog!A2:D200" : "DataChgAlert!A1",
+              "KeyInfo!B15",
+              "KeyInfo!D8",
+              (hasExpense && actionableDue) ? "KeyInfo!AT4:AT22" : "DataChgAlert!A1",
+              (hasExpense && actionableDue) ? "KeyInfo!AT24:AT40" : "DataChgAlert!A1"
             ]
           });
           const ranges = batchResp.data.valueRanges || [];
           batchData.gasLocks = ranges[0]?.values || [];
           batchData.crmTool = String(ranges[1]?.values?.[0]?.[0] || "").trim();
+          batchData.crmMode = String(ranges[1]?.values?.[1]?.[0] || "").trim();
           batchData.invComp = ranges[2]?.values || [];
           batchData.dirComp = ranges[3]?.values || [];
           batchData.autoLog = ranges[4]?.values || [];
+          const revFocus = String(ranges[5]?.values?.[0]?.[0] || "Revenue").trim();
+          const rawDcMode = String(ranges[6]?.values?.[0]?.[0] || "Contractors").trim();
+          batchData.expenseCategoryConfig = {
+            directCostsMode: revFocus.toLowerCase() === "income" ? "Pass-through" : (rawDcMode === "Pass-through" ? "Pass-through" : "Contractors"),
+            contractorsList: (ranges[7]?.values || []).map(r => String(r?.[0] || "").trim()).filter(Boolean),
+            passThroughList: (ranges[8]?.values || []).map(r => String(r?.[0] || "").trim()).filter(Boolean),
+          };
+          masterBatchSuccess = true;
         } catch (e) {
           console.log(`  ⚠️ Batch fetch failed for ${client.clientName}: ${e.message}`);
         }
@@ -2032,18 +2250,26 @@ export async function handleRunFlagSweep(req, res, sheets) {
           const expLock = gasLocks.expense;
           if (!expLock.locked) {
             console.log(`  -> Passing to readDirCompAlerts for ${client.clientName}`);
-            const expAlerts = await readDirCompAlerts(sheets, client.masterSheetId);
+            const expAlerts = await readDirCompAlerts(sheets, client.masterSheetId, batchData.dirComp, batchData.expenseCategoryConfig);
             expAlerts.forEach(a => {
               a.clientName = client.clientName;
               a.clientId = client.clientSheetId;
               a.masterSheetId = client.masterSheetId;
-              a.flagType = "expenseDashboardDiscr";
+              a.flagType = a.flagType || "contractorsDashboardDiscr";
               a._fingerprint = buildAlertFingerprint(a);
               a._legacyFingerprint = buildAlertFingerprintLegacy(a);
             });
+            const contractorAlerts = expAlerts.filter(a => a.flagType !== "passThroughDashboardDiscr");
+            const passThroughAlerts = expAlerts.filter(a => a.flagType === "passThroughDashboardDiscr");
             sweepItems.push({
-              clientName: client.clientName, alertType: "expenseDashboardDiscr",
-              alerts: expAlerts,
+              clientName: client.clientName, alertType: "contractorsDashboardDiscr",
+              alerts: contractorAlerts,
+              autoUpdatesRow: client.sheetRowNum,
+              category: "discrepancy",
+            });
+            sweepItems.push({
+              clientName: client.clientName, alertType: "passThroughDashboardDiscr",
+              alerts: passThroughAlerts,
               autoUpdatesRow: client.sheetRowNum,
               category: "discrepancy",
             });
@@ -2053,7 +2279,14 @@ export async function handleRunFlagSweep(req, res, sheets) {
         if (hasCRM && actionableDue) {
           const crmLock = gasLocks.crm;
           if (!crmLock.locked) {
+            const crmScopeLower = String(batchData.crmMode || "Pipeline").trim().toLowerCase();
+            const includeConfirmedCrm = crmScopeLower === "pipeandconf" || crmScopeLower === "confirmed";
             for (const [mode, dashKey, appKey] of [["Pipeline", "crmPipeDashDiscr", "crmPipeAppDiscr"], ["Confirmed", "crmConfDashDiscr", "crmConfAppDiscr"]]) {
+              if (mode === "Confirmed" && !includeConfirmedCrm) {
+                sweepItems.push({ clientName: client.clientName, alertType: dashKey, alerts: [], autoUpdatesRow: client.sheetRowNum, category: "discrepancy" });
+                sweepItems.push({ clientName: client.clientName, alertType: appKey, alerts: [], autoUpdatesRow: client.sheetRowNum, category: "discrepancy" });
+                continue;
+              }
               const crmAlerts = await readCRMCompAlerts(sheets, client.masterSheetId, mode, [dashKey, appKey], client.masterSheetId);
               crmAlerts.forEach(a => {
                 a.clientName = client.clientName;
@@ -2108,9 +2341,38 @@ export async function handleRunFlagSweep(req, res, sheets) {
           }
         }
 
+        if ((actionableDue || infoDue || proactiveDue) && masterBatchSuccess) {
+          const autoLogSharedData = { autoLogData: batchData.autoLog || [], gasLocks };
+          const [autoLogErrAlerts, infiniteLoopAlerts] = await Promise.all([
+            checkAutoLogErrors_(client.clientName, client.masterSheetId, autoLogSharedData),
+            checkAutoLogInfiniteLoops_(client.clientName, client.masterSheetId, autoLogSharedData),
+          ]);
+          const fastProactiveByType = {
+            autolog_error: autoLogErrAlerts || [],
+            infinite_loop: infiniteLoopAlerts || [],
+          };
+          for (const [fastType, fastAlerts] of Object.entries(fastProactiveByType)) {
+            fastAlerts.forEach(a => {
+              const fpInput = a.alertKey;
+              a._fingerprint = createHash("sha256").update(fpInput).digest("hex").substring(0, 16);
+              if (a.legacyAlertKey) {
+                a._legacyFingerprint = createHash("sha256").update(a.legacyAlertKey).digest("hex").substring(0, 16);
+              }
+              a.summary = a.heading || a.detail || a.alertType;
+            });
+            sweepItems.push({
+              clientName: client.clientName,
+              alertType: fastType,
+              alerts: fastAlerts,
+              autoUpdatesRow: client.sheetRowNum,
+              category: "proactive",
+            });
+          }
+        }
+
         if (proactiveDue) {
           console.log(`  🔍 Running proactive checks for ${client.clientName}...`);
-          let sharedData = { confirmedData: null, pipelineData: null, autoLogData: batchData.autoLog || null };
+          let sharedData = { confirmedData: null, pipelineData: null, autoLogData: batchData.autoLog || null, gasLocks };
           let fetchSuccess = false;
 
           try {
@@ -2143,8 +2405,6 @@ export async function handleRunFlagSweep(req, res, sheets) {
               checkJobStructureErrors_(client.clientName, client.clientSheetId, sharedData),
               checkDeletedExpenses_(client.clientName, client.clientSheetId, client.masterSheetId, sharedData, sheets),
               checkUnreceivedExpenses_(client.clientName, client.clientSheetId, sharedData),
-              checkAutoLogErrors_(client.clientName, client.masterSheetId, sharedData),
-              checkAutoLogInfiniteLoops_(client.clientName, client.masterSheetId, sharedData),
               checkStaleUnreconGapExpenses_(client.clientName, client.clientSheetId, sharedData, sheets),
               checkRetroactiveOutgoingsChanges_(client.clientName, client.masterSheetId, sharedData),
               checkQuarantinedPLCategories_(client.clientName, client.masterSheetId, sharedData, sheets),
@@ -2174,7 +2434,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
               "retainer_invoice", "crm_wipe", "revenue_mismatch", "direct_costs_mismatch",
               "pipeline_confirmed_overlap", "retainer_shrink_blocked", "uninvoiced_new_job", "uninvoiced_revenue",
               "deleted_invoice", "job_structure_error", "deleted_expense", "unreceived_expenses",
-              "autolog_error", "infinite_loop", "stale_unrecon_gap", "retroactive_outgoings_update",
+              "stale_unrecon_gap", "retroactive_outgoings_update",
               "unmapped_pl_category", "part_paid_balance"
             ];
 
@@ -2334,6 +2594,20 @@ export async function handleRunFlagSweep(req, res, sheets) {
         }
       }
 
+      const allExpenseFreshHashesByClient = new Map();
+      for (const item of sweepItems) {
+        if (item.alertType === "contractorsDashboardDiscr" || item.alertType === "passThroughDashboardDiscr") {
+          if (!allExpenseFreshHashesByClient.has(item.clientName)) {
+            allExpenseFreshHashesByClient.set(item.clientName, new Set());
+          }
+          const s = allExpenseFreshHashesByClient.get(item.clientName);
+          (item.alerts || []).forEach(a => {
+            if (a._fingerprint) s.add(a._fingerprint);
+            if (a._legacyFingerprint) s.add(a._legacyFingerprint);
+          });
+        }
+      }
+
       for (const item of sweepItems) {
         if (item.category === "discrepancy" || item.category === "proactive" || item.alertType === "expenseUnreconGaps" || item.alertType === "invoiceStaleUnsentChanges") {
           const freshHashes = new Set();
@@ -2353,12 +2627,19 @@ export async function handleRunFlagSweep(req, res, sheets) {
               });
             }
           });
-          const staleRows = memoryRows.filter(r =>
-            r.clientName === item.clientName &&
-            r.alertType === item.alertType &&
-            (r.status === "cached" || r.status === "pending_automation" || (item.category === "proactive" && (r.status === "task" || r.status === "accepted"))) &&
-            !freshHashes.has(r.fingerprintHash)
-          );
+          const clientExpHashes = allExpenseFreshHashesByClient.get(item.clientName);
+          const staleRows = memoryRows.filter(r => {
+            if (r.clientName !== item.clientName) return false;
+            const isEligibleStatus = (r.status === "cached" || r.status === "pending_automation" || (item.category === "proactive" && (r.status === "task" || r.status === "accepted")));
+            if (!isEligibleStatus) return false;
+            if (r.alertType === item.alertType) {
+              return !freshHashes.has(r.fingerprintHash);
+            }
+            if ((item.alertType === "contractorsDashboardDiscr" || item.alertType === "passThroughDashboardDiscr") && (r.alertType === "expenseDashboardDiscr" || r.alertType === "expense")) {
+              return !(clientExpHashes && clientExpHashes.has(r.fingerprintHash));
+            }
+            return false;
+          });
 
           for (const stale of staleRows) {
             try {
@@ -2396,7 +2677,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
           const clientMeta = clientMetaMap.get(item.clientName);
           const pendingAutoRows = memoryRows.filter(r =>
             r.clientName === item.clientName &&
-            r.alertType === item.alertType &&
+            (r.alertType === item.alertType || ((item.alertType === "contractorsDashboardDiscr" || item.alertType === "passThroughDashboardDiscr") && (r.alertType === "expenseDashboardDiscr" || r.alertType === "expense"))) &&
             r.status === "pending_automation" &&
             freshHashes.has(r.fingerprintHash)
           );
@@ -2412,11 +2693,13 @@ export async function handleRunFlagSweep(req, res, sheets) {
               try {
                 await updateAlertMemoryRow(sheets, acIdSweep, pRow.rowIndex, {
                   ...pRow,
+                  alertType: item.alertType,
                   status: "cached",
                   lastRechecked: new Date().toISOString()
                 });
                 console.log(`  ⏰ Woke up pending_automation alert for ${item.clientName}: ${pRow.fingerprintHash}`);
                 pRow.status = "cached";
+                pRow.alertType = item.alertType;
                 alertsWoken++;
                 raisedDetail.push({ clientName: item.clientName, flagKey: item.alertType, status: "woken" });
               } catch (e) {
@@ -2685,15 +2968,18 @@ export async function handleRunFlagSweep(req, res, sheets) {
               }
 
               const hashNeedsMigration = exRow.fingerprintHash !== alert._fingerprint;
-              if (exRow.dataSnapshot !== newSnapshotStr || exRow.alertSummary !== summary || hashNeedsMigration) {
+              const typeNeedsMigration = exRow.alertType !== item.alertType;
+              if (exRow.dataSnapshot !== newSnapshotStr || exRow.alertSummary !== summary || hashNeedsMigration || typeNeedsMigration) {
                 try {
                   await updateAlertMemoryRow(sheets, acIdSweep, exRow.rowIndex, {
                     ...exRow,
+                    alertType: item.alertType,
                     fingerprintHash: alert._fingerprint,
                     alertSummary: summary,
                     dataSnapshot: newSnapshotStr,
                     lastRechecked: detectedAtIso
                   });
+                  exRow.alertType = item.alertType;
                   exRow.fingerprintHash = alert._fingerprint;
                   exRow.dataSnapshot = newSnapshotStr;
                   console.log(`  🔄 Updated active alert for ${item.clientName}: ${exRow.fingerprintHash}`);
@@ -2786,6 +3072,7 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
           const isInv = r.alertType?.startsWith("invoice") || r.alertType === "invoice";
           if (isInv && opt.title && opt.title.includes("CREATE NEW")) return true;
           if (opt.title && (title.includes("321 - subcontractors") || (title.includes("outgoings vendor") && (/"\s*\d+\s*-/.test(title) || /outgoings vendor "[^"]*[\(\[]/i.test(opt.title))))) return true;
+          if (r.alertType === "passThroughDashboardDiscr" && opt.matchType === "category") return true;
           if (opt.matchType === "existing_job" || opt.matchType === "job") {
             if (opt.jobRowsData && opt.jobRowsData.length > 0) {
               const r0 = opt.jobRowsData[0] || {};
@@ -2865,11 +3152,11 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
             a._fingerprint = buildAlertFingerprint(a);
             a._legacyFingerprint = buildAlertFingerprintLegacy(a);
           });
-        } else if (alertType === "expenseDashboardDiscr" || alertType === "expense") {
+        } else if (alertType === "contractorsDashboardDiscr" || alertType === "passThroughDashboardDiscr" || alertType === "expenseDashboardDiscr" || alertType === "expense") {
           currentAlerts = await readDirCompAlerts(sheets, client.masterSheetId);
           currentAlerts.forEach(a => {
             a.clientName = client.clientName;
-            a.flagType = "expenseDashboardDiscr";
+            a.flagType = a.flagType || "contractorsDashboardDiscr";
             a._fingerprint = buildAlertFingerprint(a);
             a._legacyFingerprint = buildAlertFingerprintLegacy(a);
           });
@@ -2997,11 +3284,16 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
         String(r.alertSummary || "").includes("already exists in Confirmed")
       )) return false;
       if (!r.cachedOptionsJSON) return true;
-      if (r.alertType === "crmCopiedConfChecked" || r.alertType === "crmCopiedConfUnchecked") {
+      if (r.alertType === "crmCopiedConfChecked" || r.alertType === "crmCopiedConfUnchecked" || r.alertType === "invoiceStaleUnsentChanges") {
         try {
           const parsed = JSON.parse(r.cachedOptionsJSON);
-          if (Array.isArray(parsed?.results) && parsed.results.length > 0 && parsed.results[0].revenue === undefined) {
-            return true;
+          if (Array.isArray(parsed?.results) && parsed.results.length > 0) {
+            if (r.alertType === "invoiceStaleUnsentChanges" && parsed.results[0].jobType === undefined) {
+              return true;
+            }
+            if ((r.alertType === "crmCopiedConfChecked" || r.alertType === "crmCopiedConfUnchecked") && parsed.results[0].revenue === undefined) {
+              return true;
+            }
           }
         } catch (_) {
           return true;
@@ -3543,7 +3835,7 @@ export async function handleAnalyzeAlert(req, res, sheets) {
       const confirmed = alert.data?.confirmed || [];
       const accounting = alert.data?.accounting || [];
       const vendorDesc = String(confirmed[3] || "").trim();   // AA
-      const source = String(confirmed[10] || "").trim();  // AH
+      let source = String(confirmed[10] || "").trim();  // AH
       const vatAmount = parseFloat(String(accounting[8] || "0").replace(/[£$€,]/g, "")) || 0;
       const expDescription = String(accounting[1] || "").trim();
       const expAmount = parseFloat(String(accounting[2] || "0").replace(/[£$€,]/g, "")) || 0;
@@ -3573,7 +3865,7 @@ export async function handleAnalyzeAlert(req, res, sheets) {
         console.log(`  Discrepancy type(s): ${activeFlags.join(", ") || "Data mismatch"}`);
         console.log(`  Source: ${source}, TransactionID: ${transactionId}, Job: ${jobName}`);
 
-        const slotNum = source === "Slot1" ? 1 : source === "Slot2" ? 2 : source === "Slot3" ? 3 : null;
+        let slotNum = source === "Slot1" ? 1 : source === "Slot2" ? 2 : source === "Slot3" ? 3 : null;
         const slotColMapExp = {
           1: { d: "BX", a: "BY", v: "BZ", dt: "CA", dp: "CB", st: "CC", id: "CD" },
           2: { d: "CE", a: "CF", v: "CG", dt: "CH", dp: "CI", st: "CJ", id: "CK" },
@@ -3582,24 +3874,55 @@ export async function handleAnalyzeAlert(req, res, sheets) {
 
         // ── Branch 1: Confirmed tab Slot expense ──────────────────────────
         if (slotNum) {
-          const cols = slotColMapExp[slotNum];
+          let cols = slotColMapExp[slotNum];
           let confirmedRow = -1;
 
-          // 1. Search Confirmed tab for transaction ID in this slot's ID column
+          // 1. Search Confirmed tab across all 3 direct cost slots (BX:CR) so multi-tranche/part-paid expenses target the balance/latest slot
           if (transactionId) {
             try {
               const confirmedResp = await sheets.spreadsheets.values.get({
                 spreadsheetId: alert.clientId,
-                range: `Confirmed!${cols.id}2:${cols.id}2000`,
+                range: `Confirmed!BX2:CR2000`,
               });
-              const txRows = confirmedResp.data.values || [];
-              for (let i = 0; i < txRows.length; i++) {
-                if (String(txRows[i]?.[0] || "").trim() === transactionId) {
-                  confirmedRow = i + 2; // 1-indexed, starts row 2
-                  break;
+              const expRows = confirmedResp.data.values || [];
+              const matchingSlots = [];
+              for (let i = 0; i < expRows.length; i++) {
+                const r = expRows[i] || [];
+                // Slot 1: BX(0)..CD(6), Slot 2: CE(7)..CK(13), Slot 3: CL(14)..CR(20)
+                if (String(r[6] || "").trim() === transactionId) {
+                  matchingSlots.push({ row: i + 2, slot: 1, days: parseInt(r[4], 10), status: String(r[5] || "").trim() });
+                }
+                if (String(r[13] || "").trim() === transactionId) {
+                  matchingSlots.push({ row: i + 2, slot: 2, days: parseInt(r[11], 10), status: String(r[12] || "").trim() });
+                }
+                if (String(r[20] || "").trim() === transactionId) {
+                  matchingSlots.push({ row: i + 2, slot: 3, days: parseInt(r[18], 10), status: String(r[19] || "").trim() });
                 }
               }
-              console.log(`  Confirmed slot txId search: row=${confirmedRow}`);
+              if (matchingSlots.length > 0) {
+                let chosen = matchingSlots.find(m => m.slot === slotNum) || matchingSlots[0];
+                if (matchingSlots.length > 1 && String(flags[6] || "").trim() === "1") {
+                  const balMatch = matchingSlots.find(m => m.status.toLowerCase().includes("balance"));
+                  if (balMatch) {
+                    chosen = balMatch;
+                  } else {
+                    let maxDays = -Infinity;
+                    for (const m of matchingSlots) {
+                      if (m.status.toLowerCase().includes("part-paid") && !m.status.toLowerCase().includes("balance")) continue;
+                      const dVal = isNaN(m.days) ? -1 : m.days;
+                      if (dVal >= maxDays) {
+                        maxDays = dVal;
+                        chosen = m;
+                      }
+                    }
+                  }
+                }
+                confirmedRow = chosen.row;
+                slotNum = chosen.slot;
+                cols = slotColMapExp[slotNum];
+                source = `Slot${slotNum}`;
+              }
+              console.log(`  Confirmed slot txId search: row=${confirmedRow}, slot=${slotNum}`);
             } catch (e) {
               console.log(`  ⚠ Error searching Confirmed tab for txId: ${e.message}`);
             }
@@ -3931,6 +4254,36 @@ export async function handleAnalyzeAlert(req, res, sheets) {
       }
 
       // ── Missing cost - existing Claude path follows ────────────────────
+      let expDirectCostsMode = alert.directCostsMode || "";
+      let expCategoryType = alert.expenseCategoryType || (alert.flagType === "passThroughDashboardDiscr" ? "passthrough" : "");
+      if (!expDirectCostsMode || !expCategoryType) {
+        try {
+          const cfgSheetId = alert.masterSheetId || alert.clientId;
+          const cfgResp = await sheets.spreadsheets.values.batchGet({
+            spreadsheetId: cfgSheetId,
+            ranges: ["KeyInfo!B15", "KeyInfo!D8", "KeyInfo!AT4:AT22", "KeyInfo!AT24:AT40"],
+          });
+          const cfgRanges = cfgResp.data.valueRanges || [];
+          const revFocus = String(cfgRanges[0]?.values?.[0]?.[0] || "Revenue").trim();
+          const rawDcMode = String(cfgRanges[1]?.values?.[0]?.[0] || "Contractors").trim();
+          expDirectCostsMode = revFocus.toLowerCase() === "income" ? "Contractors" : (rawDcMode === "Pass-through" ? "Pass-through" : "Contractors");
+          const contractorsList = (cfgRanges[2]?.values || []).map(r => String(r?.[0] || "").trim()).filter(Boolean);
+          const passThroughList = (cfgRanges[3]?.values || []).map(r => String(r?.[0] || "").trim()).filter(Boolean);
+          const classified = classifyExpenseCategory(alert.data?.accounting?.[4] || alert.summary?.accountName || "", contractorsList, passThroughList, expDirectCostsMode);
+          expCategoryType = classified.expenseCategoryType;
+          if (!alert.flagType || alert.flagType === "expenseDashboardDiscr" || alert.flagType === "expense") {
+            alert.flagType = classified.flagType;
+          }
+        } catch (e) {
+          expDirectCostsMode = expDirectCostsMode || "Contractors";
+          expCategoryType = expCategoryType || "contractor";
+        }
+      }
+      const resolvedExpAlertType = expCategoryType === "passthrough" ? "passThroughDashboardDiscr" : "contractorsDashboardDiscr";
+      const allowJobOptions = expDirectCostsMode === "Pass-through" ? (expCategoryType === "passthrough") : true;
+      const allowVendorOptions = expDirectCostsMode === "Pass-through" ? (expCategoryType !== "passthrough") : true;
+      console.log(`  📊 Expense mode: directCostsMode=${expDirectCostsMode}, categoryType=${expCategoryType}, allowJobOptions=${allowJobOptions}, allowVendorOptions=${allowVendorOptions}`);
+
       console.log(`  📊 Fetching Outgoings tab for expense matching...`);
 
       const outgoingsResponse = await sheets.spreadsheets.values.get({
@@ -4082,19 +4435,16 @@ export async function handleAnalyzeAlert(req, res, sheets) {
                 const amt = cr[a] !== undefined ? cr[a] : '';
                 const date = cr[dt] || '';
                 const appId = String(cr[id] || '').trim();
-                if (!descr && !amt) {
-                  // date was already read above but previously omitted
-                  // here - fixed 20 Aug 2026, confirmed with Paul that
-                  // empty expense placeholders do carry a real expected
-                  // date the same way invoice placeholders do, needed
-                  // for the date-tolerance check added below.
-                  childSlots.push({ label: `Row ${childSheetRow} ExpSlot${s + 1}`, empty: true, date, sheetRow: childSheetRow, slotNum: s + 1 });
+                if (!descr && !appId && !amt) {
+                  childSlots.push({ label: `Row ${childSheetRow} ExpSlot${s + 1}`, empty: true, isAutoPlaceholder: false, isManualPlaceholder: false, date, sheetRow: childSheetRow, slotNum: s + 1 });
                   continue;
                 }
                 const amtNum = parseFloat(String(amt).replace(/[£$€,]/g, '')) || 0;
-                const isAllocated = !!(appId && !isPlaceholderExpense(appId));
+                const isAutoPlaceholder = isAutoExpensePlaceholderId_(appId) || (!appId && /^placeholder/i.test(descr));
+                const isManualPlaceholder = !appId && !isAutoPlaceholder && amtNum > 0;
+                const isAllocated = !!(appId && !isAutoPlaceholder && !isPlaceholderExpense(appId));
                 if (isAllocated) childAllocated += amtNum;
-                childSlots.push({ label: `Row ${childSheetRow} ExpSlot${s + 1}`, descr, amt, amtNum, date, appId, isAllocated, empty: false, sheetRow: childSheetRow, slotNum: s + 1 });
+                childSlots.push({ label: `Row ${childSheetRow} ExpSlot${s + 1}`, descr, amt, amtNum, date, appId, isAllocated, isAutoPlaceholder, isManualPlaceholder, empty: false, sheetRow: childSheetRow, slotNum: s + 1 });
               }
               const remainingBudget = childBudget - childAllocated;
               // Universal gate: exclude jobs whose direct costs are already fully received
@@ -4124,14 +4474,16 @@ export async function handleAnalyzeAlert(req, res, sheets) {
                 const amt = r[a] !== undefined ? r[a] : '';
                 const date = r[dt] || '';
                 const appId = String(r[id] || '').trim();
-                if (!descr && !amt) {
-                  slots.push({ label: `Row ${sheetRow} ExpSlot${s + 1}`, empty: true, date, sheetRow, slotNum: s + 1 });
+                if (!descr && !appId && !amt) {
+                  slots.push({ label: `Row ${sheetRow} ExpSlot${s + 1}`, empty: true, isAutoPlaceholder: false, isManualPlaceholder: false, date, sheetRow, slotNum: s + 1 });
                   continue;
                 }
                 const amtNum = parseFloat(String(amt).replace(/[£$€,]/g, '')) || 0;
-                const isAllocated = !!(appId && !isPlaceholderExpense(appId));
+                const isAutoPlaceholder = isAutoExpensePlaceholderId_(appId) || (!appId && /^placeholder/i.test(descr));
+                const isManualPlaceholder = !appId && !isAutoPlaceholder && amtNum > 0;
+                const isAllocated = !!(appId && !isAutoPlaceholder && !isPlaceholderExpense(appId));
                 if (isAllocated) totalAllocated += amtNum;
-                slots.push({ label: `Row ${sheetRow} ExpSlot${s + 1}`, descr, amt, amtNum, date, appId, isAllocated, empty: false, sheetRow, slotNum: s + 1 });
+                slots.push({ label: `Row ${sheetRow} ExpSlot${s + 1}`, descr, amt, amtNum, date, appId, isAllocated, isAutoPlaceholder, isManualPlaceholder, empty: false, sheetRow, slotNum: s + 1 });
               }
             }
             const remainingBudget = budget - totalAllocated;
@@ -4154,13 +4506,23 @@ export async function handleAnalyzeAlert(req, res, sheets) {
 
       console.log(`  ✓ Found ${candidateJobs.length} jobs with unreceived DirectCostBudget > £0`);
 
-      // ── TIER 1: Single job with exact amount placeholder match - skip Claude ──
-      // If exactly one candidate job has a single unallocated placeholder slot whose
-      // amount exactly matches the expense, generate the option directly.
-      const exactMatches = candidateJobs.flatMap(job =>
-        job.slots.filter(s => !s.empty && !s.isAllocated && s.amtNum === expenseAmount)
-          .map(s => ({ job, slot: s }))
-      );
+      // ── TIER 1: Single job with £5 tolerance manual placeholder match - skip Claude ──
+      // If exactly one candidate job has a manual placeholder slot whose amount matches
+      // within £5 (and supplier description overlaps), generate the option directly.
+      const expAmtTolFn = (slotAmt) => Math.abs(Math.round((slotAmt || 0) * 100) - Math.round(expenseAmount * 100)) <= 500;
+      const exactMatches = allowJobOptions
+        ? candidateJobs.flatMap(job =>
+          job.slots.filter(s => {
+            if (s.empty || s.isAllocated || !expAmtTolFn(s.amtNum)) return false;
+            if (s.isManualPlaceholder && s.descr && !/^placeholder/i.test(s.descr)) {
+              const d1 = String(expenseDescription || "").toLowerCase();
+              const d2 = String(s.descr || "").toLowerCase();
+              return d1.includes(d2) || d2.includes(d1);
+            }
+            return false;
+          }).map(s => ({ job, slot: s }))
+        )
+        : [];
       if (exactMatches.length === 1) {
         const { job: emJob, slot: emSlot } = exactMatches[0];
         const slotColMap = {
@@ -4168,12 +4530,14 @@ export async function handleAnalyzeAlert(req, res, sheets) {
           2: { d: "CE", a: "CF", v: "CG", dt: "CH", dp: "CI", st: "CJ", id: "CK" },
           3: { d: "CL", a: "CM", v: "CN", dt: "CO", dp: "CP", st: "CQ", id: "CR" },
         };
+        const row = emSlot.sheetRow;
         const cols = slotColMap[emSlot.slotNum];
         const parentRow = emJob.parentRow || row;
-        console.log(`  ✅ Expense Tier 1 - exact placeholder match: ${emJob.parentJob} Row ${row} ExpSlot${emSlot.slotNum}`);
+        const expTxnId = alert.summary?.transactionId || alert.summary?.appId || "";
+        console.log(`  ✅ Expense Tier 1 - placeholder match (within £5): ${emJob.parentJob} Row ${row} ExpSlot${emSlot.slotNum}`);
         const tier1ExpOption = {
           optionId: 1,
-          title: `Allocate to ${emJob.parentJob} (Row ${row}, ExpSlot${emSlot.slotNum}) - exact amount match`,
+          title: `Allocate to ${emJob.parentJob} (Row ${row}, ExpSlot${emSlot.slotNum}) - placeholder match`,
           matchType: "job",
           jobRow: parentRow,
           targetRowNum: row,
@@ -4194,14 +4558,14 @@ export async function handleAnalyzeAlert(req, res, sheets) {
           },
           matchAnalysis: {
             matchConfidence: "High",
-            placeholderMatch: `YES - Row ${row} ExpSlot${emSlot.slotNum} has placeholder matching amount £${expenseAmount}`,
+            placeholderMatch: `YES - Row ${row} ExpSlot${emSlot.slotNum} has placeholder (£${emSlot.amtNum}) matching amount £${expenseAmount}`,
             budgetFit: "YES",
-            reasonForChoice: `Exact amount match (£${expenseAmount}) with unallocated placeholder in ${emJob.parentJob}.`,
+            reasonForChoice: `Placeholder match (£${emSlot.amtNum} vs £${expenseAmount}) with manual placeholder in ${emJob.parentJob}.`,
             discrepancies: "None",
           },
           recommendedActions: [
             `Allocate expense to ${emJob.parentJob} (Row ${row}), ExpSlot${emSlot.slotNum}`,
-            `write ${expenseDescription} to ${cols.d}${row}, write ${expenseAmount} to ${cols.a}${row}, write ${vatYesNo} to ${cols.v}${row}, write ${expenseDate} to ${cols.dt}${row}, write 30 to ${cols.dp}${row}, write ${alert.summary?.status || ""} to ${cols.st}${row}`,
+            `write ${expenseDescription} to ${cols.d}${row}, write ${expenseAmount} to ${cols.a}${row}, write ${vatYesNo} to ${cols.v}${row}, write ${expenseDate} to ${cols.dt}${row}, write 30 to ${cols.dp}${row}, write ${alert.summary?.status || ""} to ${cols.st}${row}${expTxnId ? `, write ${expTxnId} to ${cols.id}${row}` : ""}`,
           ],
         };
         tier1ExpOption.jobRowsData = await fetchJobRowsForDisplay(
@@ -4214,10 +4578,11 @@ export async function handleAnalyzeAlert(req, res, sheets) {
         const expMemRows1 = await readAlertMemory(sheets, automationCommanderSheetId);
         const expMemRow1 = findMemoryRow(expMemRows1, fingerprintHash);
         if (expMemRow1) {
-          await updateAlertMemoryRow(sheets, automationCommanderSheetId, expMemRow1.rowIndex, { ...expMemRow1, cachedOptionsJSON: JSON.stringify([tier1ExpOption]) });
+          await updateAlertMemoryRow(sheets, automationCommanderSheetId, expMemRow1.rowIndex, { ...expMemRow1, alertType: resolvedExpAlertType, cachedOptionsJSON: JSON.stringify([tier1ExpOption]) });
         } else {
-          await appendAlertMemoryRow(sheets, automationCommanderSheetId, { fingerprintHash, alertType: "expense", clientName: alert.clientName || "", alertSummary: expSummary1, cachedOptionsJSON: JSON.stringify([tier1ExpOption]), status: "cached" });
+          await appendAlertMemoryRow(sheets, automationCommanderSheetId, { fingerprintHash, alertType: resolvedExpAlertType, clientName: alert.clientName || "", alertSummary: expSummary1, cachedOptionsJSON: JSON.stringify([tier1ExpOption]), status: "cached" });
         }
+        await syncRefreshedAlertOptionsToRedis_(alert, fingerprintHash, [tier1ExpOption]);
         return res.status(200).json({ success: true, options: [tier1ExpOption], alertId: alert.rowNumber, previousIgnoreReason });
       }
 
@@ -4357,23 +4722,51 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
       // invoice side, not a second, separate definition.
       const expMonthsTol = Number(tolerances.expenseMonthsTolerance) || 1;
       const expDateParsed = parseSheetOrJsDate_(expenseDate);
-      const dateWithinToleranceExp = (slotDateStr) => {
-        if (!expDateParsed || !slotDateStr) return null; // null = unknown, not "false"
-        const slotDate = parseSheetOrJsDate_(slotDateStr);
-        if (!slotDate) return null;
-        return monthsWithinTolerance_(expDateParsed, slotDate, expMonthsTol);
+      const dateWithinToleranceExp = (slotDateStr, jobStartStr, jobEndStr, isAutoBuffer = false) => {
+        if (!expDateParsed) return null;
+        if (slotDateStr) {
+          const slotDate = parseSheetOrJsDate_(slotDateStr);
+          if (slotDate && monthsWithinTolerance_(expDateParsed, slotDate, expMonthsTol)) return true;
+        }
+        if (isAutoBuffer && (jobStartStr || jobEndStr)) {
+          const sDate = parseSheetOrJsDate_(jobStartStr);
+          const eDate = parseSheetOrJsDate_(jobEndStr);
+          if (sDate || eDate) {
+            const targetM = expDateParsed.getFullYear() * 12 + expDateParsed.getMonth();
+            const startM = sDate ? (sDate.getFullYear() * 12 + sDate.getMonth() - expMonthsTol) : targetM;
+            const endM = eDate ? (eDate.getFullYear() * 12 + eDate.getMonth() + expMonthsTol) : targetM;
+            if (targetM >= Math.min(startM, endM) && targetM <= Math.max(startM, endM)) return true;
+          }
+        }
+        if (!slotDateStr) return null;
+        return false;
       };
 
       for (const job of candidateJobs) {
         const jobWords = normExpWords(job.parentJob);
         const clientWords = normExpWords(job.parentClient);
         const jobOverlap = expDescWords.some(w => jobWords.includes(w));
-        // Client match: bracketed text overlaps with the job's client name
-        const clientOverlap = expBracketWords.length > 0 &&
-          (expBracketWords.some(w => clientWords.includes(w)) || clientWords.some(w => expBracketWords.includes(w)));
-        if (!jobOverlap && !clientOverlap) continue;
-        // Find only the FIRST available slot for this job (in slot-number order)
-        const availSlot = job.slots.find(s => s.empty) || job.slots.find(s => !s.isAllocated);
+        // Client match: bracketed text or description overlaps with the job's client name
+        const clientOverlap = (expBracketWords.length > 0 &&
+          (expBracketWords.some(w => clientWords.includes(w)) || clientWords.some(w => expBracketWords.includes(w)))) ||
+          (clientWords.length > 0 && expDescWords.some(w => clientWords.includes(w)));
+        // Also check if any manual placeholder on the job has a supplier description matching the expense
+        const manualSupplierSlot = job.slots.find(s =>
+          s.isManualPlaceholder && s.descr && normExpWords(s.descr).some(w => expDescWords.includes(w))
+        );
+        if (!jobOverlap && !clientOverlap && !manualSupplierSlot) continue;
+
+        // Select best available slot using strict priority order:
+        // 1. Manual placeholder matching within £5
+        // 2. Automatic placeholder (PLACE-EXP-...) buffer
+        // 3. Any remaining Manual placeholder outside £5
+        // 4. Completely Empty slot
+        const availSlot =
+          job.slots.find(s => s.isManualPlaceholder && expAmtTolFn(s.amtNum)) ||
+          job.slots.find(s => s.isAutoPlaceholder) ||
+          job.slots.find(s => s.isManualPlaceholder) ||
+          job.slots.find(s => s.empty) ||
+          job.slots.find(s => !s.isAllocated);
         if (!availSlot) continue;
         const cols = slotColMapExp[availSlot.slotNum];
         const row = availSlot.sheetRow;
@@ -4386,8 +4779,9 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
         // Exact client match: bracketed text exactly equals the job's client name
         const bracketText = expBracketMatch ? expBracketMatch[1].trim().toLowerCase() : "";
         const isExactClient = !!bracketText && bracketText === String(job.parentClient || "").trim().toLowerCase();
-        const dateMatch = dateWithinToleranceExp(availSlot.date);
-        jobDescMatches.push({ job, availSlot, cols, row, realAllocated, newTotal, budgetFit, budgetFits, isExactClient, clientOverlap, dateMatch });
+        const dateMatch = dateWithinToleranceExp(availSlot.date, job.startDate, job.endDate, availSlot.isAutoPlaceholder);
+        const isAmtMatch = !availSlot.empty && expAmtTolFn(availSlot.amtNum);
+        jobDescMatches.push({ job, availSlot, cols, row, realAllocated, newTotal, budgetFit, budgetFits, isExactClient, clientOverlap, dateMatch, isAmtMatch });
       }
       console.log(`  Confirmed job description matches: ${jobDescMatches.length}`);
 
@@ -4494,7 +4888,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           },
           recommendedActions: [
             `Allocate expense to "${job.parentJob}" (Row ${row}), ExpSlot${availSlot.slotNum}`,
-            `write ${expenseDescription || expenseRef} to ${cols.d}${row}, write ${expenseAmount} to ${cols.a}${row}, write ${vatYesNo} to ${cols.v}${row}, write ${expenseDate} to ${cols.dt}${row}, write 30 to ${cols.dp}${row}, write ${alert.summary?.status || ""} to ${cols.st}${row}`,
+            `write ${expenseDescription || expenseRef} to ${cols.d}${row}, write ${expenseAmount} to ${cols.a}${row}, write ${vatYesNo} to ${cols.v}${row}, write ${expenseDate} to ${cols.dt}${row}, write 30 to ${cols.dp}${row}, write ${alert.summary?.status || ""} to ${cols.st}${row}${(alert.summary?.transactionId || alert.summary?.appId) ? `, write ${alert.summary?.transactionId || alert.summary?.appId} to ${cols.id}${row}` : ""}`,
           ],
         });
       }
@@ -4569,7 +4963,9 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
       // ── Option type D: Manual investigation fallback removed: covered by Ignore button
 
       // Assemble: job matches first (1-2), vendor matches (1-2), new vendor, capped at up to 4 options
-      const sysOptions = [...jobSysOptions, ...vendorSysOptions].slice(0, 4);
+      const filteredJobSysOptions = allowJobOptions ? jobSysOptions : [];
+      const filteredVendorSysOptions = allowVendorOptions ? vendorSysOptions : [];
+      const sysOptions = [...filteredJobSysOptions, ...filteredVendorSysOptions].slice(0, 4);
       // Renumber optionIds
       const options = sysOptions.map((o, i) => ({ ...o, optionId: i + 1 }));
       console.log(`  ✅ System-generated ${options.length} expense options`);
@@ -4594,18 +4990,20 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
       if (memoryRow) {
         await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, {
           ...memoryRow,
+          alertType: resolvedExpAlertType,
           cachedOptionsJSON: JSON.stringify(options),
         });
       } else {
         await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
           fingerprintHash,
-          alertType: "expense",
+          alertType: resolvedExpAlertType,
           clientName: alert.clientName || "",
           alertSummary,
           cachedOptionsJSON: JSON.stringify(options),
           status: "cached",
         });
       }
+      await syncRefreshedAlertOptionsToRedis_(alert, fingerprintHash, options);
       console.log(`  💾 Options cached in AlertMemory`);
 
       return res.status(200).json({
@@ -5330,7 +5728,10 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
       }
 
       // ── Branch 1: Duplicate invoice in spreadsheet ──────────────────────
-      if (isDuplicateInvoice) {
+      // Only route to duplicate-removal options if there is an amount conflict or no field-level date/status/client mismatch.
+      // When a split or part-paid invoice's tranches already sum to the accounting total (!isInvAmtMismatch)
+      // and the alert is for a pay date, status, sent date, or client mismatch, route to Branch 2 so the final/balance tranche is updated.
+      if (isDuplicateInvoice && (isInvAmtMismatch || (!isPayDateMismatch && !isStatusMismatch && !isSentDateMismatch && !isClientMismatch))) {
         console.log(`  ⚠️ Duplicate invoice in spreadsheet detected for invoice #${invoiceNo}`);
         const matchedJobs = [];
         for (let ri = 1; ri < invConfirmedRows.length; ri++) {
@@ -5338,12 +5739,12 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           const ref1 = String(r[42] || "").trim(); // AQ
           const ref2 = String(r[49] || "").trim(); // AX
           const ref3 = String(r[56] || "").trim(); // BE
-          let slotNum = null;
-          if (ref1 === invoiceNo) slotNum = 1;
-          else if (ref2 === invoiceNo) slotNum = 2;
-          else if (ref3 === invoiceNo) slotNum = 3;
+          const matchingRowSlots = [];
+          if (ref1 === invoiceNo) matchingRowSlots.push(1);
+          if (ref2 === invoiceNo) matchingRowSlots.push(2);
+          if (ref3 === invoiceNo) matchingRowSlots.push(3);
 
-          if (slotNum) {
+          for (const slotNum of matchingRowSlots) {
             const rowNum = ri + 1;
             const jobName = String(r[1] || "").trim();
             const clientName = String(r[0] || "").trim();
@@ -5481,20 +5882,43 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
       let matchedSlot = null;
       let matchedRowNum = null; // 1-indexed sheet row
 
+      const allInvMatches = [];
       for (let ri = 1; ri < invConfirmedRows.length; ri++) {
         const r = invConfirmedRows[ri] || [];
         const ref1 = String(r[42] || "").trim(); // AQ = Inv1 ref
         const ref2 = String(r[49] || "").trim(); // AX = Inv2 ref
         const ref3 = String(r[56] || "").trim(); // BE = Inv3 ref
-        if (ref1 === invoiceNo) { matchedJob = r; matchedSlot = 1; matchedRowNum = ri + 1; break; }
-        if (ref2 === invoiceNo) { matchedJob = r; matchedSlot = 2; matchedRowNum = ri + 1; break; }
-        if (ref3 === invoiceNo) { matchedJob = r; matchedSlot = 3; matchedRowNum = ri + 1; break; }
+        if (ref1 === invoiceNo) allInvMatches.push({ row: r, slot: 1, rowNum: ri + 1, days: parseInt(r[44], 10), status: String(r[45] || "").trim() });
+        if (ref2 === invoiceNo) allInvMatches.push({ row: r, slot: 2, rowNum: ri + 1, days: parseInt(r[51], 10), status: String(r[52] || "").trim() });
+        if (ref3 === invoiceNo) allInvMatches.push({ row: r, slot: 3, rowNum: ri + 1, days: parseInt(r[58], 10), status: String(r[59] || "").trim() });
+      }
+      if (allInvMatches.length > 0) {
+        let chosen = allInvMatches[0];
+        if (allInvMatches.length > 1) {
+          const balMatch = allInvMatches.find(m => m.status.toLowerCase().includes("balance"));
+          if (balMatch) {
+            chosen = balMatch;
+          } else {
+            let maxDays = -Infinity;
+            for (const m of allInvMatches) {
+              if (m.status.toLowerCase().includes("part-paid") && !m.status.toLowerCase().includes("balance")) continue;
+              const dVal = isNaN(m.days) ? -1 : m.days;
+              if (dVal >= maxDays) {
+                maxDays = dVal;
+                chosen = m;
+              }
+            }
+          }
+        }
+        matchedJob = chosen.row;
+        matchedSlot = chosen.slot;
+        matchedRowNum = chosen.rowNum;
       }
 
       // If not found by invoice number match in AQ/AX/BE, try finding via alert.spreadsheetItems
       if (!matchedJob && alert.spreadsheetItems && alert.spreadsheetItems.length > 0) {
-        const firstItem = alert.spreadsheetItems[0];
-        const cellRef = String(firstItem.cellRef || "").trim().toUpperCase();
+        const targetItem = alert.spreadsheetItems.length > 1 ? alert.spreadsheetItems[alert.spreadsheetItems.length - 1] : alert.spreadsheetItems[0];
+        const cellRef = String(targetItem.cellRef || "").trim().toUpperCase();
         const m = cellRef.match(/^([A-Z]+)(\d+)$/);
         if (m) {
           const colLetter = m[1];
@@ -5586,8 +6010,8 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           }
         }
 
-        // 2. Amount mismatch check
-        if (isInvAmtMismatch || Math.abs(curSlotAmt - correctAmount) >= 0.01) {
+        // 2. Amount mismatch check (never overwrite individual tranche amounts on duplicate/split invoices unless Inv amt mismatch? is flagged)
+        if (isInvAmtMismatch || (!isDuplicateInvoice && Math.abs(curSlotAmt - correctAmount) >= 0.01)) {
           if (Math.abs(curSlotAmt - correctAmount) >= 0.01) {
             mismatchNames.push("amount");
             explanationParts.push(`Amount: £${correctAmount.toFixed(2)} (excl VAT)`);
@@ -5893,14 +6317,14 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
     const isForeignCurrency = invoiceCurrency && invoiceCurrency !== primaryCurrency;
     console.log(`  Currency: invoice=${invoiceCurrency}, primary=${primaryCurrency}, foreign=${isForeignCurrency}`);
 
-    // Amount tolerance: 5p domestic, 10% of invoice amount for foreign
+      // Amount tolerance: £5.00 (500p) domestic, 10% of invoice amount for foreign
     invoiceAmtForMatch = totalExclVAT > 0 ? totalExclVAT : invoiceAmount;
     const amtToleranceFn = (slotAmt) => {
       if (isForeignCurrency) {
         return Math.abs(slotAmt - invoiceAmtForMatch) <= invoiceAmtForMatch * 0.10;
       }
-      // Domestic: 5p tolerance (compare in pennies to avoid float errors)
-      return Math.abs(Math.round(slotAmt * 100) - Math.round(invoiceAmtForMatch * 100)) <= 5;
+      // Domestic: £5.00 (500p) tolerance (compare in pennies to avoid float errors)
+      return Math.abs(Math.round(slotAmt * 100) - Math.round(invoiceAmtForMatch * 100)) <= 500;
     };
 
     // Slot column definitions
@@ -5979,8 +6403,10 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             const rawAmt = jr[sd.amtIdx];
             const slotDate = String(jr[sd.sentIdx] || "").trim();
             const amt = (rawAmt !== undefined && rawAmt !== "") ? (parseFloat(String(rawAmt).replace(/[£$€,\s]/g, "")) || 0) : 0;
+            const isAuto = isAutoInvoicePlaceholderRef_(ref);
+            const isManualPlaceholder = !ref && amt > 0;
             const isManual = isPlaceholderInvoice(ref);
-            const isReal = !!(ref && !isManual);
+            const isReal = !!(ref && !isManual && !isAuto);
             const isEmpty = !ref && amt === 0;
 
             if (isReal) {
@@ -6001,6 +6427,8 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               amt,
               ref,
               slotDate,
+              isAuto,
+              isManualPlaceholder,
               isManual,
               isReal,
               isEmpty,
@@ -6041,6 +6469,18 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           continue;
         }
 
+        // Prioritise available slots:
+        // 1. Manual placeholder matching within £5
+        // 2. Automatic placeholder (PLACE-INV-...) buffer
+        // 3. Any remaining Manual placeholder outside £5
+        // 4. Completely Empty slot
+        const prioritisedAvailSlot =
+          nonRealSlots.find(s => s.isManualPlaceholder && amtToleranceFn(s.amt)) ||
+          nonRealSlots.find(s => s.isAuto) ||
+          nonRealSlots.find(s => s.isManualPlaceholder) ||
+          nonRealSlots.find(s => s.isEmpty) ||
+          nonRealSlots[0];
+
         candidateJobs.push({
           parentRowNum: parentIdx + 1,
           client,
@@ -6059,19 +6499,37 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           jobRows,
           slots,
           nonRealSlots,
-          firstAvailSlot: nonRealSlots[0],
+          firstAvailSlot: prioritisedAvailSlot,
         });
       }
 
       console.log(`  ✓ Found ${candidateJobs.length} candidate job(s) with uninvoiced revenue > £0`);
 
+      const checkInvJobDateWindow = (jobStartStr, jobEndStr) => {
+        if (!invSentDateParsed || (!jobStartStr && !jobEndStr)) return false;
+        const sDate = parseSheetOrJsDate_(jobStartStr);
+        const eDate = parseSheetOrJsDate_(jobEndStr);
+        if (!sDate && !eDate) return false;
+        const targetM = invSentDateParsed.getFullYear() * 12 + invSentDateParsed.getMonth();
+        const startM = sDate ? (sDate.getFullYear() * 12 + sDate.getMonth() - invMonthsTol) : targetM;
+        const endM = eDate ? (eDate.getFullYear() * 12 + eDate.getMonth() + invMonthsTol) : targetM;
+        return targetM >= Math.min(startM, endM) && targetM <= Math.max(startM, endM);
+      };
+
       // Sweep amount-matched slots across candidateJobs (respects universal gate)
+      // Order per job: Manual placeholders matching within £5 first, then Automatic placeholders (PLACE-INV)
       for (const job of candidateJobs) {
-        for (const slot of job.nonRealSlots) {
+        const orderedSlotsForMatch = [
+          ...job.nonRealSlots.filter(s => s.isManualPlaceholder),
+          ...job.nonRealSlots.filter(s => !s.isManualPlaceholder),
+        ];
+        for (const slot of orderedSlotsForMatch) {
           if (slot.amt === 0) continue;
           const amtMatch = amtToleranceFn(slot.amt);
           if (!amtMatch) continue;
-          const dateOk = dateWithinTolerance(slot.slotDate);
+          const dateOk = slot.isAuto
+            ? (dateWithinTolerance(slot.slotDate) || checkInvJobDateWindow(job.startDate, job.endDate))
+            : dateWithinTolerance(slot.slotDate);
           slotMatches.push({
             rowNum: slot.sheetRow,
             parentRowNum: job.parentRowNum,
@@ -6094,6 +6552,8 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             daysCol: slot.daysCol,
             statusCol: slot.statusCol,
             isManual: slot.isManual,
+            isAuto: slot.isAuto,
+            isManualPlaceholder: slot.isManualPlaceholder,
           });
         }
       }
@@ -6400,6 +6860,7 @@ INSTRUCTIONS FOR USING THESE MATCHES:
       } else {
         await appendAlertMemoryRow(sheets, automationCommanderSheetId, { fingerprintHash, alertType: "invoice", clientName: alert.clientName || "", alertSummary: tier1Summary, cachedOptionsJSON: JSON.stringify([tier1Option]), status: "cached" });
       }
+      await syncRefreshedAlertOptionsToRedis_(alert, fingerprintHash, [tier1Option]);
       return res.status(200).json({ success: true, options: [tier1Option], alertId: alert.rowNumber, previousIgnoreReason });
     }
 
@@ -6476,16 +6937,12 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
 
       const clientRank = isExactClient ? 3 : (isPartialClient ? 2 : (isJobNameMatch ? 1 : 0));
 
-      // Preference is ALWAYS given to the FIRST AVAILABLE non-real slot matching amount
-      let matchingSlot = null;
+      // Preference is given to Manual placeholders matching within £5 first, then Automatic placeholders matching within £5
+      let matchingSlot =
+        job.nonRealSlots.find(s => s.isManualPlaceholder && amtToleranceFn(s.amt)) ||
+        job.nonRealSlots.find(s => s.amt > 0 && amtToleranceFn(s.amt)) ||
+        null;
       let isJobTotalMatch = false;
-
-      for (const slot of job.nonRealSlots) {
-        if (slot.amt > 0 && amtToleranceFn(slot.amt)) {
-          matchingSlot = slot;
-          break; // First available non-real slot matching amount
-        }
-      }
 
       if (!matchingSlot) {
         const manualSlots = job.nonRealSlots.filter(s => s.isManual && s.amt > 0);
@@ -6736,6 +7193,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
         alertSummary: invSummary, cachedOptionsJSON: JSON.stringify(options), status: "cached",
       });
     }
+    await syncRefreshedAlertOptionsToRedis_(alert, fingerprintHash, options);
     console.log(`  💾 Options cached in AlertMemory`);
 
     res.status(200).json({
@@ -6805,16 +7263,18 @@ export async function handleAcceptOption(req, res, sheets) {
       await sheets.spreadsheets.values.append({
         spreadsheetId: automationCommanderSheetId, range: "TriageLog!A:H",
         valueInputOption: "USER_ENTERED",
-        requestBody: { values: [[
-          new Date().toISOString(),
-          sanitizeFormulaInput(String(alert.type || alert.flagType || "")),
-          sanitizeFormulaInput(`${alert.sheetName}-${alert.rowNumber}`),
-          sanitizeFormulaInput(String(alert.clientName || "")),
-          "",
-          sanitizeFormulaInput(JSON.stringify({ jobName: option.jobName })),
-          "IGNORED",
-          sanitizeFormulaInput(String(option.title || ""))
-        ]] },
+        requestBody: {
+          values: [[
+            new Date().toISOString(),
+            sanitizeFormulaInput(String(alert.type || alert.flagType || "")),
+            sanitizeFormulaInput(`${alert.sheetName}-${alert.rowNumber}`),
+            sanitizeFormulaInput(String(alert.clientName || "")),
+            "",
+            sanitizeFormulaInput(JSON.stringify({ jobName: option.jobName })),
+            "IGNORED",
+            sanitizeFormulaInput(String(option.title || ""))
+          ]]
+        },
       });
 
       // Synchronize removal from precomputed cache so it disappears immediately
@@ -6899,16 +7359,18 @@ export async function handleAcceptOption(req, res, sheets) {
       await sheets.spreadsheets.values.append({
         spreadsheetId: automationCommanderSheetId, range: "TriageLog!A:H",
         valueInputOption: "USER_ENTERED",
-        requestBody: { values: [[
-          new Date().toISOString(),
-          sanitizeFormulaInput(String(alert.type || alert.flagType || "")),
-          sanitizeFormulaInput(`${alert.sheetName}-${alert.rowNumber}`),
-          sanitizeFormulaInput(String(alert.clientName || "")),
-          "",
-          sanitizeFormulaInput(JSON.stringify({ jobName: option.jobName, rowsCleared: rowsToClear })),
-          "ACCEPTED",
-          sanitizeFormulaInput(String(option.title || ""))
-        ]] },
+        requestBody: {
+          values: [[
+            new Date().toISOString(),
+            sanitizeFormulaInput(String(alert.type || alert.flagType || "")),
+            sanitizeFormulaInput(`${alert.sheetName}-${alert.rowNumber}`),
+            sanitizeFormulaInput(String(alert.clientName || "")),
+            "",
+            sanitizeFormulaInput(JSON.stringify({ jobName: option.jobName, rowsCleared: rowsToClear })),
+            "ACCEPTED",
+            sanitizeFormulaInput(String(option.title || ""))
+          ]]
+        },
       });
 
       return res.status(200).json({ success: true, message: `Cleared ${rowsToClear.length} row(s) from ${tabName} tab`, cellsWritten: clearRanges.length });
@@ -6957,7 +7419,9 @@ export async function handleAcceptOption(req, res, sheets) {
         } else {
           await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
             fingerprintHash: fp,
-            alertType: alert.type || alert.flagType || "expenseDashboardDiscr",
+            alertType: (alert.flagType && alert.flagType !== "expenseDashboardDiscr")
+              ? alert.flagType
+              : (alert.expenseCategoryType === "passthrough" ? "passThroughDashboardDiscr" : "contractorsDashboardDiscr"),
             clientName: alert.clientName || "",
             alertSummary,
             cachedOptionsJSON: "",
@@ -7514,6 +7978,124 @@ export async function handleAcceptOption(req, res, sheets) {
       : "Confirmed";
     const writeTab = ALLOWED_WRITE_TABS.has(option.tabName) ? option.tabName : defaultWriteTab;
 
+    // ── LIVE SLOT RESOLUTION (for Confirmed/Pipeline invoice & expense placements) ──
+    let liveResolvedSlotInfo = null;
+    if ((writeTab === "Confirmed" || writeTab === "Pipeline") && cellUpdates.length > 0) {
+      const invColToSlot = {
+        AP: { s: 1, f: "a" }, AQ: { s: 1, f: "ref" }, AR: { s: 1, f: "sent" }, AS: { s: 1, f: "days" }, AT: { s: 1, f: "st" },
+        AW: { s: 2, f: "a" }, AX: { s: 2, f: "ref" }, AY: { s: 2, f: "sent" }, AZ: { s: 2, f: "days" }, BA: { s: 2, f: "st" },
+        BD: { s: 3, f: "a" }, BE: { s: 3, f: "ref" }, BF: { s: 3, f: "sent" }, BG: { s: 3, f: "days" }, BH: { s: 3, f: "st" },
+      };
+      const invSlotToCol = {
+        1: { a: "AP", ref: "AQ", sent: "AR", days: "AS", st: "AT" },
+        2: { a: "AW", ref: "AX", sent: "AY", days: "AZ", st: "BA" },
+        3: { a: "BD", ref: "BE", sent: "BF", days: "BG", st: "BH" },
+      };
+      const expColToSlot = {
+        BX: { s: 1, f: "d" }, BY: { s: 1, f: "a" }, BZ: { s: 1, f: "v" }, CA: { s: 1, f: "dt" }, CB: { s: 1, f: "dp" }, CC: { s: 1, f: "st" }, CD: { s: 1, f: "id" },
+        CE: { s: 2, f: "d" }, CF: { s: 2, f: "a" }, CG: { s: 2, f: "v" }, CH: { s: 2, f: "dt" }, CI: { s: 2, f: "dp" }, CJ: { s: 2, f: "st" }, CK: { s: 2, f: "id" },
+        CL: { s: 3, f: "d" }, CM: { s: 3, f: "a" }, CN: { s: 3, f: "v" }, CO: { s: 3, f: "dt" }, CP: { s: 3, f: "dp" }, CQ: { s: 3, f: "st" }, CR: { s: 3, f: "id" },
+      };
+      const expSlotToCol = {
+        1: { d: "BX", a: "BY", v: "BZ", dt: "CA", dp: "CB", st: "CC", id: "CD" },
+        2: { d: "CE", a: "CF", v: "CG", dt: "CH", dp: "CI", st: "CJ", id: "CK" },
+        3: { d: "CL", a: "CM", v: "CN", dt: "CO", dp: "CP", st: "CQ", id: "CR" },
+      };
+
+      const nonBlankSlotWrites = cellUpdates.filter(u => String(u.value ?? "").trim() !== "");
+      const firstInvWrite = nonBlankSlotWrites.find(u => {
+        const m = String(u.cell || "").match(/^([A-Z]+)(\d+)$/);
+        return m && invColToSlot[m[1]];
+      });
+      const firstExpWrite = !firstInvWrite && nonBlankSlotWrites.find(u => {
+        const m = String(u.cell || "").match(/^([A-Z]+)(\d+)$/);
+        return m && expColToSlot[m[1]];
+      });
+
+      if (firstInvWrite) {
+        const m = String(firstInvWrite.cell).match(/^([A-Z]+)(\d+)$/);
+        const origSlot = invColToSlot[m[1]].s;
+        const origRow = parseInt(m[2], 10);
+        const seedRows = [option.jobRow, origRow].filter(Boolean);
+        try {
+          const resolved = await resolveLiveInvoiceSlot_(
+            sheets,
+            alert.clientId,
+            writeTab,
+            seedRows,
+            origRow,
+            origSlot,
+            {
+              amount: alert.summary?.amount || 0,
+              invoiceNo: alert.summary?.invoiceNo || "",
+              status: alert.summary?.status || "Sent"
+            },
+            {
+              preferRequestedIfValid: false,
+              jobClient: option.jobDetails?.clientName || alert.summary?.client || "",
+              jobName: option.jobName || option.jobDetails?.jobName || ""
+            }
+          );
+          if (resolved?.rowNum && resolved?.slotNum) {
+            liveResolvedSlotInfo = { type: "invoice", rowNum: resolved.rowNum, slotNum: resolved.slotNum, allRowNums: resolved.allRowNums || [resolved.rowNum] };
+            if (resolved.rowNum !== origRow || resolved.slotNum !== origSlot) {
+              console.log(`  🔄 Live invoice slot remapped from Row ${origRow} Slot ${origSlot} -> Row ${resolved.rowNum} Slot ${resolved.slotNum}`);
+              for (const u of cellUpdates) {
+                const um = String(u.cell || "").match(/^([A-Z]+)(\d+)$/);
+                if (um && parseInt(um[2], 10) === origRow && invColToSlot[um[1]]?.s === origSlot && String(u.value ?? "").trim() !== "") {
+                  const fieldKey = invColToSlot[um[1]].f;
+                  u.cell = `${invSlotToCol[resolved.slotNum][fieldKey]}${resolved.rowNum}`;
+                }
+              }
+            }
+          }
+        } catch (liveInvErr) {
+          console.warn("handleAcceptOption live invoice slot check skipped:", liveInvErr.message);
+        }
+      } else if (firstExpWrite) {
+        const m = String(firstExpWrite.cell).match(/^([A-Z]+)(\d+)$/);
+        const origSlot = expColToSlot[m[1]].s;
+        const origRow = parseInt(m[2], 10);
+        const seedRows = [option.jobRow, origRow].filter(Boolean);
+        try {
+          const resolved = await resolveLiveExpenseSlot_(
+            sheets,
+            alert.clientId,
+            writeTab,
+            seedRows,
+            origRow,
+            origSlot,
+            {
+              amount: alert.summary?.amount || 0,
+              description: alert.summary?.description || alert.summary?.reference || "",
+              appId: alert.summary?.transactionId || alert.summary?.appId || "",
+              status: alert.summary?.status || ""
+            },
+            {
+              preferRequestedIfValid: false,
+              jobClient: option.jobDetails?.clientName || alert.clientName || "",
+              jobName: option.jobName || option.jobDetails?.jobName || ""
+            }
+          );
+          if (resolved?.rowNum && resolved?.slotNum) {
+            liveResolvedSlotInfo = { type: "expense", rowNum: resolved.rowNum, slotNum: resolved.slotNum, allRowNums: resolved.allRowNums || [resolved.rowNum] };
+            if (resolved.rowNum !== origRow || resolved.slotNum !== origSlot) {
+              console.log(`  🔄 Live expense slot remapped from Row ${origRow} Slot ${origSlot} -> Row ${resolved.rowNum} Slot ${resolved.slotNum}`);
+              for (const u of cellUpdates) {
+                const um = String(u.cell || "").match(/^([A-Z]+)(\d+)$/);
+                if (um && parseInt(um[2], 10) === origRow && expColToSlot[um[1]]?.s === origSlot && String(u.value ?? "").trim() !== "") {
+                  const fieldKey = expColToSlot[um[1]].f;
+                  u.cell = `${expSlotToCol[resolved.slotNum][fieldKey]}${resolved.rowNum}`;
+                }
+              }
+            }
+          }
+        } catch (liveExpErr) {
+          console.warn("handleAcceptOption live expense slot check skipped:", liveExpErr.message);
+        }
+      }
+    }
+
     // Batch write all cells, always prefixed with the tab name
     if (cellUpdates.length > 0) {
 
@@ -7615,6 +8197,33 @@ export async function handleAcceptOption(req, res, sheets) {
           requestBody: { requests: formatReqs },
         });
         console.log(`  ✅ Formatting applied (bold+italic) to ${formatReqs.length} cells`);
+      }
+
+      // Adjust automatic placeholders (PLACE-INV / PLACE-EXP) on the job after Triage placement
+      if (liveResolvedSlotInfo && (writeTab === "Confirmed" || writeTab === "Pipeline")) {
+        try {
+          if (liveResolvedSlotInfo.type === "invoice") {
+            await adjustJobInvoicePlaceholders_(
+              sheets,
+              alert.clientId,
+              writeTab,
+              liveResolvedSlotInfo.allRowNums,
+              undefined,
+              alert.masterSheetId
+            );
+          } else if (liveResolvedSlotInfo.type === "expense") {
+            await adjustJobExpensePlaceholders_(
+              sheets,
+              alert.clientId,
+              writeTab,
+              liveResolvedSlotInfo.allRowNums,
+              undefined,
+              alert.masterSheetId
+            );
+          }
+        } catch (adjErr) {
+          console.warn("handleAcceptOption placeholder adjustment skipped:", adjErr.message);
+        }
       }
     }
 
@@ -9301,7 +9910,34 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
               }
             }
 
+            let resolvedJobType = "";
+            let resolvedInvoiceAmount = "";
+            let resolvedProjectCode = "";
+
             if (targetSheetRow) {
+              // Determine whether job is Project or Retainer (check parent row col 35 or multi-row group)
+              let parentRowForType = targetSheetRow;
+              if (!targetSheetRow[32] && !targetSheetRow[35] && !targetSheetRow[37]) {
+                for (let pi = actualRowNum - 2; pi >= 1; pi--) {
+                  const pr = confirmedRows[pi] || [];
+                  const prClient = String(pr[0] || "").trim().toLowerCase();
+                  const prJob = String(pr[1] || "").trim().toLowerCase();
+                  if (prClient === targetClient && (prJob === targetJob || prJob.includes(targetJob)) && (pr[32] || pr[35] || pr[37])) {
+                    parentRowForType = pr;
+                    break;
+                  }
+                }
+              }
+              const rawTypeStr = String(parentRowForType[35] || targetSheetRow[35] || "").trim().toLowerCase();
+              const isMultiRowRetainer = parentRowForType !== targetSheetRow || (actualRowNum < confirmedRows.length && (() => {
+                const nextRow = confirmedRows[actualRowNum] || [];
+                return String(nextRow[0] || "").trim().toLowerCase() === targetClient &&
+                  String(nextRow[1] || "").trim().toLowerCase() === targetJob &&
+                  !nextRow[32] && !nextRow[37];
+              })());
+              resolvedJobType = (rawTypeStr.includes("retainer") || isMultiRowRetainer) ? "Retainer" : "Project";
+              resolvedProjectCode = String(parentRowForType[2] || targetSheetRow[2] || "").trim();
+
               const slotCols = {
                 1: { ref: 42, sent: 43, status: 45, amt: 41 },
                 2: { ref: 49, sent: 50, status: 52, amt: 48 },
@@ -9313,6 +9949,12 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
                 const currentSent = String(targetSheetRow[slotCols.sent] || "").trim();
                 const currentStatus = String(targetSheetRow[slotCols.status] || "").trim();
                 const currentAmt = String(targetSheetRow[slotCols.amt] || "").trim();
+                if (currentAmt) {
+                  const amtNum = parseFloat(currentAmt.replace(/[£$€,\s]/g, ""));
+                  resolvedInvoiceAmount = !isNaN(amtNum)
+                    ? `£${amtNum.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                    : currentAmt;
+                }
 
                 if (currentRef && !isPlaceholderInvoice(currentRef)) {
                   isResolved = true;
@@ -9355,7 +9997,11 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
               tab,
               rowNum: actualRowNum,
               jobClient,
+              clientName: jobClient,
               jobName,
+              projectCode: resolvedProjectCode,
+              jobType: resolvedJobType,
+              invoiceAmount: resolvedInvoiceAmount,
               slotNum: slotNum,
               oldDate,
               newDate,
@@ -9663,39 +10309,70 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
             }
 
             if (targetRow) {
-              // Inspect cell notes in that row to check if placeholder is still active
+              // Inspect cell notes in that row (scoped to the alert's month column when present) to check if placeholder is still active
               try {
+                const isBlankDateBackfill = (!oldRec && !oldPay) && (/Rec:\s*->/i.test(changeText) || /Pay:\s*->/i.test(changeText));
                 const noteResp = await withRetry(() => sheets.spreadsheets.get({
                   spreadsheetId: clientSheetIdClean,
                   ranges: [`Outgoings!A${actualRowNum}:AZ${actualRowNum}`],
                   fields: "sheets(data(rowData(values(note,formattedValue))))",
                 }));
                 const rowData = noteResp?.data?.sheets?.[0]?.data?.[0]?.rowData?.[0]?.values || [];
-                let hasUnresolvedPlaceholder = false;
-                let foundPlaceholderCount = 0;
+                const headerRow = outgoingsRows[0] || [];
+                const normMonthKey = (mStr) => {
+                  const m = String(mStr || "").trim().match(/^([A-Za-z]{3})[\s\-]*(\d{2,4})$/);
+                  if (!m) return String(mStr || "").replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+                  return `${m[1].toLowerCase()}${m[2].slice(-2)}`;
+                };
 
-                for (const cell of rowData) {
-                  const note = String(cell.note || "");
-                  if (note.includes("PLACE-EXP") || note.includes("MANUAL-ENTRY") || note.includes("UNRECON-GAP") || note.includes("PLACE-GAP") || note.includes("MANUAL-GAP")) {
-                    foundPlaceholderCount++;
-                    const statusMatch = note.match(/\{Status:\s*(.*?)\}/i);
-                    const status = statusMatch ? statusMatch[1].trim().toLowerCase() : "";
-                    if (status !== "paid" && status !== "complete") {
-                      hasUnresolvedPlaceholder = true;
+                let targetColIdx = -1;
+                if (parsed?.month) {
+                  const targetKey = normMonthKey(parsed.month);
+                  for (let c = 0; c < headerRow.length; c++) {
+                    const hVal = String(headerRow[c] || "").trim();
+                    if (hVal && normMonthKey(hVal) === targetKey) {
+                      targetColIdx = c;
+                      break;
                     }
                   }
                 }
 
-                if (foundPlaceholderCount === 0) {
+                const cellsToInspect = targetColIdx !== -1 ? [rowData[targetColIdx] || {}] : rowData;
+                let hasUnresolvedPlaceholder = false;
+                let foundPlaceholderCount = 0;
+
+                for (const cell of cellsToInspect) {
+                  const valNum = parseFloat(String(cell?.formattedValue || "").replace(/[^0-9.-]/g, ""));
+                  if (isNaN(valNum) || Math.abs(valNum) < 0.001) continue;
+                  const note = String(cell?.note || "");
+                  if (note.includes("PLACE-EXP") || note.includes("MANUAL-ENTRY") || note.includes("UNRECON-GAP") || note.includes("PLACE-GAP") || note.includes("MANUAL-GAP")) {
+                    const rawBlocks = note.split(/(?=\{App ID:)/i);
+                    for (const blk of rawBlocks) {
+                      if (blk.includes("PLACE-EXP") || blk.includes("MANUAL-ENTRY") || blk.includes("UNRECON-GAP") || blk.includes("PLACE-GAP") || blk.includes("MANUAL-GAP")) {
+                        foundPlaceholderCount++;
+                        const statusMatch = blk.match(/\{Status:\s*(.*?)\}/i);
+                        const status = statusMatch ? statusMatch[1].trim().toLowerCase() : "";
+                        if (status !== "paid" && status !== "complete") {
+                          hasUnresolvedPlaceholder = true;
+                        }
+                      }
+                    }
+                  }
+                }
+
+                if (isBlankDateBackfill) {
                   isResolved = true;
-                  checks.push({ ok: true, message: `✓ Resolved: Placeholder was replaced with a real expense or removed.` });
+                  checks.push({ ok: true, message: `✓ Resolved: Initial placeholder dates populated.` });
+                } else if (foundPlaceholderCount === 0) {
+                  isResolved = true;
+                  checks.push({ ok: true, message: `✓ Resolved: Placeholder${parsed?.month ? ` in ${parsed.month}` : ""} was replaced with a real expense or removed.` });
                 } else if (!hasUnresolvedPlaceholder) {
                   isResolved = true;
-                  checks.push({ ok: true, message: `✓ Resolved: All expense entries for ${contractor} are marked as Paid/Complete.` });
+                  checks.push({ ok: true, message: `✓ Resolved: All expense entries for ${contractor}${parsed?.month ? ` in ${parsed.month}` : ""} are marked as Paid/Complete.` });
                 } else {
                   checks.push({
                     ok: false,
-                    message: `✗ Row ${actualRowNum} (${contractor}) still contains unreceived placeholder expense(s) (Rec date moved to ${newRec}, Pay date to ${newPay}).`
+                    message: `✗ Row ${actualRowNum} (${contractor}${parsed?.month ? ` - ${parsed.month}` : ""}) still contains unreceived placeholder expense(s) (Rec date moved to ${newRec}, Pay date to ${newPay}).`
                   });
                 }
               } catch (e) {

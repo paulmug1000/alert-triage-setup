@@ -309,14 +309,14 @@ async function writePayrollDataToSheet_(sheets, clientSheetId, extractedData, ta
     await withRetry(() => sheets.spreadsheets.values.batchUpdate({ spreadsheetId: clientSheetId, requestBody: { data: writeData, valueInputOption: "USER_ENTERED" } }));
   }
 
-  // Fetch sheet totals from Row 55 of Salaries tab (the formula totals row for the active month)
+  // Fetch sheet totals from Row 55 of Salaries tab (with fallback to summing rows 4..53 if Row 55 formulas are missing)
   let sheetTotalsRawValues = [0, 0, 0, 0, 0, 0, 0];
   let sheetTotalsFormattedValues = ["£0.00", "£0.00", "£0.00", "£0.00", "£0.00", "£0.00", "£0.00"];
   try {
     const [totalsRespUnformatted, totalsRespFormatted] = await Promise.all([
       withRetry(() => sheets.spreadsheets.values.get({
         spreadsheetId: clientSheetId,
-        range: `Salaries!${startColLetter}55:${endColLetter}55`,
+        range: `Salaries!${startColLetter}4:${endColLetter}55`,
         valueRenderOption: "UNFORMATTED_VALUE",
       })),
       withRetry(() => sheets.spreadsheets.values.get({
@@ -325,13 +325,42 @@ async function writePayrollDataToSheet_(sheets, clientSheetId, extractedData, ta
         valueRenderOption: "FORMATTED_VALUE",
       })),
     ]);
-    const rawRow = totalsRespUnformatted.data.values?.[0] || [];
-    const fmtRow = totalsRespFormatted.data.values?.[0] || [];
-    sheetTotalsRawValues = [0, 1, 2, 3, 4, 5, 6].map(idx => {
-      const v = rawRow[idx];
-      return typeof v === "number" ? v : (parseFloat(String(v || "").replace(/[^0-9.-]/g, "")) || 0);
-    });
-    sheetTotalsFormattedValues = [0, 1, 2, 3, 4, 5, 6].map(idx => String(fmtRow[idx] || "£0.00"));
+    const allRawRows = totalsRespUnformatted.data.values || [];
+    const rawRow55 = allRawRows[51] || [];
+    const fmtRow55 = totalsRespFormatted.data.values?.[0] || [];
+    const parseNum = (v) => (typeof v === "number" ? v : (parseFloat(String(v || "").replace(/[^0-9.-]/g, "")) || 0));
+
+    const row55Values = [0, 1, 2, 3, 4, 5, 6].map(idx => parseNum(rawRow55[idx]));
+    const hasRow55Totals = row55Values.some(v => Math.abs(v) > 0.001);
+
+    if (hasRow55Totals) {
+      sheetTotalsRawValues = row55Values;
+      sheetTotalsFormattedValues = [0, 1, 2, 3, 4, 5, 6].map(idx => String(fmtRow55[idx] || `£${row55Values[idx].toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`));
+    } else {
+      const computedSums = [0, 0, 0, 0, 0, 0, 0];
+      for (let r = 0; r < Math.min(50, allRawRows.length); r++) {
+        const empRow = allRawRows[r] || [];
+        for (let idx = 0; idx < 7; idx++) {
+          computedSums[idx] += parseNum(empRow[idx]);
+        }
+      }
+      sheetTotalsRawValues = computedSums.map(v => Math.round(v * 100) / 100);
+      sheetTotalsFormattedValues = sheetTotalsRawValues.map(v => `£${v.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
+
+      // Backfill missing =SUM(...) formulas into Row 55 for this month block
+      if (rawRow55.length === 0) {
+        const sumFormulas = [0, 1, 2, 3, 4, 5, 6].map(offset => {
+          const colLet = columnIndexToLetter_(startColIdx0 + 1 + offset);
+          return `=SUM(${colLet}4:${colLet}53)`;
+        });
+        withRetry(() => sheets.spreadsheets.values.update({
+          spreadsheetId: clientSheetId,
+          range: `Salaries!${startColLetter}55:${endColLetter}55`,
+          valueInputOption: "USER_ENTERED",
+          requestBody: { values: [sumFormulas] },
+        })).catch(err => console.warn("[writePayrollDataToSheet_] Non-fatal Row 55 formula backfill error:", err.message));
+      }
+    }
   } catch (sheetTotalsErr) {
     console.warn("[writePayrollDataToSheet_] Failed to read Salaries Row 55 sheet totals:", sheetTotalsErr.message);
   }

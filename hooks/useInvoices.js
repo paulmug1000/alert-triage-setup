@@ -15,7 +15,15 @@ export function useInvoices(assignedAppIds, initialClient = null) {
     }
     return [];
   });
-  const [invoicesInboxLoading, setInvoicesInboxLoading] = useState(false);
+  const [invoicesInboxLoading, setInvoicesInboxLoading] = useState(() => {
+    if (initialClient) {
+      if (!initialClient.clientSheetId) return true;
+      const cleanId = cleanSheetId ? cleanSheetId(initialClient.clientSheetId) : initialClient.clientSheetId;
+      const cached = getCachedClientData(cleanId, "invoices_inbox");
+      return !cached?.data?.inbox;
+    }
+    return false;
+  });
   const [invoicesPlacing, setInvoicesPlacingState] = useState(null);
   const invoicesPlacingRef = useRef(null);
   
@@ -174,7 +182,7 @@ export function useInvoices(assignedAppIds, initialClient = null) {
     invoicesInboxLoading,
     invoicesPlacing, setInvoicesPlacing, invoicesPlacingRef,
     invoicesJobs, setInvoicesJobs,
-    invoicesJobsLoading,
+    invoicesJobsLoading, setInvoicesJobsLoading,
     invoicesShowAll, setInvoicesShowAll,
     invoicesSavingCell, setInvoicesSavingCell,
     invoicesEditSlot, setInvoicesEditSlot,

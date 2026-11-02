@@ -4,6 +4,7 @@ import TruncatedCode from "./TruncatedCode";
 import { useTriage } from "../contexts/TriageContext";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useTasks } from "../contexts/TaskContext";
+import { useAuth } from "../hooks/useAuth";
 import { stripRowInfo, cleanUserFacingText, formatSeenTimestamp, isPlaceholderExpense } from "../utils/helpers";
 import JobMatchCard, { buildJobsFromRows } from "./JobMatchCard";
 import ExploreJobsModal from "./ExploreJobsModal";
@@ -16,9 +17,16 @@ export default function TriageAnalysisView({
   styles, setScreen, getFlagName, setActiveNav, handleNavTasks,
   isAdmin: propIsAdmin, user
 }) {
-  const isAdmin = propIsAdmin !== undefined
-    ? propIsAdmin
-    : !!(user?.isAdmin || user?.role === "Admin");
+  const auth = useAuth();
+  const effectiveUser = user || auth?.user;
+  const isSysAdmin = Boolean(
+    !effectiveUser?.isReadOnly &&
+    effectiveUser?.authProvider !== "EmailOTP" &&
+    (effectiveUser?.isAdmin === true || effectiveUser?.role === "Admin") &&
+    effectiveUser?.role !== "ClientManager" &&
+    (propIsAdmin === undefined || propIsAdmin === true)
+  );
+  const isAdmin = isSysAdmin;
   const { openCreateTaskModal } = useTasks();
   const {
     selectedClient, clientAlerts, currentClientAlertIndex, setCurrentClientAlertIndex,
@@ -61,7 +69,7 @@ export default function TriageAnalysisView({
 
   const alert = clientAlerts[currentClientAlertIndex];
   const alertFlags = alert?.data?.flags || [];
-  const isExpenseType = alert?.type === "expense" || alert?.flagType === "expenseDashboardDiscr" || alert?.sheetName === "DirComp";
+  const isExpenseType = alert?.type === "expense" || alert?.flagType === "expenseDashboardDiscr" || alert?.flagType === "contractorsDashboardDiscr" || alert?.flagType === "passThroughDashboardDiscr" || alert?.sheetName === "DirComp";
   const isInvoiceType = alert?.type === "invoice" || alert?.flagType === "invoiceDashboardDiscr" || alert?.sheetName === "InvComp";
   const isCrmType = alert?.type === "crm" || alert?.sheetName === "CRMComp" || Boolean(alert?.alertType?.startsWith("crm")) || Boolean(alert?.flagType?.startsWith("crm"));
 
@@ -107,21 +115,68 @@ export default function TriageAnalysisView({
       }).catch(() => { });
     }
 
+    const getAlertCategory = (a) => {
+      if (!a) return "";
+      if (a.type === "invoice" || a.sheetName === "InvComp" || a.flagType === "invoiceDashboardDiscr" || a.alertType === "invoiceDashboardDiscr") return "invoice";
+      if (a.type === "expense" || a.sheetName === "DirComp" || String(a.flagType || "").includes("Discr") && !String(a.flagType || "").startsWith("crm")) return "expense";
+      return a.type || a.sheetName || "";
+    };
+    const resolvedCategory = getAlertCategory(targetAlert);
+
     const targetFingerprint = targetAlert.fingerprintHash;
     const targetSheetRow = `${targetAlert.sheetName}-${targetAlert.rowNumber}`;
     const targetTxn = targetAlert.summary?.transactionId || targetAlert.summary?.appId;
-    const updatedAlerts = clientAlerts.filter(a => {
-      if (targetFingerprint && a.fingerprintHash === targetFingerprint) return false;
-      if (targetSheetRow && `${a.sheetName}-${a.rowNumber}` === targetSheetRow) return false;
-      const aTxn = a.summary?.transactionId || a.summary?.appId;
-      if (targetTxn && aTxn && String(aTxn) === String(targetTxn)) return false;
-      return true;
-    });
+    const siblingAlertsToRegenerate = [];
+    const updatedAlerts = clientAlerts
+      .filter(a => {
+        if (targetFingerprint && a.fingerprintHash === targetFingerprint) return false;
+        if (targetSheetRow && `${a.sheetName}-${a.rowNumber}` === targetSheetRow) return false;
+        const aTxn = a.summary?.transactionId || a.summary?.appId;
+        if (targetTxn && aTxn && String(aTxn) === String(targetTxn)) return false;
+        return true;
+      })
+      .map(a => {
+        if (resolvedCategory && getAlertCategory(a) === resolvedCategory) {
+          const invalidated = { ...a, options: null };
+          siblingAlertsToRegenerate.push(invalidated);
+          return invalidated;
+        }
+        return a;
+      });
     setClientAlerts(updatedAlerts);
+
+    // Trigger immediate background regeneration of precomputed options for invalidated sibling alerts
+    if (siblingAlertsToRegenerate.length > 0 && automationCommanderSheetId) {
+      siblingAlertsToRegenerate.forEach((sibAlert) => {
+        fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "analyze_alert",
+            alert: sibAlert,
+            automationCommanderSheetId,
+            forceRefresh: true
+          }),
+        })
+          .then(r => r.json())
+          .then(resData => {
+            if (resData?.success && Array.isArray(resData.options)) {
+              setClientAlerts(prev => prev.map(item =>
+                (item.sheetName === sibAlert.sheetName && item.rowNumber === sibAlert.rowNumber)
+                  ? { ...item, options: resData.options }
+                  : item
+              ));
+            }
+          })
+          .catch(() => { });
+      });
+    }
 
     let acceptedFlagType = targetAlert.flagType || targetAlert.alertType || targetAlert.type || "";
     if (acceptedFlagType === "invoice") acceptedFlagType = "invoiceDashboardDiscr";
-    if (acceptedFlagType === "expense") acceptedFlagType = "expenseDashboardDiscr";
+    if (acceptedFlagType === "expense" || acceptedFlagType === "expenseDashboardDiscr") {
+      acceptedFlagType = targetAlert.expenseCategoryType === "passthrough" ? "passThroughDashboardDiscr" : "contractorsDashboardDiscr";
+    }
     if (acceptedFlagType === "crm") acceptedFlagType = "crmPipeAppDiscr";
 
     setClientsWithFlags(prev => prev.map(c => {
@@ -358,6 +413,7 @@ export default function TriageAnalysisView({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             action: "update_invoice_slot",
+            fromTriage: true,
             clientSheetId: targetClientSheetId,
             clientName: selectedClient?.clientName || "",
             tabName: placementPrompt.tabName || "Confirmed",
@@ -390,6 +446,7 @@ export default function TriageAnalysisView({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             action: "update_expense_slot",
+            fromTriage: true,
             clientSheetId: targetClientSheetId,
             clientName: selectedClient?.clientName || "",
             tabName: placementPrompt.tabName || "Confirmed",
@@ -501,6 +558,10 @@ export default function TriageAnalysisView({
       setIsSavingPlacement(false);
     }
   };
+  const [isRefreshingCache, setIsRefreshingCache] = useState(false);
+  const [updatingTaskAction, setUpdatingTaskAction] = useState(null); // "update" | "unsnooze" | null
+  const [analyzingSource, setAnalyzingSource] = useState(null); // "rerun" | "ai" | null
+
   const progress = currentClientAlertIndex + 1;
   const isMissingFlag = String(alertFlags[0] || "").trim() === "1";
   const isMissingCost = isExpenseType && isMissingFlag;
@@ -585,7 +646,8 @@ export default function TriageAnalysisView({
             {fromCache && (
               <span style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                 <span style={styles.cacheBadge}>⚡ Cached</span>
-                <button className="triage-btn" onClick={async () => {
+                <button className="triage-btn" disabled={isRefreshingCache} onClick={async () => {
+                  setIsRefreshingCache(true);
                   try {
                     const bustRes = await fetch("/api/triage", {
                       method: "POST",
@@ -619,8 +681,9 @@ export default function TriageAnalysisView({
                     await new Promise(r => setTimeout(r, 1000));
                     await selectAlert(freshAlert);
                   } catch (e) { console.error("Cache bust failed:", e); }
-                }} style={{ fontSize: "11px", padding: "2px 8px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "4px", cursor: "pointer", color: "#555" }}>
-                  ↻ Refresh
+                  finally { setIsRefreshingCache(false); }
+                }} style={{ fontSize: "11px", padding: "2px 8px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "4px", cursor: isRefreshingCache ? "default" : "pointer", color: "#555", display: "inline-flex", alignItems: "center", gap: "4px", opacity: isRefreshingCache ? 0.7 : 1 }}>
+                  {isRefreshingCache ? <><Spinner size={10} color="#555" /> Refreshing...</> : "↻ Refresh"}
                 </button>
               </span>
             )}
@@ -1678,111 +1741,123 @@ export default function TriageAnalysisView({
                                 Other actions
                               </div>
                               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "12px" }}>
-                                {/* Search all confirmed jobs */}
-                                <div style={{ background: "#ffffff", border: "1px solid #fdba74", borderRadius: "8px", padding: "14px", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
-                                  <div>
-                                    <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
-                                      <span style={{ fontSize: "16px" }}>🔍</span>
-                                      <strong style={{ color: "#c2410c", fontSize: "14px" }}>Search all confirmed jobs</strong>
-                                    </div>
-                                    <p style={{ fontSize: "12px", color: "#4b5563", margin: "4px 0 12px 0", lineHeight: "1.4" }}>
-                                      Search and select any job across the entire client list if this {isInvoiceType ? "invoice" : "expense"} belongs to a different job.
-                                    </p>
-                                  </div>
-                                  <button
-                                    type="button"
-                                    className="triage-btn"
-                                    onClick={() => setExploreJobsOpen(true)}
-                                    style={{
-                                      ...styles.buttonSecondary,
-                                      width: "100%",
-                                      padding: "8px 14px",
-                                      fontSize: "13px",
-                                      fontWeight: "600",
-                                      color: "#ea580c",
-                                      borderColor: "#fdba74",
-                                      background: "#fff7ed",
-                                      display: "flex",
-                                      alignItems: "center",
-                                      justifyContent: "center",
-                                      gap: "6px"
-                                    }}
-                                  >
-                                    🔍 Search confirmed jobs
-                                  </button>
-                                </div>
+                                {(() => {
+                                  const expDirectCostsMode = alert?.directCostsMode || clientInfo?.directCostsMode || selectedClient?.directCostsMode || "Contractors";
+                                  const isPassThroughAlert = alert?.flagType === "passThroughDashboardDiscr" || alert?.expenseCategoryType === "passthrough";
+                                  const showJobSearch = isInvoiceType || (isExpenseType && (expDirectCostsMode !== "Pass-through" || isPassThroughAlert));
+                                  const showContractorPlace = isExpenseType && (expDirectCostsMode !== "Pass-through" || !isPassThroughAlert);
+                                  return (
+                                    <>
+                                      {/* Search all confirmed jobs */}
+                                      {showJobSearch && (
+                                        <div style={{ background: "#ffffff", border: "1px solid #fdba74", borderRadius: "8px", padding: "14px", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+                                          <div>
+                                            <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
+                                              <span style={{ fontSize: "16px" }}>🔍</span>
+                                              <strong style={{ color: "#c2410c", fontSize: "14px" }}>Search all confirmed jobs</strong>
+                                            </div>
+                                            <p style={{ fontSize: "12px", color: "#4b5563", margin: "4px 0 12px 0", lineHeight: "1.4" }}>
+                                              Search and select any job across the entire client list if this {isInvoiceType ? "invoice" : "expense"} belongs to a different job.
+                                            </p>
+                                          </div>
+                                          <button
+                                            type="button"
+                                            className="triage-btn"
+                                            onClick={() => setExploreJobsOpen(true)}
+                                            style={{
+                                              ...styles.buttonSecondary,
+                                              width: "100%",
+                                              padding: "8px 14px",
+                                              fontSize: "13px",
+                                              fontWeight: "600",
+                                              color: "#ea580c",
+                                              borderColor: "#fdba74",
+                                              background: "#fff7ed",
+                                              display: "flex",
+                                              alignItems: "center",
+                                              justifyContent: "center",
+                                              gap: "6px"
+                                            }}
+                                          >
+                                            🔍 Search confirmed jobs
+                                          </button>
+                                        </div>
+                                      )}
 
-                                {/* Create new job (Invoices only) */}
-                                {isInvoiceType && (
-                                  <div style={{ background: "#ffffff", border: "1px solid #93c5fd", borderRadius: "8px", padding: "14px", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
-                                    <div>
-                                      <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
-                                        <span style={{ fontSize: "16px" }}>➕</span>
-                                        <strong style={{ color: "#1d4ed8", fontSize: "14px" }}>Create new job</strong>
-                                      </div>
-                                      <p style={{ fontSize: "12px", color: "#4b5563", margin: "4px 0 12px 0", lineHeight: "1.4" }}>
-                                        {isAdmin ? "Add a new job row to the Confirmed tab and assign this invoice directly to it." : "Create a new confirmed job and assign this invoice directly to it."}
-                                      </p>
-                                    </div>
-                                    <button
-                                      type="button"
-                                      className="triage-btn"
-                                      onClick={() => setCreateNewJobOpen(true)}
-                                      style={{
-                                        ...styles.buttonSecondary,
-                                        width: "100%",
-                                        padding: "8px 14px",
-                                        fontSize: "13px",
-                                        fontWeight: "600",
-                                        color: "#2563eb",
-                                        borderColor: "#93c5fd",
-                                        background: "#eff6ff",
-                                        display: "flex",
-                                        alignItems: "center",
-                                        justifyContent: "center",
-                                        gap: "6px"
-                                      }}
-                                    >
-                                      ➕ Create new job
-                                    </button>
-                                  </div>
-                                )}
+                                      {/* Create new job (Invoices only) */}
+                                      {isInvoiceType && (
+                                        <div style={{ background: "#ffffff", border: "1px solid #93c5fd", borderRadius: "8px", padding: "14px", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+                                          <div>
+                                            <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
+                                              <span style={{ fontSize: "16px" }}>➕</span>
+                                              <strong style={{ color: "#1d4ed8", fontSize: "14px" }}>Create new job</strong>
+                                            </div>
+                                            <p style={{ fontSize: "12px", color: "#4b5563", margin: "4px 0 12px 0", lineHeight: "1.4" }}>
+                                              {isAdmin ? "Add a new job row to the Confirmed tab and assign this invoice directly to it." : "Create a new confirmed job and assign this invoice directly to it."}
+                                            </p>
+                                          </div>
+                                          <button
+                                            type="button"
+                                            className="triage-btn"
+                                            onClick={() => setCreateNewJobOpen(true)}
+                                            style={{
+                                              ...styles.buttonSecondary,
+                                              width: "100%",
+                                              padding: "8px 14px",
+                                              fontSize: "13px",
+                                              fontWeight: "600",
+                                              color: "#2563eb",
+                                              borderColor: "#93c5fd",
+                                              background: "#eff6ff",
+                                              display: "flex",
+                                              alignItems: "center",
+                                              justifyContent: "center",
+                                              gap: "6px"
+                                            }}
+                                          >
+                                            ➕ Create new job
+                                          </button>
+                                        </div>
+                                      )}
 
-                                {/* Place against contractor (Expenses only) */}
-                                {isExpenseType && (
-                                  <div style={{ background: "#ffffff", border: "1px solid #6ee7b7", borderRadius: "8px", padding: "14px", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
-                                    <div>
-                                      <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
-                                        <span style={{ fontSize: "16px" }}>👷</span>
-                                        <strong style={{ color: "#047857", fontSize: "14px" }}>Place against contractor</strong>
-                                      </div>
-                                      <p style={{ fontSize: "12px", color: "#4b5563", margin: "4px 0 12px 0", lineHeight: "1.4" }}>
-                                        {isAdmin ? "Place on the Outgoings sheet if this is an agency contractor rather than a direct job cost." : "Allocate to Outgoings if this is an agency contractor rather than a direct job cost."}
-                                      </p>
-                                    </div>
-                                    <button
-                                      type="button"
-                                      className="triage-btn"
-                                      onClick={() => setOutgoingsPickerOpen(true)}
-                                      style={{
-                                        ...styles.buttonSecondary,
-                                        width: "100%",
-                                        padding: "8px 14px",
-                                        fontSize: "13px",
-                                        fontWeight: "600",
-                                        color: "#059669",
-                                        borderColor: "#6ee7b7",
-                                        background: "#ecfdf5",
-                                        display: "flex",
-                                        alignItems: "center",
-                                        justifyContent: "center",
-                                        gap: "6px"
-                                      }}
-                                    >
-                                      👷 Select contractor
-                                    </button>
-                                  </div>
-                                )}
+                                      {/* Place against contractor (Expenses only) */}
+                                      {showContractorPlace && (
+                                        <div style={{ background: "#ffffff", border: "1px solid #6ee7b7", borderRadius: "8px", padding: "14px", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+                                          <div>
+                                            <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
+                                              <span style={{ fontSize: "16px" }}>👷</span>
+                                              <strong style={{ color: "#047857", fontSize: "14px" }}>Place against contractor</strong>
+                                            </div>
+                                            <p style={{ fontSize: "12px", color: "#4b5563", margin: "4px 0 12px 0", lineHeight: "1.4" }}>
+                                              {isAdmin ? "Place on the Outgoings sheet if this is an agency contractor rather than a direct job cost." : "Allocate to Outgoings if this is an agency contractor rather than a direct job cost."}
+                                            </p>
+                                          </div>
+                                          <button
+                                            type="button"
+                                            className="triage-btn"
+                                            onClick={() => setOutgoingsPickerOpen(true)}
+                                            style={{
+                                              ...styles.buttonSecondary,
+                                              width: "100%",
+                                              padding: "8px 14px",
+                                              fontSize: "13px",
+                                              fontWeight: "600",
+                                              color: "#059669",
+                                              borderColor: "#6ee7b7",
+                                              background: "#ecfdf5",
+                                              display: "flex",
+                                              alignItems: "center",
+                                              justifyContent: "center",
+                                              gap: "6px"
+                                            }}
+                                          >
+                                            👷 Select contractor
+                                          </button>
+                                        </div>
+                                      )}
+                                    </>
+                                  );
+                                })()}
 
                                 {/* Ignore alert / deal */}
                                 <div style={{ background: "#ffffff", border: "1px solid #cbd5e1", borderRadius: "8px", padding: "14px", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
@@ -1839,8 +1914,9 @@ export default function TriageAnalysisView({
         )}
 
         {isAnalyzing && (
-          <div style={{ ...styles.claudeAnalysis, textAlign: "center", color: "#666" }}>
-            Generating options for this alert...
+          <div style={{ ...styles.claudeAnalysis, textAlign: "center", color: "#666", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px" }}>
+            <Spinner size={14} color="#666" />
+            <span>Generating options for this alert...</span>
           </div>
         )}
 
@@ -1892,6 +1968,7 @@ export default function TriageAnalysisView({
           {/* Re-run analysis button */}
           <button className="triage-btn" disabled={isAnalyzing}
             onClick={async () => {
+              setAnalyzingSource("rerun");
               setIsAnalyzing(true);
               setClaudeAnalysis("");
               try {
@@ -1919,25 +1996,28 @@ export default function TriageAnalysisView({
                 setClaudeAnalysis("Error: " + e.message);
               } finally {
                 setIsAnalyzing(false);
+                setAnalyzingSource(null);
               }
             }}
             style={{
               ...styles.buttonSecondary, color: "#4b5563", borderColor: "#cbd5e1",
-              opacity: isAnalyzing ? 0.6 : 1
+              opacity: isAnalyzing ? 0.6 : 1,
+              display: "inline-flex", alignItems: "center", gap: "6px"
             }}>
-            ↻ Re-run
+            {isAnalyzing && analyzingSource === "rerun" ? <><Spinner size={12} color="#4b5563" /> Re-running...</> : "↻ Re-run"}
           </button>
 
-          {/* Use AI button - shown only to Admins for alert types that previously used Claude */}
-          {isAdmin && claudeAnalysis && (() => {
+          {/* Use AI button - shown strictly only to System Admins */}
+          {isSysAdmin && claudeAnalysis && (() => {
             const alert = clientAlerts[currentClientAlertIndex];
             const ft = alert?.flagType || alert?.alertType || alert?.type || "";
-            const aiTypes = new Set(["invoiceDashboardDiscr", "expenseDashboardDiscr",
+            const aiTypes = new Set(["invoiceDashboardDiscr", "expenseDashboardDiscr", "contractorsDashboardDiscr", "passThroughDashboardDiscr",
               "crmPipeDashDiscr", "crmConfDashDiscr", "crmPipeAppDiscr", "crmConfAppDiscr"]);
             if (!aiTypes.has(ft)) return null;
             return (
               <button className="triage-btn" disabled={isAnalyzing}
                 onClick={async () => {
+                  setAnalyzingSource("ai");
                   setIsAnalyzing(true);
                   setClaudeAnalysis("");
                   try {
@@ -1954,13 +2034,14 @@ export default function TriageAnalysisView({
                       setClaudeAnalysis("Error: " + (d.error || "Unknown error"));
                     }
                   } catch (e) { setClaudeAnalysis("Error: " + e.message); }
-                  finally { setIsAnalyzing(false); }
+                  finally { setIsAnalyzing(false); setAnalyzingSource(null); }
                 }}
                 style={{
                   ...styles.buttonSecondary, color: "#059669", borderColor: "#6ee7b7",
-                  opacity: isAnalyzing ? 0.6 : 1
+                  opacity: isAnalyzing ? 0.6 : 1,
+                  display: "inline-flex", alignItems: "center", gap: "6px"
                 }}>
-                🤖 Use AI
+                {isAnalyzing && analyzingSource === "ai" ? <><Spinner size={12} color="#059669" /> Analyzing...</> : "Use AI"}
               </button>
             );
           })()}
@@ -1980,32 +2061,15 @@ export default function TriageAnalysisView({
             <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
               <button className="triage-btn" onClick={() => { handleNavTasks(); setActiveNav("tasks"); }}
                 style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 12px", color: "#7c3aed", borderColor: "#c4b5fd" }}>
-                View Task
+                View task
               </button>
               {existingTaskBanner.dataChanged && (
                 <>
                   <button className="triage-btn"
+                    disabled={updatingTaskAction !== null}
                     onClick={async () => {
-                      const alert = clientAlerts[currentClientAlertIndex];
-                      await fetch("/api/triage", {
-                        method: "POST", headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({
-                          action: "update_task",
-                          fingerprintHash: existingTaskBanner.fingerprintHash,
-                          newCachedOptionsJSON: claudeAnalysis,
-                          newAlertData: JSON.stringify(alert),
-                          unsnooze: false,
-                          automationCommanderSheetId,
-                        }),
-                      });
-                      setExistingTaskBanner(prev => ({ ...prev, dataChanged: false }));
-                    }}
-                    style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 12px" }}>
-                    Update Task
-                  </button>
-                  {existingTaskBanner.isSnoozed && (
-                    <button className="triage-btn"
-                      onClick={async () => {
+                      setUpdatingTaskAction("update");
+                      try {
                         const alert = clientAlerts[currentClientAlertIndex];
                         await fetch("/api/triage", {
                           method: "POST", headers: { "Content-Type": "application/json" },
@@ -2014,14 +2078,43 @@ export default function TriageAnalysisView({
                             fingerprintHash: existingTaskBanner.fingerprintHash,
                             newCachedOptionsJSON: claudeAnalysis,
                             newAlertData: JSON.stringify(alert),
-                            unsnooze: true,
+                            unsnooze: false,
                             automationCommanderSheetId,
                           }),
                         });
-                        setExistingTaskBanner(prev => ({ ...prev, dataChanged: false, isSnoozed: false }));
+                        setExistingTaskBanner(prev => ({ ...prev, dataChanged: false }));
+                      } finally {
+                        setUpdatingTaskAction(null);
+                      }
+                    }}
+                    style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 12px", display: "inline-flex", alignItems: "center", gap: "6px", opacity: updatingTaskAction !== null ? 0.7 : 1 }}>
+                    {updatingTaskAction === "update" ? <><Spinner size={11} /> Updating...</> : "Update task"}
+                  </button>
+                  {existingTaskBanner.isSnoozed && (
+                    <button className="triage-btn"
+                      disabled={updatingTaskAction !== null}
+                      onClick={async () => {
+                        setUpdatingTaskAction("unsnooze");
+                        try {
+                          const alert = clientAlerts[currentClientAlertIndex];
+                          await fetch("/api/triage", {
+                            method: "POST", headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                              action: "update_task",
+                              fingerprintHash: existingTaskBanner.fingerprintHash,
+                              newCachedOptionsJSON: claudeAnalysis,
+                              newAlertData: JSON.stringify(alert),
+                              unsnooze: true,
+                              automationCommanderSheetId,
+                            }),
+                          });
+                          setExistingTaskBanner(prev => ({ ...prev, dataChanged: false, isSnoozed: false }));
+                        } finally {
+                          setUpdatingTaskAction(null);
+                        }
                       }}
-                      style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 12px", color: "#7c3aed", borderColor: "#c4b5fd" }}>
-                      Update &amp; Unsnooze
+                      style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 12px", color: "#7c3aed", borderColor: "#c4b5fd", display: "inline-flex", alignItems: "center", gap: "6px", opacity: updatingTaskAction !== null ? 0.7 : 1 }}>
+                      {updatingTaskAction === "unsnooze" ? <><Spinner size={11} color="#7c3aed" /> Updating...</> : "Update & unsnooze"}
                     </button>
                   )}
                 </>

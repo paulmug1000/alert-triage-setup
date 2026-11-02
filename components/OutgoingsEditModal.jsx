@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
+import Spinner from "./Spinner";
 import { isPlaceholderExpense, toSheetDateFormat, toInputDateFormat } from "../utils/helpers";
 import PlaceholderPill, { isAutoPlaceholder } from "./PlaceholderPill";
 
@@ -289,21 +290,26 @@ export default function OutgoingsEditModal({ editCellData, outgoingsData, update
   const prevMonth = currentMonthIdx > 0 ? outgoingsData.months[currentMonthIdx - 1] : null;
   const nextMonth = currentMonthIdx >= 0 && currentMonthIdx < (outgoingsData?.months?.length ?? 0) - 1 ? outgoingsData.months[currentMonthIdx + 1] : null;
 
-  const doSplit = (blockIdx, targetCol, amt) => {
+  const doSplit = async (blockIdx, targetCol, amt) => {
     const b = blocks[blockIdx];
     const splitAmt = parseFloat(amt);
     if (!splitAmt || splitAmt <= 0 || splitAmt >= b.amount) return;
-    const newSrcAmt = parseFloat((b.amount - splitAmt).toFixed(2));
-    const newBlocks = blocks.map((bl, i) => i === blockIdx ? { ...bl, amount: newSrcAmt } : bl);
-    blocksRef.current = newBlocks;
-    dirtyRef.current = false;
-    setBlocks(newBlocks);
-    updateCell(contractor, colLetter, newBlocks, topNote);
-    const tb = [...(contractor.cells?.[targetCol]?.blocks || []).filter(bl => !bl.appId.startsWith("UNRECON-GAP"))];
-    tb.push({ ...b, amount: splitAmt });
-    updateCell(contractor, targetCol, tb);
-    setSplitAmts(prev => ({ ...prev, [`${blockIdx}_${targetCol}`]: "" }));
-    setSavedMsg("Split saved ✓");
+    setSaving(true);
+    try {
+      const newSrcAmt = parseFloat((b.amount - splitAmt).toFixed(2));
+      const newBlocks = blocks.map((bl, i) => i === blockIdx ? { ...bl, amount: newSrcAmt } : bl);
+      blocksRef.current = newBlocks;
+      dirtyRef.current = false;
+      setBlocks(newBlocks);
+      await updateCell(contractor, colLetter, newBlocks, topNote);
+      const tb = [...(contractor.cells?.[targetCol]?.blocks || []).filter(bl => !bl.appId.startsWith("UNRECON-GAP"))];
+      tb.push({ ...b, amount: splitAmt });
+      await updateCell(contractor, targetCol, tb);
+      setSplitAmts(prev => ({ ...prev, [`${blockIdx}_${targetCol}`]: "" }));
+      setSavedMsg("Split saved ✓");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const doMove = async (blockIdx, targetCol) => {
@@ -311,30 +317,35 @@ export default function OutgoingsEditModal({ editCellData, outgoingsData, update
     const b = blocks[blockIdx];
     if (!b) return;
 
-    // 1. Remove from source month and update source cell immediately in sheet
-    const newBlocks = blocks.filter((_, idx) => idx !== blockIdx);
-    blocksRef.current = newBlocks;
-    dirtyRef.current = false;
-    setBlocks(newBlocks);
-    await updateCell(contractor, colLetter, newBlocks, topNote);
+    setSaving(true);
+    try {
+      // 1. Remove from source month and update source cell immediately in sheet
+      const newBlocks = blocks.filter((_, idx) => idx !== blockIdx);
+      blocksRef.current = newBlocks;
+      dirtyRef.current = false;
+      setBlocks(newBlocks);
+      await updateCell(contractor, colLetter, newBlocks, topNote);
 
-    // 2. Add to target month and write to target cell immediately in sheet
-    const targetBlocks = [
-      ...(contractor.cells?.[targetCol]?.blocks || []).filter(bl => !bl.appId.startsWith("UNRECON-GAP"))
-    ];
-    targetBlocks.push({ ...b });
-    await updateCell(contractor, targetCol, targetBlocks);
+      // 2. Add to target month and write to target cell immediately in sheet
+      const targetBlocks = [
+        ...(contractor.cells?.[targetCol]?.blocks || []).filter(bl => !bl.appId.startsWith("UNRECON-GAP"))
+      ];
+      targetBlocks.push({ ...b });
+      await updateCell(contractor, targetCol, targetBlocks);
 
-    setSavedMsg("Moved ✓");
+      setSavedMsg("Moved ✓");
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
-      onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      onClick={e => { if (e.target === e.currentTarget && !saving) onClose(); }}>
       <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(92vw, 660px)", maxHeight: "85vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)", position: "relative" }}>
         {saving && (
-          <div style={{ position: "absolute", inset: 0, background: "rgba(255,255,255,0.8)", borderRadius: "12px", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 10, fontSize: "14px", color: "#0066cc", fontWeight: "600" }}>
-            Saving changes...
+          <div style={{ position: "absolute", inset: 0, background: "rgba(255,255,255,0.8)", borderRadius: "12px", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", zIndex: 10, fontSize: "14px", color: "#0066cc", fontWeight: "600" }}>
+            <Spinner size={16} color="#0066cc" /> Saving changes...
           </div>
         )}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
@@ -439,20 +450,26 @@ export default function OutgoingsEditModal({ editCellData, outgoingsData, update
                   {!isPlaceholderExpense(b.appId) && (
                     <button
                       type="button"
+                      disabled={saving}
                       onClick={async () => {
-                        const newBlocks = blocksRef.current.filter((_, idx) => idx !== i);
-                        blocksRef.current = newBlocks;
-                        dirtyRef.current = false;
-                        await updateCell(contractor, colLetter, newBlocks, topNote);
-                        onReturnToInbox({
-                          appId: b.appId, amount: b.amount,
-                          date: b.recDate || "", datePaid: b.payDate || "",
-                          description: b.description || "", accountName: b.description || "",
-                          status: b.status || "",
-                        });
-                        onClose();
+                        setSaving(true);
+                        try {
+                          const newBlocks = blocksRef.current.filter((_, idx) => idx !== i);
+                          blocksRef.current = newBlocks;
+                          dirtyRef.current = false;
+                          await updateCell(contractor, colLetter, newBlocks, topNote);
+                          onReturnToInbox({
+                            appId: b.appId, amount: b.amount,
+                            date: b.recDate || "", datePaid: b.payDate || "",
+                            description: b.description || "", accountName: b.description || "",
+                            status: b.status || "",
+                          });
+                          onClose();
+                        } finally {
+                          setSaving(false);
+                        }
                       }}
-                      style={{ background: "none", border: "none", color: "#0066cc", cursor: "pointer", fontSize: "12px", fontWeight: "500" }}
+                      style={{ background: "none", border: "none", color: "#0066cc", cursor: saving ? "default" : "pointer", fontSize: "12px", fontWeight: "500" }}
                     >
                       ↩ Return to inbox
                     </button>
@@ -819,8 +836,8 @@ export default function OutgoingsEditModal({ editCellData, outgoingsData, update
             {dirtyRef.current || newAmount.trim() ? "Cancel" : "Close"}
           </button>
           <button onClick={save} disabled={saving}
-            style={{ padding: "8px 22px", background: saving ? "#4caf50" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: saving ? "default" : "pointer", fontSize: "13px", fontWeight: "600", opacity: saving ? 0.8 : 1 }}>
-            {saving ? "Saving..." : "Save changes"}
+            style={{ padding: "8px 22px", background: saving ? "#4caf50" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: saving ? "default" : "pointer", fontSize: "13px", fontWeight: "600", opacity: saving ? 0.8 : 1, display: "inline-flex", alignItems: "center", gap: "6px" }}>
+            {saving ? <><Spinner size={12} color="#fff" /> Saving...</> : "Save changes"}
           </button>
         </div>
       </div>

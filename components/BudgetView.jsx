@@ -276,16 +276,28 @@ export default function BudgetView({
         (allOutgoingsClients || []).find(
           (c) => c.clientName?.toLowerCase() === managedClient.clientName?.toLowerCase()
         ) || managedClient;
-      setSelectedClient(match);
+      setSelectedClient((prev) => {
+        if (prev?.clientName?.toLowerCase() !== match?.clientName?.toLowerCase()) {
+          setBudgetData(null);
+          setLoading(true);
+        }
+        return match;
+      });
       return;
     }
     if (initialClient) {
       const targetStr = typeof initialClient === "string" ? initialClient.toLowerCase() : initialClient?.clientName?.toLowerCase();
       const match = (allOutgoingsClients || []).find(
         (c) => c.clientName?.toLowerCase() === targetStr
-      );
+      ) || (typeof initialClient === "object" ? initialClient : null);
       if (match) {
-        setSelectedClient(match);
+        setSelectedClient((prev) => {
+          if (prev?.clientName?.toLowerCase() !== match?.clientName?.toLowerCase()) {
+            setBudgetData(null);
+            setLoading(true);
+          }
+          return match;
+        });
         return;
       }
     }
@@ -335,7 +347,7 @@ export default function BudgetView({
             setLoading(false);
             return;
           }
-        } catch {}
+        } catch { }
       }
     }
     setError(null);
@@ -406,6 +418,11 @@ export default function BudgetView({
   const maxFyIdx = fyConfigs.length > 0 ? fyConfigs.length - 1 : 0;
   const isIncomeMode = budgetData?.isIncomeMode || false;
   const isRevMode = !isIncomeMode;
+  const directCostsMode = isIncomeMode
+    ? "Pass-through"
+    : String(budgetData?.directCostsMode || keyData?.directCostsMode || "Contractors").trim() === "Pass-through"
+      ? "Pass-through"
+      : "Contractors";
 
   const fyCols = useMemo(() => {
     return currentFy?.monthCols || [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
@@ -443,9 +460,18 @@ export default function BudgetView({
     const nb = isRevMode ? getMonthVals(6) : getMonthVals(22);   // Row 7 or Row 23
     const totalRev = conf.map((v, i) => v + pipe[i] + nb[i]);
 
-    // 2. Direct Costs
-    // Row 13 in Master Sheet is direct costs input
-    const dirCosts = isRevMode ? getMonthVals(12) : new Array(12).fill(0);
+    // 2. Direct / Pass-through Costs
+    // Row 13 in Master Sheet is direct costs input (plus rows 14-15 if populated)
+    const dcConf = isRevMode ? getMonthVals(12) : new Array(12).fill(0);
+    const dcPipe = isRevMode ? getMonthVals(13) : new Array(12).fill(0);
+    const dcNb = isRevMode ? getMonthVals(14) : new Array(12).fill(0);
+    const rawDirCosts = isRevMode
+      ? dcConf.map((v, i) => v + (dcPipe[i] || 0) + (dcNb[i] || 0))
+      : new Array(12).fill(0);
+    const dirCosts =
+      isRevMode && directCostsMode === "Pass-through"
+        ? rawDirCosts
+        : new Array(12).fill(0);
 
     // 3. Salaries (Rows 58 to 112 -> matrix[57] to matrix[111])
     const salaryDel = new Array(12).fill(0);
@@ -525,7 +551,7 @@ export default function BudgetView({
       for (let m = 0; m < 12; m++) {
         const targetCos = totalRev[m] * desCosPct;
         const otherCos =
-          dirCosts[m] +
+          (isRevMode ? rawDirCosts[m] : 0) +
           salaryDel[m] +
           divDel[m] +
           contractorDel[m] +
@@ -535,9 +561,14 @@ export default function BudgetView({
     }
 
     // 7. Summary Line Rollups
-    // Staff costs - delivery = salaries del + divs del + contractors del + making up CoS
+    // Staff costs - delivery = salaries del + divs del + contractors del + (direct costs if Contractors mode) + making up CoS
     const staffDel = salaryDel.map(
-      (v, i) => v + divDel[i] + contractorDel[i] + makingUpCosVals[i]
+      (v, i) =>
+        v +
+        divDel[i] +
+        contractorDel[i] +
+        (isRevMode && directCostsMode === "Contractors" ? rawDirCosts[i] : 0) +
+        makingUpCosVals[i]
     );
 
     // Staff costs - non-delivery = salaries non-del + divs non-del
@@ -621,7 +652,7 @@ export default function BudgetView({
       expDelTotal: sumArr(expDel),
       expNonDelTotal: sumArr(expNonDel),
     };
-  }, [matrix, fyCols, isRevMode, desCosPct, row0]);
+  }, [matrix, fyCols, isRevMode, directCostsMode, desCosPct, row0]);
 
   // Construct Top Table Rows
   const tableRows = useMemo(() => {
@@ -713,9 +744,9 @@ export default function BudgetView({
 
     addSectionHeader("Costs of sale");
     addDataRow("Staff costs - delivery", computedModel.staffDel, true, false, false, "#ffffff", "#0047AB");
-    if (isRevMode) {
-      // Direct Costs (Sheet Row 13) - EDITABLE!
-      addDataRow("Direct costs", computedModel.dirCosts, true, false, false, "#ffffff", "#0047AB", false, true, 13);
+    if (isRevMode && directCostsMode === "Pass-through") {
+      // Pass-through Costs (Sheet Row 13) - EDITABLE!
+      addDataRow("Pass-through costs", computedModel.dirCosts, true, false, false, "#ffffff", "#0047AB", false, true, 13);
     }
     addDataRow("Other expenses - delivery", computedModel.expDel, true, false, false, "#ffffff", "#0047AB");
     addSpacer(4);
@@ -748,7 +779,7 @@ export default function BudgetView({
     addDataRow("Operating profit %", computedModel.opProfitPct, false, false, true, "#ffffff", "#0047AB");
 
     return rows;
-  }, [computedModel, isRevMode]);
+  }, [computedModel, isRevMode, directCostsMode]);
 
   // ───────────────────────────────────────────────────────────────────────────
   // CELL UPDATE HANDLER (OPTIMISTIC + PERSIST TO GOOGLE SHEETS)
@@ -915,7 +946,6 @@ export default function BudgetView({
     const values = Array(12).fill(monthlyVal);
 
     setSavingSpread(true);
-    setSpreadModal((prev) => ({ ...prev, isOpen: false }));
 
     // Optimistically update matrix
     setBudgetData((prev) => {
@@ -952,7 +982,14 @@ export default function BudgetView({
           startColLetter,
           endColLetter,
           values,
-          rowDescription: sheetRow === 5 ? "Confirmed revenue" : "Direct costs",
+          rowDescription:
+            sheetRow === 5
+              ? isIncomeMode
+                ? "Confirmed income"
+                : "Confirmed revenue"
+              : directCostsMode === "Pass-through"
+                ? "Pass-through costs"
+                : "Direct costs",
           clientName: selectedClient.clientName,
         }),
       });
@@ -973,6 +1010,7 @@ export default function BudgetView({
       fetchBudgetData(selectedClient, true);
     } finally {
       setSavingSpread(false);
+      setSpreadModal((prev) => ({ ...prev, isOpen: false }));
     }
   };
 
@@ -1403,10 +1441,13 @@ export default function BudgetView({
         <EditClientSelector
           clients={allOutgoingsClients}
           onSelectClient={(c) => {
+            setBudgetData(null);
+            setError(null);
+            setLoading(true);
             setSelectedClient(c);
             onSelectClient?.(c);
           }}
-          loading={loading}
+          loading={(allOutgoingsClients || []).length === 0}
           title="Select a client to view and edit budget:"
         />
       )}
@@ -1454,7 +1495,7 @@ export default function BudgetView({
       )}
 
       {/* Main Loading Skeleton */}
-      {selectedClient && (loading || !budgetData) && !error && (
+      {(selectedClient || managedClient) && (loading || !budgetData) && !budgetData && !error && (
         <BudgetSkeleton />
       )}
 
@@ -1511,7 +1552,9 @@ export default function BudgetView({
                 <span>✏️</span>{" "}
                 {isIncomeMode
                   ? "Confirmed income is editable"
-                  : "Confirmed revenue and direct costs are editable"}
+                  : directCostsMode === "Pass-through"
+                    ? "Confirmed revenue and pass-through costs are editable"
+                    : "Confirmed revenue is editable"}
               </span>
               <span>Click any highlighted cell to edit, or use ⚡ spread</span>
             </div>
@@ -2259,7 +2302,9 @@ export default function BudgetView({
                   onClick={(e) => e.stopPropagation()}
                 >
                   <span style={{ fontWeight: 600, color: "#7e22ce" }}>Making up CoS target{isSysAdmin ? " (B142)" : ""}:</span>
-                  {isEditingCosTarget ? (
+                  {savingKey === "142_1" ? (
+                    <Spinner size={12} color="#7e22ce" />
+                  ) : isEditingCosTarget ? (
                     <div style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
                       <input
                         type="text"
@@ -2268,15 +2313,21 @@ export default function BudgetView({
                         onChange={(e) => setCosTargetInput(e.target.value)}
                         onKeyDown={(e) => {
                           if (e.key === "Enter") {
-                            setIsEditingCosTarget(false);
-                            handleUpdateCell(142, 1, cosTargetInput);
+                            e.preventDefault();
+                            e.currentTarget.blur();
                           } else if (e.key === "Escape") {
+                            e.currentTarget.dataset.cancelled = "true";
                             setIsEditingCosTarget(false);
                           }
                         }}
-                        onBlur={() => {
+                        onBlur={(e) => {
+                          if (e.currentTarget.dataset.cancelled === "true") {
+                            delete e.currentTarget.dataset.cancelled;
+                            return;
+                          }
                           setIsEditingCosTarget(false);
-                          handleUpdateCell(142, 1, cosTargetInput);
+                          setSavingKey("142_1");
+                          Promise.resolve(handleUpdateCell(142, 1, cosTargetInput)).finally(() => setSavingKey(null));
                         }}
                         style={{
                           width: "55px",

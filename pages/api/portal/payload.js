@@ -110,6 +110,15 @@ export default async function handler(req, res) {
     const splitMethod = keyInfoData[14]?.[3] || "Even By Month";
     const splitEnabled = keyInfoData[15]?.[3] === "Yes";
     const authMode = keyInfoData[4]?.[9] ? String(keyInfoData[4][9]).trim() : "EmailOTP";
+    const rawFocus = String(keyInfoData[14]?.[1] || "").trim();
+    const mode = rawFocus.toLowerCase() === "income" ? "Income" : "Revenue";
+    const rawDirectCostsMode = String(keyInfoData[7]?.[3] || "").trim();
+    const directCostsMode =
+      mode === "Income"
+        ? "Pass-through"
+        : rawDirectCostsMode.toLowerCase().includes("pass")
+          ? "Pass-through"
+          : "Contractors";
 
     const version = toggles[0]?.[0] || appDataDisp[39]?.[22] || ""; // W40
     const showExtraRows = String(toggles[2]?.[0] || appDataDisp[41]?.[22] || "").trim().toLowerCase() === "yes"; // W42
@@ -121,7 +130,11 @@ export default async function handler(req, res) {
     const extractMonthData = (labelCol, valCol, headerRowIdx) => {
       const rows = [];
       for (let i = 0; i < numRows; i++) {
-        const label = appDataDisp[i]?.[labelCol] !== undefined ? String(appDataDisp[i][labelCol]) : "";
+        let label = appDataDisp[i]?.[labelCol] !== undefined ? String(appDataDisp[i][labelCol]) : "";
+        const lowerLabel = label.trim().toLowerCase();
+        if ((i === 12 && mode === "Revenue") || lowerLabel === "direct costs" || lowerLabel === "pass-through costs") {
+          label = mode === "Revenue" && directCostsMode === "Pass-through" ? "Pass-through costs" : "Hide";
+        }
         let val = appDataDisp[i]?.[valCol] !== undefined ? String(appDataDisp[i][valCol]) : "";
         if (i > 1 && val && !val.includes("%")) {
           val = formatCurrencyString(val, null, currencySymbol, thousandsSeparator);
@@ -235,6 +248,8 @@ export default async function handler(req, res) {
       _cachedAt: new Date().toISOString(),
       hasBudget,
       hasCash,
+      mode,
+      directCostsMode,
       currencySymbol,
       thousandsSeparator,
       clientInfo: {
@@ -245,6 +260,8 @@ export default async function handler(req, res) {
         vatRate,
         hasBudget,
         hasCash,
+        mode,
+        directCostsMode,
         splitMethod,
         splitEnabled,
         authMode,

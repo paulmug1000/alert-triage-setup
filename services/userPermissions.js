@@ -459,6 +459,17 @@ export function canAccessPma(user) {
 }
 
 /**
+ * Check if a user is permitted to view sensitive salaries and dividends data
+ */
+export function canViewSalariesAndDividends(user) {
+  if (!user) return false;
+  if (user.isAdmin || user.role === "Admin") return true;
+  if (user.role === "ClientManager") return true;
+  if (user.isSenior || String(user.role || "").toLowerCase().includes("senior")) return false;
+  return true;
+}
+
+/**
  * Check if a user is authorized to view or edit data for a given client
  */
 export function isUserAuthorizedForClient(user, clientName) {

@@ -154,6 +154,7 @@ export default function IntegrationsView({
   const [googleSheetModalClient, setGoogleSheetModalClient] = useState(null);
   const [excelModalClient, setExcelModalClient] = useState(null);
   const [disconnectDialog, setDisconnectDialog] = useState(null);
+  const [redirectingKey, setRedirectingKey] = useState(null);
 
   const highlightedRef = useRef(null);
   const onStatusRefreshRef = useRef(onStatusRefresh);
@@ -326,6 +327,7 @@ export default function IntegrationsView({
   // CENTRAL ADVISOR XERO ACCOUNT ACTIONS
   // --------------------------------------------------------------------------
   const handleConnectAdvisorXero = () => {
+    setRedirectingKey("advisor_xero");
     const params = new URLSearchParams({
       clientKey: "advisor",
       clientName: "Advisor Account",
@@ -339,6 +341,7 @@ export default function IntegrationsView({
   // XERO ACTIONS
   // --------------------------------------------------------------------------
   const handleConnectXero = (client, mode = "advisor") => {
+    setRedirectingKey(`${client.clientName}_xero`);
     const params = new URLSearchParams({
       clientKey: client.clientName,
       clientName: client.clientName,
@@ -435,6 +438,7 @@ export default function IntegrationsView({
   // QUICKBOOKS ACTIONS
   // --------------------------------------------------------------------------
   const handleConnectQB = (client) => {
+    setRedirectingKey(`${client.clientName}_quickbooks`);
     const params = new URLSearchParams({
       clientKey: client.clientName,
       clientName: client.clientName,
@@ -490,6 +494,7 @@ export default function IntegrationsView({
       setExcelModalClient(client);
       return;
     }
+    setRedirectingKey(`${client.clientName}_${toolKey}`);
     const params = new URLSearchParams({
       clientKey: client.clientName,
       clientName: client.clientName,
@@ -945,6 +950,7 @@ export default function IntegrationsView({
           <div>
             <button
               onClick={handleConnectAdvisorXero}
+              disabled={redirectingKey === "advisor_xero"}
               style={{
                 padding: "9px 16px",
                 borderRadius: "8px",
@@ -953,7 +959,7 @@ export default function IntegrationsView({
                 color: "#ffffff",
                 fontSize: "13px",
                 fontWeight: "600",
-                cursor: "pointer",
+                cursor: redirectingKey === "advisor_xero" ? "wait" : "pointer",
                 boxShadow: "0 1px 2px rgba(0, 180, 216, 0.2)",
                 display: "flex",
                 alignItems: "center",
@@ -961,8 +967,11 @@ export default function IntegrationsView({
                 whiteSpace: "nowrap"
               }}
             >
-              <span>🔗</span>
-              <span>{sharedXero?.connected ? "Re-authorise Advisor Xero" : "Connect Advisor Xero"}</span>
+              {redirectingKey === "advisor_xero" ? (
+                <><Spinner size={12} color="#fff" /><span>Redirecting...</span></>
+              ) : (
+                <><span>🔗</span><span>{sharedXero?.connected ? "Re-authorise Advisor Xero" : "Connect Advisor Xero"}</span></>
+              )}
             </button>
           </div>
         </div>
@@ -1216,6 +1225,7 @@ export default function IntegrationsView({
                         onSwitchTenant={(tid) => handleSwitchTenant(client, tid)}
                         switchingTenant={Boolean(switchingTenantMap[client.clientName])}
                         onConnect={(mode) => handleConnectXero(client, mode)}
+                        redirecting={redirectingKey === `${client.clientName}_xero`}
                         onDisconnect={() => handleDisconnectXero(client)}
                         actionLoading={Boolean(actionLoadingMap[`${client.clientName}_xero_disconnect`])}
                         onTestToken={() => handleTestToken(client, "xero")}
@@ -1226,6 +1236,7 @@ export default function IntegrationsView({
                       <QuickBooksCard
                         client={client}
                         onConnect={() => handleConnectQB(client)}
+                        redirecting={redirectingKey === `${client.clientName}_quickbooks`}
                         onDisconnect={() => handleDisconnectQB(client)}
                         actionLoading={Boolean(actionLoadingMap[`${client.clientName}_quickbooks_disconnect`])}
                         onTestToken={() => handleTestToken(client, "quickbooks")}
@@ -1266,6 +1277,7 @@ export default function IntegrationsView({
                         toolKey={crmToolType}
                         config={CRM_TOOLS_CONFIG[crmToolType]}
                         onConnect={() => handleConnectCrm(client, crmToolType)}
+                        redirecting={redirectingKey === `${client.clientName}_${crmToolType}`}
                         onConfigure={() => handleConfigureCrm(client, crmToolType)}
                         onDisconnect={() => handleDisconnectCrm(client, crmToolType)}
                         actionLoading={Boolean(actionLoadingMap[`${client.clientName}_${crmToolType}_disconnect`])}
@@ -1446,7 +1458,7 @@ export default function IntegrationsView({
                   gap: "6px"
                 }}
               >
-                {disconnectDialog.loading ? "Disconnecting..." : (disconnectDialog.confirmLabel || "Disconnect")}
+                {disconnectDialog.loading ? <><Spinner size={12} color="#fff" /> Disconnecting...</> : (disconnectDialog.confirmLabel || "Disconnect")}
               </button>
             </div>
           </div>
@@ -1509,6 +1521,7 @@ function XeroCard({
   onSwitchTenant,
   switchingTenant,
   onConnect,
+  redirecting,
   onDisconnect,
   actionLoading,
   onTestToken,
@@ -1582,11 +1595,13 @@ function XeroCard({
             </p>
             {sharedXero?.availableTenants && sharedXero.availableTenants.length > 0 && (
               <div style={{ marginTop: "6px", paddingTop: "6px", borderTop: "1px dashed #bae6fd" }}>
-                <span style={{ fontSize: "11px", fontWeight: "600", color: "#0369a1", display: "block", marginBottom: "4px" }}>
-                  Already authorised in Xero? Link organisation:
+                <span style={{ fontSize: "11px", fontWeight: "600", color: "#0369a1", display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
+                  <span>Already authorised in Xero? Link organisation:</span>
+                  {switchingTenant && <Spinner size={11} color="#0369a1" />}
                 </span>
                 <select
                   defaultValue=""
+                  disabled={switchingTenant}
                   onChange={(e) => {
                     if (e.target.value) onSwitchTenant(e.target.value);
                   }}
@@ -1596,11 +1611,12 @@ function XeroCard({
                     borderRadius: "6px",
                     border: "1px solid #7dd3fc",
                     fontSize: "11.5px",
-                    background: "#fff",
-                    color: "#0f172a"
+                    background: switchingTenant ? "#f1f5f9" : "#fff",
+                    color: "#0f172a",
+                    cursor: switchingTenant ? "wait" : "pointer"
                   }}
                 >
-                  <option value="" disabled>Select from {sharedXero.availableTenants.length} authorised org(s)...</option>
+                  <option value="" disabled>{switchingTenant ? "Linking organisation..." : `Select from ${sharedXero.availableTenants.length} authorised org(s)...`}</option>
                   {sharedXero.availableTenants.map((t) => (
                     <option key={t.tenantId} value={t.tenantId}>{t.tenantName}</option>
                   ))}
@@ -1679,10 +1695,13 @@ function XeroCard({
                       color: "#fff",
                       fontSize: "11.5px",
                       fontWeight: "600",
-                      cursor: selectedTenantId === xero.tenantId ? "default" : "pointer"
+                      cursor: selectedTenantId === xero.tenantId ? "default" : "pointer",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "4px"
                     }}
                   >
-                    {switchingTenant ? "Saving..." : "Switch"}
+                    {switchingTenant ? <><Spinner size={11} color="#fff" /> Saving...</> : "Switch"}
                   </button>
                 </div>
               </div>
@@ -1737,6 +1756,7 @@ function XeroCard({
             <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: "6px" }}>
               <button
                 onClick={() => onConnect("dedicated")}
+                disabled={redirecting}
                 style={{
                   width: "100%",
                   padding: "9px 14px",
@@ -1746,11 +1766,15 @@ function XeroCard({
                   color: "#ffffff",
                   fontSize: "12.5px",
                   fontWeight: "600",
-                  cursor: "pointer",
-                  boxShadow: "0 1px 2px rgba(0,0,0,0.08)"
+                  cursor: redirecting ? "wait" : "pointer",
+                  boxShadow: "0 1px 2px rgba(0,0,0,0.08)",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: "6px"
                 }}
               >
-                Re-connect Xero for {client.clientName}
+                {redirecting ? <><Spinner size={12} color="#fff" /> Redirecting...</> : `Re-connect Xero for ${client.clientName}`}
               </button>
               <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                 <button
@@ -1794,6 +1818,7 @@ function XeroCard({
             <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: "6px" }}>
               <button
                 onClick={() => onConnect("dedicated")}
+                disabled={redirecting}
                 style={{
                   width: "100%",
                   padding: "9px 14px",
@@ -1803,13 +1828,21 @@ function XeroCard({
                   color: "#ffffff",
                   fontSize: "12.5px",
                   fontWeight: "600",
-                  cursor: "pointer",
-                  boxShadow: "0 1px 2px rgba(0,0,0,0.08)"
+                  cursor: redirecting ? "wait" : "pointer",
+                  boxShadow: "0 1px 2px rgba(0,0,0,0.08)",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: "6px"
                 }}
               >
-                {xero.reconnectRequired
-                  ? `Re-connect Xero for ${client.clientName}`
-                  : `Connect Dedicated Xero for ${client.clientName}`}
+                {redirecting ? (
+                  <><Spinner size={12} color="#fff" /> Redirecting...</>
+                ) : xero.reconnectRequired ? (
+                  `Re-connect Xero for ${client.clientName}`
+                ) : (
+                  `Connect Dedicated Xero for ${client.clientName}`
+                )}
               </button>
             </div>
           )}
@@ -1848,6 +1881,7 @@ function XeroCard({
 function QuickBooksCard({
   client,
   onConnect,
+  redirecting,
   onDisconnect,
   actionLoading,
   onTestToken,
@@ -1977,6 +2011,7 @@ function QuickBooksCard({
             <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: "6px" }}>
               <button
                 onClick={onConnect}
+                disabled={redirecting}
                 style={{
                   width: "100%",
                   padding: "9px 14px",
@@ -1986,11 +2021,15 @@ function QuickBooksCard({
                   color: "#ffffff",
                   fontSize: "12.5px",
                   fontWeight: "600",
-                  cursor: "pointer",
-                  boxShadow: "0 1px 2px rgba(0,0,0,0.08)"
+                  cursor: redirecting ? "wait" : "pointer",
+                  boxShadow: "0 1px 2px rgba(0,0,0,0.08)",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: "6px"
                 }}
               >
-                Re-connect QuickBooks for {client.clientName}
+                {redirecting ? <><Spinner size={12} color="#fff" /> Redirecting...</> : `Re-connect QuickBooks for ${client.clientName}`}
               </button>
               <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                 <button
@@ -2033,6 +2072,7 @@ function QuickBooksCard({
           ) : (
             <button
               onClick={onConnect}
+              disabled={redirecting}
               style={{
                 width: "100%",
                 padding: "9px 14px",
@@ -2042,11 +2082,21 @@ function QuickBooksCard({
                 color: "#ffffff",
                 fontSize: "12.5px",
                 fontWeight: "600",
-                cursor: "pointer",
-                boxShadow: "0 1px 2px rgba(0,0,0,0.08)"
+                cursor: redirecting ? "wait" : "pointer",
+                boxShadow: "0 1px 2px rgba(0,0,0,0.08)",
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: "6px"
               }}
             >
-              {qb.reconnectRequired ? `Re-connect QuickBooks for ${client.clientName}` : `Connect QuickBooks for ${client.clientName}`}
+              {redirecting ? (
+                <><Spinner size={12} color="#fff" /> Redirecting...</>
+              ) : qb.reconnectRequired ? (
+                `Re-connect QuickBooks for ${client.clientName}`
+              ) : (
+                `Connect QuickBooks for ${client.clientName}`
+              )}
             </button>
           )}
         </div>
@@ -2086,6 +2136,7 @@ function CrmCard({
   toolKey,
   config,
   onConnect,
+  redirecting,
   onConfigure,
   onDisconnect,
   actionLoading,
@@ -2249,6 +2300,7 @@ function CrmCard({
             <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: "6px" }}>
               <button
                 onClick={onConnect}
+                disabled={redirecting}
                 style={{
                   width: "100%",
                   padding: "9px 14px",
@@ -2258,11 +2310,15 @@ function CrmCard({
                   color: "#ffffff",
                   fontSize: "12.5px",
                   fontWeight: "600",
-                  cursor: "pointer",
-                  boxShadow: "0 1px 2px rgba(0,0,0,0.08)"
+                  cursor: redirecting ? "wait" : "pointer",
+                  boxShadow: "0 1px 2px rgba(0,0,0,0.08)",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: "6px"
                 }}
               >
-                Re-connect {config.name} for {client.clientName}
+                {redirecting ? <><Spinner size={12} color="#fff" /> Redirecting...</> : `Re-connect ${config.name} for ${client.clientName}`}
               </button>
               <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                 <button
@@ -2305,6 +2361,7 @@ function CrmCard({
           ) : (
             <button
               onClick={onConnect}
+              disabled={redirecting}
               style={{
                 width: "100%",
                 padding: "9px 14px",
@@ -2314,13 +2371,21 @@ function CrmCard({
                 color: "#ffffff",
                 fontSize: "12.5px",
                 fontWeight: "600",
-                cursor: "pointer",
-                boxShadow: "0 1px 2px rgba(0,0,0,0.08)"
+                cursor: redirecting ? "wait" : "pointer",
+                boxShadow: "0 1px 2px rgba(0,0,0,0.08)",
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: "6px"
               }}
             >
-              {toolData.reconnectRequired
-                ? `Re-connect ${config.name} for ${client.clientName}`
-                : `Connect ${config.name} for ${client.clientName}`}
+              {redirecting ? (
+                <><Spinner size={12} color="#fff" /> Redirecting...</>
+              ) : toolData.reconnectRequired ? (
+                `Re-connect ${config.name} for ${client.clientName}`
+              ) : (
+                `Connect ${config.name} for ${client.clientName}`
+              )}
             </button>
           )}
         </div>

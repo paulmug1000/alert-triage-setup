@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from "react";
 import Spinner from "./Spinner";
+import Skeleton from "./Skeleton";
 import UnevenSplitModal from "./UnevenSplitModal";
 import InvoicesEditModal from "./InvoicesEditModal";
 import DirectCostsEditModal from "./DirectCostsEditModal";
@@ -26,7 +27,8 @@ import {
   calculatePaymentDate,
   groupSlotItemsForDisplay,
   NO_END_DATE_SHEET_VALUE,
-  isNoEndDateSentinel
+  isNoEndDateSentinel,
+  stripCurrency
 } from "../utils/helpers";
 import CrmSyncBadge, { CrmSyncIcon } from "./CrmSyncBadge";
 import { useAppGlobals } from "../hooks/useAppGlobals";
@@ -718,7 +720,7 @@ export default function JobDetailModal({
       slot: {
         ref: defaultRef,
         amount: defaultAmt,
-        status: "Placeholder",
+        status: "",
         sentDate: "",
         daysToPay: 30
       },
@@ -777,7 +779,7 @@ export default function JobDetailModal({
         vat: "Yes",
         date: "",
         daysToPay: 30,
-        status: "Placeholder",
+        status: "",
         transactionId: ""
       },
       jobName: parentRow.jobName || job.jobName,
@@ -968,6 +970,15 @@ export default function JobDetailModal({
       if (!data.success) throw new Error(data.error || "Failed to update job");
 
       // Update local state
+      const invUpdatesMap = new Map();
+      (data.invoiceSlotUpdates || []).forEach((u) => {
+        invUpdatesMap.set(`${u.rowNum}_${u.slotNum}`, u);
+      });
+      const expUpdatesMap = new Map();
+      (data.expenseSlotUpdates || []).forEach((u) => {
+        expUpdatesMap.set(`${u.rowNum}_${u.slotNum}`, u);
+      });
+
       setJob((prev) => {
         if (!prev) return prev;
         const updatedRows = prev.rows.map((r, rIdx) => {
@@ -977,6 +988,18 @@ export default function JobDetailModal({
             if (FIELD_MAP[f]?.isDate && nextVal) nextVal = toSheetDateFormat(nextVal);
             if (rIdx === 0 || f === "client" || f === "jobName") nextRow[f] = nextVal;
           });
+          if (invUpdatesMap.size > 0 && Array.isArray(nextRow.invoiceSlots)) {
+            nextRow.invoiceSlots = nextRow.invoiceSlots.map((sl) => {
+              const match = invUpdatesMap.get(`${r.rowNum}_${sl.slotNum}`);
+              return match ? { ...sl, ...match } : sl;
+            });
+          }
+          if (expUpdatesMap.size > 0 && Array.isArray(nextRow.expenseSlots)) {
+            nextRow.expenseSlots = nextRow.expenseSlots.map((sl) => {
+              const match = expUpdatesMap.get(`${r.rowNum}_${sl.slotNum}`);
+              return match ? { ...sl, ...match } : sl;
+            });
+          }
           return nextRow;
         });
         return {
@@ -1280,10 +1303,89 @@ export default function JobDetailModal({
           {/* Body Content */}
           <div className="job-detail-modal-body" style={{ flex: 1, overflowY: "auto", padding: "20px 24px" }}>
             {loading && (
-              <div style={{ padding: "60px 0", textAlign: "center", color: "#64748b" }}>
-                <Spinner size={24} color="#0284c7" />
-                <div style={{ marginTop: "12px", fontSize: "14px", fontWeight: "500" }}>
-                  Loading job details…
+              <div>
+                {/* Skeleton Primary Job Fields Row */}
+                <div
+                  style={{
+                    background: "#ffffff",
+                    border: "1px solid #e2e8f0",
+                    borderRadius: "10px",
+                    padding: "16px",
+                    marginBottom: "18px",
+                    boxShadow: "0 1px 2px rgba(0,0,0,0.03)"
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "14px" }}>
+                    <Skeleton width="140px" height="12px" borderRadius="4px" />
+                    <Skeleton width="90px" height="12px" borderRadius="4px" />
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1.6fr 0.9fr 1fr 1fr 1fr 1fr 0.8fr", gap: "12px" }}>
+                    {Array.from({ length: 8 }).map((_, i) => (
+                      <div key={i}>
+                        <Skeleton width="65%" height="11px" borderRadius="4px" style={{ marginBottom: "6px" }} />
+                        <Skeleton width="100%" height="32px" borderRadius="5px" />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Skeleton 3-Column Sub-Cards */}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1.25fr 1.25fr", gap: "16px" }}>
+                  {[0, 1, 2].map((colIdx) => (
+                    <div
+                      key={colIdx}
+                      style={{
+                        background: "#ffffff",
+                        border: "1px solid #e2e8f0",
+                        borderRadius: "10px",
+                        padding: "16px",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: "12px"
+                      }}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingBottom: "8px", borderBottom: "1px solid #f1f5f9" }}>
+                        <Skeleton width="130px" height="13px" borderRadius="4px" />
+                        <Skeleton width="60px" height="18px" borderRadius="9px" />
+                      </div>
+                      {colIdx === 0 ? (
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+                          {Array.from({ length: 6 }).map((_, fIdx) => (
+                            <div key={fIdx}>
+                              <Skeleton width="60%" height="10px" borderRadius="4px" style={{ marginBottom: "6px" }} />
+                              <Skeleton width="100%" height="30px" borderRadius="5px" />
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                          {[0, 1, 2].map((cardIdx) => (
+                            <div
+                              key={cardIdx}
+                              style={{
+                                padding: "10px 12px",
+                                borderRadius: "7px",
+                                border: "1px solid #f1f5f9",
+                                background: "#f8fafc",
+                                display: "flex",
+                                flexDirection: "column",
+                                gap: "6px"
+                              }}
+                            >
+                              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                                <Skeleton width="90px" height="13px" borderRadius="4px" />
+                                <Skeleton width="70px" height="13px" borderRadius="4px" />
+                              </div>
+                              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                                <Skeleton width="110px" height="10px" borderRadius="4px" />
+                                <Skeleton width="55px" height="14px" borderRadius="7px" />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
@@ -1427,6 +1529,9 @@ export default function JobDetailModal({
                           ...lockedInputStyle
                         }}
                       />
+                      <div style={{ fontSize: "10px", color: "#64748b", marginTop: "3px", lineHeight: "1.2" }}>
+                        For retainers, enter the monthly amount
+                      </div>
                       {isConfirmed && metrics.revenue > 0 && (
                         metrics.leftToInvoice > 0 ? (
                           <div style={{ marginTop: "4px" }}>
@@ -1948,6 +2053,7 @@ export default function JobDetailModal({
                                 boxSizing: "border-box",
                                 maxWidth: "100%",
                                 overflow: "hidden",
+                                flexShrink: 0,
                                 display: "flex",
                                 flexDirection: "column",
                                 gap: "5px",
@@ -2254,6 +2360,7 @@ export default function JobDetailModal({
                                 boxSizing: "border-box",
                                 maxWidth: "100%",
                                 overflow: "hidden",
+                                flexShrink: 0,
                                 display: "flex",
                                 flexDirection: "column",
                                 gap: "5px",
@@ -2443,27 +2550,34 @@ export default function JobDetailModal({
                 </button>
               )}
 
-              {!isJobLocked && isDirty && (
+              {!isJobLocked && (isDirty || saving || recentlySaved) && (
                 <button
                   type="button"
                   onClick={handleSaveJob}
-                  disabled={saving}
+                  disabled={saving || !isDirty}
                   style={{
                     padding: "6px 16px",
                     borderRadius: "6px",
-                    border: "none",
-                    background: "#16a34a",
-                    color: "#ffffff",
+                    border: (!isDirty && recentlySaved) ? "1px solid #86efac" : "none",
+                    background: (!isDirty && recentlySaved) ? "#dcfce7" : "#16a34a",
+                    color: (!isDirty && recentlySaved) ? "#166534" : "#ffffff",
                     fontSize: "12px",
                     fontWeight: "600",
-                    cursor: saving ? "wait" : "pointer",
+                    cursor: saving ? "wait" : (!isDirty ? "default" : "pointer"),
                     display: "inline-flex",
                     alignItems: "center",
                     gap: "6px",
-                    boxShadow: "0 1px 2px rgba(22, 163, 74, 0.2)"
+                    boxShadow: (!isDirty && recentlySaved) ? "none" : "0 1px 2px rgba(22, 163, 74, 0.2)",
+                    transition: "all 0.15s ease"
                   }}
                 >
-                  {saving ? <><Spinner size={12} color="#ffffff" /> Saving…</> : "Save job"}
+                  {saving ? (
+                    <><Spinner size={12} color="#ffffff" /> Saving…</>
+                  ) : (!isDirty && recentlySaved) ? (
+                    "✓ Saved"
+                  ) : (
+                    "Save job"
+                  )}
                 </button>
               )}
 

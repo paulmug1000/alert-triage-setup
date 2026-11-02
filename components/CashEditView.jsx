@@ -817,7 +817,11 @@ export default function CashEditView({
         </div>
         <EditClientSelector
           clients={allOutgoingsClients}
+          loading={(allOutgoingsClients || []).length === 0}
           onSelectClient={(c) => {
+            setCashData(null);
+            setError("");
+            setLoading(true);
             setSelectedClient(c);
             onSelectClient?.(c);
           }}
@@ -1002,10 +1006,13 @@ export default function CashEditView({
               fontWeight: 600,
               color: "#334155",
               cursor: loading ? "not-allowed" : "pointer",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "6px",
             }}
             title={isSysAdmin ? "Refresh from Google Sheet" : "Refresh cashflow data"}
           >
-            {loading ? "Refreshing..." : "↻ Refresh"}
+            {loading ? <><Spinner size={12} color="#334155" /> Refreshing...</> : "↻ Refresh"}
           </button>
 
           {/* External Google Sheets Link (Admins only) */}
@@ -1032,7 +1039,7 @@ export default function CashEditView({
       </div>
 
       {/* ── LOADING / ERROR STATES ─────────────────────────────────────────────── */}
-      {(loading || (!cashData && !error)) && (
+      {(loading || (!cashData && !error)) && !cashData && (
         <CashflowSkeleton />
       )}
 

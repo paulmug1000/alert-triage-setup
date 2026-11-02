@@ -264,6 +264,11 @@ export default function CashflowView({
   const exclClosing = applyActualClosing(rawExclClosing);
   const inclClosing = applyActualClosing(rawInclClosing);
 
+  const isPassThrough =
+    String(keyData?.outgoingsMeta?.mode || "").toLowerCase().includes("income") ||
+    keyData?.outgoingsMeta?.directCostsMode === "Pass-through";
+  const directCostsLabel = isPassThrough ? "Pass-through costs" : "Direct costs";
+
   const exclDetails = [
     {
       label: "Confirmed cash incoming",
@@ -291,13 +296,13 @@ export default function CashflowView({
       label: "Contractors",
       values: getValues(exclRows, ["contractors outgoing", "contractors adjustment"], [12, 13]),
       getNote: (mIdx) => getAdjustmentNote(exclRows, mIdx, [12, 13]),
-      ddType: "cashContractors"
+      ddType: "conCash_excl"
     },
     {
-      label: "Direct costs",
-      values: getValues(exclRows, ["direct costs outgoing", "direct costs adjustment"], [14, 15]),
+      label: directCostsLabel,
+      values: getValues(exclRows, ["direct costs outgoing", "direct costs adjustment", "pass-through costs outgoing", "pass-through costs adjustment"], [14, 15]),
       getNote: (mIdx) => getAdjustmentNote(exclRows, mIdx, [14, 15]),
-      ddType: "cashDirCosts"
+      ddType: "dirCash_excl"
     },
     {
       label: "Other expenses",
@@ -373,8 +378,8 @@ export default function CashflowView({
       ddType: "cashContractors"
     },
     {
-      label: "Direct costs",
-      values: getValues(inclRows, ["direct costs outgoing", "direct costs adjustment"], [56, 57]),
+      label: directCostsLabel,
+      values: getValues(inclRows, ["direct costs outgoing", "direct costs adjustment", "pass-through costs outgoing", "pass-through costs adjustment"], [56, 57]),
       getNote: (mIdx) => getAdjustmentNote(inclRows, mIdx, [56, 57]),
       ddType: "cashDirCosts"
     },

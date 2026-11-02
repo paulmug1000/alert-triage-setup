@@ -60,6 +60,8 @@ export default function CashflowReconTab({
   // Overwrite confirmation modal for "Use recon figures"
   const [overwriteModal, setOverwriteModal] = useState(null);
   const [applyingRecon, setApplyingRecon] = useState(false);
+  const [applyingReconRow, setApplyingReconRow] = useState(null);
+  const [resolvingCellKey, setResolvingCellKey] = useState(null);
 
   // Match Actuals state and modal
   const [matchingActuals, setMatchingActuals] = useState(false);
@@ -244,8 +246,11 @@ export default function CashflowReconTab({
 
   // Handle Mark Resolved Toggle
   const handleToggleResolved = async (cell) => {
-    if (!reconData || !currentClientInfo) return;
+    if (!reconData || !currentClientInfo || !cell) return;
+    const cellKey = `${cell.sheetRow}_${cell.colIdx}`;
+    if (resolvingCellKey === cellKey) return;
     const targetState = !cell.isResolved;
+    setResolvingCellKey(cellKey);
     setError("");
     try {
       const resp = await fetch("/api/triage", {
@@ -286,6 +291,8 @@ export default function CashflowReconTab({
     } catch (err) {
       console.error("Error toggling resolved:", err);
       setError(err.message);
+    } finally {
+      setResolvingCellKey(null);
     }
   };
 
@@ -522,6 +529,7 @@ export default function CashflowReconTab({
   const executeApplyReconFormula = async (targetRow, colLetter, formula) => {
     if (!currentClientInfo) return;
     setApplyingRecon(true);
+    setApplyingReconRow(targetRow);
     setError("");
     try {
       const cleanFormula = typeof formula === "string" ? formula.trim().replace(/^['’]=/, "=") : formula;
@@ -550,6 +558,7 @@ export default function CashflowReconTab({
       setError(err.message);
     } finally {
       setApplyingRecon(false);
+      setApplyingReconRow(null);
     }
   };
 
@@ -1401,6 +1410,7 @@ export default function CashflowReconTab({
                                         {renderNoteButton(elem.baseRow, baseCell)}
                                         <button
                                           onClick={() => handleToggleResolved(baseCell)}
+                                          disabled={resolvingCellKey === `${baseCell?.sheetRow}_${baseCell?.colIdx}`}
                                           title={baseCell?.isResolved ? "Un-mark resolved" : "Mark resolved"}
                                           style={{
                                             padding: "2px 7px",
@@ -1411,10 +1421,14 @@ export default function CashflowReconTab({
                                             fontSize: "9px",
                                             fontWeight: "700",
                                             textTransform: "uppercase",
-                                            cursor: "pointer",
-                                            flexShrink: 0
+                                            cursor: resolvingCellKey === `${baseCell?.sheetRow}_${baseCell?.colIdx}` ? "wait" : "pointer",
+                                            flexShrink: 0,
+                                            display: "inline-flex",
+                                            alignItems: "center",
+                                            gap: "4px"
                                           }}
                                         >
+                                          {resolvingCellKey === `${baseCell?.sheetRow}_${baseCell?.colIdx}` ? <Spinner size={9} /> : null}
                                           {baseCell?.isResolved ? "Resolved" : "Resolve"}
                                         </button>
                                       </div>
@@ -1584,9 +1598,11 @@ export default function CashflowReconTab({
                                       {renderNoteButton(elem.adjRow, adjCell)}
                                       {isAdmin && (() => {
                                         const isReconUsed = isReconUsedForRow(elem.baseRow);
+                                        const isThisRowApplying = applyingRecon && (applyingReconRow === elem.adjRow?.sheetRow || applyingReconRow === elem.baseRow?.targetAdjustmentRow);
                                         return (
                                           <button
                                             onClick={() => handleUseReconFigures(elem.baseRow, elem.baseRow.cells[cIndex])}
+                                            disabled={applyingRecon}
                                             title={isReconUsed ? "Recon actual figure is currently applied" : `Apply recon actual for ${elem.title}`}
                                             style={{
                                               padding: "2px 7px",
@@ -1597,10 +1613,15 @@ export default function CashflowReconTab({
                                               fontSize: "9px",
                                               fontWeight: "700",
                                               textTransform: "uppercase",
-                                              cursor: "pointer",
-                                              flexShrink: 0
+                                              cursor: applyingRecon ? "default" : "pointer",
+                                              opacity: isThisRowApplying ? 0.7 : 1,
+                                              flexShrink: 0,
+                                              display: "inline-flex",
+                                              alignItems: "center",
+                                              gap: "4px"
                                             }}
                                           >
+                                            {isThisRowApplying ? <Spinner size={9} /> : null}
                                             Recon
                                           </button>
                                         );
@@ -2070,10 +2091,14 @@ export default function CashflowReconTab({
                   color: "#ffffff",
                   fontSize: "13px",
                   fontWeight: "600",
-                  cursor: savingEdit ? "default" : "pointer"
+                  cursor: savingEdit ? "default" : "pointer",
+                  opacity: savingEdit ? 0.7 : 1,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px"
                 }}
               >
-                {savingEdit ? "Saving..." : "Save adjustment"}
+                {savingEdit ? <><Spinner size={12} color="#fff" /> Saving...</> : "Save adjustment"}
               </button>
             </div>
           </div>
@@ -2167,10 +2192,14 @@ export default function CashflowReconTab({
                   color: "#ffffff",
                   fontSize: "13px",
                   fontWeight: "600",
-                  cursor: applyingRecon ? "default" : "pointer"
+                  cursor: applyingRecon ? "default" : "pointer",
+                  opacity: applyingRecon ? 0.7 : 1,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px"
                 }}
               >
-                {applyingRecon ? "Applying..." : (isAdmin ? "Overwrite & apply formula" : "Overwrite & apply")}
+                {applyingRecon ? <><Spinner size={12} color="#fff" /> Applying...</> : (isAdmin ? "Overwrite & apply formula" : "Overwrite & apply")}
               </button>
             </div>
           </div>
@@ -2388,10 +2417,14 @@ export default function CashflowReconTab({
                   color: "#ffffff",
                   fontSize: "13px",
                   fontWeight: "600",
-                  cursor: savingNote ? "default" : "pointer"
+                  cursor: savingNote ? "default" : "pointer",
+                  opacity: savingNote ? 0.7 : 1,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px"
                 }}
               >
-                {savingNote ? "Saving..." : "Save note"}
+                {savingNote ? <><Spinner size={12} color="#fff" /> Saving...</> : "Save note"}
               </button>
             </div>
           </div>

@@ -1801,6 +1801,69 @@ export async function handleStorePrecomputed(req, res, sheets) {
             flags: extraFlagsByClient.get(clientName) || {},
           });
         }
+
+        // Populate alertCounts and active*Ids on finalClientsWithFlags so triage_precomputed
+        // always matches the exact structure produced by handleGetPrecomputed.
+        const storeCountsByClient = {};
+        const storeExpIdsByClient = {};
+        const storeContrIdsByClient = {};
+        const storePassIdsByClient = {};
+        const storeInvIdsByClient = {};
+        for (const a of finalAlerts) {
+          const k = a.clientName;
+          const fKey = a.flagType || a.alertType || a.type;
+          if (!storeCountsByClient[k]) storeCountsByClient[k] = {};
+          storeCountsByClient[k][fKey] = (storeCountsByClient[k][fKey] || 0) + 1;
+          if (fKey === "contractorsDashboardDiscr" || fKey === "passThroughDashboardDiscr" || fKey === "expenseDashboardDiscr") {
+            const txId = a.summary?.transactionId || a.summary?.appId || a.summary?.reference || a.summary?.id;
+            if (txId !== undefined && txId !== null && txId !== "") {
+              const s = String(txId).trim();
+              const clean = s.replace(/^#/, "");
+              if (!storeExpIdsByClient[k]) storeExpIdsByClient[k] = [];
+              storeExpIdsByClient[k].push(s);
+              if (clean !== s) storeExpIdsByClient[k].push(clean);
+              if (fKey === "passThroughDashboardDiscr") {
+                if (!storePassIdsByClient[k]) storePassIdsByClient[k] = [];
+                storePassIdsByClient[k].push(s);
+                if (clean !== s) storePassIdsByClient[k].push(clean);
+              } else {
+                if (!storeContrIdsByClient[k]) storeContrIdsByClient[k] = [];
+                storeContrIdsByClient[k].push(s);
+                if (clean !== s) storeContrIdsByClient[k].push(clean);
+              }
+            }
+          }
+          if (fKey === "invoiceDashboardDiscr") {
+            const isMissing = a.data?.flags?.[0] === "1" || (a.flagColumns?.[0] === "Missing invoice?" && a.data?.flags?.[0] === "1");
+            if (isMissing) {
+              const invNo = a.summary?.invoiceNo || a.summary?.reference || a.summary?.id || a.data?.accounting?.[5];
+              if (invNo !== undefined && invNo !== null && invNo !== "") {
+                const s = String(invNo).trim();
+                const clean = s.replace(/^#/, "");
+                if (!storeInvIdsByClient[k]) storeInvIdsByClient[k] = [];
+                storeInvIdsByClient[k].push(s);
+                if (clean !== s) storeInvIdsByClient[k].push(clean);
+              }
+            }
+          }
+        }
+        for (const na of finalNoActionAlerts) {
+          const k = na.clientName;
+          const fKey = na.flagType;
+          if (k && fKey) {
+            if (!storeCountsByClient[k]) storeCountsByClient[k] = {};
+            storeCountsByClient[k][fKey] = (storeCountsByClient[k][fKey] || 0) + 1;
+          }
+        }
+        finalClientsWithFlags = finalClientsWithFlags.map(c => ({
+          ...c,
+          alertCounts: storeCountsByClient[c.clientName] || {},
+          activeExpenseIds: storeExpIdsByClient[c.clientName] || [],
+          activeContractorExpenseIds: storeContrIdsByClient[c.clientName] || [],
+          activePassThroughExpenseIds: storePassIdsByClient[c.clientName] || [],
+          activeInvoiceIds: storeInvIdsByClient[c.clientName] || [],
+        }));
+
         console.log(`  store_precomputed: merged ${newAlertsFromMemory.length} discrepancy + ${newNoActionFromMemory.length} proactive AlertMemory-sourced item(s) across ${newClientMeta.size} new + ${extraFlagsByClient.size - newClientMeta.size} existing client(s)`);
       }
     } catch (mergeErr) {

@@ -114,20 +114,28 @@ export default function InvoicesView({
   const auth = useAuth();
   const isAdmin = propIsAdmin !== undefined ? propIsAdmin : (!auth.user?.isReadOnly && !!(auth.user?.isAdmin || auth.user?.role === "Admin"));
 
-  const { assignedAppIds, setAssignedAppIds, outgoingsPullPendingRef, addAssignedAppId } = useAppGlobals();
+  const { automationCommanderSheetId, assignedAppIds, setAssignedAppIds, outgoingsPullPendingRef, addAssignedAppId } = useAppGlobals();
   const { clientsWithFlags, setClientsWithFlags, setClientAlerts, sessionId } = useTriage();
 
   const removeAssignedInvoiceAlert = (invNo, refNo, clientName) => {
-    const cleanInvNo = String(invNo || "").trim();
-    const cleanRef = String(refNo || "").trim();
+    const cleanInvNo = String(invNo || "").trim().replace(/^#/, "");
+    const cleanRef = String(refNo || "").trim().replace(/^#/, "");
     if (!cleanInvNo || !setClientAlerts) return;
     setClientAlerts(prev => {
       if (!Array.isArray(prev)) return prev;
       const toRemove = [];
       const next = prev.filter(a => {
-        if (a.type === "invoiceDashboardDiscr" && (!clientName || a.clientName === clientName)) {
-          const txId = String(a.data?.accounting?.[10] || a.data?.accounting?.[1] || a.data?.accounting?.[0] || "").trim();
-          const isMissing = String(a.data?.flags?.[0] ?? "").trim() === "1";
+        const isInv = a.type === "invoice" || a.type === "invoiceDashboardDiscr" || a.flagType === "invoiceDashboardDiscr";
+        if (isInv && (!clientName || a.clientName === clientName)) {
+          const txId = String(
+            a.summary?.invoiceNo ||
+            a.data?.accounting?.[5] ||
+            a.data?.accounting?.[10] ||
+            a.data?.accounting?.[1] ||
+            a.data?.accounting?.[0] ||
+            ""
+          ).trim().replace(/^#/, "");
+          const isMissing = String(a.data?.flags?.[0] ?? "1").trim() === "1";
           if (isMissing && (txId === cleanInvNo || (cleanRef && txId === cleanRef))) {
             toRemove.push(a);
             return false;
@@ -136,19 +144,23 @@ export default function InvoicesView({
         return true;
       });
       if (toRemove.length > 0 && sessionId) {
-        toRemove.forEach(a => {
+        const alertIds = toRemove
+          .map(a => a.fingerprintHash || (a.sheetName && a.rowNumber ? `${a.sheetName}-${a.rowNumber}` : null))
+          .filter(Boolean);
+        if (alertIds.length > 0) {
           fetch("/api/triage", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               action: "remove_alert",
               sessionId,
-              clientName: a.clientName,
-              alertType: a.type,
-              rowNumber: a.rowNumber
+              alertIds,
+              clientName: toRemove[0].clientName,
+              alertType: toRemove[0].type,
+              rowNumber: toRemove[0].rowNumber
             })
           }).catch(() => { });
-        });
+        }
       }
       return next;
     });
@@ -542,6 +554,8 @@ export default function InvoicesView({
     try {
       const payload = {
         action: "assign_invoice_to_job",
+        sessionId,
+        automationCommanderSheetId,
         clientSheetId: invoicesClient?.clientSheetId,
         clientName: invoicesClient?.clientName || invoicesClient?.name || "",
         masterSheetId: invoicesClient?.masterSheetId || "",
@@ -631,18 +645,67 @@ export default function InvoicesView({
           }
 
           if (data.placeholderAdjustment) {
-            const { rowNum: pRow, slotNum: pSlot, newAmount: pAmt } = data.placeholderAdjustment;
-            updatedRows = updatedRows.map((r) => {
-              if (r.rowNum === pRow) {
+            const slotUpdates = Array.isArray(data.placeholderAdjustment.slotUpdates)
+              ? data.placeholderAdjustment.slotUpdates
+              : [];
+            if (slotUpdates.length > 0) {
+              const knownRowNums = new Set(updatedRows.map(r => Number(r.rowNum)));
+              for (const u of slotUpdates) {
+                if (u?.rowNum && !knownRowNums.has(Number(u.rowNum))) {
+                  knownRowNums.add(Number(u.rowNum));
+                  updatedRows.push({
+                    rowNum: Number(u.rowNum),
+                    client: updatedClient,
+                    jobName: updatedJob,
+                    projectCode: j.projectCode || "",
+                    revenue: 0,
+                    directCosts: 0,
+                    invoiceSlots: [
+                      { slotNum: 1, amount: "", ref: "", sentDate: "", daysToPay: "", status: "" },
+                      { slotNum: 2, amount: "", ref: "", sentDate: "", daysToPay: "", status: "" },
+                      { slotNum: 3, amount: "", ref: "", sentDate: "", daysToPay: "", status: "" }
+                    ],
+                    expenseSlots: [
+                      { slotNum: 1, amount: "", ref: "", date: "", status: "" },
+                      { slotNum: 2, amount: "", ref: "", date: "", status: "" },
+                      { slotNum: 3, amount: "", ref: "", date: "", status: "" }
+                    ]
+                  });
+                }
+              }
+              updatedRows = updatedRows.map((r) => {
+                const plhdrForRow = slotUpdates.filter(u => Number(u.rowNum) === Number(r.rowNum));
+                if (plhdrForRow.length === 0) return r;
                 return {
                   ...r,
-                  invoiceSlots: (r.invoiceSlots || []).map((sl) =>
-                    sl.slotNum === pSlot ? { ...sl, amount: pAmt > 0 ? String(pAmt) : "" } : sl
-                  ),
+                  invoiceSlots: (r.invoiceSlots || []).map((sl) => {
+                    const m = plhdrForRow.find(u => Number(u.slotNum) === Number(sl.slotNum));
+                    if (!m) return sl;
+                    return {
+                      ...sl,
+                      amount: m.amount ?? "",
+                      ref: m.ref ?? "",
+                      sentDate: m.sentDate ?? "",
+                      daysToPay: m.daysToPay ?? "",
+                      status: m.status ?? "",
+                    };
+                  }),
                 };
-              }
-              return r;
-            });
+              });
+            } else {
+              const { rowNum: pRow, slotNum: pSlot, newAmount: pAmt } = data.placeholderAdjustment;
+              updatedRows = updatedRows.map((r) => {
+                if (r.rowNum === pRow) {
+                  return {
+                    ...r,
+                    invoiceSlots: (r.invoiceSlots || []).map((sl) =>
+                      sl.slotNum === pSlot ? { ...sl, amount: pAmt > 0 ? String(pAmt) : "" } : sl
+                    ),
+                  };
+                }
+                return r;
+              });
+            }
           }
 
           let nextRevenue = j.revenue;

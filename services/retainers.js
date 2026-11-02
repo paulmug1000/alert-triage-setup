@@ -1,12 +1,12 @@
 import { waitUntil } from "@vercel/functions";
-import { getSheetsClient, withRetry, extractSheetIdFromUrl, colIndexToLetter, sanitizeFormulaInput } from "./sheetsClient";
-import { getToleranceValues, checkAllGASLocks } from "./sharedHelpers";
-import { logPmaActivity } from "./pmaLogger";
-import { resolveClientNameBySheetId, getAllClients, resolveMasterSheetIdForClient_ } from "./workspaces";
-import { isPlaceholderInvoice, isPlaceholderExpense, canonicalizeInvoiceStatus, NO_END_DATE_SHEET_VALUE, isNoEndDateSentinel, formatJobEndDateDisplay } from "../utils/helpers";
-import { getSessionUser } from "./authService";
-import { get2TierCache, set2TierCache, invalidatePmaClientCache, memoryCache } from "./cacheService";
-import { redisClient } from "./redisClient";
+import { getSheetsClient, withRetry, extractSheetIdFromUrl, colIndexToLetter, sanitizeFormulaInput } from "./sheetsClient.js";
+import { getToleranceValues, checkAllGASLocks } from "./sharedHelpers.js";
+import { logPmaActivity } from "./pmaLogger.js";
+import { resolveClientNameBySheetId, getAllClients, resolveMasterSheetIdForClient_ } from "./workspaces.js";
+import { isPlaceholderInvoice, isPlaceholderExpense, canonicalizeInvoiceStatus, NO_END_DATE_SHEET_VALUE, isNoEndDateSentinel, formatJobEndDateDisplay } from "../utils/helpers.js";
+import { getSessionUser } from "./authService.js";
+import { get2TierCache, set2TierCache, invalidatePmaClientCache, memoryCache } from "./cacheService.js";
+import { redisClient } from "./redisClient.js";
 
 const RET_MONTHS_MAP = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
 

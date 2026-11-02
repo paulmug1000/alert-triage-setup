@@ -112,7 +112,7 @@ export default function OutgoingsView({
   const { clientsWithFlags, setClientsWithFlags, setClientAlerts, sessionId } = useTriage();
 
   const removeAssignedExpenseAlerts = (appIds, clientName) => {
-    const idSet = new Set((appIds || []).map(id => String(id || "").trim()).filter(Boolean));
+    const idSet = new Set((appIds || []).map(id => String(id || "").trim().replace(/^#/, "")).filter(Boolean));
     if (idSet.size === 0 || !setClientAlerts) return;
     setClientAlerts(prev => {
       if (!Array.isArray(prev)) return prev;
@@ -120,9 +120,17 @@ export default function OutgoingsView({
       const next = prev.filter(a => {
         const isExp = a.type === "expense" || a.type === "expenseDashboardDiscr" || a.flagType === "contractorsDashboardDiscr" || a.flagType === "passThroughDashboardDiscr" || a.flagType === "expenseDashboardDiscr";
         if (isExp && (!clientName || a.clientName === clientName)) {
-          const txId = String(a.data?.accounting?.[6] || a.data?.accounting?.[10] || a.data?.accounting?.[11] || a.data?.accounting?.[0] || "").trim();
-          const isMissing = String(a.data?.flags?.[0] ?? "").trim() === "1";
-          if (isMissing && idSet.has(txId)) {
+          const txId = String(
+            a.summary?.transactionId ||
+            a.summary?.appId ||
+            a.data?.accounting?.[6] ||
+            a.data?.accounting?.[10] ||
+            a.data?.accounting?.[11] ||
+            a.data?.accounting?.[0] ||
+            ""
+          ).trim().replace(/^#/, "");
+          const isMissing = String(a.data?.flags?.[0] ?? "1").trim() === "1";
+          if (isMissing && txId && idSet.has(txId)) {
             toRemove.push(a);
             return false;
           }
@@ -130,21 +138,97 @@ export default function OutgoingsView({
         return true;
       });
       if (toRemove.length > 0 && sessionId) {
-        toRemove.forEach(a => {
+        const alertIds = toRemove
+          .map(a => a.fingerprintHash || (a.sheetName && a.rowNumber ? `${a.sheetName}-${a.rowNumber}` : null))
+          .filter(Boolean);
+        if (alertIds.length > 0) {
           fetch("/api/triage", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               action: "remove_alert",
               sessionId,
-              clientName: a.clientName,
-              alertType: a.type,
-              rowNumber: a.rowNumber
+              alertIds,
+              clientName: toRemove[0].clientName,
+              alertType: toRemove[0].type,
+              rowNumber: toRemove[0].rowNumber
             })
           }).catch(() => { });
-        });
+        }
       }
       return next;
+    });
+  };
+
+  const applyExpenseUpdatesToJobRows = (existingRows, placedList = [], placeholderUpdates = [], fallbackClient = "", fallbackJobName = "") => {
+    const baseRows = Array.isArray(existingRows) ? existingRows : [];
+    const knownRowNums = new Set(baseRows.map(r => Number(r.rowNum)));
+    const extraRowNums = new Set();
+    for (const p of (placedList || [])) {
+      if (p?.rowNum && !knownRowNums.has(Number(p.rowNum))) extraRowNums.add(Number(p.rowNum));
+    }
+    for (const u of (placeholderUpdates || [])) {
+      if (u?.rowNum && !knownRowNums.has(Number(u.rowNum))) extraRowNums.add(Number(u.rowNum));
+    }
+    const parentTemplate = baseRows[0] || {};
+    const synthesizedRows = [...extraRowNums].sort((a, b) => a - b).map(rNum => ({
+      rowNum: rNum,
+      isParent: false,
+      client: fallbackClient || parentTemplate.client || "",
+      jobName: fallbackJobName || parentTemplate.jobName || "",
+      projectCode: "",
+      revenue: "",
+      directCosts: "",
+      projectRetainer: parentTemplate.projectRetainer || "Project",
+      startDate: "",
+      endDate: "",
+      expenseSlots: [1, 2, 3].map(sNum => ({
+        slotNum: sNum,
+        description: "",
+        amount: "",
+        vat: "",
+        date: "",
+        daysToPay: "",
+        status: "",
+        transactionId: ""
+      }))
+    }));
+    const allRows = [...baseRows, ...synthesizedRows];
+    return allRows.map(r => {
+      const placedForThisRow = (placedList || []).filter(p => Number(p.rowNum) === Number(r.rowNum));
+      const plhdrForThisRow = (placeholderUpdates || []).filter(u => Number(u.rowNum) === Number(r.rowNum));
+      if (placedForThisRow.length === 0 && plhdrForThisRow.length === 0) return r;
+      return {
+        ...r,
+        expenseSlots: (r.expenseSlots || []).map(sl => {
+          const match = placedForThisRow.find(p => Number(p.slotNum) === Number(sl.slotNum));
+          if (match) {
+            return {
+              ...sl,
+              description: match.description,
+              amount: match.amount,
+              vat: match.vat,
+              date: match.date,
+              status: match.status,
+              transactionId: match.transactionId
+            };
+          }
+          const plhdrMatch = plhdrForThisRow.find(u => Number(u.slotNum) === Number(sl.slotNum));
+          if (plhdrMatch) {
+            return {
+              ...sl,
+              description: plhdrMatch.description ?? "",
+              amount: plhdrMatch.amount ?? "",
+              vat: plhdrMatch.vat ?? "",
+              date: plhdrMatch.date ?? "",
+              daysToPay: plhdrMatch.daysToPay ?? "",
+              status: plhdrMatch.status ?? "",
+              transactionId: plhdrMatch.transactionId ?? ""
+            };
+          }
+          return sl;
+        })
+      };
     });
   };
   const {
@@ -383,6 +467,8 @@ export default function OutgoingsView({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "assign_expense_to_job",
+          sessionId,
+          automationCommanderSheetId,
           clientSheetId: outgoingsClient?.clientSheetId,
           clientName: outgoingsClient?.clientName || outgoingsClient?.name || "",
           masterSheetId: outgoingsClient?.masterSheetId || "",
@@ -400,9 +486,7 @@ export default function OutgoingsView({
       if (outgoingsClient?.masterSheetId) {
         outgoingsPullPendingRef.current = { clientSheetId: outgoingsClient.clientSheetId, masterSheetId: outgoingsClient.masterSheetId };
       }
-      if (data.newRowsCreated) {
-        await loadDirectCostsJobs(outgoingsClient, directCostsShowAll);
-      } else if (data.placed && Array.isArray(data.placed)) {
+      if (data.placed && Array.isArray(data.placed)) {
         const placeholderUpdates = Array.isArray(data.placeholderAdjustment?.slotUpdates)
           ? data.placeholderAdjustment.slotUpdates
           : [];
@@ -410,46 +494,14 @@ export default function OutgoingsView({
           if (j.client !== job.client || j.jobName !== job.jobName) return j;
           return {
             ...j,
-            rows: j.rows.map(r => {
-              const placedForThisRow = data.placed.filter(p => p.rowNum === r.rowNum);
-              const plhdrForThisRow = placeholderUpdates.filter(u => u.rowNum === r.rowNum);
-              if (placedForThisRow.length === 0 && plhdrForThisRow.length === 0) return r;
-              return {
-                ...r,
-                expenseSlots: r.expenseSlots.map(sl => {
-                  const match = placedForThisRow.find(p => p.slotNum === sl.slotNum);
-                  if (match) {
-                    return {
-                      ...sl,
-                      description: match.description,
-                      amount: match.amount,
-                      vat: match.vat,
-                      date: match.date,
-                      status: match.status,
-                      transactionId: match.transactionId
-                    };
-                  }
-                  const plhdrMatch = plhdrForThisRow.find(u => u.slotNum === sl.slotNum);
-                  if (plhdrMatch) {
-                    return {
-                      ...sl,
-                      description: plhdrMatch.description ?? "",
-                      amount: plhdrMatch.amount ?? "",
-                      vat: plhdrMatch.vat ?? "",
-                      date: plhdrMatch.date ?? "",
-                      daysToPay: plhdrMatch.daysToPay ?? "",
-                      status: plhdrMatch.status ?? "",
-                      transactionId: plhdrMatch.transactionId ?? ""
-                    };
-                  }
-                  return sl;
-                })
-              };
-            })
+            rows: applyExpenseUpdatesToJobRows(j.rows, data.placed, placeholderUpdates, j.client, j.jobName)
           };
         }));
+        if (data.newRowsCreated) {
+          loadDirectCostsJobs(outgoingsClient, directCostsShowAll, true);
+        }
       } else {
-        await loadDirectCostsJobs(outgoingsClient, directCostsShowAll);
+        await loadDirectCostsJobs(outgoingsClient, directCostsShowAll, true);
       }
     } catch (e) {
       console.error("assign_expense_to_job error:", e);
@@ -468,7 +520,7 @@ export default function OutgoingsView({
       for (const s of (r.expenseSlots || [])) {
         const hasDesc = !!(s.description && String(s.description).trim() !== "");
         const isPlhdr = isPlaceholderExpense(s) || String(s.description || "").toUpperCase().startsWith("PLACE");
-        if (hasDesc && isPlhdr && isAutoPlaceholder(s.description)) {
+        if (hasDesc && isPlhdr && isAutoPlaceholder(s.transactionId || s.description)) {
           executeExpensePlacement(job, toPlace, r.rowNum, s.slotNum, false, `${r.rowNum}-${s.slotNum}`);
           return;
         }
@@ -517,7 +569,7 @@ export default function OutgoingsView({
         const hasDesc = !!(s.description && String(s.description).trim() !== "");
         const hasAmt = !!(s.amount && parseFloat(String(s.amount).replace(/[£$€,\s]/g, "")) > 0);
         const isPlhdr = isPlaceholderExpense(s) || String(s.description || "").toUpperCase().startsWith("MANUAL") || (!hasDesc && hasAmt);
-        if ((hasDesc || hasAmt) && isPlhdr && !isAutoPlaceholder(s.description)) {
+        if ((hasDesc || hasAmt) && isPlhdr && !isAutoPlaceholder(s.transactionId || s.description)) {
           manualPlaceholders.push({ ...s, rowNum: r.rowNum, slotNum: s.slotNum });
         }
       }
@@ -558,6 +610,8 @@ export default function OutgoingsView({
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "update_outgoing_note",
+          sessionId,
+          automationCommanderSheetId,
           clientSheetId: outgoingsClient?.clientSheetId,
           clientName: outgoingsClient?.clientName || outgoingsClient?.name || "",
           contractorName: contractor?.name || "",
@@ -658,32 +712,21 @@ export default function OutgoingsView({
           onClose={() => setDirectCostsEditSlot(null)}
           onMarkPullPending={(masterId) => outgoingsPullPendingRef.current = masterId}
           onUpdateJobs={(rNum, sNum, newData, resData) => {
+            const placeholderUpdates = Array.isArray(resData?.placeholderAdjustment?.slotUpdates)
+              ? resData.placeholderAdjustment.slotUpdates
+              : [];
             setDirectCostsJobs(prev => prev && prev.map(j => {
               const hasRow = j.rows?.some(r => r.rowNum === rNum);
-              let updatedJob = j;
-              if (hasRow && resData?.placeholderAdjustment) {
-                const { rowNum: pRow, slotNum: pSlot, newAmount: pAmt } = resData.placeholderAdjustment;
-                updatedJob = {
-                  ...updatedJob,
-                  rows: updatedJob.rows.map(r => {
-                    if (r.rowNum === pRow) {
-                      return {
-                        ...r,
-                        expenseSlots: (r.expenseSlots || []).map(sl =>
-                          sl.slotNum === pSlot ? { ...sl, amount: pAmt > 0 ? String(pAmt) : "" } : sl
-                        )
-                      };
-                    }
-                    return r;
-                  })
-                };
-              }
+              if (!hasRow) return j;
+              const rowsWithEditedSlot = j.rows.map(r => r.rowNum !== rNum ? r : {
+                ...r,
+                expenseSlots: r.expenseSlots.map(sl => sl.slotNum !== sNum ? sl : { ...sl, ...newData })
+              });
               return {
-                ...updatedJob,
-                rows: updatedJob.rows.map(r => r.rowNum !== rNum ? r : {
-                  ...r,
-                  expenseSlots: r.expenseSlots.map(sl => sl.slotNum !== sNum ? sl : { ...sl, ...newData })
-                }),
+                ...j,
+                rows: placeholderUpdates.length > 0
+                  ? applyExpenseUpdatesToJobRows(rowsWithEditedSlot, [], placeholderUpdates, j.client, j.jobName)
+                  : rowsWithEditedSlot,
               };
             }));
           }}
@@ -1947,7 +1990,7 @@ export default function OutgoingsView({
                                                       }}
                                                     >
                                                       {isPlhdr
-                                                        ? (isAutoPlaceholder(expItem.description) ? "Placeholder (A)" : "Placeholder (M)")
+                                                        ? (isAutoPlaceholder(expItem.transactionId || expItem.description) ? "Placeholder (A)" : "Placeholder (M)")
                                                         : (expItem.description || (expItem.transactionId ? `#${expItem.transactionId}` : "Expense"))}
                                                     </span>
                                                     <span style={{ fontWeight: "700", fontSize: "11px", color: "#0f172a", flexShrink: 0 }}>
@@ -2200,6 +2243,8 @@ export default function OutgoingsView({
                                               method: "POST", headers: { "Content-Type": "application/json" },
                                               body: JSON.stringify({
                                                 action: "assign_expense_to_job",
+                                                sessionId,
+                                                automationCommanderSheetId,
                                                 clientSheetId: outgoingsClient?.clientSheetId,
                                                 clientName: outgoingsClient?.clientName || outgoingsClient?.name || "",
                                                 masterSheetId: outgoingsClient?.masterSheetId || "",
@@ -2215,37 +2260,22 @@ export default function OutgoingsView({
                                             if (outgoingsClient?.masterSheetId) {
                                               outgoingsPullPendingRef.current = { clientSheetId: outgoingsClient.clientSheetId, masterSheetId: outgoingsClient.masterSheetId };
                                             }
-                                            if (data.newRowsCreated) {
-                                              await loadDirectCostsJobs(outgoingsClient, directCostsShowAll);
-                                            } else if (data.placed && Array.isArray(data.placed)) {
+                                            if (data.placed && Array.isArray(data.placed)) {
+                                              const placeholderUpdates = Array.isArray(data.placeholderAdjustment?.slotUpdates)
+                                                ? data.placeholderAdjustment.slotUpdates
+                                                : [];
                                               setDirectCostsJobs(prev => prev && prev.map(j => {
                                                 if (j.client !== job.client || j.jobName !== job.jobName) return j;
                                                 return {
                                                   ...j,
-                                                  rows: j.rows.map(r => {
-                                                    const placedForThisRow = data.placed.filter(p => p.rowNum === r.rowNum);
-                                                    if (placedForThisRow.length === 0) return r;
-                                                    return {
-                                                      ...r,
-                                                      expenseSlots: r.expenseSlots.map(sl => {
-                                                        const match = placedForThisRow.find(p => p.slotNum === sl.slotNum);
-                                                        if (!match) return sl;
-                                                        return {
-                                                          ...sl,
-                                                          description: match.description,
-                                                          amount: match.amount,
-                                                          vat: match.vat,
-                                                          date: match.date,
-                                                          status: match.status,
-                                                          transactionId: match.transactionId
-                                                        };
-                                                      })
-                                                    };
-                                                  })
+                                                  rows: applyExpenseUpdatesToJobRows(j.rows, data.placed, placeholderUpdates, j.client, j.jobName)
                                                 };
                                               }));
+                                              if (data.newRowsCreated) {
+                                                loadDirectCostsJobs(outgoingsClient, directCostsShowAll, true);
+                                              }
                                             } else {
-                                              await loadDirectCostsJobs(outgoingsClient, directCostsShowAll);
+                                              await loadDirectCostsJobs(outgoingsClient, directCostsShowAll, true);
                                             }
                                           } catch (e) { console.error("assign_expense_to_job error:", e); }
                                           finally { setDirectCostsSavingCell(null); }
@@ -2320,6 +2350,8 @@ export default function OutgoingsView({
                                             method: "POST", headers: { "Content-Type": "application/json" },
                                             body: JSON.stringify({
                                               action: "assign_expense_to_job",
+                                              sessionId,
+                                              automationCommanderSheetId,
                                               clientSheetId: outgoingsClient?.clientSheetId,
                                               clientName: outgoingsClient?.clientName || outgoingsClient?.name || "",
                                               masterSheetId: outgoingsClient?.masterSheetId || "",
@@ -2332,7 +2364,7 @@ export default function OutgoingsView({
                                           if (outgoingsClient?.masterSheetId) {
                                             outgoingsPullPendingRef.current = { clientSheetId: outgoingsClient.clientSheetId, masterSheetId: outgoingsClient.masterSheetId };
                                           }
-                                          await loadDirectCostsJobs(outgoingsClient, directCostsShowAll);
+                                          await loadDirectCostsJobs(outgoingsClient, directCostsShowAll, true);
                                         } catch (e) { console.error("assign_expense_to_job (new row) error:", e); }
                                         finally { setDirectCostsSavingCell(null); }
                                       }}

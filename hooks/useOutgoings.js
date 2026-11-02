@@ -51,12 +51,12 @@ export function useOutgoings(assignedAppIds, assignedByClient, setAssignedByClie
   });
   const [outgoingsPlacing, setOutgoingsPlacingState] = useState(null);
   const outgoingsPlacingRef = useRef(null);
-  
-  const setOutgoingsPlacing = (val) => { 
-    outgoingsPlacingRef.current = val; 
-    setOutgoingsPlacingState(val); 
+
+  const setOutgoingsPlacing = (val) => {
+    outgoingsPlacingRef.current = val;
+    setOutgoingsPlacingState(val);
   };
-  
+
   const [outgoingsEstimate, setOutgoingsEstimate] = useState(null);
   const [outgoingsNewVendor, setOutgoingsNewVendor] = useState(null);
   const [vendorsSubTab, setVendorsSubTab] = useState(() => {
@@ -164,10 +164,36 @@ export function useOutgoings(assignedAppIds, assignedByClient, setAssignedByClie
       } else {
         const allInboxIds = new Set((inboxData.inbox || []).map(e => e.appId));
 
+        // Preserve any recently assigned IDs still within their active localStorage TTL
+        // so isAssigned(id, clientName) remains true for AlertSelectionView / AlertDetailView
+        // even after DirComp's IMPORTRANGE removes the resolved expense from inboxData.inbox.
+        const activeLocalAssignedIds = new Set();
+        try {
+          const stored = localStorage.getItem("pulse_assignedAppIds");
+          if (stored) {
+            const parsed = JSON.parse(stored);
+            const now = Date.now();
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+              for (const [k, exp] of Object.entries(parsed)) {
+                if (typeof exp === "number" && exp > now) {
+                  activeLocalAssignedIds.add(k);
+                  const rawId = k.includes("::") ? k.split("::").pop() : k;
+                  activeLocalAssignedIds.add(rawId);
+                }
+              }
+            }
+          }
+        } catch { }
+
+        const shouldKeepAssignedId = (id) => {
+          const clean = String(id).replace(/^#/, "");
+          return allInboxIds.has(id) || allInboxIds.has(clean) || activeLocalAssignedIds.has(id) || activeLocalAssignedIds.has(clean);
+        };
+
         setAssignedByClient(prev => {
           const next = { ...prev };
           const existingIds = prev[client.clientName] || new Set();
-          const pruned = new Set([...existingIds].filter(id => allInboxIds.has(id)));
+          const pruned = new Set([...existingIds].filter(id => shouldKeepAssignedId(id)));
           if (pruned.size > 0) next[client.clientName] = pruned;
           else delete next[client.clientName];
 
@@ -175,30 +201,13 @@ export function useOutgoings(assignedAppIds, assignedByClient, setAssignedByClie
             const nextGlobal = new Set(prevGlobal);
             const cNorm = client.clientName ? String(client.clientName).trim().toLowerCase() : "";
             for (const id of existingIds) {
-              if (!allInboxIds.has(id)) {
+              if (!shouldKeepAssignedId(id)) {
                 nextGlobal.delete(id);
                 const clean = String(id).replace(/^#/, "");
                 nextGlobal.delete(clean);
                 if (cNorm) nextGlobal.delete(`${cNorm}::${clean}`);
               }
             }
-            try {
-              const stored = localStorage.getItem("pulse_assignedAppIds");
-              if (stored) {
-                const parsed = JSON.parse(stored);
-                if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-                  for (const id of existingIds) {
-                    if (!allInboxIds.has(id)) {
-                      const clean = String(id).replace(/^#/, "");
-                      delete parsed[id];
-                      delete parsed[clean];
-                      if (cNorm) delete parsed[`${cNorm}::${clean}`];
-                    }
-                  }
-                  localStorage.setItem("pulse_assignedAppIds", JSON.stringify(parsed));
-                }
-              }
-            } catch {}
             return nextGlobal;
           });
 
@@ -212,14 +221,14 @@ export function useOutgoings(assignedAppIds, assignedByClient, setAssignedByClie
             action: "prune_assigned_expenses",
             automationCommanderSheetId,
             clientName: client.clientName,
-            validAppIds: [...allInboxIds],
+            validAppIds: [...new Set([...allInboxIds, ...activeLocalAssignedIds])],
           }),
         }).catch(e => console.error("prune_assigned_expenses error:", e));
 
         const serverAssigned = assignedByClient[client.clientName] || new Set();
         const currentAssigned = new Set([
-          ...Array.from(assignedAppIds).filter(id => allInboxIds.has(id)),
-          ...Array.from(serverAssigned).filter(id => allInboxIds.has(id)),
+          ...Array.from(assignedAppIds).filter(id => shouldKeepAssignedId(id)),
+          ...Array.from(serverAssigned).filter(id => shouldKeepAssignedId(id)),
         ]);
         const freshInbox = (inboxData.inbox || []).filter(exp => !currentAssigned.has(exp.appId));
         setOutgoingsInbox(freshInbox);
@@ -295,7 +304,7 @@ export function useOutgoings(assignedAppIds, assignedByClient, setAssignedByClie
       setDirectCostsJobs(cached.data.jobs);
       setDirectCostsLoading(false);
       if (!cached.isStale) return;
-    } else {
+    } else if (!directCostsJobs || directCostsJobs.length === 0) {
       setDirectCostsLoading(true);
     }
 
@@ -310,7 +319,7 @@ export function useOutgoings(assignedAppIds, assignedByClient, setAssignedByClie
             setDirectCostsLoading(false);
             return;
           }
-        } catch {}
+        } catch { }
       }
     }
 
@@ -324,7 +333,7 @@ export function useOutgoings(assignedAppIds, assignedByClient, setAssignedByClie
         setCachedClientData(client.clientSheetId, cacheKey, data);
         setDirectCostsJobs(data.jobs);
       }
-    } catch(e) { console.error("loadDirectCostsJobs error:", e); }
+    } catch (e) { console.error("loadDirectCostsJobs error:", e); }
     finally { setDirectCostsLoading(false); }
   };
 

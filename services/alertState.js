@@ -8,7 +8,7 @@ import {
 import { createHash } from "crypto";
 import { logPmaActivity } from "./pmaLogger.js";
 import { getSessionUser } from "./authService.js";
-import { isUserAuthorizedForClient, canAccessPma } from "./userPermissions.js";
+import { isUserAuthorizedForClient, canAccessPma, DEFAULT_AC_SHEET_ID } from "./userPermissions.js";
 import { matchesClientName, ADMIN_ONLY_ALERT_TYPES, toSheetDateFormat } from "../utils/helpers.js";
 import { getAllClients } from "./workspaces.js";
 import { invalidatePrecomputedMemoryCache } from "./triageEngine.js";
@@ -47,9 +47,43 @@ export async function handleGetAlerts(req, res) {
   console.log(`\n🔍 get_alerts request: sessionId=${sessionId}`);
   if (!sessionId) return res.status(400).json({ success: false, error: "Missing sessionId" });
   try {
-    const sessionData = await redisClient.get(`triage_alerts:${sessionId}`);
+    const [sessionData, preRaw] = await Promise.all([
+      redisClient.get(`triage_alerts:${sessionId}`),
+      redisClient.get(PRECOMPUTED_KEY).catch(() => null),
+    ]);
     if (!sessionData) return res.status(404).json({ success: false, error: "Session not found" });
-    let { alerts, noActionAlerts, proactiveAlerts, clientsWithFlags, resolvedNoActionFlags } = JSON.parse(sessionData);
+    const parsedSession = JSON.parse(sessionData);
+
+    // Reconcile session alerts against triage_precomputed so any alert resolved via workspace assignment
+    // or another tab/device is immediately pruned from this session as well.
+    if (preRaw) {
+      try {
+        const pre = JSON.parse(preRaw);
+        const preActiveIds = new Set();
+        for (const a of (pre.alerts || [])) {
+          if (a.fingerprintHash) preActiveIds.add(a.fingerprintHash);
+          if (a.sheetName && a.rowNumber != null) preActiveIds.add(`${a.sheetName}-${a.rowNumber}`);
+        }
+        for (const na of (pre.noActionAlerts || [])) {
+          if (na.fingerprintHash) preActiveIds.add(na.fingerprintHash);
+          if (na.flagType) preActiveIds.add(`${na.clientName}___${na.flagType}`);
+        }
+        const staleTargetIds = [];
+        for (const a of (parsedSession.alerts || [])) {
+          const hasFp = a.fingerprintHash && preActiveIds.has(a.fingerprintHash);
+          const hasRow = a.sheetName && a.rowNumber != null && preActiveIds.has(`${a.sheetName}-${a.rowNumber}`);
+          if (!hasFp && !hasRow) {
+            staleTargetIds.push(a.fingerprintHash || `${a.sheetName}-${a.rowNumber}`);
+          }
+        }
+        if (staleTargetIds.length > 0) {
+          applyAlertRemovalToTriageData(parsedSession, staleTargetIds);
+          redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsedSession), { EX: 86400 * 7 }).catch(() => {});
+        }
+      } catch (_) {}
+    }
+
+    let { alerts, noActionAlerts, proactiveAlerts, clientsWithFlags, resolvedNoActionFlags } = parsedSession;
 
     const sessionUser = getSessionUser(req);
     if (!sessionUser) {
@@ -130,18 +164,36 @@ export function applyAlertRemovalToTriageData(data, targetIds, allowedClientChec
   if (data.totalAlerts != null) data.totalAlerts = keptAlerts.length;
   if (data.noActionCount != null) data.noActionCount = keptNoAction.length;
 
-  const removedCountsByClientFlag = {};
-  for (const a of [...removedAlerts, ...removedNoAction]) {
-    const cName = a.clientName;
-    if (!cName) continue;
+  const resolveFlagKey = (a) => {
     let flagKey = a.flagType || a.alertType || a.type;
     if (flagKey === "invoice") flagKey = "invoiceDashboardDiscr";
     if (flagKey === "expense" || flagKey === "expenseDashboardDiscr") {
       flagKey = a.expenseCategoryType === "passthrough" ? "passThroughDashboardDiscr" : "contractorsDashboardDiscr";
     }
     if (flagKey === "crm") flagKey = a.alertType || "crmPipeAppDiscr";
+    return flagKey;
+  };
+
+  const removedCountsByClientFlag = {};
+  const removedTxIdsByClient = {};
+  const removedInvNosByClient = {};
+  for (const a of [...removedAlerts, ...removedNoAction]) {
+    const cName = a.clientName;
+    if (!cName) continue;
+    const flagKey = resolveFlagKey(a);
     if (!removedCountsByClientFlag[cName]) removedCountsByClientFlag[cName] = {};
     removedCountsByClientFlag[cName][flagKey] = (removedCountsByClientFlag[cName][flagKey] || 0) + 1;
+
+    const txId = String(a.summary?.transactionId || a.summary?.appId || a.data?.accounting?.[6] || "").trim().replace(/^#/, "");
+    if (txId) {
+      if (!removedTxIdsByClient[cName]) removedTxIdsByClient[cName] = new Set();
+      removedTxIdsByClient[cName].add(txId);
+    }
+    const invNo = String(a.summary?.invoiceNo || a.data?.accounting?.[5] || "").trim().replace(/^#/, "");
+    if (invNo) {
+      if (!removedInvNosByClient[cName]) removedInvNosByClient[cName] = new Set();
+      removedInvNosByClient[cName].add(invNo);
+    }
   }
 
   if (data.clientsWithFlags) {
@@ -151,18 +203,197 @@ export function applyAlertRemovalToTriageData(data, targetIds, allowedClientChec
       const updatedCounts = { ...(c.alertCounts || {}) };
       const updatedFlags = { ...(c.flags || {}) };
       for (const [fKey, countRemoved] of Object.entries(clientRemovals)) {
-        if (updatedCounts[fKey] != null) {
-          updatedCounts[fKey] = Math.max(0, updatedCounts[fKey] - countRemoved);
-          if (updatedCounts[fKey] === 0) {
-            updatedFlags[fKey] = false;
-          }
+        const remainingForFlag = [...keptAlerts, ...keptNoAction].filter(
+          item => item.clientName === c.clientName && resolveFlagKey(item) === fKey
+        ).length;
+        if (remainingForFlag === 0) {
+          updatedCounts[fKey] = 0;
+          updatedFlags[fKey] = false;
+        } else if (updatedCounts[fKey] != null) {
+          updatedCounts[fKey] = Math.max(remainingForFlag, updatedCounts[fKey] - countRemoved);
+        } else {
+          updatedCounts[fKey] = remainingForFlag;
         }
       }
-      return { ...c, alertCounts: updatedCounts, flags: updatedFlags };
+      const txSet = removedTxIdsByClient[c.clientName];
+      const invSet = removedInvNosByClient[c.clientName];
+      const nextClient = { ...c, alertCounts: updatedCounts, flags: updatedFlags };
+      if (txSet && txSet.size > 0) {
+        if (Array.isArray(nextClient.activeExpenseIds)) {
+          nextClient.activeExpenseIds = nextClient.activeExpenseIds.filter(id => !txSet.has(String(id).replace(/^#/, "")));
+        }
+        if (Array.isArray(nextClient.activeContractorExpenseIds)) {
+          nextClient.activeContractorExpenseIds = nextClient.activeContractorExpenseIds.filter(id => !txSet.has(String(id).replace(/^#/, "")));
+        }
+        if (Array.isArray(nextClient.activePassThroughExpenseIds)) {
+          nextClient.activePassThroughExpenseIds = nextClient.activePassThroughExpenseIds.filter(id => !txSet.has(String(id).replace(/^#/, "")));
+        }
+      }
+      if (invSet && invSet.size > 0 && Array.isArray(nextClient.activeInvoiceIds)) {
+        nextClient.activeInvoiceIds = nextClient.activeInvoiceIds.filter(id => !invSet.has(String(id).replace(/^#/, "")));
+      }
+      return nextClient;
     });
   }
 
   return { removedCount: totalRemoved };
+}
+
+/**
+ * Resolves any active missing-expense or missing-invoice alerts in AlertMemory,
+ * triage_precomputed, and triage_alerts:{sessionId} when an expense or invoice
+ * is assigned directly from the Contractors, Pass-through costs, or Invoices workspaces.
+ */
+export async function resolveAssignedAlertsInMemoryAndCache(sheets, {
+  acSheetId = DEFAULT_AC_SHEET_ID,
+  clientName = "",
+  expenseIds = [],
+  invoiceNos = [],
+  sessionId = null
+} = {}) {
+  try {
+    const cleanExpIds = new Set(
+      (Array.isArray(expenseIds) ? expenseIds : [expenseIds])
+        .map(id => String(id || "").trim().replace(/^#/, ""))
+        .filter(Boolean)
+    );
+    const cleanInvNos = new Set(
+      (Array.isArray(invoiceNos) ? invoiceNos : [invoiceNos])
+        .map(no => String(no || "").trim().replace(/^#/, "").toLowerCase())
+        .filter(Boolean)
+    );
+    if (cleanExpIds.size === 0 && cleanInvNos.size === 0) return;
+
+    const targetAlertIds = new Set();
+    const targetAcId = acSheetId || DEFAULT_AC_SHEET_ID;
+
+    if (sheets && targetAcId) {
+      try {
+        const memoryRows = await readAlertMemory(sheets, targetAcId);
+        const nowIso = new Date().toISOString();
+        const batchUpdates = [];
+
+        for (const r of (memoryRows || [])) {
+          if (r.status !== "cached" && r.status !== "pending_automation") continue;
+          if (clientName && !matchesClientName(r.clientName, clientName)) continue;
+
+          const aType = String(r.alertType || "").trim();
+          const isExpAlert = ["contractorsDashboardDiscr", "passThroughDashboardDiscr", "expenseDashboardDiscr", "expense"].includes(aType);
+          const isInvAlert = ["invoiceDashboardDiscr", "invoice"].includes(aType);
+          if (!isExpAlert && !isInvAlert) continue;
+
+          let snapObj = {};
+          try { snapObj = r.dataSnapshot ? JSON.parse(r.dataSnapshot) : {}; } catch {}
+
+          let matched = false;
+          if (isExpAlert && cleanExpIds.size > 0) {
+            const payloadTx = String(
+              snapObj?.summary?.transactionId ||
+              snapObj?.summary?.appId ||
+              snapObj?.data?.accounting?.[6] ||
+              snapObj?.data?.accounting?.[10] ||
+              snapObj?.data?.accounting?.[11] ||
+              snapObj?.data?.accounting?.[0] ||
+              ""
+            ).trim().replace(/^#/, "");
+            if (payloadTx && cleanExpIds.has(payloadTx)) {
+              matched = true;
+            }
+          } else if (isInvAlert && cleanInvNos.size > 0) {
+            const payloadInv = String(
+              snapObj?.summary?.invoiceNo ||
+              snapObj?.data?.accounting?.[5] ||
+              snapObj?.data?.accounting?.[10] ||
+              snapObj?.data?.accounting?.[1] ||
+              snapObj?.data?.accounting?.[0] ||
+              ""
+            ).trim().replace(/^#/, "").toLowerCase();
+            if (payloadInv && cleanInvNos.has(payloadInv)) {
+              matched = true;
+            } else {
+              const sumStr = String(r.alertSummary || snapObj?.summary?.summary || "").trim().toLowerCase();
+              for (const invNo of cleanInvNos) {
+                if (sumStr.startsWith(`invoice ${invNo} `) || sumStr.includes(`invoice ${invNo} •`)) {
+                  matched = true;
+                  break;
+                }
+              }
+            }
+          }
+
+          if (matched) {
+            if (r.fingerprintHash) targetAlertIds.add(r.fingerprintHash);
+            if (snapObj?.sheetName && snapObj?.rowNumber != null) {
+              targetAlertIds.add(`${snapObj.sheetName}-${snapObj.rowNumber}`);
+            }
+            batchUpdates.push({
+              rowIndex: r.rowIndex,
+              updates: { ...r, status: "accepted", lastSeen: nowIso }
+            });
+          }
+        }
+
+        if (batchUpdates.length > 0) {
+          await updateAlertMemoryRowsBatch(sheets, targetAcId, batchUpdates);
+          console.log(`  ✅ Marked ${batchUpdates.length} assigned alert(s) as accepted in AlertMemory for ${clientName}`);
+        }
+      } catch (memErr) {
+        console.warn("resolveAssignedAlertsInMemoryAndCache AlertMemory update failed:", memErr.message);
+      }
+    }
+
+    const collectMatchingAlertIdsFromData = (data) => {
+      if (!data?.alerts) return;
+      for (const a of data.alerts) {
+        if (clientName && !matchesClientName(a.clientName, clientName)) continue;
+        const txId = String(a.summary?.transactionId || a.summary?.appId || a.data?.accounting?.[6] || "").trim().replace(/^#/, "");
+        const invNo = String(a.summary?.invoiceNo || a.data?.accounting?.[5] || "").trim().replace(/^#/, "").toLowerCase();
+        if ((txId && cleanExpIds.has(txId)) || (invNo && cleanInvNos.has(invNo))) {
+          if (a.fingerprintHash) targetAlertIds.add(a.fingerprintHash);
+          if (a.sheetName && a.rowNumber != null) targetAlertIds.add(`${a.sheetName}-${a.rowNumber}`);
+        }
+      }
+    };
+
+    if (redisClient?.isOpen) {
+      try {
+        const preRaw = await redisClient.get(PRECOMPUTED_KEY);
+        if (preRaw) {
+          const pre = JSON.parse(preRaw);
+          collectMatchingAlertIdsFromData(pre);
+          if (targetAlertIds.size > 0) {
+            const { removedCount } = applyAlertRemovalToTriageData(pre, targetAlertIds);
+            if (removedCount > 0) {
+              await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
+              invalidatePrecomputedMemoryCache();
+            }
+          }
+        }
+      } catch (preErr) {
+        console.warn("resolveAssignedAlertsInMemoryAndCache precomputed update failed:", preErr.message);
+      }
+
+      if (sessionId) {
+        try {
+          const sessRaw = await redisClient.get(`triage_alerts:${sessionId}`);
+          if (sessRaw) {
+            const sess = JSON.parse(sessRaw);
+            collectMatchingAlertIdsFromData(sess);
+            if (targetAlertIds.size > 0) {
+              const { removedCount } = applyAlertRemovalToTriageData(sess, targetAlertIds);
+              if (removedCount > 0) {
+                await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(sess), { EX: 86400 * 7 });
+              }
+            }
+          }
+        } catch (sessErr) {
+          console.warn("resolveAssignedAlertsInMemoryAndCache session update failed:", sessErr.message);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("resolveAssignedAlertsInMemoryAndCache error:", err.message);
+  }
 }
 
 export async function handleRemoveAlert(req, res) {

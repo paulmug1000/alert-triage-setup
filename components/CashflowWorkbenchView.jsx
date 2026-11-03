@@ -1069,12 +1069,18 @@ export default function CashflowWorkbenchView({
       // Match rawBankTxns with rawUnreconItems to identify which bank transactions are unreconciled
       const unreconMatchedIndices = new Set();
       const mappedBankTxns = rawBankTxns.map((tx, idx) => {
-        const txAmt = parseAmount(tx.outAmount || tx.inAmount || tx.outAmt || tx.inAmt);
+        const txOut = Math.abs(parseAmount(tx.outAmount || tx.outAmt));
+        const txIn = Math.abs(parseAmount(tx.inAmount || tx.inAmt));
+        const txAbsAmt = txOut > 0 ? txOut : txIn;
+        const txNormDate = formatDateDMmmYy(tx.date);
+
         const unrecIdx = rawUnreconItems.findIndex((u, uIdx) => {
           if (unreconMatchedIndices.has(uIdx)) return false;
-          const uAmt = parseAmount(u.amount || u.outAmount);
-          const amtMatch = Math.abs(txAmt - uAmt) < 0.01;
-          const dateMatch = (tx.date && u.date) ? (tx.date === u.date) : true;
+          const uRawAmt = parseAmount(u.amount || u.outAmount);
+          const uAbsAmt = Math.abs(uRawAmt);
+          const amtMatch = Math.abs(txAbsAmt - uAbsAmt) < 0.01;
+          const uNormDate = formatDateDMmmYy(u.date);
+          const dateMatch = (txNormDate && uNormDate) ? (txNormDate === uNormDate) : true;
           const payeeMatch = (tx.payee && u.payee) ? (tx.payee.toLowerCase().includes(u.payee.toLowerCase()) || u.payee.toLowerCase().includes(tx.payee.toLowerCase())) : false;
           return amtMatch && (dateMatch || payeeMatch);
         });
@@ -1086,8 +1092,8 @@ export default function CashflowWorkbenchView({
             ...tx,
             id: tx.id || matchedUn.id || `unrec_${matchedUn.rowNum || idx}`,
             accountName: tx.accountName || matchedUn.accountName || defaultAccount,
-            category: tx.category || tx.suggestedCategory || (parseAmount(tx.inAmount) > 0 ? "Revenue" : "Outgoings"),
-            suggestedCategory: tx.suggestedCategory || tx.category || (parseAmount(tx.inAmount) > 0 ? "Revenue" : "Outgoings"),
+            category: tx.category || tx.suggestedCategory || (txIn > 0 ? "Revenue" : "Outgoings"),
+            suggestedCategory: tx.suggestedCategory || tx.category || (txIn > 0 ? "Revenue" : "Outgoings"),
             plCategory: matchedUn.category || "",
             vatApplies: matchedUn.vatApplies || "No",
             isReconciled: false,
@@ -1099,8 +1105,8 @@ export default function CashflowWorkbenchView({
           ...tx,
           id: tx.id || (tx.rowNum ? `row_${tx.rowNum}` : `bt_${idx}_${Date.now()}`),
           accountName: tx.accountName || defaultAccount,
-          category: tx.category || tx.suggestedCategory || (parseAmount(tx.inAmount) > 0 ? "Revenue" : "Outgoings"),
-          suggestedCategory: tx.suggestedCategory || tx.category || (parseAmount(tx.inAmount) > 0 ? "Revenue" : "Outgoings"),
+          category: tx.category || tx.suggestedCategory || (txIn > 0 ? "Revenue" : "Outgoings"),
+          suggestedCategory: tx.suggestedCategory || tx.category || (txIn > 0 ? "Revenue" : "Outgoings"),
           isNew: Boolean(tx.isNew),
           isReconciled: tx.isReconciled !== undefined ? tx.isReconciled : true
         };
@@ -1109,8 +1115,9 @@ export default function CashflowWorkbenchView({
       // Add any unreconciled items that were not present in rawBankTxns (e.g. non-cash, or in CD:CN only)
       rawUnreconItems.forEach((u, uIdx) => {
         if (!unreconMatchedIndices.has(uIdx)) {
-          const isNeg = u.isNegative !== undefined ? u.isNegative : true;
-          const numAmt = parseAmount(u.amount);
+          const rawUAmt = parseAmount(u.amount);
+          const isNeg = u.isNegative !== undefined ? u.isNegative : (rawUAmt < 0 || String(u.amount || "").includes("-"));
+          const absAmt = Math.abs(rawUAmt);
           mappedBankTxns.push({
             id: u.id || `unrec_${u.rowNum || uIdx}_${Date.now()}`,
             rowNum: u.rowNum,
@@ -1118,9 +1125,9 @@ export default function CashflowWorkbenchView({
             payee: u.payee || "",
             particulars: u.particulars || "",
             reference: u.reference || "",
-            outAmount: isNeg ? numAmt : 0,
-            inAmount: !isNeg ? numAmt : 0,
-            amount: numAmt,
+            outAmount: isNeg ? absAmt : 0,
+            inAmount: !isNeg ? absAmt : 0,
+            amount: absAmt,
             accountName: u.accountName || defaultAccount,
             plCategory: u.category || "",
             category: isNeg ? "Outgoings" : "Revenue",
@@ -1679,6 +1686,18 @@ export default function CashflowWorkbenchView({
   };
 
   // 3a. Handlers for Unreconciled Transactions in the Bank Feed List
+  const isSameUnreconEntry = (u, tx) => {
+    if (tx.id && u.id && u.id === tx.id) return true;
+    if (tx.rowNum != null && u.rowNum != null && u.rowNum === tx.rowNum) return true;
+    const uPayee = String(u.payee || u.particulars || "").trim().toLowerCase();
+    const txPayee = String(tx.payee || tx.particulars || "").trim().toLowerCase();
+    const uDateNorm = formatDateDMmmYy(u.date);
+    const txDateNorm = formatDateDMmmYy(tx.date);
+    const uAbsAmt = Math.abs(parseAmount(u.amount));
+    const txAbsAmt = Math.abs(parseAmount(tx.outAmount || tx.inAmount || tx.amount));
+    return Boolean(uPayee && uPayee === txPayee && (uDateNorm === txDateNorm || u.date === tx.date) && Math.abs(uAbsAmt - txAbsAmt) < 0.01);
+  };
+
   const handleUnreconCategoryChange = (tx, newPlCategory) => {
     const updatedBank = bankTxns.map(t => {
       const isMatch = (tx.id && t.id && t.id === tx.id) || (tx.rowNum != null && t.rowNum != null && t.rowNum === tx.rowNum) || (t === tx);
@@ -1688,10 +1707,7 @@ export default function CashflowWorkbenchView({
       return t;
     });
     const updatedUnrecon = unreconItems.map(u => {
-      const isMatch = (tx.id && u.id && u.id === tx.id) ||
-        (tx.rowNum != null && u.rowNum != null && u.rowNum === tx.rowNum) ||
-        (u.payee === tx.payee && u.date === tx.date && Math.abs(parseAmount(u.amount) - parseAmount(tx.outAmount || tx.amount)) < 0.01);
-      if (isMatch) {
+      if (isSameUnreconEntry(u, tx)) {
         return { ...u, category: newPlCategory };
       }
       return u;
@@ -1711,10 +1727,7 @@ export default function CashflowWorkbenchView({
       return t;
     });
     const updatedUnrecon = unreconItems.map(u => {
-      const isMatch = (tx.id && u.id && u.id === tx.id) ||
-        (tx.rowNum != null && u.rowNum != null && u.rowNum === tx.rowNum) ||
-        (u.payee === tx.payee && u.date === tx.date && Math.abs(parseAmount(u.amount) - parseAmount(tx.outAmount || tx.amount)) < 0.01);
-      if (isMatch) {
+      if (isSameUnreconEntry(u, tx)) {
         return { ...u, vatApplies: nextVat };
       }
       return u;
@@ -1726,7 +1739,7 @@ export default function CashflowWorkbenchView({
 
   const handleRemoveUnreconItem = (tx) => {
     const updatedBank = bankTxns.filter(t => !((tx.id && t.id && t.id === tx.id) || (tx.rowNum != null && t.rowNum != null && t.rowNum === tx.rowNum) || (t === tx)));
-    const updatedUnrecon = unreconItems.filter(u => !((tx.id && u.id && u.id === tx.id) || (tx.rowNum != null && u.rowNum != null && u.rowNum === tx.rowNum) || (u.payee === tx.payee && u.date === tx.date && Math.abs(parseAmount(u.amount) - parseAmount(tx.outAmount || tx.amount)) < 0.01)));
+    const updatedUnrecon = unreconItems.filter(u => !isSameUnreconEntry(u, tx));
     setBankTxns(updatedBank);
     setUnreconItems(updatedUnrecon);
     triggerAutoSync(updatedBank, updatedUnrecon);

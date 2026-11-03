@@ -239,6 +239,100 @@ export function applyAlertRemovalToTriageData(data, targetIds, allowedClientChec
   return { removedCount: totalRemoved };
 }
 
+export function restoreAlertToTriageData(data, alert, category) {
+  if (!data || !alert) return;
+  const isProactive = category === "proactive" || alert.isProactive;
+  const isInfo = category === "informational" || alert.isNoAction;
+
+  const resolveFlagKey = (a) => {
+    let flagKey = a.flagType || a.alertType || a.type;
+    if (flagKey === "invoice") flagKey = "invoiceDashboardDiscr";
+    if (flagKey === "expense" || flagKey === "expenseDashboardDiscr") {
+      flagKey = a.expenseCategoryType === "passthrough" ? "passThroughDashboardDiscr" : "contractorsDashboardDiscr";
+    }
+    if (flagKey === "crm") flagKey = a.alertType || "crmPipeAppDiscr";
+    return flagKey;
+  };
+
+  const alertMatches = (a, b) => {
+    if (a.fingerprintHash && b.fingerprintHash && a.fingerprintHash === b.fingerprintHash) return true;
+    if (a.alertKey && b.alertKey && a.alertKey === b.alertKey) return true;
+    if (a.sheetName && a.rowNumber != null && b.sheetName && b.rowNumber != null &&
+        a.sheetName === b.sheetName && String(a.rowNumber) === String(b.rowNumber)) return true;
+    return false;
+  };
+
+  if (isProactive) {
+    if (!data.proactiveAlerts) data.proactiveAlerts = [];
+    const exists = data.proactiveAlerts.some(a => alertMatches(a, alert));
+    if (!exists) {
+      data.proactiveAlerts.unshift(alert);
+    }
+  } else if (isInfo) {
+    if (!data.noActionAlerts) data.noActionAlerts = [];
+    const exists = data.noActionAlerts.some(a => alertMatches(a, alert));
+    if (!exists) {
+      data.noActionAlerts.unshift(alert);
+    }
+  } else {
+    if (!data.alerts) data.alerts = [];
+    const exists = data.alerts.some(a => alertMatches(a, alert));
+    if (!exists) {
+      data.alerts.unshift(alert);
+    }
+  }
+
+  if (data.totalAlerts != null && data.alerts) data.totalAlerts = data.alerts.length;
+  if (data.noActionCount != null && data.noActionAlerts) data.noActionCount = data.noActionAlerts.length;
+
+  if (!isProactive && alert.clientName && data.clientsWithFlags) {
+    const flagKey = resolveFlagKey(alert);
+    const clientIdx = data.clientsWithFlags.findIndex(c => matchesClientName(c.clientName, alert.clientName));
+    if (clientIdx !== -1) {
+      const c = data.clientsWithFlags[clientIdx];
+      const updatedCounts = { ...(c.alertCounts || {}) };
+      const updatedFlags = { ...(c.flags || {}) };
+      if (flagKey) {
+        updatedCounts[flagKey] = (updatedCounts[flagKey] || 0) + 1;
+        updatedFlags[flagKey] = true;
+      }
+      data.clientsWithFlags[clientIdx] = { ...c, alertCounts: updatedCounts, flags: updatedFlags };
+    } else {
+      data.clientsWithFlags.push({
+        clientName: alert.clientName,
+        flags: flagKey ? { [flagKey]: true } : {},
+        alertCounts: flagKey ? { [flagKey]: 1 } : {},
+        activeExpenseIds: [],
+        activeInvoiceIds: [],
+      });
+    }
+  }
+}
+
+export async function restoreAlertToCacheAndSession(alert, category, sessionId) {
+  try {
+    if (sessionId && redisClient?.isOpen) {
+      const sessionData = await redisClient.get(`triage_alerts:${sessionId}`);
+      if (sessionData) {
+        const parsed = JSON.parse(sessionData);
+        restoreAlertToTriageData(parsed, alert, category);
+        await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 86400 * 7 });
+      }
+    }
+    if (redisClient?.isOpen) {
+      const preRaw = await redisClient.get(PRECOMPUTED_KEY);
+      if (preRaw) {
+        const pre = JSON.parse(preRaw);
+        restoreAlertToTriageData(pre, alert, category);
+        await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
+        invalidatePrecomputedMemoryCache();
+      }
+    }
+  } catch (err) {
+    console.warn("restoreAlertToCacheAndSession error:", err.message);
+  }
+}
+
 /**
  * Resolves any active missing-expense or missing-invoice alerts in AlertMemory,
  * triage_precomputed, and triage_alerts:{sessionId} when an expense or invoice

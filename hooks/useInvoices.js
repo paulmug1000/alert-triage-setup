@@ -5,12 +5,40 @@ export function useInvoices(assignedAppIds, initialClient = null) {
   const { getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId } = useAppGlobals();
 
   const [invoicesClient, setInvoicesClient] = useState(initialClient);
+
+  const isInvoiceAssigned = useCallback((invNo, clientObj) => {
+    if (!invNo || !assignedAppIds) return false;
+    const clean = String(invNo).trim().replace(/^#/, "");
+    const cName = clientObj?.clientName || invoicesClient?.clientName || initialClient?.clientName;
+    if (cName) {
+      const norm = String(cName).trim().toLowerCase();
+      return Boolean(
+        assignedAppIds.has(`${norm}::${clean}`) ||
+        assignedAppIds.has(`${norm}::${invNo}`) ||
+        assignedAppIds.has(`${norm}::#${clean}`)
+      );
+    }
+    return Boolean(assignedAppIds.has(invNo) || assignedAppIds.has(clean));
+  }, [assignedAppIds, invoicesClient, initialClient]);
+
   const [invoicesInbox, setInvoicesInbox] = useState(() => {
     if (initialClient?.clientSheetId) {
       const cleanId = cleanSheetId ? cleanSheetId(initialClient.clientSheetId) : initialClient.clientSheetId;
       const cached = getCachedClientData(cleanId, "invoices_inbox");
       if (cached?.data?.inbox) {
-        return (cached.data.inbox || []).filter(inv => !assignedAppIds?.has(inv.invoiceNo));
+        const cName = initialClient.clientName ? String(initialClient.clientName).trim().toLowerCase() : "";
+        return (cached.data.inbox || []).filter(inv => {
+          if (!inv?.invoiceNo) return false;
+          const clean = String(inv.invoiceNo).trim().replace(/^#/, "");
+          if (cName) {
+            return !(
+              assignedAppIds?.has(`${cName}::${clean}`) ||
+              assignedAppIds?.has(`${cName}::${inv.invoiceNo}`) ||
+              assignedAppIds?.has(`${cName}::#${clean}`)
+            );
+          }
+          return !(assignedAppIds?.has(inv.invoiceNo) || assignedAppIds?.has(clean));
+        });
       }
     }
     return [];
@@ -75,7 +103,7 @@ export function useInvoices(assignedAppIds, initialClient = null) {
 
     const cached = !bypassCache ? getCachedClientData(client.clientSheetId, cacheKey) : null;
     if (cached?.data?.inbox) {
-      const pruned = (cached.data.inbox || []).filter(inv => !assignedAppIds.has(inv.invoiceNo));
+      const pruned = (cached.data.inbox || []).filter(inv => !isInvoiceAssigned(inv.invoiceNo, client));
       setInvoicesInbox(pruned);
       setInvoicesInboxLoading(false);
       if (!cached.isStale) return;
@@ -90,7 +118,7 @@ export function useInvoices(assignedAppIds, initialClient = null) {
           await inFlight;
           const fresh = getCachedClientData(client.clientSheetId, cacheKey);
           if (fresh?.data?.inbox) {
-            setInvoicesInbox((fresh.data.inbox || []).filter(inv => !assignedAppIds.has(inv.invoiceNo)));
+            setInvoicesInbox((fresh.data.inbox || []).filter(inv => !isInvoiceAssigned(inv.invoiceNo, client)));
             setInvoicesInboxLoading(false);
             return;
           }
@@ -106,7 +134,7 @@ export function useInvoices(assignedAppIds, initialClient = null) {
       const data = await res.json();
       if (data.success) {
         setCachedClientData(client.clientSheetId, cacheKey, data);
-        const pruned = (data.inbox || []).filter(inv => !assignedAppIds.has(inv.invoiceNo));
+        const pruned = (data.inbox || []).filter(inv => !isInvoiceAssigned(inv.invoiceNo, client));
         setInvoicesInbox(pruned);
       }
     } catch(e) { 
@@ -114,7 +142,7 @@ export function useInvoices(assignedAppIds, initialClient = null) {
     } finally { 
       setInvoicesInboxLoading(false); 
     }
-  }, [assignedAppIds, cleanSheetId, getCachedClientData, setCachedClientData, getInFlightPrefetch]);
+  }, [isInvoiceAssigned, cleanSheetId, getCachedClientData, setCachedClientData, getInFlightPrefetch]);
 
   const loadInvoicesJobs = useCallback(async (client, showAll, silent = false, bypassCache = false) => {
     if (!client?.clientSheetId) return;

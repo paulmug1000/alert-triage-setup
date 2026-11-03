@@ -195,7 +195,7 @@ export default function InvoicesView({
         setInvoicesClient(clientObj);
         if (clientObj?.clientSheetId) {
           prevManagedClientRef.current = currentName;
-          loadInvoicesInbox(clientObj);
+          loadInvoicesInbox(clientObj, Boolean(isModalOverlay));
           loadInvoicesJobs(clientObj, false);
           setInvoicesShowAll(false);
         }
@@ -209,7 +209,7 @@ export default function InvoicesView({
       setInvoicesClient(clientObj);
       if (clientObj?.clientSheetId) {
         prevInitialClientRef.current = initialClient;
-        loadInvoicesInbox(clientObj);
+        loadInvoicesInbox(clientObj, Boolean(isModalOverlay));
         loadInvoicesJobs(clientObj, false);
         setInvoicesShowAll(false);
       }
@@ -524,28 +524,22 @@ export default function InvoicesView({
     setInvoicesPlacing(null);
     setInvoicesSavingCell(savingKey);
 
-    if (addAssignedAppId) {
-      addAssignedAppId(inv.invoiceNo, invoicesClient?.clientName);
-      if (inv.reference && inv.reference !== inv.invoiceNo) {
-        addAssignedAppId(inv.reference, invoicesClient?.clientName);
-      }
-    } else {
-      setAssignedAppIds(prevSet => {
-        const next = new Set(prevSet); next.add(inv.invoiceNo);
-        return next;
-      });
-    }
-    setInvoicesInbox(prev => prev.filter(e => e.invoiceNo !== inv.invoiceNo));
-    removeAssignedInvoiceAlert(inv.invoiceNo, inv.reference, invoicesClient?.clientName);
+    const effectiveClientSheetId = invoicesClient?.clientSheetId ||
+      managedClient?.clientSheetId ||
+      initialClient?.clientSheetId ||
+      allClientsMap?.[invoicesClient?.clientName]?.clientSheetId ||
+      Object.values(allClientsMap || {}).find(c => c.clientName?.toLowerCase() === (invoicesClient?.clientName || "").toLowerCase())?.clientSheetId;
+    const effectiveMasterSheetId = invoicesClient?.masterSheetId ||
+      managedClient?.masterSheetId ||
+      initialClient?.masterSheetId ||
+      allClientsMap?.[invoicesClient?.clientName]?.masterSheetId ||
+      Object.values(allClientsMap || {}).find(c => c.clientName?.toLowerCase() === (invoicesClient?.clientName || "").toLowerCase())?.masterSheetId;
 
-    setClientsWithFlags(prev => prev.map(c => {
-      if (c.clientName !== invoicesClient?.clientName) return c;
-      const updatedCounts = { ...c.alertCounts };
-      if (updatedCounts["invoiceDashboardDiscr"] > 0) updatedCounts["invoiceDashboardDiscr"]--;
-      const updatedFlags = { ...c.flags };
-      if (updatedCounts["invoiceDashboardDiscr"] === 0) updatedFlags.invoiceDashboardDiscr = false;
-      return { ...c, alertCounts: updatedCounts, flags: updatedFlags };
-    }));
+    if (!effectiveClientSheetId) {
+      alert("Could not determine client spreadsheet for placing this invoice.");
+      setInvoicesSavingCell(null);
+      return;
+    }
 
     const jobRowNums = job?.rows ? job.rows.map(r => r.rowNum) : (rowNum ? [rowNum] : []);
     const effectiveClientName = shouldUpdateClientName ? String(inv.client || "").trim() : job.client;
@@ -556,9 +550,9 @@ export default function InvoicesView({
         action: "assign_invoice_to_job",
         sessionId,
         automationCommanderSheetId,
-        clientSheetId: invoicesClient?.clientSheetId,
-        clientName: invoicesClient?.clientName || invoicesClient?.name || "",
-        masterSheetId: invoicesClient?.masterSheetId || "",
+        clientSheetId: effectiveClientSheetId,
+        clientName: invoicesClient?.clientName || invoicesClient?.name || managedClient?.clientName || "",
+        masterSheetId: effectiveMasterSheetId || "",
         createNewRow: !!isNewRow,
         jobLastRow: isNewRow ? jobLastRow : undefined,
         rowNum: !isNewRow ? rowNum : undefined,
@@ -580,14 +574,43 @@ export default function InvoicesView({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(errText || `Server returned HTTP ${res.status}`);
+      }
       const data = await res.json();
       if (!data.success) {
         alert(data.error || "Failed to place invoice");
         await loadInvoicesJobs(invoicesClient, invoicesShowAll);
         return;
       }
-      if (invoicesClient?.masterSheetId) {
-        outgoingsPullPendingRef.current = invoicesClient.masterSheetId;
+
+      // ONLY remove from inbox and record as assigned once the server confirmed the write
+      if (addAssignedAppId) {
+        addAssignedAppId(inv.invoiceNo, invoicesClient?.clientName);
+        if (inv.reference && inv.reference !== inv.invoiceNo) {
+          addAssignedAppId(inv.reference, invoicesClient?.clientName);
+        }
+      } else {
+        setAssignedAppIds(prevSet => {
+          const next = new Set(prevSet); next.add(inv.invoiceNo);
+          return next;
+        });
+      }
+      setInvoicesInbox(prev => prev.filter(e => e.invoiceNo !== inv.invoiceNo));
+      removeAssignedInvoiceAlert(inv.invoiceNo, inv.reference, invoicesClient?.clientName);
+
+      setClientsWithFlags(prev => prev.map(c => {
+        if (c.clientName !== invoicesClient?.clientName) return c;
+        const updatedCounts = { ...c.alertCounts };
+        if (updatedCounts["invoiceDashboardDiscr"] > 0) updatedCounts["invoiceDashboardDiscr"]--;
+        const updatedFlags = { ...c.flags };
+        if (updatedCounts["invoiceDashboardDiscr"] === 0) updatedFlags.invoiceDashboardDiscr = false;
+        return { ...c, alertCounts: updatedCounts, flags: updatedFlags };
+      }));
+
+      if (effectiveMasterSheetId) {
+        outgoingsPullPendingRef.current = effectiveMasterSheetId;
       }
 
       // Optimistically update invoicesJobs without full-screen reload!

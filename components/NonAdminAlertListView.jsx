@@ -49,6 +49,7 @@ export default function NonAdminAlertListView({
   allClientsMap,
   setRetainerAlertResolution,
   setRetainerSplitInvoice,
+  setRetainerChangeSendDates,
   acknowledgeProactiveAlert,
   acknowledgingKey,
   exitingAlertKeys = new Set(),
@@ -246,7 +247,7 @@ export default function NonAdminAlertListView({
                             onClick={() => onNavInvoices ? onNavInvoices(selectedClient) : setActiveNav("invoices")}
                             style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 14px", color: "#ea580c", borderColor: "#fdba74" }}
                           >
-                            📥 Assign invoices
+                            Assign invoices
                           </button>
                         </div>
                       )}
@@ -315,7 +316,7 @@ export default function NonAdminAlertListView({
                           onClick={() => onNavInvoices ? onNavInvoices(selectedClient) : setActiveNav("invoices")}
                           style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 14px", color: "#ea580c", borderColor: "#fdba74" }}
                         >
-                          📥 Assign invoices
+                          Assign invoices
                         </button>
                       </div>
                     )}
@@ -605,96 +606,196 @@ export default function NonAdminAlertListView({
                           {getProactiveCardTitle(alert, false)}
                         </div>
 
-                        {alert.alertType === "retainer_invoice" && (
-                          <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
-                            {m.endClientName && <div><strong>End client:</strong> {m.endClientName}</div>}
-                            {m.jobName && <div><strong>Job:</strong> {m.jobName}</div>}
-                            {m.revenue && <div><strong>Monthly revenue:</strong> {m.revenue}</div>}
-                            {m.startDate && <div><strong>Contract period:</strong> {m.startDate} → {formatJobEndDateDisplay(m.endDate, m.endDate)}</div>}
-                            {m.frequencyDays && <div><strong>Invoice frequency:</strong> {freqLabel(m.frequencyDays)} (every ~{m.frequencyDays} days)</div>}
-                            {m.lastInvoiceDate && <div><strong>Last invoice sent:</strong> {m.lastInvoiceDate}</div>}
-                            {m.expectedByDate && <div><strong>Next expected by:</strong> {m.expectedByDate}</div>}
-                            {m.possibleMatchInvoiceNo && (
-                              <div style={{ marginTop: "6px", paddingTop: "6px", borderTop: "1px solid #e2e8f0" }}>
-                                {m.possibleMatchCase === "changed" && (
-                                  <div style={{ display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "600", marginBottom: "4px", background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca" }}>
-                                    Possible retainer change - {m.possibleMatchConfidence === "high" ? "high" : "medium"} confidence
-                                  </div>
-                                )}
-                                {m.possibleMatchCase === "draft" && (
-                                  <div style={{ display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "600", marginBottom: "4px", background: "#f0f9ff", color: "#0369a1", border: "1px solid #bae6fd" }}>
-                                    Draft invoice found nearby
-                                  </div>
-                                )}
-                                <div><strong>{m.possibleMatchCase === "draft" ? "DRAFT invoice found:" : "Invoice found:"}</strong> #{m.possibleMatchInvoiceNo} for £{parseFloat(m.possibleMatchAmount || 0).toFixed(2)}, sent {m.possibleMatchSentDate}</div>
-                                <div>{m.possibleMatchConfirmedRow ? <>Already attached to a confirmed job</> : <>Not yet attached to any confirmed job</>}</div>
-                                {m.possibleMatchCase === "changed" && <div style={{ marginTop: "4px" }}>This may mean the retainer value has changed.</div>}
-                                {m.possibleMatchCase === "matches" && <div style={{ marginTop: "4px" }}>Matches the expected retainer amount.</div>}
-                                {m.possibleMatchCase === "draft" && <div style={{ marginTop: "4px" }}>It likely just needs sending.</div>}
-                              </div>
-                            )}
-                            {m.jobName && (!m.possibleMatchInvoiceNo || m.possibleMatchCase === "changed") && (
-                              <div style={{ marginTop: "8px", paddingTop: "8px", borderTop: "1px solid #e2e8f0", display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                                {m.possibleMatchInvoiceNo ? (
-                                  <>
+                        {alert.alertType === "retainer_invoice" && (() => {
+                          const jobName = m.jobName || alert.jobName;
+                          const endClientName = m.endClientName || alert.endClientName;
+                          const revenue = m.revenue || alert.revenue;
+                          const startDate = m.startDate || alert.startDate;
+                          const endDate = m.endDate || alert.endDate;
+                          const frequencyDays = m.frequencyDays || alert.frequencyDays;
+                          const lastInvoiceDate = m.lastInvoiceDate || alert.lastInvoiceDate;
+                          const expectedByDate = m.expectedByDate || alert.expectedByDate;
+                          const possibleMatchInvoiceNo = m.possibleMatchInvoiceNo || alert.possibleMatchInvoiceNo;
+                          const possibleMatchAmount = m.possibleMatchAmount || alert.possibleMatchAmount;
+                          const possibleMatchSentDate = m.possibleMatchSentDate || alert.possibleMatchSentDate;
+                          const possibleMatchConfidence = m.possibleMatchConfidence || alert.possibleMatchConfidence;
+                          const possibleMatchConfirmedRow = m.possibleMatchConfirmedRow || alert.possibleMatchConfirmedRow;
+                          const possibleMatchStatus = m.possibleMatchStatus || alert.possibleMatchStatus;
+                          const effectiveMatchCase = m.possibleMatchCase || alert.possibleMatchCase || (
+                            possibleMatchInvoiceNo
+                              ? ((possibleMatchAmount && revenue && Math.abs(parseFloat(possibleMatchAmount || 0) - parseFloat(revenue || 0)) > 0.01) ? "changed" : (possibleMatchStatus && !["sent", "paid"].includes(String(possibleMatchStatus).toLowerCase()) ? "draft" : "matches"))
+                              : ""
+                          );
+                          return (
+                            <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
+                              {endClientName && <div><strong>End client:</strong> {endClientName}</div>}
+                              {jobName && <div><strong>Job:</strong> {jobName}</div>}
+                              {revenue && <div><strong>Monthly revenue:</strong> {revenue}</div>}
+                              {startDate && <div><strong>Contract period:</strong> {startDate} → {formatJobEndDateDisplay(endDate, endDate)}</div>}
+                              {frequencyDays && <div><strong>Invoice frequency:</strong> {freqLabel(frequencyDays)} (every ~{frequencyDays} days)</div>}
+                              {lastInvoiceDate && <div><strong>Last invoice sent:</strong> {lastInvoiceDate}</div>}
+                              {expectedByDate && <div><strong>Next expected by:</strong> {expectedByDate}</div>}
+                              {possibleMatchInvoiceNo && (
+                                <div style={{ marginTop: "6px", paddingTop: "6px", borderTop: "1px solid #e2e8f0" }}>
+                                  {effectiveMatchCase === "changed" && (
+                                    <div style={{ display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "600", marginBottom: "4px", background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca" }}>
+                                      Possible retainer change - {possibleMatchConfidence === "high" ? "high" : "medium"} confidence
+                                    </div>
+                                  )}
+                                  {effectiveMatchCase === "draft" && (
+                                    <div style={{ display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "600", marginBottom: "4px", background: "#f0f9ff", color: "#0369a1", border: "1px solid #bae6fd" }}>
+                                      Draft invoice found nearby
+                                    </div>
+                                  )}
+                                  <div><strong>{effectiveMatchCase === "draft" ? "DRAFT invoice found:" : "Invoice found:"}</strong> #{possibleMatchInvoiceNo} for £{parseFloat(possibleMatchAmount || 0).toFixed(2)}, sent {possibleMatchSentDate}</div>
+                                  <div>{possibleMatchConfirmedRow ? <>Already attached to a confirmed job</> : <>Not yet attached to any confirmed job</>}</div>
+                                  {effectiveMatchCase === "changed" && <div style={{ marginTop: "4px" }}>This may mean the retainer value has changed.</div>}
+                                  {effectiveMatchCase === "matches" && <div style={{ marginTop: "4px" }}>Matches the expected retainer amount.</div>}
+                                  {effectiveMatchCase === "draft" && <div style={{ marginTop: "4px" }}>It likely just needs sending.</div>}
+                                </div>
+                              )}
+                              {jobName && (
+                                <div style={{ marginTop: "8px", paddingTop: "8px", borderTop: "1px solid #e2e8f0", display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+                                  {possibleMatchInvoiceNo ? (
+                                    <>
+                                      <button className="triage-btn" onClick={() => {
+                                        const clientInfo = getClientInfoForAlert(alert);
+                                        const targetClientSheetId = clientInfo?.clientSheetId || selectedClient?.clientSheetId || m.clientSheetId || alert.clientSheetId;
+                                        const targetMasterSheetId = clientInfo?.masterSheetId || selectedClient?.masterSheetId || m.masterSheetId || alert.masterSheetId;
+                                        const targetClientName = alert.clientName || selectedClient?.clientName || "";
+                                        setRetainerAlertResolution({
+                                          resolutionType: "changeAmount",
+                                          alertMeta: {
+                                            ...alert,
+                                            ...m,
+                                            jobName,
+                                            endClientName,
+                                            lastInvoiceDate,
+                                            possibleMatchSentDate,
+                                            possibleMatchAmount,
+                                            possibleMatchInvoiceNo,
+                                            possibleMatchConfirmedRow,
+                                            clientName: targetClientName
+                                          },
+                                          alertKey: alert.alertKey,
+                                          clientSheetId: targetClientSheetId,
+                                          masterSheetId: targetMasterSheetId
+                                        });
+                                      }} style={{ padding: "6px 12px", background: "#1976d2", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>Change retainer amount</button>
+                                      <button className="triage-btn" onClick={() => {
+                                        const clientInfo = getClientInfoForAlert(alert);
+                                        const targetClientSheetId = clientInfo?.clientSheetId || selectedClient?.clientSheetId || m.clientSheetId || alert.clientSheetId;
+                                        const targetMasterSheetId = clientInfo?.masterSheetId || selectedClient?.masterSheetId || m.masterSheetId || alert.masterSheetId;
+                                        const targetClientName = alert.clientName || selectedClient?.clientName || "";
+                                        setRetainerSplitInvoice({
+                                          alertMeta: {
+                                            ...alert,
+                                            ...m,
+                                            jobName,
+                                            endClientName,
+                                            lastInvoiceDate,
+                                            possibleMatchSentDate,
+                                            possibleMatchAmount,
+                                            possibleMatchInvoiceNo,
+                                            possibleMatchConfirmedRow,
+                                            clientName: targetClientName
+                                          },
+                                          alertKey: alert.alertKey,
+                                          clientSheetId: targetClientSheetId,
+                                          masterSheetId: targetMasterSheetId
+                                        });
+                                      }} style={{ padding: "6px 12px", background: "#0284c7", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>Split invoice</button>
+                                    </>
+                                  ) : (
                                     <button className="triage-btn" onClick={() => {
                                       const clientInfo = getClientInfoForAlert(alert);
-                                      const targetClientSheetId = clientInfo?.clientSheetId || selectedClient?.clientSheetId || m.clientSheetId;
-                                      const targetMasterSheetId = clientInfo?.masterSheetId || selectedClient?.masterSheetId || m.masterSheetId;
+                                      const targetClientSheetId = clientInfo?.clientSheetId || selectedClient?.clientSheetId || m.clientSheetId || alert.clientSheetId;
+                                      const targetMasterSheetId = clientInfo?.masterSheetId || selectedClient?.masterSheetId || m.masterSheetId || alert.masterSheetId;
                                       const targetClientName = alert.clientName || selectedClient?.clientName || "";
                                       setRetainerAlertResolution({
-                                        resolutionType: "changeAmount",
-                                        alertMeta: { ...m, clientName: targetClientName },
+                                        resolutionType: "end",
+                                        alertMeta: {
+                                          ...alert,
+                                          ...m,
+                                          jobName,
+                                          endClientName,
+                                          lastInvoiceDate,
+                                          clientName: targetClientName
+                                        },
                                         alertKey: alert.alertKey,
                                         clientSheetId: targetClientSheetId,
                                         masterSheetId: targetMasterSheetId
                                       });
-                                    }} style={{ padding: "6px 12px", background: "#1976d2", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>Change retainer amount</button>
-                                    <button className="triage-btn" onClick={() => {
-                                      const clientInfo = getClientInfoForAlert(alert);
-                                      const targetClientSheetId = clientInfo?.clientSheetId || selectedClient?.clientSheetId || m.clientSheetId;
-                                      const targetMasterSheetId = clientInfo?.masterSheetId || selectedClient?.masterSheetId || m.masterSheetId;
-                                      const targetClientName = alert.clientName || selectedClient?.clientName || "";
-                                      setRetainerSplitInvoice({
-                                        alertMeta: { ...m, clientName: targetClientName },
-                                        alertKey: alert.alertKey,
-                                        clientSheetId: targetClientSheetId,
-                                        masterSheetId: targetMasterSheetId
-                                      });
-                                    }} style={{ padding: "6px 12px", background: "#0284c7", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>Split invoice</button>
-                                  </>
-                                ) : (
-                                  <button className="triage-btn" onClick={() => {
-                                    const clientInfo = getClientInfoForAlert(alert);
-                                    const targetClientSheetId = clientInfo?.clientSheetId || selectedClient?.clientSheetId || m.clientSheetId;
-                                    const targetMasterSheetId = clientInfo?.masterSheetId || selectedClient?.masterSheetId || m.masterSheetId;
-                                    const targetClientName = alert.clientName || selectedClient?.clientName || "";
-                                    setRetainerAlertResolution({
-                                      resolutionType: "end",
-                                      alertMeta: { ...m, clientName: targetClientName },
-                                      alertKey: alert.alertKey,
-                                      clientSheetId: targetClientSheetId,
-                                      masterSheetId: targetMasterSheetId
-                                    });
-                                  }} style={{ padding: "6px 12px", background: "#dc2626", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>End retainer</button>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        )}
+                                    }} style={{ padding: "6px 12px", background: "#dc2626", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>End retainer</button>
+                                  )}
+                                  {setRetainerChangeSendDates && (
+                                    <button
+                                      className="triage-btn"
+                                      onClick={() => {
+                                        const clientInfo = getClientInfoForAlert(alert);
+                                        const targetClientSheetId = clientInfo?.clientSheetId || selectedClient?.clientSheetId || m.clientSheetId || alert.clientSheetId;
+                                        const targetMasterSheetId = clientInfo?.masterSheetId || selectedClient?.masterSheetId || m.masterSheetId || alert.masterSheetId;
+                                        const targetClientName = alert.clientName || selectedClient?.clientName || "";
+                                        setRetainerChangeSendDates({
+                                          alert,
+                                          alertMeta: {
+                                            ...alert,
+                                            ...m,
+                                            jobName,
+                                            endClientName,
+                                            clientName: targetClientName
+                                          },
+                                          clientName: targetClientName,
+                                          endClientName,
+                                          jobName,
+                                          confirmedRow: m.confirmedRow || alert.confirmedRow,
+                                          clientSheetId: targetClientSheetId,
+                                          masterSheetId: targetMasterSheetId
+                                        });
+                                      }}
+                                      style={{ padding: "6px 12px", background: "#0284c7", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}
+                                    >
+                                      Change send dates
+                                    </button>
+                                  )}
+                                  {(() => {
+                                    const cName = alert.clientName || selectedClient?.clientName;
+                                    const clientInfo = (clientsWithFlags || []).find(c => c.clientName === cName) || (allClientsMap && (allClientsMap[cName] || Object.values(allClientsMap).find(cl => cl.clientName?.toLowerCase() === cName?.toLowerCase()))) || selectedClient || { clientName: cName };
+                                    const jobTarget = getAlertJobTarget(alert, false, clientInfo);
+                                    if (!jobTarget || !onViewJob) return null;
+                                    return (
+                                      <button
+                                        className="triage-btn"
+                                        onClick={() => onViewJob(jobTarget)}
+                                        style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 12px", color: "#0284c7", borderColor: "#bae6fd", display: "inline-flex", alignItems: "center", gap: "4px" }}
+                                        title="View and edit job details in pop-up"
+                                      >
+                                        🔍 View job
+                                      </button>
+                                    );
+                                  })()}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
 
-                        {alert.alertType === "uninvoiced_new_job" && (
-                          <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
-                            {m.endClientName && <div><strong>End client:</strong> {m.endClientName}</div>}
-                            {m.jobName && <div><strong>Job:</strong> {m.jobName}{m.projectCode ? ` [${m.projectCode}]` : ""}</div>}
-                            {(m.jobType || alert.jobType || m.isRetainer !== undefined) && (
-                              <div><strong>Job type:</strong> {m.jobType || alert.jobType || (String(m.isRetainer).toLowerCase() === "true" || String(m.isRetainer).toLowerCase() === "yes" ? "Retainer" : "Project")}</div>
-                            )}
-                            {m.startDate && <div><strong>Job started:</strong> {m.startDate}</div>}
-                            {m.revenue && <div><strong>Revenue:</strong> £{parseFloat(m.revenue).toFixed(2)}</div>}
-                            <div style={{ marginTop: "4px", color: "#c62828" }}>Over a month elapsed with zero real invoices sent.</div>
-                          </div>
-                        )}
+                        {alert.alertType === "uninvoiced_new_job" && (() => {
+                          const displayEndDate = m.endDate || alert.endDate || alert.detail?.match(/ends\s+([0-9a-zA-Z-]+)/i)?.[1];
+                          return (
+                            <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
+                              {m.endClientName && <div><strong>End client:</strong> {m.endClientName}</div>}
+                              {m.jobName && <div><strong>Job:</strong> {m.jobName}{m.projectCode ? ` [${m.projectCode}]` : ""}</div>}
+                              {(m.jobType || alert.jobType || m.isRetainer !== undefined) && (
+                                <div><strong>Job type:</strong> {m.jobType || alert.jobType || (String(m.isRetainer).toLowerCase() === "true" || String(m.isRetainer).toLowerCase() === "yes" ? "Retainer" : "Project")}</div>
+                              )}
+                              {m.startDate && <div><strong>Job started:</strong> {m.startDate}</div>}
+                              {displayEndDate && <div><strong>Job end date:</strong> {formatJobEndDateDisplay(displayEndDate, displayEndDate)}</div>}
+                              {m.revenue && <div><strong>Revenue:</strong> £{parseFloat(m.revenue).toFixed(2)}</div>}
+                              <div style={{ marginTop: "4px", color: "#c62828" }}>Over a month elapsed with zero real invoices sent.</div>
+                            </div>
+                          );
+                        })()}
 
                         {alert.alertType === "uninvoiced_revenue" && (
                           <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>

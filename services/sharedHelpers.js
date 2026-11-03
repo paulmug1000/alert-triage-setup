@@ -120,6 +120,75 @@ export async function setCRMMode(sheets, spreadsheetId, mode, currentMode = null
 export const GAS_LOCK_STALE_MS = 10 * 60 * 1000; // 10 minutes (GAS hard execution limit is 6m)
 export const GAS_LOCK_FORCE_CLEAR_MS = 30 * 60 * 1000; // 30 minutes fallback clear if GAS trigger has not self-healed
 
+export function parseGASLockTimestamp(tsRaw) {
+  if (tsRaw === null || tsRaw === undefined || tsRaw === "") return null;
+  if (tsRaw instanceof Date && !isNaN(tsRaw.getTime())) {
+    return tsRaw;
+  }
+  // If it's a numeric serial date (e.g. 46329.3517 from Google Sheets)
+  if (typeof tsRaw === "number" || (typeof tsRaw === "string" && /^\d+(\.\d+)?$/.test(tsRaw.trim()))) {
+    const num = Number(tsRaw);
+    if (!isNaN(num) && num > 30000 && num < 80000) {
+      // Excel/Google Sheets serial date (days since Dec 30 1899)
+      const ms = Math.round((num - 25569) * 86400 * 1000);
+      return new Date(ms);
+    }
+  }
+  if (typeof tsRaw !== "string") return null;
+  const str = tsRaw.trim();
+  if (!str) return null;
+
+  // Format: "Tue 3-Nov 04:35" or "Wed 21-Oct 11:30" (missing year)
+  const noYearMatch = str.match(/(?:[A-Za-z]{3}\s+)?(\d{1,2})-([A-Za-z]{3})\s+(\d{1,2}):(\d{2})/i);
+  if (noYearMatch) {
+    const currentYear = new Date().getFullYear();
+    const day = noYearMatch[1];
+    const mon = noYearMatch[2];
+    const time = `${noYearMatch[3]}:${noYearMatch[4]}`;
+    const candidate = new Date(`${day} ${mon} ${currentYear} ${time}`);
+    if (!isNaN(candidate.getTime())) {
+      return candidate;
+    }
+  }
+
+  // Format: "dd/MM/yyyy HH:mm:ss" or "dd/MM/yyyy HH:mm" (UK format with time)
+  const ukMatch = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (ukMatch) {
+    const day = ukMatch[1].padStart(2, "0");
+    const mon = ukMatch[2].padStart(2, "0");
+    const year = ukMatch[3];
+    const time = `${ukMatch[4].padStart(2, "0")}:${ukMatch[5]}${ukMatch[6] ? `:${ukMatch[6]}` : ":00"}`;
+    const isoCandidate = new Date(`${year}-${mon}-${day}T${time}`);
+    if (!isNaN(isoCandidate.getTime())) return isoCandidate;
+  }
+
+  // If string contains NO time component (e.g. "03/11/2026", "2026-11-03", "3-Nov-2026"):
+  // IT HAS NO MINUTE PRECISION. A date-only string MUST NOT be used for 10-minute timeout calculation!
+  if (!str.includes(":") && !str.includes("T")) {
+    // If it's a date from a previous calendar day, it is definitely stale (e.g. days/weeks old)
+    const dateOnlyMatch = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (dateOnlyMatch) {
+      const day = parseInt(dateOnlyMatch[1], 10);
+      const mon = parseInt(dateOnlyMatch[2], 10) - 1;
+      const year = parseInt(dateOnlyMatch[3], 10);
+      const endOfThatDay = new Date(Date.UTC(year, mon, day, 23, 59, 59));
+      if (Date.now() - endOfThatDay.getTime() > 24 * 60 * 60 * 1000) {
+        return endOfThatDay; // From a previous day, definitely stale
+      }
+    }
+    return null; // Date is today without a time: cannot measure 10-minute lock lease safely!
+  }
+
+  // Standard ISO or Date.parse fallback
+  const d = new Date(str);
+  if (!isNaN(d.getTime())) {
+    const yr = d.getFullYear();
+    if (yr < 2020 || yr > 2050) return null;
+    return d;
+  }
+  return null;
+}
+
 export async function checkAllGASLocks(sheets, masterSheetId, cachedData = null) {
   const result = { invoice: { locked: false }, expense: { locked: false }, crm: { locked: false } };
   if (!masterSheetId) return result;
@@ -143,10 +212,10 @@ export async function checkAllGASLocks(sheets, masterSheetId, cachedData = null)
       const flag = String(row[fIdx] || "").trim().toUpperCase();
       const tsRaw = row[tIdx];
       if (flag !== "YES") return { locked: false };
-      if (tsRaw) {
-        const tsDate = new Date(tsRaw);
-        const ageMs = !isNaN(tsDate) ? (Date.now() - tsDate.getTime()) : 0;
-        if (!isNaN(tsDate) && ageMs > GAS_LOCK_STALE_MS) {
+      const tsDate = parseGASLockTimestamp(tsRaw);
+      if (tsDate) {
+        const ageMs = Date.now() - tsDate.getTime();
+        if (ageMs > GAS_LOCK_STALE_MS) {
           const meta = metaByType[name] || { category: name.toUpperCase(), label: `${name} Sequence` };
           const startedIso = tsDate.toISOString();
           const staleTimeout = {

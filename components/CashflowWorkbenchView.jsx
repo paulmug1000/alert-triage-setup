@@ -2124,456 +2124,456 @@ export default function CashflowWorkbenchView({
             </div>
           </div>
 
-      {/* Messages */}
-      {apiMsg && (
-        <div style={{ padding: "8px 12px", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", fontSize: "12px", color: "#166534" }}>
-          {apiMsg}
-        </div>
-      )}
-      {syncMsg && (
-        <div style={{ padding: "8px 12px", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", fontSize: "12px", color: "#166534" }}>
-          {syncMsg}
-        </div>
-      )}
-      {tabError && (
-        <div style={{ padding: "8px 12px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "6px", fontSize: "12px", color: "#991b1b" }}>
-          ⚠️ {tabError}
-        </div>
-      )}
-
-      {/* TWO-PANE WORKBENCH */}
-      <div style={{
-        display: "grid",
-        gridTemplateColumns: "1fr 1fr",
-        gap: "14px",
-        minHeight: "680px"
-      }}>
-        {/* ========================================================================= */}
-        {/* LEFT PANE: Bank Transactions Feed & Categorisation                       */}
-        {/* ========================================================================= */}
-        <div style={{
-          background: "#ffffff",
-          borderRadius: "10px",
-          border: "1px solid #cbd5e1",
-          display: "flex",
-          flexDirection: "column",
-          overflow: "hidden",
-          minWidth: 0,
-          boxShadow: "0 1px 3px rgba(0,0,0,0.03)"
-        }}>
-          {/* Header */}
-          <div style={{ padding: "12px 14px", borderBottom: "1px solid #e2e8f0", background: "#f8fafc" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px", flexWrap: "wrap", gap: "8px" }}>
-              <div style={{ fontWeight: "700", fontSize: "13px", color: "#1e293b", display: "flex", alignItems: "center", gap: "6px" }}>
-                <span>Bank transactions</span>
-              </div>
-              <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
-                {distinctAccounts.length > 0 && (
-                  <select
-                    value={filterAccount}
-                    onChange={e => setFilterAccount(e.target.value)}
-                    style={{
-                      padding: "4px 8px",
-                      fontSize: "11px",
-                      fontWeight: "600",
-                      borderRadius: "5px",
-                      border: "1px solid #cbd5e1",
-                      background: "#ffffff",
-                      color: "#1e293b",
-                      cursor: "pointer",
-                      maxWidth: "180px"
-                    }}
-                  >
-                    <option value="ALL">All accounts ({bankTxns.length})</option>
-                    {distinctAccounts.map(acc => {
-                      const count = bankTxns.filter(t => (t.accountName || defaultAccount) === acc).length;
-                      return (
-                        <option key={acc} value={acc}>
-                          {acc} ({count})
-                        </option>
-                      );
-                    })}
-                  </select>
-                )}
-                {distinctAccounts.length > 1 && filterAccount === "ALL" && (
-                  <button
-                    type="button"
-                    onClick={() => setGroupByAccount(!groupByAccount)}
-                    style={{
-                      padding: "4px 8px",
-                      fontSize: "10px",
-                      fontWeight: "600",
-                      borderRadius: "5px",
-                      border: groupByAccount ? "1px solid #0284c7" : "1px solid #cbd5e1",
-                      background: groupByAccount ? "#f0f9ff" : "#ffffff",
-                      color: groupByAccount ? "#0284c7" : "#64748b",
-                      cursor: "pointer"
-                    }}
-                    title="Divide and group bank transactions by account with sub-headers"
-                  >
-                    {groupByAccount ? "Grouped by account" : "Group by account"}
-                  </button>
-                )}
-              </div>
+          {/* Messages */}
+          {apiMsg && (
+            <div style={{ padding: "8px 12px", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", fontSize: "12px", color: "#166534" }}>
+              {apiMsg}
             </div>
-
-            {/* Search row (replacing category pills) */}
-            <div>
-              <input
-                type="text"
-                placeholder="Search payees, amounts, descriptions, categories..."
-                value={searchTerm}
-                onChange={e => setSearchTerm(e.target.value)}
-                style={{
-                  width: "100%",
-                  boxSizing: "border-box",
-                  padding: "6px 10px",
-                  fontSize: "11px",
-                  borderRadius: "6px",
-                  border: "1px solid #cbd5e1",
-                  background: "#ffffff"
-                }}
-              />
+          )}
+          {syncMsg && (
+            <div style={{ padding: "8px 12px", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", fontSize: "12px", color: "#166534" }}>
+              {syncMsg}
             </div>
-          </div>
+          )}
+          {tabError && (
+            <div style={{ padding: "8px 12px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "6px", fontSize: "12px", color: "#991b1b" }}>
+              ⚠️ {tabError}
+            </div>
+          )}
 
-          {/* Table */}
-          <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden", maxHeight: "640px" }}>
-            {filteredTxns.length === 0 ? (
-              <div style={{ textAlign: "center", padding: "50px 20px", color: "#94a3b8", fontSize: "12px" }}>
-                No transactions match the selected filters.
-              </div>
-            ) : (
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "11px", tableLayout: "fixed" }}>
-                <thead style={{ position: "sticky", top: 0, background: "#f1f5f9", zIndex: 1 }}>
-                  <tr style={{ color: "#475569", borderBottom: "1px solid #cbd5e1" }}>
-                    <th style={{ padding: "6px 6px", textAlign: "left", width: "65px" }}>Date</th>
-                    <th style={{ padding: "6px 6px", textAlign: "left" }}>Payee & description</th>
-                    <th style={{ padding: "6px 2px", width: "135px" }}></th>
-                    <th style={{ padding: "6px 4px", textAlign: "right", width: "58px" }}>Out (£)</th>
-                    <th style={{ padding: "6px 4px", textAlign: "right", width: "58px" }}>In (£)</th>
-                    <th style={{ padding: "6px 4px", textAlign: "left", width: "95px" }}>Category</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredTxns.map((tx, idx) => {
-                    const currentCat = getResolvedCategory(tx);
-                    const catStyle = CATEGORY_COLORS[currentCat] || CATEGORY_COLORS.Outgoings;
-                    const isUnrecon = tx.isReconciled === false;
-                    const rowAccount = tx.accountName || defaultAccount;
-                    const prevTx = idx > 0 ? filteredTxns[idx - 1] : null;
-                    const prevAccount = prevTx ? (prevTx.accountName || defaultAccount) : null;
-                    const showAccountHeader = groupByAccount && (idx === 0 || (rowAccount || "Unassigned account") !== (prevAccount || "Unassigned account"));
-                    const groupCount = groupByAccount ? filteredTxns.filter(t => (t.accountName || defaultAccount || "Unassigned account") === (rowAccount || "Unassigned account")).length : 0;
-
-                    return (
-                      <React.Fragment key={tx.rowNum || tx.id || tx.sourceId || idx}>
-                        {showAccountHeader && (
-                          <tr style={{ background: "#f8fafc", borderTop: idx > 0 ? "2px solid #cbd5e1" : "none", borderBottom: "1px solid #e2e8f0" }}>
-                            <td colSpan={6} style={{ padding: "6px 10px", fontWeight: "700", fontSize: "11px", color: "#334155" }}>
-                              <span style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
-                                <span>{rowAccount || "Unassigned account"}</span>
-                                <span style={{ fontSize: "10px", fontWeight: "600", color: "#64748b", background: "#e2e8f0", padding: "1px 6px", borderRadius: "10px" }}>
-                                  {groupCount} transaction{groupCount !== 1 ? "s" : ""}
-                                </span>
-                              </span>
-                            </td>
-                          </tr>
-                        )}
-                        <tr
-                          style={{
-                            borderBottom: "1px solid #f1f5f9",
-                            background: tx.isNew ? "#f0fdf4" : (isUnrecon ? "#fffbeb" : (idx % 2 === 0 ? "#ffffff" : "#fafbfc"))
-                          }}
-                        >
-                          <td style={{ padding: "6px 6px", color: "#64748b", whiteSpace: "nowrap", fontSize: "10px" }}>
-                            {tx.date || ""}
-                          </td>
-                          <td style={{ padding: "6px 6px", color: "#1e293b", minWidth: 0, overflow: "hidden" }}>
-                            <div style={{ fontWeight: "600", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                              {tx.payee || tx.particulars || "—"}
-                            </div>
-                            {tx.particulars && tx.particulars !== tx.payee && (
-                              <div style={{ fontSize: "10px", color: "#64748b", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                {tx.particulars}
-                              </div>
-                            )}
-                            <div style={{ display: "flex", alignItems: "center", gap: "4px", flexWrap: "wrap", marginTop: "2px" }}>
-                              {tx.isNew && (
-                                <span style={{ fontSize: "9px", padding: "1px 5px", background: "#dcfce7", color: "#166534", borderRadius: "3px", fontWeight: "700", border: "1px solid #86efac" }}>
-                                  new
-                                </span>
-                              )}
-                              {rowAccount && (
-                                <span style={{ fontSize: "9px", padding: "1px 5px", background: "#f1f5f9", color: "#475569", borderRadius: "3px", border: "1px solid #cbd5e1", fontWeight: "600" }}>
-                                  {rowAccount}
-                                </span>
-                              )}
-                              {isUnrecon && (
-                                <span style={{ fontSize: "9px", padding: "1px 5px", background: "#fef3c7", color: "#b45309", borderRadius: "3px", fontWeight: "700", border: "1px solid #fde68a" }}>
-                                  Unreconciled
-                                </span>
-                              )}
-                            </div>
-                          </td>
-                          <td style={{ padding: "6px 2px", width: "135px" }}>
-                            {isUnrecon ? (
-                              <div style={{ display: "flex", alignItems: "center", gap: "3px" }}>
-                                <select
-                                  value={tx.plCategory || tx.category || ""}
-                                  onChange={e => handleUnreconCategoryChange(tx, e.target.value)}
-                                  title="Assign P&L expense category"
-                                  style={{
-                                    flex: 1,
-                                    minWidth: "75px",
-                                    maxWidth: "85px",
-                                    padding: "2px 3px",
-                                    fontSize: "9px",
-                                    borderRadius: "4px",
-                                    border: "1px solid #cbd5e1",
-                                    background: (tx.plCategory || tx.category) ? "#f0fdf4" : "#ffffff",
-                                    color: (tx.plCategory || tx.category) ? "#166534" : "#334155",
-                                    fontWeight: (tx.plCategory || tx.category) ? "600" : "400",
-                                    cursor: "pointer",
-                                    overflow: "hidden",
-                                    textOverflow: "ellipsis",
-                                    whiteSpace: "nowrap"
-                                  }}
-                                >
-                                  <option value="">(P&L account...)</option>
-                                  <option value="Not an expense">Not an expense</option>
-                                  {Array.from(new Set([
-                                    ...(reconData?.plAccountOptions || []).filter(c => c && c !== "Not an expense"),
-                                    ...(tx.plCategory && tx.plCategory !== "Not an expense" ? [tx.plCategory] : (tx.category && tx.category !== "Not an expense" ? [tx.category] : []))
-                                  ])).map(catOpt => (
-                                    <option key={catOpt} value={catOpt}>{catOpt}</option>
-                                  ))}
-                                </select>
-                                <button
-                                  type="button"
-                                  onClick={() => handleUnreconVatToggle(tx)}
-                                  title="Toggle whether VAT applies to this expense"
-                                  style={{
-                                    padding: "2px 4px",
-                                    fontSize: "8.5px",
-                                    fontWeight: "700",
-                                    borderRadius: "3px",
-                                    border: "1px solid #cbd5e1",
-                                    background: tx.vatApplies === "Yes" ? "#dcfce7" : "#f1f5f9",
-                                    color: tx.vatApplies === "Yes" ? "#166534" : "#475569",
-                                    cursor: "pointer",
-                                    whiteSpace: "nowrap",
-                                    flexShrink: 0
-                                  }}
-                                >
-                                  {tx.vatApplies === "Yes" ? "VAT: Yes" : "VAT: No"}
-                                </button>
-                              </div>
-                            ) : (
-                              <span style={{ color: "#cbd5e1", fontSize: "11px", display: "inline-block", textAlign: "center", width: "100%" }}>—</span>
-                            )}
-                          </td>
-                          <td style={{ padding: "6px 4px", textAlign: "right", color: "#b91c1c", fontWeight: parseAmount(tx.outAmount) > 0 ? "600" : "400", whiteSpace: "nowrap", width: "58px" }}>
-                            {formatAmount2DP(tx.outAmount)}
-                          </td>
-                          <td style={{ padding: "6px 4px", textAlign: "right", color: "#15803d", fontWeight: parseAmount(tx.inAmount) > 0 ? "600" : "400", whiteSpace: "nowrap", width: "58px" }}>
-                            {formatAmount2DP(tx.inAmount)}
-                          </td>
-                          <td style={{ padding: "6px 4px", width: "95px" }}>
-                            <select
-                              value={currentCat}
-                              onChange={e => handleCategoryChange(tx, e.target.value)}
-                              style={{
-                                padding: "2px 2px",
-                                fontSize: "9.5px",
-                                fontWeight: "600",
-                                borderRadius: "4px",
-                                background: catStyle.bg,
-                                color: catStyle.color,
-                                border: `1px solid ${catStyle.border}`,
-                                cursor: "pointer",
-                                width: "100%",
-                                overflow: "hidden",
-                                textOverflow: "ellipsis"
-                              }}
-                            >
-                              {VALID_RECON_CATEGORIES.map(c => (
-                                <option key={c} value={c}>{c}</option>
-                              ))}
-                            </select>
-                          </td>
-                        </tr>
-                      </React.Fragment>
-                    );
-                  })}
-                </tbody>
-              </table>
-            )}
-          </div>
-        </div>
-
-        {/* ========================================================================= */}
-        {/* RIGHT PANE: Breakdowns & Variance Workbench                              */}
-        {/* ========================================================================= */}
-        <div style={{
-          background: "#ffffff",
-          borderRadius: "10px",
-          border: "1px solid #cbd5e1",
-          display: "flex",
-          flexDirection: "column",
-          overflow: "hidden",
-          minWidth: 0,
-          boxShadow: "0 1px 3px rgba(0,0,0,0.03)"
-        }}>
-          {/* Tabs */}
-          <div style={{ padding: "8px 12px", borderBottom: "1px solid #e2e8f0", background: "#f8fafc", display: "flex", gap: "6px", flexWrap: "wrap" }}>
-            {[
-              { id: "variance", label: "Cashflow variance" },
-              { id: "revenue", label: `Revenue (${liveRevenueBankItems.length})` },
-              { id: "contractors", label: `Contractors (${liveContractorsBankItems.length})` },
-              { id: "direct_costs", label: `Direct costs (${liveDirectCostsBankItems.length})` }
-            ].map(tab => (
-              <button
-                key={tab.id}
-                onClick={() => setActiveRightTab(tab.id)}
-                style={{
-                  padding: "5px 10px",
-                  fontSize: "11px",
-                  fontWeight: activeRightTab === tab.id ? "700" : "500",
-                  borderRadius: "5px",
-                  border: activeRightTab === tab.id ? "1px solid #0284c7" : "1px solid transparent",
-                  background: activeRightTab === tab.id ? "#ffffff" : "transparent",
-                  color: activeRightTab === tab.id ? "#0284c7" : "#64748b",
-                  cursor: "pointer",
-                  boxShadow: activeRightTab === tab.id ? "0 1px 2px rgba(0,0,0,0.05)" : "none"
-                }}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
-
-          {/* Tab Content */}
-          <div style={{ flex: 1, padding: "14px", overflowY: "auto", maxHeight: "640px" }}>
-            {/* 1. Cashflow Variance */}
-            {activeRightTab === "variance" && (
-              <div>
-                <div style={{ marginBottom: "12px", fontSize: "12px", color: "#475569" }}>
-                  Compares totals from the bank transactions with expected figures based on data in Pulse.
+          {/* TWO-PANE WORKBENCH */}
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 1fr",
+            gap: "14px",
+            minHeight: "680px"
+          }}>
+            {/* ========================================================================= */}
+            {/* LEFT PANE: Bank Transactions Feed & Categorisation                       */}
+            {/* ========================================================================= */}
+            <div style={{
+              background: "#ffffff",
+              borderRadius: "10px",
+              border: "1px solid #cbd5e1",
+              display: "flex",
+              flexDirection: "column",
+              overflow: "hidden",
+              minWidth: 0,
+              boxShadow: "0 1px 3px rgba(0,0,0,0.03)"
+            }}>
+              {/* Header */}
+              <div style={{ padding: "12px 14px", borderBottom: "1px solid #e2e8f0", background: "#f8fafc" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px", flexWrap: "wrap", gap: "8px" }}>
+                  <div style={{ fontWeight: "700", fontSize: "13px", color: "#1e293b", display: "flex", alignItems: "center", gap: "6px" }}>
+                    <span>Bank transactions</span>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                    {distinctAccounts.length > 0 && (
+                      <select
+                        value={filterAccount}
+                        onChange={e => setFilterAccount(e.target.value)}
+                        style={{
+                          padding: "4px 8px",
+                          fontSize: "11px",
+                          fontWeight: "600",
+                          borderRadius: "5px",
+                          border: "1px solid #cbd5e1",
+                          background: "#ffffff",
+                          color: "#1e293b",
+                          cursor: "pointer",
+                          maxWidth: "180px"
+                        }}
+                      >
+                        <option value="ALL">All accounts ({bankTxns.length})</option>
+                        {distinctAccounts.map(acc => {
+                          const count = bankTxns.filter(t => (t.accountName || defaultAccount) === acc).length;
+                          return (
+                            <option key={acc} value={acc}>
+                              {acc} ({count})
+                            </option>
+                          );
+                        })}
+                      </select>
+                    )}
+                    {distinctAccounts.length > 1 && filterAccount === "ALL" && (
+                      <button
+                        type="button"
+                        onClick={() => setGroupByAccount(!groupByAccount)}
+                        style={{
+                          padding: "4px 8px",
+                          fontSize: "10px",
+                          fontWeight: "600",
+                          borderRadius: "5px",
+                          border: groupByAccount ? "1px solid #0284c7" : "1px solid #cbd5e1",
+                          background: groupByAccount ? "#f0f9ff" : "#ffffff",
+                          color: groupByAccount ? "#0284c7" : "#64748b",
+                          cursor: "pointer"
+                        }}
+                        title="Divide and group bank transactions by account with sub-headers"
+                      >
+                        {groupByAccount ? "Grouped by account" : "Group by account"}
+                      </button>
+                    )}
+                  </div>
                 </div>
-                {(!reconData?.cashflowComparisons || reconData.cashflowComparisons.length === 0) ? (
-                  <div style={{ textAlign: "center", padding: "40px 20px", color: "#94a3b8" }}>
-                    {isAdmin ? "No comparison data available for this tab. Ensure Recon Sheet tab is populated." : "No comparison data available for this month."}
+
+                {/* Search row (replacing category pills) */}
+                <div>
+                  <input
+                    type="text"
+                    placeholder="Search payees, amounts, descriptions, categories..."
+                    value={searchTerm}
+                    onChange={e => setSearchTerm(e.target.value)}
+                    style={{
+                      width: "100%",
+                      boxSizing: "border-box",
+                      padding: "6px 10px",
+                      fontSize: "11px",
+                      borderRadius: "6px",
+                      border: "1px solid #cbd5e1",
+                      background: "#ffffff"
+                    }}
+                  />
+                </div>
+              </div>
+
+              {/* Table */}
+              <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden", maxHeight: "640px" }}>
+                {filteredTxns.length === 0 ? (
+                  <div style={{ textAlign: "center", padding: "50px 20px", color: "#94a3b8", fontSize: "12px" }}>
+                    No transactions match the selected filters.
                   </div>
                 ) : (
-                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
-                    <thead>
-                      <tr style={{ background: "#f1f5f9", borderBottom: "1px solid #cbd5e1", color: "#475569" }}>
-                        <th style={{ padding: "8px 10px", textAlign: "left" }}>Category</th>
-                        <th style={{ padding: "8px 10px", textAlign: "right" }}>Cashflow forecast</th>
-                        <th style={{ padding: "8px 10px", textAlign: "right" }}>Bank actual</th>
-                        <th style={{ padding: "8px 10px", textAlign: "right" }}>Difference</th>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "11px", tableLayout: "fixed" }}>
+                    <thead style={{ position: "sticky", top: 0, background: "#f1f5f9", zIndex: 1 }}>
+                      <tr style={{ color: "#475569", borderBottom: "1px solid #cbd5e1" }}>
+                        <th style={{ padding: "6px 6px", textAlign: "left", width: "65px" }}>Date</th>
+                        <th style={{ padding: "6px 6px", textAlign: "left" }}>Payee & description</th>
+                        <th style={{ padding: "6px 2px", width: "135px" }}></th>
+                        <th style={{ padding: "6px 4px", textAlign: "right", width: "58px" }}>Out (£)</th>
+                        <th style={{ padding: "6px 4px", textAlign: "right", width: "58px" }}>In (£)</th>
+                        <th style={{ padding: "6px 4px", textAlign: "left", width: "95px" }}>Category</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {reconData.cashflowComparisons.filter(c => c.label.toLowerCase() !== "total").map((c, i) => {
-                        const liveVal = getLiveBankActual(c);
-                        const hasLiveTxns = bankTxns && bankTxns.length > 0;
-
-                        // Parse cashflow forecast value
-                        const cashflowClean = String(c.cashflow || "").replace(/[£,\s]/g, "");
-                        const cashflowNum = parseFloat(cashflowClean) || 0;
-
-                        // Bank actual value: use live calculated total from workbench if bankTxns loaded, otherwise fall back to sheet value
-                        let bankActualNum = 0;
-                        let bankActualDisplay = c.bankRecon || "—";
-
-                        if (hasLiveTxns && liveVal !== null) {
-                          bankActualNum = liveVal;
-                          bankActualDisplay = formatGBP(liveVal);
-                        } else if (c.bankRecon && c.bankRecon !== "—") {
-                          const sheetClean = String(c.bankRecon || "").replace(/[£,\s]/g, "");
-                          bankActualNum = parseFloat(sheetClean) || 0;
-                          bankActualDisplay = c.bankRecon;
-                        }
-
-                        // Difference: Bank actual vs Forecast
-                        let diffNum = 0;
-                        let diffDisplay = c.diff || "£0.00";
-                        if ((hasLiveTxns && liveVal !== null) || (c.bankRecon && c.bankRecon !== "—")) {
-                          diffNum = bankActualNum - cashflowNum;
-                          diffDisplay = formatGBP(diffNum);
-                        } else {
-                          const diffClean = String(c.diff || "").replace(/[£,\s]/g, "");
-                          diffNum = parseFloat(diffClean) || 0;
-                        }
-
-                        const isZero = Math.abs(diffNum) < 0.01;
-                        const isHighlight = Math.abs(diffNum) > 0.01;
+                      {filteredTxns.map((tx, idx) => {
+                        const currentCat = getResolvedCategory(tx);
+                        const catStyle = CATEGORY_COLORS[currentCat] || CATEGORY_COLORS.Outgoings;
+                        const isUnrecon = tx.isReconciled === false;
+                        const rowAccount = tx.accountName || defaultAccount;
+                        const prevTx = idx > 0 ? filteredTxns[idx - 1] : null;
+                        const prevAccount = prevTx ? (prevTx.accountName || defaultAccount) : null;
+                        const showAccountHeader = groupByAccount && (idx === 0 || (rowAccount || "Unassigned account") !== (prevAccount || "Unassigned account"));
+                        const groupCount = groupByAccount ? filteredTxns.filter(t => (t.accountName || defaultAccount || "Unassigned account") === (rowAccount || "Unassigned account")).length : 0;
 
                         return (
-                          <tr key={i} style={{ borderBottom: "1px solid #f1f5f9", background: isHighlight ? "#fffbeb" : "#ffffff" }}>
-                            <td style={{ padding: "8px 10px", fontWeight: "600", color: "#1e293b" }}>{c.label}</td>
-                            <td style={{ padding: "8px 10px", textAlign: "right", color: "#475569" }}>{c.cashflow || "—"}</td>
-                            <td style={{ padding: "8px 10px", textAlign: "right", color: "#1e293b", fontWeight: "600" }}>{bankActualDisplay}</td>
-                            <td style={{ padding: "8px 10px", textAlign: "right" }}>
-                              <span style={{
-                                padding: "2px 6px",
-                                borderRadius: "4px",
-                                fontSize: "11px",
-                                fontWeight: "700",
-                                background: isZero ? "#dcfce7" : "#fee2e2",
-                                color: isZero ? "#166534" : "#991b1b"
-                              }}>
-                                {diffDisplay}
-                              </span>
-                            </td>
-                          </tr>
+                          <React.Fragment key={tx.rowNum || tx.id || tx.sourceId || idx}>
+                            {showAccountHeader && (
+                              <tr style={{ background: "#f8fafc", borderTop: idx > 0 ? "2px solid #cbd5e1" : "none", borderBottom: "1px solid #e2e8f0" }}>
+                                <td colSpan={6} style={{ padding: "6px 10px", fontWeight: "700", fontSize: "11px", color: "#334155" }}>
+                                  <span style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
+                                    <span>{rowAccount || "Unassigned account"}</span>
+                                    <span style={{ fontSize: "10px", fontWeight: "600", color: "#64748b", background: "#e2e8f0", padding: "1px 6px", borderRadius: "10px" }}>
+                                      {groupCount} transaction{groupCount !== 1 ? "s" : ""}
+                                    </span>
+                                  </span>
+                                </td>
+                              </tr>
+                            )}
+                            <tr
+                              style={{
+                                borderBottom: "1px solid #f1f5f9",
+                                background: tx.isNew ? "#f0fdf4" : (isUnrecon ? "#fffbeb" : (idx % 2 === 0 ? "#ffffff" : "#fafbfc"))
+                              }}
+                            >
+                              <td style={{ padding: "6px 6px", color: "#64748b", whiteSpace: "nowrap", fontSize: "10px" }}>
+                                {tx.date || ""}
+                              </td>
+                              <td style={{ padding: "6px 6px", color: "#1e293b", minWidth: 0, overflow: "hidden" }}>
+                                <div style={{ fontWeight: "600", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                  {tx.payee || tx.particulars || "—"}
+                                </div>
+                                {tx.particulars && tx.particulars !== tx.payee && (
+                                  <div style={{ fontSize: "10px", color: "#64748b", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                    {tx.particulars}
+                                  </div>
+                                )}
+                                <div style={{ display: "flex", alignItems: "center", gap: "4px", flexWrap: "wrap", marginTop: "2px" }}>
+                                  {tx.isNew && (
+                                    <span style={{ fontSize: "9px", padding: "1px 5px", background: "#dcfce7", color: "#166534", borderRadius: "3px", fontWeight: "700", border: "1px solid #86efac" }}>
+                                      new
+                                    </span>
+                                  )}
+                                  {rowAccount && (
+                                    <span style={{ fontSize: "9px", padding: "1px 5px", background: "#f1f5f9", color: "#475569", borderRadius: "3px", border: "1px solid #cbd5e1", fontWeight: "600" }}>
+                                      {rowAccount}
+                                    </span>
+                                  )}
+                                  {isUnrecon && (
+                                    <span style={{ fontSize: "9px", padding: "1px 5px", background: "#fef3c7", color: "#b45309", borderRadius: "3px", fontWeight: "700", border: "1px solid #fde68a" }}>
+                                      Unreconciled
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
+                              <td style={{ padding: "6px 2px", width: "135px" }}>
+                                {isUnrecon ? (
+                                  <div style={{ display: "flex", alignItems: "center", gap: "3px" }}>
+                                    <select
+                                      value={tx.plCategory || tx.category || ""}
+                                      onChange={e => handleUnreconCategoryChange(tx, e.target.value)}
+                                      title="Assign P&L expense category"
+                                      style={{
+                                        flex: 1,
+                                        minWidth: "75px",
+                                        maxWidth: "85px",
+                                        padding: "2px 3px",
+                                        fontSize: "9px",
+                                        borderRadius: "4px",
+                                        border: "1px solid #cbd5e1",
+                                        background: (tx.plCategory || tx.category) ? "#f0fdf4" : "#ffffff",
+                                        color: (tx.plCategory || tx.category) ? "#166534" : "#334155",
+                                        fontWeight: (tx.plCategory || tx.category) ? "600" : "400",
+                                        cursor: "pointer",
+                                        overflow: "hidden",
+                                        textOverflow: "ellipsis",
+                                        whiteSpace: "nowrap"
+                                      }}
+                                    >
+                                      <option value="">(P&L account...)</option>
+                                      <option value="Not an expense">Not an expense</option>
+                                      {Array.from(new Set([
+                                        ...(reconData?.plAccountOptions || []).filter(c => c && c !== "Not an expense"),
+                                        ...(tx.plCategory && tx.plCategory !== "Not an expense" ? [tx.plCategory] : (tx.category && tx.category !== "Not an expense" ? [tx.category] : []))
+                                      ])).map(catOpt => (
+                                        <option key={catOpt} value={catOpt}>{catOpt}</option>
+                                      ))}
+                                    </select>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleUnreconVatToggle(tx)}
+                                      title="Toggle whether VAT applies to this expense"
+                                      style={{
+                                        padding: "2px 4px",
+                                        fontSize: "8.5px",
+                                        fontWeight: "700",
+                                        borderRadius: "3px",
+                                        border: "1px solid #cbd5e1",
+                                        background: tx.vatApplies === "Yes" ? "#dcfce7" : "#f1f5f9",
+                                        color: tx.vatApplies === "Yes" ? "#166534" : "#475569",
+                                        cursor: "pointer",
+                                        whiteSpace: "nowrap",
+                                        flexShrink: 0
+                                      }}
+                                    >
+                                      {tx.vatApplies === "Yes" ? "VAT: Yes" : "VAT: No"}
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <span style={{ color: "#cbd5e1", fontSize: "11px", display: "inline-block", textAlign: "center", width: "100%" }}>—</span>
+                                )}
+                              </td>
+                              <td style={{ padding: "6px 4px", textAlign: "right", color: "#b91c1c", fontWeight: parseAmount(tx.outAmount) > 0 ? "600" : "400", whiteSpace: "nowrap", width: "58px" }}>
+                                {formatAmount2DP(tx.outAmount)}
+                              </td>
+                              <td style={{ padding: "6px 4px", textAlign: "right", color: "#15803d", fontWeight: parseAmount(tx.inAmount) > 0 ? "600" : "400", whiteSpace: "nowrap", width: "58px" }}>
+                                {formatAmount2DP(tx.inAmount)}
+                              </td>
+                              <td style={{ padding: "6px 4px", width: "95px" }}>
+                                <select
+                                  value={currentCat}
+                                  onChange={e => handleCategoryChange(tx, e.target.value)}
+                                  style={{
+                                    padding: "2px 2px",
+                                    fontSize: "9.5px",
+                                    fontWeight: "600",
+                                    borderRadius: "4px",
+                                    background: catStyle.bg,
+                                    color: catStyle.color,
+                                    border: `1px solid ${catStyle.border}`,
+                                    cursor: "pointer",
+                                    width: "100%",
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis"
+                                  }}
+                                >
+                                  {VALID_RECON_CATEGORIES.map(c => (
+                                    <option key={c} value={c}>{c}</option>
+                                  ))}
+                                </select>
+                              </td>
+                            </tr>
+                          </React.Fragment>
                         );
                       })}
                     </tbody>
                   </table>
                 )}
               </div>
-            )}
+            </div>
 
-            {/* 2. Revenue Breakdown */}
-            {activeRightTab === "revenue" && (
-              <AlignedBreakdownView
-                type="revenue"
-                bankItems={liveRevenueBankItems}
-                pulseItems={sanitizedPulseInvoices}
-                title="Revenue matching"
-                subtitle={isAdmin ? "Bank deposits tagged as Revenue vs paid invoices from Pulse Monthly! tab:" : "Bank deposits tagged as Revenue vs paid invoices in Pulse:"}
-              />
-            )}
+            {/* ========================================================================= */}
+            {/* RIGHT PANE: Breakdowns & Variance Workbench                              */}
+            {/* ========================================================================= */}
+            <div style={{
+              background: "#ffffff",
+              borderRadius: "10px",
+              border: "1px solid #cbd5e1",
+              display: "flex",
+              flexDirection: "column",
+              overflow: "hidden",
+              minWidth: 0,
+              boxShadow: "0 1px 3px rgba(0,0,0,0.03)"
+            }}>
+              {/* Tabs */}
+              <div style={{ padding: "8px 12px", borderBottom: "1px solid #e2e8f0", background: "#f8fafc", display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                {[
+                  { id: "variance", label: "Cashflow variance" },
+                  { id: "revenue", label: `Revenue (${liveRevenueBankItems.length})` },
+                  { id: "contractors", label: `Contractors (${liveContractorsBankItems.length})` },
+                  { id: "direct_costs", label: `Direct costs (${liveDirectCostsBankItems.length})` }
+                ].map(tab => (
+                  <button
+                    key={tab.id}
+                    onClick={() => setActiveRightTab(tab.id)}
+                    style={{
+                      padding: "5px 10px",
+                      fontSize: "11px",
+                      fontWeight: activeRightTab === tab.id ? "700" : "500",
+                      borderRadius: "5px",
+                      border: activeRightTab === tab.id ? "1px solid #0284c7" : "1px solid transparent",
+                      background: activeRightTab === tab.id ? "#ffffff" : "transparent",
+                      color: activeRightTab === tab.id ? "#0284c7" : "#64748b",
+                      cursor: "pointer",
+                      boxShadow: activeRightTab === tab.id ? "0 1px 2px rgba(0,0,0,0.05)" : "none"
+                    }}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
 
-            {/* 3. Contractors Breakdown */}
-            {activeRightTab === "contractors" && (
-              <AlignedBreakdownView
-                type="contractors"
-                bankItems={liveContractorsBankItems}
-                pulseItems={sanitizedPulseContractors}
-                title="Contractors matching"
-                subtitle="Bank debits tagged as Contractors vs Pulse contractor payments:"
-              />
-            )}
+              {/* Tab Content */}
+              <div style={{ flex: 1, padding: "14px", overflowY: "auto", maxHeight: "640px" }}>
+                {/* 1. Cashflow Variance */}
+                {activeRightTab === "variance" && (
+                  <div>
+                    <div style={{ marginBottom: "12px", fontSize: "12px", color: "#475569" }}>
+                      Compares totals from the bank transactions with expected figures based on data in Pulse.
+                    </div>
+                    {(!reconData?.cashflowComparisons || reconData.cashflowComparisons.length === 0) ? (
+                      <div style={{ textAlign: "center", padding: "40px 20px", color: "#94a3b8" }}>
+                        {isAdmin ? "No comparison data available for this tab. Ensure Recon Sheet tab is populated." : "No comparison data available for this month."}
+                      </div>
+                    ) : (
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
+                        <thead>
+                          <tr style={{ background: "#f1f5f9", borderBottom: "1px solid #cbd5e1", color: "#475569" }}>
+                            <th style={{ padding: "8px 10px", textAlign: "left" }}>Category</th>
+                            <th style={{ padding: "8px 10px", textAlign: "right" }}>Cashflow forecast</th>
+                            <th style={{ padding: "8px 10px", textAlign: "right" }}>Bank actual</th>
+                            <th style={{ padding: "8px 10px", textAlign: "right" }}>Difference</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {reconData.cashflowComparisons.filter(c => c.label.toLowerCase() !== "total").map((c, i) => {
+                            const liveVal = getLiveBankActual(c);
+                            const hasLiveTxns = bankTxns && bankTxns.length > 0;
 
-            {/* 4. Direct Costs Breakdown */}
-            {activeRightTab === "direct_costs" && (
-              <AlignedBreakdownView
-                type="direct_costs"
-                bankItems={liveDirectCostsBankItems}
-                pulseItems={sanitizedPulseDirectCosts}
-                title="Direct costs matching"
-                subtitle="Bank debits tagged as Direct costs vs Pulse direct cost job items:"
-              />
-            )}
+                            // Parse cashflow forecast value
+                            const cashflowClean = String(c.cashflow || "").replace(/[£,\s]/g, "");
+                            const cashflowNum = parseFloat(cashflowClean) || 0;
+
+                            // Bank actual value: use live calculated total from workbench if bankTxns loaded, otherwise fall back to sheet value
+                            let bankActualNum = 0;
+                            let bankActualDisplay = c.bankRecon || "—";
+
+                            if (hasLiveTxns && liveVal !== null) {
+                              bankActualNum = liveVal;
+                              bankActualDisplay = formatGBP(liveVal);
+                            } else if (c.bankRecon && c.bankRecon !== "—") {
+                              const sheetClean = String(c.bankRecon || "").replace(/[£,\s]/g, "");
+                              bankActualNum = parseFloat(sheetClean) || 0;
+                              bankActualDisplay = c.bankRecon;
+                            }
+
+                            // Difference: Bank actual vs Forecast
+                            let diffNum = 0;
+                            let diffDisplay = c.diff || "£0.00";
+                            if ((hasLiveTxns && liveVal !== null) || (c.bankRecon && c.bankRecon !== "—")) {
+                              diffNum = bankActualNum - cashflowNum;
+                              diffDisplay = formatGBP(diffNum);
+                            } else {
+                              const diffClean = String(c.diff || "").replace(/[£,\s]/g, "");
+                              diffNum = parseFloat(diffClean) || 0;
+                            }
+
+                            const isZero = Math.abs(diffNum) < 0.01;
+                            const isHighlight = Math.abs(diffNum) > 0.01;
+
+                            return (
+                              <tr key={i} style={{ borderBottom: "1px solid #f1f5f9", background: isHighlight ? "#fffbeb" : "#ffffff" }}>
+                                <td style={{ padding: "8px 10px", fontWeight: "600", color: "#1e293b" }}>{c.label}</td>
+                                <td style={{ padding: "8px 10px", textAlign: "right", color: "#475569" }}>{c.cashflow || "—"}</td>
+                                <td style={{ padding: "8px 10px", textAlign: "right", color: "#1e293b", fontWeight: "600" }}>{bankActualDisplay}</td>
+                                <td style={{ padding: "8px 10px", textAlign: "right" }}>
+                                  <span style={{
+                                    padding: "2px 6px",
+                                    borderRadius: "4px",
+                                    fontSize: "11px",
+                                    fontWeight: "700",
+                                    background: isZero ? "#dcfce7" : "#fee2e2",
+                                    color: isZero ? "#166534" : "#991b1b"
+                                  }}>
+                                    {diffDisplay}
+                                  </span>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                )}
+
+                {/* 2. Revenue Breakdown */}
+                {activeRightTab === "revenue" && (
+                  <AlignedBreakdownView
+                    type="revenue"
+                    bankItems={liveRevenueBankItems}
+                    pulseItems={sanitizedPulseInvoices}
+                    title="Revenue matching"
+                    subtitle={isAdmin ? "Bank deposits tagged as Revenue vs paid invoices from Pulse Monthly! tab:" : "Bank deposits tagged as Revenue vs paid invoices in Pulse:"}
+                  />
+                )}
+
+                {/* 3. Contractors Breakdown */}
+                {activeRightTab === "contractors" && (
+                  <AlignedBreakdownView
+                    type="contractors"
+                    bankItems={liveContractorsBankItems}
+                    pulseItems={sanitizedPulseContractors}
+                    title="Contractors matching"
+                    subtitle="Bank debits tagged as Contractors vs Pulse contractor payments:"
+                  />
+                )}
+
+                {/* 4. Direct Costs Breakdown */}
+                {activeRightTab === "direct_costs" && (
+                  <AlignedBreakdownView
+                    type="direct_costs"
+                    bankItems={liveDirectCostsBankItems}
+                    pulseItems={sanitizedPulseDirectCosts}
+                    title="Direct costs matching"
+                    subtitle="Bank debits tagged as Direct costs vs Pulse direct cost job items:"
+                  />
+                )}
 
 
+              </div>
+            </div>
           </div>
-        </div>
-      </div>
         </>
       )}
 
@@ -4074,10 +4074,10 @@ export default function CashflowWorkbenchView({
                   Important next step:
                 </p>
                 <p style={{ margin: "0 0 6px" }}>
-                  Notice the <strong>Reconciled & ready for automated P&L updates</strong> checkbox in the top bar.
+                  Notice the <strong>Reconciled & ready for automated P&L updates</strong> checkbox in the top bar of the next screen.
                 </p>
                 <p style={{ margin: 0 }}>
-                  Once you are happy with the reconciliation, check this box. This will allow the display of cashflow breakdowns and start the automatic updating process.
+                  Once you&apos;re happy with the reconciliation, check this box. This will allow the display of transaction breakdowns and start automatic updates.
                 </p>
               </div>
             </div>

@@ -500,8 +500,9 @@ export async function handleGetInvoicesInbox(req, res, sheets) {
       if (!invoiceNo) { skippedNoInvNo++; continue; }
       inbox.push({
         invoiceNo, client, job, currency, sentDate, dueDate, fullyPaidOn, status,
-        amount: totalExclVAT > 0 ? totalExclVAT : invoiceAmt,
+        amount: totalExclVAT !== 0 ? totalExclVAT : invoiceAmt,
         grossAmount: invoiceAmt, vatAmount: vatIncluded,
+        isMissing,
       });
     }
 
@@ -3419,8 +3420,15 @@ export async function handleAssignInvoiceToJob(req, res, sheets) {
     jobLastRow, jobClient, jobName, updateClientName, newClientName, jobRowNums,
     updateJobName, newJobName
   } = req.body;
-  if (!clientSheetId || !invoice) return res.status(400).json({ success: false, error: "Missing clientSheetId or invoice" });
-  if (!createNewRow && (!rowNum || !slotNum)) return res.status(400).json({ success: false, error: "Missing rowNum or slotNum" });
+  console.log(`ℹ PMA handleAssignInvoiceToJob: client="${req.body.clientName}", job="${jobName}", invoiceNo="${invoice?.invoiceNo}", createNewRow=${createNewRow}, rowNum=${rowNum}, slotNum=${slotNum}`);
+  if (!clientSheetId || !invoice) {
+    console.error(`❌ PMA handleAssignInvoiceToJob: Missing clientSheetId (${clientSheetId}) or invoice (${Boolean(invoice)})`);
+    return res.status(400).json({ success: false, error: "Missing clientSheetId or invoice" });
+  }
+  if (!createNewRow && (!rowNum || !slotNum)) {
+    console.error(`❌ PMA handleAssignInvoiceToJob: Missing rowNum (${rowNum}) or slotNum (${slotNum})`);
+    return res.status(400).json({ success: false, error: "Missing rowNum or slotNum" });
+  }
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
     const slotCols = {
@@ -3810,6 +3818,17 @@ export async function handleAssignInvoiceToJob(req, res, sheets) {
         data: slotUpdateData,
       },
     });
+
+    // Update in-memory allRows for targetRowNum so placeholder adjustments know this slot has a real invoice!
+    if (allRows) {
+      if (!allRows[targetRowNum - 1]) allRows[targetRowNum - 1] = [];
+      const baseCol = targetSlotNum === 1 ? 41 : targetSlotNum === 2 ? 48 : 55;
+      allRows[targetRowNum - 1][baseCol] = invoice.amount || 0;
+      allRows[targetRowNum - 1][baseCol + 1] = invoice.invoiceNo || "";
+      allRows[targetRowNum - 1][baseCol + 2] = invoice.sentDate || "";
+      allRows[targetRowNum - 1][baseCol + 3] = daysToPay;
+      allRows[targetRowNum - 1][baseCol + 4] = invoice.status || "Sent";
+    }
 
     // Adjust any existing placeholder invoice slot on this job
     const allJobRowsToCheck = matchingRowIndices.length > 0 ? [...matchingRowIndices] : [targetRowNum];

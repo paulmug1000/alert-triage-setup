@@ -1429,10 +1429,16 @@ export function getProactiveCardTitle(alert, isAdmin = true) {
   const m = alert.metadata || {};
   const type = alert.alertType || "";
   switch (type) {
-    case "retainer_invoice":
-      if (m.possibleMatchCase === "draft") return "Draft retainer invoice found but not yet sent";
-      if (m.possibleMatchCase === "changed") return "Expected retainer invoice not found at current retainer amount";
+    case "retainer_invoice": {
+      const effCase = m.possibleMatchCase || (
+        m.possibleMatchInvoiceNo
+          ? ((m.possibleMatchAmount && m.revenue && Math.abs(parseFloat(m.possibleMatchAmount || 0) - parseFloat(m.revenue || 0)) > 0.01) ? "changed" : (m.possibleMatchStatus && !["sent", "paid"].includes(String(m.possibleMatchStatus).toLowerCase()) ? "draft" : "matches"))
+          : ""
+      );
+      if (effCase === "draft") return "Draft retainer invoice found but not yet sent";
+      if (effCase === "changed") return "Expected retainer invoice not found at current retainer amount";
       return "Expected recurring retainer invoice has not been sent";
+    }
     case "uninvoiced_new_job":
       return "Job started over a month ago with no invoices sent";
     case "uninvoiced_revenue":
@@ -1699,7 +1705,7 @@ export function calculatePaymentDate(baseDateStr, daysToPay) {
  * - direct_costs_mismatch
  * - stale_unrecon_gap
  */
-export function getAlertJobTarget(alertOrNa, isInfo = false, clientInfo = null) {
+function getAlertJobTargetInternal_(alertOrNa, isInfo = false, clientInfo = null) {
   if (!alertOrNa) return null;
 
   const m = alertOrNa.metadata || {};
@@ -1944,6 +1950,14 @@ export function getAlertJobTarget(alertOrNa, isInfo = false, clientInfo = null) 
   }
 
   return null;
+}
+
+export function getAlertJobTarget(alertOrNa, isInfo = false, clientInfo = null) {
+  if (!alertOrNa) return null;
+  const target = getAlertJobTargetInternal_(alertOrNa, isInfo, clientInfo);
+  if (!target) return null;
+  target.sourceAlert = alertOrNa;
+  return target;
 }
 
 const RET_MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];

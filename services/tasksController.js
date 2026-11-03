@@ -10,6 +10,7 @@ import { logPmaActivity } from "./pmaLogger";
 import { getSessionUser } from "./authService";
 import { matchesClientName, isUserAuthorizedForClient } from "./userPermissions";
 import { ADMIN_ONLY_ALERT_TYPES } from "../utils/helpers";
+import { restoreAlertToCacheAndSession } from "./alertState";
 
 let _tasksMemoryCache = null;
 let _tasksCachedAt = 0;
@@ -109,6 +110,7 @@ export async function handleBulkCreateTasks(req, res, sheets) {
             isAdminOnly,
             taskKey,
             snoozedUntil: snoozedUntil || "",
+            alertData: JSON.stringify(alert),
           }),
         };
 
@@ -614,7 +616,7 @@ export async function handleSnoozeTask(req, res, sheets) {
 }
 
 export async function handleRevertTaskToAlert(req, res, sheets) {
-  const { fingerprintHash, automationCommanderSheetId: acId } = req.body;
+  const { fingerprintHash, automationCommanderSheetId: acId, sessionId } = req.body;
   if (!fingerprintHash || !acId) return res.status(400).json({ success: false, error: "Missing required fields" });
   try {
     await ensureAlertMemoryTab(sheets, acId);
@@ -636,9 +638,72 @@ export async function handleRevertTaskToAlert(req, res, sheets) {
       return res.status(403).json({ success: false, error: "Access denied: task belongs to an Admin-only alert" });
     }
 
-    await updateAlertMemoryRow(sheets, acId, memoryRow.rowIndex, { ...memoryRow, status: "cached" });
+    let originalAlert = null;
+    if (taskMeta.alertData) {
+      try {
+        originalAlert = typeof taskMeta.alertData === "string" ? JSON.parse(taskMeta.alertData) : taskMeta.alertData;
+      } catch (e) {
+        console.warn("Failed to parse alertData on task revert:", e);
+      }
+    }
+
+    if (!originalAlert) {
+      originalAlert = {
+        fingerprintHash,
+        type: memoryRow.alertType || taskMeta.alertType || "alert",
+        flagType: taskMeta.flagType || memoryRow.alertType || "",
+        clientName: memoryRow.clientName || "",
+        heading: memoryRow.alertSummary || "Alert",
+        summary: {
+          summary: memoryRow.alertSummary,
+          invoiceNo: taskMeta.invoiceNo || "",
+          reference: taskMeta.reference || "",
+          amount: taskMeta.amount || "",
+          status: taskMeta.status || "",
+        },
+        masterSheetId: taskMeta.masterSheetId || "",
+        isProactive: !!taskMeta.isProactive || memoryRow.category === "proactive",
+        proactiveAlertKey: taskMeta.proactiveAlertKey || "",
+      };
+    }
+
+    if (!originalAlert.fingerprintHash) {
+      originalAlert.fingerprintHash = fingerprintHash;
+    }
+
+    const category = memoryRow.category || (taskMeta.isProactive ? "proactive" : (originalAlert.isNoAction ? "informational" : "discrepancy"));
+
+    const restoredRow = {
+      ...memoryRow,
+      status: "cached",
+      snoozedUntil: "",
+      ignoreReason: "",
+      dataSnapshot: taskMeta.alertData ? (typeof taskMeta.alertData === "string" ? taskMeta.alertData : JSON.stringify(taskMeta.alertData)) : memoryRow.dataSnapshot,
+    };
+
+    await updateAlertMemoryRow(sheets, acId, memoryRow.rowIndex, restoredRow);
     await updateTaskInCache({ fingerprintHash }, true);
-    return res.status(200).json({ success: true });
+    await updateHandledAlertHash(acId, fingerprintHash, "cached");
+
+    await restoreAlertToCacheAndSession(originalAlert, category, sessionId);
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId: acId,
+      clientName: memoryRow.clientName || "",
+      category: "TRIAGE",
+      action: "Task Reverted to Alert",
+      summary: `Reverted task to alert for ${memoryRow.clientName || "Client"}: ${memoryRow.alertSummary || "Alert"}`,
+      details: { fingerprintHash, clientName: memoryRow.clientName, alertType: memoryRow.alertType }
+    });
+
+    return res.status(200).json({
+      success: true,
+      alert: originalAlert,
+      category,
+      clientName: memoryRow.clientName,
+      alertType: memoryRow.alertType,
+      fingerprintHash,
+    });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
   }

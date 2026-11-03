@@ -1624,7 +1624,8 @@ export default function TriageAnalysisView({
                                             clientName: targetClientName,
                                             contractor: targetJobName,
                                             rowNum: option.jobRow,
-                                            isOutgoings: true
+                                            isOutgoings: true,
+                                            sourceAlert: alert
                                           });
                                         }}
                                         style={{
@@ -1939,7 +1940,7 @@ export default function TriageAnalysisView({
             onClick={() => setShowIgnoreModal(true)}
             style={{ ...styles.buttonSecondary, color: "#c62828", borderColor: "#ef9a9a" }}
           >
-            Ignore forever
+            Ignore
           </button>
           <button className="triage-btn"
             onClick={() => openCreateTaskModal(clientAlerts[currentClientAlertIndex], false)}
@@ -2648,6 +2649,12 @@ export default function TriageAnalysisView({
             isOpen={Boolean(viewingOutgoingsTarget)}
             target={viewingOutgoingsTarget}
             onClose={() => setViewingOutgoingsTarget(null)}
+            onDeleted={(deletedTarget) => {
+              const targetAlert = deletedTarget?.sourceAlert || alert;
+              if (targetAlert) {
+                handleResolveAlertAfterPlacement(targetAlert, "Deleted expense from Outgoings");
+              }
+            }}
             isAdmin={isAdmin}
           />
         )}

@@ -202,7 +202,7 @@ export default function AlertSelectionView({
       body: JSON.stringify({
         action: "acknowledge_proactive_alert",
         alertKey,
-        clientName: selectedClient?.clientName,
+        clientName: alertData?.clientName || selectedClient?.clientName,
         sessionId,
         automationCommanderSheetId,
         alertData,
@@ -248,7 +248,7 @@ export default function AlertSelectionView({
         const remainingClientProactive = remaining.filter(a => a.clientName === selectedClient?.clientName);
         const remainingProactiveCount = remainingClientProactive.length;
         const infoDone = clientNoActionAlerts.every(na => isNoActionResolved(na) || isStaleInvoiceSuppressedByRetainerAlert(na, remainingClientProactive));
-        if (clientAlerts.length === 0 && infoDone && remainingProactiveCount === 0) {
+        if (selectedClient && clientAlerts.length === 0 && infoDone && remainingProactiveCount === 0) {
           handlePostClear([], resolvedNoActionFlags);
         }
         return remaining;
@@ -509,6 +509,61 @@ export default function AlertSelectionView({
         handlePostClear([], newResolved);
       }
     }, 320);
+  };
+
+  const handleOutgoingsDeleted = (deletedTarget) => {
+    if (!deletedTarget) return;
+    const handledKeys = new Set();
+    const sourceAlert = deletedTarget.sourceAlert;
+    if (sourceAlert) {
+      if (sourceAlert.alertKey || sourceAlert.alertType) {
+        const k = sourceAlert.alertKey || (sourceAlert.rowIndex != null ? `row-${sourceAlert.rowIndex}` : null);
+        if (k) handledKeys.add(k);
+        acknowledgeProactiveAlert(sourceAlert.alertKey, sourceAlert.rowIndex);
+      } else if (sourceAlert.flagType) {
+        const id = sourceAlert.fingerprintHash || `${sourceAlert.flagType}-${sourceAlert.flagDetail || ""}`;
+        if (id) handledKeys.add(id);
+        handleMarkNoActionResolved(sourceAlert);
+      }
+    }
+
+    const cName = deletedTarget.clientName || deletedTarget.client?.clientName || selectedClient?.clientName;
+    const targetRowNum = deletedTarget.sheetRow ? Number(deletedTarget.sheetRow) : (deletedTarget.rowNum ? Number(deletedTarget.rowNum) : null);
+    const contractorName = String(deletedTarget.contractor || "").trim().toLowerCase();
+    const monthStr = String(deletedTarget.month || "").trim().toLowerCase();
+
+    if (cName) {
+      (proactiveAlerts || []).forEach(a => {
+        if ((a.clientName === cName || a.metadata?.clientName === cName) && a.alertType === "stale_unrecon_gap") {
+          const aRowNum = a.metadata?.rowNum || a.rowNum;
+          const aContractor = String(a.metadata?.contractor || a.contractor || "").trim().toLowerCase();
+          const aMonth = String(a.metadata?.month || a.month || "").trim().toLowerCase();
+          const k = a.alertKey || (a.rowIndex != null ? `row-${a.rowIndex}` : null);
+          const isRowMatch = targetRowNum && Number(aRowNum) === targetRowNum;
+          const isContractorMonthMatch = contractorName && monthStr && aContractor === contractorName && aMonth === monthStr;
+          if ((isRowMatch || isContractorMonthMatch) && k && !handledKeys.has(k)) {
+            handledKeys.add(k);
+            acknowledgeProactiveAlert(a.alertKey, a.rowIndex);
+          }
+        }
+      });
+
+      (clientNoActionAlerts || []).forEach(na => {
+        if (na.flagType === "expenseUnreconGaps") {
+          const parsed = parseInfoAlertDetail(na.flagType, na.flagDetail);
+          const naRowNum = parsed?.rowNum || parsed?.outgoingsRow;
+          const naContractor = String(parsed?.contractor || "").trim().toLowerCase();
+          const naMonth = String(parsed?.month || "").trim().toLowerCase();
+          const id = na.fingerprintHash || `${na.flagType}-${na.flagDetail || ""}`;
+          const isRowMatch = targetRowNum && Number(naRowNum) === targetRowNum;
+          const isContractorMonthMatch = contractorName && monthStr && naContractor === contractorName && naMonth === monthStr;
+          if ((isRowMatch || isContractorMonthMatch) && id && !handledKeys.has(id)) {
+            handledKeys.add(id);
+            handleMarkNoActionResolved(na);
+          }
+        }
+      });
+    }
   };
 
   const getGroupSectionHeader = (type, groupAlerts) => {
@@ -1424,6 +1479,7 @@ export default function AlertSelectionView({
             allClientsMap={allClientsMap}
             setRetainerAlertResolution={setRetainerAlertResolution}
             setRetainerSplitInvoice={setRetainerSplitInvoice}
+            setRetainerChangeSendDates={setRetainerChangeSendDates}
             acknowledgeProactiveAlert={acknowledgeProactiveAlert}
             acknowledgingKey={acknowledgingKey}
             exitingAlertKeys={exitingAlertKeys}
@@ -1514,7 +1570,7 @@ export default function AlertSelectionView({
                                       <button className="triage-btn"
                                         onClick={() => onNavInvoices ? onNavInvoices(selectedClient) : setActiveNav("invoices")}
                                         style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 14px", color: "#ea580c", borderColor: "#fdba74" }}>
-                                        📥 Assign invoices
+                                        Assign invoices
                                       </button>
                                     </div>
                                   )}
@@ -1572,7 +1628,7 @@ export default function AlertSelectionView({
                                       <button className="triage-btn"
                                         onClick={() => onNavInvoices ? onNavInvoices(selectedClient) : setActiveNav("invoices")}
                                         style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 14px", color: "#ea580c", borderColor: "#fdba74" }}>
-                                        📥 Assign invoices
+                                        Assign invoices
                                       </button>
                                     </div>
                                   )]
@@ -2050,48 +2106,80 @@ export default function AlertSelectionView({
                                       <span>{getProactiveCardTitle(alert, isAdmin)}</span>
                                       {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(alert.alertType) && <AdminBadge show={clientHasManager} />}
                                     </div>
-                                    {alert.alertType === "retainer_invoice" && (
-                                      <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
-                                        {m.endClientName && <div><strong>End client:</strong> {m.endClientName}</div>}
-                                        {m.jobName && <div><strong>Job:</strong> {m.jobName}</div>}
-                                        {m.confirmedRow && <div><strong>Confirmed tab row:</strong> {m.confirmedRow}</div>}
-                                        {m.revenue && <div><strong>Monthly revenue:</strong> {m.revenue}</div>}
-                                        {m.startDate && <div><strong>Contract period:</strong> {m.startDate} → {formatJobEndDateDisplay(m.endDate, m.endDate)}</div>}
-                                        {m.frequencyDays && <div><strong>Invoice frequency:</strong> {freqLabel(m.frequencyDays)} (every ~{m.frequencyDays} days)</div>}
-                                        {m.lastInvoiceDate && <div><strong>Last invoice sent:</strong> {m.lastInvoiceDate}</div>}
-                                        {m.expectedByDate && <div><strong>Next expected by:</strong> {m.expectedByDate}</div>}
-                                        {m.possibleMatchInvoiceNo && (
-                                          <div style={{ marginTop: "6px", paddingTop: "6px", borderTop: "1px solid #e2e8f0" }}>
-                                            {m.possibleMatchCase === "changed" && (
-                                              <div style={{ display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "600", marginBottom: "4px", background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca" }}>
-                                                Possible retainer change - {m.possibleMatchConfidence === "high" ? "high" : "medium"} confidence
-                                              </div>
-                                            )}
-                                            {m.possibleMatchCase === "draft" && (
-                                              <div style={{ display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "600", marginBottom: "4px", background: "#f0f9ff", color: "#0369a1", border: "1px solid #bae6fd" }}>
-                                                Draft invoice found nearby
-                                              </div>
-                                            )}
-                                            <div><strong>{m.possibleMatchCase === "draft" ? "DRAFT invoice found:" : "Invoice found:"}</strong> #{m.possibleMatchInvoiceNo} for £{parseFloat(m.possibleMatchAmount || 0).toFixed(2)}, sent {m.possibleMatchSentDate}</div>
-                                            <div>{m.possibleMatchConfirmedRow ? <>Already attached to Confirmed row {m.possibleMatchConfirmedRow}</> : <>Not yet attached to any confirmed job in Pulse</>}</div>
-                                            {m.possibleMatchCase === "changed" && <div style={{ marginTop: "4px" }}>This may mean the retainer value has changed.</div>}
-                                            {m.possibleMatchCase === "matches" && <div style={{ marginTop: "4px" }}>Matches the expected retainer amount.</div>}
-                                            {m.possibleMatchCase === "draft" && <div style={{ marginTop: "4px" }}>It likely just needs sending.</div>}
-                                          </div>
-                                        )}
-                                        {m.confirmedRow && m.jobName && (
-                                          <div style={{ marginTop: "8px", paddingTop: "8px", borderTop: "1px solid #e2e8f0", display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                                            {(!m.possibleMatchInvoiceNo || m.possibleMatchCase === "changed") && (
-                                              m.possibleMatchInvoiceNo ? (
+                                    {alert.alertType === "retainer_invoice" && (() => {
+                                      const confirmedRow = m.confirmedRow || alert.confirmedRow;
+                                      const jobName = m.jobName || alert.jobName;
+                                      const endClientName = m.endClientName || alert.endClientName;
+                                      const revenue = m.revenue || alert.revenue;
+                                      const startDate = m.startDate || alert.startDate;
+                                      const endDate = m.endDate || alert.endDate;
+                                      const frequencyDays = m.frequencyDays || alert.frequencyDays;
+                                      const lastInvoiceDate = m.lastInvoiceDate || alert.lastInvoiceDate;
+                                      const expectedByDate = m.expectedByDate || alert.expectedByDate;
+                                      const possibleMatchInvoiceNo = m.possibleMatchInvoiceNo || alert.possibleMatchInvoiceNo;
+                                      const possibleMatchAmount = m.possibleMatchAmount || alert.possibleMatchAmount;
+                                      const possibleMatchSentDate = m.possibleMatchSentDate || alert.possibleMatchSentDate;
+                                      const possibleMatchConfidence = m.possibleMatchConfidence || alert.possibleMatchConfidence;
+                                      const possibleMatchConfirmedRow = m.possibleMatchConfirmedRow || alert.possibleMatchConfirmedRow;
+                                      const possibleMatchStatus = m.possibleMatchStatus || alert.possibleMatchStatus;
+                                      const effectiveMatchCase = m.possibleMatchCase || alert.possibleMatchCase || (
+                                        possibleMatchInvoiceNo
+                                          ? ((possibleMatchAmount && revenue && Math.abs(parseFloat(possibleMatchAmount || 0) - parseFloat(revenue || 0)) > 0.01) ? "changed" : (possibleMatchStatus && !["sent", "paid"].includes(String(possibleMatchStatus).toLowerCase()) ? "draft" : "matches"))
+                                          : ""
+                                      );
+                                      return (
+                                        <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
+                                          {endClientName && <div><strong>End client:</strong> {endClientName}</div>}
+                                          {jobName && <div><strong>Job:</strong> {jobName}</div>}
+                                          {confirmedRow && <div><strong>Confirmed tab row:</strong> {confirmedRow}</div>}
+                                          {revenue && <div><strong>Monthly revenue:</strong> {revenue}</div>}
+                                          {startDate && <div><strong>Contract period:</strong> {startDate} → {formatJobEndDateDisplay(endDate, endDate)}</div>}
+                                          {frequencyDays && <div><strong>Invoice frequency:</strong> {freqLabel(frequencyDays)} (every ~{frequencyDays} days)</div>}
+                                          {lastInvoiceDate && <div><strong>Last invoice sent:</strong> {lastInvoiceDate}</div>}
+                                          {expectedByDate && <div><strong>Next expected by:</strong> {expectedByDate}</div>}
+                                          {possibleMatchInvoiceNo && (
+                                            <div style={{ marginTop: "6px", paddingTop: "6px", borderTop: "1px solid #e2e8f0" }}>
+                                              {effectiveMatchCase === "changed" && (
+                                                <div style={{ display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "600", marginBottom: "4px", background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca" }}>
+                                                  Possible retainer change - {possibleMatchConfidence === "high" ? "high" : "medium"} confidence
+                                                </div>
+                                              )}
+                                              {effectiveMatchCase === "draft" && (
+                                                <div style={{ display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "600", marginBottom: "4px", background: "#f0f9ff", color: "#0369a1", border: "1px solid #bae6fd" }}>
+                                                  Draft invoice found nearby
+                                                </div>
+                                              )}
+                                              <div><strong>{effectiveMatchCase === "draft" ? "DRAFT invoice found:" : "Invoice found:"}</strong> #{possibleMatchInvoiceNo} for £{parseFloat(possibleMatchAmount || 0).toFixed(2)}, sent {possibleMatchSentDate}</div>
+                                              <div>{possibleMatchConfirmedRow ? <>Already attached to Confirmed row {possibleMatchConfirmedRow}</> : <>Not yet attached to any confirmed job in Pulse</>}</div>
+                                              {effectiveMatchCase === "changed" && <div style={{ marginTop: "4px" }}>This may mean the retainer value has changed.</div>}
+                                              {effectiveMatchCase === "matches" && <div style={{ marginTop: "4px" }}>Matches the expected retainer amount.</div>}
+                                              {effectiveMatchCase === "draft" && <div style={{ marginTop: "4px" }}>It likely just needs sending.</div>}
+                                            </div>
+                                          )}
+                                          {(confirmedRow || jobName) && (
+                                            <div style={{ marginTop: "8px", paddingTop: "8px", borderTop: "1px solid #e2e8f0", display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+                                              {possibleMatchInvoiceNo ? (
                                                 <>
                                                   <button className="triage-btn" onClick={() => {
                                                     const clientInfo = getClientInfoForAlert(alert);
-                                                    const targetClientSheetId = clientInfo?.clientSheetId || selectedClient?.clientSheetId || m.clientSheetId;
-                                                    const targetMasterSheetId = clientInfo?.masterSheetId || selectedClient?.masterSheetId || m.masterSheetId;
+                                                    const targetClientSheetId = clientInfo?.clientSheetId || selectedClient?.clientSheetId || m.clientSheetId || alert.clientSheetId;
+                                                    const targetMasterSheetId = clientInfo?.masterSheetId || selectedClient?.masterSheetId || m.masterSheetId || alert.masterSheetId;
                                                     const targetClientName = alert.clientName || selectedClient?.clientName || "";
                                                     setRetainerAlertResolution({
                                                       resolutionType: "changeAmount",
-                                                      alertMeta: { ...m, clientName: targetClientName },
+                                                      alertMeta: {
+                                                        ...alert,
+                                                        ...m,
+                                                        confirmedRow,
+                                                        jobName,
+                                                        endClientName,
+                                                        lastInvoiceDate,
+                                                        possibleMatchSentDate,
+                                                        possibleMatchAmount,
+                                                        possibleMatchInvoiceNo,
+                                                        possibleMatchConfirmedRow,
+                                                        clientName: targetClientName
+                                                      },
                                                       alertKey: alert.alertKey,
                                                       clientSheetId: targetClientSheetId,
                                                       masterSheetId: targetMasterSheetId
@@ -2099,11 +2187,23 @@ export default function AlertSelectionView({
                                                   }} style={{ padding: "6px 12px", background: "#7c3aed", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>Change retainer amount</button>
                                                   <button className="triage-btn" onClick={() => {
                                                     const clientInfo = getClientInfoForAlert(alert);
-                                                    const targetClientSheetId = clientInfo?.clientSheetId || selectedClient?.clientSheetId || m.clientSheetId;
-                                                    const targetMasterSheetId = clientInfo?.masterSheetId || selectedClient?.masterSheetId || m.masterSheetId;
+                                                    const targetClientSheetId = clientInfo?.clientSheetId || selectedClient?.clientSheetId || m.clientSheetId || alert.clientSheetId;
+                                                    const targetMasterSheetId = clientInfo?.masterSheetId || selectedClient?.masterSheetId || m.masterSheetId || alert.masterSheetId;
                                                     const targetClientName = alert.clientName || selectedClient?.clientName || "";
                                                     setRetainerSplitInvoice({
-                                                      alertMeta: { ...m, clientName: targetClientName },
+                                                      alertMeta: {
+                                                        ...alert,
+                                                        ...m,
+                                                        confirmedRow,
+                                                        jobName,
+                                                        endClientName,
+                                                        lastInvoiceDate,
+                                                        possibleMatchSentDate,
+                                                        possibleMatchAmount,
+                                                        possibleMatchInvoiceNo,
+                                                        possibleMatchConfirmedRow,
+                                                        clientName: targetClientName
+                                                      },
                                                       alertKey: alert.alertKey,
                                                       clientSheetId: targetClientSheetId,
                                                       masterSheetId: targetMasterSheetId
@@ -2113,45 +2213,76 @@ export default function AlertSelectionView({
                                               ) : (
                                                 <button className="triage-btn" onClick={() => {
                                                   const clientInfo = getClientInfoForAlert(alert);
-                                                  const targetClientSheetId = clientInfo?.clientSheetId || selectedClient?.clientSheetId || m.clientSheetId;
-                                                  const targetMasterSheetId = clientInfo?.masterSheetId || selectedClient?.masterSheetId || m.masterSheetId;
+                                                  const targetClientSheetId = clientInfo?.clientSheetId || selectedClient?.clientSheetId || m.clientSheetId || alert.clientSheetId;
+                                                  const targetMasterSheetId = clientInfo?.masterSheetId || selectedClient?.masterSheetId || m.masterSheetId || alert.masterSheetId;
                                                   const targetClientName = alert.clientName || selectedClient?.clientName || "";
                                                   setRetainerAlertResolution({
                                                     resolutionType: "end",
-                                                    alertMeta: { ...m, clientName: targetClientName },
+                                                    alertMeta: {
+                                                      ...alert,
+                                                      ...m,
+                                                      confirmedRow,
+                                                      jobName,
+                                                      endClientName,
+                                                      lastInvoiceDate,
+                                                      clientName: targetClientName
+                                                    },
                                                     alertKey: alert.alertKey,
                                                     clientSheetId: targetClientSheetId,
                                                     masterSheetId: targetMasterSheetId
                                                   });
                                                 }} style={{ padding: "6px 12px", background: "#dc2626", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>End retainer</button>
-                                              )
-                                            )}
-                                            <button
-                                              className="triage-btn"
-                                              onClick={() => {
-                                                const clientInfo = getClientInfoForAlert(alert);
-                                                const targetClientSheetId = clientInfo?.clientSheetId || selectedClient?.clientSheetId || m.clientSheetId;
-                                                const targetMasterSheetId = clientInfo?.masterSheetId || selectedClient?.masterSheetId || m.masterSheetId;
-                                                const targetClientName = alert.clientName || selectedClient?.clientName || "";
-                                                setRetainerChangeSendDates({
-                                                  alert,
-                                                  alertMeta: { ...m, clientName: targetClientName },
-                                                  clientName: targetClientName,
-                                                  endClientName: m.endClientName,
-                                                  jobName: m.jobName,
-                                                  confirmedRow: m.confirmedRow,
-                                                  clientSheetId: targetClientSheetId,
-                                                  masterSheetId: targetMasterSheetId
-                                                });
-                                              }}
-                                              style={{ padding: "6px 12px", background: "#0284c7", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}
-                                            >
-                                              Change send dates
-                                            </button>
-                                          </div>
-                                        )}
-                                      </div>
-                                    )}
+                                              )}
+                                              <button
+                                                className="triage-btn"
+                                                onClick={() => {
+                                                  const clientInfo = getClientInfoForAlert(alert);
+                                                  const targetClientSheetId = clientInfo?.clientSheetId || selectedClient?.clientSheetId || m.clientSheetId || alert.clientSheetId;
+                                                  const targetMasterSheetId = clientInfo?.masterSheetId || selectedClient?.masterSheetId || m.masterSheetId || alert.masterSheetId;
+                                                  const targetClientName = alert.clientName || selectedClient?.clientName || "";
+                                                  setRetainerChangeSendDates({
+                                                    alert,
+                                                    alertMeta: {
+                                                      ...alert,
+                                                      ...m,
+                                                      confirmedRow,
+                                                      jobName,
+                                                      endClientName,
+                                                      clientName: targetClientName
+                                                    },
+                                                    clientName: targetClientName,
+                                                    endClientName,
+                                                    jobName,
+                                                    confirmedRow,
+                                                    clientSheetId: targetClientSheetId,
+                                                    masterSheetId: targetMasterSheetId
+                                                  });
+                                                }}
+                                                style={{ padding: "6px 12px", background: "#0284c7", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}
+                                              >
+                                                Change send dates
+                                              </button>
+                                              {(() => {
+                                                const cName = alert.clientName || selectedClient?.clientName;
+                                                const clientInfo = (clientsWithFlags || []).find(c => c.clientName === cName) || (allClientsMap && (allClientsMap[cName] || Object.values(allClientsMap).find(cl => cl.clientName?.toLowerCase() === cName?.toLowerCase()))) || selectedClient;
+                                                const jobTarget = getAlertJobTarget(alert, false, clientInfo);
+                                                if (!jobTarget) return null;
+                                                return (
+                                                  <button
+                                                    className="triage-btn"
+                                                    onClick={() => handleViewJobOrExpense(jobTarget)}
+                                                    style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 12px", color: "#0284c7", borderColor: "#bae6fd", display: "inline-flex", alignItems: "center", gap: "4px" }}
+                                                    title="View and edit job details in pop-up"
+                                                  >
+                                                    🔍 View job
+                                                  </button>
+                                                );
+                                              })()}
+                                            </div>
+                                          )}
+                                        </div>
+                                      );
+                                    })()}
 
                                     {alert.alertType === "uninvoiced_new_job" && (
                                       <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
@@ -2162,6 +2293,10 @@ export default function AlertSelectionView({
                                         )}
                                         {m.confirmedRow && <div><strong>Confirmed tab row:</strong> {m.confirmedRow}</div>}
                                         {m.startDate && <div><strong>Job started:</strong> {m.startDate}</div>}
+                                        {(() => {
+                                          const displayEndDate = m.endDate || alert.endDate || alert.detail?.match(/ends\s+([0-9a-zA-Z-]+)/i)?.[1];
+                                          return displayEndDate ? <div><strong>Job end date:</strong> {formatJobEndDateDisplay(displayEndDate, displayEndDate)}</div> : null;
+                                        })()}
                                         {m.revenue && <div><strong>Revenue:</strong> £{parseFloat(m.revenue).toFixed(2)}</div>}
                                         <div style={{ marginTop: "4px", color: "#c62828" }}>Over a month elapsed with zero real invoices sent.</div>
                                       </div>
@@ -2946,6 +3081,7 @@ export default function AlertSelectionView({
           isOpen={Boolean(viewingOutgoingsTarget)}
           target={viewingOutgoingsTarget}
           onClose={() => setViewingOutgoingsTarget(null)}
+          onDeleted={handleOutgoingsDeleted}
           isAdmin={isAdmin}
         />
       )}

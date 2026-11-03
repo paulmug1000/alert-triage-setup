@@ -424,8 +424,22 @@ export async function checkRetainerInvoices_(clientName, clientSheetId, masterSh
       if (hasUnsentScheduled) {
         const possibleMatch1 = await findPossibleRetainerInvoice_(masterSheetId, clientSheetId, clientNameRow, unsentSendDate, sharedData, sheets, r);
         let detail1 = `${clientNameRow} - ${jobName}: invoice was scheduled for ${fmtDate(unsentSendDate)} but has no reference number - it may not have been sent yet.`;
+        let possibleMatchCase1 = "";
         if (possibleMatch1) {
-          detail1 += `\nPossible match: invoice ${possibleMatch1.invoiceNo} for £${possibleMatch1.amount.toFixed(2)} was sent to ${clientNameRow} on ${possibleMatch1.sentDate} (confidence: ${possibleMatch1.confidence})${possibleMatch1.attachedToRow ? ` - already attached to Confirmed row ${possibleMatch1.attachedToRow}` : " - not yet attached to any job in Confirmed"}. This may mean the retainer value has changed.`;
+          const match1Status = String(possibleMatch1.status || "").toLowerCase();
+          const match1IsReal = (match1Status === "sent" || match1Status === "paid");
+          if (match1IsReal) {
+            const match1Differs = Math.abs(possibleMatch1.amount - monthlyRevenue) > 0.01;
+            possibleMatchCase1 = match1Differs ? "changed" : "matches";
+            if (match1Differs) {
+              detail1 += `\nPossible match: invoice ${possibleMatch1.invoiceNo} for £${possibleMatch1.amount.toFixed(2)} was sent to ${clientNameRow} on ${possibleMatch1.sentDate} (confidence: ${possibleMatch1.confidence})${possibleMatch1.attachedToRow ? ` - already attached to Confirmed row ${possibleMatch1.attachedToRow}` : " - not yet attached to any job in Confirmed"}. This may mean the retainer value has changed.`;
+            } else {
+              detail1 += `\nInvoice ${possibleMatch1.invoiceNo} for £${possibleMatch1.amount.toFixed(2)} was sent to ${clientNameRow} on ${possibleMatch1.sentDate}, matching the expected retainer amount${possibleMatch1.attachedToRow ? ` - already attached to Confirmed row ${possibleMatch1.attachedToRow}.` : ", but not yet attached to this job in Confirmed."}`;
+            }
+          } else {
+            possibleMatchCase1 = "draft";
+            detail1 += `\nNote: invoice ${possibleMatch1.invoiceNo} for £${possibleMatch1.amount.toFixed(2)}${possibleMatch1.attachedToRow ? ` already exists on Confirmed row ${possibleMatch1.attachedToRow}` : " already exists"} but is still marked "${possibleMatch1.status || "unsent"}" - it likely just needs sending.`;
+          }
         }
         const expectedDateStr1 = unsentSendDate ? fmtDate(unsentSendDate) : "";
         alerts.push({
@@ -441,6 +455,7 @@ export async function checkRetainerInvoices_(clientName, clientSheetId, masterSh
           possibleMatchSentDate: possibleMatch1?.sentDate || "", possibleMatchVatAmount: String(possibleMatch1?.vatAmount || 0),
           possibleMatchStatus: possibleMatch1?.status || "", possibleMatchConfidence: possibleMatch1?.confidence || "",
           possibleMatchConfirmedRow: possibleMatch1?.attachedToRow ? String(possibleMatch1.attachedToRow) : "",
+          possibleMatchCase: possibleMatchCase1,
         });
         continue;
       }
@@ -931,16 +946,17 @@ export async function checkUninvoicedNewJobs_(clientName, clientSheetId, sharedD
         }
         const resolvedJobType = isRetainerJob ? "Retainer" : "Project";
         const stableKey = buildStableJobKey_(jobClient, jobName, projectCode, startVal, endVal);
+        const formattedEndDate = endDate ? fmtDate(endDate) : (endVal ? String(endVal).trim() : "");
         alerts.push({
           alertType: "uninvoiced_new_job",
           alertKey: `uninvoiced_new_job|${clientName}|${jobClient || ""}|${stableKey}|rev:${revenueAmt.toFixed(2)}`,
           legacyAlertKey: `uninvoiced_new_job|${clientName}|${jobClient || ""}|${stableKey}`,
           stableJobKey: stableKey,
           heading: "Job started over a month ago with no invoices sent",
-          detail: `${jobClient} | ${jobName} (Row ${r + 1})${projectCode ? ` [${projectCode}]` : ""}: job started ${fmtDate(startDate)} (over a month ago) but no real invoices have been recorded yet. All invoice slots are empty or contain manual placeholders.`,
-          jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1, revenue: String(revenueAmt), startDate: fmtDate(startDate),
+          detail: `${jobClient} | ${jobName} (Row ${r + 1})${projectCode ? ` [${projectCode}]` : ""}: job started ${fmtDate(startDate)}${formattedEndDate ? `, ends ${formattedEndDate}` : ""} (over a month ago) but no real invoices have been recorded yet. All invoice slots are empty or contain manual placeholders.`,
+          jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1, revenue: String(revenueAmt), startDate: fmtDate(startDate), endDate: formattedEndDate,
           jobType: resolvedJobType, isRetainer: isRetainerJob,
-          metadata: { jobClient, jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1, revenue: String(revenueAmt), startDate: fmtDate(startDate), stableJobKey: stableKey, jobType: resolvedJobType, isRetainer: isRetainerJob },
+          metadata: { jobClient, jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1, revenue: String(revenueAmt), startDate: fmtDate(startDate), endDate: formattedEndDate, stableJobKey: stableKey, jobType: resolvedJobType, isRetainer: isRetainerJob },
         });
       }
       r += jobRows.length;

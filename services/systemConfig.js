@@ -1,6 +1,7 @@
 import { waitUntil } from "@vercel/functions";
 import { redisClient } from "./redisClient.js";
-import { getSheetsClient, withRetry, extractSheetIdFromUrl, isValidGoogleScriptUrl } from "./sheetsClient.js";
+import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
+import { isValidGoogleScriptUrl } from "./eomTools.js";
 import { getSessionUser, safeCompareSecret } from "./authService.js";
 import { isUserAuthorizedForClient, getCanonicalAcSheetId } from "./userPermissions.js";
 

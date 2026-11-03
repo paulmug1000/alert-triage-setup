@@ -482,7 +482,7 @@ export default function OutgoingsDetailModal({
       setExistingBlocks(updatedBlocks);
       setConfirmingDelete(false);
       setDeletedSuccess(true);
-      onDeleted?.(target);
+      onDeleted?.({ ...target, sheetRow });
       setTimeout(() => {
         onClose();
       }, 600);

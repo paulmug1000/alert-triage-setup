@@ -5,6 +5,7 @@ import TruncatedCode from "./TruncatedCode";
 import { useTasks } from "../contexts/TaskContext";
 import { useAuth } from "../hooks/useAuth";
 import { filterAnalysisResultsForAlert, stripRowInfo } from "../utils/helpers";
+import { useTriage } from "../contexts/TriageContext";
 
 export default function TasksView({
   styles,
@@ -42,6 +43,19 @@ export default function TasksView({
     otherActiveTaskCount, otherSnoozedTaskCount, resolvedTaskCount,
     tasksLoadedAt, loadTasks, refreshTaskCount
   } = useTasks();
+
+  const triage = useTriage?.() || {};
+  const {
+    sessionId: triageSessionId,
+    setProactiveAlerts,
+    setProactiveCountsByClient,
+    setClientsWithFlags,
+    setClientAlerts,
+    setClientNoActionAlerts,
+    setProcessedAlerts,
+    setResolvedNoActionFlags,
+    selectedClient: triageSelectedClient,
+  } = triage;
 
   const [isBulkMode, setIsBulkMode] = useState(false);
   const [selectedTaskHashes, setSelectedTaskHashes] = useState(new Set());
@@ -208,7 +222,12 @@ export default function TasksView({
       const res = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "revert_task_to_alert", fingerprintHash, automationCommanderSheetId }),
+        body: JSON.stringify({
+          action: "revert_task_to_alert",
+          fingerprintHash,
+          automationCommanderSheetId,
+          sessionId: triageSessionId || undefined
+        }),
       });
       const data = await res.json();
       if (data.success) {
@@ -216,7 +235,107 @@ export default function TasksView({
         if (tasksFilter !== "resolved") {
           setTasks(prev => prev.filter(t => t.fingerprintHash !== fingerprintHash));
         }
-        refreshTriage();
+
+        const restoredAlert = data.alert;
+        const category = data.category || (restoredAlert?.isProactive ? "proactive" : (restoredAlert?.isNoAction ? "informational" : "discrepancy"));
+        const clientName = data.clientName || restoredAlert?.clientName;
+
+        const matchesClient = (a, b) => String(a || "").trim().toLowerCase() === String(b || "").trim().toLowerCase();
+
+        if (restoredAlert) {
+          if (category === "proactive" || restoredAlert.isProactive) {
+            setProactiveAlerts?.(prev => {
+              const prevArr = Array.isArray(prev) ? prev : [];
+              const exists = prevArr.some(a => (a.fingerprintHash && a.fingerprintHash === fingerprintHash) || (restoredAlert.alertKey && a.alertKey === restoredAlert.alertKey));
+              if (exists) return prevArr;
+              const updated = [restoredAlert, ...prevArr];
+              const counts = {};
+              updated.forEach(a => {
+                const cName = a.clientName || a.metadata?.endClientName || a.metadata?.clientName;
+                if (cName) counts[cName] = (counts[cName] || 0) + 1;
+              });
+              setProactiveCountsByClient?.(counts);
+              try {
+                localStorage.setItem("pulse_cached_proactive_alerts", JSON.stringify(updated));
+              } catch {}
+              return updated;
+            });
+          } else if (category === "informational" || restoredAlert.isNoAction) {
+            const na = restoredAlert;
+            const infoKey = na.fingerprintHash || `${na.flagType}-${na.flagDetail || ""}`;
+            setResolvedNoActionFlags?.(prev => {
+              const next = new Set(prev);
+              next.delete(infoKey);
+              if (na.fingerprintHash) next.delete(na.fingerprintHash);
+              if (na.id) next.delete(na.id);
+              if (na.flagDetail) next.delete(`${na.flagType}-${na.flagDetail}`);
+              next.delete(na.flagType);
+              return next;
+            });
+            if (triageSelectedClient && matchesClient(triageSelectedClient.clientName, clientName)) {
+              setClientNoActionAlerts?.(prev => {
+                const prevArr = Array.isArray(prev) ? prev : [];
+                if (prevArr.some(a => (a.fingerprintHash && a.fingerprintHash === fingerprintHash) || (a.id && a.id === na.id))) return prevArr;
+                return [restoredAlert, ...prevArr];
+              });
+            }
+          } else {
+            // Actionable discrepancy
+            setProcessedAlerts?.(prev => {
+              const next = new Set(prev);
+              next.delete(fingerprintHash);
+              if (restoredAlert.sheetName && restoredAlert.rowNumber != null) {
+                next.delete(`${restoredAlert.sheetName}-${restoredAlert.rowNumber}`);
+                next.delete(`${restoredAlert.flagType || restoredAlert.type}-${restoredAlert.sheetName}-${restoredAlert.rowNumber}`);
+              }
+              return next;
+            });
+            if (triageSelectedClient && matchesClient(triageSelectedClient.clientName, clientName)) {
+              setClientAlerts?.(prev => {
+                const prevArr = Array.isArray(prev) ? prev : [];
+                if (prevArr.some(a => (a.fingerprintHash && a.fingerprintHash === fingerprintHash) || (a.sheetName && a.rowNumber && a.sheetName === restoredAlert.sheetName && String(a.rowNumber) === String(restoredAlert.rowNumber)))) return prevArr;
+                return [restoredAlert, ...prevArr];
+              });
+            }
+          }
+
+          // Update clientsWithFlags if discrepancy or informational
+          if (category !== "proactive" && !restoredAlert.isProactive) {
+            let ft = restoredAlert.flagType || restoredAlert.alertType || restoredAlert.type || "";
+            if (ft === "invoice") ft = "invoiceDashboardDiscr";
+            if (ft === "expense" || ft === "expenseDashboardDiscr") {
+              ft = restoredAlert.expenseCategoryType === "passthrough" ? "passThroughDashboardDiscr" : "contractorsDashboardDiscr";
+            }
+            if (ft === "crm") ft = "crmPipeAppDiscr";
+
+            setClientsWithFlags?.(prev => {
+              const prevArr = Array.isArray(prev) ? prev : [];
+              const exists = prevArr.some(c => matchesClient(c.clientName, clientName));
+              if (exists) {
+                return prevArr.map(c => {
+                  if (!matchesClient(c.clientName, clientName)) return c;
+                  const updatedCounts = { ...(c.alertCounts || {}) };
+                  const updatedFlags = { ...(c.flags || {}) };
+                  if (ft) {
+                    updatedCounts[ft] = (updatedCounts[ft] || 0) + 1;
+                    updatedFlags[ft] = true;
+                  }
+                  return { ...c, alertCounts: updatedCounts, flags: updatedFlags };
+                });
+              } else if (clientName) {
+                return [...prevArr, {
+                  clientName,
+                  flags: ft ? { [ft]: true } : {},
+                  alertCounts: ft ? { [ft]: 1 } : {},
+                  activeExpenseIds: [],
+                  activeInvoiceIds: [],
+                }];
+              }
+              return prevArr;
+            });
+          }
+        }
+
         await loadTasks(tasksFilter, true);
         refreshTaskCount?.(true);
       } else {

@@ -1283,7 +1283,7 @@ export default function CashflowReconTab({
                                 justifyContent: "center"
                               }}
                             >
-                              Total (Net)
+                              Pulse total
                             </div>
                             <div
                               style={{
@@ -1300,7 +1300,7 @@ export default function CashflowReconTab({
                                 justifyContent: "center"
                               }}
                             >
-                              Transaction amount
+                              Transactions total
                             </div>
                           </>
                         )}

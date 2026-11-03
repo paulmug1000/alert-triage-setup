@@ -249,7 +249,8 @@ export default function OutgoingsView({
     directCostsShowAll, setDirectCostsShowAll,
     directCostsSavingCell, setDirectCostsSavingCell,
     outgoingsError,
-    loadOutgoings, loadDirectCostsJobs
+    loadOutgoings, loadDirectCostsJobs,
+    invalidateCachedClientData
   } = useOutgoings(assignedAppIds, assignedByClient, setAssignedByClient, setAssignedAppIds, outgoingsPullPendingRef, automationCommanderSheetId, managedClient || initialClient);
 
   const prevInitialClientRef = React.useRef(null);
@@ -498,10 +499,16 @@ export default function OutgoingsView({
           };
         }));
         if (data.newRowsCreated) {
-          loadDirectCostsJobs(outgoingsClient, directCostsShowAll, true);
+          const clientToReload = effectiveClientObj || outgoingsClient;
+          if (clientToReload) {
+            await loadDirectCostsJobs(clientToReload, directCostsShowAll, true);
+          }
         }
       } else {
-        await loadDirectCostsJobs(outgoingsClient, directCostsShowAll, true);
+        const clientToReload = effectiveClientObj || outgoingsClient;
+        if (clientToReload) {
+          await loadDirectCostsJobs(clientToReload, directCostsShowAll, true);
+        }
       }
     } catch (e) {
       console.error("assign_expense_to_job error:", e);
@@ -752,11 +759,31 @@ export default function OutgoingsView({
       {outgoingsNewVendor && (
         <OutgoingsNewVendorModal
           newVendorData={outgoingsNewVendor}
-          outgoingsClient={outgoingsClient}
+          outgoingsClient={effectiveClientObj || outgoingsClient}
           onClose={() => setOutgoingsNewVendor(null)}
-          onCreated={async () => {
-            const clientToReload = outgoingsClient;
-            await loadOutgoings(clientToReload);
+          onCreated={async (newVendor) => {
+            if (newVendor?.name) {
+              setOutgoingsData(prev => {
+                if (!prev) return prev;
+                const existing = prev.contractors || [];
+                if (existing.some(c => c.sheetRow === newVendor.sheetRow || (c.name || "").toLowerCase() === (newVendor.name || "").toLowerCase())) {
+                  return prev;
+                }
+                return {
+                  ...prev,
+                  contractors: [...existing, newVendor]
+                };
+              });
+              setContractorSearch("");
+            }
+            const clientToReload = effectiveClientObj || outgoingsClient;
+            if (clientToReload?.clientSheetId && typeof invalidateCachedClientData === "function") {
+              invalidateCachedClientData(clientToReload.clientSheetId, "outgoings");
+              invalidateCachedClientData(clientToReload.clientSheetId, "outgoings_inbox");
+            }
+            if (clientToReload) {
+              await loadOutgoings(clientToReload, true);
+            }
           }}
         />
       )}

@@ -20,6 +20,7 @@ export default function OutgoingsNewVendorModal({ newVendorData = {}, outgoingsC
         body: JSON.stringify({
           action: "create_outgoings_vendor",
           clientSheetId: outgoingsClient?.clientSheetId,
+          masterSheetId: outgoingsClient?.masterSheetId,
           clientName: outgoingsClient?.clientName || outgoingsClient?.name || "",
           vendorName: vendorName.trim(),
           vatFlag, invTiming, payTiming, deliveryPct: parseFloat(deliveryPct) || 100,
@@ -28,7 +29,18 @@ export default function OutgoingsNewVendorModal({ newVendorData = {}, outgoingsC
       const data = await res.json();
       if (!data.success) { setError(data.error || "Failed to create vendor"); setSaving(false); return; }
       
-      await onCreated();
+      const createdVendor = data.vendor || {
+        sheetRow: data.sheetRow,
+        name: vendorName.trim(),
+        vatFlag,
+        invTiming,
+        payTiming,
+        deliveryPct: `${parseFloat(deliveryPct) || 100}%`,
+        cells: {}
+      };
+      if (typeof onCreated === "function") {
+        await onCreated(createdVendor);
+      }
       onClose();
     } catch(e) { setError(e.message); setSaving(false); }
   };

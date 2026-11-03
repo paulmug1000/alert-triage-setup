@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import Spinner from "./Spinner";
 import { formatCurrency } from "./JobsView";
 import { isPlaceholderExpense } from "../utils/helpers";
+import OutgoingsNewVendorModal from "./OutgoingsNewVendorModal";
 
 export default function OutgoingsContractorPickerModal({
   isOpen,
@@ -19,6 +20,7 @@ export default function OutgoingsContractorPickerModal({
   const [searchQuery, setSearchQuery] = useState("");
   const [monthWindowOffset, setMonthWindowOffset] = useState(0);
   const [replacePrompt, setReplacePrompt] = useState(null);
+  const [showNewVendorModal, setShowNewVendorModal] = useState(false);
 
   useEffect(() => {
     if (!isOpen || !clientSheetId) {
@@ -30,7 +32,7 @@ export default function OutgoingsContractorPickerModal({
     }
 
     let isMounted = true;
-    const fetchOutgoings = async () => {
+    const fetchOutgoings = async (bypassCache = false) => {
       setLoading(true);
       setError(null);
       try {
@@ -39,7 +41,8 @@ export default function OutgoingsContractorPickerModal({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             action: "get_outgoings",
-            clientSheetId
+            clientSheetId,
+            bypassCache
           })
         });
         const data = await res.json();
@@ -234,25 +237,45 @@ export default function OutgoingsContractorPickerModal({
           alignItems: "center",
           gap: "14px"
         }}>
-          <div style={{ flex: 1, maxWidth: "420px", position: "relative" }}>
-            <span style={{ position: "absolute", left: "10px", top: "50%", transform: "translateY(-50%)", fontSize: "13px", color: "#94a3b8" }}>
-              🔍
-            </span>
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search contractors..."
+          <div style={{ flex: 1, maxWidth: "480px", display: "flex", gap: "8px", alignItems: "center" }}>
+            <div style={{ flex: 1, position: "relative" }}>
+              <span style={{ position: "absolute", left: "10px", top: "50%", transform: "translateY(-50%)", fontSize: "13px", color: "#94a3b8" }}>
+                🔍
+              </span>
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search contractors..."
+                style={{
+                  width: "100%",
+                  padding: "8px 10px 8px 32px",
+                  borderRadius: "6px",
+                  border: "1px solid #cbd5e1",
+                  fontSize: "13px",
+                  outline: "none",
+                  boxSizing: "border-box"
+                }}
+              />
+            </div>
+            <button
+              type="button"
+              className="triage-btn"
+              onClick={() => setShowNewVendorModal(true)}
               style={{
-                width: "100%",
-                padding: "8px 10px 8px 32px",
+                padding: "8px 14px",
+                background: "#0066cc",
+                color: "#ffffff",
+                border: "none",
                 borderRadius: "6px",
-                border: "1px solid #cbd5e1",
-                fontSize: "13px",
-                outline: "none",
-                boxSizing: "border-box"
+                fontSize: "12px",
+                fontWeight: "600",
+                cursor: "pointer",
+                whiteSpace: "nowrap"
               }}
-            />
+            >
+              + New vendor
+            </button>
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
@@ -347,8 +370,28 @@ export default function OutgoingsContractorPickerModal({
                 <tbody>
                   {filteredContractors.length === 0 ? (
                     <tr>
-                      <td colSpan={visibleMonths.length + 1} style={{ padding: "30px", textAlign: "center", color: "#94a3b8", fontStyle: "italic" }}>
-                        No contractors match your search query.
+                      <td colSpan={visibleMonths.length + 1} style={{ padding: "36px", textAlign: "center", color: "#64748b" }}>
+                        <div style={{ marginBottom: "12px", fontSize: "13px" }}>No contractors match your search query.</div>
+                        <button
+                          type="button"
+                          className="triage-btn"
+                          onClick={() => setShowNewVendorModal(true)}
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "6px",
+                            padding: "6px 14px",
+                            background: "#f0f4ff",
+                            border: "1px solid #c5cff0",
+                            borderRadius: "6px",
+                            color: "#1a56db",
+                            fontSize: "12px",
+                            fontWeight: "600",
+                            cursor: "pointer"
+                          }}
+                        >
+                          + Create new vendor
+                        </button>
                       </td>
                     </tr>
                   ) : (
@@ -568,6 +611,25 @@ export default function OutgoingsContractorPickerModal({
             </div>
           );
         })()}
+        {showNewVendorModal && (
+          <OutgoingsNewVendorModal
+            newVendorData={{ exp: expense }}
+            outgoingsClient={{ clientSheetId, clientName }}
+            onClose={() => setShowNewVendorModal(false)}
+            onCreated={async (newVendor) => {
+              if (newVendor?.name) {
+                setContractors(prev => {
+                  if (prev.some(c => c.sheetRow === newVendor.sheetRow || (c.name || "").toLowerCase() === (newVendor.name || "").toLowerCase())) {
+                    return prev;
+                  }
+                  return [...prev, newVendor];
+                });
+                setSearchQuery(newVendor.name);
+              }
+              await fetchOutgoings(true);
+            }}
+          />
+        )}
       </div>
     </div>
   );

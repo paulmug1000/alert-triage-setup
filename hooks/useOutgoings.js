@@ -2,7 +2,7 @@ import { useState, useRef, useCallback } from "react";
 import { useAppGlobals } from "./useAppGlobals";
 
 export function useOutgoings(assignedAppIds, assignedByClient, setAssignedByClient, setAssignedAppIds, outgoingsPullPendingRef, automationCommanderSheetId, initialClient = null) {
-  const { getCachedClientData, setCachedClientData, getInFlightPrefetch, cleanSheetId } = useAppGlobals();
+  const { getCachedClientData, setCachedClientData, invalidateCachedClientData, getInFlightPrefetch, cleanSheetId } = useAppGlobals();
 
   const hasValidContractors = (cData) =>
     Boolean(
@@ -95,6 +95,13 @@ export function useOutgoings(assignedAppIds, assignedByClient, setAssignedByClie
 
     const cleanId = cleanSheetId ? cleanSheetId(client.clientSheetId) : String(client.clientSheetId).replace(/.*\/d\/([a-zA-Z0-9-_]+).*/, "$1");
     const cleanMasterId = client.masterSheetId ? (cleanSheetId ? cleanSheetId(client.masterSheetId) : String(client.masterSheetId).replace(/.*\/d\/([a-zA-Z0-9-_]+).*/, "$1")) : null;
+
+    if (bypassCache && client?.clientSheetId) {
+      if (typeof invalidateCachedClientData === "function") {
+        invalidateCachedClientData(client.clientSheetId, "outgoings");
+        invalidateCachedClientData(client.clientSheetId, "outgoings_inbox");
+      }
+    }
 
     // Check client cache for grid & inbox (0ms instant render)
     const cachedGrid = !bypassCache ? getCachedClientData(client.clientSheetId, "outgoings") : null;
@@ -355,6 +362,7 @@ export function useOutgoings(assignedAppIds, assignedByClient, setAssignedByClie
     directCostsShowAll, setDirectCostsShowAll,
     directCostsSavingCell, setDirectCostsSavingCell,
     outgoingsError, setOutgoingsError,
-    loadOutgoings, loadDirectCostsJobs
+    loadOutgoings, loadDirectCostsJobs,
+    invalidateCachedClientData
   };
 }

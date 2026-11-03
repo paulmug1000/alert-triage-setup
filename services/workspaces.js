@@ -516,33 +516,67 @@ export async function handleGetInvoicesInbox(req, res, sheets) {
 }
 
 export async function handleCreateOutgoingsVendor(req, res, sheets) {
-  const { clientSheetId, vendorName, vatFlag, invTiming, payTiming, deliveryPct } = req.body;
+  const { clientSheetId, masterSheetId, vendorName, vatFlag, invTiming, payTiming, deliveryPct } = req.body;
   if (!clientSheetId || !vendorName) return res.status(400).json({ success: false, error: "Missing clientSheetId or vendorName" });
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+    const cleanVendorName = String(vendorName || "").trim();
     const checkResp = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetIdClean,
-      range: "Outgoings!A13:A110",
+      range: "Outgoings!A13:E110",
     });
     const rows = checkResp.data.values || [];
-    let lastRow = 12;
-    for (let i = rows.length - 1; i >= 0; i--) {
-      if (rows[i]?.[0]) { lastRow = 12 + i; break; }
-    }
-    const newRow = lastRow + 2;
-    if (newRow > 110) return res.status(400).json({ success: false, error: "Contractors section is full (max row 110)" });
 
     const pctNum = parseFloat(String(deliveryPct !== undefined && deliveryPct !== "" ? deliveryPct : "100").replace(/%/g, ""));
     const pctString = `${Number.isFinite(pctNum) ? Math.max(0, Math.min(100, pctNum)) : 100}%`;
+
+    // 1. Check if vendor already exists in Outgoings
+    for (let i = 0; i < rows.length; i++) {
+      const existingName = String(rows[i]?.[0] || "").trim();
+      if (existingName && existingName.toLowerCase() === cleanVendorName.toLowerCase()) {
+        const existingRow = 13 + i;
+        const existingVendorObj = {
+          sheetRow: existingRow,
+          name: existingName,
+          vatFlag: String(rows[i]?.[1] || vatFlag || "Yes").trim(),
+          invTiming: String(rows[i]?.[2] || invTiming || "Next").trim(),
+          payTiming: String(rows[i]?.[3] || payTiming || "Next").trim(),
+          deliveryPct: String(rows[i]?.[4] || pctString).trim(),
+          cells: {},
+        };
+        return res.status(200).json({
+          success: true,
+          sheetRow: existingRow,
+          vendor: existingVendorObj,
+          alreadyExisted: true,
+        });
+      }
+    }
+
+    // 2. Find next available row in contractors section (rows 13 to 110)
+    let lastPopulatedRow = 12;
+    for (let i = rows.length - 1; i >= 0; i--) {
+      const val = String(rows[i]?.[0] || "").trim();
+      if (val && !val.startsWith("=") && val.toLowerCase() !== "contractors") {
+        lastPopulatedRow = 13 + i;
+        break;
+      }
+    }
+    const newRow = lastPopulatedRow + 1;
+    if (newRow > 110) return res.status(400).json({ success: false, error: "Contractors section is full (max row 110)" });
 
     await sheets.spreadsheets.values.update({
       spreadsheetId: sheetIdClean,
       range: `Outgoings!A${newRow}:E${newRow}`,
       valueInputOption: "USER_ENTERED",
-      requestBody: { values: [[sanitizeFormulaInput(vendorName), sanitizeFormulaInput(String(vatFlag || "Yes")), sanitizeFormulaInput(String(invTiming || "Next")), sanitizeFormulaInput(String(payTiming || "Next")), pctString]] },
+      requestBody: { values: [[sanitizeFormulaInput(cleanVendorName), sanitizeFormulaInput(String(vatFlag || "Yes")), sanitizeFormulaInput(String(invTiming || "Next")), sanitizeFormulaInput(String(payTiming || "Next")), pctString]] },
     });
 
     await applySheetFontFormat(sheets, sheetIdClean, "Outgoings", newRow - 1, newRow, 0, 50, "Arial", 9);
+
+    // Invalidate server-side caches immediately across L1/L2
+    const cleanMasterId = masterSheetId ? (extractSheetIdFromUrl(masterSheetId) || masterSheetId) : null;
+    await invalidatePmaClientCache(sheetIdClean, cleanMasterId, ["outgoings"]).catch(e => console.warn("Cache invalidate failed:", e.message));
 
     let tenantClient = req.body.clientName || "";
     if (!tenantClient) {
@@ -554,9 +588,9 @@ export async function handleCreateOutgoingsVendor(req, res, sheets) {
       clientName: tenantClient,
       category: "EXPENSES",
       action: "Vendor Created",
-      summary: `Created new contractor/vendor '${vendorName}' for ${tenantClient || "Client"} (Row ${newRow})`,
+      summary: `Created new contractor/vendor '${cleanVendorName}' for ${tenantClient || "Client"} (Row ${newRow})`,
       details: {
-        vendorName,
+        vendorName: cleanVendorName,
         vatFlag: vatFlag || "Yes",
         invTiming: invTiming || "Next",
         payTiming: payTiming || "Next",
@@ -566,7 +600,17 @@ export async function handleCreateOutgoingsVendor(req, res, sheets) {
       }
     }).catch(e => console.error("PMA log failed:", e));
 
-    return res.status(200).json({ success: true, sheetRow: newRow });
+    const newVendorObj = {
+      sheetRow: newRow,
+      name: cleanVendorName,
+      vatFlag: vatFlag || "Yes",
+      invTiming: invTiming || "Next",
+      payTiming: payTiming || "Next",
+      deliveryPct: pctString,
+      cells: {},
+    };
+
+    return res.status(200).json({ success: true, sheetRow: newRow, vendor: newVendorObj });
   } catch (err) {
     console.error("❌ create_outgoings_vendor error:", err);
     return res.status(500).json({ success: false, error: err.message });

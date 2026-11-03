@@ -3542,6 +3542,10 @@ export default function ReportingTab({
         const slides = narrativeWorkbench?.slides || [];
         const activeSlide = slides.find(s => s.slideNumber === activeSlideNumber) || slides[0] || null;
         const draftedSlidesCount = slides.filter(s => s.draftText && s.draftText.trim() && !s.isUneditedClone).length;
+        const flagChangedSlidesCount = slides.filter(s => Boolean(s.hasFlag) !== Boolean(s.deckHasFlag)).length;
+        const actionableSlidesCount = slides.filter(
+          s => (s.draftText && s.draftText.trim() && !s.isUneditedClone) || (Boolean(s.hasFlag) !== Boolean(s.deckHasFlag))
+        ).length;
         const isBusy = Boolean(generatingSlideNum || narrativeSaving || narrativeApplying);
 
         const countWords = (str) => {
@@ -3549,8 +3553,19 @@ export default function ReportingTab({
           return String(str).trim().split(/\s+/).filter(Boolean).length;
         };
 
+        const countBullets = (str) => {
+          if (!str || !String(str).trim()) return 0;
+          const lines = String(str).split("\n").map(l => l.trim()).filter(Boolean);
+          const bullets = lines.filter(l => /^[•\-\*]/.test(l));
+          return bullets.length || lines.length;
+        };
+
         const activeDraftWords = countWords(activeSlide?.draftText);
         const prevMonthWords = countWords(activeSlide?.previousNarratives?.[0]?.text);
+        const prevMonthBullets = countBullets(activeSlide?.previousNarratives?.[0]?.text);
+        const guideMaxWords = prevMonthWords > 0
+          ? (activeSlide?.isTakeawaysSlide ? Math.round(prevMonthWords * 1.15) : Math.max(prevMonthWords + 6, Math.round(prevMonthWords * 1.2)))
+          : 60;
 
         return (
           <div style={{
@@ -3601,16 +3616,20 @@ export default function ReportingTab({
                     Report covers: {formatMonthKey(narrativeWorkbench?.reportMonthKey || selectedReportMonthKey)}
                   </span>
                   {slides.length > 0 && (
-                    <span style={{
-                      fontSize: "12px",
-                      fontWeight: 600,
-                      padding: "3px 10px",
-                      borderRadius: "999px",
-                      background: draftedSlidesCount === slides.length ? "#dcfce7" : "#f1f5f9",
-                      color: draftedSlidesCount === slides.length ? "#15803d" : "#475569",
-                      border: `1px solid ${draftedSlidesCount === slides.length ? "#bbf7d0" : "#cbd5e1"}`
-                    }}>
-                      {draftedSlidesCount} of {slides.length} slides drafted
+                    <span
+                      title="Shows how many of the presentation's commentary slides have a fresh narrative draft for this reporting month (as opposed to still holding last month's cloned commentary)"
+                      style={{
+                        fontSize: "12px",
+                        fontWeight: 600,
+                        padding: "3px 10px",
+                        borderRadius: "999px",
+                        background: draftedSlidesCount === slides.length ? "#dcfce7" : "#f1f5f9",
+                        color: draftedSlidesCount === slides.length ? "#15803d" : "#475569",
+                        border: `1px solid ${draftedSlidesCount === slides.length ? "#bbf7d0" : "#cbd5e1"}`,
+                        cursor: "help"
+                      }}
+                    >
+                      {draftedSlidesCount} of {slides.length} narrative slides drafted
                     </span>
                   )}
                   {narrativeWorkbench?.priorMonthsLoaded?.length > 0 && (
@@ -3891,9 +3910,8 @@ export default function ReportingTab({
                       }
 
                       return (
-                        <button
+                        <div
                           key={slide.slideNumber}
-                          type="button"
                           onClick={() => setActiveSlideNumber(slide.slideNumber)}
                           style={{
                             textAlign: "left",
@@ -3918,22 +3936,27 @@ export default function ReportingTab({
                             </span>
 
                             <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-                              {slide.hasFlag && (
-                                <span
-                                  title="Red flag on slide"
-                                  style={{
-                                    fontSize: "10px",
-                                    fontWeight: 700,
-                                    padding: "1px 6px",
-                                    borderRadius: "999px",
-                                    background: "#fef2f2",
-                                    color: "#b91c1c",
-                                    border: "1px solid #fecaca"
-                                  }}
-                                >
-                                  Flag
-                                </span>
-                              )}
+                              <button
+                                type="button"
+                                onClick={(e) => handleToggleSlideFlag(slide.slideNumber, e)}
+                                title={slide.hasFlag ? "Red flag is ON for this slide (click to turn off)" : "No red flag on this slide (click to turn on)"}
+                                style={{
+                                  fontSize: "10px",
+                                  fontWeight: 700,
+                                  padding: "1px 6px",
+                                  borderRadius: "999px",
+                                  background: slide.hasFlag ? "#fef2f2" : "#f8fafc",
+                                  color: slide.hasFlag ? "#b91c1c" : "#94a3b8",
+                                  border: `1px solid ${slide.hasFlag ? "#fecaca" : "#e2e8f0"}`,
+                                  cursor: "pointer",
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: "3px"
+                                }}
+                              >
+                                <span style={{ opacity: slide.hasFlag ? 1 : 0.45 }}>🚩</span>
+                                <span>{slide.hasFlag ? "Flag" : "Off"}</span>
+                              </button>
                               <span style={{
                                 fontSize: "10px",
                                 fontWeight: 600,
@@ -3970,7 +3993,7 @@ export default function ReportingTab({
                               {slide.chartCode}
                             </div>
                           )}
-                        </button>
+                        </div>
                       );
                     })}
                   </div>
@@ -3989,6 +4012,7 @@ export default function ReportingTab({
                       {/* 1. Embedded Chart PNGs */}
                       {activeSlide.chartImages?.length > 0 && (
                         <div style={{
+                          flexShrink: 0,
                           border: "1px solid #e2e8f0",
                           borderRadius: "8px",
                           overflow: "hidden",
@@ -4041,9 +4065,11 @@ export default function ReportingTab({
                         <div
                           key={tIdx}
                           style={{
+                            flexShrink: 0,
                             border: "1px solid #e2e8f0",
                             borderRadius: "8px",
-                            overflow: "hidden"
+                            overflow: "hidden",
+                            background: "#ffffff"
                           }}
                         >
                           <div style={{
@@ -4055,16 +4081,19 @@ export default function ReportingTab({
                             color: "#334155",
                             display: "flex",
                             justifyContent: "space-between",
-                            alignItems: "center"
+                            alignItems: "center",
+                            gap: "8px"
                           }}>
-                            <span>Slide data table{activeSlide.tables.length > 1 ? ` ${tIdx + 1}` : ""}</span>
+                            <span>
+                              Slide data table{activeSlide.tables.length > 1 ? ` ${tIdx + 1}` : ""} ({Math.max(0, tbl.length - 1)} rows)
+                            </span>
                             {activeSlide.chartCode && (
                               <span style={{ fontSize: "11px", fontFamily: "monospace", color: "#64748b" }}>
                                 {activeSlide.chartCode}
                               </span>
                             )}
                           </div>
-                          <div style={{ overflowX: "auto", maxHeight: "340px" }}>
+                          <div style={{ overflowX: "auto", overflowY: "auto", maxHeight: "560px" }}>
                             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "11.5px" }}>
                               <tbody>
                                 {tbl.map((row, rIdx) => {
@@ -4080,7 +4109,10 @@ export default function ReportingTab({
                                       style={{
                                         background: isHeader ? "#f1f5f9" : (isSummaryRow ? "#f8fafc" : "#ffffff"),
                                         borderBottom: "1px solid #f1f5f9",
-                                        fontWeight: isHeader || isSummaryRow ? 700 : 400
+                                        fontWeight: isHeader || isSummaryRow ? 700 : 400,
+                                        position: isHeader ? "sticky" : "static",
+                                        top: isHeader ? 0 : "auto",
+                                        zIndex: isHeader ? 1 : "auto"
                                       }}
                                     >
                                       {row.map((cell, cIdx) => (
@@ -4109,70 +4141,104 @@ export default function ReportingTab({
                       ))}
 
                       {/* 3. Supplier Transactions Breakdown (Overheads Slide) */}
-                      {activeSlide.slideTransactions && (
-                        <div style={{
-                          border: "1px solid #bae6fd",
-                          borderRadius: "8px",
-                          overflow: "hidden",
-                          background: "#f8fafc"
-                        }}>
-                          <div style={{
-                            padding: "8px 12px",
-                            background: "#e0f2fe",
-                            borderBottom: "1px solid #bae6fd",
-                            fontSize: "12px",
-                            fontWeight: 600,
-                            color: "#0369a1",
-                            display: "flex",
-                            justifyContent: "space-between",
-                            alignItems: "center"
-                          }}>
-                            <span>Supplier transactions from reconciliation ({activeSlide.slideTransactions.yyMm})</span>
-                            <span style={{ fontSize: "11px", fontWeight: 500 }}>
-                              Included in AI prompt
-                            </span>
-                          </div>
-                          <div style={{ padding: "10px 12px", maxHeight: "260px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "8px" }}>
-                            {Object.keys(activeSlide.slideTransactions.matchedByCategory || {}).length > 0 ? (
-                              Object.entries(activeSlide.slideTransactions.matchedByCategory).map(([cat, items]) => (
-                                <div key={cat} style={{ background: "#ffffff", border: "1px solid #e2e8f0", borderRadius: "6px", padding: "8px 10px" }}>
-                                  <div style={{ fontSize: "11.5px", fontWeight: 700, color: "#0f172a", marginBottom: "4px" }}>
-                                    {cat}
-                                  </div>
-                                  <div style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
-                                    {items.map((t, idx) => (
-                                      <div key={idx} style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", color: "#475569", gap: "8px" }}>
-                                        <span>
-                                          <strong>{t.payee}</strong>
-                                          {t.description ? ` — ${t.description}` : ""}
-                                          {t.date ? <span style={{ color: "#94a3b8", marginLeft: "4px" }}>({t.date})</span> : null}
-                                        </span>
-                                        <span style={{ fontFamily: "monospace", fontWeight: 600, color: "#0f172a", whiteSpace: "nowrap" }}>
-                                          {t.netFormatted}
-                                        </span>
-                                      </div>
-                                    ))}
-                                  </div>
-                                </div>
-                              ))
-                            ) : (
-                              (activeSlide.slideTransactions.topTransactions || []).slice(0, 12).map((t, idx) => (
-                                <div key={idx} style={{ display: "flex", justifyContent: "space-between", fontSize: "11.5px", color: "#334155", borderBottom: "1px solid #e2e8f0", paddingBottom: "4px" }}>
-                                  <span>
-                                    <span style={{ color: "#0369a1", fontWeight: 600 }}>[{t.category}]</span>{" "}
-                                    <strong>{t.payee}</strong>
-                                    {t.description ? ` — ${t.description}` : ""}
-                                  </span>
-                                  <span style={{ fontFamily: "monospace", fontWeight: 600 }}>{t.netFormatted}</span>
-                                </div>
-                              ))
-                            )}
-                          </div>
-                        </div>
-                      )}
+                      {activeSlide.slideTransactions && (() => {
+                        const matchedByCat = activeSlide.slideTransactions.matchedByCategory || {};
+                        const catEntries = Object.entries(matchedByCat).filter(([, list]) => Array.isArray(list) && list.length > 0);
+                        const topTxs = activeSlide.slideTransactions.topTransactions || [];
+                        const totalTxCount = catEntries.reduce((acc, [, list]) => acc + list.length, 0) || topTxs.length;
 
-                      {/* 4. Historical Narrative Reference (T-1 and T-2) */}
+                        return (
+                          <div style={{
+                            flexShrink: 0,
+                            border: "1px solid #bae6fd",
+                            borderRadius: "8px",
+                            overflow: "hidden",
+                            background: "#f8fafc"
+                          }}>
+                            <div style={{
+                              padding: "8px 12px",
+                              background: "#e0f2fe",
+                              borderBottom: "1px solid #bae6fd",
+                              fontSize: "12px",
+                              fontWeight: 600,
+                              color: "#0369a1",
+                              display: "flex",
+                              justifyContent: "space-between",
+                              alignItems: "center",
+                              gap: "8px"
+                            }}>
+                              <span>
+                                Supplier transactions ({activeSlide.slideTransactions.yyMm} · {totalTxCount} items across {catEntries.length} categories)
+                              </span>
+                              <span style={{ fontSize: "11px", fontWeight: 500 }}>
+                                Included in AI prompt
+                              </span>
+                            </div>
+                            <div style={{
+                              padding: "10px 12px",
+                              maxHeight: "360px",
+                              overflowY: "auto",
+                              display: "flex",
+                              flexDirection: "column",
+                              gap: "8px"
+                            }}>
+                              {catEntries.length > 0 ? (
+                                catEntries.map(([cat, items]) => (
+                                  <div key={cat} style={{ background: "#ffffff", border: "1px solid #e2e8f0", borderRadius: "6px", padding: "8px 10px" }}>
+                                    <div style={{
+                                      fontSize: "11.5px",
+                                      fontWeight: 700,
+                                      color: "#0f172a",
+                                      marginBottom: "5px",
+                                      display: "flex",
+                                      justifyContent: "space-between",
+                                      alignItems: "center"
+                                    }}>
+                                      <span>{cat}</span>
+                                      <span style={{ fontSize: "10.5px", fontWeight: 500, color: "#64748b" }}>
+                                        {items.length} item{items.length === 1 ? "" : "s"}
+                                      </span>
+                                    </div>
+                                    <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                                      {items.map((t, idx) => (
+                                        <div key={idx} style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", color: "#475569", gap: "8px", borderTop: idx > 0 ? "1px dashed #f1f5f9" : "none", paddingTop: idx > 0 ? "3px" : 0 }}>
+                                          <span>
+                                            <strong>{t.payee}</strong>
+                                            {t.description ? ` — ${t.description}` : ""}
+                                            {t.date ? <span style={{ color: "#94a3b8", marginLeft: "4px" }}>({t.date})</span> : null}
+                                          </span>
+                                          <span style={{ fontFamily: "monospace", fontWeight: 600, color: "#0f172a", whiteSpace: "nowrap" }}>
+                                            {t.netFormatted}
+                                          </span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                ))
+                              ) : topTxs.length > 0 ? (
+                                topTxs.slice(0, 20).map((t, idx) => (
+                                  <div key={idx} style={{ display: "flex", justifyContent: "space-between", fontSize: "11.5px", color: "#334155", borderBottom: "1px solid #e2e8f0", paddingBottom: "4px" }}>
+                                    <span>
+                                      <span style={{ color: "#0369a1", fontWeight: 600 }}>[{t.category}]</span>{" "}
+                                      <strong>{t.payee}</strong>
+                                      {t.description ? ` — ${t.description}` : ""}
+                                    </span>
+                                    <span style={{ fontFamily: "monospace", fontWeight: 600 }}>{t.netFormatted}</span>
+                                  </div>
+                                ))
+                              ) : (
+                                <div style={{ fontSize: "12px", color: "#64748b", padding: "6px 2px" }}>
+                                  No itemised supplier transactions found for {activeSlide.slideTransactions.yyMm}.
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })()}
+
+                      {/* 4. Historical Narrative Reference (T-1 .. T-4) */}
                       <div style={{
+                        flexShrink: 0,
                         border: "1px solid #e2e8f0",
                         borderRadius: "8px",
                         overflow: "hidden",
@@ -4184,58 +4250,104 @@ export default function ReportingTab({
                           borderBottom: "1px solid #e2e8f0",
                           fontSize: "12px",
                           fontWeight: 600,
-                          color: "#334155"
+                          color: "#334155",
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center"
                         }}>
-                          Previous months&apos; commentary for this slide
+                          <span>Previous months&apos; commentary for this slide ({activeSlide.previousNarratives?.length || 0})</span>
+                          {prevMonthWords > 0 && (
+                            <span style={{ fontSize: "11px", fontWeight: 600, color: "#0369a1" }}>
+                              Guide length: ~{prevMonthWords} words ({prevMonthBullets} bullet{prevMonthBullets === 1 ? "" : "s"})
+                            </span>
+                          )}
                         </div>
-                        <div style={{ padding: "12px", display: "flex", flexDirection: "column", gap: "12px" }}>
+                        <div style={{
+                          padding: "12px",
+                          maxHeight: "360px",
+                          overflowY: "auto",
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: "12px"
+                        }}>
                           {activeSlide.previousNarratives?.length > 0 ? (
-                            activeSlide.previousNarratives.map((prev, idx) => (
-                              <div
-                                key={idx}
-                                style={{
-                                  background: "#ffffff",
-                                  border: "1px solid #e2e8f0",
-                                  borderRadius: "6px",
-                                  padding: "10px 12px"
-                                }}
-                              >
-                                <div style={{
-                                  display: "flex",
-                                  justifyContent: "space-between",
-                                  alignItems: "center",
-                                  marginBottom: "6px"
-                                }}>
-                                  <span style={{ fontSize: "11.5px", fontWeight: 700, color: "#0f172a" }}>
-                                    {formatMonthKey(prev.monthKey)} (slide {prev.slideNumber})
-                                    {prev.hasFlag ? " — flagged" : ""}
-                                  </span>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleUpdateSlideLocalField(activeSlide.slideNumber, "draftText", prev.text)}
-                                    style={{
-                                      background: "none",
-                                      border: "1px solid #cbd5e1",
-                                      borderRadius: "4px",
-                                      padding: "2px 8px",
-                                      fontSize: "11px",
-                                      color: "#475569",
-                                      cursor: "pointer"
-                                    }}
-                                  >
-                                    Copy to editor
-                                  </button>
+                            activeSlide.previousNarratives.map((prev, idx) => {
+                              const pWords = countWords(prev.text);
+                              const pBullets = countBullets(prev.text);
+                              return (
+                                <div
+                                  key={idx}
+                                  style={{
+                                    background: "#ffffff",
+                                    border: "1px solid #e2e8f0",
+                                    borderRadius: "6px",
+                                    padding: "10px 12px",
+                                    flexShrink: 0
+                                  }}
+                                >
+                                  <div style={{
+                                    display: "flex",
+                                    justifyContent: "space-between",
+                                    alignItems: "center",
+                                    marginBottom: "6px",
+                                    gap: "8px",
+                                    flexWrap: "wrap"
+                                  }}>
+                                    <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                                      <span style={{ fontSize: "11.5px", fontWeight: 700, color: "#0f172a" }}>
+                                        {formatMonthKey(prev.monthKey)} (slide {prev.slideNumber})
+                                      </span>
+                                      {prev.hasFlag && (
+                                        <span style={{
+                                          fontSize: "10px",
+                                          fontWeight: 700,
+                                          padding: "1px 6px",
+                                          borderRadius: "999px",
+                                          background: "#fef2f2",
+                                          color: "#b91c1c",
+                                          border: "1px solid #fecaca"
+                                        }}>
+                                          🚩 Flagged
+                                        </span>
+                                      )}
+                                      <span style={{
+                                        fontSize: "10.5px",
+                                        fontWeight: 600,
+                                        padding: "1px 7px",
+                                        borderRadius: "999px",
+                                        background: "#f1f5f9",
+                                        color: "#475569"
+                                      }}>
+                                        {pWords} words · {pBullets} bullet{pBullets === 1 ? "" : "s"}
+                                      </span>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleUpdateSlideLocalField(activeSlide.slideNumber, "draftText", prev.text)}
+                                      style={{
+                                        background: "none",
+                                        border: "1px solid #cbd5e1",
+                                        borderRadius: "4px",
+                                        padding: "2px 8px",
+                                        fontSize: "11px",
+                                        color: "#475569",
+                                        cursor: "pointer"
+                                      }}
+                                    >
+                                      Copy to editor
+                                    </button>
+                                  </div>
+                                  <div style={{
+                                    fontSize: "12px",
+                                    color: "#334155",
+                                    whiteSpace: "pre-wrap",
+                                    lineHeight: 1.5
+                                  }}>
+                                    {prev.text}
+                                  </div>
                                 </div>
-                                <div style={{
-                                  fontSize: "12px",
-                                  color: "#334155",
-                                  whiteSpace: "pre-wrap",
-                                  lineHeight: 1.5
-                                }}>
-                                  {prev.text}
-                                </div>
-                              </div>
-                            ))
+                              );
+                            })
                           ) : (
                             <div style={{ fontSize: "12px", color: "#64748b" }}>
                               No prior month narrative found for this slide.
@@ -4256,8 +4368,8 @@ export default function ReportingTab({
                       gap: "14px",
                       overflowY: "auto"
                     }}>
-                      {/* Slide Header */}
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "10px" }}>
+                      {/* Slide Header + Interactive Red Flag Toggle */}
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "10px", flexWrap: "wrap" }}>
                         <div>
                           <div style={{ fontSize: "11px", fontWeight: 700, color: "#2563eb" }}>
                             Slide {activeSlide.slideNumber} {activeSlide.chartCode ? `· ${activeSlide.chartCode}` : ""}
@@ -4267,19 +4379,32 @@ export default function ReportingTab({
                           </h3>
                         </div>
 
-                        {activeSlide.hasFlag && (
-                          <span style={{
-                            fontSize: "11px",
+                        <button
+                          type="button"
+                          onClick={(e) => handleToggleSlideFlag(activeSlide.slideNumber, e)}
+                          title="Click to turn the red flag on or off for this slide (updates both the AI 'The flag:' bullet and the 🚩 shape in Google Slides when applied)"
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "6px",
+                            fontSize: "11.5px",
                             fontWeight: 600,
-                            padding: "4px 10px",
+                            padding: "5px 11px",
                             borderRadius: "999px",
-                            background: "#fef2f2",
-                            color: "#b91c1c",
-                            border: "1px solid #fecaca"
-                          }}>
-                            Red flag on slide — include &apos;The flag:&apos; bullet
+                            background: activeSlide.hasFlag ? "#fef2f2" : "#f8fafc",
+                            color: activeSlide.hasFlag ? "#b91c1c" : "#475569",
+                            border: `1px solid ${activeSlide.hasFlag ? "#fecaca" : "#cbd5e1"}`,
+                            cursor: "pointer",
+                            transition: "all 0.12s ease"
+                          }}
+                        >
+                          <span style={{ opacity: activeSlide.hasFlag ? 1 : 0.45 }}>🚩</span>
+                          <span>
+                            {activeSlide.hasFlag
+                              ? "Red flag: On (includes 'The flag:' bullet)"
+                              : "Red flag: Off (click to add flag)"}
                           </span>
-                        )}
+                        </button>
                       </div>
 
                       {activeSlide.isUneditedClone && !activeSlide.draftText && (
@@ -4295,7 +4420,7 @@ export default function ReportingTab({
                         </div>
                       )}
 
-                      {/* Steer / Context Box + Regenerate Button */}
+                      {/* Steer / Context Box + Regenerate / Shorten Buttons */}
                       <div style={{
                         background: "#f8fafc",
                         border: "1px solid #e2e8f0",
@@ -4312,7 +4437,7 @@ export default function ReportingTab({
                           rows={2}
                           value={activeSlide.steerText || ""}
                           onChange={(e) => handleUpdateSlideLocalField(activeSlide.slideNumber, "steerText", e.target.value)}
-                          placeholder="e.g. Mention that the £3k legal fee in G&A was a one-off trademark renewal, or keep to 3 short bullets..."
+                          placeholder="e.g. Mention that the £3k legal fee in G&A was a one-off trademark renewal, or keep to 1 short bullet..."
                           style={{
                             width: "100%",
                             padding: "8px 10px",
@@ -4326,36 +4451,64 @@ export default function ReportingTab({
                         />
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
                           <span style={{ fontSize: "11px", color: "#64748b" }}>
-                            {activeSlide.isTakeawaysSlide
-                              ? "Synthesises headline performance and key takeaways across all slides."
-                              : "Analyses the slide table, chart visual, and prior months' tone."}
+                            {prevMonthWords > 0
+                              ? `Target guide from last month: ~${prevMonthWords} words across ${prevMonthBullets} bullet${prevMonthBullets === 1 ? "" : "s"} (max ${guideMaxWords} words).`
+                              : (activeSlide.isTakeawaysSlide
+                                ? "Synthesises headline performance and key takeaways across all slides."
+                                : "Analyses the slide table, chart visual, and prior months' tone.")}
                           </span>
-                          <button
-                            type="button"
-                            disabled={isBusy}
-                            onClick={() => handleDraftSingleSlide(activeSlide.slideNumber)}
-                            style={{
-                              display: "inline-flex",
-                              alignItems: "center",
-                              gap: "6px",
-                              padding: "6px 14px",
-                              background: "#0f172a",
-                              color: "#ffffff",
-                              border: "none",
-                              borderRadius: "6px",
-                              fontSize: "12px",
-                              fontWeight: 600,
-                              cursor: isBusy ? "not-allowed" : "pointer",
-                              opacity: isBusy ? 0.7 : 1
-                            }}
-                          >
-                            {generatingSlideNum === activeSlide.slideNumber && <Spinner size="12px" color="#ffffff" />}
-                            <span>
-                              {generatingSlideNum === activeSlide.slideNumber
-                                ? "Drafting..."
-                                : (activeSlide.draftText ? "Regenerate slide" : "Draft this slide")}
-                            </span>
-                          </button>
+                          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                            {activeSlide.draftText && activeSlide.draftText.trim() && (
+                              <button
+                                type="button"
+                                disabled={isBusy}
+                                onClick={() => handleDraftSingleSlide(activeSlide.slideNumber, "shorten")}
+                                title="Condense and tighten the current draft to match last month's exact brevity"
+                                style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: "5px",
+                                  padding: "6px 11px",
+                                  background: "#ffffff",
+                                  color: "#334155",
+                                  border: "1px solid #cbd5e1",
+                                  borderRadius: "6px",
+                                  fontSize: "12px",
+                                  fontWeight: 600,
+                                  cursor: isBusy ? "not-allowed" : "pointer",
+                                  opacity: isBusy ? 0.7 : 1
+                                }}
+                              >
+                                <span>Shorten draft</span>
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              disabled={isBusy}
+                              onClick={() => handleDraftSingleSlide(activeSlide.slideNumber, "single")}
+                              style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "6px",
+                                padding: "6px 14px",
+                                background: "#0f172a",
+                                color: "#ffffff",
+                                border: "none",
+                                borderRadius: "6px",
+                                fontSize: "12px",
+                                fontWeight: 600,
+                                cursor: isBusy ? "not-allowed" : "pointer",
+                                opacity: isBusy ? 0.7 : 1
+                              }}
+                            >
+                              {generatingSlideNum === activeSlide.slideNumber && <Spinner size="12px" color="#ffffff" />}
+                              <span>
+                                {generatingSlideNum === activeSlide.slideNumber
+                                  ? "Drafting..."
+                                  : (activeSlide.draftText ? "Regenerate slide" : "Draft this slide")}
+                              </span>
+                            </button>
+                          </div>
                         </div>
                       </div>
 
@@ -4435,23 +4588,30 @@ export default function ReportingTab({
                           justifyContent: "space-between",
                           alignItems: "center",
                           fontSize: "11.5px",
-                          color: "#64748b"
+                          color: "#64748b",
+                          flexWrap: "wrap",
+                          gap: "8px"
                         }}>
-                          <span>
+                          <span style={{
+                            color: prevMonthWords > 0 && activeDraftWords > guideMaxWords ? "#b45309" : "#64748b",
+                            fontWeight: prevMonthWords > 0 && activeDraftWords > guideMaxWords ? 600 : 400
+                          }}>
                             {activeDraftWords} words
-                            {prevMonthWords > 0 ? ` (last month: ${prevMonthWords} words)` : ""}
+                            {prevMonthWords > 0
+                              ? ` · last month: ${prevMonthWords} words (${prevMonthBullets} bullet${prevMonthBullets === 1 ? "" : "s"}, guide max: ${guideMaxWords} words)`
+                              : ""}
                           </span>
                           <button
                             type="button"
-                            disabled={isBusy || !activeSlide.draftText?.trim()}
+                            disabled={isBusy || (!activeSlide.draftText?.trim() && Boolean(activeSlide.hasFlag) === Boolean(activeSlide.deckHasFlag))}
                             onClick={() => handleApplyNarrativeToDeck(activeSlide.slideNumber)}
                             style={{
                               background: "none",
                               border: "none",
-                              color: (!isBusy && activeSlide.draftText?.trim()) ? "#2563eb" : "#94a3b8",
+                              color: (!isBusy && (activeSlide.draftText?.trim() || Boolean(activeSlide.hasFlag) !== Boolean(activeSlide.deckHasFlag))) ? "#2563eb" : "#94a3b8",
                               fontSize: "12px",
                               fontWeight: 600,
-                              cursor: (!isBusy && activeSlide.draftText?.trim()) ? "pointer" : "not-allowed",
+                              cursor: (!isBusy && (activeSlide.draftText?.trim() || Boolean(activeSlide.hasFlag) !== Boolean(activeSlide.deckHasFlag))) ? "pointer" : "not-allowed",
                               padding: 0
                             }}
                           >
@@ -4510,17 +4670,17 @@ export default function ReportingTab({
 
                   <button
                     type="button"
-                    disabled={isBusy || draftedSlidesCount === 0}
+                    disabled={isBusy || actionableSlidesCount === 0}
                     onClick={handleSaveNarrativeDrafts}
                     style={{
                       padding: "8px 16px",
                       background: "#ffffff",
-                      color: draftedSlidesCount === 0 ? "#94a3b8" : "#0f172a",
+                      color: actionableSlidesCount === 0 ? "#94a3b8" : "#0f172a",
                       border: "1px solid #cbd5e1",
                       borderRadius: "6px",
                       fontSize: "13px",
                       fontWeight: 600,
-                      cursor: (isBusy || draftedSlidesCount === 0) ? "not-allowed" : "pointer",
+                      cursor: (isBusy || actionableSlidesCount === 0) ? "not-allowed" : "pointer",
                       display: "inline-flex",
                       alignItems: "center",
                       gap: "6px"
@@ -4532,24 +4692,24 @@ export default function ReportingTab({
 
                   <button
                     type="button"
-                    disabled={isBusy || draftedSlidesCount === 0}
+                    disabled={isBusy || actionableSlidesCount === 0}
                     onClick={() => handleApplyNarrativeToDeck(null)}
                     style={{
                       padding: "8px 20px",
-                      background: draftedSlidesCount === 0 ? "#94a3b8" : "#16a34a",
+                      background: actionableSlidesCount === 0 ? "#94a3b8" : "#16a34a",
                       color: "#ffffff",
                       border: "none",
                       borderRadius: "6px",
                       fontSize: "13px",
                       fontWeight: 600,
-                      cursor: (isBusy || draftedSlidesCount === 0) ? "not-allowed" : "pointer",
+                      cursor: (isBusy || actionableSlidesCount === 0) ? "not-allowed" : "pointer",
                       display: "inline-flex",
                       alignItems: "center",
                       gap: "6px"
                     }}
                   >
                     {narrativeApplying && <Spinner size="14px" color="#ffffff" />}
-                    <span>Apply all to presentation ({draftedSlidesCount})</span>
+                    <span>Apply all to presentation ({actionableSlidesCount})</span>
                   </button>
                 </div>
               </div>

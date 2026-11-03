@@ -529,6 +529,19 @@ export function parseBankDate(dateStr) {
   return null;
 }
 
+const MONTH_NAMES_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/**
+ * Formats a parsed bank date object into strict d-Mmm-yy format (e.g. "24-Oct-26", "4-Nov-26").
+ */
+export function formatBankDateDMmmYy(dateObj) {
+  if (!dateObj || !dateObj.year || !dateObj.month || !dateObj.day) return "";
+  const d = dateObj.day;
+  const m = MONTH_NAMES_SHORT[dateObj.month - 1] || "";
+  const yy = String(dateObj.year).slice(-2);
+  return `${d}-${m}-${yy}`;
+}
+
 /**
  * Parses user-pasted text (tab-separated from Xero/QB reports) or CSV/Excel rows
  * and applies strict month-boundary filtering.
@@ -588,6 +601,9 @@ export function parseUnreconciledItems({
       success: true,
       items: [],
       validItems: [],
+      hasUnreconSection: false,
+      unreconSectionCount: 0,
+      otherSectionCount: 0,
       totalLinesProcessed: 0,
       inMonthCount: 0,
       otherMonthCount: 0,
@@ -597,13 +613,19 @@ export function parseUnreconciledItems({
     };
   }
 
+  const hasUnreconSection = inputRows.some(r => {
+    const txt = (Array.isArray(r) ? r.join(" ") : String(r)).toLowerCase();
+    return (txt.includes("unreconciled statement lines") || txt.includes("unreconciled bank statement lines")) && !txt.includes("total");
+  });
+
   const isStructuredReport = inputRows.some(r => {
     const txt = (Array.isArray(r) ? r.join(" ") : String(r)).toLowerCase();
     return txt.includes("reconciliation summary") ||
-           txt.includes("totals summary") ||
-           txt.includes("statement balances") ||
-           txt.includes("plus outstanding") ||
-           txt.includes("balance in xero");
+      txt.includes("totals summary") ||
+      txt.includes("statement balances") ||
+      txt.includes("plus outstanding") ||
+      txt.includes("plus unreconciled") ||
+      txt.includes("balance in xero");
   });
 
   const SUMMARY_REGEX = /\b(statement balance|balance in xero|balance as per|calculated balance out by|imported statement balance|total outstanding|total payments|total receipts|total unreconciled|closing balance|opening balance|bank account:|account number:|page \d+ of \d+|reconciliation summary|reconciliation report|bank reconciliation|totals summary)\b/i;
@@ -642,15 +664,15 @@ export function parseUnreconciledItems({
 
     // Section end boundaries / summary footers
     if (lower.includes("total outstanding") ||
-        lower.includes("total unreconciled") ||
-        lower.includes("statement balance") ||
-        lower.includes("totals summary") ||
-        lower.includes("balance in xero") ||
-        lower.includes("statement balances") ||
-        lower.includes("calculated balance out by") ||
-        lower.includes("imported statement balance") ||
-        lower.includes("closing balance") ||
-        lower.includes("opening balance")) {
+      lower.includes("total unreconciled") ||
+      lower.includes("statement balance") ||
+      lower.includes("totals summary") ||
+      lower.includes("balance in xero") ||
+      lower.includes("statement balances") ||
+      lower.includes("calculated balance out by") ||
+      lower.includes("imported statement balance") ||
+      lower.includes("closing balance") ||
+      lower.includes("opening balance")) {
       currentSection = null;
       skippedLines.push({ line: joinedLine, reason: "Summary/Balance boundary row" });
       return;
@@ -736,10 +758,14 @@ export function parseUnreconciledItems({
     const isInTargetMonth = Boolean(targetYear && targetMonth && dateObj.year === targetYear && dateObj.month === targetMonth);
     const rowMonthLabel = new Date(dateObj.year, dateObj.month - 1, 1).toLocaleDateString("en-GB", { month: "short", year: "numeric" });
 
+    const formattedDate = formatBankDateDMmmYy(dateObj);
+    const isUnreconSection = hasUnreconSection ? currentSection === "unreconciled" : true;
+
     items.push({
       id: `unrecon_${Date.now()}_${idx}`,
-      date: dateObj.iso,
-      displayDate: cleanCols[dateColIdx],
+      date: formattedDate || dateObj.iso,
+      displayDate: formattedDate || cleanCols[dateColIdx],
+      isoDate: dateObj.iso,
       payee,
       particulars: particulars || payee,
       reference,
@@ -750,7 +776,10 @@ export function parseUnreconciledItems({
       isInTargetMonth,
       rowMonthLabel,
       targetMonthLabel,
-      selected: isInTargetMonth,
+      section: currentSection || "unreconciled",
+      sectionLabel: currentSection === "payments" ? "Outstanding Payments" : (currentSection === "receipts" ? "Outstanding Receipts" : "Plus Unreconciled Statement Lines"),
+      isUnreconSection,
+      selected: isInTargetMonth && isUnreconSection,
       isReconciled: false,
       source: "unreconciled_pasted",
       suggestedCategory: isNegative ? "Outgoings" : "Revenue",
@@ -765,16 +794,19 @@ export function parseUnreconciledItems({
     if (a.selected !== b.selected) {
       return b.selected ? 1 : -1;
     }
-    return (a.date || "").localeCompare(b.date || "");
+    return (a.isoDate || a.date || "").localeCompare(b.isoDate || b.date || "");
   });
 
   return {
     success: true,
     items,
-    validItems: items.filter(it => it.isInTargetMonth),
+    validItems: items.filter(it => it.isInTargetMonth && it.isUnreconSection !== false),
+    hasUnreconSection,
+    unreconSectionCount: items.filter(i => i.isUnreconSection).length,
+    otherSectionCount: items.filter(i => !i.isUnreconSection).length,
     totalLinesProcessed: inputRows.length,
-    inMonthCount: items.filter(it => it.isInTargetMonth).length,
-    otherMonthCount: items.filter(it => !it.isInTargetMonth).length,
+    inMonthCount: items.filter(it => it.isInTargetMonth && (!hasUnreconSection || i.isUnreconSection)).length,
+    otherMonthCount: items.filter(it => !it.isInTargetMonth && (!hasUnreconSection || i.isUnreconSection)).length,
     skippedSummaryCount: skippedLines.length,
     skippedLines,
     targetMonth: { year: targetYear, month: targetMonth, label: targetMonthLabel }

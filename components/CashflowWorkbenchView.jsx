@@ -60,11 +60,57 @@ export function parseAmount(val) {
   return isNaN(num) ? 0 : num;
 }
 
+const MONTH_NAMES_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+export function formatDateDMmmYy(val) {
+  if (val == null || val === "") return "";
+  const s = String(val).trim();
+  // 1. Excel serial number: e.g. 46316, 45280
+  const num = Number(s);
+  if (!isNaN(num) && num >= 35000 && num <= 60000) {
+    const utcDays = num - 25569;
+    const date = new Date(utcDays * 86400 * 1000);
+    const d = date.getUTCDate();
+    const m = MONTH_NAMES_SHORT[date.getUTCMonth()];
+    const yy = String(date.getUTCFullYear()).slice(-2);
+    return `${d}-${m}-${yy}`;
+  }
+  // 2. ISO format: YYYY-MM-DD
+  const mIso = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (mIso) {
+    const d = parseInt(mIso[3], 10);
+    const m = MONTH_NAMES_SHORT[parseInt(mIso[2], 10) - 1] || "";
+    const yy = mIso[1].slice(-2);
+    return `${d}-${m}-${yy}`;
+  }
+  // 3. UK format: DD/MM/YYYY or DD-MM-YYYY or DD.MM.YYYY
+  const mUk = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})$/);
+  if (mUk) {
+    const d = parseInt(mUk[1], 10);
+    const m = MONTH_NAMES_SHORT[parseInt(mUk[2], 10) - 1] || "";
+    let yy = mUk[3];
+    if (yy.length === 4) yy = yy.slice(-2);
+    return `${d}-${m}-${yy}`;
+  }
+  // 4. Text format: e.g. "24 Oct 2026", "24-Oct-26", "24-Oct-2026"
+  const mText = s.match(/^(\d{1,2})[\s\-/.]([a-zA-Z]{3,})[\s\-/.](?:'?)(\d{2,4})$/);
+  if (mText) {
+    const d = parseInt(mText[1], 10);
+    const rawMon = mText[2].toLowerCase();
+    const mIdx = MONTH_NAMES_SHORT.findIndex(mn => rawMon.startsWith(mn.toLowerCase()));
+    const m = mIdx !== -1 ? MONTH_NAMES_SHORT[mIdx] : mText[2].slice(0, 3);
+    let yy = mText[3];
+    if (yy.length === 4) yy = yy.slice(-2);
+    return `${d}-${m}-${yy}`;
+  }
+  return s;
+}
+
 export function formatAmount2DP(val) {
   if (val == null || val === "") return "";
   const num = parseAmount(val);
   if (num === 0 && (val === 0 || val === "0" || val === "0.00" || val === "£0.00")) return "£0.00";
-  if (num === 0) return "";
+  if (num === 0) return "£0.00";
   return `£${num.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
@@ -569,8 +615,8 @@ function AlignedBreakdownView({
                         <div style={{ display: "flex", flexDirection: "column", gap: "3px", background: "rgba(255,255,255,0.7)", padding: "4px 6px", borderRadius: "4px", border: "1px solid rgba(0,0,0,0.06)" }}>
                           {pair.bank.map((b, bIdx) => (
                             <div key={bIdx} style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", color: "#475569" }}>
-                              <span>{b.date || "Date"}: {b.particulars || b.ref || "Payment"}</span>
-                              <strong style={{ color: "#1e293b" }}>£{getBankAmt(b)}</strong>
+                              <span>{formatDateDMmmYy(b.date) || "Date"}: {b.particulars || b.ref || "Payment"}</span>
+                              <strong style={{ color: "#1e293b" }}>{formatAmount2DP(getBankAmt(b)) || "£0.00"}</strong>
                             </div>
                           ))}
                         </div>
@@ -610,11 +656,11 @@ function AlignedBreakdownView({
                             )}
                           </div>
                           <span style={{ fontWeight: "700", fontSize: "12px", color: bankTheme.text, whiteSpace: "nowrap" }}>
-                            £{getBankAmt(pair.bank)}
+                            {formatAmount2DP(getBankAmt(pair.bank)) || "£0.00"}
                           </span>
                         </div>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", color: "#64748b", marginTop: "4px" }}>
-                          <span>{pair.bank.date || "No date"}{pair.bank.ref ? ` • ${pair.bank.ref}` : ""}</span>
+                          <span>{formatDateDMmmYy(pair.bank.date) || "No date"}{pair.bank.ref ? ` • ${pair.bank.ref}` : ""}</span>
                           <span
                             style={{
                               display: "inline-flex",
@@ -670,7 +716,7 @@ function AlignedBreakdownView({
                               <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginRight: "8px" }} title={p.job || p.description}>
                                 {p.job || p.description || (p.ref ? `Inv ${p.ref}` : "Pulse item")}
                               </span>
-                              <strong style={{ color: "#1e293b", whiteSpace: "nowrap" }}>£{p.amount}</strong>
+                              <strong style={{ color: "#1e293b", whiteSpace: "nowrap" }}>{formatAmount2DP(p.amount) || "£0.00"}</strong>
                             </div>
                           ))}
                         </div>
@@ -703,7 +749,7 @@ function AlignedBreakdownView({
                             {getPulseDesc(pair.pulse)}
                           </span>
                           <span style={{ fontWeight: "700", fontSize: "12px", color: pulseTheme.text, whiteSpace: "nowrap" }}>
-                            £{pair.pulse.amount}
+                            {formatAmount2DP(pair.pulse.amount) || "£0.00"}
                           </span>
                         </div>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", color: "#64748b", marginTop: "4px" }}>
@@ -780,11 +826,11 @@ function AlignedBreakdownView({
                         )}
                       </div>
                       <span style={{ fontWeight: "700", fontSize: "12px", color: "#e11d48" }}>
-                        £{getBankAmt(b)}
+                        {formatAmount2DP(getBankAmt(b)) || "£0.00"}
                       </span>
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", color: "#64748b", marginTop: "6px" }}>
-                      <span>{b.date || "No date"}{b.ref ? ` • ${b.ref}` : ""}</span>
+                      <span>{formatDateDMmmYy(b.date) || "No date"}{b.ref ? ` • ${b.ref}` : ""}</span>
                       <span style={{ padding: "2px 6px", background: "#fee2e2", color: "#991b1b", borderRadius: "4px", fontSize: "10px", fontWeight: "700", border: "1px solid #fca5a5" }}>
                         Unmatched
                       </span>
@@ -811,7 +857,7 @@ function AlignedBreakdownView({
                         {getPulseDesc(p)}
                       </span>
                       <span style={{ fontWeight: "700", fontSize: "12px", color: "#e11d48" }}>
-                        £{p.amount}
+                        {formatAmount2DP(p.amount) || "£0.00"}
                       </span>
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", color: "#64748b", marginTop: "6px" }}>
@@ -881,6 +927,7 @@ export default function CashflowWorkbenchView({
   const [guidedCashAccountIdx, setGuidedCashAccountIdx] = useState(0);
   const [showSetupCompletePopup, setShowSetupCompletePopup] = useState(false);
   const [guidedReviewSearch, setGuidedReviewSearch] = useState("");
+  const [isFinishingGuided, setIsFinishingGuided] = useState(false);
 
   const handleUpdateDa1Platform = async (newPlatform) => {
     if (!clientInfo?.reconSheetId || !reconData?.reconTabName) return;
@@ -918,6 +965,7 @@ export default function CashflowWorkbenchView({
   const [parsedItems, setParsedItems] = useState([]);
   const [showSkippedAccordion, setShowSkippedAccordion] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [filterOnlyUnreconSection, setFilterOnlyUnreconSection] = useState(true);
 
   // Default primary account derived from trackedBankAccounts
   const defaultAccount = useMemo(() => {
@@ -1413,11 +1461,39 @@ export default function CashflowWorkbenchView({
     });
   };
 
+  const unassignedOutgoingsCount = useMemo(() => {
+    return bankTxns.filter(t => {
+      if (t.isReconciled !== false) return false;
+      const cat = t.category || t.suggestedCategory || (parseAmount(t.outAmount) > 0 ? "Outgoings" : "Revenue");
+      return cat === "Outgoings" && (!t.plCategory || !t.plCategory.trim());
+    }).length;
+  }, [bankTxns]);
+
   // Finish Guided Setup Handler
   const handleFinishGuidedSetup = async () => {
-    await triggerAutoSync(bankTxns, unreconItems);
-    setIsGuidedSetupOpen(false);
-    setShowSetupCompletePopup(true);
+    if (unassignedOutgoingsCount > 0) {
+      setCustomModal({
+        title: "Category required",
+        message: `Please select a category for each unreconciled outgoing item (${unassignedOutgoingsCount} remaining) before confirming.`,
+        type: "warning"
+      });
+      return;
+    }
+    setIsFinishingGuided(true);
+    try {
+      await triggerAutoSync(bankTxns, unreconItems);
+      setIsGuidedSetupOpen(false);
+      setShowSetupCompletePopup(true);
+    } catch (err) {
+      console.error("Finish guided setup error:", err);
+      setCustomModal({
+        title: "Save failed",
+        message: err.message,
+        type: "error"
+      });
+    } finally {
+      setIsFinishingGuided(false);
+    }
   };
 
   // 2b. Intelligent Delta Update for Bank Transactions
@@ -1593,6 +1669,22 @@ export default function CashflowWorkbenchView({
     setApiMsg(`✓ Cleared unreconciled item: ${tx.payee || tx.particulars || "Item"}`);
   };
 
+  const handlePromptDeleteUnrecon = (tx) => {
+    const desc = tx.payee || tx.particulars || "Transaction";
+    const amtStr = formatAmount2DP(tx.outAmount || tx.inAmount || tx.amount);
+    const dateStr = formatDateDMmmYy(tx.date);
+    setCustomModal({
+      title: "Remove unreconciled transaction",
+      message: `Are you sure you want to remove this unreconciled transaction (${desc}, ${dateStr}${amtStr ? `, ${amtStr}` : ""})? This action cannot be undone.`,
+      type: "warning",
+      isConfirm: true,
+      confirmText: "Remove item",
+      onConfirm: () => {
+        handleRemoveUnreconItem(tx);
+      }
+    });
+  };
+
   // 3b. Recategorise All Handler
   const [recategorising, setRecategorising] = useState(false);
   const handleRecategoriseAll = async () => {
@@ -1724,19 +1816,34 @@ export default function CashflowWorkbenchView({
   };
 
   const handleSelectInMonth = () => {
-    setParsedItems(prev => prev.map(item => ({ ...item, selected: Boolean(item.isInTargetMonth) })));
+    setParsedItems(prev => prev.map(item => {
+      if (filterOnlyUnreconSection && parsedPreview?.hasUnreconSection && item.isUnreconSection === false) {
+        return item;
+      }
+      return { ...item, selected: Boolean(item.isInTargetMonth) };
+    }));
   };
 
   const handleSelectAll = () => {
-    setParsedItems(prev => prev.map(item => ({ ...item, selected: true })));
+    setParsedItems(prev => prev.map(item => {
+      if (filterOnlyUnreconSection && parsedPreview?.hasUnreconSection && item.isUnreconSection === false) {
+        return item;
+      }
+      return { ...item, selected: true };
+    }));
   };
 
   const handleDeselectAll = () => {
-    setParsedItems(prev => prev.map(item => ({ ...item, selected: false })));
+    setParsedItems(prev => prev.map(item => {
+      if (filterOnlyUnreconSection && parsedPreview?.hasUnreconSection && item.isUnreconSection === false) {
+        return item;
+      }
+      return { ...item, selected: false };
+    }));
   };
 
   const handleApplyUnreconciled = () => {
-    const selectedItems = (parsedItems || []).filter(it => it.selected);
+    const selectedItems = (parsedItems || []).filter(it => it.selected && (!filterOnlyUnreconSection || !parsedPreview?.hasUnreconSection || it.isUnreconSection !== false));
     if (selectedItems.length === 0) {
       setCustomModal({
         title: "No items selected",
@@ -1747,10 +1854,11 @@ export default function CashflowWorkbenchView({
     }
     const taggedItems = selectedItems.map(it => ({
       ...it,
+      date: formatDateDMmmYy(it.date || it.displayDate),
       accountName: selectedUploadAccount || it.accountName || defaultAccount,
       isReconciled: false,
       vatApplies: it.vatApplies || "No",
-      plCategory: it.category || "",
+      plCategory: (it.plCategory && it.plCategory !== "Outgoings") ? it.plCategory : "",
       category: (it.outAmount > 0 || it.isNegative) ? "Outgoings" : "Revenue",
       suggestedCategory: (it.outAmount > 0 || it.isNegative) ? "Outgoings" : "Revenue"
     }));
@@ -1810,9 +1918,16 @@ export default function CashflowWorkbenchView({
       if (a.selected && !b.selected) return -1;
       if (!a.selected && b.selected) return 1;
       // 3. Stable date order descending
-      return (b.date || "").localeCompare(a.date || "");
+      return (b.isoDate || b.date || "").localeCompare(a.isoDate || a.date || "");
     });
   }, [parsedItems]);
+
+  const displayedParsedItems = useMemo(() => {
+    if (!parsedPreview?.hasUnreconSection || !filterOnlyUnreconSection) {
+      return sortedParsedItems;
+    }
+    return sortedParsedItems.filter(item => item.isUnreconSection !== false);
+  }, [sortedParsedItems, parsedPreview, filterOnlyUnreconSection]);
 
   // Manual fallback sync if needed
   const handleSyncToRecon = async () => {
@@ -1871,26 +1986,35 @@ export default function CashflowWorkbenchView({
       // Search filter
       if (searchTerm) {
         const q = searchTerm.toLowerCase().trim();
-        const cleanQ = q.replace(/[£,\s]/g, "");
-        const text = `${tx.payee || ""} ${tx.particulars || ""} ${tx.reference || ""} ${tx.plCategory || ""} ${tx.category || ""} ${tx.date || ""} ${acc}`.toLowerCase();
+        const tokens = q.split(/\s+/).filter(Boolean);
 
-        let match = text.includes(q);
+        const outNum = parseAmount(tx.outAmount || tx.outAmt);
+        const inNum = parseAmount(tx.inAmount || tx.inAmt);
+        const resolvedCat = getResolvedCategory(tx).toLowerCase();
+        const plCat = String(tx.plCategory || "").toLowerCase();
+        const dateFormatted = formatDateDMmmYy(tx.date).toLowerCase();
+        const dateRaw = String(tx.date || "").toLowerCase();
+        const payeeText = String(tx.payee || "").toLowerCase();
+        const particularsText = String(tx.particulars || "").toLowerCase();
+        const refText = String(tx.reference || "").toLowerCase();
 
-        // Also search by amount
-        if (!match && cleanQ) {
-          const outClean = String(tx.outAmount || tx.outAmt || "").replace(/[£,\s]/g, "");
-          const inClean = String(tx.inAmount || tx.inAmt || "").replace(/[£,\s]/g, "");
-          const outNum = parseAmount(tx.outAmount || tx.outAmt);
-          const inNum = parseAmount(tx.inAmount || tx.inAmt);
+        const searchableText = `${payeeText} ${particularsText} ${refText} ${resolvedCat} ${plCat} ${dateFormatted} ${dateRaw}`;
 
-          if (outClean.includes(cleanQ) || inClean.includes(cleanQ)) {
-            match = true;
-          } else if (!isNaN(parseFloat(cleanQ))) {
-            const searchNum = parseFloat(cleanQ);
-            if (outNum > 0 && Math.abs(outNum - searchNum) < 0.009) match = true;
-            if (inNum > 0 && Math.abs(inNum - searchNum) < 0.009) match = true;
+        const match = tokens.every(token => {
+          // 1. Check text search in visible / relevant metadata
+          if (searchableText.includes(token)) return true;
+
+          // 2. Numeric / amount search (exact match on numeric value, not arbitrary substring)
+          const cleanToken = token.replace(/[£,]/g, "");
+          if (/^\d+(\.\d{1,2})?$/.test(cleanToken)) {
+            const searchVal = parseFloat(cleanToken);
+            if (!isNaN(searchVal)) {
+              if (outNum > 0 && Math.abs(outNum - searchVal) < 0.009) return true;
+              if (inNum > 0 && Math.abs(inNum - searchVal) < 0.009) return true;
+            }
           }
-        }
+          return false;
+        });
 
         if (!match) return false;
       }
@@ -2287,7 +2411,33 @@ export default function CashflowWorkbenchView({
                               }}
                             >
                               <td style={{ padding: "6px 6px", color: "#64748b", whiteSpace: "nowrap", fontSize: "10px" }}>
-                                {tx.date || ""}
+                                <div>{formatDateDMmmYy(tx.date)}</div>
+                                {isUnrecon && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handlePromptDeleteUnrecon(tx)}
+                                    title="Remove unreconciled item"
+                                    style={{
+                                      marginTop: "2px",
+                                      background: "transparent",
+                                      border: "none",
+                                      color: "#dc2626",
+                                      cursor: "pointer",
+                                      padding: "1px 4px",
+                                      fontSize: "11px",
+                                      fontWeight: "700",
+                                      borderRadius: "3px",
+                                      display: "inline-flex",
+                                      alignItems: "center",
+                                      justifyContent: "center",
+                                      lineHeight: 1
+                                    }}
+                                    onMouseEnter={e => e.currentTarget.style.backgroundColor = "#fee2e2"}
+                                    onMouseLeave={e => e.currentTarget.style.backgroundColor = "transparent"}
+                                  >
+                                    ✕
+                                  </button>
+                                )}
                               </td>
                               <td style={{ padding: "6px 6px", color: "#1e293b", minWidth: 0, overflow: "hidden" }}>
                                 <div style={{ fontWeight: "600", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -2317,12 +2467,12 @@ export default function CashflowWorkbenchView({
                                 </div>
                               </td>
                               <td style={{ padding: "6px 2px", width: "135px" }}>
-                                {isUnrecon ? (
+                                {isUnrecon && currentCat === "Outgoings" ? (
                                   <div style={{ display: "flex", alignItems: "center", gap: "3px" }}>
                                     <select
-                                      value={tx.plCategory || tx.category || ""}
+                                      value={tx.plCategory || ""}
                                       onChange={e => handleUnreconCategoryChange(tx, e.target.value)}
-                                      title="Assign P&L expense category"
+                                      title="Assign category"
                                       style={{
                                         flex: 1,
                                         minWidth: "75px",
@@ -2330,21 +2480,21 @@ export default function CashflowWorkbenchView({
                                         padding: "2px 3px",
                                         fontSize: "9px",
                                         borderRadius: "4px",
-                                        border: "1px solid #cbd5e1",
-                                        background: (tx.plCategory || tx.category) ? "#f0fdf4" : "#ffffff",
-                                        color: (tx.plCategory || tx.category) ? "#166534" : "#334155",
-                                        fontWeight: (tx.plCategory || tx.category) ? "600" : "400",
+                                        border: `1px solid ${!tx.plCategory ? "#fca5a5" : "#cbd5e1"}`,
+                                        background: tx.plCategory ? "#f0fdf4" : "#ffffff",
+                                        color: tx.plCategory ? "#166534" : "#334155",
+                                        fontWeight: tx.plCategory ? "600" : "400",
                                         cursor: "pointer",
                                         overflow: "hidden",
                                         textOverflow: "ellipsis",
                                         whiteSpace: "nowrap"
                                       }}
                                     >
-                                      <option value="">(P&L account...)</option>
+                                      <option value=""></option>
                                       <option value="Not an expense">Not an expense</option>
                                       {Array.from(new Set([
-                                        ...(reconData?.plAccountOptions || []).filter(c => c && c !== "Not an expense"),
-                                        ...(tx.plCategory && tx.plCategory !== "Not an expense" ? [tx.plCategory] : (tx.category && tx.category !== "Not an expense" ? [tx.category] : []))
+                                        ...(reconData?.plAccountOptions || []).filter(c => c && c !== "Not an expense" && c !== "Outgoings"),
+                                        ...(tx.plCategory && tx.plCategory !== "Not an expense" && tx.plCategory !== "Outgoings" ? [tx.plCategory] : [])
                                       ])).map(catOpt => (
                                         <option key={catOpt} value={catOpt}>{catOpt}</option>
                                       ))}
@@ -2838,6 +2988,42 @@ export default function CashflowWorkbenchView({
                       </div>
                     </div>
 
+                    {/* Section Filter (For Xero Reports with Plus Unreconciled Statement Lines) */}
+                    {parsedPreview.hasUnreconSection && (
+                      <div style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "8px",
+                        background: "#ffffff",
+                        padding: "4px 10px",
+                        borderRadius: "6px",
+                        border: "1px solid #86efac",
+                        fontSize: "11px"
+                      }}>
+                        <span style={{ fontWeight: "700", color: "#166534" }}>Filter:</span>
+                        <label style={{ display: "inline-flex", alignItems: "center", gap: "4px", cursor: "pointer", fontWeight: filterOnlyUnreconSection ? "700" : "500", color: filterOnlyUnreconSection ? "#166534" : "#64748b" }}>
+                          <input
+                            type="radio"
+                            name="reconSectionRadio"
+                            checked={filterOnlyUnreconSection}
+                            onChange={() => setFilterOnlyUnreconSection(true)}
+                            style={{ cursor: "pointer" }}
+                          />
+                          Plus Unreconciled Statement Lines only ({parsedPreview.unreconSectionCount || 0})
+                        </label>
+                        <label style={{ display: "inline-flex", alignItems: "center", gap: "4px", cursor: "pointer", fontWeight: !filterOnlyUnreconSection ? "700" : "500", color: !filterOnlyUnreconSection ? "#166534" : "#64748b" }}>
+                          <input
+                            type="radio"
+                            name="reconSectionRadio"
+                            checked={!filterOnlyUnreconSection}
+                            onChange={() => setFilterOnlyUnreconSection(false)}
+                            style={{ cursor: "pointer" }}
+                          />
+                          All sections ({parsedItems.length})
+                        </label>
+                      </div>
+                    )}
+
                     {/* Target Account Selector */}
                     <div style={{ display: "flex", alignItems: "center", gap: "6px", background: "#ffffff", padding: "4px 8px", borderRadius: "6px", border: "1px solid #86efac" }}>
                       <span style={{ fontSize: "11px", fontWeight: "700", color: "#166534" }}>🏦 Assign to:</span>
@@ -2937,7 +3123,7 @@ export default function CashflowWorkbenchView({
                           <th style={{ padding: "8px 10px", width: "36px", textAlign: "center" }}>
                             <input
                               type="checkbox"
-                              checked={parsedItems.length > 0 && parsedItems.every(i => i.selected)}
+                              checked={displayedParsedItems.length > 0 && displayedParsedItems.every(i => i.selected)}
                               onChange={(e) => e.target.checked ? handleSelectAll() : handleDeselectAll()}
                               style={{ cursor: "pointer" }}
                             />
@@ -2951,7 +3137,7 @@ export default function CashflowWorkbenchView({
                         </tr>
                       </thead>
                       <tbody>
-                        {sortedParsedItems.map((item, idx) => (
+                        {displayedParsedItems.map((item, idx) => (
                           <tr
                             key={item.id || idx}
                             onClick={() => handleToggleItem(item.id)}
@@ -2971,7 +3157,7 @@ export default function CashflowWorkbenchView({
                               />
                             </td>
                             <td style={{ padding: "7px 10px", color: "#334155", fontWeight: "600", whiteSpace: "nowrap" }}>
-                              {item.displayDate || item.date}
+                              {formatDateDMmmYy(item.displayDate || item.date)}
                             </td>
                             <td style={{ padding: "7px 10px" }}>
                               <span style={{
@@ -3486,26 +3672,28 @@ export default function CashflowWorkbenchView({
                       {bankTxns.filter(t => t.isReconciled !== false).length > 0 ? "Re-import bank transactions" : "Import bank transactions"}
                     </button>
 
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setGuidedStep(2);
-                        setGuidedCashAccountIdx(0);
-                      }}
-                      style={{
-                        padding: "10px 22px",
-                        background: bankTxns.filter(t => t.isReconciled !== false).length > 0 ? "#166534" : "#ffffff",
-                        color: bankTxns.filter(t => t.isReconciled !== false).length > 0 ? "#ffffff" : "#475569",
-                        border: `1px solid ${bankTxns.filter(t => t.isReconciled !== false).length > 0 ? "#166534" : "#cbd5e1"}`,
-                        borderRadius: "8px",
-                        fontSize: "13px",
-                        fontWeight: "600",
-                        cursor: "pointer",
-                        marginLeft: "auto"
-                      }}
-                    >
-                      {bankTxns.filter(t => t.isReconciled !== false).length > 0 ? "Next: Add unreconciled items →" : "Proceed to add unreconciled items →"}
-                    </button>
+                    {bankTxns.filter(t => t.isReconciled !== false).length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setGuidedStep(2);
+                          setGuidedCashAccountIdx(0);
+                        }}
+                        style={{
+                          padding: "10px 22px",
+                          background: "#166534",
+                          color: "#ffffff",
+                          border: "1px solid #166534",
+                          borderRadius: "8px",
+                          fontSize: "13px",
+                          fontWeight: "600",
+                          cursor: "pointer",
+                          marginLeft: "auto"
+                        }}
+                      >
+                        Next: Add unreconciled items →
+                      </button>
+                    )}
                   </div>
                 </div>
               )}
@@ -3592,7 +3780,7 @@ export default function CashflowWorkbenchView({
                                   <tbody>
                                     {itemsForThisAcc.map((it, idx) => (
                                       <tr key={idx} style={{ borderBottom: "1px solid #f1f5f9" }}>
-                                        <td style={{ padding: "6px 10px", color: "#64748b" }}>{it.date}</td>
+                                        <td style={{ padding: "6px 10px", color: "#64748b" }}>{formatDateDMmmYy(it.date)}</td>
                                         <td style={{ padding: "6px 10px", fontWeight: "600", color: "#1e293b" }}>{it.payee || it.particulars || "—"}</td>
                                         <td style={{ padding: "6px 10px", textAlign: "right", fontWeight: "600", color: it.outAmount > 0 ? "#b91c1c" : "#15803d" }}>
                                           {formatAmount2DP(it.outAmount || it.inAmount || it.amount)}
@@ -3755,7 +3943,7 @@ export default function CashflowWorkbenchView({
                           <tbody>
                             {unreconItems.map((u, idx) => (
                               <tr key={idx} style={{ borderBottom: "1px solid #f1f5f9" }}>
-                                <td style={{ padding: "6px 12px", color: "#64748b" }}>{u.date}</td>
+                                <td style={{ padding: "6px 12px", color: "#64748b" }}>{formatDateDMmmYy(u.date)}</td>
                                 <td style={{ padding: "6px 12px", color: "#0369a1", fontWeight: "600" }}>{u.accountName || defaultAccount}</td>
                                 <td style={{ padding: "6px 12px", fontWeight: "600", color: "#1e293b" }}>{u.payee || u.particulars || "—"}</td>
                                 <td style={{ padding: "6px 12px", textAlign: "right", fontWeight: "600", color: u.outAmount > 0 ? "#b91c1c" : "#15803d" }}>
@@ -3871,7 +4059,7 @@ export default function CashflowWorkbenchView({
 
                             return (
                               <tr key={idx} style={{ borderBottom: "1px solid #f1f5f9" }}>
-                                <td style={{ padding: "6px 8px", color: "#64748b", whiteSpace: "nowrap" }}>{t.date}</td>
+                                <td style={{ padding: "6px 8px", color: "#64748b", whiteSpace: "nowrap" }}>{formatDateDMmmYy(t.date)}</td>
                                 <td style={{ padding: "6px 8px", color: "#0369a1", fontWeight: "600", whiteSpace: "nowrap" }}>
                                   {t.accountName || defaultAccount}
                                 </td>
@@ -3922,27 +4110,27 @@ export default function CashflowWorkbenchView({
                                       ))}
                                     </select>
 
-                                    {isUnrecon && (
+                                    {isUnrecon && currentCat === "Outgoings" && (
                                       <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
                                         <select
-                                          value={t.plCategory || t.category || ""}
+                                          value={t.plCategory || ""}
                                           onChange={e => handleUnreconCategoryChange(t, e.target.value)}
-                                          title="Assign P&L expense category"
+                                          title="Assign category"
                                           style={{
                                             flex: 1,
                                             padding: "2px 4px",
                                             fontSize: "9.5px",
                                             borderRadius: "3px",
-                                            border: "1px solid #cbd5e1",
-                                            background: (t.plCategory || t.category) ? "#f0fdf4" : "#ffffff",
-                                            color: (t.plCategory || t.category) ? "#166534" : "#334155"
+                                            border: `1px solid ${!t.plCategory ? "#fca5a5" : "#cbd5e1"}`,
+                                            background: t.plCategory ? "#f0fdf4" : "#ffffff",
+                                            color: t.plCategory ? "#166534" : "#334155"
                                           }}
                                         >
-                                          <option value="">(P&L account...)</option>
+                                          <option value=""></option>
                                           <option value="Not an expense">Not an expense</option>
                                           {Array.from(new Set([
-                                            ...(reconData?.plAccountOptions || []).filter(c => c && c !== "Not an expense"),
-                                            ...(t.plCategory && t.plCategory !== "Not an expense" ? [t.plCategory] : (t.category && t.category !== "Not an expense" ? [t.category] : []))
+                                            ...(reconData?.plAccountOptions || []).filter(c => c && c !== "Not an expense" && c !== "Outgoings"),
+                                            ...(t.plCategory && t.plCategory !== "Not an expense" && t.plCategory !== "Outgoings" ? [t.plCategory] : [])
                                           ])).map(catOpt => (
                                             <option key={catOpt} value={catOpt}>{catOpt}</option>
                                           ))}
@@ -3977,11 +4165,31 @@ export default function CashflowWorkbenchView({
                     </div>
                   </div>
 
+                  {unassignedOutgoingsCount > 0 && (
+                    <div style={{
+                      padding: "8px 12px",
+                      background: "#fef2f2",
+                      border: "1px solid #fecaca",
+                      borderRadius: "6px",
+                      fontSize: "12px",
+                      color: "#991b1b",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "8px"
+                    }}>
+                      <span>⚠️</span>
+                      <span>
+                        Please select a category for each unreconciled outgoing item ({unassignedOutgoingsCount} remaining) before confirming.
+                      </span>
+                    </div>
+                  )}
+
                   {/* Actions */}
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "8px" }}>
                     <button
                       type="button"
                       onClick={() => setGuidedStep(3)}
+                      disabled={isFinishingGuided}
                       style={{
                         padding: "8px 16px",
                         background: "#ffffff",
@@ -3990,7 +4198,7 @@ export default function CashflowWorkbenchView({
                         borderRadius: "6px",
                         fontSize: "12px",
                         fontWeight: "600",
-                        cursor: "pointer"
+                        cursor: isFinishingGuided ? "not-allowed" : "pointer"
                       }}
                     >
                       ← Back to unreconciled items
@@ -3999,19 +4207,30 @@ export default function CashflowWorkbenchView({
                     <button
                       type="button"
                       onClick={handleFinishGuidedSetup}
+                      disabled={isFinishingGuided || unassignedOutgoingsCount > 0}
                       style={{
                         padding: "8px 22px",
-                        background: "#0284c7",
+                        background: (isFinishingGuided || unassignedOutgoingsCount > 0) ? "#94a3b8" : "#0284c7",
                         color: "#ffffff",
                         border: "none",
                         borderRadius: "6px",
                         fontSize: "13px",
                         fontWeight: "600",
-                        cursor: "pointer",
-                        boxShadow: "0 2px 4px rgba(2, 132, 199, 0.2)"
+                        cursor: (isFinishingGuided || unassignedOutgoingsCount > 0) ? "not-allowed" : "pointer",
+                        boxShadow: (isFinishingGuided || unassignedOutgoingsCount > 0) ? "none" : "0 2px 4px rgba(2, 132, 199, 0.2)",
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "8px"
                       }}
                     >
-                      Confirm and finish setup
+                      {isFinishingGuided ? (
+                        <>
+                          <Spinner size={14} />
+                          <span>Saving...</span>
+                        </>
+                      ) : (
+                        "Confirm and finish setup"
+                      )}
                     </button>
                   </div>
                 </div>

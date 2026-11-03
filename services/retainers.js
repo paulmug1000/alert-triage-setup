@@ -402,11 +402,11 @@ export async function handleRenameRetainerJob(req, res, sheets) {
   }
 }
 
-export async function handleChangeRetainerEndDate(req, res, sheets) {
-  let { clientSheetId, masterSheetId, client, jobName, parentRowNum, newEndDate: rawNewEndDate, noEndDate } = req.body;
+export async function executeChangeRetainerEndDate(sheets, params = {}) {
+  let { clientSheetId, masterSheetId, client, jobName, parentRowNum, newEndDate: rawNewEndDate, noEndDate, clientName, automationCommanderSheetId } = params;
   const newEndDate = (noEndDate || isNoEndDateSentinel(rawNewEndDate)) ? NO_END_DATE_SHEET_VALUE : rawNewEndDate;
   if (!clientSheetId || !jobName || !parentRowNum || !newEndDate) {
-    return res.status(400).json({ success: false, error: "Missing required fields" });
+    return { success: false, error: "Missing required fields" };
   }
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
@@ -428,7 +428,7 @@ export async function handleChangeRetainerEndDate(req, res, sheets) {
     const rows = resp.data.values || [];
     const resolvedParent = resolveRetainerParentRow_(rows, parentRowNum, client, jobName);
     if (!resolvedParent) {
-      return res.status(400).json({ success: false, error: "Row mismatch - job may have moved." });
+      return { success: false, error: "Row mismatch - job may have moved." };
     }
     parentRowNum = resolvedParent.rowNum;
     client = resolvedParent.resolvedClient;
@@ -437,7 +437,7 @@ export async function handleChangeRetainerEndDate(req, res, sheets) {
 
     const confirmedSheet = (metaResp.data.sheets || []).find(s => s.properties.title === "Confirmed");
     if (!confirmedSheet) {
-      return res.status(400).json({ success: false, error: "Confirmed tab not found" });
+      return { success: false, error: "Confirmed tab not found" };
     }
     const gridSheetId = confirmedSheet.properties.sheetId;
     let currentMaxRows = confirmedSheet.properties.gridProperties?.rowCount || 5000;
@@ -445,7 +445,7 @@ export async function handleChangeRetainerEndDate(req, res, sheets) {
 
     const oldEndDate = retParseSheetDate(parentRow[38]);
     const newEnd = retParseSheetDate(newEndDate);
-    if (!newEnd) return res.status(400).json({ success: false, error: "Invalid new end date" });
+    if (!newEnd) return { success: false, error: "Invalid new end date" };
     const formattedNewEndDate = retFmtDate(newEnd);
     const displayNewEndDate = formatJobEndDateDisplay(formattedNewEndDate);
 
@@ -487,10 +487,10 @@ export async function handleChangeRetainerEndDate(req, res, sheets) {
 
       const blockedRow = toTrim.find(cr => retRowHasRealData(cr.row));
       if (blockedRow) {
-        return res.status(200).json({
+        return {
           success: false, blocked: true,
           error: `Cannot shorten this retainer - row ${blockedRow.rowNum} already has a real invoice or expense recorded.`,
-        });
+        };
       }
 
       if (toTrim.length === 0) {
@@ -498,7 +498,8 @@ export async function handleChangeRetainerEndDate(req, res, sheets) {
           spreadsheetId: sheetIdClean, range: `Confirmed!AM${parentRowNum}`,
           valueInputOption: "USER_ENTERED", requestBody: { values: [[sanitizeFormulaInput(formattedNewEndDate)]] },
         });
-        return res.status(200).json({ success: true, trimmed: 0, grown: 0 });
+        await invalidatePmaClientCache(sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(e => console.warn("Cache invalidate failed in executeChangeRetainerEndDate:", e.message));
+        return { success: true, trimmed: 0, grown: 0 };
       }
 
       const groupTrimCounts = new Map();
@@ -623,15 +624,15 @@ export async function handleChangeRetainerEndDate(req, res, sheets) {
         }),
       ]);
 
-      let tenantClient = req.body.clientName || "";
+      let tenantClient = clientName || "";
       if (!tenantClient) {
-        tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
+        tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, automationCommanderSheetId);
       }
       const endClient = client || "";
       const jobIdentifier = endClient ? `"${endClient} - ${jobName}"` : `"${jobName}"`;
 
       logPmaActivity(sheets, {
-        automationCommanderSheetId: req.body.automationCommanderSheetId,
+        automationCommanderSheetId: automationCommanderSheetId,
         clientName: tenantClient,
         category: "RETAINER",
         action: "Retainer End Date Changed",
@@ -639,7 +640,9 @@ export async function handleChangeRetainerEndDate(req, res, sheets) {
         details: { jobName, newEndDate: displayNewEndDate, endClient, clientName: tenantClient, trimmed: trimRowNums.length, grown: 0 }
       }).catch(e => console.error("PMA log failed:", e));
 
-      return res.status(200).json({ success: true, trimmed: trimRowNums.length, grown: 0 });
+      await invalidatePmaClientCache(sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(e => console.warn("Cache invalidate failed in executeChangeRetainerEndDate:", e.message));
+
+      return { success: true, trimmed: trimRowNums.length, grown: 0 };
 
     } else {
       const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -652,7 +655,8 @@ export async function handleChangeRetainerEndDate(req, res, sheets) {
           spreadsheetId: sheetIdClean, range: `Confirmed!AM${parentRowNum}`,
           valueInputOption: "USER_ENTERED", requestBody: { values: [[formattedNewEndDate]] },
         });
-        return res.status(200).json({ success: true, trimmed: 0, grown: 0 });
+        await invalidatePmaClientCache(sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(e => console.warn("Cache invalidate failed in executeChangeRetainerEndDate:", e.message));
+        return { success: true, trimmed: 0, grown: 0 };
       }
 
       const intervalMonths = retDetectIntervalMonths(childDates);
@@ -697,7 +701,8 @@ export async function handleChangeRetainerEndDate(req, res, sheets) {
           spreadsheetId: sheetIdClean, range: `Confirmed!AM${parentRowNum}`,
           valueInputOption: "USER_ENTERED", requestBody: { values: [[formattedNewEndDate]] },
         });
-        return res.status(200).json({ success: true, trimmed: 0, grown: 0 });
+        await invalidatePmaClientCache(sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(e => console.warn("Cache invalidate failed in executeChangeRetainerEndDate:", e.message));
+        return { success: true, trimmed: 0, grown: 0 };
       }
 
       // Compute trueLastRow in memory from already-fetched rows (no redundant 5000-row read!)
@@ -844,15 +849,15 @@ export async function handleChangeRetainerEndDate(req, res, sheets) {
         requestBody: { valueInputOption: "USER_ENTERED", data: allWrites },
       });
 
-      let tenantClient = req.body.clientName || "";
+      let tenantClient = clientName || "";
       if (!tenantClient) {
-        tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
+        tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, automationCommanderSheetId);
       }
       const endClient = client || "";
       const jobIdentifier = endClient ? `"${endClient} - ${jobName}"` : `"${jobName}"`;
 
       logPmaActivity(sheets, {
-        automationCommanderSheetId: req.body.automationCommanderSheetId,
+        automationCommanderSheetId: automationCommanderSheetId,
         clientName: tenantClient,
         category: "RETAINER",
         action: "Retainer End Date Changed",
@@ -860,21 +865,40 @@ export async function handleChangeRetainerEndDate(req, res, sheets) {
         details: { jobName, newEndDate: displayNewEndDate, endClient, clientName: tenantClient, trimmed: 0, grown: newRowDates.length }
       }).catch(e => console.error("PMA log failed:", e));
 
-      return res.status(200).json({ success: true, trimmed: 0, grown: newRowDates.length });
+      await invalidatePmaClientCache(sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(e => console.warn("Cache invalidate failed in executeChangeRetainerEndDate:", e.message));
+
+      return { success: true, trimmed: 0, grown: newRowDates.length };
     }
+  } catch (err) {
+    console.error("❌ executeChangeRetainerEndDate error:", err);
+    return { success: false, error: err.message };
+  }
+}
+
+export async function handleChangeRetainerEndDate(req, res, sheets) {
+  try {
+    const result = await executeChangeRetainerEndDate(sheets, {
+      ...req.body,
+      automationCommanderSheetId: req.body.automationCommanderSheetId
+    });
+    if (!result.success && !result.blocked) {
+      return res.status(400).json(result);
+    }
+    return res.status(200).json(result);
   } catch (err) {
     console.error("❌ change_retainer_end_date error:", err);
     return res.status(500).json({ success: false, error: err.message });
   }
 }
 
-export async function handleChangeRetainerStartDate(req, res, sheets) {
+export async function executeChangeRetainerStartDate(sheets, params = {}) {
   let {
     clientSheetId, masterSheetId, client, jobName, parentRowNum,
     newStartDate, newEndDate, newMonthlyAmount,
-  } = req.body;
+    clientName, automationCommanderSheetId
+  } = params;
   if (!clientSheetId || !jobName || !parentRowNum || !newStartDate) {
-    return res.status(400).json({ success: false, error: "Missing required fields" });
+    return { success: false, error: "Missing required fields" };
   }
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
@@ -896,7 +920,7 @@ export async function handleChangeRetainerStartDate(req, res, sheets) {
     const rows = resp.data.values || [];
     const resolvedParent = resolveRetainerParentRow_(rows, parentRowNum, client, jobName);
     if (!resolvedParent) {
-      return res.status(400).json({ success: false, error: "Row mismatch - job may have moved." });
+      return { success: false, error: "Row mismatch - job may have moved." };
     }
     parentRowNum = resolvedParent.rowNum;
     client = resolvedParent.resolvedClient;
@@ -905,19 +929,19 @@ export async function handleChangeRetainerStartDate(req, res, sheets) {
 
     const confirmedSheet = (metaResp.data.sheets || []).find(s => s.properties.title === "Confirmed");
     if (!confirmedSheet) {
-      return res.status(400).json({ success: false, error: "Confirmed tab not found" });
+      return { success: false, error: "Confirmed tab not found" };
     }
     const gridSheetId = confirmedSheet.properties.sheetId;
     let currentMaxRows = confirmedSheet.properties.gridProperties?.rowCount || 5000;
     const rowGroups = confirmedSheet.rowGroups || [];
 
     const newStart = retParseSheetDate(newStartDate);
-    if (!newStart) return res.status(400).json({ success: false, error: "Invalid new start date" });
+    if (!newStart) return { success: false, error: "Invalid new start date" };
 
     const currentEndDate = retParseSheetDate(parentRow[38]);
     const finalEnd = newEndDate ? retParseSheetDate(newEndDate) : (currentEndDate || new Date(2050, 11, 31));
     if (finalEnd && newStart > finalEnd) {
-      return res.status(400).json({ success: false, error: "Start date cannot be after end date." });
+      return { success: false, error: "Start date cannot be after end date." };
     }
     const formattedFinalEnd = finalEnd ? retFmtDate(finalEnd) : NO_END_DATE_SHEET_VALUE;
 
@@ -937,11 +961,11 @@ export async function handleChangeRetainerStartDate(req, res, sheets) {
     const allRows = [{ rowNum: parentRowNum, row: parentRow }].concat(childRows);
     const blockedRow = allRows.find(r => retRowHasRealData(r.row));
     if (blockedRow) {
-      return res.status(200).json({
+      return {
         success: false,
         blocked: true,
         error: `Cannot change start date - row ${blockedRow.rowNum} already has a real invoice or expense recorded.`,
-      });
+      };
     }
 
     const oldStartDate = retParseSheetDate(parentRow[37]);
@@ -1280,15 +1304,15 @@ export async function handleChangeRetainerStartDate(req, res, sheets) {
       });
     }
 
-    let tenantClient = req.body.clientName || "";
+    let tenantClient = clientName || "";
     if (!tenantClient) {
-      tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
+      tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, automationCommanderSheetId);
     }
     const endClient = client || "";
     const jobIdentifier = endClient ? `"${endClient} - ${jobName}"` : `"${jobName}"`;
 
     logPmaActivity(sheets, {
-      automationCommanderSheetId: req.body.automationCommanderSheetId,
+      automationCommanderSheetId: automationCommanderSheetId,
       clientName: tenantClient,
       category: "RETAINER",
       action: "Retainer Start Date Changed",
@@ -1296,11 +1320,29 @@ export async function handleChangeRetainerStartDate(req, res, sheets) {
       details: { jobName, newStartDate, newEndDate, newMonthlyAmount, endClient, clientName: tenantClient }
     }).catch(e => console.error("PMA log failed:", e));
 
-    return res.status(200).json({
+    await invalidatePmaClientCache(sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(e => console.warn("Cache invalidate failed in executeChangeRetainerStartDate:", e.message));
+
+    return {
       success: true,
       trimmed: Math.max(0, currentCount - targetCount),
       grown: Math.max(0, targetCount - currentCount),
+    };
+  } catch (err) {
+    console.error("❌ executeChangeRetainerStartDate error:", err);
+    return { success: false, error: err.message };
+  }
+}
+
+export async function handleChangeRetainerStartDate(req, res, sheets) {
+  try {
+    const result = await executeChangeRetainerStartDate(sheets, {
+      ...req.body,
+      automationCommanderSheetId: req.body.automationCommanderSheetId
     });
+    if (!result.success && !result.blocked) {
+      return res.status(400).json(result);
+    }
+    return res.status(200).json(result);
   } catch (err) {
     console.error("❌ change_retainer_start_date error:", err);
     return res.status(500).json({ success: false, error: err.message });

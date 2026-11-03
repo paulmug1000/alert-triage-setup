@@ -28,6 +28,8 @@ import {
   provisionRetainerScheduleInBackground,
   buildRetainerChildRowsWritePlan,
   groupAndCollapseRetainerChildRows_,
+  executeChangeRetainerEndDate,
+  executeChangeRetainerStartDate,
 } from "./retainers.js";
 
 let _allClientsMemoryCache = null;
@@ -1633,51 +1635,141 @@ export async function handleUpdateJobFields(req, res, sheets) {
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
 
+    const targetRowNum = rowNum ? parseInt(rowNum, 10) : null;
+    const typeUpdate = updates.find(u => (u.colLetter || "").toUpperCase() === "AJ" || (u.cellRef || "").toUpperCase().startsWith("AJ"));
+    let isRetainerJob = false;
+    if (tabName === "Confirmed" && targetRowNum) {
+      if (req.body.isRetainer !== undefined) {
+        isRetainerJob = Boolean(req.body.isRetainer);
+      } else if (typeUpdate) {
+        isRetainerJob = String(typeUpdate.value || "").trim().toLowerCase() === "retainer";
+      } else {
+        try {
+          const typeCellResp = await sheets.spreadsheets.values.get({
+            spreadsheetId: sheetIdClean,
+            range: `${tabName}!AJ${targetRowNum}`,
+            valueRenderOption: "FORMATTED_VALUE"
+          });
+          const val = typeCellResp.data?.values?.[0]?.[0] || "";
+          isRetainerJob = String(val).trim().toLowerCase() === "retainer";
+        } catch (e) {
+          console.warn("Could not check job type cell:", e.message);
+        }
+      }
+    }
+
+    const startDateUpdate = updates.find(u => (u.colLetter || "").toUpperCase() === "AL" || (u.cellRef || "").toUpperCase().startsWith("AL"));
+    const endDateUpdate = updates.find(u => (u.colLetter || "").toUpperCase() === "AM" || (u.cellRef || "").toUpperCase().startsWith("AM"));
+    const isChangingToRetainer = tabName === "Confirmed" && typeUpdate && String(typeUpdate.value || "").trim().toLowerCase() === "retainer";
+    const isExistingRetainer = isRetainerJob && !isChangingToRetainer;
+
     const isSettingRetainer = updates.some(
       u => ((u.colLetter || "").toUpperCase() === "AJ" || (u.cellRef || "").toUpperCase().startsWith("AJ")) &&
         String(u.value || "").trim().toLowerCase() === "retainer"
     );
-    const data = updates.map(u => {
+
+    // If it's an existing retainer on Confirmed and start/end dates changed, exclude those date columns from initial write
+    // so executeChangeRetainerStartDate / executeChangeRetainerEndDate can inspect current sheet values and handle row manipulation safely.
+    const initialUpdates = updates.filter(u => {
       const colUp = (u.colLetter || String(u.cellRef || "").replace(/[0-9]/g, "")).toUpperCase();
-      let v = u.value;
-      if (colUp === "AM" && (isNoEndDateSentinel(v) || (isSettingRetainer && !String(v || "").trim()))) {
-        v = NO_END_DATE_SHEET_VALUE;
+      if (isExistingRetainer) {
+        if (startDateUpdate && (colUp === "AL" || colUp === "AM")) return false;
+        if (endDateUpdate && colUp === "AM") return false;
       }
-      return {
-        range: `${tabName}!${u.cellRef || `${u.colLetter}${u.rowNum || rowNum}`}`,
-        values: [[sanitizeFormulaInput(v)]]
-      };
+      return true;
     });
 
-    await sheets.spreadsheets.values.batchUpdate({
-      spreadsheetId: sheetIdClean,
-      requestBody: {
-        valueInputOption: "USER_ENTERED",
-        data
-      }
-    });
+    if (initialUpdates.length > 0) {
+      const data = initialUpdates.map(u => {
+        const colUp = (u.colLetter || String(u.cellRef || "").replace(/[0-9]/g, "")).toUpperCase();
+        let v = u.value;
+        if (colUp === "AM" && (isNoEndDateSentinel(v) || (isSettingRetainer && !String(v || "").trim()))) {
+          v = NO_END_DATE_SHEET_VALUE;
+        }
+        return {
+          range: `${tabName}!${u.cellRef || `${u.colLetter}${u.rowNum || rowNum}`}`,
+          values: [[sanitizeFormulaInput(v)]]
+        };
+      });
+
+      await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: sheetIdClean,
+        requestBody: {
+          valueInputOption: "USER_ENTERED",
+          data
+        }
+      });
+    }
 
     // If Revenue (AG), Direct Costs (AH), Dates (AL, AM), or Type (AJ) change, synchronize placeholders or provision retainer rows
     let backgroundProvisioning = false;
     let invoiceSlotUpdates = [];
     let expenseSlotUpdates = [];
-    if ((tabName === "Confirmed" || tabName === "Pipeline") && rowNum) {
-      const targetRowNum = parseInt(rowNum, 10);
-      const typeUpdate = updates.find(u => (u.colLetter || "").toUpperCase() === "AJ" || (u.cellRef || "").toUpperCase().startsWith("AJ"));
+    let retainerTrimmed = 0;
+    let retainerGrown = 0;
+
+    let resolvedClient = req.body.clientName || "";
+    if (!resolvedClient) {
+      resolvedClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
+    }
+    const clientUpdate = updates.find(u => (u.colLetter || "").toUpperCase() === "A");
+    const jobNameUpdate = updates.find(u => (u.colLetter || "").toUpperCase() === "B");
+    const effectiveClient = clientUpdate ? String(clientUpdate.value || "") : (endClientName || "");
+    const effectiveJobName = jobNameUpdate ? String(jobNameUpdate.value || "") : (jobName || "");
+
+    if ((tabName === "Confirmed" || tabName === "Pipeline") && targetRowNum) {
       const revUpdate = updates.find(u => (u.colLetter || "").toUpperCase() === "AG" || (u.cellRef || "").toUpperCase().startsWith("AG"));
       const costUpdate = updates.find(u => (u.colLetter || "").toUpperCase() === "AH" || (u.cellRef || "").toUpperCase().startsWith("AH"));
       const dateUpdate = updates.find(u => ["AL", "AM"].includes((u.colLetter || "").toUpperCase()) || ["AL", "AM"].some(c => (u.cellRef || "").toUpperCase().startsWith(c)));
 
-      if (tabName === "Confirmed" && typeUpdate && String(typeUpdate.value || "").trim().toLowerCase() === "retainer") {
+      if (isChangingToRetainer) {
         await provisionRetainerChildRows_(sheets, {
           clientSheetId: sheetIdClean,
           masterSheetId: req.body.masterSheetId,
-          clientName: req.body.clientName || "",
+          clientName: resolvedClient,
           parentRowNum: targetRowNum,
-          client: endClientName || "",
-          jobName: jobName || "",
+          client: effectiveClient,
+          jobName: effectiveJobName,
         });
+      } else if (isExistingRetainer) {
+        if (startDateUpdate) {
+          const retStartResult = await executeChangeRetainerStartDate(sheets, {
+            clientSheetId: sheetIdClean,
+            masterSheetId: req.body.masterSheetId,
+            client: effectiveClient,
+            jobName: effectiveJobName,
+            parentRowNum: targetRowNum,
+            newStartDate: startDateUpdate.value,
+            newEndDate: endDateUpdate ? endDateUpdate.value : undefined,
+            newMonthlyAmount: revUpdate ? revUpdate.value : undefined,
+            clientName: resolvedClient,
+            automationCommanderSheetId: req.body.automationCommanderSheetId
+          });
+          if (retStartResult && !retStartResult.success) {
+            return res.status(200).json(retStartResult);
+          }
+          retainerTrimmed = retStartResult?.trimmed || 0;
+          retainerGrown = retStartResult?.grown || 0;
+        } else if (endDateUpdate) {
+          const retEndResult = await executeChangeRetainerEndDate(sheets, {
+            clientSheetId: sheetIdClean,
+            masterSheetId: req.body.masterSheetId,
+            client: effectiveClient,
+            jobName: effectiveJobName,
+            parentRowNum: targetRowNum,
+            newEndDate: endDateUpdate.value,
+            noEndDate: isNoEndDateSentinel(endDateUpdate.value),
+            clientName: resolvedClient,
+            automationCommanderSheetId: req.body.automationCommanderSheetId
+          });
+          if (retEndResult && !retEndResult.success) {
+            return res.status(200).json(retEndResult);
+          }
+          retainerTrimmed = retEndResult?.trimmed || 0;
+          retainerGrown = retEndResult?.grown || 0;
+        }
       } else {
+        // Standard Project: adjust invoice & expense placeholders across the 3 slots
         if (revUpdate) {
           const revNum = parseFloat(String(revUpdate.value || "").replace(/[£$€,\s]/g, "")) || 0;
           const invAdj = await adjustJobInvoicePlaceholders_(sheets, sheetIdClean, tabName, [targetRowNum], revNum, req.body.masterSheetId).catch(e => {
@@ -1692,30 +1784,26 @@ export async function handleUpdateJobFields(req, res, sheets) {
           });
           if (invAdj?.slotUpdates) invoiceSlotUpdates = invAdj.slotUpdates;
         }
-      }
 
-      if (costUpdate) {
-        const costNum = parseFloat(String(costUpdate.value || "").replace(/[£$€,\s]/g, "")) || 0;
-        const expAdj = await adjustJobExpensePlaceholders_(sheets, sheetIdClean, tabName, [targetRowNum], costNum, req.body.masterSheetId).catch(e => {
-          console.warn("Job fields expense placeholder adjust failed:", e.message);
-          return null;
-        });
-        if (expAdj?.slotUpdates) expenseSlotUpdates = expAdj.slotUpdates;
-      } else if (dateUpdate) {
-        const expAdj = await adjustJobExpensePlaceholders_(sheets, sheetIdClean, tabName, [targetRowNum], undefined, req.body.masterSheetId).catch(e => {
-          console.warn("Job fields date expense placeholder adjust failed:", e.message);
-          return null;
-        });
-        if (expAdj?.slotUpdates) expenseSlotUpdates = expAdj.slotUpdates;
+        if (costUpdate) {
+          const costNum = parseFloat(String(costUpdate.value || "").replace(/[£$€,\s]/g, "")) || 0;
+          const expAdj = await adjustJobExpensePlaceholders_(sheets, sheetIdClean, tabName, [targetRowNum], costNum, req.body.masterSheetId).catch(e => {
+            console.warn("Job fields expense placeholder adjust failed:", e.message);
+            return null;
+          });
+          if (expAdj?.slotUpdates) expenseSlotUpdates = expAdj.slotUpdates;
+        } else if (dateUpdate) {
+          const expAdj = await adjustJobExpensePlaceholders_(sheets, sheetIdClean, tabName, [targetRowNum], undefined, req.body.masterSheetId).catch(e => {
+            console.warn("Job fields date expense placeholder adjust failed:", e.message);
+            return null;
+          });
+          if (expAdj?.slotUpdates) expenseSlotUpdates = expAdj.slotUpdates;
+        }
       }
     }
 
-    let resolvedClient = req.body.clientName || "";
-    if (!resolvedClient) {
-      resolvedClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
-    }
-    const resolvedEndClient = endClientName || "";
-    const resolvedJobName = jobName || "";
+    const resolvedEndClient = effectiveClient || endClientName || "";
+    const resolvedJobName = effectiveJobName || jobName || "";
     const jobIdentifier = resolvedEndClient && resolvedJobName ? `"${resolvedEndClient} - ${resolvedJobName}"` : `Row ${rowNum}`;
     const fieldSummary = updates.map(u => u.fieldName || u.colLetter).join(", ");
 
@@ -1731,13 +1819,24 @@ export async function handleUpdateJobFields(req, res, sheets) {
         updates,
         endClient: resolvedEndClient,
         jobName: resolvedJobName,
-        clientName: resolvedClient
+        clientName: resolvedClient,
+        isRetainer: isRetainerJob,
+        trimmed: retainerTrimmed,
+        grown: retainerGrown
       }
     }).catch(e => console.error("PMA log failed:", e));
 
     await invalidatePmaClientCache(sheetIdClean, req.body.masterSheetId, ["jobs", "invoices", "outgoings", "retainers", "cash"]).catch(e => console.warn("Cache invalidate failed in update_job_fields:", e.message));
 
-    return res.status(200).json({ success: true, backgroundProvisioning, invoiceSlotUpdates, expenseSlotUpdates });
+    return res.status(200).json({
+      success: true,
+      backgroundProvisioning,
+      invoiceSlotUpdates,
+      expenseSlotUpdates,
+      trimmed: retainerTrimmed,
+      grown: retainerGrown,
+      isRetainer: isRetainerJob
+    });
   } catch (err) {
     console.error("❌ update_job_fields error:", err);
     return res.status(500).json({ success: false, error: err.message });

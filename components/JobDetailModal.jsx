@@ -181,7 +181,8 @@ export default function JobDetailModal({
           body: JSON.stringify({
             action: "get_all_client_jobs",
             clientSheetId: sheetId,
-            tabName: "All"
+            tabName: "All",
+            bypassCache: reloadTrigger > 0
           })
         });
         const data = await res.json();
@@ -973,6 +974,7 @@ export default function JobDetailModal({
           rowNum: parentRowNum,
           endClientName: draftEdits.client || parentRow.client || job.client,
           jobName: draftEdits.jobName || parentRow.jobName || job.jobName,
+          isRetainer,
           updates
         })
       });
@@ -1045,6 +1047,8 @@ export default function JobDetailModal({
       if (data.backgroundProvisioning) {
         setTimeout(() => setReloadTrigger((prev) => prev + 1), 4000);
         setTimeout(() => setReloadTrigger((prev) => prev + 1), 8000);
+      } else if (isRetainer && (draftEdits.endDate !== undefined || draftEdits.startDate !== undefined || data.trimmed > 0 || data.grown > 0)) {
+        setReloadTrigger((prev) => prev + 1);
       }
     } catch (err) {
       alert("Error saving job: " + err.message);

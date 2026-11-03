@@ -186,11 +186,13 @@ export default async function handler(req, res) {
     for (let i = 0; i < numRows; i++) {
       lineItemLabels.push(appDataDisp[i]?.[0] !== undefined ? String(appDataDisp[i][0]).trim() : "");
     }
-    if (mode.toLowerCase() !== "income" && lineItemLabels.length > 12) {
+    if (mode.toLowerCase() !== "income" && lineItemLabels.length > 13 && lineItemLabels[11]) {
       if (directCostsMode === "Contractors") {
-        lineItemLabels[12] = "Hide";
+        lineItemLabels[12] = "Other expenses - delivery";
+        lineItemLabels[13] = "Hide";
       } else if (directCostsMode === "Pass-through") {
         lineItemLabels[12] = "Pass-through costs";
+        lineItemLabels[13] = "Other expenses - delivery";
       }
     }
 

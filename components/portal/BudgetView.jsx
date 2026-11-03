@@ -201,12 +201,12 @@ export default function BudgetView({
   const pipe = getRowData(isRevMode ? 5 : 21);
   const nb = getRowData(isRevMode ? 6 : 22);
 
+  const hasPassThroughRow = isRevMode && directCostsMode === "Pass-through";
   const staffDel = getRowData(28);
-  const dirCosts =
-    isRevMode && directCostsMode === "Pass-through"
-      ? getRowData(29)
-      : new Array(13).fill(0);
-  const expDel = getRowData(isRevMode ? 30 : 29);
+  const dirCosts = hasPassThroughRow
+    ? getRowData(29)
+    : new Array(13).fill(0);
+  const expDel = getRowData(hasPassThroughRow ? 30 : 29);
 
   const staffNonDel = getRowData(39);
   const expNonDel = getRowData(40);

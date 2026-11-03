@@ -131,14 +131,18 @@ export default function BudgetVarianceView({
   const blkStart = selectedYearIdx === 0 ? 6 : (selectedYearIdx === 1 ? 21 : 36);
   const getBud = (rawRowIdx, fallbackLabel = "") => {
     let targetRow = rawVals[rawRowIdx];
+    let effectiveRowIdx = rawRowIdx;
     if (fallbackLabel && (!targetRow || !cleanStr(targetRow[0]).includes(cleanStr(fallbackLabel)))) {
-      const foundRow = rawVals.find((r) => cleanStr(r?.[0]).includes(cleanStr(fallbackLabel)));
-      if (foundRow) targetRow = foundRow;
+      const foundIdx = rawVals.findIndex((r) => cleanStr(r?.[0]).includes(cleanStr(fallbackLabel)));
+      if (foundIdx !== -1) {
+        targetRow = rawVals[foundIdx];
+        effectiveRowIdx = foundIdx;
+      }
     }
     if (!targetRow) return new Array(12).fill(0);
     const row = [];
     for (let m = 0; m < 12; m++) {
-      let val = parseFloat(mathVals?.[rawRowIdx]?.[blkStart + m]);
+      let val = parseFloat(mathVals?.[effectiveRowIdx]?.[blkStart + m]);
       if (isNaN(val)) {
         val = universalParseMoney(targetRow?.[blkStart + m]);
       }
@@ -190,15 +194,15 @@ export default function BudgetVarianceView({
       ? getBud(isRevMode ? 6 : 22, "new business to find")
       : getAct("new business to find");
 
+    const hasPassThroughRow = isRevMode && directCostsMode === "Pass-through";
     const staffDel = isBud
       ? getBud(28, "staff costs - delivery")
       : getAct("staff costs - delivery");
-    const dirCosts =
-      isRevMode && directCostsMode === "Pass-through"
-        ? (isBud ? getBud(29, "pass-through costs") : getAct("pass-through costs"))
-        : new Array(12).fill(0);
+    const dirCosts = hasPassThroughRow
+      ? (isBud ? getBud(29, "pass-through costs") : getAct("pass-through costs"))
+      : new Array(12).fill(0);
     const expDel = isBud
-      ? getBud(isRevMode ? 30 : 29, "other expenses - delivery")
+      ? getBud(hasPassThroughRow ? 30 : 29, "other expenses - delivery")
       : getAct("other expenses - delivery");
 
     const staffNonDel = isBud

@@ -893,7 +893,26 @@ export default function CashflowWorkbenchView({
   automationCommanderSheetId,
   onRefresh,
   onTabCreated,
-  isAdmin = false
+  isAdmin = false,
+  groupedElements = [],
+  targetCol = null,
+  isCombinedTransferMode = false,
+  combinedTransferTxVal = null,
+  getCategoryTxAmount,
+  isReconUsedForRow,
+  isReconUsedForTransfer,
+  onUseReconFigures,
+  onUseCombinedTransferRecon,
+  onStartEdit,
+  onToggleResolved,
+  onOpenNote,
+  onRequestMatchAll,
+  onSwitchToMatrix,
+  onLiveSignedActualsChange,
+  applyingRecon = false,
+  applyingReconRow = null,
+  resolvingCellKey = null,
+  matchingActuals = false
 }) {
   const [bankTxns, setBankTxns] = useState([]);
   const [unreconItems, setUnreconItems] = useState([]);
@@ -1240,6 +1259,51 @@ export default function CashflowWorkbenchView({
 
     return totals;
   }, [bankTxns]);
+
+  // Live signed cashflow actuals (In - Out) matching Recon Sheet U3:X16 Column X & Cash tab sign convention
+  const liveSignedActuals = useMemo(() => {
+    if (!bankTxns || bankTxns.length === 0) return null;
+    let revenue = 0, salaries = 0, dividends = 0, contractors = 0, directCosts = 0, outgoings = 0, vat = 0, corpTax = 0, transfer = 0, nonOperatingIncome = 0, nonOperatingExpenses = 0;
+
+    bankTxns.forEach(tx => {
+      const cat = String(tx.category || tx.suggestedCategory || "Other").trim().toLowerCase();
+      const inVal = parseAmount(tx.inAmount || tx.inAmt);
+      const outVal = parseAmount(tx.outAmount || tx.outAmt);
+      const netVal = inVal - outVal; // Positive for inflows, negative for outflows
+
+      if (cat.includes("non-operating income")) nonOperatingIncome += netVal;
+      else if (cat.includes("non-operating expense")) nonOperatingExpenses += netVal;
+      else if (cat === "revenue") revenue += netVal;
+      else if (cat === "salaries" || cat === "paye" || cat === "pension") salaries += netVal;
+      else if (cat === "dividends") dividends += netVal;
+      else if (cat === "contractors") contractors += netVal;
+      else if (cat === "direct costs") directCosts += netVal;
+      else if (cat === "outgoings") outgoings += netVal;
+      else if (cat === "vat") vat += netVal;
+      else if (cat === "corp tax") corpTax += netVal;
+      else if (cat === "transfer") transfer += netVal;
+    });
+
+    return {
+      revenue,
+      salaries,
+      dividends,
+      contractors,
+      directCosts,
+      outgoings,
+      vat,
+      corpTax,
+      transfer,
+      nonOperatingIncome,
+      nonOperatingExpenses
+    };
+  }, [bankTxns]);
+
+  useEffect(() => {
+    if (onLiveSignedActualsChange) {
+      onLiveSignedActualsChange(liveSignedActuals);
+    }
+  }, [liveSignedActuals, onLiveSignedActualsChange]);
 
   // Matches a cashflow comparison label to liveCategoryTotals
   const getLiveBankActual = useCallback((c) => {
@@ -2649,7 +2713,7 @@ export default function CashflowWorkbenchView({
               {/* Tabs */}
               <div style={{ padding: "8px 12px", borderBottom: "1px solid #e2e8f0", background: "#f8fafc", display: "flex", gap: "6px", flexWrap: "wrap" }}>
                 {[
-                  { id: "variance", label: "Cashflow variance" },
+                  { id: "variance", label: "Cashflow finalisation" },
                   { id: "revenue", label: `Revenue (${liveRevenueBankItems.length})` },
                   { id: "contractors", label: `Contractors (${liveContractorsBankItems.length})` },
                   { id: "direct_costs", label: `Direct costs (${liveDirectCostsBankItems.length})` }
@@ -2676,87 +2740,737 @@ export default function CashflowWorkbenchView({
 
               {/* Tab Content */}
               <div style={{ flex: 1, padding: "14px", overflowY: "auto", maxHeight: "640px" }}>
-                {/* 1. Cashflow Variance */}
-                {activeRightTab === "variance" && (
-                  <div>
-                    <div style={{ marginBottom: "12px", fontSize: "12px", color: "#475569" }}>
-                      Compares totals from the bank transactions with expected figures based on data in Pulse.
-                    </div>
-                    {(!reconData?.cashflowComparisons || reconData.cashflowComparisons.length === 0) ? (
-                      <div style={{ textAlign: "center", padding: "40px 20px", color: "#94a3b8" }}>
-                        {isAdmin ? "No comparison data available for this tab. Ensure Recon Sheet tab is populated." : "No comparison data available for this month."}
+                {/* 1. Interactive Single-Tab Cashflow Finalisation */}
+                {activeRightTab === "variance" && (() => {
+                  const targetColIndex = (reconData?.selectedCols || []).findIndex(c => c.type === "target");
+                  const cIdx = targetColIndex !== -1 ? targetColIndex : 1;
+                  const RESOLVED_BG = "#d9ead3";
+                  const singleGridCols = "minmax(140px, 1.2fr) 185px 105px 115px";
+
+                  const renderInlineNoteBtn = (row, cell) => {
+                    if (!row || !cell || !onOpenNote) return null;
+                    const hasNote = !!cell.note;
+                    return (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onOpenNote(row, cell);
+                        }}
+                        title={hasNote ? `Note: ${cell.note}` : (isAdmin ? "Add cell note" : "Add note")}
+                        style={{
+                          background: hasNote ? "#fef3c7" : "transparent",
+                          border: hasNote ? "1px solid #fde68a" : "none",
+                          borderRadius: "4px",
+                          cursor: "pointer",
+                          padding: hasNote ? "1px 4px" : "1px 2px",
+                          fontSize: "11px",
+                          color: hasNote ? "#b45309" : "#cbd5e1",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          lineHeight: 1,
+                          flexShrink: 0,
+                          opacity: hasNote ? 1 : 0.45
+                        }}
+                      >
+                        {hasNote ? "📝" : "💬"}
+                      </button>
+                    );
+                  };
+
+                  return (
+                    <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                      {/* Action bar: Recon all to match transactions + 3-month view link */}
+                      <div style={{
+                        padding: "9px 12px",
+                        background: "#f8fafc",
+                        border: "1px solid #e2e8f0",
+                        borderRadius: "8px",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        flexWrap: "wrap",
+                        gap: "8px"
+                      }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                          {onRequestMatchAll && (
+                            <button
+                              type="button"
+                              onClick={onRequestMatchAll}
+                              disabled={matchingActuals}
+                              title="Reconciles all target month cashflow categories against the bank transaction totals and marks items resolved"
+                              style={{
+                                padding: "6px 12px",
+                                background: "#15803d",
+                                color: "#ffffff",
+                                border: "none",
+                                borderRadius: "6px",
+                                fontSize: "11.5px",
+                                fontWeight: "700",
+                                cursor: matchingActuals ? "default" : "pointer",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "6px",
+                                boxShadow: "0 1px 2px rgba(0,0,0,0.06)"
+                              }}
+                            >
+                              {matchingActuals ? <Spinner size={11} /> : null}
+                              <span>{matchingActuals ? "Reconciling..." : "Recon all to match transactions"}</span>
+                            </button>
+                          )}
+                          {isCombinedTransferMode && (
+                            <span style={{
+                              fontSize: "10.5px",
+                              fontWeight: "700",
+                              color: "#0369a1",
+                              background: "#e0f2fe",
+                              border: "1px solid #bae6fd",
+                              padding: "3px 8px",
+                              borderRadius: "6px"
+                            }}>
+                              Transfers mode: Corp tax + VAT combined
+                            </span>
+                          )}
+                        </div>
+
+                        {onSwitchToMatrix && (
+                          <button
+                            type="button"
+                            onClick={onSwitchToMatrix}
+                            title="View 3-month rolling cashflow table"
+                            style={{
+                              padding: "5px 10px",
+                              background: "#ffffff",
+                              border: "1px solid #cbd5e1",
+                              borderRadius: "6px",
+                              color: "#334155",
+                              fontSize: "11px",
+                              fontWeight: "600",
+                              cursor: "pointer"
+                            }}
+                          >
+                            3-month view ↗
+                          </button>
+                        )}
                       </div>
-                    ) : (
-                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
-                        <thead>
-                          <tr style={{ background: "#f1f5f9", borderBottom: "1px solid #cbd5e1", color: "#475569" }}>
-                            <th style={{ padding: "8px 10px", textAlign: "left" }}>Category</th>
-                            <th style={{ padding: "8px 10px", textAlign: "right" }}>Cashflow forecast</th>
-                            <th style={{ padding: "8px 10px", textAlign: "right" }}>Bank actual</th>
-                            <th style={{ padding: "8px 10px", textAlign: "right" }}>Difference</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {reconData.cashflowComparisons.filter(c => c.label.toLowerCase() !== "total").map((c, i) => {
-                            const liveVal = getLiveBankActual(c);
-                            const hasLiveTxns = bankTxns && bankTxns.length > 0;
 
-                            // Parse cashflow forecast value
-                            const cashflowClean = String(c.cashflow || "").replace(/[£,\s]/g, "");
-                            const cashflowNum = parseFloat(cashflowClean) || 0;
+                      {(!groupedElements || groupedElements.length === 0) ? (
+                        <div style={{ textAlign: "center", padding: "40px 20px", color: "#94a3b8" }}>
+                          No cashflow data available for this month.
+                        </div>
+                      ) : (
+                        <>
+                          {/* Column Header Bar */}
+                          <div style={{
+                            display: "grid",
+                            gridTemplateColumns: singleGridCols,
+                            background: "#15803d",
+                            color: "#ffffff",
+                            fontSize: "11px",
+                            fontWeight: "700",
+                            borderRadius: "8px",
+                            overflow: "hidden"
+                          }}>
+                            <div style={{ padding: "8px 10px", background: "#14532d", display: "flex", alignItems: "center" }}>
+                              Cash movement
+                            </div>
+                            <div style={{ padding: "8px 10px", textAlign: "right", display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "5px" }}>
+                              <span>{targetCol?.label || reconData?.targetMonthLabel || "Target"}</span>
+                              <span style={{ fontSize: "8.5px", padding: "1px 4px", background: "#ffffff", color: "#15803d", borderRadius: "3px", fontWeight: "800", textTransform: "uppercase" }}>
+                                Target
+                              </span>
+                            </div>
+                            <div style={{ padding: "8px 8px", textAlign: "center", borderLeft: "1px solid rgba(255,255,255,0.2)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                              Pulse total
+                            </div>
+                            <div style={{ padding: "8px 8px", textAlign: "center", borderLeft: "1px solid rgba(255,255,255,0.2)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                              Transactions total
+                            </div>
+                          </div>
 
-                            // Bank actual value: use live calculated total from workbench if bankTxns loaded, otherwise fall back to sheet value
-                            let bankActualNum = 0;
-                            let bankActualDisplay = c.bankRecon || "—";
+                          {/* Category Cards */}
+                          <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                            {groupedElements.filter(e => !e.isSummary).map((elem) => {
+                              // Option A: Combined Tax Transfers Bracketed Card
+                              if (elem.type === "compound_transfer") {
+                                const corpBaseCell = elem.corpBaseRow?.cells?.[cIdx];
+                                const corpAdjCell = elem.corpAdjRow?.cells?.[cIdx];
+                                const vatBaseCell = elem.vatBaseRow?.cells?.[cIdx];
+                                const vatAdjCell = elem.vatAdjRow?.cells?.[cIdx];
 
-                            if (hasLiveTxns && liveVal !== null) {
-                              bankActualNum = liveVal;
-                              bankActualDisplay = formatGBP(liveVal);
-                            } else if (c.bankRecon && c.bankRecon !== "—") {
-                              const sheetClean = String(c.bankRecon || "").replace(/[£,\s]/g, "");
-                              bankActualNum = parseFloat(sheetClean) || 0;
-                              bankActualDisplay = c.bankRecon;
-                            }
+                                const corpBaseVal = (corpBaseCell?.numVal !== undefined && corpBaseCell?.numVal !== null) ? corpBaseCell.numVal : parseAmount(corpBaseCell?.v);
+                                const corpAdjVal = (corpAdjCell?.numVal !== undefined && corpAdjCell?.numVal !== null) ? corpAdjCell.numVal : parseAmount(corpAdjCell?.v);
+                                const vatBaseVal = (vatBaseCell?.numVal !== undefined && vatBaseCell?.numVal !== null) ? vatBaseCell.numVal : parseAmount(vatBaseCell?.v);
+                                const vatAdjVal = (vatAdjCell?.numVal !== undefined && vatAdjCell?.numVal !== null) ? vatAdjCell.numVal : parseAmount(vatAdjCell?.v);
 
-                            // Difference: Bank actual vs Forecast
-                            let diffNum = 0;
-                            let diffDisplay = c.diff || "£0.00";
-                            if ((hasLiveTxns && liveVal !== null) || (c.bankRecon && c.bankRecon !== "—")) {
-                              diffNum = bankActualNum - cashflowNum;
-                              diffDisplay = formatGBP(diffNum);
-                            } else {
-                              const diffClean = String(c.diff || "").replace(/[£,\s]/g, "");
-                              diffNum = parseFloat(diffClean) || 0;
-                            }
+                                const corpTotal = corpBaseVal + corpAdjVal;
+                                const vatTotal = vatBaseVal + vatAdjVal;
+                                const combinedTotalVal = corpTotal + vatTotal;
+                                const combinedTotalFmt = formatGBP(combinedTotalVal);
 
-                            const isZero = Math.abs(diffNum) < 0.01;
-                            const isHighlight = Math.abs(diffNum) > 0.01;
+                                const txVal = combinedTransferTxVal;
+                                const isAvailable = txVal !== null && txVal !== undefined;
+                                const isMatch = isAvailable && (
+                                  Math.abs(combinedTotalVal - txVal) < 0.05 ||
+                                  (Math.sign(combinedTotalVal) !== Math.sign(txVal) && Math.abs(Math.abs(combinedTotalVal) - Math.abs(txVal)) < 0.05)
+                                );
+                                const isReconUsed = isReconUsedForTransfer ? isReconUsedForTransfer(elem) : false;
+                                const isThisApplying = applyingRecon && applyingReconRow === elem.vatAdjRow?.sheetRow;
 
-                            return (
-                              <tr key={i} style={{ borderBottom: "1px solid #f1f5f9", background: isHighlight ? "#fffbeb" : "#ffffff" }}>
-                                <td style={{ padding: "8px 10px", fontWeight: "600", color: "#1e293b" }}>{c.label}</td>
-                                <td style={{ padding: "8px 10px", textAlign: "right", color: "#475569" }}>{c.cashflow || "—"}</td>
-                                <td style={{ padding: "8px 10px", textAlign: "right", color: "#1e293b", fontWeight: "600" }}>{bankActualDisplay}</td>
-                                <td style={{ padding: "8px 10px", textAlign: "right" }}>
-                                  <span style={{
-                                    padding: "2px 6px",
-                                    borderRadius: "4px",
-                                    fontSize: "11px",
-                                    fontWeight: "700",
-                                    background: isZero ? "#dcfce7" : "#fee2e2",
-                                    color: isZero ? "#166534" : "#991b1b"
-                                  }}>
-                                    {diffDisplay}
-                                  </span>
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    )}
-                  </div>
-                )}
+                                return (
+                                  <div
+                                    key={elem.id}
+                                    style={{
+                                      display: "grid",
+                                      gridTemplateColumns: singleGridCols,
+                                      gridTemplateRows: "auto auto auto auto",
+                                      background: "#ffffff",
+                                      border: "1px solid #bae6fd",
+                                      borderLeft: "4px solid #0284c7",
+                                      borderRadius: "8px",
+                                      overflow: "hidden",
+                                      boxShadow: "0 1px 2px rgba(2, 132, 199, 0.06)"
+                                    }}
+                                  >
+                                    {/* Row 1: Corp tax */}
+                                    <div style={{ gridColumn: "1", gridRow: "1", padding: "6px 10px", fontWeight: "700", fontSize: "12px", color: "#0f172a", borderBottom: "1px dashed #f1f5f9", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "4px" }}>
+                                      <span>{elem.corpTitle || "Corporation tax"}</span>
+                                      <span style={{ fontSize: "8.5px", fontWeight: "700", color: "#0369a1", background: "#e0f2fe", padding: "1px 4px", borderRadius: "3px" }}>
+                                        Transfers
+                                      </span>
+                                    </div>
+                                    <div style={{ gridColumn: "2", gridRow: "1", padding: "6px 8px", background: corpBaseCell?.isResolved ? RESOLVED_BG : "#f8fafc", borderBottom: "1px dashed #f1f5f9", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "4px" }}>
+                                      <div style={{ display: "inline-flex", alignItems: "center", gap: "3px" }}>
+                                        {renderInlineNoteBtn(elem.corpBaseRow, corpBaseCell)}
+                                        {onToggleResolved && (
+                                          <button
+                                            type="button"
+                                            onClick={() => onToggleResolved(corpBaseCell)}
+                                            disabled={resolvingCellKey === `${corpBaseCell?.sheetRow}_${corpBaseCell?.colIdx}`}
+                                            style={{
+                                              padding: "2px 6px",
+                                              borderRadius: "4px",
+                                              border: corpBaseCell?.isResolved ? "1px solid #86efac" : "1px solid #cbd5e1",
+                                              background: corpBaseCell?.isResolved ? "#dcfce7" : "#ffffff",
+                                              color: corpBaseCell?.isResolved ? "#166534" : "#475569",
+                                              fontSize: "8.5px",
+                                              fontWeight: "700",
+                                              textTransform: "uppercase",
+                                              cursor: "pointer"
+                                            }}
+                                          >
+                                            {corpBaseCell?.isResolved ? "Resolved" : "Resolve"}
+                                          </button>
+                                        )}
+                                      </div>
+                                      <span style={{ fontWeight: "700", fontSize: "11.5px", color: "#0f172a", fontVariantNumeric: "tabular-nums" }}>
+                                        {corpBaseCell?.v || "£0.00"}
+                                      </span>
+                                    </div>
+
+                                    {/* Row 2: Corp tax adjustment */}
+                                    <div style={{ gridColumn: "1", gridRow: "2", padding: "4px 10px 5px 18px", color: "#64748b", fontStyle: "italic", fontSize: "10.5px", background: "#fafbfc", borderBottom: "1px solid #e2e8f0", display: "flex", alignItems: "center" }}>
+                                      ↳ Adjustment
+                                    </div>
+                                    <div style={{ gridColumn: "2", gridRow: "2", padding: "4px 8px 5px", background: "#f8fafc", borderBottom: "1px solid #e2e8f0", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "4px" }}>
+                                      <div style={{ display: "inline-flex", alignItems: "center", gap: "3px" }}>
+                                        {renderInlineNoteBtn(elem.corpAdjRow, corpAdjCell)}
+                                      </div>
+                                      <span
+                                        onClick={() => onStartEdit && onStartEdit(elem.corpAdjRow, corpAdjCell)}
+                                        title="Click to edit corporation tax adjustment"
+                                        style={{
+                                          display: "inline-block",
+                                          minWidth: "74px",
+                                          textAlign: "right",
+                                          padding: "2px 7px",
+                                          background: "#ffffff",
+                                          border: "1px solid #cbd5e1",
+                                          borderRadius: "4px",
+                                          cursor: "pointer",
+                                          fontVariantNumeric: "tabular-nums",
+                                          fontSize: "11px",
+                                          color: "#334155",
+                                          fontWeight: "600"
+                                        }}
+                                      >
+                                        {corpAdjCell?.v || "£0.00"}
+                                      </span>
+                                    </div>
+
+                                    {/* Row 3: VAT */}
+                                    <div style={{ gridColumn: "1", gridRow: "3", padding: "6px 10px", fontWeight: "700", fontSize: "12px", color: "#0f172a", borderBottom: "1px dashed #f1f5f9", display: "flex", alignItems: "center" }}>
+                                      <span>{elem.vatTitle || "VAT"}</span>
+                                    </div>
+                                    <div style={{ gridColumn: "2", gridRow: "3", padding: "6px 8px", background: vatBaseCell?.isResolved ? RESOLVED_BG : "#f8fafc", borderBottom: "1px dashed #f1f5f9", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "4px" }}>
+                                      <div style={{ display: "inline-flex", alignItems: "center", gap: "3px" }}>
+                                        {renderInlineNoteBtn(elem.vatBaseRow, vatBaseCell)}
+                                        {onToggleResolved && (
+                                          <button
+                                            type="button"
+                                            onClick={() => onToggleResolved(vatBaseCell)}
+                                            disabled={resolvingCellKey === `${vatBaseCell?.sheetRow}_${vatBaseCell?.colIdx}`}
+                                            style={{
+                                              padding: "2px 6px",
+                                              borderRadius: "4px",
+                                              border: vatBaseCell?.isResolved ? "1px solid #86efac" : "1px solid #cbd5e1",
+                                              background: vatBaseCell?.isResolved ? "#dcfce7" : "#ffffff",
+                                              color: vatBaseCell?.isResolved ? "#166534" : "#475569",
+                                              fontSize: "8.5px",
+                                              fontWeight: "700",
+                                              textTransform: "uppercase",
+                                              cursor: "pointer"
+                                            }}
+                                          >
+                                            {vatBaseCell?.isResolved ? "Resolved" : "Resolve"}
+                                          </button>
+                                        )}
+                                      </div>
+                                      <span style={{ fontWeight: "700", fontSize: "11.5px", color: "#0f172a", fontVariantNumeric: "tabular-nums" }}>
+                                        {vatBaseCell?.v || "£0.00"}
+                                      </span>
+                                    </div>
+
+                                    {/* Row 4: VAT adjustment + Combined Recon button */}
+                                    <div style={{ gridColumn: "1", gridRow: "4", padding: "4px 10px 5px 18px", color: "#64748b", fontStyle: "italic", fontSize: "10.5px", background: "#fafbfc", display: "flex", alignItems: "center" }}>
+                                      ↳ Adjustment
+                                    </div>
+                                    <div style={{ gridColumn: "2", gridRow: "4", padding: "4px 8px 5px", background: "#f8fafc", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "4px" }}>
+                                      <div style={{ display: "inline-flex", alignItems: "center", gap: "3px" }}>
+                                        {renderInlineNoteBtn(elem.vatAdjRow, vatAdjCell)}
+                                        {onUseCombinedTransferRecon && (
+                                          <button
+                                            type="button"
+                                            onClick={() => onUseCombinedTransferRecon(elem, targetCol)}
+                                            disabled={applyingRecon}
+                                            title="Reconcile combined Corporation tax + VAT against Transfer total"
+                                            style={{
+                                              padding: "2px 6px",
+                                              borderRadius: "4px",
+                                              border: isReconUsed ? "1px solid #86efac" : "1px solid #bfdbfe",
+                                              background: isReconUsed ? "#dcfce7" : "#eff6ff",
+                                              color: isReconUsed ? "#166534" : "#1d4ed8",
+                                              fontSize: "8.5px",
+                                              fontWeight: "700",
+                                              textTransform: "uppercase",
+                                              cursor: applyingRecon ? "default" : "pointer",
+                                              display: "inline-flex",
+                                              alignItems: "center",
+                                              gap: "3px"
+                                            }}
+                                          >
+                                            {isThisApplying ? <Spinner size={8} /> : null}
+                                            Recon
+                                          </button>
+                                        )}
+                                      </div>
+                                      <span
+                                        onClick={() => onStartEdit && onStartEdit(elem.vatAdjRow, vatAdjCell)}
+                                        title="Click to edit VAT / transfer adjustment"
+                                        style={{
+                                          display: "inline-block",
+                                          minWidth: "74px",
+                                          textAlign: "right",
+                                          padding: "2px 7px",
+                                          background: "#ffffff",
+                                          border: "1px solid #cbd5e1",
+                                          borderRadius: "4px",
+                                          cursor: "pointer",
+                                          fontVariantNumeric: "tabular-nums",
+                                          fontSize: "11px",
+                                          color: "#334155",
+                                          fontWeight: "600"
+                                        }}
+                                      >
+                                        {vatAdjCell?.v || "£0.00"}
+                                      </span>
+                                    </div>
+
+                                    {/* Spanning Col 3: Pulse Total */}
+                                    <div style={{
+                                      gridColumn: "3",
+                                      gridRow: "1 / span 4",
+                                      padding: "6px 6px",
+                                      background: "#f0f9ff",
+                                      borderLeft: "1px solid #bae6fd",
+                                      borderRight: "1px solid #bae6fd",
+                                      display: "flex",
+                                      flexDirection: "column",
+                                      alignItems: "center",
+                                      justifyContent: "center",
+                                      gap: "2px"
+                                    }}>
+                                      <span style={{ fontSize: "9.5px", color: "#64748b", fontVariantNumeric: "tabular-nums" }}>
+                                        Corp: {formatGBP(corpTotal)}
+                                      </span>
+                                      <span style={{ fontSize: "9.5px", color: "#64748b", fontVariantNumeric: "tabular-nums" }}>
+                                        VAT: {formatGBP(vatTotal)}
+                                      </span>
+                                      <div style={{ width: "80%", height: "1px", background: "#bae6fd", margin: "2px 0" }} />
+                                      <span style={{ fontSize: "11.5px", fontWeight: "700", color: "#0f172a", fontVariantNumeric: "tabular-nums" }}>
+                                        {combinedTotalFmt}
+                                      </span>
+                                    </div>
+
+                                    {/* Spanning Col 4: Transactions Total (Transfer) */}
+                                    <div style={{
+                                      gridColumn: "4",
+                                      gridRow: "1 / span 4",
+                                      padding: "6px 6px",
+                                      background: "#f0f9ff",
+                                      display: "flex",
+                                      flexDirection: "column",
+                                      alignItems: "center",
+                                      justifyContent: "center",
+                                      gap: "3px"
+                                    }}>
+                                      <span style={{ fontSize: "8.5px", fontWeight: "700", color: "#0369a1", textTransform: "uppercase" }}>
+                                        Transfer
+                                      </span>
+                                      {isAvailable ? (
+                                        <span
+                                          style={{
+                                            padding: "3px 8px",
+                                            borderRadius: "12px",
+                                            fontSize: "11px",
+                                            fontWeight: "700",
+                                            fontVariantNumeric: "tabular-nums",
+                                            background: isMatch ? "#dcfce7" : "#fee2e2",
+                                            color: isMatch ? "#166534" : "#991b1b",
+                                            border: isMatch ? "1px solid #86efac" : "1px solid #fca5a5"
+                                          }}
+                                          title={isMatch
+                                            ? `Matches combined Corp tax + VAT total: ${formatGBP(txVal)}`
+                                            : `Variance: Transfer ${formatGBP(txVal)} vs Combined total ${combinedTotalFmt} (Diff: ${formatGBP(txVal - combinedTotalVal)})`
+                                          }
+                                        >
+                                          {formatGBP(txVal)}
+                                        </span>
+                                      ) : (
+                                        <span style={{ color: "#94a3b8", fontSize: "11px" }}>—</span>
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              }
+
+                              // Standard Compound Category Card
+                              if (elem.type === "compound") {
+                                const baseCell = elem.baseRow?.cells?.[cIdx];
+                                const adjCell = elem.adjRow?.cells?.[cIdx];
+                                const baseVal = (baseCell?.numVal !== undefined && baseCell?.numVal !== null) ? baseCell.numVal : parseAmount(baseCell?.v);
+                                const adjVal = (adjCell?.numVal !== undefined && adjCell?.numVal !== null) ? adjCell.numVal : parseAmount(adjCell?.v);
+                                const totalVal = baseVal + adjVal;
+                                const totalFmt = formatGBP(totalVal);
+
+                                const txVal = getCategoryTxAmount ? getCategoryTxAmount(elem.mappedItemType, elem.title) : null;
+                                const isAvailable = txVal !== null && txVal !== undefined;
+                                const isMatch = isAvailable && (
+                                  Math.abs(totalVal - txVal) < 0.05 ||
+                                  (Math.sign(totalVal) !== Math.sign(txVal) && Math.abs(Math.abs(totalVal) - Math.abs(txVal)) < 0.05)
+                                );
+                                const isReconUsed = isReconUsedForRow ? isReconUsedForRow(elem.baseRow) : false;
+                                const isThisApplying = applyingRecon && (applyingReconRow === elem.adjRow?.sheetRow || applyingReconRow === elem.baseRow?.targetAdjustmentRow);
+
+                                return (
+                                  <div
+                                    key={elem.id}
+                                    style={{
+                                      display: "grid",
+                                      gridTemplateColumns: singleGridCols,
+                                      gridTemplateRows: "auto auto",
+                                      background: "#ffffff",
+                                      border: "1px solid #e2e8f0",
+                                      borderRadius: "8px",
+                                      overflow: "hidden",
+                                      boxShadow: "0 1px 2px rgba(15, 23, 42, 0.03)"
+                                    }}
+                                  >
+                                    {/* Row 1: Category & Forecast */}
+                                    <div style={{ gridColumn: "1", gridRow: "1", padding: "6px 10px", fontWeight: "700", fontSize: "12px", color: "#0f172a", borderBottom: "1px dashed #f1f5f9", display: "flex", alignItems: "center" }}>
+                                      <span>{elem.title}</span>
+                                    </div>
+                                    <div style={{ gridColumn: "2", gridRow: "1", padding: "6px 8px", background: baseCell?.isResolved ? RESOLVED_BG : "#f8fafc", borderBottom: "1px dashed #f1f5f9", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "4px" }}>
+                                      <div style={{ display: "inline-flex", alignItems: "center", gap: "3px" }}>
+                                        {renderInlineNoteBtn(elem.baseRow, baseCell)}
+                                        {onToggleResolved && (
+                                          <button
+                                            type="button"
+                                            onClick={() => onToggleResolved(baseCell)}
+                                            disabled={resolvingCellKey === `${baseCell?.sheetRow}_${baseCell?.colIdx}`}
+                                            style={{
+                                              padding: "2px 6px",
+                                              borderRadius: "4px",
+                                              border: baseCell?.isResolved ? "1px solid #86efac" : "1px solid #cbd5e1",
+                                              background: baseCell?.isResolved ? "#dcfce7" : "#ffffff",
+                                              color: baseCell?.isResolved ? "#166534" : "#475569",
+                                              fontSize: "8.5px",
+                                              fontWeight: "700",
+                                              textTransform: "uppercase",
+                                              cursor: "pointer"
+                                            }}
+                                          >
+                                            {baseCell?.isResolved ? "Resolved" : "Resolve"}
+                                          </button>
+                                        )}
+                                      </div>
+                                      <span style={{ fontWeight: "700", fontSize: "11.5px", color: "#0f172a", fontVariantNumeric: "tabular-nums" }}>
+                                        {baseCell?.v || "£0.00"}
+                                      </span>
+                                    </div>
+
+                                    {/* Row 2: Adjustment */}
+                                    <div style={{ gridColumn: "1", gridRow: "2", padding: "4px 10px 5px 18px", color: "#64748b", fontStyle: "italic", fontSize: "10.5px", background: "#fafbfc", display: "flex", alignItems: "center" }}>
+                                      ↳ Adjustment
+                                    </div>
+                                    <div style={{ gridColumn: "2", gridRow: "2", padding: "4px 8px 5px", background: "#f8fafc", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "4px" }}>
+                                      <div style={{ display: "inline-flex", alignItems: "center", gap: "3px" }}>
+                                        {renderInlineNoteBtn(elem.adjRow, adjCell)}
+                                        {onUseReconFigures && (
+                                          <button
+                                            type="button"
+                                            onClick={() => onUseReconFigures(elem.baseRow, baseCell)}
+                                            disabled={applyingRecon}
+                                            title={isReconUsed ? "Recon actual figure is currently applied" : `Apply recon actual for ${elem.title}`}
+                                            style={{
+                                              padding: "2px 6px",
+                                              borderRadius: "4px",
+                                              border: isReconUsed ? "1px solid #86efac" : "1px solid #bfdbfe",
+                                              background: isReconUsed ? "#dcfce7" : "#eff6ff",
+                                              color: isReconUsed ? "#166534" : "#1d4ed8",
+                                              fontSize: "8.5px",
+                                              fontWeight: "700",
+                                              textTransform: "uppercase",
+                                              cursor: applyingRecon ? "default" : "pointer",
+                                              display: "inline-flex",
+                                              alignItems: "center",
+                                              gap: "3px"
+                                            }}
+                                          >
+                                            {isThisApplying ? <Spinner size={8} /> : null}
+                                            Recon
+                                          </button>
+                                        )}
+                                      </div>
+                                      <span
+                                        onClick={() => onStartEdit && onStartEdit(elem.adjRow, adjCell)}
+                                        title="Click to edit adjustment"
+                                        style={{
+                                          display: "inline-block",
+                                          minWidth: "74px",
+                                          textAlign: "right",
+                                          padding: "2px 7px",
+                                          background: "#ffffff",
+                                          border: "1px solid #cbd5e1",
+                                          borderRadius: "4px",
+                                          cursor: "pointer",
+                                          fontVariantNumeric: "tabular-nums",
+                                          fontSize: "11px",
+                                          color: "#334155",
+                                          fontWeight: "600"
+                                        }}
+                                      >
+                                        {adjCell?.v || "£0.00"}
+                                      </span>
+                                    </div>
+
+                                    {/* Spanning Col 3: Pulse Total */}
+                                    <div style={{
+                                      gridColumn: "3",
+                                      gridRow: "1 / span 2",
+                                      padding: "6px 6px",
+                                      background: "#f8fafc",
+                                      borderLeft: "1px solid #e2e8f0",
+                                      borderRight: "1px solid #e2e8f0",
+                                      display: "flex",
+                                      alignItems: "center",
+                                      justifyContent: "center"
+                                    }}>
+                                      <span style={{ fontSize: "11.5px", fontWeight: "700", color: "#0f172a", fontVariantNumeric: "tabular-nums" }}>
+                                        {totalFmt}
+                                      </span>
+                                    </div>
+
+                                    {/* Spanning Col 4: Transactions Total */}
+                                    <div style={{
+                                      gridColumn: "4",
+                                      gridRow: "1 / span 2",
+                                      padding: "6px 6px",
+                                      background: "#f8fafc",
+                                      display: "flex",
+                                      alignItems: "center",
+                                      justifyContent: "center"
+                                    }}>
+                                      {isAvailable ? (
+                                        <span
+                                          style={{
+                                            padding: "3px 8px",
+                                            borderRadius: "12px",
+                                            fontSize: "11px",
+                                            fontWeight: "700",
+                                            fontVariantNumeric: "tabular-nums",
+                                            background: isMatch ? "#dcfce7" : "#fee2e2",
+                                            color: isMatch ? "#166534" : "#991b1b",
+                                            border: isMatch ? "1px solid #86efac" : "1px solid #fca5a5"
+                                          }}
+                                          title={isMatch
+                                            ? `Matches Pulse total: ${formatGBP(txVal)}`
+                                            : `Variance: Transactions total ${formatGBP(txVal)} vs Pulse total ${totalFmt} (Diff: ${formatGBP(txVal - totalVal)})`
+                                          }
+                                        >
+                                          {formatGBP(txVal)}
+                                        </span>
+                                      ) : (
+                                        <span style={{ color: "#94a3b8", fontSize: "11px" }}>—</span>
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              }
+
+                              // Standalone operational row (e.g. Other adjustments)
+                              const row = elem.row;
+                              const cell = row?.cells?.[cIdx];
+                              return (
+                                <div
+                                  key={elem.id}
+                                  style={{
+                                    display: "grid",
+                                    gridTemplateColumns: singleGridCols,
+                                    alignItems: "center",
+                                    background: "#ffffff",
+                                    border: "1px solid #e2e8f0",
+                                    borderRadius: "8px",
+                                    overflow: "hidden"
+                                  }}
+                                >
+                                  <div style={{ gridColumn: "1", padding: "6px 10px", fontWeight: "600", fontSize: "11.5px", color: "#1e293b" }}>
+                                    {elem.title}
+                                  </div>
+                                  <div style={{ gridColumn: "2 / span 3", padding: "6px 10px", textAlign: "right", display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "6px" }}>
+                                    {renderInlineNoteBtn(row, cell)}
+                                    {elem.isAdjustment ? (
+                                      <span
+                                        onClick={() => onStartEdit && onStartEdit(row, cell)}
+                                        title="Click to edit adjustment"
+                                        style={{
+                                          display: "inline-block",
+                                          minWidth: "74px",
+                                          textAlign: "right",
+                                          padding: "2px 7px",
+                                          background: "#ffffff",
+                                          border: "1px solid #cbd5e1",
+                                          borderRadius: "4px",
+                                          cursor: "pointer",
+                                          fontVariantNumeric: "tabular-nums",
+                                          fontSize: "11px",
+                                          color: "#334155",
+                                          fontWeight: "600"
+                                        }}
+                                      >
+                                        {cell?.v || "£0.00"}
+                                      </span>
+                                    ) : (
+                                      <span style={{ fontVariantNumeric: "tabular-nums", fontSize: "11.5px", color: "#334155" }}>
+                                        {cell?.v || ""}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          {/* Summary & Cash Balance Section */}
+                          {groupedElements.some(e => e.isSummary) && (
+                            <>
+                              <div style={{ display: "flex", alignItems: "center", gap: "10px", marginTop: "6px", marginBottom: "2px" }}>
+                                <div style={{ height: "1px", flex: 1, background: "#e2e8f0" }} />
+                                <span style={{ fontSize: "10px", fontWeight: "700", color: "#64748b", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                                  Reconciliation & cash balance
+                                </span>
+                                <div style={{ height: "1px", flex: 1, background: "#e2e8f0" }} />
+                              </div>
+
+                              <div style={{ display: "flex", flexDirection: "column", gap: "5px" }}>
+                                {groupedElements.filter(e => e.isSummary).map((elem) => {
+                                  const row = elem.row;
+                                  const cell = row?.cells?.[cIdx];
+                                  const valNum = parseAmount(cell?.v);
+                                  const isDiff = elem.isDifference;
+                                  const isClosing = elem.title.toLowerCase().includes("closing balance");
+                                  const isNet = elem.title.toLowerCase().includes("net cash movement");
+
+                                  let cardBg = "#ffffff";
+                                  let cardBorder = "1px solid #e2e8f0";
+                                  if (isDiff) {
+                                    cardBg = valNum === 0 ? "#f0fdf4" : "#fef2f2";
+                                    cardBorder = valNum === 0 ? "1px solid #86efac" : "1px solid #fca5a5";
+                                  } else if (isClosing) {
+                                    cardBg = "#eff6ff";
+                                    cardBorder = "1px solid #93c5fd";
+                                  } else if (isNet) {
+                                    cardBg = "#f8fafc";
+                                    cardBorder = "1px solid #cbd5e1";
+                                  }
+
+                                  return (
+                                    <div
+                                      key={elem.id}
+                                      style={{
+                                        display: "grid",
+                                        gridTemplateColumns: singleGridCols,
+                                        alignItems: "center",
+                                        background: cardBg,
+                                        border: cardBorder,
+                                        borderRadius: "8px",
+                                        overflow: "hidden"
+                                      }}
+                                    >
+                                      <div style={{
+                                        gridColumn: "1 / span 2",
+                                        padding: "7px 10px",
+                                        fontWeight: "700",
+                                        fontSize: "11.5px",
+                                        color: isDiff ? (valNum === 0 ? "#166534" : "#991b1b") : (isClosing || isNet ? "#1e40af" : "#1e293b"),
+                                        display: "flex",
+                                        alignItems: "center",
+                                        gap: "6px"
+                                      }}>
+                                        <span>{elem.title}</span>
+                                        {isDiff && valNum === 0 && (
+                                          <span style={{ fontSize: "9px", padding: "1px 6px", background: "#dcfce7", color: "#166534", borderRadius: "4px", fontWeight: "800", textTransform: "uppercase" }}>
+                                            In balance ✓
+                                          </span>
+                                        )}
+                                      </div>
+                                      <div style={{
+                                        gridColumn: "3 / span 2",
+                                        padding: "7px 10px",
+                                        textAlign: "right",
+                                        fontWeight: "700",
+                                        fontSize: "12px",
+                                        color: isDiff ? (valNum === 0 ? "#166534" : "#991b1b") : (isClosing || isNet ? "#1e40af" : "#1e293b"),
+                                        display: "flex",
+                                        alignItems: "center",
+                                        justifyContent: "flex-end",
+                                        gap: "6px",
+                                        fontVariantNumeric: "tabular-nums"
+                                      }}>
+                                        {renderInlineNoteBtn(row, cell)}
+                                        <span>{isDiff && valNum === 0 ? "✓ £0.00" : (cell?.v || "")}</span>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  );
+                })()}
 
                 {/* 2. Revenue Breakdown */}
                 {activeRightTab === "revenue" && (

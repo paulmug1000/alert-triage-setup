@@ -43,6 +43,7 @@ export default function CashflowReconTab({
   const [selectedClient, setSelectedClient] = useState(initialClient || managedClient?.clientName || "");
   const [reconData, setReconData] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
 
@@ -69,6 +70,9 @@ export default function CashflowReconTab({
 
   // Track rows where recon has been applied during this session
   const [reconAppliedRows, setReconAppliedRows] = useState(new Set());
+
+  // Live signed category actuals pushed from CashflowWorkbenchView as bankTxns change
+  const [liveSignedActuals, setLiveSignedActuals] = useState(null);
 
   // Note editor modal
   const [noteModal, setNoteModal] = useState(null);
@@ -161,7 +165,7 @@ export default function CashflowReconTab({
   }, [eomMonthKey, monthDelta]);
 
   // Load Cashflow Recon Data
-  const loadData = useCallback(async (clientNameToLoad) => {
+  const loadData = useCallback(async (clientNameToLoad, { silent = false } = {}) => {
     const targetName = clientNameToLoad || selectedClient;
     const clientObj = (allOutgoingsClients || []).find(c => c.clientName === targetName);
     if (!clientObj || !clientObj.clientSheetId) {
@@ -169,9 +173,13 @@ export default function CashflowReconTab({
       return;
     }
 
-    setLoading(true);
+    if (silent) {
+      setIsRefreshing(true);
+    } else {
+      setLoading(true);
+      setSuccessMsg("");
+    }
     setError("");
-    setSuccessMsg("");
 
     try {
       const resp = await fetch("/api/triage", {
@@ -195,11 +203,16 @@ export default function CashflowReconTab({
       console.error("Error loading cashflow recon data:", err);
       setError(err.message);
     } finally {
-      setLoading(false);
+      if (silent) {
+        setIsRefreshing(false);
+      } else {
+        setLoading(false);
+      }
     }
   }, [selectedClient, allOutgoingsClients, effectiveMonthKey, automationCommanderSheetId]);
 
   useEffect(() => {
+    setLiveSignedActuals(null);
     if (selectedClient) {
       sessionStorage.setItem("pma_cashflow_recon_client", selectedClient);
       loadData(selectedClient);
@@ -207,6 +220,29 @@ export default function CashflowReconTab({
       setReconData(null);
     }
   }, [selectedClient, loadData]);
+
+  // Effective recon actuals: prefer live calculated totals from workbench if available, else sheet actuals
+  const effectiveReconActuals = useMemo(() => {
+    return liveSignedActuals || reconData?.reconActuals || null;
+  }, [liveSignedActuals, reconData?.reconActuals]);
+
+  // Option A: Combined Transfers mode when KeyInfo!B10 is "Transfers" and client hasn't split transfers into separate Corp tax / VAT categories
+  const isCombinedTransferMode = useMemo(() => {
+    if (!reconData?.isTransfersMode) return false;
+    if (!effectiveReconActuals) return true;
+    const transferAmt = Math.abs(effectiveReconActuals.transfer || 0);
+    const corpAmt = Math.abs(effectiveReconActuals.corpTax || 0);
+    const vatAmt = Math.abs(effectiveReconActuals.vat || 0);
+    if (transferAmt < 0.005 && (corpAmt >= 0.005 || vatAmt >= 0.005)) {
+      return false;
+    }
+    return true;
+  }, [reconData?.isTransfersMode, effectiveReconActuals]);
+
+  const combinedTransferTxVal = useMemo(() => {
+    if (!effectiveReconActuals) return null;
+    return (effectiveReconActuals.transfer || 0) + (effectiveReconActuals.corpTax || 0) + (effectiveReconActuals.vat || 0);
+  }, [effectiveReconActuals]);
 
   // Target month column info
   const targetCol = useMemo(() => {
@@ -216,7 +252,7 @@ export default function CashflowReconTab({
 
   // Helper: check if recon figure is actively in use for a row
   const isReconUsedForRow = useCallback((row) => {
-    if (!row.mappedItemType || !row.targetAdjustmentRow || !reconData?.reconActuals) return false;
+    if (!row.mappedItemType || !row.targetAdjustmentRow || !effectiveReconActuals || !reconData?.rows) return false;
     if (reconAppliedRows.has(row.targetAdjustmentRow)) return true;
 
     // Check destination adjustment cell formula in target month column
@@ -225,16 +261,16 @@ export default function CashflowReconTab({
     const raw = adjCell?.rawVal;
     if (typeof raw === "string" && (raw.startsWith("=") || /^['’]=/.test(raw))) {
       let reconVal = 0;
-      if (row.mappedItemType === "confirmed_cash") reconVal = reconData.reconActuals.revenue;
-      else if (row.mappedItemType === "salaries") reconVal = reconData.reconActuals.salaries;
-      else if (row.mappedItemType === "dividends") reconVal = reconData.reconActuals.dividends;
-      else if (row.mappedItemType === "contractors") reconVal = reconData.reconActuals.contractors;
-      else if (row.mappedItemType === "direct_costs") reconVal = reconData.reconActuals.directCosts;
-      else if (row.mappedItemType === "other_expenses") reconVal = reconData.reconActuals.outgoings;
-      else if (row.mappedItemType === "corporation_tax") reconVal = reconData.reconActuals.corpTax;
-      else if (row.mappedItemType === "vat") reconVal = reconData.reconActuals.vat;
-      else if (row.mappedItemType === "non_operating_income") reconVal = reconData.reconActuals.nonOperatingIncome;
-      else if (row.mappedItemType === "non_operating_expenses") reconVal = reconData.reconActuals.nonOperatingExpenses;
+      if (row.mappedItemType === "confirmed_cash") reconVal = effectiveReconActuals.revenue;
+      else if (row.mappedItemType === "salaries") reconVal = effectiveReconActuals.salaries;
+      else if (row.mappedItemType === "dividends") reconVal = effectiveReconActuals.dividends;
+      else if (row.mappedItemType === "contractors") reconVal = effectiveReconActuals.contractors;
+      else if (row.mappedItemType === "direct_costs") reconVal = effectiveReconActuals.directCosts;
+      else if (row.mappedItemType === "other_expenses") reconVal = effectiveReconActuals.outgoings;
+      else if (row.mappedItemType === "corporation_tax") reconVal = effectiveReconActuals.corpTax;
+      else if (row.mappedItemType === "vat") reconVal = effectiveReconActuals.vat;
+      else if (row.mappedItemType === "non_operating_income") reconVal = effectiveReconActuals.nonOperatingIncome;
+      else if (row.mappedItemType === "non_operating_expenses") reconVal = effectiveReconActuals.nonOperatingExpenses;
 
       const reconFixed = reconVal !== undefined ? reconVal.toFixed(2) : "";
       if (reconFixed && (raw.includes(reconFixed) || raw.replace(/^['’]/, "").includes(reconFixed))) {
@@ -242,7 +278,27 @@ export default function CashflowReconTab({
       }
     }
     return false;
-  }, [reconAppliedRows, reconData, targetCol]);
+  }, [reconAppliedRows, reconData, effectiveReconActuals, targetCol]);
+
+  // Helper: check if combined transfer recon figure is actively in use on VAT adjustment row
+  const isReconUsedForTransfer = useCallback((elem) => {
+    const vatAdjRowNum = elem?.vatAdjRow?.sheetRow;
+    if (!vatAdjRowNum || !reconData?.rows || combinedTransferTxVal === null) return false;
+    if (reconAppliedRows.has(vatAdjRowNum)) return true;
+
+    const adjRowObj = reconData.rows.find(r => r.sheetRow === vatAdjRowNum);
+    const adjCell = adjRowObj?.cells.find(c => c.colIdx === targetCol?.colIdx);
+    const raw = adjCell?.rawVal;
+    if (typeof raw === "string" && (raw.startsWith("=") || /^['’]=/.test(raw))) {
+      const cleanRaw = raw.replace(/^['’]/, "").toUpperCase();
+      const fixedStr = combinedTransferTxVal.toFixed(2);
+      const intStr = String(Math.round(combinedTransferTxVal));
+      if (cleanRaw.includes("SUM") && (cleanRaw.includes(fixedStr) || cleanRaw.includes(intStr))) {
+        return true;
+      }
+    }
+    return false;
+  }, [reconAppliedRows, reconData, combinedTransferTxVal, targetCol]);
 
   // Handle Mark Resolved Toggle
   const handleToggleResolved = async (cell) => {
@@ -316,6 +372,115 @@ export default function CashflowReconTab({
     }
   };
 
+  // Optimistically update adjustment cell(s) and summary rows in local state so the table updates in place without flashing
+  const applyOptimisticCellUpdates = useCallback((adjustmentsList = [], colLetter, resolvedRowNums = []) => {
+    setReconData(prev => {
+      if (!prev || !prev.rows) return prev;
+      const targetColObj = (prev.selectedCols || []).find(c => c.colLetter === colLetter) ||
+        (prev.selectedCols || []).find(c => c.type === "target");
+      if (!targetColObj) return prev;
+      const colIdx = targetColObj.colIdx;
+
+      const resolvedSet = new Set(resolvedRowNums);
+      const adjMap = new Map();
+      let totalDelta = 0;
+
+      adjustmentsList.forEach(({ sheetRow, rawVal }) => {
+        const adjRow = prev.rows.find(r => r.sheetRow === sheetRow);
+        const adjCell = adjRow?.cells.find(c => c.colIdx === colIdx);
+        const oldVal = (adjCell?.numVal !== undefined && adjCell?.numVal !== null) ? adjCell.numVal : parseAmount(adjCell?.v);
+        let newNumVal = null;
+
+        const str = rawVal !== null && rawVal !== undefined ? String(rawVal).trim() : "";
+        const formulaMatch = str.match(/^=\s*(-?\d+(?:\.\d+)?)\s*-\s*([A-Z]+)(\d+)$/i);
+        const sumFormulaMatch = str.match(/^=\s*(-?\d+(?:\.\d+)?)\s*-\s*SUM\(\s*([A-Z]+)(\d+)\s*:\s*([A-Z]+)(\d+)\s*\)$/i);
+        const addFormulaMatch = str.match(/^=\s*(-?\d+(?:\.\d+)?)\s*-\s*\(\s*([A-Z]+)(\d+)\s*\+\s*([A-Z]+)(\d+)\s*\+\s*([A-Z]+)(\d+)\s*\)$/i);
+        if (formulaMatch) {
+          const targetTotal = parseFloat(formulaMatch[1]);
+          const refRowNum = parseInt(formulaMatch[3], 10);
+          const refRow = prev.rows.find(r => r.sheetRow === refRowNum);
+          const refCell = refRow?.cells.find(c => c.colIdx === colIdx);
+          const refVal = (refCell?.numVal !== undefined && refCell?.numVal !== null) ? refCell.numVal : parseAmount(refCell?.v);
+          newNumVal = targetTotal - refVal;
+        } else if (sumFormulaMatch) {
+          const targetTotal = parseFloat(sumFormulaMatch[1]);
+          const startRow = parseInt(sumFormulaMatch[3], 10);
+          const endRow = parseInt(sumFormulaMatch[5], 10);
+          let sumRef = 0;
+          prev.rows.forEach(r => {
+            if (r.sheetRow >= startRow && r.sheetRow <= endRow) {
+              const refCell = r.cells.find(c => c.colIdx === colIdx);
+              const refVal = (refCell?.numVal !== undefined && refCell?.numVal !== null) ? refCell.numVal : parseAmount(refCell?.v);
+              sumRef += refVal;
+            }
+          });
+          newNumVal = targetTotal - sumRef;
+        } else if (addFormulaMatch) {
+          const targetTotal = parseFloat(addFormulaMatch[1]);
+          const rNums = [parseInt(addFormulaMatch[3], 10), parseInt(addFormulaMatch[5], 10), parseInt(addFormulaMatch[7], 10)];
+          let sumRef = 0;
+          rNums.forEach(rn => {
+            const refRow = prev.rows.find(r => r.sheetRow === rn);
+            const refCell = refRow?.cells.find(c => c.colIdx === colIdx);
+            const refVal = (refCell?.numVal !== undefined && refCell?.numVal !== null) ? refCell.numVal : parseAmount(refCell?.v);
+            sumRef += refVal;
+          });
+          newNumVal = targetTotal - sumRef;
+        } else if (str === "") {
+          newNumVal = 0;
+        } else if (!str.startsWith("=")) {
+          newNumVal = parseAmount(str);
+        }
+
+        if (newNumVal !== null && !isNaN(newNumVal)) {
+          const delta = newNumVal - oldVal;
+          totalDelta += delta;
+          adjMap.set(sheetRow, { rawVal: str, newNumVal, delta });
+        } else {
+          adjMap.set(sheetRow, { rawVal: str, newNumVal: null, delta: 0 });
+        }
+      });
+
+      const newRows = prev.rows.map(r => {
+        const adjUpdate = adjMap.get(r.sheetRow);
+        const isResolvedTarget = resolvedSet.has(r.sheetRow);
+        const lowerLabel = (r.label || "").toLowerCase().trim();
+        const isNetRow = lowerLabel.includes("net cash movement");
+        const isClosingRow = lowerLabel === "closing balance";
+
+        if (!adjUpdate && !isResolvedTarget && !(totalDelta !== 0 && (isNetRow || isClosingRow))) {
+          return r;
+        }
+
+        const newCells = r.cells.map(c => {
+          if (c.colIdx !== colIdx) return c;
+          const updated = { ...c };
+          if (isResolvedTarget) {
+            updated.isResolved = true;
+            updated.bg = RESOLVED_GREEN;
+          }
+          if (adjUpdate) {
+            updated.rawVal = adjUpdate.rawVal;
+            if (adjUpdate.newNumVal !== null) {
+              updated.numVal = adjUpdate.newNumVal;
+              updated.v = formatGBP(adjUpdate.newNumVal);
+            }
+          } else if (totalDelta !== 0 && (isNetRow || isClosingRow)) {
+            const curNum = (c.numVal !== undefined && c.numVal !== null) ? c.numVal : parseAmount(c.v);
+            const nextNum = curNum + totalDelta;
+            updated.numVal = nextNum;
+            updated.v = formatGBP(nextNum);
+          }
+          return updated;
+        });
+
+        return { ...r, cells: newCells };
+      });
+
+      return { ...prev, rows: newRows };
+    });
+  }, []);
+
   // Save Adjustment Edit
   const handleSaveEdit = async () => {
     if (!editingCell || !currentClientInfo) return;
@@ -323,14 +488,16 @@ export default function CashflowReconTab({
     setError("");
     try {
       const cleanVal = typeof editValue === "string" ? editValue.trim().replace(/^['’]=/, "=") : editValue;
+      const targetEdit = { ...editingCell };
+      applyOptimisticCellUpdates([{ sheetRow: targetEdit.sheetRow, rawVal: cleanVal }], targetEdit.colLetter);
       const resp = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "update_cash_adjustment",
           clientSheetId: currentClientInfo.clientSheetId,
-          colLetter: editingCell.colLetter,
-          sheetRow: editingCell.sheetRow,
+          colLetter: targetEdit.colLetter,
+          sheetRow: targetEdit.sheetRow,
           value: cleanVal,
           clientName: selectedClient,
           automationCommanderSheetId
@@ -339,12 +506,13 @@ export default function CashflowReconTab({
       const res = await resp.json();
       if (!res.success) throw new Error(res.error || "Failed to save adjustment");
       setEditingCell(null);
-      setSuccessMsg(isAdmin ? `Adjustment saved to Cash!${editingCell.colLetter}${editingCell.sheetRow}` : "Adjustment saved.");
-      // Reload table to recalculate all formula cells
-      await loadData(selectedClient);
+      setSuccessMsg(isAdmin ? `Adjustment saved to Cash!${targetEdit.colLetter}${targetEdit.sheetRow}` : "Adjustment saved.");
+      // Silently reload table in background to recalculate all formula cells without unmounting
+      await loadData(selectedClient, { silent: true });
     } catch (err) {
       console.error("Error saving adjustment:", err);
       setError(err.message);
+      await loadData(selectedClient, { silent: true });
     } finally {
       setSavingEdit(false);
     }
@@ -352,13 +520,13 @@ export default function CashflowReconTab({
 
   // Use Recon Figures: Calculate formula and check for overwrite
   const handleUseReconFigures = (row, targetMonthCell) => {
-    if (!reconData?.reconActuals) {
+    if (!effectiveReconActuals) {
       setError(reconData?.reconError ? `Cannot apply recon figures: ${reconData.reconError}` : "No recon actuals available for this month.");
       return;
     }
 
     const itemType = row.mappedItemType;
-    const recon = reconData.reconActuals;
+    const recon = effectiveReconActuals;
     const colLetter = targetMonthCell.colLetter;
     const cellRef = `${colLetter}${row.sheetRow}`;
 
@@ -439,9 +607,55 @@ export default function CashflowReconTab({
     }
   };
 
+  // Option A: Combined Transfer Recon (reconciles combined Corp Tax + VAT against Transfer total via VAT adjustment row)
+  const handleUseCombinedTransferRecon = (elem, targetColObj) => {
+    if (!effectiveReconActuals || !elem?.corpBaseRow || !elem?.corpAdjRow || !elem?.vatBaseRow || !elem?.vatAdjRow) {
+      setError("Cannot apply combined transfer recon: tax rows or actuals are missing.");
+      return;
+    }
+
+    const col = targetColObj || targetCol;
+    if (!col) return;
+    const colLetter = col.colLetter;
+    const reconVal = combinedTransferTxVal || 0;
+    const targetAdjustmentRow = elem.vatAdjRow.sheetRow;
+
+    const r1 = elem.corpBaseRow.sheetRow;
+    const r2 = elem.corpAdjRow.sheetRow;
+    const r3 = elem.vatBaseRow.sheetRow;
+    const isContiguous = (r2 === r1 + 1) && (r3 === r2 + 1);
+    const formula = isContiguous
+      ? `=${reconVal.toFixed(2)}-SUM(${colLetter}${r1}:${colLetter}${r3})`
+      : `=${reconVal.toFixed(2)}-(${colLetter}${r1}+${colLetter}${r2}+${colLetter}${r3})`;
+
+    const adjRowObj = reconData.rows.find(r => r.sheetRow === targetAdjustmentRow);
+    const adjCell = adjRowObj?.cells.find(c => c.colIdx === col.colIdx);
+    const currentVal = adjCell?.v ?? "";
+    const rawVal = adjCell?.rawVal ?? "";
+    const currentFormula = (typeof rawVal === "string" && (rawVal.startsWith("=") || /^['’]=/.test(rawVal))) ? rawVal.replace(/^['’]/, "") : "";
+
+    const cleanStr = String(rawVal || currentVal).replace(/[£,\s]/g, "").trim();
+    const num = parseFloat(cleanStr);
+    const isNonZero = cleanStr !== "" && cleanStr !== "0" && cleanStr !== "0.00" && !isNaN(num) && num !== 0;
+
+    if (isNonZero || currentFormula) {
+      setOverwriteModal({
+        mappedItem: elem.title || "Tax transfers (Corporation tax & VAT)",
+        formula,
+        targetRow: targetAdjustmentRow,
+        colLetter,
+        currentValue: currentVal,
+        currentFormula,
+        adjRowLabel: adjRowObj?.label || `Row ${targetAdjustmentRow}`
+      });
+    } else {
+      executeApplyReconFormula(targetAdjustmentRow, colLetter, formula);
+    }
+  };
+
   // Match Actuals: Applies recon figures and marks resolved across all mapped elements in target month
   const executeMatchAllActuals = async () => {
-    if (!reconData?.reconActuals || !targetCol || !currentClientInfo) {
+    if (!effectiveReconActuals || !targetCol || !currentClientInfo) {
       setError("Cannot match actuals: target month reconciliation actuals are not available.");
       return;
     }
@@ -451,16 +665,21 @@ export default function CashflowReconTab({
     setShowMatchConfirm(false);
 
     try {
-      const recon = reconData.reconActuals;
+      const recon = effectiveReconActuals;
       const colLetter = targetCol.colLetter;
       const adjustments = [];
       const resolvedRows = [];
 
       // Mapped items
       const mappedRows = (reconData.rows || []).filter(r => r.mappedItemType && !r.isAdjustmentRow);
+      const corpBaseRow = mappedRows.find(r => r.mappedItemType === "corporation_tax");
+      const vatBaseRow = mappedRows.find(r => r.mappedItemType === "vat");
 
       mappedRows.forEach(row => {
         const itemType = row.mappedItemType;
+        if (isCombinedTransferMode && (itemType === "corporation_tax" || itemType === "vat")) {
+          return; // Handled below as combined transfer
+        }
         const cellRef = `${colLetter}${row.sheetRow}`;
         let reconVal = null;
         let targetRow = row.targetAdjustmentRow;
@@ -496,6 +715,29 @@ export default function CashflowReconTab({
         }
       });
 
+      if (isCombinedTransferMode && corpBaseRow && vatBaseRow && vatBaseRow.targetAdjustmentRow) {
+        const r1 = corpBaseRow.sheetRow;
+        const r2 = corpBaseRow.targetAdjustmentRow || (r1 + 1);
+        const r3 = vatBaseRow.sheetRow;
+        const isContiguous = (r2 === r1 + 1) && (r3 === r2 + 1);
+        const transferVal = combinedTransferTxVal || 0;
+        const transferFormula = isContiguous
+          ? `=${transferVal.toFixed(2)}-SUM(${colLetter}${r1}:${colLetter}${r3})`
+          : `=${transferVal.toFixed(2)}-(${colLetter}${r1}+${colLetter}${r2}+${colLetter}${r3})`;
+
+        adjustments.push({
+          sheetRow: vatBaseRow.targetAdjustmentRow,
+          formula: transferFormula
+        });
+        resolvedRows.push(corpBaseRow.sheetRow, vatBaseRow.sheetRow);
+      }
+
+      applyOptimisticCellUpdates(
+        adjustments.map(a => ({ sheetRow: a.sheetRow, rawVal: a.formula })),
+        colLetter,
+        resolvedRows
+      );
+
       const resp = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -517,10 +759,11 @@ export default function CashflowReconTab({
 
       adjustments.forEach(a => setReconAppliedRows(prev => new Set([...prev, a.sheetRow])));
       setSuccessMsg(`Matched actuals applied and resolved for ${adjustments.length} cashflow items in ${reconData.targetMonthLabel || "target month"}.`);
-      await loadData(selectedClient);
+      await loadData(selectedClient, { silent: true });
     } catch (err) {
       console.error("Error matching actuals:", err);
       setError(err.message);
+      await loadData(selectedClient, { silent: true });
     } finally {
       setMatchingActuals(false);
     }
@@ -533,6 +776,7 @@ export default function CashflowReconTab({
     setError("");
     try {
       const cleanFormula = typeof formula === "string" ? formula.trim().replace(/^['’]=/, "=") : formula;
+      applyOptimisticCellUpdates([{ sheetRow: targetRow, rawVal: cleanFormula }], colLetter);
       const resp = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -550,12 +794,13 @@ export default function CashflowReconTab({
       if (!res.success) throw new Error(res.error || "Failed to apply recon formula");
       setReconAppliedRows(prev => new Set([...prev, targetRow]));
       setOverwriteModal(null);
-      setSuccessMsg(`Applied formula ${cleanFormula} to Cash!${colLetter}${targetRow}`);
-      // Reload table to recalculate all rows
-      await loadData(selectedClient);
+      setSuccessMsg(isAdmin ? `Applied formula ${cleanFormula} to Cash!${colLetter}${targetRow}` : "Reconciliation adjustment applied.");
+      // Silently reload table in background so cell values sync without unmounting the table
+      await loadData(selectedClient, { silent: true });
     } catch (err) {
       console.error("Error applying recon formula:", err);
       setError(err.message);
+      await loadData(selectedClient, { silent: true });
     } finally {
       setApplyingRecon(false);
       setApplyingReconRow(null);
@@ -680,11 +925,41 @@ export default function CashflowReconTab({
     const elements = [];
     const visitedRowNums = new Set();
 
+    const corpBaseRow = rows.find(r => r.mappedItemType === "corporation_tax");
+    const corpAdjRow = corpBaseRow?.targetAdjustmentRow ? rows.find(r => r.sheetRow === corpBaseRow.targetAdjustmentRow) : null;
+    const vatBaseRow = rows.find(r => r.mappedItemType === "vat");
+    const vatAdjRow = vatBaseRow?.targetAdjustmentRow ? rows.find(r => r.sheetRow === vatBaseRow.targetAdjustmentRow) : null;
+
     rows.forEach(row => {
       if (visitedRowNums.has(row.sheetRow)) return;
 
       const lower = row.label.toLowerCase().trim();
       if (!lower) return; // skip empty spacing rows
+
+      // Option A: Combined Tax transfers bracketed card when client is in Transfers mode
+      if (
+        isCombinedTransferMode &&
+        (row.mappedItemType === "corporation_tax" || row.mappedItemType === "vat") &&
+        corpBaseRow && corpAdjRow && vatBaseRow && vatAdjRow
+      ) {
+        visitedRowNums.add(corpBaseRow.sheetRow);
+        visitedRowNums.add(corpAdjRow.sheetRow);
+        visitedRowNums.add(vatBaseRow.sheetRow);
+        visitedRowNums.add(vatAdjRow.sheetRow);
+        elements.push({
+          id: `elem_tax_transfer_${corpBaseRow.sheetRow}`,
+          type: "compound_transfer",
+          title: "Tax transfers (Corporation tax & VAT)",
+          corpTitle: corpBaseRow.label.replace(/\s*(outgoing|incoming)\s*/i, "").trim(),
+          vatTitle: vatBaseRow.label.replace(/\s*(outgoing|incoming)\s*/i, "").trim(),
+          corpBaseRow,
+          corpAdjRow,
+          vatBaseRow,
+          vatAdjRow,
+          mappedItemType: "tax_transfer"
+        });
+        return;
+      }
 
       // Check if mapped base row with adjustment row
       if (row.mappedItemType && row.targetAdjustmentRow && row.targetAdjustmentRow !== row.sheetRow) {
@@ -731,12 +1006,13 @@ export default function CashflowReconTab({
     });
 
     return elements;
-  }, [reconData]);
+  }, [reconData, isCombinedTransferMode]);
 
-  // Helper: retrieves transaction amount for a given category from recon actuals
+  // Helper: retrieves transaction amount for a given category from effective recon actuals
   const getCategoryTxAmount = useCallback((itemType, rowLabel = "") => {
-    if (!reconData?.reconActuals) return null;
-    const recon = reconData.reconActuals;
+    if (!effectiveReconActuals) return null;
+    const recon = effectiveReconActuals;
+    if (itemType === "tax_transfer") return combinedTransferTxVal ?? 0;
     if (itemType === "confirmed_cash") return recon.revenue ?? 0;
     if (itemType === "salaries") return recon.salaries ?? 0;
     if (itemType === "dividends") return recon.dividends ?? 0;
@@ -762,7 +1038,7 @@ export default function CashflowReconTab({
     if (l.includes("non-operating expense")) return recon.nonOperatingExpenses ?? 0;
 
     return null;
-  }, [reconData]);
+  }, [effectiveReconActuals, combinedTransferTxVal]);
 
   // Dynamic grid column coordinates for modern card view
   const { gridTemplateColumns, colPositions, totalColPosition, txColPosition, spacerBeforeTarget, spacerAfterTarget } = useMemo(() => {
@@ -878,55 +1154,105 @@ export default function CashflowReconTab({
         boxShadow: "0 1px 3px rgba(0,0,0,0.06)"
       }}>
         {/* Title row */}
-        <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
-          {selectedClient && !managedClient && (allOutgoingsClients || []).length > 1 && (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+            {selectedClient && !managedClient && (allOutgoingsClients || []).length > 1 && (
+              <button
+                type="button"
+                onClick={handleBackToClients}
+                style={{
+                  background: "#ffffff",
+                  border: "1px solid #cbd5e1",
+                  borderRadius: "6px",
+                  cursor: "pointer",
+                  padding: "6px 12px",
+                  fontSize: "16px",
+                  color: "#475569",
+                  lineHeight: 1,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  transition: "all 0.15s ease",
+                  boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = "#f1f5f9";
+                  e.currentTarget.style.borderColor = "#94a3b8";
+                  e.currentTarget.style.color = "#0f172a";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = "#ffffff";
+                  e.currentTarget.style.borderColor = "#cbd5e1";
+                  e.currentTarget.style.color = "#475569";
+                }}
+                title="Back to client list"
+              >
+                ←
+              </button>
+            )}
+            <div>
+              <h1 style={{ margin: 0, fontSize: "20px", fontWeight: 700, color: "#1e293b", display: "flex", alignItems: "center", gap: "8px" }}>
+                <span>Cashflow recon</span>
+              </h1>
+              {selectedClient ? (
+                <div style={{ margin: "3px 0 0", fontSize: "14px", fontWeight: 600, color: "#0047AB" }}>
+                  {selectedClient}
+                </div>
+              ) : (
+                <p style={{ margin: "4px 0 0", fontSize: "13px", color: "#64748b" }}>
+                  Select a client to reconcile cashflow
+                </p>
+              )}
+            </div>
+          </div>
+
+          {selectedClient && (
             <button
               type="button"
-              onClick={handleBackToClients}
+              onClick={() => loadData(selectedClient, { silent: Boolean(reconData) })}
+              disabled={loading || isRefreshing}
+              title="Refresh cashflow and transaction data"
               style={{
+                padding: "6px 12px",
                 background: "#ffffff",
                 border: "1px solid #cbd5e1",
                 borderRadius: "6px",
-                cursor: "pointer",
-                padding: "6px 12px",
-                fontSize: "16px",
-                color: "#475569",
-                lineHeight: 1,
+                color: "#334155",
+                fontSize: "12px",
+                fontWeight: 600,
+                cursor: (loading || isRefreshing) ? "default" : "pointer",
                 display: "inline-flex",
                 alignItems: "center",
-                justifyContent: "center",
-                transition: "all 0.15s ease",
+                gap: "6px",
                 boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+                transition: "all 0.15s ease",
+                opacity: (loading || isRefreshing) ? 0.75 : 1
               }}
               onMouseEnter={(e) => {
-                e.currentTarget.style.backgroundColor = "#f1f5f9";
-                e.currentTarget.style.borderColor = "#94a3b8";
-                e.currentTarget.style.color = "#0f172a";
+                if (!loading && !isRefreshing) {
+                  e.currentTarget.style.backgroundColor = "#f8fafc";
+                  e.currentTarget.style.borderColor = "#94a3b8";
+                  e.currentTarget.style.color = "#0f172a";
+                }
               }}
               onMouseLeave={(e) => {
                 e.currentTarget.style.backgroundColor = "#ffffff";
                 e.currentTarget.style.borderColor = "#cbd5e1";
-                e.currentTarget.style.color = "#475569";
+                e.currentTarget.style.color = "#334155";
               }}
-              title="Back to client list"
             >
-              ←
+              {(loading || isRefreshing) ? (
+                <Spinner size={12} />
+              ) : (
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="23 4 23 10 17 10" />
+                  <polyline points="1 20 1 14 7 14" />
+                  <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+                </svg>
+              )}
+              <span>{(loading || isRefreshing) ? "Refreshing..." : "Refresh"}</span>
             </button>
           )}
-          <div>
-            <h1 style={{ margin: 0, fontSize: "20px", fontWeight: 700, color: "#1e293b", display: "flex", alignItems: "center", gap: "8px" }}>
-              <span>Cashflow recon</span>
-            </h1>
-            {selectedClient ? (
-              <div style={{ margin: "3px 0 0", fontSize: "14px", fontWeight: 600, color: "#0047AB" }}>
-                {selectedClient}
-              </div>
-            ) : (
-              <p style={{ margin: "4px 0 0", fontSize: "13px", color: "#64748b" }}>
-                Select a client to reconcile cashflow
-              </p>
-            )}
-          </div>
         </div>
 
         {/* Selected Client Toolbar & Month Controls */}
@@ -1132,12 +1458,31 @@ export default function CashflowReconTab({
           eomMonthKey={eomMonthKey}
           effectiveMonthKey={effectiveMonthKey}
           automationCommanderSheetId={automationCommanderSheetId}
-          onRefresh={() => loadData(selectedClient)}
+          onRefresh={() => loadData(selectedClient, { silent: Boolean(reconData) })}
           onTabCreated={(tab) => {
             setReconData(prev => prev ? ({ ...prev, hasTargetTab: true, reconError: null }) : prev);
-            loadData(selectedClient);
+            loadData(selectedClient, { silent: Boolean(reconData) });
           }}
           isAdmin={isAdmin}
+          groupedElements={groupedElements}
+          targetCol={targetCol}
+          isCombinedTransferMode={isCombinedTransferMode}
+          combinedTransferTxVal={combinedTransferTxVal}
+          getCategoryTxAmount={getCategoryTxAmount}
+          isReconUsedForRow={isReconUsedForRow}
+          isReconUsedForTransfer={isReconUsedForTransfer}
+          onUseReconFigures={handleUseReconFigures}
+          onUseCombinedTransferRecon={handleUseCombinedTransferRecon}
+          onStartEdit={handleStartEdit}
+          onToggleResolved={handleToggleResolved}
+          onOpenNote={handleOpenNote}
+          onRequestMatchAll={() => setShowMatchConfirm(true)}
+          onSwitchToMatrix={() => setViewMode("matrix")}
+          onLiveSignedActualsChange={setLiveSignedActuals}
+          applyingRecon={applyingRecon}
+          applyingReconRow={applyingReconRow}
+          resolvingCellKey={resolvingCellKey}
+          matchingActuals={matchingActuals}
         />
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: "12px", width: "fit-content", maxWidth: "100%" }}>
@@ -1312,6 +1657,536 @@ export default function CashflowReconTab({
                 {/* 2. Operational Movement Cards (with 8px gap between categories) */}
                 <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                   {groupedElements.filter(e => !e.isSummary).map((elem) => {
+                    if (elem.type === "compound_transfer") {
+                      return (
+                        <div
+                          key={elem.id}
+                          style={{
+                            display: "grid",
+                            gridTemplateColumns: gridTemplateColumns,
+                            gridTemplateRows: "auto auto auto auto",
+                            background: "#ffffff",
+                            border: "1px solid #bae6fd",
+                            borderLeft: "4px solid #0284c7",
+                            borderRadius: "10px",
+                            boxShadow: "0 1px 3px rgba(2, 132, 199, 0.08)",
+                            overflow: "hidden",
+                            transition: "box-shadow 0.15s, border-color 0.15s"
+                          }}
+                        >
+                          {/* Spacers before/after Target Month */}
+                          {spacerBeforeTarget && (
+                            <div
+                              style={{
+                                gridColumn: `${spacerBeforeTarget}`,
+                                gridRow: "1 / span 4",
+                                background: "#f8fafc",
+                                borderLeft: "1px solid #e2e8f0",
+                                borderRight: "1px solid #e2e8f0"
+                              }}
+                            />
+                          )}
+                          {spacerAfterTarget && (
+                            <div
+                              style={{
+                                gridColumn: `${spacerAfterTarget}`,
+                                gridRow: "1 / span 4",
+                                background: "#f8fafc",
+                                borderLeft: "1px solid #e2e8f0",
+                                borderRight: "1px solid #e2e8f0"
+                              }}
+                            />
+                          )}
+
+                          {/* Row 1 Title: Corporation tax */}
+                          <div
+                            style={{
+                              gridColumn: "1",
+                              gridRow: "1",
+                              padding: "8px 14px",
+                              fontWeight: "700",
+                              fontSize: "13px",
+                              color: "#0f172a",
+                              borderBottom: "1px dashed #f1f5f9",
+                              display: "flex",
+                              flexDirection: "column",
+                              justifyContent: "center",
+                              gap: "2px"
+                            }}
+                          >
+                            <span>{elem.corpTitle || "Corporation tax"}</span>
+                            <span style={{
+                              fontSize: "9px",
+                              fontWeight: "700",
+                              color: "#0369a1",
+                              background: "#e0f2fe",
+                              padding: "1px 5px",
+                              borderRadius: "4px",
+                              width: "fit-content"
+                            }}>
+                              Transfers mode
+                            </span>
+                          </div>
+
+                          {/* Row 2 Title: Corp tax adjustment */}
+                          <div
+                            style={{
+                              gridColumn: "1",
+                              gridRow: "2",
+                              padding: "6px 14px 7px 24px",
+                              color: "#64748b",
+                              fontStyle: "italic",
+                              fontSize: "11px",
+                              display: "flex",
+                              alignItems: "center",
+                              background: "#fafbfc",
+                              borderBottom: "1px solid #e2e8f0"
+                            }}
+                          >
+                            <span>↳ Adjustment</span>
+                          </div>
+
+                          {/* Row 3 Title: VAT */}
+                          <div
+                            style={{
+                              gridColumn: "1",
+                              gridRow: "3",
+                              padding: "8px 14px",
+                              fontWeight: "700",
+                              fontSize: "13px",
+                              color: "#0f172a",
+                              borderBottom: "1px dashed #f1f5f9",
+                              display: "flex",
+                              alignItems: "center"
+                            }}
+                          >
+                            <span>{elem.vatTitle || "VAT"}</span>
+                          </div>
+
+                          {/* Row 4 Title: VAT adjustment */}
+                          <div
+                            style={{
+                              gridColumn: "1",
+                              gridRow: "4",
+                              padding: "6px 14px 7px 24px",
+                              color: "#64748b",
+                              fontStyle: "italic",
+                              fontSize: "11px",
+                              display: "flex",
+                              alignItems: "center",
+                              background: "#fafbfc"
+                            }}
+                          >
+                            <span>↳ Adjustment</span>
+                          </div>
+
+                          {/* Month Columns across all 4 rows */}
+                          {reconData.selectedCols.map((col, cIndex) => {
+                            const isTargetCol = col.type === "target";
+                            const gridCol = colPositions[cIndex];
+                            const corpBaseCell = elem.corpBaseRow.cells[cIndex];
+                            const corpAdjCell = elem.corpAdjRow?.cells[cIndex];
+                            const vatBaseCell = elem.vatBaseRow.cells[cIndex];
+                            const vatAdjCell = elem.vatAdjRow?.cells[cIndex];
+
+                            const corpBaseVal = (corpBaseCell?.numVal !== undefined && corpBaseCell?.numVal !== null) ? corpBaseCell.numVal : parseAmount(corpBaseCell?.v);
+                            const corpAdjVal = (corpAdjCell?.numVal !== undefined && corpAdjCell?.numVal !== null) ? corpAdjCell.numVal : parseAmount(corpAdjCell?.v);
+                            const vatBaseVal = (vatBaseCell?.numVal !== undefined && vatBaseCell?.numVal !== null) ? vatBaseCell.numVal : parseAmount(vatBaseCell?.v);
+                            const vatAdjVal = (vatAdjCell?.numVal !== undefined && vatAdjCell?.numVal !== null) ? vatAdjCell.numVal : parseAmount(vatAdjCell?.v);
+
+                            const corpTotal = corpBaseVal + corpAdjVal;
+                            const vatTotal = vatBaseVal + vatAdjVal;
+                            const combinedTotalVal = corpTotal + vatTotal;
+                            const combinedTotalFmt = formatGBP(combinedTotalVal);
+
+                            const corpBg = corpBaseCell?.isResolved ? RESOLVED_GREEN : (isTargetCol ? "#f8fafc" : "#ffffff");
+                            const vatBg = vatBaseCell?.isResolved ? RESOLVED_GREEN : (isTargetCol ? "#f8fafc" : "#ffffff");
+
+                            return (
+                              <React.Fragment key={col.colIdx}>
+                                {/* Row 1: Corp tax base */}
+                                <div
+                                  style={{
+                                    gridColumn: `${gridCol}`,
+                                    gridRow: "1",
+                                    padding: "8px 10px",
+                                    background: corpBg,
+                                    borderBottom: "1px dashed #f1f5f9",
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: isTargetCol ? "space-between" : "flex-end",
+                                    gap: "6px"
+                                  }}
+                                >
+                                  {isTargetCol ? (
+                                    <>
+                                      <div style={{ display: "inline-flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
+                                        {renderNoteButton(elem.corpBaseRow, corpBaseCell)}
+                                        <button
+                                          onClick={() => handleToggleResolved(corpBaseCell)}
+                                          disabled={resolvingCellKey === `${corpBaseCell?.sheetRow}_${corpBaseCell?.colIdx}`}
+                                          title={corpBaseCell?.isResolved ? "Un-mark resolved" : "Mark resolved"}
+                                          style={{
+                                            padding: "2px 7px",
+                                            borderRadius: "4px",
+                                            border: corpBaseCell?.isResolved ? "1px solid #86efac" : "1px solid #cbd5e1",
+                                            background: corpBaseCell?.isResolved ? "#dcfce7" : "#ffffff",
+                                            color: corpBaseCell?.isResolved ? "#166534" : "#475569",
+                                            fontSize: "9px",
+                                            fontWeight: "700",
+                                            textTransform: "uppercase",
+                                            cursor: resolvingCellKey === `${corpBaseCell?.sheetRow}_${corpBaseCell?.colIdx}` ? "wait" : "pointer",
+                                            flexShrink: 0,
+                                            display: "inline-flex",
+                                            alignItems: "center",
+                                            gap: "4px"
+                                          }}
+                                        >
+                                          {resolvingCellKey === `${corpBaseCell?.sheetRow}_${corpBaseCell?.colIdx}` ? <Spinner size={9} /> : null}
+                                          {corpBaseCell?.isResolved ? "Resolved" : "Resolve"}
+                                        </button>
+                                      </div>
+                                      <span style={{ display: "inline-block", minWidth: "80px", textAlign: "right", padding: "3px 8px", fontWeight: "700", fontVariantNumeric: "tabular-nums", color: "#0f172a", fontSize: "12px", whiteSpace: "nowrap" }}>
+                                        {corpBaseCell?.v || "£0.00"}
+                                      </span>
+                                    </>
+                                  ) : (
+                                    <div style={{ display: "inline-flex", alignItems: "center", gap: "6px", flexShrink: 0 }}>
+                                      {renderNoteButton(elem.corpBaseRow, corpBaseCell)}
+                                      <span style={{ display: "inline-block", minWidth: "80px", textAlign: "right", padding: "3px 8px", fontVariantNumeric: "tabular-nums", color: "#334155", fontSize: "12px", whiteSpace: "nowrap" }}>
+                                        {corpBaseCell?.v || "£0.00"}
+                                      </span>
+                                    </div>
+                                  )}
+                                </div>
+
+                                {/* Row 2: Corp tax adjustment */}
+                                <div
+                                  style={{
+                                    gridColumn: `${gridCol}`,
+                                    gridRow: "2",
+                                    padding: "5px 10px 6px",
+                                    background: isTargetCol ? "#f8fafc" : "#fafbfc",
+                                    borderBottom: "1px solid #e2e8f0",
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: isTargetCol ? "space-between" : "flex-end",
+                                    gap: "6px"
+                                  }}
+                                >
+                                  {isTargetCol ? (
+                                    <>
+                                      <div style={{ display: "inline-flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
+                                        {renderNoteButton(elem.corpAdjRow, corpAdjCell)}
+                                      </div>
+                                      <span
+                                        onClick={() => handleStartEdit(elem.corpAdjRow, corpAdjCell)}
+                                        title="Click to edit corporation tax adjustment"
+                                        style={{
+                                          display: "inline-block",
+                                          minWidth: "80px",
+                                          textAlign: "right",
+                                          padding: "3px 8px",
+                                          background: "#ffffff",
+                                          border: "1px solid #cbd5e1",
+                                          borderRadius: "4px",
+                                          cursor: "pointer",
+                                          fontVariantNumeric: "tabular-nums",
+                                          fontSize: "11px",
+                                          color: "#334155",
+                                          fontWeight: "600",
+                                          boxShadow: "0 1px 2px rgba(0,0,0,0.02)",
+                                          whiteSpace: "nowrap",
+                                          boxSizing: "border-box"
+                                        }}
+                                      >
+                                        {corpAdjCell?.v || "£0.00"}
+                                      </span>
+                                    </>
+                                  ) : (
+                                    <div style={{ display: "inline-flex", alignItems: "center", gap: "6px", flexShrink: 0 }}>
+                                      {renderNoteButton(elem.corpAdjRow, corpAdjCell)}
+                                      <span
+                                        onClick={() => handleStartEdit(elem.corpAdjRow, corpAdjCell)}
+                                        title="Click to edit adjustment"
+                                        style={{
+                                          display: "inline-block",
+                                          minWidth: "80px",
+                                          textAlign: "right",
+                                          padding: "3px 8px",
+                                          background: "#ffffff",
+                                          border: "1px solid #cbd5e1",
+                                          borderRadius: "4px",
+                                          cursor: "pointer",
+                                          fontVariantNumeric: "tabular-nums",
+                                          fontSize: "11px",
+                                          color: "#334155",
+                                          fontWeight: "600",
+                                          whiteSpace: "nowrap",
+                                          boxSizing: "border-box"
+                                        }}
+                                      >
+                                        {corpAdjCell?.v || "£0.00"}
+                                      </span>
+                                    </div>
+                                  )}
+                                </div>
+
+                                {/* Row 3: VAT base */}
+                                <div
+                                  style={{
+                                    gridColumn: `${gridCol}`,
+                                    gridRow: "3",
+                                    padding: "8px 10px",
+                                    background: vatBg,
+                                    borderBottom: "1px dashed #f1f5f9",
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: isTargetCol ? "space-between" : "flex-end",
+                                    gap: "6px"
+                                  }}
+                                >
+                                  {isTargetCol ? (
+                                    <>
+                                      <div style={{ display: "inline-flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
+                                        {renderNoteButton(elem.vatBaseRow, vatBaseCell)}
+                                        <button
+                                          onClick={() => handleToggleResolved(vatBaseCell)}
+                                          disabled={resolvingCellKey === `${vatBaseCell?.sheetRow}_${vatBaseCell?.colIdx}`}
+                                          title={vatBaseCell?.isResolved ? "Un-mark resolved" : "Mark resolved"}
+                                          style={{
+                                            padding: "2px 7px",
+                                            borderRadius: "4px",
+                                            border: vatBaseCell?.isResolved ? "1px solid #86efac" : "1px solid #cbd5e1",
+                                            background: vatBaseCell?.isResolved ? "#dcfce7" : "#ffffff",
+                                            color: vatBaseCell?.isResolved ? "#166534" : "#475569",
+                                            fontSize: "9px",
+                                            fontWeight: "700",
+                                            textTransform: "uppercase",
+                                            cursor: resolvingCellKey === `${vatBaseCell?.sheetRow}_${vatBaseCell?.colIdx}` ? "wait" : "pointer",
+                                            flexShrink: 0,
+                                            display: "inline-flex",
+                                            alignItems: "center",
+                                            gap: "4px"
+                                          }}
+                                        >
+                                          {resolvingCellKey === `${vatBaseCell?.sheetRow}_${vatBaseCell?.colIdx}` ? <Spinner size={9} /> : null}
+                                          {vatBaseCell?.isResolved ? "Resolved" : "Resolve"}
+                                        </button>
+                                      </div>
+                                      <span style={{ display: "inline-block", minWidth: "80px", textAlign: "right", padding: "3px 8px", fontWeight: "700", fontVariantNumeric: "tabular-nums", color: "#0f172a", fontSize: "12px", whiteSpace: "nowrap" }}>
+                                        {vatBaseCell?.v || "£0.00"}
+                                      </span>
+                                    </>
+                                  ) : (
+                                    <div style={{ display: "inline-flex", alignItems: "center", gap: "6px", flexShrink: 0 }}>
+                                      {renderNoteButton(elem.vatBaseRow, vatBaseCell)}
+                                      <span style={{ display: "inline-block", minWidth: "80px", textAlign: "right", padding: "3px 8px", fontVariantNumeric: "tabular-nums", color: "#334155", fontSize: "12px", whiteSpace: "nowrap" }}>
+                                        {vatBaseCell?.v || "£0.00"}
+                                      </span>
+                                    </div>
+                                  )}
+                                </div>
+
+                                {/* Row 4: VAT adjustment (with Combined Transfer Recon button) */}
+                                <div
+                                  style={{
+                                    gridColumn: `${gridCol}`,
+                                    gridRow: "4",
+                                    padding: "5px 10px 6px",
+                                    background: isTargetCol ? "#f8fafc" : "#fafbfc",
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: isTargetCol ? "space-between" : "flex-end",
+                                    gap: "6px"
+                                  }}
+                                >
+                                  {isTargetCol ? (
+                                    <>
+                                      <div style={{ display: "inline-flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
+                                        {renderNoteButton(elem.vatAdjRow, vatAdjCell)}
+                                        {isAdmin && (() => {
+                                          const isReconUsed = isReconUsedForTransfer(elem);
+                                          const isThisRowApplying = applyingRecon && applyingReconRow === elem.vatAdjRow?.sheetRow;
+                                          return (
+                                            <button
+                                              onClick={() => handleUseCombinedTransferRecon(elem, col)}
+                                              disabled={applyingRecon}
+                                              title={isReconUsed ? "Combined transfer recon actual is currently applied" : "Reconcile combined Corporation tax + VAT against Transfer total"}
+                                              style={{
+                                                padding: "2px 7px",
+                                                borderRadius: "4px",
+                                                border: isReconUsed ? "1px solid #86efac" : "1px solid #bfdbfe",
+                                                background: isReconUsed ? "#dcfce7" : "#eff6ff",
+                                                color: isReconUsed ? "#166534" : "#1d4ed8",
+                                                fontSize: "9px",
+                                                fontWeight: "700",
+                                                textTransform: "uppercase",
+                                                cursor: applyingRecon ? "default" : "pointer",
+                                                opacity: isThisRowApplying ? 0.7 : 1,
+                                                flexShrink: 0,
+                                                display: "inline-flex",
+                                                alignItems: "center",
+                                                gap: "4px"
+                                              }}
+                                            >
+                                              {isThisRowApplying ? <Spinner size={9} /> : null}
+                                              Recon
+                                            </button>
+                                          );
+                                        })()}
+                                      </div>
+                                      <span
+                                        onClick={() => handleStartEdit(elem.vatAdjRow, vatAdjCell)}
+                                        title="Click to edit VAT / transfer adjustment"
+                                        style={{
+                                          display: "inline-block",
+                                          minWidth: "80px",
+                                          textAlign: "right",
+                                          padding: "3px 8px",
+                                          background: "#ffffff",
+                                          border: "1px solid #cbd5e1",
+                                          borderRadius: "4px",
+                                          cursor: "pointer",
+                                          fontVariantNumeric: "tabular-nums",
+                                          fontSize: "11px",
+                                          color: "#334155",
+                                          fontWeight: "600",
+                                          boxShadow: "0 1px 2px rgba(0,0,0,0.02)",
+                                          whiteSpace: "nowrap",
+                                          boxSizing: "border-box"
+                                        }}
+                                      >
+                                        {vatAdjCell?.v || "£0.00"}
+                                      </span>
+                                    </>
+                                  ) : (
+                                    <div style={{ display: "inline-flex", alignItems: "center", gap: "6px", flexShrink: 0 }}>
+                                      {renderNoteButton(elem.vatAdjRow, vatAdjCell)}
+                                      <span
+                                        onClick={() => handleStartEdit(elem.vatAdjRow, vatAdjCell)}
+                                        title="Click to edit adjustment"
+                                        style={{
+                                          display: "inline-block",
+                                          minWidth: "80px",
+                                          textAlign: "right",
+                                          padding: "3px 8px",
+                                          background: "#ffffff",
+                                          border: "1px solid #cbd5e1",
+                                          borderRadius: "4px",
+                                          cursor: "pointer",
+                                          fontVariantNumeric: "tabular-nums",
+                                          fontSize: "11px",
+                                          color: "#334155",
+                                          fontWeight: "600",
+                                          whiteSpace: "nowrap",
+                                          boxSizing: "border-box"
+                                        }}
+                                      >
+                                        {vatAdjCell?.v || "£0.00"}
+                                      </span>
+                                    </div>
+                                  )}
+                                </div>
+
+                                {/* Spanning Pulse Total Column (All 4 rows) */}
+                                {isTargetCol && (
+                                  <div
+                                    style={{
+                                      gridColumn: `${totalColPosition}`,
+                                      gridRow: "1 / span 4",
+                                      padding: "8px 10px",
+                                      background: "#f0f9ff",
+                                      borderLeft: "1px solid #bae6fd",
+                                      borderRight: "1px solid #bae6fd",
+                                      display: "flex",
+                                      flexDirection: "column",
+                                      alignItems: "center",
+                                      justifyContent: "center",
+                                      gap: "3px"
+                                    }}
+                                  >
+                                    <span style={{ fontSize: "10px", color: "#64748b", fontVariantNumeric: "tabular-nums" }}>
+                                      Corp: {formatGBP(corpTotal)}
+                                    </span>
+                                    <span style={{ fontSize: "10px", color: "#64748b", fontVariantNumeric: "tabular-nums" }}>
+                                      VAT: {formatGBP(vatTotal)}
+                                    </span>
+                                    <div style={{ width: "80%", height: "1px", background: "#bae6fd", margin: "2px 0" }} />
+                                    <span
+                                      style={{
+                                        fontSize: "12px",
+                                        fontWeight: "700",
+                                        fontVariantNumeric: "tabular-nums",
+                                        color: "#0f172a"
+                                      }}
+                                      title={`Combined Corporation tax (${formatGBP(corpTotal)}) + VAT (${formatGBP(vatTotal)}) = ${combinedTotalFmt}`}
+                                    >
+                                      {combinedTotalFmt}
+                                    </span>
+                                  </div>
+                                )}
+
+                                {/* Spanning Transactions Total (Transfer) Column (All 4 rows) */}
+                                {isTargetCol && (() => {
+                                  const txVal = combinedTransferTxVal;
+                                  const isAvailable = txVal !== null && txVal !== undefined;
+                                  const isMatch = isAvailable && (
+                                    Math.abs(combinedTotalVal - txVal) < 0.05 ||
+                                    (Math.sign(combinedTotalVal) !== Math.sign(txVal) && Math.abs(Math.abs(combinedTotalVal) - Math.abs(txVal)) < 0.05)
+                                  );
+                                  return (
+                                    <div
+                                      style={{
+                                        gridColumn: `${txColPosition}`,
+                                        gridRow: "1 / span 4",
+                                        padding: "8px 10px",
+                                        background: "#f0f9ff",
+                                        borderRight: "1px solid #bae6fd",
+                                        display: "flex",
+                                        flexDirection: "column",
+                                        alignItems: "center",
+                                        justifyContent: "center",
+                                        gap: "4px"
+                                      }}
+                                    >
+                                      <span style={{ fontSize: "9px", fontWeight: "700", color: "#0369a1", textTransform: "uppercase", letterSpacing: "0.03em" }}>
+                                        Transfer
+                                      </span>
+                                      {isAvailable ? (
+                                        <span
+                                          style={{
+                                            padding: "4px 10px",
+                                            borderRadius: "14px",
+                                            fontSize: "11px",
+                                            fontWeight: "700",
+                                            fontVariantNumeric: "tabular-nums",
+                                            background: isMatch ? "#dcfce7" : "#fee2e2",
+                                            color: isMatch ? "#166534" : "#991b1b",
+                                            border: isMatch ? "1px solid #86efac" : "1px solid #fca5a5",
+                                            display: "inline-block",
+                                            boxShadow: "0 1px 2px rgba(0,0,0,0.02)"
+                                          }}
+                                          title={isMatch
+                                            ? `Matches combined Corp tax + VAT total: ${formatGBP(txVal)}`
+                                            : `Mismatch: Transfer amount ${formatGBP(txVal)} vs Combined total ${combinedTotalFmt} (Diff: ${formatGBP(txVal - combinedTotalVal)})`
+                                          }
+                                        >
+                                          {formatGBP(txVal)}
+                                        </span>
+                                      ) : (
+                                        <span style={{ color: "#94a3b8", fontSize: "12px" }}>—</span>
+                                      )}
+                                    </div>
+                                  );
+                                })()}
+                              </React.Fragment>
+                            );
+                          })}
+                        </div>
+                      );
+                    }
+
                     if (elem.type === "compound") {
                       return (
                         <div
@@ -2256,8 +3131,16 @@ export default function CashflowReconTab({
                 <li>Contractors</li>
                 <li>Direct costs</li>
                 <li>Other expenses</li>
-                <li>Corporation tax</li>
-                <li>VAT</li>
+                {isCombinedTransferMode ? (
+                  <li style={{ gridColumn: "1 / span 2", fontWeight: "600", color: "#0369a1" }}>
+                    Tax transfers (Corporation tax & VAT combined via Transfer total)
+                  </li>
+                ) : (
+                  <>
+                    <li>Corporation tax</li>
+                    <li>VAT</li>
+                  </>
+                )}
                 <li>Non-operating income</li>
                 <li>Non-operating expenses</li>
               </ul>

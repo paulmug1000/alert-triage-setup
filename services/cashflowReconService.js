@@ -187,17 +187,21 @@ export async function getCashflowReconData({
   // Recon tab name format: YYMM e.g. "2608"
   const reconTabName = `${String(targetYear).slice(-2)}${String(targetMonth + 1).padStart(2, "0")}`;
 
-  // 2. Fetch Cash tab from Client Sheet
+  // 2. Fetch Cash tab and KeyInfo!B10 (Tax payment method) from Client Sheet
   const FIELDS = "sheets(properties(sheetId,title),data.rowData.values(formattedValue,effectiveValue,note,userEnteredValue,effectiveFormat(backgroundColor,textFormat(bold,italic,foregroundColor),horizontalAlignment,borders)))";
   const res = await withRetry(() => sheets.spreadsheets.get({
     spreadsheetId: cleanClientSheetId,
-    ranges: ["Cash!A1:AK45"],
+    ranges: ["Cash!A1:AK45", "KeyInfo!B10"],
     fields: FIELDS,
   }));
 
   const cashSheet = res.data.sheets.find(s => s.properties.title === "Cash") || res.data.sheets[0];
   const cashTabSheetId = cashSheet?.properties?.sheetId ?? 0;
   const rowData = cashSheet?.data?.[0]?.rowData || [];
+
+  const keyInfoSheet = res.data.sheets.find(s => s.properties.title === "KeyInfo");
+  const taxPaymentMethodRaw = String(keyInfoSheet?.data?.[0]?.rowData?.[0]?.values?.[0]?.formattedValue || "").trim();
+  const isTransfersMode = taxPaymentMethodRaw.toLowerCase().startsWith("transfer");
 
   if (rowData.length === 0) {
     throw new Error("Cash tab is empty or not found in client spreadsheet");
@@ -490,7 +494,7 @@ export async function getCashflowReconData({
 
         // Parse [0] U3:X16 Totals
         const rawReconRows = vRanges[0]?.values || [];
-        let revenue = 0, salaries = 0, dividends = 0, contractors = 0, directCosts = 0, outgoings = 0, vat = 0, corpTax = 0, nonOperatingIncome = 0, nonOperatingExpenses = 0;
+        let revenue = 0, salaries = 0, dividends = 0, contractors = 0, directCosts = 0, outgoings = 0, vat = 0, corpTax = 0, transfer = 0, nonOperatingIncome = 0, nonOperatingExpenses = 0;
 
         rawReconRows.forEach(r => {
           const label = String(r[0] || "").trim().toLowerCase();
@@ -504,6 +508,7 @@ export async function getCashflowReconData({
           else if (label.includes("contractor")) contractors += val;
           else if (label.includes("direct cost")) directCosts += val;
           else if (label.includes("outgoing")) outgoings += val;
+          else if (label.includes("transfer")) transfer += val;
           else if (label.includes("vat")) vat += val;
           else if (label.includes("corp") || label.includes("corporation tax") || (label.includes("tax") && !label.includes("vat"))) corpTax += val;
         });
@@ -517,6 +522,7 @@ export async function getCashflowReconData({
           outgoings,
           vat,
           corpTax,
+          transfer,
           nonOperatingIncome,
           nonOperatingExpenses,
           tabName: reconTabName
@@ -826,6 +832,8 @@ export async function getCashflowReconData({
     clientSheetId: cleanClientSheetId,
     cashTabSheetId,
     reconSheetId: cleanReconSheetId,
+    taxPaymentMethod: taxPaymentMethodRaw || "Actual",
+    isTransfersMode: Boolean(isTransfersMode),
     targetMonthLabel: `${FULL_MONTH_NAMES[targetMonthInfo.month]} ${targetMonthInfo.year}`,
     targetMonthKey: `${targetYear}-${String(targetMonth + 1).padStart(2, "0")}`,
     reconTabName,

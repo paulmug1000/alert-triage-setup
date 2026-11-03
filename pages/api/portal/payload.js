@@ -132,7 +132,13 @@ export default async function handler(req, res) {
       for (let i = 0; i < numRows; i++) {
         let label = appDataDisp[i]?.[labelCol] !== undefined ? String(appDataDisp[i][labelCol]) : "";
         const lowerLabel = label.trim().toLowerCase();
-        if ((i === 12 && mode === "Revenue") || lowerLabel === "direct costs" || lowerLabel === "pass-through costs") {
+        if (splitEnabled && mode === "Revenue") {
+          if (i === 12) {
+            label = directCostsMode === "Pass-through" ? "Pass-through costs" : "Other expenses - delivery";
+          } else if (i === 13) {
+            label = directCostsMode === "Pass-through" ? "Other expenses - delivery" : "Hide";
+          }
+        } else if (lowerLabel === "direct costs" || lowerLabel === "pass-through costs") {
           label = mode === "Revenue" && directCostsMode === "Pass-through" ? "Pass-through costs" : "Hide";
         }
         let val = appDataDisp[i]?.[valCol] !== undefined ? String(appDataDisp[i][valCol]) : "";

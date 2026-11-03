@@ -7,7 +7,7 @@ export function getCurrencySymbol(customSymbol) {
   if (customSymbol && typeof customSymbol === "string" && customSymbol.trim()) return customSymbol.trim();
   if (typeof window !== "undefined") {
     return window.currencySymbol || (function () {
-      try { return localStorage.getItem("pulse_currency_symbol"); } catch {} return null;
+      try { return localStorage.getItem("pulse_currency_symbol"); } catch { } return null;
     })() || "£";
   }
   return "£";
@@ -17,7 +17,7 @@ export function getThousandsSeparator(customSeparator) {
   if (customSeparator && typeof customSeparator === "string" && customSeparator.trim()) return customSeparator.trim();
   if (typeof window !== "undefined") {
     return window.thousandsSeparator || (function () {
-      try { return localStorage.getItem("pulse_thousands_separator"); } catch {} return null;
+      try { return localStorage.getItem("pulse_thousands_separator"); } catch { } return null;
     })() || ",";
   }
   return ",";
@@ -968,8 +968,8 @@ export const CashDeepDiveEngine = {
 
             const rawRefKey = String(job[`${prefix}${i}Ref`] || (isDirCash ? (job[`${prefix}${i}Id`] || job[`${prefix}${i}Desc`]) : "") || "").trim().toUpperCase();
             const isSplitTranche = (rawRefKey && (refCounts.get(rawRefKey) || 0) > 1) ||
-                                  statusVal.toLowerCase().includes("part") ||
-                                  statusVal.toLowerCase().includes("balance");
+              statusVal.toLowerCase().includes("part") ||
+              statusVal.toLowerCase().includes("balance");
 
             if (statusVal.toLowerCase().includes("balance") && !actualDesc.toLowerCase().includes("bal")) {
               actualDesc = `${actualDesc} (balance)`;
@@ -1069,10 +1069,10 @@ export const CashDeepDiveEngine = {
           const rawStatus = String(tx.status || "").toLowerCase();
           const rawDesc = String(tx.itemDesc || tx.rawDesc || "").trim();
           const isSplit = (cleanId && (appIdCounts.get(cleanId) || 0) > 1) ||
-                          rawStatus.includes("part") ||
-                          rawStatus.includes("balance") ||
-                          rawDesc.toLowerCase().includes("part payment") ||
-                          rawDesc.toLowerCase().includes("(balance)");
+            rawStatus.includes("part") ||
+            rawStatus.includes("balance") ||
+            rawDesc.toLowerCase().includes("part payment") ||
+            rawDesc.toLowerCase().includes("(balance)");
 
           let displayDesc = rawDesc;
           if (rawStatus.includes("balance") && !displayDesc.toLowerCase().includes("bal")) {
@@ -1391,8 +1391,8 @@ export const CashDeepDiveEngine = {
     const cacheItems = isContractor
       ? (keyData.outgoings.contractors || [])
       : (keyData.outgoings.expenses || []).filter(
-          (e) => !e.name || !e.name.toLowerCase().includes("depreciation")
-        );
+        (e) => !e.name || !e.name.toLowerCase().includes("depreciation")
+      );
 
     let foundY = -1;
     let foundC = -1;
@@ -1598,8 +1598,8 @@ export function buildDeepDiveData({
   const directCostsMode = effectiveIncomeMode
     ? "Pass-through"
     : String(rawDirectCostsMode).trim() === "Pass-through"
-    ? "Pass-through"
-    : "Contractors";
+      ? "Pass-through"
+      : "Contractors";
 
   const calcNbDirectCosts = (startDateObj, numMonths) => {
     if (effectiveIncomeMode || !keyData?.nbtofind?.directCosts) return 0;
@@ -2802,8 +2802,8 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
   const directCostsMode = !isRevMode
     ? "Pass-through"
     : rawDcMode === "Pass-through"
-    ? "Pass-through"
-    : "Contractors";
+      ? "Pass-through"
+      : "Contractors";
   const isContractorsDirectMode = isRevMode && directCostsMode === "Contractors";
   const otherExpDelRowIdx = String(rows[12]?.label || "").toLowerCase().includes("other expenses") ? 12 : 13;
 
@@ -2908,8 +2908,8 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
       if (isRevMode) {
         exactOldDC = isContractorsDirectMode
           ? (outIdx >= 0 && outgoingsMeta.directCostsAsContractors?.[outIdx] !== undefined
-              ? parseMoney(outgoingsMeta.directCostsAsContractors[outIdx][m])
-              : getOldVal(12))
+            ? parseMoney(outgoingsMeta.directCostsAsContractors[outIdx][m])
+            : 0)
           : getOldVal(12);
         const exactNbDCDeduction = nbDCDeduction[m] || 0;
         exactNewDC = Math.max(0, exactOldDC - exactDCDeduction - exactNbDCDeduction + exactAssumedConfDCAdd);

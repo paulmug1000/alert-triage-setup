@@ -1990,6 +1990,10 @@ export default function CashflowWorkbenchView({
 
         const outNum = parseAmount(tx.outAmount || tx.outAmt);
         const inNum = parseAmount(tx.inAmount || tx.inAmt);
+        const outStr = outNum > 0 ? formatAmount2DP(outNum).toLowerCase() : "";
+        const inStr = inNum > 0 ? formatAmount2DP(inNum).toLowerCase() : "";
+        const outRaw = outNum > 0 ? String(outNum) : "";
+        const inRaw = inNum > 0 ? String(inNum) : "";
         const resolvedCat = getResolvedCategory(tx).toLowerCase();
         const plCat = String(tx.plCategory || "").toLowerCase();
         const dateFormatted = formatDateDMmmYy(tx.date).toLowerCase();
@@ -1997,8 +2001,9 @@ export default function CashflowWorkbenchView({
         const payeeText = String(tx.payee || "").toLowerCase();
         const particularsText = String(tx.particulars || "").toLowerCase();
         const refText = String(tx.reference || "").toLowerCase();
+        const accText = String(tx.accountName || defaultAccount || "").toLowerCase();
 
-        const searchableText = `${payeeText} ${particularsText} ${refText} ${resolvedCat} ${plCat} ${dateFormatted} ${dateRaw}`;
+        const searchableText = `${payeeText} ${particularsText} ${refText} ${resolvedCat} ${plCat} ${dateFormatted} ${dateRaw} ${accText} ${outStr} ${inStr} ${outRaw} ${inRaw}`;
 
         const match = tokens.every(token => {
           // 1. Check text search in visible / relevant metadata
@@ -2056,11 +2061,39 @@ export default function CashflowWorkbenchView({
   const reviewTxns = useMemo(() => {
     if (!guidedReviewSearch) return bankTxns;
     const q = guidedReviewSearch.toLowerCase().trim();
+    const tokens = q.split(/\s+/).filter(Boolean);
     return bankTxns.filter(t => {
-      const text = `${t.payee || ""} ${t.particulars || ""} ${t.accountName || ""} ${t.category || ""} ${t.plCategory || ""} ${t.date || ""}`.toLowerCase();
-      return text.includes(q);
+      const outNum = parseAmount(t.outAmount || t.outAmt);
+      const inNum = parseAmount(t.inAmount || t.inAmt);
+      const outStr = outNum > 0 ? formatAmount2DP(outNum).toLowerCase() : "";
+      const inStr = inNum > 0 ? formatAmount2DP(inNum).toLowerCase() : "";
+      const outRaw = outNum > 0 ? String(outNum) : "";
+      const inRaw = inNum > 0 ? String(inNum) : "";
+      const resolvedCat = (t.category || t.suggestedCategory || (inNum > 0 ? "Revenue" : "Outgoings")).toLowerCase();
+      const plCat = String(t.plCategory || "").toLowerCase();
+      const dateFormatted = formatDateDMmmYy(t.date).toLowerCase();
+      const dateRaw = String(t.date || "").toLowerCase();
+      const payeeText = String(t.payee || "").toLowerCase();
+      const particularsText = String(t.particulars || "").toLowerCase();
+      const refText = String(t.reference || "").toLowerCase();
+      const accText = String(t.accountName || defaultAccount || "").toLowerCase();
+
+      const searchableText = `${payeeText} ${particularsText} ${refText} ${resolvedCat} ${plCat} ${dateFormatted} ${dateRaw} ${accText} ${outStr} ${inStr} ${outRaw} ${inRaw}`;
+
+      return tokens.every(token => {
+        if (searchableText.includes(token)) return true;
+        const cleanToken = token.replace(/[£,]/g, "");
+        if (/^\d+(\.\d{1,2})?$/.test(cleanToken)) {
+          const searchVal = parseFloat(cleanToken);
+          if (!isNaN(searchVal)) {
+            if (outNum > 0 && Math.abs(outNum - searchVal) < 0.009) return true;
+            if (inNum > 0 && Math.abs(inNum - searchVal) < 0.009) return true;
+          }
+        }
+        return false;
+      });
     });
-  }, [bankTxns, guidedReviewSearch]);
+  }, [bankTxns, guidedReviewSearch, defaultAccount]);
 
   if (!hasTargetTab || creatingTab) {
     return (
@@ -2343,21 +2376,59 @@ export default function CashflowWorkbenchView({
 
                 {/* Search row (replacing category pills) */}
                 <div>
-                  <input
-                    type="text"
-                    placeholder="Search payees, amounts, descriptions, categories..."
-                    value={searchTerm}
-                    onChange={e => setSearchTerm(e.target.value)}
-                    style={{
-                      width: "100%",
-                      boxSizing: "border-box",
-                      padding: "6px 10px",
-                      fontSize: "11px",
-                      borderRadius: "6px",
-                      border: "1px solid #cbd5e1",
-                      background: "#ffffff"
-                    }}
-                  />
+                  <div style={{ position: "relative" }}>
+                    <input
+                      type="text"
+                      placeholder="Search payees, amounts, descriptions, categories..."
+                      value={searchTerm}
+                      onChange={e => setSearchTerm(e.target.value)}
+                      style={{
+                        width: "100%",
+                        boxSizing: "border-box",
+                        padding: "6px 28px 6px 10px",
+                        fontSize: "11px",
+                        borderRadius: "6px",
+                        border: "1px solid #cbd5e1",
+                        background: "#ffffff"
+                      }}
+                    />
+                    {searchTerm && (
+                      <button
+                        type="button"
+                        onClick={() => setSearchTerm("")}
+                        title="Clear search"
+                        style={{
+                          position: "absolute",
+                          right: "6px",
+                          top: "50%",
+                          transform: "translateY(-50%)",
+                          background: "transparent",
+                          border: "none",
+                          color: "#94a3b8",
+                          cursor: "pointer",
+                          padding: "2px 4px",
+                          fontSize: "12px",
+                          lineHeight: 1
+                        }}
+                        onMouseEnter={e => e.currentTarget.style.color = "#475569"}
+                        onMouseLeave={e => e.currentTarget.style.color = "#94a3b8"}
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+                  {searchTerm && (
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "4px", fontSize: "10px", color: "#64748b" }}>
+                      <span>Showing {filteredTxns.length} of {bankTxns.length} transactions for &ldquo;{searchTerm}&rdquo;</span>
+                      <button
+                        type="button"
+                        onClick={() => setSearchTerm("")}
+                        style={{ background: "transparent", border: "none", color: "#0284c7", cursor: "pointer", padding: 0, fontSize: "10px", fontWeight: "600" }}
+                      >
+                        Clear
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -4015,7 +4086,7 @@ export default function CashflowWorkbenchView({
                         Review all transactions and their predicted categories. Ensure each transaction is assigned to the correct category before completing setup.
                       </p>
                     </div>
-                    <div style={{ minWidth: "220px" }}>
+                    <div style={{ minWidth: "220px", position: "relative" }}>
                       <input
                         type="text"
                         placeholder="Search transactions..."
@@ -4023,12 +4094,36 @@ export default function CashflowWorkbenchView({
                         onChange={e => setGuidedReviewSearch(e.target.value)}
                         style={{
                           width: "100%",
-                          padding: "6px 10px",
+                          padding: "6px 28px 6px 10px",
                           fontSize: "12px",
                           borderRadius: "6px",
                           border: "1px solid #cbd5e1"
                         }}
                       />
+                      {guidedReviewSearch && (
+                        <button
+                          type="button"
+                          onClick={() => setGuidedReviewSearch("")}
+                          title="Clear search"
+                          style={{
+                            position: "absolute",
+                            right: "6px",
+                            top: "50%",
+                            transform: "translateY(-50%)",
+                            background: "transparent",
+                            border: "none",
+                            color: "#94a3b8",
+                            cursor: "pointer",
+                            padding: "2px 4px",
+                            fontSize: "12px",
+                            lineHeight: 1
+                          }}
+                          onMouseEnter={e => e.currentTarget.style.color = "#475569"}
+                          onMouseLeave={e => e.currentTarget.style.color = "#94a3b8"}
+                        >
+                          ✕
+                        </button>
+                      )}
                     </div>
                   </div>
 

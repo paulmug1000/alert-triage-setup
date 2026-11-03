@@ -1238,7 +1238,7 @@ export default function ReportingTab({
         ...prev,
         slides: (prev.slides || []).map(s => {
           if (s.slideNumber !== slideNumber) return s;
-          const nextStatus = field === "draftText" && value.trim()
+          const nextStatus = field === "draftText" && String(value || "").trim()
             ? (s.status === "applied" ? "drafted" : (s.status === "cloned" || s.status === "empty" ? "drafted" : s.status))
             : s.status;
           return {
@@ -1249,12 +1249,26 @@ export default function ReportingTab({
         })
       };
     });
-    if (field === "draftText" || field === "steerText") {
+    if (field === "draftText" || field === "steerText" || field === "hasFlag") {
       setNarrativeDirty(true);
     }
   };
 
-  const handleDraftSingleSlide = async (slideNumber) => {
+  const handleToggleSlideFlag = (slideNumber, e) => {
+    if (e && e.stopPropagation) e.stopPropagation();
+    setNarrativeWorkbench(prev => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        slides: (prev.slides || []).map(s =>
+          s.slideNumber === slideNumber ? { ...s, hasFlag: !s.hasFlag } : s
+        )
+      };
+    });
+    setNarrativeDirty(true);
+  };
+
+  const handleDraftSingleSlide = async (slideNumber, mode = "single") => {
     if (!narrativeWorkbench || !narrativeModalClient) return;
     const targetSlide = (narrativeWorkbench.slides || []).find(s => s.slideNumber === slideNumber);
     if (!targetSlide) return;
@@ -1269,7 +1283,7 @@ export default function ReportingTab({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "eom_generate_narrative",
-          mode: "single",
+          mode,
           clientName: narrativeWorkbench.clientName,
           reportMonthKey: narrativeWorkbench.reportMonthKey,
           presentationId: narrativeWorkbench.presentationId,
@@ -1308,7 +1322,9 @@ export default function ReportingTab({
 
       setNarrativeNotice({
         type: "success",
-        text: `Drafted narrative for slide ${slideNumber} (${targetSlide.slideTitle}).`
+        text: mode === "shorten"
+          ? `Shortened narrative for slide ${slideNumber} (${targetSlide.slideTitle}).`
+          : `Drafted narrative for slide ${slideNumber} (${targetSlide.slideTitle}).`
       });
     } catch (err) {
       console.error("Error generating slide narrative:", err);
@@ -1418,14 +1434,17 @@ export default function ReportingTab({
     try {
       const draftsMap = {};
       (narrativeWorkbench.slides || []).forEach(s => {
-        if (s.draftText && s.draftText.trim()) {
+        const hasDraftText = Boolean(s.draftText && s.draftText.trim());
+        const flagChanged = Boolean(s.hasFlag) !== Boolean(s.deckHasFlag);
+        if (hasDraftText || flagChanged || s.steerText) {
           draftsMap[s.slideNumber] = {
             slideNumber: s.slideNumber,
             slideTitle: s.slideTitle,
             chartCode: s.chartCode || "",
-            text: s.draftText,
+            text: s.draftText || "",
             steerText: s.steerText || "",
-            status: s.status === "applied" ? "applied" : "drafted"
+            hasFlag: Boolean(s.hasFlag),
+            status: hasDraftText ? (s.status === "applied" ? "applied" : "drafted") : s.status
           };
         }
       });
@@ -1445,7 +1464,7 @@ export default function ReportingTab({
       const data = await resp.json();
       if (!data.success) throw new Error(data.error || "Failed to save narrative drafts");
 
-      const draftedCount = Object.keys(draftsMap).length;
+      const draftedCount = (narrativeWorkbench.slides || []).filter(s => s.draftText && s.draftText.trim() && !s.isUneditedClone).length;
       updateClientNarrativeBadge(narrativeWorkbench.clientName, narrativeWorkbench.reportMonthKey, {
         status: data.status || "drafted",
         draftedCount,
@@ -1456,7 +1475,7 @@ export default function ReportingTab({
       setNarrativeDirty(false);
       setNarrativeNotice({
         type: "success",
-        text: `Saved narrative drafts for ${narrativeWorkbench.clientName}.`
+        text: `Saved narrative drafts and flag settings for ${narrativeWorkbench.clientName}.`
       });
     } catch (err) {
       console.error("Error saving narrative drafts:", err);
@@ -1469,12 +1488,16 @@ export default function ReportingTab({
   const handleApplyNarrativeToDeck = async (onlySlideNumber = null) => {
     if (!narrativeWorkbench || !narrativeModalClient) return;
     const slidesToPush = (narrativeWorkbench.slides || []).filter(s => {
-      if (onlySlideNumber !== null) return s.slideNumber === onlySlideNumber && s.draftText && s.draftText.trim();
-      return s.draftText && s.draftText.trim() && !s.isUneditedClone;
+      const hasNewText = Boolean(s.draftText && s.draftText.trim() && !s.isUneditedClone);
+      const hasFlagChange = Boolean(s.hasFlag) !== Boolean(s.deckHasFlag);
+      if (onlySlideNumber !== null) {
+        return s.slideNumber === onlySlideNumber && (Boolean(s.draftText && s.draftText.trim()) || hasFlagChange);
+      }
+      return hasNewText || hasFlagChange;
     });
 
     if (slidesToPush.length === 0) {
-      setNarrativeError("No drafted slide narrative to apply. Draft or edit at least one slide first.");
+      setNarrativeError("No drafted slide narrative or red flag changes to apply. Draft or edit at least one slide first.");
       return;
     }
 
@@ -1498,7 +1521,8 @@ export default function ReportingTab({
           slideUpdates: slidesToPush.map(s => ({
             slideNumber: s.slideNumber,
             shapeName: s.shapeName || "",
-            newText: s.draftText,
+            newText: s.draftText && s.draftText.trim() ? s.draftText : "",
+            hasFlag: Boolean(s.hasFlag),
             isTakeawaysSlide: Boolean(s.isTakeawaysSlide),
             slideTitle: s.slideTitle,
             chartCode: s.chartCode || ""
@@ -1513,7 +1537,13 @@ export default function ReportingTab({
         if (!prev) return prev;
         const nextSlides = (prev.slides || []).map(s =>
           updatedSlideNums.has(s.slideNumber)
-            ? { ...s, deckText: s.draftText, status: "applied", isUneditedClone: false }
+            ? {
+                ...s,
+                deckText: s.draftText && s.draftText.trim() ? s.draftText : s.deckText,
+                deckHasFlag: Boolean(s.hasFlag),
+                status: s.draftText && s.draftText.trim() ? "applied" : s.status,
+                isUneditedClone: s.draftText && s.draftText.trim() ? false : s.isUneditedClone
+              }
             : s
         );
         const appliedOrDraftedCount = nextSlides.filter(s => s.draftText && s.draftText.trim() && !s.isUneditedClone).length;
@@ -1535,8 +1565,8 @@ export default function ReportingTab({
       setNarrativeNotice({
         type: "success",
         text: onlySlideNumber !== null
-          ? `Applied narrative to slide ${onlySlideNumber} in Google Slides presentation.`
-          : `Applied narrative across ${data.updatedCount || slidesToPush.length} slides in Google Slides presentation.`
+          ? `Applied narrative & flag settings to slide ${onlySlideNumber} in Google Slides presentation.`
+          : `Applied narrative & flag settings across ${data.updatedCount || slidesToPush.length} slides in Google Slides presentation.`
       });
     } catch (err) {
       console.error("Error applying narrative to deck:", err);

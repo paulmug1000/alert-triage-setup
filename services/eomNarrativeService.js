@@ -460,21 +460,20 @@ export function parsePptxBuffer(pptxBuffer, options = { includeImages: true }) {
       };
     }
 
-    // Determine if this slide belongs in the Narrative Workbench
+    // Determine if this slide belongs in the Narrative Workbench:
+    // Only slides that actually carry a narrative commentary shape (excluding cover Slide 1, MonthSnapshot/QuarterSnapshot, and Thank You)
     const isSnapshotSlide = chartCode === "[MonthSnapshot]" || chartCode === "[QuarterSnapshot]";
     const isCoverOrDivider =
       slideNumber === 1 ||
-      (!chartCode && tables.length === 0 && !hasCharts && (!narrativeShape || narrativeShape.text.length < 40)) ||
+      (!chartCode && tables.length === 0 && !hasCharts && (!narrativeShape || narrativeShape.text.length < 20)) ||
       /^thank you/i.test(slideTitle);
 
-    const isNarrativeSlide = !isSnapshotSlide && !isCoverOrDivider && (
-      Boolean(chartCode) ||
-      Boolean(narrativeShape && (tables.length > 0 || hasCharts || narrativeShape.text.length >= 40))
-    );
+    const isNarrativeSlide = !isSnapshotSlide && !isCoverOrDivider && Boolean(narrativeShape);
 
     const isTakeawaysSlide =
       chartCode === "[BusinessPerformance]" ||
       /^business performance$/i.test(slideTitle) ||
+      /performance and key takeaways/i.test(slideTitle) ||
       Boolean(narrativeShape?.isTakeawaysSlide);
 
     slides.push({
@@ -548,17 +547,24 @@ function normalizeChartFamily_(chartCode) {
   return clean;
 }
 
+/**
+ * Normalizes slide text for clone comparison, stripping bullets and month/year tokens
+ * so that decks where `replaceAllText("September", "October")` ran during deck creation
+ * are still accurately identified as unedited clones of the prior month.
+ */
 function normalizeTextForComparison_(text) {
   if (!text) return "";
   return String(text)
-    .replace(/[•■▪●\-–]/g, "")
+    .toLowerCase()
+    .replace(/[•■▪●\-–]/g, " ")
+    .replace(/\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\b/gi, "")
+    .replace(/\b202\d\b/g, "")
     .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
+    .trim();
 }
 
 /**
- * Resolves the target month's presentation ID and up to 2 prior monthly presentations
+ * Resolves the target month's presentation ID and up to 4 prior monthly presentations
  * using ReportsLog on Reporting Control sheet + the client's Mgmt Reports Drive folder.
  */
 async function resolveClientPresentations_(sheets, drive, clientName, reportMonthKey, providedFolderUrl) {
@@ -575,7 +581,7 @@ async function resolveClientPresentations_(sheets, drive, clientName, reportMont
       ranges: [
         "ReportsLog!A1:Z100",
         "EomReportingConfig!A2:I500",
-        "RepControl!A5:AJ100"
+        "RepControl!A5:BZ100"
       ],
       valueRenderOption: "FORMATTED_VALUE"
     }));
@@ -612,12 +618,13 @@ async function resolveClientPresentations_(sheets, drive, clientName, reportMont
       if (cfgMatch && cfgMatch[4]) folderUrl = String(cfgMatch[4]).trim();
     }
 
+    // RepControl columns: 0=Client, 16=Client sheet, 17=Master sheet, 32=Mgmt Reports folder, 34=Recon sheet
     const repMatch = repRows.find(r => String(r[0] || "").trim().toLowerCase() === clientName.trim().toLowerCase());
     if (repMatch) {
-      if (!masterSheetId && repMatch[1]) masterSheetId = extractSheetIdFromUrl(repMatch[1]) || "";
-      if (!folderUrl && repMatch[2]) folderUrl = String(repMatch[2]).trim();
-      if (repMatch[34]) reconSheetId = extractSheetIdFromUrl(repMatch[34]) || "";
-      if (repMatch[35]) clientSheetId = extractSheetIdFromUrl(repMatch[35]) || "";
+      if (!clientSheetId && repMatch[16]) clientSheetId = extractSheetIdFromUrl(repMatch[16]) || "";
+      if (!masterSheetId && repMatch[17]) masterSheetId = extractSheetIdFromUrl(repMatch[17]) || "";
+      if (!folderUrl && repMatch[32]) folderUrl = String(repMatch[32]).trim();
+      if (!reconSheetId && repMatch[34]) reconSheetId = extractSheetIdFromUrl(repMatch[34]) || "";
     }
   } catch (err) {
     console.warn(`[resolveClientPresentations_] Reporting Control lookup note for ${clientName}:`, err.message);
@@ -640,7 +647,7 @@ async function resolveClientPresentations_(sheets, drive, clientName, reportMont
     } catch (_) {}
   }
 
-  // 3. Also scan the client's Mgmt Reports Drive folder for presentations named with yyMM
+  // 3. Also scan the client's Mgmt Reports Drive folder for presentations containing a 4-digit yyMM code (e.g. "Eleven 2609 Management Report Sep26")
   const folderId = extractDriveIdFromUrl_(folderUrl);
   if (folderId) {
     try {
@@ -648,12 +655,12 @@ async function resolveClientPresentations_(sheets, drive, clientName, reportMont
         q: `'${folderId}' in parents and mimeType = 'application/vnd.google-apps.presentation' and trashed = false`,
         fields: "files(id, name, webViewLink, modifiedTime)",
         orderBy: "name desc, modifiedTime desc",
-        pageSize: 30,
+        pageSize: 40,
         supportsAllDrives: true,
         includeItemsFromAllDrives: true
       }));
       for (const file of listResp.data.files || []) {
-        const nameMatch = String(file.name || "").trim().match(/^(\d{4})\b/);
+        const nameMatch = String(file.name || "").trim().match(/\b(2\d(?:0[1-9]|1[0-2]))\b/);
         if (nameMatch) {
           const mKey = yyMmToMonthKey_(nameMatch[1]);
           if (mKey && !deckMap.has(mKey)) {
@@ -675,9 +682,10 @@ async function resolveClientPresentations_(sheets, drive, clientName, reportMont
   const targetDeck = (reportMonthKey && deckMap.get(reportMonthKey)) || allDecksSorted[0] || null;
   const effectiveMonthKey = targetDeck?.monthKey || reportMonthKey || "";
 
+  // Load up to 4 prior monthly presentations so the user can scroll through earlier months
   const priorDecks = allDecksSorted
     .filter(d => d.monthKey < effectiveMonthKey && d.presentationId !== targetDeck?.presentationId)
-    .slice(0, 2);
+    .slice(0, 4);
 
   return {
     targetDeck,
@@ -704,7 +712,7 @@ async function exportPresentationAsPptxBuffer_(drive, presentationId) {
 }
 
 // ============================================================================
-// 3. SUPPLIER & OVERHEAD TRANSACTION CONTEXT (RECON SHEET + CLIENT SHEET)
+// 3. SUPPLIER & OVERHEAD TRANSACTION CONTEXT (CLIENT OUTGOINGS ROW 300 + RECON)
 // ============================================================================
 
 function parseAmountNum_(val) {
@@ -728,8 +736,11 @@ function formatGbpShort_(num) {
 }
 
 /**
- * Pulls overhead transaction details from the client's Recon Sheet (`yyMM` tab)
- * and Client Sheet `Outgoings` notes to explain overhead category variances.
+ * Pulls overhead supplier transaction details from:
+ * 1. Client Sheet `Outgoings!A300:AZ300` ("Transactions Breakdown (JSON)" synced by 7_Cost_Sync.gs,
+ *    containing all reconciled Xero/QBO bills, bank spend, journals, and unreconciled items by category)
+ * 2. Recon Sheet `'yyMM'!CD1:CR160` (unreconciled expenses: CF=Date, CG=Payee, CH=Desc, CI=Gross, CM=Category, CP=Net)
+ *    and `'yyMM'!A3:Q200` (bank statement Outgoings lines).
  */
 async function fetchOverheadTransactionContext_(sheets, {
   reconSheetId,
@@ -741,15 +752,13 @@ async function fetchOverheadTransactionContext_(sheets, {
   const result = {
     yyMm,
     reconAvailable: false,
-    categoriesMap: {}, // categoryName -> [{ date, payee, description, netAmount, grossAmount }]
+    categoriesMap: {}, // categoryName -> [{ date, payee, description, netAmount, netFormatted, grossFormatted, isUnreconciled }]
     categorisedTransactions: [],
-    outgoingsBankLines: [],
-    clientOutgoingsNotes: []
+    outgoingsBankLines: []
   };
 
   if (!yyMm) return result;
 
-  // If reconSheetId is not yet known, check getAllClients or Master KeyInfo
   let resolvedReconId = reconSheetId;
   let resolvedClientSheetId = clientSheetId;
   if (!resolvedReconId || !resolvedClientSheetId) {
@@ -765,7 +774,78 @@ async function fetchOverheadTransactionContext_(sheets, {
     } catch (_) {}
   }
 
-  // 1. Read Recon Sheet tab `yyMM` (both CD1:CR160 categorised expenses and A3:Q200 bank lines)
+  const seenTxKeys = new Set();
+  const addCategorisedTx = (item) => {
+    const dedupeKey = `${String(item.category).toLowerCase()}|${String(item.payee).toLowerCase()}|${Math.round(Math.abs(item.netAmount))}|${item.date}`;
+    if (seenTxKeys.has(dedupeKey)) return;
+    seenTxKeys.add(dedupeKey);
+
+    result.categorisedTransactions.push(item);
+    const catKey = item.category || "Uncategorised";
+    if (!result.categoriesMap[catKey]) {
+      result.categoriesMap[catKey] = [];
+    }
+    result.categoriesMap[catKey].push(item);
+  };
+
+  // 1. Read Client Sheet Outgoings Row 300 JSON breakdown for the target month
+  if (resolvedClientSheetId) {
+    try {
+      const outResp = await withRetry(() => sheets.spreadsheets.values.batchGet({
+        spreadsheetId: resolvedClientSheetId,
+        ranges: ["Outgoings!A1:AZ1", "Outgoings!A300:AZ300"],
+        valueRenderOption: "FORMATTED_VALUE"
+      }));
+      const headerRow = outResp.data.valueRanges?.[0]?.values?.[0] || [];
+      const jsonRow = outResp.data.valueRanges?.[1]?.values?.[0] || [];
+
+      let targetColIdx = -1;
+      for (let c = 1; c < headerRow.length; c++) {
+        if (parseHeaderToMonthKeyLocal_(headerRow[c]) === reportMonthKey) {
+          targetColIdx = c;
+          break;
+        }
+      }
+
+      if (targetColIdx !== -1 && jsonRow[targetColIdx]) {
+        const rawJson = String(jsonRow[targetColIdx]).trim();
+        if (rawJson.startsWith("[")) {
+          const parsedTx = JSON.parse(rawJson);
+          if (Array.isArray(parsedTx)) {
+            result.reconAvailable = true;
+            for (const tx of parsedTx) {
+              const netAmount = Number(tx.n ?? tx.g ?? 0);
+              if (!Number.isFinite(netAmount) || Math.abs(netAmount) < 1) continue;
+              const rawSupplier = String(tx.s || "").trim();
+              // Split "Supplier Name (Description)" if formatted that way
+              let payee = rawSupplier;
+              let description = "";
+              const parenIdx = rawSupplier.indexOf(" (");
+              if (parenIdx > 0 && rawSupplier.endsWith(")")) {
+                payee = rawSupplier.slice(0, parenIdx).trim();
+                description = rawSupplier.slice(parenIdx + 2, -1).trim();
+                if (/^no desc$/i.test(description)) description = "";
+              }
+              addCategorisedTx({
+                date: String(tx.d || "").trim(),
+                payee: payee || "Supplier",
+                description,
+                category: String(tx.c || "Uncategorised").trim(),
+                netAmount,
+                netFormatted: formatGbpShort_(netAmount),
+                grossFormatted: formatGbpShort_(Number(tx.g ?? netAmount)),
+                isUnreconciled: Boolean(tx.u)
+              });
+            }
+          }
+        }
+      }
+    } catch (clientErr) {
+      console.warn(`[fetchOverheadTransactionContext_] Client Outgoings row 300 note:`, clientErr.message);
+    }
+  }
+
+  // 2. Read Recon Sheet tab `yyMM` (CD1:CR160 unreconciled expenses + A3:Q200 bank lines)
   if (resolvedReconId) {
     try {
       const reconBatch = await withRetry(() => sheets.spreadsheets.values.batchGet({
@@ -781,43 +861,31 @@ async function fetchOverheadTransactionContext_(sheets, {
       const expRows = reconBatch.data.valueRanges?.[0]?.values || [];
       const bankRows = reconBatch.data.valueRanges?.[1]?.values || [];
 
-      // Parse CD1:CR160 (Col 0=Date, Col 1=Payee, Col 2=Description, Col 3=Amount Gross, Col 7=Category, Col 10=Amount excl VAT)
-      for (let i = 1; i < expRows.length; i++) {
+      // In CD1:CR160 (CD=0, CE=1, CF=2 Date, CG=3 Payee, CH=4 Description, CI=5 Gross Amount, CM=9 Category, CP=12 Amt excl VAT)
+      for (let i = 2; i < expRows.length; i++) {
         const r = expRows[i] || [];
-        const date = String(r[0] || "").trim();
-        const payee = String(r[1] || "").trim();
-        const description = String(r[2] || "").trim();
-        const grossStr = String(r[3] || "").trim();
-        const category = String(r[7] || "").trim();
-        const netStr = String(r[10] || r[3] || "").trim();
+        const date = String(r[2] ?? r[0] ?? "").trim();
+        const payee = String(r[3] ?? r[1] ?? "").trim();
+        const description = String(r[4] ?? r[2] ?? "").trim();
+        const grossStr = String(r[5] ?? r[3] ?? "").trim();
+        const category = String(r[9] ?? r[7] ?? "").trim();
+        const netStr = String(r[12] ?? r[10] ?? grossStr).trim();
         const netAmount = parseAmountNum_(netStr) ?? parseAmountNum_(grossStr) ?? 0;
 
         if (!payee && !description && !category) continue;
         if (Math.abs(netAmount) < 1) continue;
 
-        const item = {
+        addCategorisedTx({
           date,
           payee: payee || description || "Supplier",
           description: description !== payee ? description : "",
           category: category || "Uncategorised",
-          netAmount,
-          netFormatted: formatGbpShort_(netAmount),
-          grossFormatted: grossStr
-        };
-        result.categorisedTransactions.push(item);
-
-        const catKey = item.category;
-        if (!result.categoriesMap[catKey]) {
-          result.categoriesMap[catKey] = [];
-        }
-        result.categoriesMap[catKey].push(item);
+          netAmount: Math.abs(netAmount),
+          netFormatted: formatGbpShort_(Math.abs(netAmount)),
+          grossFormatted: grossStr,
+          isUnreconciled: true
+        });
       }
-
-      // Sort each category's transactions by absolute amount descending
-      for (const catKey of Object.keys(result.categoriesMap)) {
-        result.categoriesMap[catKey].sort((a, b) => Math.abs(b.netAmount) - Math.abs(a.netAmount));
-      }
-      result.categorisedTransactions.sort((a, b) => Math.abs(b.netAmount) - Math.abs(a.netAmount));
 
       // Parse A3:Q200 bank statement Outgoings lines (Col 1=Date, Col 3=Payee, Col 4=Desc, Col 8=Out, Col 16=Type)
       for (let i = 0; i < bankRows.length; i++) {
@@ -828,7 +896,7 @@ async function fetchOverheadTransactionContext_(sheets, {
         const payee = String(r[3] || "").trim();
         const description = String(r[4] || "").trim();
         const outAmt = parseAmountNum_(r[8]);
-        if (!outAmt || Math.abs(outAmt) < 50) continue;
+        if (!outAmt || Math.abs(outAmt) < 25) continue;
 
         result.outgoingsBankLines.push({
           date,
@@ -843,6 +911,12 @@ async function fetchOverheadTransactionContext_(sheets, {
       // Tab yyMM might not exist on Recon sheet for older months; ignore quietly
     }
   }
+
+  // Sort each category's transactions by absolute amount descending
+  for (const catKey of Object.keys(result.categoriesMap)) {
+    result.categoriesMap[catKey].sort((a, b) => Math.abs(b.netAmount) - Math.abs(a.netAmount));
+  }
+  result.categorisedTransactions.sort((a, b) => Math.abs(b.netAmount) - Math.abs(a.netAmount));
 
   return result;
 }
@@ -1116,21 +1190,36 @@ export async function handleEomGetNarrativeWorkbench(req, res, sheets) {
         }
       : null;
 
-    // Match each narrative slide with its T-1 and T-2 historical narratives and saved drafts
+    // Match each narrative slide with its T-1..T-4 historical narratives and saved drafts
     const narrativeSlides = parsedSlides
-      .filter(s => s.isNarrativeSlide)
+      .filter(s => {
+        if (s.isNarrativeSlide) return true;
+        // Also include if a prior deck had commentary on this exact slide title
+        const normT = s.slideTitle.toLowerCase().trim();
+        return validPriorDecks.some(pd =>
+          pd.slides.some(ps => ps.slideTitle.toLowerCase().trim() === normT && Boolean(ps.currentText))
+        );
+      })
       .map(slide => {
         const family = normalizeChartFamily_(slide.chartCode);
         const normTitle = slide.slideTitle.toLowerCase().trim();
 
         const previousNarratives = [];
         for (const pDeck of validPriorDecks) {
-          const matchedPriorSlide = pDeck.slides.find(ps => {
-            if (slide.chartCode && ps.chartCode === slide.chartCode) return true;
-            if (family && normalizeChartFamily_(ps.chartCode) === family) return true;
-            if (ps.slideTitle.toLowerCase().trim() === normTitle) return true;
-            return false;
-          });
+          // Match exact slide title first (since slides like Bookings per month vs Bookings by source share [Bookings12])
+          let matchedPriorSlide = pDeck.slides.find(
+            ps => ps.slideTitle.toLowerCase().trim() === normTitle && Boolean(ps.currentText)
+          );
+          if (!matchedPriorSlide && slide.chartCode) {
+            matchedPriorSlide = pDeck.slides.find(
+              ps => ps.chartCode === slide.chartCode && Boolean(ps.currentText)
+            );
+          }
+          if (!matchedPriorSlide && family) {
+            matchedPriorSlide = pDeck.slides.find(
+              ps => normalizeChartFamily_(ps.chartCode) === family && Boolean(ps.currentText)
+            );
+          }
           if (matchedPriorSlide && matchedPriorSlide.currentText) {
             previousNarratives.push({
               monthKey: pDeck.monthKey,
@@ -1150,34 +1239,55 @@ export async function handleEomGetNarrativeWorkbench(req, res, sheets) {
           normalizeTextForComparison_(slide.currentText) === normalizeTextForComparison_(tMinus1Text);
 
         const savedDraft = savedRecord.draftsBySlide?.[slide.slideNumber] || null;
-        const effectiveDraftText = savedDraft?.text !== undefined ? savedDraft.text : (isUneditedClone ? "" : slide.currentText);
-        const slideStatus = savedDraft?.status || (savedDraft?.text ? "drafted" : (isUneditedClone ? "cloned" : (slide.currentText ? "existing" : "empty")));
+        const hasSavedDraftText = Boolean(savedDraft?.text && String(savedDraft.text).trim());
+        const effectiveDraftText = hasSavedDraftText
+          ? savedDraft.text
+          : (isUneditedClone ? "" : slide.currentText);
+        const slideStatus = hasSavedDraftText
+          ? (savedDraft?.status || "drafted")
+          : (isUneditedClone ? "cloned" : (slide.currentText ? "existing" : "empty"));
+
+        const effectiveHasFlag =
+          typeof savedDraft?.hasFlag === "boolean" ? savedDraft.hasFlag : Boolean(slide.hasFlag);
 
         // Attach relevant overhead supplier transactions if this is the Overheads slide
         const isOverheadsSlide = family === "overheads" || /overhead/i.test(slide.slideTitle);
         let slideTransactions = null;
-        if (isOverheadsSlide && overheadTxContext.reconAvailable) {
-          // Match categories in the slide table to categories in Recon CD:CR
+        if (isOverheadsSlide) {
           const tableCategories = (slide.tables?.[0] || [])
             .slice(1)
             .map(r => String(r[0] || "").trim())
             .filter(c => c && !/^total/i.test(c));
 
           const matchedByCategory = {};
+          const allCatsMap = overheadTxContext.categoriesMap || {};
           for (const cat of tableCategories) {
-            const exactOrPartial = Object.keys(overheadTxContext.categoriesMap).find(
-              k => k.toLowerCase() === cat.toLowerCase() || k.toLowerCase().includes(cat.toLowerCase()) || cat.toLowerCase().includes(k.toLowerCase())
+            const exactOrPartial = Object.keys(allCatsMap).find(
+              k =>
+                k.toLowerCase() === cat.toLowerCase() ||
+                k.toLowerCase().includes(cat.toLowerCase()) ||
+                cat.toLowerCase().includes(k.toLowerCase())
             );
-            if (exactOrPartial && overheadTxContext.categoriesMap[exactOrPartial]?.length > 0) {
-              matchedByCategory[cat] = overheadTxContext.categoriesMap[exactOrPartial].slice(0, 8);
+            if (exactOrPartial && allCatsMap[exactOrPartial]?.length > 0) {
+              matchedByCategory[cat] = allCatsMap[exactOrPartial].slice(0, 12);
+            }
+          }
+          // Also include any remaining categories in allCatsMap that weren't matched by exact table row name
+          for (const [rawCat, txList] of Object.entries(allCatsMap)) {
+            const alreadyIncluded = Object.keys(matchedByCategory).some(
+              mc => mc.toLowerCase() === rawCat.toLowerCase()
+            );
+            if (!alreadyIncluded && txList?.length > 0) {
+              matchedByCategory[rawCat] = txList.slice(0, 12);
             }
           }
 
           slideTransactions = {
             yyMm: overheadTxContext.yyMm,
+            reconAvailable: Boolean(overheadTxContext.reconAvailable),
             matchedByCategory,
-            topTransactions: overheadTxContext.categorisedTransactions.slice(0, 20),
-            outgoingsBankLines: overheadTxContext.outgoingsBankLines.slice(0, 12)
+            topTransactions: (overheadTxContext.categorisedTransactions || []).slice(0, 30),
+            outgoingsBankLines: (overheadTxContext.outgoingsBankLines || []).slice(0, 15)
           };
         }
 
@@ -1186,7 +1296,8 @@ export async function handleEomGetNarrativeWorkbench(req, res, sheets) {
           slideTitle: slide.slideTitle,
           chartCode: slide.chartCode,
           speakerNotes: slide.speakerNotes,
-          hasFlag: slide.hasFlag,
+          hasFlag: effectiveHasFlag,
+          deckHasFlag: Boolean(slide.hasFlag),
           isTakeawaysSlide: slide.isTakeawaysSlide,
           isOverheadsSlide,
           tables: slide.tables,
@@ -1246,33 +1357,93 @@ function formatTableAsMarkdown_(tableRows) {
     .join("\n");
 }
 
+function countWords_(text) {
+  return String(text || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean).length;
+}
+
+function countBullets_(text) {
+  const lines = String(text || "")
+    .split("\n")
+    .map(l => l.trim())
+    .filter(Boolean);
+  const bulletLines = lines.filter(l => /^[•\-\*]/.test(l));
+  return bulletLines.length || lines.length;
+}
+
+function computeTargetLengthMetrics_(slide) {
+  const prevText = slide.previousNarratives?.[0]?.text || "";
+  const prevWords = countWords_(prevText);
+  const prevBullets = countBullets_(prevText);
+
+  if (slide.isTakeawaysSlide) {
+    const targetWords = prevWords > 40 ? prevWords : 165;
+    const maxAllowedWords = Math.round(targetWords * 1.15);
+    return {
+      hasPriorGuide: prevWords > 0,
+      prevWords,
+      prevBullets: prevBullets || 8,
+      targetBullets: prevBullets || 8,
+      targetWords,
+      maxAllowedWords
+    };
+  }
+
+  if (prevWords > 0) {
+    // Allow at most +20% or +6 words over last month's word count (e.g. 12 words -> max 18 words; 24 words -> max 30 words; 51 words -> max 61 words)
+    const maxAllowedWords = Math.max(prevWords + 6, Math.round(prevWords * 1.2));
+    return {
+      hasPriorGuide: true,
+      prevWords,
+      prevBullets,
+      targetBullets: prevBullets,
+      targetWords: prevWords,
+      maxAllowedWords
+    };
+  }
+
+  return {
+    hasPriorGuide: false,
+    prevWords: 0,
+    prevBullets: 0,
+    targetBullets: 3,
+    targetWords: 45,
+    maxAllowedWords: 60
+  };
+}
+
 const FRACTIONAL_FD_SYSTEM_PROMPT = `You are a seasoned UK fractional Finance Director writing the monthly management report commentary for an agency/professional services client.
 
 Your task is to write the slide narrative that accompanies the financial tables and charts on a specific slide of the client's Google Slides management report.
 
-### Essential style & tone rules (strictly enforced)
-1. **UK English**: Always use UK spelling and formatting (e.g. utilisation, normalised, realised, programme, £, %).
-2. **Concise, commercial, direct voice**:
-   - Write crisp, insightful bullet points grounded in the exact numbers from the slide's table(s) and visual trends in the chart image(s).
+### Essential style, brevity & tone rules (strictly enforced)
+1. **EXTREME BREVITY & WORD-COUNT DISCIPLINE (CRITICAL)**:
+   - These slide text boxes are compact. You MUST strictly match the word count and bullet count of the previous month's narrative on that specific slide (specified in \`<length_constraint>\`).
+   - If the previous month had 1 short bullet of 12 words (e.g. \`• Strong month in October; the rolling 12-month trend is now moving upwards\`), you MUST write 1 short bullet of ~12-18 words — NEVER 3 or 4 long paragraphs!
+   - Write telegraphic, high-density commercial notes: drop unnecessary articles, conjunctions, and explanatory padding. Let the numbers and \`->\` arrows do the work.
+2. **UK English**: Always use UK spelling and formatting (e.g. utilisation, normalised, realised, programme, £, %).
+3. **Concise, commercial, direct voice**:
    - Never use filler phrases ("Overall, this chart illustrates...", "Looking at the table...", "It is pleasing to see..."), marketing fluff, or exclamation marks.
    - Use shorthand arrows (\`->\`) naturally when showing run-rate math or multi-step commercial consequences (e.g. \`£292k for the remaining 6 months -> £49k per month; current pipeline shows £179k across Oct-Dec -> £113k still to find\`).
    - Quote accurate figures (e.g. \`£92k vs £105k budget\`, \`55.1% vs 61.5% target\`, \`+£1,535 / +22.4%\`).
-3. **Red flag (\`🚩\`) handling**:
-   - If the slide is marked as having a red flag (\`🚩\` = true), your final bullet (or the dedicated flag bullet, matching the client's prior style on that slide) MUST begin with \`The flag: \` followed by a clear, direct explanation of the risk, pinch point, or shortfall that triggered the flag.
+4. **Red flag (\`🚩\`) handling**:
+   - If the slide is marked as having a red flag (\`🚩\` = true), your final bullet MUST begin with \`• The flag: \` followed by a concise, direct explanation of the risk, pinch point, or shortfall.
    - If the slide does NOT have a red flag (\`🚩\` = false), do NOT include \`The flag:\`.
-4. **Continuity without cloning**:
-   - Study the client's prior months' narratives ($T-1$ and $T-2$) for this exact slide to match sentence rhythm, bullet count, level of detail, and client-specific terminology (e.g. "profit share threshold", "non-delivery overheads", "wage allocation to CoS", "total jobs", "excl. hols").
-   - NEVER copy last month's numbers or text verbatim. Tell this month's financial story clearly while maintaining logical continuity on multi-month trends (YTD recovery, H2 run-rate required, cash pinch points).
-5. **Formatting output**:
+5. **Continuity without cloning**:
+   - Study the client's prior months' narratives ($T-1$, $T-2$, etc.) for this exact slide to match sentence rhythm, exact bullet count, level of detail, and client-specific terminology.
+   - NEVER copy last month's numbers or text verbatim. Tell this month's financial story clearly.
+6. **Formatting output**:
    - Output ONLY the narrative text to go into the commentary box — no markdown code fences, no introductory preamble, and no trailing commentary.
-   - For standard slides: format every point as a bullet starting with \`• \` (one bullet per line, typically 3 to 5 bullets matching the length of prior months' commentary on that slide).
+   - For standard slides: format every point as a bullet starting with \`• \` (one bullet per line).
    - For the **Business performance (\`[BusinessPerformance]\` / Slide 3)** overview slide ONLY:
      Format with two exact section headings (without bullets on the headings) separated by a blank line, and end every bullet in the second section with \`(see slide X)\` referencing the exact slide number in the deck:
      Month in review
      • [1 to 3 concise headline bullets covering revenue, gross profit/margin, overheads, and net profit for the month]
 
      Key takeaways from this report
-     • [4 to 6 high-impact bullets synthesising key insights across YTD, full-year forecast, targets, cashflow, bookings/pipeline, and utilisation, each ending with (see slide X)]`;
+     • [4 to 6 concise bullets synthesising key insights across YTD, full-year forecast, targets, cashflow, bookings/pipeline, and utilisation, each ending with (see slide X)]`;
 
 function buildSlidePromptText_(slide, {
   clientName,
@@ -1280,7 +1451,8 @@ function buildSlidePromptText_(slide, {
   snapshotContext,
   allSlidesSummaryForTakeaways,
   overheadMismatchWarning,
-  steerText
+  steerText,
+  lengthMetrics
 }) {
   const parts = [];
   parts.push(`Client: ${clientName}`);
@@ -1288,7 +1460,25 @@ function buildSlidePromptText_(slide, {
   parts.push(`Slide number: Slide ${slide.slideNumber}`);
   parts.push(`Slide title: ${slide.slideTitle}`);
   if (slide.chartCode) parts.push(`Slide chart/table code: ${slide.chartCode}`);
-  parts.push(`Red flag (🚩) on slide: ${slide.hasFlag ? "YES — include a '• The flag: ...' bullet explaining the risk/issue" : "NO"}`);
+  parts.push(`Red flag (🚩) on slide: ${slide.hasFlag ? "YES — include a concise '• The flag: ...' bullet explaining the risk/issue" : "NO — do NOT include 'The flag:'"}`);
+
+  if (lengthMetrics) {
+    parts.push(`\n<length_constraint>`);
+    if (lengthMetrics.hasPriorGuide) {
+      parts.push(`Previous month's commentary on this slide was **${lengthMetrics.prevWords} words** across **${lengthMetrics.prevBullets} bullet(s)**.`);
+      if (!slide.isTakeawaysSlide) {
+        const effectiveBullets = slide.hasFlag && !slide.previousNarratives?.[0]?.hasFlag
+          ? lengthMetrics.targetBullets + 1
+          : lengthMetrics.targetBullets;
+        parts.push(`STRICT REQUIREMENT: Write **${effectiveBullets} bullet(s)** and keep your total response around **${lengthMetrics.targetWords} words** (HARD MAXIMUM: **${lengthMetrics.maxAllowedWords} words**). Do NOT write more bullets or longer sentences than last month.`);
+      } else {
+        parts.push(`STRICT REQUIREMENT: Keep your total response around **${lengthMetrics.targetWords} words** (HARD MAXIMUM: **${lengthMetrics.maxAllowedWords} words**).`);
+      }
+    } else {
+      parts.push(`STRICT REQUIREMENT: Write at most **${lengthMetrics.targetBullets} concise bullets** and keep your total response under **${lengthMetrics.maxAllowedWords} words**.`);
+    }
+    parts.push(`</length_constraint>`);
+  }
 
   if (snapshotContext?.tables?.length > 0) {
     parts.push(`\n--- HEADLINE KPI SNAPSHOT (Slide ${snapshotContext.slideNumber}: ${snapshotContext.slideTitle}) ---`);
@@ -1320,6 +1510,7 @@ function buildSlidePromptText_(slide, {
     if (catKeys.length > 0) {
       for (const cat of catKeys) {
         const itemsStr = byCat[cat]
+          .slice(0, 6)
           .map(t => `${t.payee}${t.description ? ` - ${t.description}` : ""} (${t.netFormatted})`)
           .join("; ");
         parts.push(`- ${cat}: ${itemsStr}`);
@@ -1332,9 +1523,11 @@ function buildSlidePromptText_(slide, {
   }
 
   if (slide.previousNarratives?.length > 0) {
-    parts.push(`\n--- PREVIOUS MONTHS' NARRATIVE FOR THIS SLIDE (match this exact analytical style, length, and tone) ---`);
+    parts.push(`\n--- PREVIOUS MONTHS' NARRATIVE FOR THIS SLIDE (match this exact analytical style, brevity, bullet count, and tone) ---`);
     for (const prev of slide.previousNarratives) {
-      parts.push(`[${prev.monthKey} — Slide ${prev.slideNumber} (${prev.slideTitle})${prev.hasFlag ? " 🚩" : ""}]:`);
+      const wCount = countWords_(prev.text);
+      const bCount = countBullets_(prev.text);
+      parts.push(`[${prev.monthKey} — Slide ${prev.slideNumber} (${prev.slideTitle})${prev.hasFlag ? " 🚩" : ""} — ${wCount} words, ${bCount} bullet(s)]:`);
       parts.push(prev.text);
       if (prev.tables?.length > 0) {
         parts.push(`(${prev.monthKey} table for comparison:)`);
@@ -1357,7 +1550,7 @@ function buildSlidePromptText_(slide, {
     parts.push(String(steerText).trim());
   }
 
-  parts.push(`\nNow write the narrative for Slide ${slide.slideNumber} (${slide.slideTitle}) for ${reportMonthKey}. Output only the narrative text.`);
+  parts.push(`\nNow write the narrative for Slide ${slide.slideNumber} (${slide.slideTitle}) for ${reportMonthKey}. Stay strictly within ${lengthMetrics?.maxAllowedWords || 60} words. Output only the narrative text.`);
   return parts.join("\n");
 }
 
@@ -1370,8 +1563,42 @@ async function generateSingleSlideWithClaude_({
   snapshotContext,
   allSlidesSummaryForTakeaways,
   overheadMismatchWarning,
-  steerText
+  steerText,
+  shortenOnly = false
 }) {
+  const lengthMetrics = computeTargetLengthMetrics_(slide);
+
+  // If the user clicked "Shorten" on an existing draft, run a fast tightening pass
+  if (shortenOnly && slide.draftText && String(slide.draftText).trim()) {
+    const currentWords = countWords_(slide.draftText);
+    const desiredMax = Math.min(lengthMetrics.maxAllowedWords, Math.max(12, Math.round(currentWords * 0.6)));
+    const prevSample = slide.previousNarratives?.[0]?.text || "";
+    const tightenMsg = await anthropic.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 600,
+      temperature: 0.15,
+      system: FRACTIONAL_FD_SYSTEM_PROMPT,
+      messages: [
+        {
+          role: "user",
+          content: `Tighten and shorten this draft narrative for Slide ${slide.slideNumber} (${slide.slideTitle}) so it is **at most ${desiredMax} words** (target ~${lengthMetrics.targetWords} words across ${lengthMetrics.targetBullets} bullet(s)).
+Keep the exact commercial numbers, \`->\` shorthand arrows, UK spelling, and ${slide.hasFlag ? "keep a concise '• The flag: ...' final bullet" : "do not include 'The flag:'"}.
+${prevSample ? `\nReference for exact length and rhythm from last month (${lengthMetrics.prevWords} words):\n${prevSample}\n` : ""}
+Current draft to shorten (${currentWords} words):
+${slide.draftText}
+
+Output ONLY the shortened narrative text.`
+        }
+      ]
+    });
+    const shortened = (tightenMsg.content || [])
+      .filter(b => b.type === "text")
+      .map(b => b.text)
+      .join("\n")
+      .trim();
+    return shortened || slide.draftText;
+  }
+
   const userContentBlocks = [];
 
   // Attach up to 3 chart PNG images from the slide for Claude vision analysis
@@ -1395,7 +1622,8 @@ async function generateSingleSlideWithClaude_({
     snapshotContext,
     allSlidesSummaryForTakeaways,
     overheadMismatchWarning,
-    steerText
+    steerText,
+    lengthMetrics
   });
 
   userContentBlocks.push({
@@ -1405,17 +1633,73 @@ async function generateSingleSlideWithClaude_({
 
   const msg = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
-    max_tokens: 1000,
-    temperature: 0.25,
+    max_tokens: 900,
+    temperature: 0.2,
     system: FRACTIONAL_FD_SYSTEM_PROMPT,
     messages: [{ role: "user", content: userContentBlocks }]
   });
 
-  const generatedText = (msg.content || [])
+  let generatedText = (msg.content || [])
     .filter(block => block.type === "text")
     .map(block => block.text)
     .join("\n")
     .trim();
+
+  let totalInputTokens = msg.usage?.input_tokens || 0;
+  let totalOutputTokens = msg.usage?.output_tokens || 0;
+
+  // Deterministic post-generation word-count enforcement:
+  // If Claude exceeded maxAllowedWords (and user didn't explicitly ask for extra detail in steerText),
+  // automatically run a fast text-only tightening pass so the output genuinely respects the guide word count.
+  const generatedWords = countWords_(generatedText);
+  const effectiveMaxWords =
+    slide.hasFlag && !slide.previousNarratives?.[0]?.hasFlag
+      ? lengthMetrics.maxAllowedWords + 18
+      : lengthMetrics.maxAllowedWords;
+
+  if (generatedWords > effectiveMaxWords && (!steerText || !/detail|expand|longer/i.test(steerText))) {
+    const prevSample = slide.previousNarratives?.[0]?.text || "";
+    const targetBullets =
+      slide.hasFlag && !slide.previousNarratives?.[0]?.hasFlag
+        ? lengthMetrics.targetBullets + 1
+        : lengthMetrics.targetBullets;
+
+    const tightenMsg = await anthropic.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 600,
+      temperature: 0.1,
+      system: FRACTIONAL_FD_SYSTEM_PROMPT,
+      messages: [
+        {
+          role: "user",
+          content: `Your draft for Slide ${slide.slideNumber} (${slide.slideTitle}) is **${generatedWords} words**, which exceeds the strict maximum of **${effectiveMaxWords} words** (last month's narrative was **${lengthMetrics.prevWords} words** across **${lengthMetrics.prevBullets} bullet(s)**).
+
+Rewrite and condense the draft below so that it is **at most ${effectiveMaxWords} words** (ideally ~${lengthMetrics.targetWords} words) and has **${targetBullets} bullet(s)**.
+- Preserve the key commercial figures, variances, and \`->\` shorthand arrows.
+- Cut secondary commentary, repetitive phrasing, and wordy explanations.
+- ${slide.hasFlag ? "Keep a concise '• The flag: ...' bullet at the end." : "Do NOT include 'The flag:'."}
+${slide.isTakeawaysSlide ? "- Keep the two section headings ('Month in review' and 'Key takeaways from this report') and the '(see slide X)' references at the end of each takeaway bullet." : ""}
+${prevSample ? `\nLast month's actual narrative on this slide (${lengthMetrics.prevWords} words — match this exact brevity and density):\n${prevSample}\n` : ""}
+Draft to condense (${generatedWords} words):
+${generatedText}
+
+Output ONLY the condensed narrative text.`
+        }
+      ]
+    });
+
+    const tightenedText = (tightenMsg.content || [])
+      .filter(b => b.type === "text")
+      .map(b => b.text)
+      .join("\n")
+      .trim();
+
+    if (tightenedText) {
+      generatedText = tightenedText;
+    }
+    totalInputTokens += tightenMsg.usage?.input_tokens || 0;
+    totalOutputTokens += tightenMsg.usage?.output_tokens || 0;
+  }
 
   if (acId) {
     logClaudeUsage_(
@@ -1423,8 +1707,8 @@ async function generateSingleSlideWithClaude_({
       acId,
       clientName,
       `eom_narrative_slide_${slide.slideNumber}`,
-      msg.usage?.input_tokens || 0,
-      msg.usage?.output_tokens || 0,
+      totalInputTokens,
+      totalOutputTokens,
       "reporting_narrative"
     ).catch(() => {});
   }
@@ -1435,7 +1719,7 @@ async function generateSingleSlideWithClaude_({
 /**
  * POST /api/triage {
  *   action: "eom_generate_narrative",
- *   mode: "single" | "all",
+ *   mode: "single" | "all" | "shorten",
  *   clientName,
  *   reportMonthKey,
  *   presentationId,
@@ -1482,14 +1766,14 @@ export async function handleEomGenerateNarrative(req, res, sheets) {
     const draftsBySlide = { ...(savedRecord.draftsBySlide || {}) };
     const now = new Date().toISOString();
 
-    if (mode === "single") {
+    if (mode === "single" || mode === "shorten") {
       const targetSlide = slidesList.find(s => Number(s.slideNumber) === Number(slideNumber));
       if (!targetSlide) {
         return res.status(404).json({ success: false, error: `Slide ${slideNumber} not found.` });
       }
 
       let allSlidesSummaryForTakeaways = "";
-      if (targetSlide.isTakeawaysSlide) {
+      if (targetSlide.isTakeawaysSlide && mode !== "shorten") {
         allSlidesSummaryForTakeaways = slidesList
           .filter(s => !s.isTakeawaysSlide)
           .map(s => {
@@ -1509,7 +1793,8 @@ export async function handleEomGenerateNarrative(req, res, sheets) {
         snapshotContext,
         allSlidesSummaryForTakeaways,
         overheadMismatchWarning,
-        steerText
+        steerText,
+        shortenOnly: mode === "shorten"
       });
 
       draftsBySlide[targetSlide.slideNumber] = {
@@ -1518,6 +1803,7 @@ export async function handleEomGenerateNarrative(req, res, sheets) {
         chartCode: targetSlide.chartCode || "",
         text: generatedText,
         steerText: steerText || "",
+        hasFlag: Boolean(targetSlide.hasFlag),
         status: "drafted",
         updatedAt: now
       };
@@ -1533,7 +1819,7 @@ export async function handleEomGenerateNarrative(req, res, sheets) {
 
       return res.status(200).json({
         success: true,
-        mode: "single",
+        mode,
         slideNumber: targetSlide.slideNumber,
         generatedText,
         draftsBySlide,
@@ -1574,6 +1860,7 @@ export async function handleEomGenerateNarrative(req, res, sheets) {
           chartCode: slide.chartCode || "",
           text,
           steerText: slideSteer,
+          hasFlag: Boolean(slide.hasFlag),
           status: "drafted",
           updatedAt: now
         };
@@ -1609,6 +1896,7 @@ export async function handleEomGenerateNarrative(req, res, sheets) {
           chartCode: tSlide.chartCode || "",
           text,
           steerText: slideSteer,
+          hasFlag: Boolean(tSlide.hasFlag),
           status: "drafted",
           updatedAt: now
         };
@@ -1654,7 +1942,7 @@ export async function handleEomGenerateNarrative(req, res, sheets) {
  *   clientName,
  *   reportMonthKey,
  *   presentationId,
- *   draftsMap, // { [slideNumber]: { text, steerText, slideTitle, chartCode } }
+ *   draftsMap, // { [slideNumber]: { text, steerText, hasFlag, slideTitle, chartCode } }
  *   totalNarrativeSlides
  * }
  */
@@ -1676,14 +1964,16 @@ export async function handleEomSaveNarrativeDraft(req, res, sheets) {
 
     for (const [sNum, item] of Object.entries(draftsMap)) {
       if (!item || typeof item !== "object") continue;
+      const newText = item.text !== undefined ? String(item.text) : (mergedDrafts[sNum]?.text || "");
       mergedDrafts[sNum] = {
         ...(mergedDrafts[sNum] || {}),
         slideNumber: Number(sNum),
         slideTitle: item.slideTitle || mergedDrafts[sNum]?.slideTitle || `Slide ${sNum}`,
         chartCode: item.chartCode || mergedDrafts[sNum]?.chartCode || "",
-        text: item.text !== undefined ? String(item.text) : (mergedDrafts[sNum]?.text || ""),
+        text: newText,
         steerText: item.steerText !== undefined ? String(item.steerText) : (mergedDrafts[sNum]?.steerText || ""),
-        status: item.status || "drafted",
+        hasFlag: typeof item.hasFlag === "boolean" ? item.hasFlag : mergedDrafts[sNum]?.hasFlag,
+        status: newText.trim() ? (item.status || "drafted") : "empty",
         updatedAt: now
       };
     }
@@ -1718,12 +2008,13 @@ export async function handleEomSaveNarrativeDraft(req, res, sheets) {
  *   presentationId,
  *   folderUrl,
  *   webAppUrl,
- *   slideUpdates, // [{ slideNumber, shapeName, newText, isTakeawaysSlide, slideTitle, chartCode }]
+ *   slideUpdates, // [{ slideNumber, shapeName, newText, hasFlag, isTakeawaysSlide, slideTitle, chartCode }]
  *   totalNarrativeSlides,
  *   automationCommanderSheetId
  * }
  * Calls the Reporting Control GAS Web App (`action: "APPLY_NARRATIVE"`) to write the approved
- * narrative commentary into each slide's text box while preserving font, size, and bullet styling.
+ * narrative commentary into each slide's text box while preserving font, size, and bullet styling,
+ * as well as adding or removing the red flag (🚩) shape on each slide.
  */
 export async function handleEomApplyNarrativeToDeck(req, res, sheets) {
   const sessionUser = getSessionUser(req);
@@ -1783,6 +2074,7 @@ export async function handleEomApplyNarrativeToDeck(req, res, sheets) {
             slideNumber: Number(u.slideNumber),
             shapeName: u.shapeName || "",
             newText: String(u.newText || ""),
+            hasFlag: typeof u.hasFlag === "boolean" ? u.hasFlag : undefined,
             isTakeawaysSlide: Boolean(u.isTakeawaysSlide)
           }))
         })
@@ -1823,7 +2115,8 @@ export async function handleEomApplyNarrativeToDeck(req, res, sheets) {
         slideNumber: sNum,
         slideTitle: u.slideTitle || mergedDrafts[sNum]?.slideTitle || `Slide ${sNum}`,
         chartCode: u.chartCode || mergedDrafts[sNum]?.chartCode || "",
-        text: String(u.newText || ""),
+        text: u.newText !== undefined && String(u.newText).trim() ? String(u.newText) : (mergedDrafts[sNum]?.text || ""),
+        hasFlag: typeof u.hasFlag === "boolean" ? u.hasFlag : mergedDrafts[sNum]?.hasFlag,
         status: "applied",
         appliedAt: now,
         updatedAt: now

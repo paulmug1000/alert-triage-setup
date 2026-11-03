@@ -1735,6 +1735,8 @@ export async function handleUpdateJobFields(req, res, sheets) {
       }
     }).catch(e => console.error("PMA log failed:", e));
 
+    await invalidatePmaClientCache(sheetIdClean, req.body.masterSheetId, ["jobs", "invoices", "outgoings", "retainers", "cash"]).catch(e => console.warn("Cache invalidate failed in update_job_fields:", e.message));
+
     return res.status(200).json({ success: true, backgroundProvisioning, invoiceSlotUpdates, expenseSlotUpdates });
   } catch (err) {
     console.error("❌ update_job_fields error:", err);

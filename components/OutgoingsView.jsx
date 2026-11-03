@@ -757,7 +757,59 @@ export default function OutgoingsView({
           isOpen={!!selectedJobForDetail}
           target={selectedJobForDetail}
           isAdmin={isAdmin}
-          onClose={() => setSelectedJobForDetail(null)}
+          onClose={(saved) => {
+            setSelectedJobForDetail(null);
+            if (saved && effectiveSheetId) {
+              invalidateCachedClientData?.(effectiveSheetId);
+              loadDirectCostsJobs(effectiveClientObj, directCostsShowAll, true);
+              loadOutgoings(effectiveClientObj, true);
+            }
+          }}
+          onJobSaved={(info) => {
+            if (info?.draftEdits || info?.directCosts !== undefined || info?.revenue !== undefined) {
+              setDirectCostsJobs((prevJobs) => {
+                if (!prevJobs) return prevJobs;
+                return prevJobs.map((job) => {
+                  const targetRowNum = info.rowNum || selectedJobForDetail?.rowNum;
+                  const hasRow = job.rows?.some(r => r.rowNum === targetRowNum);
+                  const matchesName = (
+                    job.client?.toLowerCase() === (info.client || selectedJobForDetail?.client || "").toLowerCase() &&
+                    job.jobName?.toLowerCase() === (info.jobName || selectedJobForDetail?.jobName || "").toLowerCase()
+                  );
+                  if (!hasRow && !matchesName) return job;
+
+                  const nextRows = (job.rows || []).map((r, rIdx) => {
+                    const nextRow = { ...r };
+                    if (rIdx === 0 || r.rowNum === targetRowNum) {
+                      if (info.draftEdits?.revenue !== undefined) nextRow.revenue = String(info.draftEdits.revenue);
+                      else if (info.revenue !== undefined) nextRow.revenue = String(info.revenue);
+                      if (info.draftEdits?.directCosts !== undefined) nextRow.directCosts = String(info.draftEdits.directCosts);
+                      else if (info.directCosts !== undefined) nextRow.directCosts = String(info.directCosts);
+                      if (info.draftEdits?.jobName !== undefined) nextRow.jobName = info.draftEdits.jobName;
+                      if (info.draftEdits?.client !== undefined) nextRow.client = info.draftEdits.client;
+                      if (info.draftEdits?.projectCode !== undefined) nextRow.projectCode = info.draftEdits.projectCode;
+                      if (info.draftEdits?.startDate !== undefined) nextRow.startDate = info.draftEdits.startDate;
+                      if (info.draftEdits?.endDate !== undefined) nextRow.endDate = info.draftEdits.endDate;
+                    }
+                    return nextRow;
+                  });
+
+                  return {
+                    ...job,
+                    client: info.draftEdits?.client || job.client,
+                    jobName: info.draftEdits?.jobName || job.jobName,
+                    projectCode: info.draftEdits?.projectCode !== undefined ? info.draftEdits.projectCode : job.projectCode,
+                    rows: nextRows,
+                  };
+                });
+              });
+            }
+            if (effectiveSheetId) {
+              invalidateCachedClientData?.(effectiveSheetId);
+            }
+            loadDirectCostsJobs(effectiveClientObj, directCostsShowAll, true);
+            loadOutgoings(effectiveClientObj, true);
+          }}
           onMarkPullPending={(masterId) => (outgoingsPullPendingRef.current = masterId)}
         />
       )}
@@ -1858,6 +1910,7 @@ export default function OutgoingsView({
                                           rowNum: jr.rowNum,
                                           tabName: "Confirmed",
                                           clientSheetId: effectiveSheetId,
+                                            masterSheetId: effectiveClientObj?.masterSheetId,
                                           clientName: effectiveClientName,
                                           crmTool: effectiveClientObj?.crmTool,
                                           crmDrives: effectiveClientObj?.crmDrives
@@ -2212,6 +2265,7 @@ export default function OutgoingsView({
                                             rowNum: jr.rowNum,
                                             tabName: "Confirmed",
                                             clientSheetId: effectiveSheetId,
+                                          masterSheetId: effectiveClientObj?.masterSheetId,
                                             clientName: effectiveClientName,
                                             crmTool: effectiveClientObj?.crmTool,
                                             crmDrives: effectiveClientObj?.crmDrives

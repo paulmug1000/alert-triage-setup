@@ -114,7 +114,7 @@ export default function InvoicesView({
   const auth = useAuth();
   const isAdmin = propIsAdmin !== undefined ? propIsAdmin : (!auth.user?.isReadOnly && !!(auth.user?.isAdmin || auth.user?.role === "Admin"));
 
-  const { automationCommanderSheetId, assignedAppIds, setAssignedAppIds, outgoingsPullPendingRef, addAssignedAppId } = useAppGlobals();
+  const { automationCommanderSheetId, assignedAppIds, setAssignedAppIds, outgoingsPullPendingRef, addAssignedAppId, invalidateCachedClientData } = useAppGlobals();
   const { clientsWithFlags, setClientsWithFlags, setClientAlerts, sessionId } = useTriage();
 
   const removeAssignedInvoiceAlert = (invNo, refNo, clientName) => {
@@ -1058,7 +1058,70 @@ export default function InvoicesView({
           isOpen={!!selectedJobForDetail}
           target={selectedJobForDetail}
           isAdmin={isAdmin}
-          onClose={() => setSelectedJobForDetail(null)}
+          onClose={(saved) => {
+            setSelectedJobForDetail(null);
+            if (saved && invoicesClient?.clientSheetId) {
+              invalidateCachedClientData?.(invoicesClient.clientSheetId);
+              loadInvoicesJobs(invoicesClient, invoicesShowAll, true, true);
+            }
+          }}
+          onJobSaved={(info) => {
+            if (info?.draftEdits || info?.revenue !== undefined || info?.directCosts !== undefined) {
+              setInvoicesJobs((prevJobs) => {
+                if (!prevJobs) return prevJobs;
+                return prevJobs.map((job) => {
+                  const targetRowNum = info.rowNum || selectedJobForDetail?.rowNum;
+                  const hasRow = job.rows?.some(r => r.rowNum === targetRowNum);
+                  const matchesName = (
+                    job.client?.toLowerCase() === (info.client || selectedJobForDetail?.client || "").toLowerCase() &&
+                    job.jobName?.toLowerCase() === (info.jobName || selectedJobForDetail?.jobName || "").toLowerCase()
+                  );
+                  if (!hasRow && !matchesName) return job;
+
+                  const nextRows = (job.rows || []).map((r, rIdx) => {
+                    const nextRow = { ...r };
+                    if (rIdx === 0 || r.rowNum === targetRowNum) {
+                      if (info.draftEdits?.revenue !== undefined) nextRow.revenue = String(info.draftEdits.revenue);
+                      else if (info.revenue !== undefined) nextRow.revenue = String(info.revenue);
+                      if (info.draftEdits?.directCosts !== undefined) nextRow.directCosts = String(info.draftEdits.directCosts);
+                      else if (info.directCosts !== undefined) nextRow.directCosts = String(info.directCosts);
+                      if (info.draftEdits?.jobName !== undefined) nextRow.jobName = info.draftEdits.jobName;
+                      if (info.draftEdits?.client !== undefined) nextRow.client = info.draftEdits.client;
+                      if (info.draftEdits?.projectCode !== undefined) nextRow.projectCode = info.draftEdits.projectCode;
+                      if (info.draftEdits?.startDate !== undefined) nextRow.startDate = info.draftEdits.startDate;
+                      if (info.draftEdits?.endDate !== undefined) nextRow.endDate = info.draftEdits.endDate;
+                    }
+                    return nextRow;
+                  });
+
+                  const nextRevenueNum = parseFloat(String(nextRows[0]?.revenue || "").replace(/[£$€,\s]/g, "")) || 0;
+                  let realInvoicedTotal = 0;
+                  for (const jr of nextRows) {
+                    for (const slot of (jr.invoiceSlots || [])) {
+                      const ref = String(slot.ref || "").trim();
+                      if (ref && !isPlaceholderInvoice(ref)) {
+                        realInvoicedTotal += parseFloat(String(slot.amount || "").replace(/[£$€,\s]/g, "")) || 0;
+                      }
+                    }
+                  }
+                  const uninvoicedAmount = nextRevenueNum - realInvoicedTotal;
+
+                  return {
+                    ...job,
+                    client: info.draftEdits?.client || job.client,
+                    jobName: info.draftEdits?.jobName || job.jobName,
+                    projectCode: info.draftEdits?.projectCode !== undefined ? info.draftEdits.projectCode : job.projectCode,
+                    rows: nextRows,
+                    uninvoicedAmount,
+                  };
+                });
+              });
+            }
+            if (invoicesClient?.clientSheetId) {
+              invalidateCachedClientData?.(invoicesClient.clientSheetId);
+            }
+            loadInvoicesJobs(invoicesClient, invoicesShowAll, true, true);
+          }}
           onMarkPullPending={(masterId) => (outgoingsPullPendingRef.current = masterId)}
         />
       )}
@@ -1713,6 +1776,7 @@ export default function InvoicesView({
                                                   rowNum: jr.rowNum,
                                                   tabName: "Confirmed",
                                                   clientSheetId: invoicesClient?.clientSheetId,
+                                                  masterSheetId: invoicesClient?.masterSheetId,
                                                   clientName: invoicesClient?.clientName,
                                                   crmTool: invoicesClient?.crmTool,
                                                   crmDrives: invoicesClient?.crmDrives
@@ -2126,6 +2190,7 @@ export default function InvoicesView({
                                                   rowNum: jr.rowNum,
                                                   tabName: "Confirmed",
                                                   clientSheetId: invoicesClient?.clientSheetId,
+                                                  masterSheetId: invoicesClient?.masterSheetId,
                                                   clientName: invoicesClient?.clientName,
                                                   crmTool: invoicesClient?.crmTool,
                                                   crmDrives: invoicesClient?.crmDrives

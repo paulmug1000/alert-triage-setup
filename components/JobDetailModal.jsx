@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import Spinner from "./Spinner";
 import Skeleton from "./Skeleton";
 import UnevenSplitModal from "./UnevenSplitModal";
@@ -40,8 +40,16 @@ export default function JobDetailModal({
   target,
   onClose,
   onMarkPullPending,
-  isAdmin: propIsAdmin
+  isAdmin: propIsAdmin,
+  onJobSaved,
+  onSaved
 }) {
+  const hasSavedChangesRef = useRef(false);
+  const handleCloseModal = () => {
+    if (typeof onClose === "function") {
+      onClose(hasSavedChangesRef.current);
+    }
+  };
   const { allClientsMap } = useAppGlobals();
   const [internalClientsMap, setInternalClientsMap] = useState(null);
 
@@ -383,7 +391,7 @@ export default function JobDetailModal({
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (e.key === "Escape" && isOpen && !invoicesEditSlot && !directCostsEditSlot && !jobsEditSplit) {
-        onClose();
+        handleCloseModal();
       }
     };
     window.addEventListener("keydown", handleKeyDown);
@@ -959,6 +967,7 @@ export default function JobDetailModal({
         body: JSON.stringify({
           action: "update_job_fields",
           clientSheetId,
+          masterSheetId: client?.masterSheetId || resolvedClientInfo?.masterSheetId || target?.masterSheetId || "",
           clientName: client?.clientName || target?.clientName || "",
           tabName,
           rowNum: parentRowNum,
@@ -1013,6 +1022,23 @@ export default function JobDetailModal({
         };
       });
 
+      hasSavedChangesRef.current = true;
+      const jobSavedPayload = {
+        jobName: draftEdits.jobName || parentRow.jobName || job?.jobName,
+        client: draftEdits.client || parentRow.client || job?.client,
+        revenue: draftEdits.revenue !== undefined ? draftEdits.revenue : parentRow?.revenue,
+        directCosts: draftEdits.directCosts !== undefined ? draftEdits.directCosts : parentRow?.directCosts,
+        rowNum: parentRowNum,
+        draftEdits: { ...draftEdits },
+        updates
+      };
+      if (typeof onJobSaved === "function") {
+        try { onJobSaved(jobSavedPayload); } catch (e) { console.error("onJobSaved error:", e); }
+      }
+      if (typeof onSaved === "function") {
+        try { onSaved(jobSavedPayload); } catch (e) { console.error("onSaved error:", e); }
+      }
+
       setDraftEdits({});
       setRecentlySaved(true);
       setTimeout(() => setRecentlySaved(false), 3000);
@@ -1044,8 +1070,16 @@ export default function JobDetailModal({
           }
           onClose={() => setInvoicesEditSlot(null)}
           onMarkPullPending={(masterId) => onMarkPullPending && onMarkPullPending(masterId)}
-          onInvoiceMoved={() => setReloadTrigger((prev) => prev + 1)}
+          onInvoiceMoved={() => {
+            hasSavedChangesRef.current = true;
+            if (typeof onJobSaved === "function") onJobSaved({ subModalSaved: true });
+            if (typeof onSaved === "function") onSaved({ subModalSaved: true });
+            setReloadTrigger((prev) => prev + 1);
+          }}
           onUpdateInvoiceJobs={(rNum, sNum, newData, resData) => {
+            hasSavedChangesRef.current = true;
+            if (typeof onJobSaved === "function") onJobSaved({ rowNum: rNum, subModalSaved: true, resData });
+            if (typeof onSaved === "function") onSaved({ rowNum: rNum, subModalSaved: true, resData });
             if (invoicesEditSlot?.createNewRow) {
               setReloadTrigger((prev) => prev + 1);
               return;
@@ -1096,6 +1130,9 @@ export default function JobDetailModal({
           onClose={() => setDirectCostsEditSlot(null)}
           onMarkPullPending={(masterId) => onMarkPullPending && onMarkPullPending(masterId)}
           onUpdateJobs={(rNum, sNum, newData) => {
+            hasSavedChangesRef.current = true;
+            if (typeof onJobSaved === "function") onJobSaved({ rowNum: rNum, subModalSaved: true });
+            if (typeof onSaved === "function") onSaved({ rowNum: rNum, subModalSaved: true });
             if (directCostsEditSlot?.createNewRow) {
               setReloadTrigger((prev) => prev + 1);
               return;
@@ -1127,6 +1164,9 @@ export default function JobDetailModal({
           tabName={jobsEditSplit.tabName || tabName}
           onClose={() => setJobsEditSplit(null)}
           onUpdateJobsData={(rNum, splitStr, updatedFields) => {
+            hasSavedChangesRef.current = true;
+            if (typeof onJobSaved === "function") onJobSaved({ rowNum: rNum, subModalSaved: true, updatedFields });
+            if (typeof onSaved === "function") onSaved({ rowNum: rNum, subModalSaved: true, updatedFields });
             setRecentlySaved(true);
             setTimeout(() => setRecentlySaved(false), 3000);
             setJob((prev) => {
@@ -1187,7 +1227,7 @@ export default function JobDetailModal({
         }}
         onClick={(e) => {
           if (e.target === e.currentTarget && !invoicesEditSlot && !directCostsEditSlot && !jobsEditSplit) {
-            onClose();
+            handleCloseModal();
           }
         }}
       >
@@ -1282,7 +1322,7 @@ export default function JobDetailModal({
 
             <button
               type="button"
-              onClick={onClose}
+              onClick={handleCloseModal}
               aria-label="Close"
               title="Close"
               style={{
@@ -1420,7 +1460,7 @@ export default function JobDetailModal({
                 <div style={{ marginTop: "16px", display: "flex", gap: "10px" }}>
                   <button
                     type="button"
-                    onClick={onClose}
+                    onClick={handleCloseModal}
                     style={{
                       padding: "6px 14px",
                       background: "#ffffff",
@@ -2629,7 +2669,7 @@ export default function JobDetailModal({
 
               <button
                 type="button"
-                onClick={onClose}
+                onClick={handleCloseModal}
                 style={{
                   padding: "6px 16px",
                   borderRadius: "6px",

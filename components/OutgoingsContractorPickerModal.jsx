@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
 import Spinner from "./Spinner";
 import { formatCurrency } from "./JobsView";
 import { isPlaceholderExpense } from "../utils/helpers";
@@ -22,6 +22,64 @@ export default function OutgoingsContractorPickerModal({
   const [replacePrompt, setReplacePrompt] = useState(null);
   const [showNewVendorModal, setShowNewVendorModal] = useState(false);
 
+  const fetchOutgoings = useCallback(async (bypassCache = false) => {
+    if (!clientSheetId) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "get_outgoings",
+          clientSheetId,
+          bypassCache
+        })
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || "Failed to load Outgoings data");
+
+      setContractors(prev => {
+        const fresh = data.contractors || [];
+        const merged = [...fresh];
+        if (Array.isArray(prev)) {
+          for (const p of prev) {
+            if (!merged.some(m => m.sheetRow === p.sheetRow || (m.name || "").toLowerCase().trim() === (p.name || "").toLowerCase().trim())) {
+              merged.unshift(p);
+            }
+          }
+        }
+        return merged;
+      });
+      setMonths(data.months || []);
+
+      // Find index of expense month or current month to set initial window offset
+      const expDateStr = String(expense?.date || "").trim();
+      let targetMonthIdx = -1;
+      if (expDateStr) {
+        const monthsMap = { jan:0, feb:1, mar:2, apr:3, may:4, jun:5, jul:6, aug:7, sep:8, oct:9, nov:10, dec:11 };
+        const mMatch = expDateStr.match(/(\d{1,2})-([A-Za-z]{3})-(\d{2,4})/);
+        if (mMatch) {
+          const yr = mMatch[3].slice(-2);
+          const targetLabel = `${mMatch[2]}-${yr}`.toLowerCase();
+          targetMonthIdx = (data.months || []).findIndex(m => m.label.toLowerCase() === targetLabel);
+        }
+      }
+      if (targetMonthIdx === -1) {
+        const now = new Date();
+        const curIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+        targetMonthIdx = (data.months || []).findIndex(m => (m.isoMonth || "").startsWith(curIso));
+      }
+      if (targetMonthIdx >= 0) {
+        setMonthWindowOffset(Math.max(0, targetMonthIdx - 2));
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [clientSheetId, expense]);
+
   useEffect(() => {
     if (!isOpen || !clientSheetId) {
       setContractors([]);
@@ -31,61 +89,8 @@ export default function OutgoingsContractorPickerModal({
       return;
     }
 
-    let isMounted = true;
-    const fetchOutgoings = async (bypassCache = false) => {
-      setLoading(true);
-      setError(null);
-      try {
-        const res = await fetch("/api/triage", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: "get_outgoings",
-            clientSheetId,
-            bypassCache
-          })
-        });
-        const data = await res.json();
-        if (!data.success) throw new Error(data.error || "Failed to load Outgoings data");
-        if (isMounted) {
-          setContractors(data.contractors || []);
-          setMonths(data.months || []);
-
-          // Find index of expense month or current month to set initial window offset
-          const expDateStr = String(expense?.date || "").trim();
-          let targetMonthIdx = -1;
-          if (expDateStr) {
-            const monthsMap = { jan:0, feb:1, mar:2, apr:3, may:4, jun:5, jul:6, aug:7, sep:8, oct:9, nov:10, dec:11 };
-            const mMatch = expDateStr.match(/(\d{1,2})-([A-Za-z]{3})-(\d{2,4})/);
-            if (mMatch) {
-              const mName = mMatch[2].toLowerCase();
-              const yr = mMatch[3].slice(-2);
-              const targetLabel = `${mMatch[2]}-${yr}`.toLowerCase();
-              targetMonthIdx = (data.months || []).findIndex(m => m.label.toLowerCase() === targetLabel);
-            }
-          }
-          if (targetMonthIdx === -1) {
-            const now = new Date();
-            const curIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-            targetMonthIdx = (data.months || []).findIndex(m => (m.isoMonth || "").startsWith(curIso));
-          }
-          if (targetMonthIdx >= 0) {
-            setMonthWindowOffset(Math.max(0, targetMonthIdx - 2));
-          }
-        }
-      } catch (err) {
-        if (isMounted) setError(err.message);
-      } finally {
-        if (isMounted) setLoading(false);
-      }
-    };
-
-    fetchOutgoings();
-
-    return () => {
-      isMounted = false;
-    };
-  }, [isOpen, clientSheetId, expense]);
+    fetchOutgoings(false);
+  }, [isOpen, clientSheetId, fetchOutgoings]);
 
   // Close on Escape
   useEffect(() => {
@@ -619,10 +624,10 @@ export default function OutgoingsContractorPickerModal({
             onCreated={async (newVendor) => {
               if (newVendor?.name) {
                 setContractors(prev => {
-                  if (prev.some(c => c.sheetRow === newVendor.sheetRow || (c.name || "").toLowerCase() === (newVendor.name || "").toLowerCase())) {
+                  if (prev.some(c => c.sheetRow === newVendor.sheetRow || (c.name || "").toLowerCase().trim() === (newVendor.name || "").toLowerCase().trim())) {
                     return prev;
                   }
-                  return [...prev, newVendor];
+                  return [newVendor, ...prev];
                 });
                 setSearchQuery(newVendor.name);
               }

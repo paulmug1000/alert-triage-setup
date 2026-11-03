@@ -4,6 +4,7 @@ import Skeleton from "./Skeleton";
 import UnevenSplitModal from "./UnevenSplitModal";
 import InvoicesEditModal from "./InvoicesEditModal";
 import DirectCostsEditModal from "./DirectCostsEditModal";
+import RetainerChangeSendDatesModal from "./RetainerChangeSendDatesModal";
 import CellNoteModal from "./CellNoteModal";
 import NoteIndicatorButton from "./NoteIndicatorButton";
 import PlaceholderPill, { isAutoPlaceholder, generatePlaceholderInvoiceRef } from "./PlaceholderPill";
@@ -75,6 +76,7 @@ export default function JobDetailModal({
   const [directCostsEditSlot, setDirectCostsEditSlot] = useState(null);
   const [jobsEditSplit, setJobsEditSplit] = useState(null);
   const [cellNoteModalConfig, setCellNoteModalConfig] = useState(null);
+  const [retainerChangeSendDates, setRetainerChangeSendDates] = useState(null);
 
   // Combine global map and fallback loaded map
   const activeClientsMap = useMemo(() => {
@@ -1158,6 +1160,18 @@ export default function JobDetailModal({
         />
       )}
 
+      {retainerChangeSendDates && (
+        <RetainerChangeSendDatesModal
+          isOpen={Boolean(retainerChangeSendDates)}
+          target={retainerChangeSendDates}
+          automationCommanderSheetId={resolvedClientInfo?.client?.automationCommanderSheetId || target?.automationCommanderSheetId}
+          onClose={() => setRetainerChangeSendDates(null)}
+          onUpdated={async () => {
+            setReloadTrigger(prev => prev + 1);
+          }}
+        />
+      )}
+
       {/* Main Modal Overlay */}
       <div
         className="job-detail-modal-overlay"
@@ -1655,6 +1669,38 @@ export default function JobDetailModal({
                         />
                       )}
                     </div>
+
+                    {isConfirmed && isRetainer && (
+                      <div style={{ gridColumn: "1 / -1", display: "flex", justifyContent: "flex-end", marginTop: "4px" }}>
+                        <button
+                          type="button"
+                          onClick={() => setRetainerChangeSendDates({
+                            client: clientVal,
+                            endClientName: clientVal,
+                            jobName: jobNameVal,
+                            confirmedRow: parentRow?.rowNum,
+                            clientSheetId: resolvedClientInfo?.clientSheetId,
+                            masterSheetId: resolvedClientInfo?.client?.masterSheetId || target?.masterSheetId,
+                            clientName: resolvedClientInfo?.clientName || target?.clientName
+                          })}
+                          style={{
+                            padding: "4px 10px",
+                            background: "#f0f9ff",
+                            color: "#0284c7",
+                            border: "1px solid #bae6fd",
+                            borderRadius: "6px",
+                            fontSize: "12px",
+                            fontWeight: "600",
+                            cursor: "pointer",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "4px"
+                          }}
+                        >
+                          Change expected send dates
+                        </button>
+                      </div>
+                    )}
 
                     {/* % Likelihood - Only for Pipeline jobs */}
                     {!isConfirmed && (

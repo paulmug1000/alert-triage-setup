@@ -141,12 +141,27 @@ export function useOutgoings(assignedAppIds, assignedByClient, setAssignedByClie
 
     const applyGridData = (gridData) => {
       if (gridData?.success) {
-        setCachedClientData(client.clientSheetId, "outgoings", gridData);
-        setOutgoingsData(prev => ({
-          contractors: gridData.contractors,
-          months: gridData.months,
-          directCostsMode: gridData.directCostsMode || prev?.directCostsMode || client?.directCostsMode || "Contractors",
-        }));
+        setOutgoingsData(prev => {
+          const fresh = gridData.contractors || [];
+          const merged = [...fresh];
+          if (prev?.contractors) {
+            for (const c of prev.contractors) {
+              if (!merged.some(m => m.sheetRow === c.sheetRow || (m.name || "").toLowerCase().trim() === (c.name || "").toLowerCase().trim())) {
+                merged.unshift(c);
+              }
+            }
+          }
+          const mergedGridData = {
+            ...gridData,
+            contractors: merged,
+          };
+          setCachedClientData(client.clientSheetId, "outgoings", mergedGridData);
+          return {
+            contractors: merged,
+            months: gridData.months,
+            directCostsMode: gridData.directCostsMode || prev?.directCostsMode || client?.directCostsMode || "Contractors",
+          };
+        });
         const now = new Date();
         const curIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
         const currentIdx = (gridData.months || []).findIndex(m => (m.isoMonth || "").startsWith(curIso));

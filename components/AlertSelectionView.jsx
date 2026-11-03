@@ -3,6 +3,7 @@ import Spinner from "./Spinner";
 import TruncatedCode from "./TruncatedCode";
 import RetainerAlertResolutionModal from "./RetainerAlertResolutionModal";
 import RetainerSplitInvoiceModal from "./RetainerSplitInvoiceModal";
+import RetainerChangeSendDatesModal from "./RetainerChangeSendDatesModal";
 import NonAdminAlertListView from "./NonAdminAlertListView";
 import JobDetailModal from "./JobDetailModal";
 import OutgoingsDetailModal from "./OutgoingsDetailModal";
@@ -87,6 +88,7 @@ export default function AlertSelectionView({
     : !!(currentUser?.isAdmin || currentUser?.role === "Admin");
   const [retainerAlertResolution, setRetainerAlertResolution] = useState(null);
   const [retainerSplitInvoice, setRetainerSplitInvoice] = useState(null);
+  const [retainerChangeSendDates, setRetainerChangeSendDates] = useState(null);
   const [acknowledgingKey, setAcknowledgingKey] = useState(null);
   const [exitingAlertKeys, setExitingAlertKeys] = useState(new Set());
   const [selectedClassifications, setSelectedClassifications] = useState({});
@@ -2077,51 +2079,75 @@ export default function AlertSelectionView({
                                             {m.possibleMatchCase === "draft" && <div style={{ marginTop: "4px" }}>It likely just needs sending.</div>}
                                           </div>
                                         )}
-                                        {m.confirmedRow && m.jobName && (!m.possibleMatchInvoiceNo || m.possibleMatchCase === "changed") && (
+                                        {m.confirmedRow && m.jobName && (
                                           <div style={{ marginTop: "8px", paddingTop: "8px", borderTop: "1px solid #e2e8f0", display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                                            {m.possibleMatchInvoiceNo ? (
-                                              <>
+                                            {(!m.possibleMatchInvoiceNo || m.possibleMatchCase === "changed") && (
+                                              m.possibleMatchInvoiceNo ? (
+                                                <>
+                                                  <button className="triage-btn" onClick={() => {
+                                                    const clientInfo = getClientInfoForAlert(alert);
+                                                    const targetClientSheetId = clientInfo?.clientSheetId || selectedClient?.clientSheetId || m.clientSheetId;
+                                                    const targetMasterSheetId = clientInfo?.masterSheetId || selectedClient?.masterSheetId || m.masterSheetId;
+                                                    const targetClientName = alert.clientName || selectedClient?.clientName || "";
+                                                    setRetainerAlertResolution({
+                                                      resolutionType: "changeAmount",
+                                                      alertMeta: { ...m, clientName: targetClientName },
+                                                      alertKey: alert.alertKey,
+                                                      clientSheetId: targetClientSheetId,
+                                                      masterSheetId: targetMasterSheetId
+                                                    });
+                                                  }} style={{ padding: "6px 12px", background: "#7c3aed", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>Change retainer amount</button>
+                                                  <button className="triage-btn" onClick={() => {
+                                                    const clientInfo = getClientInfoForAlert(alert);
+                                                    const targetClientSheetId = clientInfo?.clientSheetId || selectedClient?.clientSheetId || m.clientSheetId;
+                                                    const targetMasterSheetId = clientInfo?.masterSheetId || selectedClient?.masterSheetId || m.masterSheetId;
+                                                    const targetClientName = alert.clientName || selectedClient?.clientName || "";
+                                                    setRetainerSplitInvoice({
+                                                      alertMeta: { ...m, clientName: targetClientName },
+                                                      alertKey: alert.alertKey,
+                                                      clientSheetId: targetClientSheetId,
+                                                      masterSheetId: targetMasterSheetId
+                                                    });
+                                                  }} style={{ padding: "6px 12px", background: "#0891b2", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>Split invoice</button>
+                                                </>
+                                              ) : (
                                                 <button className="triage-btn" onClick={() => {
                                                   const clientInfo = getClientInfoForAlert(alert);
                                                   const targetClientSheetId = clientInfo?.clientSheetId || selectedClient?.clientSheetId || m.clientSheetId;
                                                   const targetMasterSheetId = clientInfo?.masterSheetId || selectedClient?.masterSheetId || m.masterSheetId;
                                                   const targetClientName = alert.clientName || selectedClient?.clientName || "";
                                                   setRetainerAlertResolution({
-                                                    resolutionType: "changeAmount",
+                                                    resolutionType: "end",
                                                     alertMeta: { ...m, clientName: targetClientName },
                                                     alertKey: alert.alertKey,
                                                     clientSheetId: targetClientSheetId,
                                                     masterSheetId: targetMasterSheetId
                                                   });
-                                                }} style={{ padding: "6px 12px", background: "#7c3aed", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>Change retainer amount</button>
-                                                <button className="triage-btn" onClick={() => {
-                                                  const clientInfo = getClientInfoForAlert(alert);
-                                                  const targetClientSheetId = clientInfo?.clientSheetId || selectedClient?.clientSheetId || m.clientSheetId;
-                                                  const targetMasterSheetId = clientInfo?.masterSheetId || selectedClient?.masterSheetId || m.masterSheetId;
-                                                  const targetClientName = alert.clientName || selectedClient?.clientName || "";
-                                                  setRetainerSplitInvoice({
-                                                    alertMeta: { ...m, clientName: targetClientName },
-                                                    alertKey: alert.alertKey,
-                                                    clientSheetId: targetClientSheetId,
-                                                    masterSheetId: targetMasterSheetId
-                                                  });
-                                                }} style={{ padding: "6px 12px", background: "#0891b2", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>Split invoice</button>
-                                              </>
-                                            ) : (
-                                              <button className="triage-btn" onClick={() => {
+                                                }} style={{ padding: "6px 12px", background: "#dc2626", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>End retainer</button>
+                                              )
+                                            )}
+                                            <button
+                                              className="triage-btn"
+                                              onClick={() => {
                                                 const clientInfo = getClientInfoForAlert(alert);
                                                 const targetClientSheetId = clientInfo?.clientSheetId || selectedClient?.clientSheetId || m.clientSheetId;
                                                 const targetMasterSheetId = clientInfo?.masterSheetId || selectedClient?.masterSheetId || m.masterSheetId;
                                                 const targetClientName = alert.clientName || selectedClient?.clientName || "";
-                                                setRetainerAlertResolution({
-                                                  resolutionType: "end",
+                                                setRetainerChangeSendDates({
+                                                  alert,
                                                   alertMeta: { ...m, clientName: targetClientName },
-                                                  alertKey: alert.alertKey,
+                                                  clientName: targetClientName,
+                                                  endClientName: m.endClientName,
+                                                  jobName: m.jobName,
+                                                  confirmedRow: m.confirmedRow,
                                                   clientSheetId: targetClientSheetId,
                                                   masterSheetId: targetMasterSheetId
                                                 });
-                                              }} style={{ padding: "6px 12px", background: "#dc2626", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>End retainer</button>
-                                            )}
+                                              }}
+                                              style={{ padding: "6px 12px", background: "#0284c7", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}
+                                            >
+                                              Change send dates
+                                            </button>
                                           </div>
                                         )}
                                       </div>
@@ -2890,6 +2916,16 @@ export default function AlertSelectionView({
           clientName={retainerSplitInvoice.alertMeta?.clientName || selectedClient?.clientName}
           onClose={() => setRetainerSplitInvoice(null)}
           onResolved={() => loadProactiveAlerts()}
+        />
+      )}
+
+      {retainerChangeSendDates && (
+        <RetainerChangeSendDatesModal
+          isOpen={Boolean(retainerChangeSendDates)}
+          target={retainerChangeSendDates}
+          automationCommanderSheetId={automationCommanderSheetId}
+          onClose={() => setRetainerChangeSendDates(null)}
+          onUpdated={() => loadProactiveAlerts()}
         />
       )}
 

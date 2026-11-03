@@ -1776,6 +1776,21 @@ export function getAlertJobTarget(alertOrNa, isInfo = false, clientInfo = null) 
     };
   }
 
+  if (alertType === "retainer_invoice" || alertType === "retainer_shrink_blocked") {
+    const rowNum = m.confirmedRow || alertOrNa.confirmedRow || (alertOrNa.detail && alertOrNa.detail.match(/Row\s*(\d+)/i)?.[1]);
+    return {
+      isOutgoings: false,
+      client: effectiveClient,
+      clientName: cName,
+      clientSheetId: cSheetId,
+      rowNum,
+      tabName: "Confirmed",
+      jobName: m.jobName || alertOrNa.jobName,
+      endClientName: m.endClientName || alertOrNa.endClientName,
+      projectCode: m.projectCode || alertOrNa.projectCode
+    };
+  }
+
   if (alertType === "uninvoiced_new_job" || alertType === "uninvoiced_revenue") {
     const rowNum = m.confirmedRow || alertOrNa.confirmedRow || (alertOrNa.detail && alertOrNa.detail.match(/Row\s*(\d+)/i)?.[1]);
     return {

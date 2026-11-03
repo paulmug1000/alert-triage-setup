@@ -3,7 +3,12 @@ import Spinner from "./Spinner";
 
 export default function OutgoingsNewVendorModal({ newVendorData = {}, outgoingsClient, onClose, onCreated }) {
   const exp = newVendorData?.exp || null;
-  const [vendorName, setVendorName] = useState(exp ? (exp.description || exp.accountName || "") : "");
+  const defaultName = (() => {
+    if (!exp) return "";
+    const raw = exp.vendor || exp.contactName || exp.description || exp.accountName || "";
+    return String(raw).split(/[(\[]/)[0].trim();
+  })();
+  const [vendorName, setVendorName] = useState(defaultName);
   const [vatFlag, setVatFlag] = useState("Yes");
   const [invTiming, setInvTiming] = useState("Next");
   const [payTiming, setPayTiming] = useState("Next");
@@ -39,7 +44,11 @@ export default function OutgoingsNewVendorModal({ newVendorData = {}, outgoingsC
         cells: {}
       };
       if (typeof onCreated === "function") {
-        await onCreated(createdVendor);
+        try {
+          await onCreated(createdVendor);
+        } catch (onCreatedErr) {
+          console.warn("onCreated callback warning:", onCreatedErr);
+        }
       }
       onClose();
     } catch(e) { setError(e.message); setSaving(false); }

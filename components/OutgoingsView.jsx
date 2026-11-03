@@ -291,6 +291,19 @@ export default function OutgoingsView({
   }, [managedClient, initialClient, allOutgoingsClients, clientsWithFlags, outgoingsClient?.clientSheetId, outgoingsData]);
 
   const effectiveClientObj = outgoingsClient || (managedClient?.clientName ? (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === managedClient.clientName.toLowerCase()) || managedClient : null) || initialClient;
+  const resolvedClientForVendor = React.useMemo(() => {
+    const base = effectiveClientObj || outgoingsClient || managedClient || initialClient;
+    if (!base) return null;
+    const name = String(base.clientName || base.name || "").trim().toLowerCase();
+    const fromAll = (allOutgoingsClients || []).find(c => String(c.clientName || c.name || "").trim().toLowerCase() === name);
+    return {
+      ...(fromAll || {}),
+      ...base,
+      clientSheetId: base.clientSheetId || fromAll?.clientSheetId || "",
+      masterSheetId: base.masterSheetId || fromAll?.masterSheetId || "",
+      clientName: base.clientName || fromAll?.clientName || base.name || "",
+    };
+  }, [effectiveClientObj, outgoingsClient, managedClient, initialClient, allOutgoingsClients]);
   const effectiveSheetId = outgoingsClient?.clientSheetId || managedClient?.clientSheetId || (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === (outgoingsClient?.clientName || managedClient?.clientName)?.toLowerCase())?.clientSheetId;
   const effectiveClientName = outgoingsClient?.clientName || managedClient?.clientName || "";
   const clientDirectCostsMode = outgoingsData?.directCostsMode || effectiveClientObj?.directCostsMode || "Contractors";
@@ -759,24 +772,24 @@ export default function OutgoingsView({
       {outgoingsNewVendor && (
         <OutgoingsNewVendorModal
           newVendorData={outgoingsNewVendor}
-          outgoingsClient={effectiveClientObj || outgoingsClient}
+          outgoingsClient={resolvedClientForVendor || effectiveClientObj || outgoingsClient}
           onClose={() => setOutgoingsNewVendor(null)}
           onCreated={async (newVendor) => {
             if (newVendor?.name) {
               setOutgoingsData(prev => {
                 if (!prev) return prev;
                 const existing = prev.contractors || [];
-                if (existing.some(c => c.sheetRow === newVendor.sheetRow || (c.name || "").toLowerCase() === (newVendor.name || "").toLowerCase())) {
+                if (existing.some(c => c.sheetRow === newVendor.sheetRow || (c.name || "").toLowerCase().trim() === (newVendor.name || "").toLowerCase().trim())) {
                   return prev;
                 }
                 return {
                   ...prev,
-                  contractors: [...existing, newVendor]
+                  contractors: [newVendor, ...existing]
                 };
               });
-              setContractorSearch("");
+              setContractorSearch(newVendor.name);
             }
-            const clientToReload = effectiveClientObj || outgoingsClient;
+            const clientToReload = resolvedClientForVendor || effectiveClientObj || outgoingsClient;
             if (clientToReload?.clientSheetId && typeof invalidateCachedClientData === "function") {
               invalidateCachedClientData(clientToReload.clientSheetId, "outgoings");
               invalidateCachedClientData(clientToReload.clientSheetId, "outgoings_inbox");
@@ -1211,7 +1224,7 @@ export default function OutgoingsView({
                             {isSelected ? "✓ Selected to place" : "Click to select"}
                           </div>
                         </div>
-                        {effectiveSubTab === "contractors" && (
+                        {!isPassThroughScreen && (
                           <button onClick={e => { e.stopPropagation(); setOutgoingsNewVendor({ exp }); }}
                             title="Create new vendor for this expense"
                             style={{ fontSize: "9.5px", padding: "1px 6px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "3px", cursor: "pointer", color: "#555", whiteSpace: "nowrap" }}>

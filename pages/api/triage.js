@@ -44,7 +44,7 @@ import {
 } from "../../services/workspaces";
 import {
   handleGetRetainerJobs, handleRenameRetainerJob, handleChangeRetainerStartDate, handleChangeRetainerEndDate,
-  handleChangeRetainerMonthlyAmount, handleCreateRetainerJob, handleTidyUpRetainers,
+  handleChangeRetainerMonthlyAmount, handleChangeRetainerSendDates, handleCreateRetainerJob, handleTidyUpRetainers,
   handleComputeRetainerAlertResolution, handleComputeRetainerSplitInvoicePreview,
   handleApplyRetainerSplitInvoice, handleDeleteRetainer
 } from "../../services/retainers";
@@ -242,6 +242,7 @@ export default async function handler(req, res) {
       change_retainer_start_date: ["retainers", "jobs", "invoices", "cash"],
       change_retainer_end_date: ["retainers", "jobs", "invoices", "cash"],
       change_retainer_monthly_amount: ["retainers", "jobs", "invoices", "cash"],
+      change_retainer_send_dates: ["retainers", "jobs", "invoices", "cash"],
       create_retainer_job: ["retainers", "jobs", "invoices", "cash"],
       tidy_up_retainers: ["retainers", "jobs", "invoices", "cash"],
       apply_retainer_split_invoice: ["retainers", "jobs", "invoices", "cash"],
@@ -644,6 +645,8 @@ export default async function handler(req, res) {
       return await handleChangeRetainerEndDate(req, res, sheets);
     } else if (action === "change_retainer_monthly_amount") {
       return await handleChangeRetainerMonthlyAmount(req, res, sheets);
+    } else if (action === "change_retainer_send_dates") {
+      return await handleChangeRetainerSendDates(req, res, sheets);
     } else if (action === "create_retainer_job") {
       return await handleCreateRetainerJob(req, res, sheets);
     } else if (action === "tidy_up_retainers") {

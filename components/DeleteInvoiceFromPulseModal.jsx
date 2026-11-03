@@ -125,30 +125,28 @@ export default function DeleteInvoiceFromPulseModal({
         }
       }
 
-      // 2. Resolve the proactive alert in AlertMemory & Redis
+      // 2. Resolve the proactive alert in AlertMemory & Redis in the background
       const alertKey = alert?.alertKey;
       if (alertKey && automationCommanderSheetId) {
-        try {
-          await fetch("/api/triage", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              action: "resolve_proactive_alert",
-              automationCommanderSheetId,
-              alertKey,
-              clientName: clientName || effectiveClient || "",
-              sessionId: sessionId || "",
-              resolution: isInvoiceAlreadyGone
-                ? "Resolved alert (invoice reference already removed from Confirmed tab)"
-                : "Deleted invoice from Pulse"
-            })
-          });
-        } catch (resolveErr) {
+        fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "resolve_proactive_alert",
+            automationCommanderSheetId,
+            alertKey,
+            clientName: clientName || effectiveClient || "",
+            sessionId: sessionId || "",
+            resolution: isInvoiceAlreadyGone
+              ? "Resolved alert (invoice reference already removed from Confirmed tab)"
+              : "Deleted invoice from Pulse"
+          })
+        }).catch(resolveErr => {
           console.warn("Failed to mark proactive alert as resolved:", resolveErr);
-        }
+        });
       }
 
-      // 3. Notify parent component to update UI state
+      // 3. Notify parent component to update UI state immediately
       if (onDeleted) {
         onDeleted(alertKey, alert?.rowIndex);
       }

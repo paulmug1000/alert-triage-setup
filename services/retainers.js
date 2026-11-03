@@ -1307,6 +1307,149 @@ export async function handleChangeRetainerStartDate(req, res, sheets) {
   }
 }
 
+export async function handleChangeRetainerSendDates(req, res, sheets) {
+  let { clientSheetId, masterSheetId, client, clientName, jobName, parentRowNum, newSendDay, applyTo = "placeholders" } = req.body;
+  if (!clientSheetId || !jobName || !parentRowNum || newSendDay === undefined || newSendDay === null) {
+    return res.status(400).json({ success: false, error: "Missing required fields" });
+  }
+
+  const parsedDay = newSendDay === "end" ? "end" : parseInt(newSendDay, 10);
+  if (parsedDay !== "end" && (isNaN(parsedDay) || parsedDay < 1 || parsedDay > 31)) {
+    return res.status(400).json({ success: false, error: "Invalid newSendDay: must be between 1 and 31 or 'end'" });
+  }
+
+  try {
+    const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+    const resp = await sheets.spreadsheets.values.get({
+      spreadsheetId: sheetIdClean,
+      range: "Confirmed!A1:BH5000",
+      valueRenderOption: "FORMATTED_VALUE",
+    });
+    const rows = resp.data.values || [];
+    const resolvedParent = resolveRetainerParentRow_(rows, parentRowNum, client, jobName);
+    if (!resolvedParent) {
+      return res.status(400).json({ success: false, error: "Could not find retainer job on Confirmed tab" });
+    }
+    parentRowNum = resolvedParent.rowNum;
+    client = resolvedParent.resolvedClient;
+    jobName = resolvedParent.resolvedJobName;
+    const parentRow = resolvedParent.row;
+
+    const childRows = [];
+    let cj = parentRowNum;
+    while (cj < rows.length) {
+      const next = rows[cj] || [];
+      if (String(next[0] || "").trim() === client && String(next[1] || "").trim() === jobName &&
+        !String(next[32] || "").trim() && !String(next[37] || "").trim()) {
+        childRows.push({ rowNum: cj + 1, row: next });
+        cj++;
+      } else break;
+    }
+
+    const childDates = childRows.map(cr => retParseSheetDate(cr.row[43])).filter(Boolean);
+    const parentInvDate = retParseSheetDate(parentRow[43]);
+    const allInvoiceDates = (parentInvDate ? [parentInvDate] : []).concat(childDates);
+    const intervalMonths = retDetectIntervalMonths(allInvoiceDates) || 1;
+
+    const jobStartDateForOffset = retParseSheetDate(parentRow[37]);
+    const invoiceTimingOffset = retDetectInvoiceTimingOffset_(allInvoiceDates, jobStartDateForOffset, intervalMonths);
+    const timingMonthAdjust = invoiceTimingOffset === "before" ? 1 : (invoiceTimingOffset === "after" ? -1 : 0);
+
+    // Anchor calculation to reconstruct true scheduled month for child rows
+    let anchorChildIdx = -1;
+    let anchorMonthVal = null;
+    for (let k = 0; k < childRows.length; k++) {
+      const d = retParseSheetDate(childRows[k].row[43]);
+      const ref = String(childRows[k].row[42] || "").trim();
+      if (d && ref && !isPlaceholderInvoice(ref)) {
+        anchorChildIdx = k;
+        anchorMonthVal = d.getFullYear() * 12 + d.getMonth() + timingMonthAdjust;
+        break;
+      }
+    }
+    if (anchorChildIdx === -1 && jobStartDateForOffset && childRows.length > 0) {
+      anchorChildIdx = 0;
+      anchorMonthVal = jobStartDateForOffset.getFullYear() * 12 + jobStartDateForOffset.getMonth() + timingMonthAdjust;
+    }
+
+    const batchData = [];
+    const rowsToProcess = childRows.length > 0 ? childRows : [{ rowNum: parentRowNum, row: parentRow }];
+
+    for (let i = 0; i < rowsToProcess.length; i++) {
+      const item = rowsToProcess[i];
+      const rNum = item.rowNum;
+      const rowArr = item.row;
+      const ref1 = String(rowArr[42] || "").trim();
+      const isPlaceholder = !ref1 || isPlaceholderInvoice(ref1);
+
+      if (applyTo === "placeholders" && !isPlaceholder) {
+        continue;
+      }
+
+      // Determine month and year for this slot
+      let slotYear, slotMonth0;
+      if (anchorChildIdx !== -1 && anchorMonthVal !== null && childRows.length > 0) {
+        const childK = i;
+        const schedMonthVal = anchorMonthVal + (childK - anchorChildIdx) * intervalMonths;
+        slotYear = Math.floor(schedMonthVal / 12);
+        slotMonth0 = ((schedMonthVal % 12) + 12) % 12;
+      } else {
+        const rawDate = retParseSheetDate(rowArr[43]);
+        if (rawDate) {
+          slotYear = rawDate.getFullYear();
+          slotMonth0 = rawDate.getMonth();
+        } else if (jobStartDateForOffset) {
+          const mVal = jobStartDateForOffset.getFullYear() * 12 + jobStartDateForOffset.getMonth() + i * intervalMonths;
+          slotYear = Math.floor(mVal / 12);
+          slotMonth0 = ((mVal % 12) + 12) % 12;
+        } else {
+          continue;
+        }
+      }
+
+      const maxDaysInMonth = new Date(slotYear, slotMonth0 + 1, 0).getDate();
+      const dayToUse = parsedDay === "end" ? maxDaysInMonth : Math.min(parsedDay, maxDaysInMonth);
+      const newDate = new Date(slotYear, slotMonth0, dayToUse);
+      const formattedDate = retFmtDate(newDate);
+
+      batchData.push({
+        range: `Confirmed!AR${rNum}`,
+        values: [[formattedDate]]
+      });
+    }
+
+    if (batchData.length > 0) {
+      await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: sheetIdClean,
+        requestBody: { valueInputOption: "USER_ENTERED", data: batchData },
+      });
+    }
+
+    let tenantClient = req.body.clientName || "";
+    if (!tenantClient) {
+      tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
+    }
+    const endClient = client || "";
+    const jobIdentifier = endClient ? `"${endClient} - ${jobName}"` : `"${jobName}"`;
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId: req.body.automationCommanderSheetId,
+      clientName: tenantClient,
+      category: "RETAINER",
+      action: "Retainer Send Dates Changed",
+      summary: `Changed expected retainer invoice send dates for ${jobIdentifier} to day ${newSendDay} (${batchData.length} rows updated)`,
+      details: { jobName, endClient, clientName: tenantClient, newSendDay, applyTo, updatedCount: batchData.length }
+    }).catch(e => console.error("PMA log failed:", e));
+
+    await invalidatePmaClientCache(sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers"]);
+
+    return res.status(200).json({ success: true, updatedCount: batchData.length });
+  } catch (err) {
+    console.error("❌ change_retainer_send_dates error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
 export async function handleChangeRetainerMonthlyAmount(req, res, sheets) {
   let {
     clientSheetId, client, jobName, parentRowNum, changeMonth, changeYear, newMonthlyAmount,
@@ -1396,17 +1539,49 @@ export async function handleChangeRetainerMonthlyAmount(req, res, sheets) {
     }
 
     const allRows = [{ rowNum: parentRowNum, row: parentRow, isParent: true }].concat(childRows);
-    const datedRows = allRows.map(r => ({ ...r, invDate: retParseSheetDate(r.row[43]) })).filter(r => r.invDate);
-    const intervalMonths = retDetectIntervalMonths(datedRows.map(r => r.invDate));
+    const childDates = childRows.map(cr => retParseSheetDate(cr.row[43])).filter(Boolean);
+    const parentInvDate = retParseSheetDate(parentRow[43]);
+    const allInvoiceDates = (parentInvDate ? [parentInvDate] : []).concat(childDates);
+    const intervalMonths = retDetectIntervalMonths(allInvoiceDates) || 1;
 
     const jobStartDateForOffset = retParseSheetDate(parentRow[37]);
-    const invoiceTimingOffset = retDetectInvoiceTimingOffset_(datedRows.map(r => r.invDate), jobStartDateForOffset, intervalMonths);
+    const invoiceTimingOffset = retDetectInvoiceTimingOffset_(allInvoiceDates, jobStartDateForOffset, intervalMonths);
     const timingMonthAdjust = invoiceTimingOffset === "before" ? 1 : (invoiceTimingOffset === "after" ? -1 : 0);
+
+    // Anchor calculation to reconstruct true scheduled month for child rows whose send dates were
+    // rolled forward to subsequent months (e.g. by updateStaleUnsentInvoices)
+    let anchorChildIdx = -1;
+    let anchorMonthVal = null;
+    for (let k = 0; k < childRows.length; k++) {
+      const d = retParseSheetDate(childRows[k].row[43]);
+      const ref = String(childRows[k].row[42] || "").trim();
+      if (d && ref && !isPlaceholderInvoice(ref)) {
+        anchorChildIdx = k;
+        anchorMonthVal = d.getFullYear() * 12 + d.getMonth() + timingMonthAdjust;
+        break;
+      }
+    }
+    if (anchorChildIdx === -1 && jobStartDateForOffset && childRows.length > 0) {
+      anchorChildIdx = 0;
+      anchorMonthVal = jobStartDateForOffset.getFullYear() * 12 + jobStartDateForOffset.getMonth() + timingMonthAdjust;
+    }
+
+    const datedRows = allRows.map((r, idx) => {
+      const rawDate = retParseSheetDate(r.row[43]);
+      let rowMonthVal = rawDate ? (rawDate.getFullYear() * 12 + rawDate.getMonth() + timingMonthAdjust) : null;
+      if (idx > 0 && anchorChildIdx !== -1 && anchorMonthVal !== null) {
+        const childK = idx - 1;
+        rowMonthVal = anchorMonthVal + (childK - anchorChildIdx) * intervalMonths;
+      }
+      return { ...r, invDate: rawDate, rowMonthVal };
+    }).filter(r => r.rowMonthVal !== null || r.invDate);
 
     let matchedRow = null;
     let matchedRowPeriodStartVal = null;
     for (let i = datedRows.length - 1; i >= 0; i--) {
-      const rowMonthVal = datedRows[i].invDate.getFullYear() * 12 + datedRows[i].invDate.getMonth() + timingMonthAdjust;
+      const rowMonthVal = datedRows[i].rowMonthVal !== null
+        ? datedRows[i].rowMonthVal
+        : (datedRows[i].invDate.getFullYear() * 12 + datedRows[i].invDate.getMonth() + timingMonthAdjust);
       if (rowMonthVal <= changeMonthVal) { matchedRow = datedRows[i]; matchedRowPeriodStartVal = rowMonthVal; break; }
     }
     if (!matchedRow) return res.status(400).json({ success: false, error: "Could not find a row covering that month" });

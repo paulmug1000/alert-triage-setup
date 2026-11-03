@@ -142,9 +142,11 @@ export default function InvoicesNewJobModal({
         onMarkPullPending(invoicesClient.masterSheetId);
       }
 
-      // Trigger all the state updates back in the parent component
-      await onSuccess(inv);
       onClose();
+      // Trigger all the state updates back in the parent component
+      if (typeof onSuccess === "function") {
+        await onSuccess(inv);
+      }
     } catch (e) { setError(e.message); setSaving(false); }
   };
 

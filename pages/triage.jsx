@@ -253,6 +253,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
       ...client,
       clientSheetId: client.clientSheetId || matchOutgoings?.clientSheetId || matchFlags?.clientSheetId || matchMap?.clientSheetId || "",
       masterSheetId: client.masterSheetId || matchOutgoings?.masterSheetId || matchFlags?.masterSheetId || matchMap?.masterSheetId || "",
+      clientName: client.clientName || matchOutgoings?.clientName || matchFlags?.clientName || matchMap?.clientName || client.name || "",
     };
   };
 

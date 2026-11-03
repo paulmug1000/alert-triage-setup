@@ -62,7 +62,9 @@ import {
   handleEomGetReportingData, handleEomSaveReportingConfig, handleEomRunReportingAction,
   handleEomTestReportingWebApp, handleEomSaveChartRef, handleEomDeleteChartRef,
   handleEomGetOverheadExpenses, handleEomPreviewOverheadExpenses,
-  handleEomAddZeroBudgetCategory, handleEomConfirmOverheadExpenses
+  handleEomAddZeroBudgetCategory, handleEomConfirmOverheadExpenses,
+  handleEomGetNarrativeWorkbench, handleEomGenerateNarrative,
+  handleEomSaveNarrativeDraft, handleEomApplyNarrativeToDeck
 } from "../../services/eomTools";
 import {
   handleUploadPayrollChunk, handleIdentifyPayrollClient, handleIdentifyTimeClient,
@@ -1336,6 +1338,14 @@ export default async function handler(req, res) {
       return await handleEomAddZeroBudgetCategory(req, res, sheets);
     } else if (action === "eom_confirm_overhead_expenses") {
       return await handleEomConfirmOverheadExpenses(req, res, sheets);
+    } else if (action === "eom_get_narrative_workbench") {
+      return await handleEomGetNarrativeWorkbench(req, res, sheets);
+    } else if (action === "eom_generate_narrative") {
+      return await handleEomGenerateNarrative(req, res, sheets);
+    } else if (action === "eom_save_narrative_draft") {
+      return await handleEomSaveNarrativeDraft(req, res, sheets);
+    } else if (action === "eom_apply_narrative_to_deck") {
+      return await handleEomApplyNarrativeToDeck(req, res, sheets);
 
     } else if (action === "get_flag_sweep_log") {
       const runs = await readFlagSweepLog(sheets, req.body.automationCommanderSheetId);

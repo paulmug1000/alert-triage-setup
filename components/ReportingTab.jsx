@@ -86,6 +86,19 @@ export default function ReportingTab({
     analysis: null
   });
 
+  // Narrative workbench modal state
+  const [narrativeModalClient, setNarrativeModalClient] = useState(null);
+  const [narrativeLoading, setNarrativeLoading] = useState(false);
+  const [narrativeError, setNarrativeError] = useState("");
+  const [narrativeNotice, setNarrativeNotice] = useState(null); // { type: 'success' | 'info' | 'error', text: string }
+  const [narrativeWorkbench, setNarrativeWorkbench] = useState(null);
+  const [activeSlideNumber, setActiveSlideNumber] = useState(null);
+  const [generatingSlideNum, setGeneratingSlideNum] = useState(null); // slideNumber or "__ALL__"
+  const [batchDraftProgress, setBatchDraftProgress] = useState(null); // { current, total, slideTitle }
+  const [narrativeSaving, setNarrativeSaving] = useState(false);
+  const [narrativeApplying, setNarrativeApplying] = useState(false);
+  const [narrativeDirty, setNarrativeDirty] = useState(false);
+
   // Default report covered month is 1 month prior to the EoM work cycle (e.g. 2026-10 cycle reports on 2026-09)
   const defaultReportMonthKey = useMemo(() => {
     return eomWorkMonthToTargetMonth(eomMonthKey) || eomMonthKey;
@@ -1166,6 +1179,373 @@ export default function ReportingTab({
     }
   };
 
+  // ── NARRATIVE WORKBENCH HANDLERS ────────────────────────────────────────────
+  const updateClientNarrativeBadge = useCallback((clientName, monthKey, statusInfo) => {
+    setClients(prev => prev.map(c => {
+      if (c.clientName !== clientName) return c;
+      const nextByMonth = {
+        ...(c.narrativeStatusByMonth || {}),
+        [monthKey]: statusInfo
+      };
+      return {
+        ...c,
+        narrativeStatusByMonth: nextByMonth,
+        narrativeStatusForMonth: monthKey === selectedReportMonthKey ? statusInfo : c.narrativeStatusForMonth
+      };
+    }));
+  }, [selectedReportMonthKey]);
+
+  const openNarrativeModal = async (client) => {
+    setNarrativeModalClient(client);
+    setNarrativeLoading(true);
+    setNarrativeError("");
+    setNarrativeNotice(null);
+    setNarrativeWorkbench(null);
+    setActiveSlideNumber(null);
+    setNarrativeDirty(false);
+
+    try {
+      const resp = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "eom_get_narrative_workbench",
+          clientName: client.clientName,
+          reportMonthKey: selectedReportMonthKey,
+          folderUrl: client.folderUrl || "",
+          masterSheetId: client.masterSheetId || client.masterSheetUrl || ""
+        })
+      });
+      const data = await resp.json();
+      if (!data.success) throw new Error(data.error || "Failed to load narrative workbench");
+
+      setNarrativeWorkbench(data);
+      if (Array.isArray(data.slides) && data.slides.length > 0) {
+        setActiveSlideNumber(data.slides[0].slideNumber);
+      }
+    } catch (err) {
+      console.error("Error loading narrative workbench:", err);
+      setNarrativeError(err.message);
+    } finally {
+      setNarrativeLoading(false);
+    }
+  };
+
+  const handleUpdateSlideLocalField = (slideNumber, field, value) => {
+    setNarrativeWorkbench(prev => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        slides: (prev.slides || []).map(s => {
+          if (s.slideNumber !== slideNumber) return s;
+          const nextStatus = field === "draftText" && value.trim()
+            ? (s.status === "applied" ? "drafted" : (s.status === "cloned" || s.status === "empty" ? "drafted" : s.status))
+            : s.status;
+          return {
+            ...s,
+            [field]: value,
+            status: nextStatus
+          };
+        })
+      };
+    });
+    if (field === "draftText" || field === "steerText") {
+      setNarrativeDirty(true);
+    }
+  };
+
+  const handleDraftSingleSlide = async (slideNumber) => {
+    if (!narrativeWorkbench || !narrativeModalClient) return;
+    const targetSlide = (narrativeWorkbench.slides || []).find(s => s.slideNumber === slideNumber);
+    if (!targetSlide) return;
+
+    setGeneratingSlideNum(slideNumber);
+    setNarrativeError("");
+    setNarrativeNotice(null);
+
+    try {
+      const resp = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "eom_generate_narrative",
+          mode: "single",
+          clientName: narrativeWorkbench.clientName,
+          reportMonthKey: narrativeWorkbench.reportMonthKey,
+          presentationId: narrativeWorkbench.presentationId,
+          slideNumber,
+          steerText: targetSlide.steerText || "",
+          slides: narrativeWorkbench.slides,
+          snapshotContext: narrativeWorkbench.snapshotContext,
+          overheadMismatchWarning: narrativeWorkbench.overheadMismatchWarning,
+          automationCommanderSheetId
+        })
+      });
+      const data = await resp.json();
+      if (!data.success) throw new Error(data.error || "Failed to generate slide narrative");
+
+      setNarrativeWorkbench(prev => {
+        if (!prev) return prev;
+        const nextSlides = (prev.slides || []).map(s =>
+          s.slideNumber === slideNumber
+            ? { ...s, draftText: data.generatedText, status: "drafted", isUneditedClone: false }
+            : s
+        );
+        const draftedCount = nextSlides.filter(s => s.draftText && s.draftText.trim() && !s.isUneditedClone).length;
+        updateClientNarrativeBadge(prev.clientName, prev.reportMonthKey, {
+          status: "drafted",
+          draftedCount,
+          totalSlides: nextSlides.length,
+          updatedAt: data.updatedAt || new Date().toISOString()
+        });
+        return {
+          ...prev,
+          overallStatus: "drafted",
+          updatedAt: data.updatedAt,
+          slides: nextSlides
+        };
+      });
+
+      setNarrativeNotice({
+        type: "success",
+        text: `Drafted narrative for slide ${slideNumber} (${targetSlide.slideTitle}).`
+      });
+    } catch (err) {
+      console.error("Error generating slide narrative:", err);
+      setNarrativeError(err.message);
+    } finally {
+      setGeneratingSlideNum(null);
+    }
+  };
+
+  const handleDraftAllSlides = async () => {
+    if (!narrativeWorkbench || !narrativeModalClient) return;
+    const allSlides = narrativeWorkbench.slides || [];
+    if (allSlides.length === 0) return;
+
+    setGeneratingSlideNum("__ALL__");
+    setNarrativeError("");
+    setNarrativeNotice(null);
+
+    // Order: detail slides first, then Slide 3 ([BusinessPerformance] / takeaways) last
+    const detailSlides = allSlides.filter(s => !s.isTakeawaysSlide);
+    const takeawaysSlides = allSlides.filter(s => s.isTakeawaysSlide);
+    const orderedQueue = [...detailSlides, ...takeawaysSlides];
+
+    let workingSlides = [...allSlides];
+    let completed = 0;
+
+    try {
+      for (const slide of orderedQueue) {
+        completed++;
+        setBatchDraftProgress({
+          current: completed,
+          total: orderedQueue.length,
+          slideNumber: slide.slideNumber,
+          slideTitle: slide.slideTitle
+        });
+        setActiveSlideNumber(slide.slideNumber);
+
+        const resp = await fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "eom_generate_narrative",
+            mode: "single",
+            clientName: narrativeWorkbench.clientName,
+            reportMonthKey: narrativeWorkbench.reportMonthKey,
+            presentationId: narrativeWorkbench.presentationId,
+            slideNumber: slide.slideNumber,
+            steerText: slide.steerText || "",
+            slides: workingSlides,
+            snapshotContext: narrativeWorkbench.snapshotContext,
+            overheadMismatchWarning: narrativeWorkbench.overheadMismatchWarning,
+            automationCommanderSheetId
+          })
+        });
+        const data = await resp.json();
+        if (!data.success) throw new Error(data.error || `Failed on slide ${slide.slideNumber}`);
+
+        workingSlides = workingSlides.map(s =>
+          s.slideNumber === slide.slideNumber
+            ? { ...s, draftText: data.generatedText, status: "drafted", isUneditedClone: false }
+            : s
+        );
+
+        setNarrativeWorkbench(prev => prev ? {
+          ...prev,
+          overallStatus: "drafted",
+          updatedAt: data.updatedAt,
+          slides: workingSlides
+        } : prev);
+      }
+
+      // Focus Slide 3 (Business performance) when batch completes so the user sees the full summary first
+      if (takeawaysSlides.length > 0) {
+        setActiveSlideNumber(takeawaysSlides[0].slideNumber);
+      } else if (workingSlides.length > 0) {
+        setActiveSlideNumber(workingSlides[0].slideNumber);
+      }
+
+      const draftedCount = workingSlides.filter(s => s.draftText && s.draftText.trim() && !s.isUneditedClone).length;
+      updateClientNarrativeBadge(narrativeWorkbench.clientName, narrativeWorkbench.reportMonthKey, {
+        status: "drafted",
+        draftedCount,
+        totalSlides: workingSlides.length,
+        updatedAt: new Date().toISOString()
+      });
+
+      setNarrativeDirty(false);
+      setNarrativeNotice({
+        type: "success",
+        text: `Drafted all ${orderedQueue.length} narrative slides (detail slides first, followed by executive takeaways on slide ${takeawaysSlides[0]?.slideNumber || 3}).`
+      });
+    } catch (err) {
+      console.error("Error batch drafting narrative:", err);
+      setNarrativeError(err.message);
+    } finally {
+      setGeneratingSlideNum(null);
+      setBatchDraftProgress(null);
+    }
+  };
+
+  const handleSaveNarrativeDrafts = async () => {
+    if (!narrativeWorkbench) return;
+    setNarrativeSaving(true);
+    setNarrativeError("");
+    setNarrativeNotice(null);
+
+    try {
+      const draftsMap = {};
+      (narrativeWorkbench.slides || []).forEach(s => {
+        if (s.draftText && s.draftText.trim()) {
+          draftsMap[s.slideNumber] = {
+            slideNumber: s.slideNumber,
+            slideTitle: s.slideTitle,
+            chartCode: s.chartCode || "",
+            text: s.draftText,
+            steerText: s.steerText || "",
+            status: s.status === "applied" ? "applied" : "drafted"
+          };
+        }
+      });
+
+      const resp = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "eom_save_narrative_draft",
+          clientName: narrativeWorkbench.clientName,
+          reportMonthKey: narrativeWorkbench.reportMonthKey,
+          presentationId: narrativeWorkbench.presentationId,
+          draftsMap,
+          totalNarrativeSlides: (narrativeWorkbench.slides || []).length
+        })
+      });
+      const data = await resp.json();
+      if (!data.success) throw new Error(data.error || "Failed to save narrative drafts");
+
+      const draftedCount = Object.keys(draftsMap).length;
+      updateClientNarrativeBadge(narrativeWorkbench.clientName, narrativeWorkbench.reportMonthKey, {
+        status: data.status || "drafted",
+        draftedCount,
+        totalSlides: (narrativeWorkbench.slides || []).length,
+        updatedAt: data.updatedAt || new Date().toISOString()
+      });
+
+      setNarrativeDirty(false);
+      setNarrativeNotice({
+        type: "success",
+        text: `Saved narrative drafts for ${narrativeWorkbench.clientName}.`
+      });
+    } catch (err) {
+      console.error("Error saving narrative drafts:", err);
+      setNarrativeError(err.message);
+    } finally {
+      setNarrativeSaving(false);
+    }
+  };
+
+  const handleApplyNarrativeToDeck = async (onlySlideNumber = null) => {
+    if (!narrativeWorkbench || !narrativeModalClient) return;
+    const slidesToPush = (narrativeWorkbench.slides || []).filter(s => {
+      if (onlySlideNumber !== null) return s.slideNumber === onlySlideNumber && s.draftText && s.draftText.trim();
+      return s.draftText && s.draftText.trim() && !s.isUneditedClone;
+    });
+
+    if (slidesToPush.length === 0) {
+      setNarrativeError("No drafted slide narrative to apply. Draft or edit at least one slide first.");
+      return;
+    }
+
+    setNarrativeApplying(true);
+    setNarrativeError("");
+    setNarrativeNotice(null);
+
+    try {
+      const resp = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "eom_apply_narrative_to_deck",
+          clientName: narrativeWorkbench.clientName,
+          reportMonthKey: narrativeWorkbench.reportMonthKey,
+          presentationId: narrativeWorkbench.presentationId,
+          folderUrl: narrativeWorkbench.folderUrl || narrativeModalClient.folderUrl || "",
+          webAppUrl: narrativeModalClient.webAppUrl || systemWebAppUrl || "",
+          totalNarrativeSlides: (narrativeWorkbench.slides || []).length,
+          automationCommanderSheetId,
+          slideUpdates: slidesToPush.map(s => ({
+            slideNumber: s.slideNumber,
+            shapeName: s.shapeName || "",
+            newText: s.draftText,
+            isTakeawaysSlide: Boolean(s.isTakeawaysSlide),
+            slideTitle: s.slideTitle,
+            chartCode: s.chartCode || ""
+          }))
+        })
+      });
+      const data = await resp.json();
+      if (!data.success) throw new Error(data.error || "Failed to apply narrative to presentation");
+
+      const updatedSlideNums = new Set(slidesToPush.map(s => s.slideNumber));
+      setNarrativeWorkbench(prev => {
+        if (!prev) return prev;
+        const nextSlides = (prev.slides || []).map(s =>
+          updatedSlideNums.has(s.slideNumber)
+            ? { ...s, deckText: s.draftText, status: "applied", isUneditedClone: false }
+            : s
+        );
+        const appliedOrDraftedCount = nextSlides.filter(s => s.draftText && s.draftText.trim() && !s.isUneditedClone).length;
+        updateClientNarrativeBadge(prev.clientName, prev.reportMonthKey, {
+          status: "applied",
+          draftedCount: appliedOrDraftedCount,
+          totalSlides: nextSlides.length,
+          updatedAt: data.updatedAt || new Date().toISOString()
+        });
+        return {
+          ...prev,
+          overallStatus: "applied",
+          updatedAt: data.updatedAt,
+          slides: nextSlides
+        };
+      });
+
+      setNarrativeDirty(false);
+      setNarrativeNotice({
+        type: "success",
+        text: onlySlideNumber !== null
+          ? `Applied narrative to slide ${onlySlideNumber} in Google Slides presentation.`
+          : `Applied narrative across ${data.updatedCount || slidesToPush.length} slides in Google Slides presentation.`
+      });
+    } catch (err) {
+      console.error("Error applying narrative to deck:", err);
+      setNarrativeError(err.message);
+    } finally {
+      setNarrativeApplying(false);
+    }
+  };
+
   if (!isAdmin) {
     return (
       <div style={{ padding: "40px 20px", textAlign: "center", color: "#64748b" }}>
@@ -1707,6 +2087,7 @@ export default function ReportingTab({
                   <th style={{ padding: "12px 16px" }}>Client</th>
                   <th style={{ padding: "12px 16px" }}>Latest report</th>
                   <th style={{ padding: "12px 16px" }}>Overhead expenses</th>
+                  <th style={{ padding: "12px 16px" }}>Narrative</th>
                   <th style={{ padding: "12px 16px" }}>Quick links</th>
                   <th style={{ padding: "12px 16px" }}>Email template</th>
                   <th style={{ padding: "12px 16px" }}>Execution status</th>
@@ -1872,6 +2253,93 @@ export default function ReportingTab({
                                     <polyline points="20 6 9 17 4 12" />
                                   </svg>
                                   <span>Finalised</span>
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })()}
+                      </td>
+
+                      {/* Narrative */}
+                      <td style={{ padding: "12px 16px" }}>
+                        {(() => {
+                          const narInfo = client.narrativeStatusByMonth?.[selectedReportMonthKey] || client.narrativeStatusForMonth || null;
+                          const narStatus = narInfo?.status || null;
+                          const canOpenNarrative = Boolean(activeReportUrl || client.folderUrl || client.hasDeckConfigured);
+                          const formattedNarTime = narInfo?.updatedAt
+                            ? new Date(narInfo.updatedAt).toLocaleString("en-GB", {
+                                day: "2-digit",
+                                month: "short",
+                                hour: "2-digit",
+                                minute: "2-digit"
+                              })
+                            : "";
+
+                          return (
+                            <div style={{ display: "inline-flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                              <button
+                                type="button"
+                                disabled={!canOpenNarrative}
+                                onClick={() => openNarrativeModal(client)}
+                                style={{
+                                  background: "#f8fafc",
+                                  border: "1px solid #cbd5e1",
+                                  borderRadius: "4px",
+                                  padding: "4px 10px",
+                                  fontSize: "12px",
+                                  fontWeight: 600,
+                                  color: !canOpenNarrative ? "#94a3b8" : "#334155",
+                                  cursor: !canOpenNarrative ? "not-allowed" : "pointer",
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: "5px"
+                                }}
+                              >
+                                <span>Draft / review</span>
+                              </button>
+
+                              {narStatus === "applied" && (
+                                <span
+                                  title={formattedNarTime ? `Applied to deck for ${reportMonthLabel} (${formattedNarTime})` : `Applied to deck for ${reportMonthLabel}`}
+                                  style={{
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    gap: "4px",
+                                    padding: "3px 8px",
+                                    borderRadius: "999px",
+                                    background: "#f0fdf4",
+                                    border: "1px solid #bbf7d0",
+                                    color: "#15803d",
+                                    fontSize: "11px",
+                                    fontWeight: 600
+                                  }}
+                                >
+                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round">
+                                    <polyline points="20 6 9 17 4 12" />
+                                  </svg>
+                                  <span>Applied</span>
+                                </span>
+                              )}
+
+                              {narStatus === "drafted" && (
+                                <span
+                                  title={formattedNarTime ? `Draft saved for ${reportMonthLabel} (${formattedNarTime})` : `Draft saved for ${reportMonthLabel}`}
+                                  style={{
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    gap: "4px",
+                                    padding: "3px 8px",
+                                    borderRadius: "999px",
+                                    background: "#eff6ff",
+                                    border: "1px solid #bfdbfe",
+                                    color: "#1d4ed8",
+                                    fontSize: "11px",
+                                    fontWeight: 600
+                                  }}
+                                >
+                                  <span>
+                                    Drafted{narInfo?.draftedCount ? ` (${narInfo.draftedCount}/${narInfo.totalSlides || narInfo.draftedCount})` : ""}
+                                  </span>
                                 </span>
                               )}
                             </div>
@@ -3031,6 +3499,1027 @@ export default function ReportingTab({
                   >
                     {overheadConfirming && <Spinner size="14px" color="#ffffff" />}
                     <span>Confirm</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ── NARRATIVE WORKBENCH MODAL ─────────────────────────────────────────── */}
+      {narrativeModalClient && (() => {
+        const slides = narrativeWorkbench?.slides || [];
+        const activeSlide = slides.find(s => s.slideNumber === activeSlideNumber) || slides[0] || null;
+        const draftedSlidesCount = slides.filter(s => s.draftText && s.draftText.trim() && !s.isUneditedClone).length;
+        const isBusy = Boolean(generatingSlideNum || narrativeSaving || narrativeApplying);
+
+        const countWords = (str) => {
+          if (!str || !String(str).trim()) return 0;
+          return String(str).trim().split(/\s+/).filter(Boolean).length;
+        };
+
+        const activeDraftWords = countWords(activeSlide?.draftText);
+        const prevMonthWords = countWords(activeSlide?.previousNarratives?.[0]?.text);
+
+        return (
+          <div style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(15, 23, 42, 0.6)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 10000,
+            padding: "16px"
+          }}>
+            <div style={{
+              background: "#ffffff",
+              borderRadius: "12px",
+              width: "100%",
+              maxWidth: "1520px",
+              height: "92vh",
+              display: "flex",
+              flexDirection: "column",
+              boxShadow: "0 20px 45px rgba(0,0,0,0.28)",
+              overflow: "hidden"
+            }}>
+              {/* Modal Top Bar */}
+              <div style={{
+                padding: "14px 22px",
+                borderBottom: "1px solid #e2e8f0",
+                background: "#f8fafc",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: "12px",
+                flexWrap: "wrap"
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                  <h2 style={{ margin: 0, fontSize: "17px", fontWeight: 700, color: "#0f172a" }}>
+                    Report narrative: {narrativeModalClient.clientName}
+                  </h2>
+                  <span style={{
+                    fontSize: "12px",
+                    fontWeight: 600,
+                    padding: "3px 10px",
+                    borderRadius: "999px",
+                    background: "#e0f2fe",
+                    color: "#0369a1",
+                    border: "1px solid #bae6fd"
+                  }}>
+                    Report covers: {formatMonthKey(narrativeWorkbench?.reportMonthKey || selectedReportMonthKey)}
+                  </span>
+                  {slides.length > 0 && (
+                    <span style={{
+                      fontSize: "12px",
+                      fontWeight: 600,
+                      padding: "3px 10px",
+                      borderRadius: "999px",
+                      background: draftedSlidesCount === slides.length ? "#dcfce7" : "#f1f5f9",
+                      color: draftedSlidesCount === slides.length ? "#15803d" : "#475569",
+                      border: `1px solid ${draftedSlidesCount === slides.length ? "#bbf7d0" : "#cbd5e1"}`
+                    }}>
+                      {draftedSlidesCount} of {slides.length} slides drafted
+                    </span>
+                  )}
+                  {narrativeWorkbench?.priorMonthsLoaded?.length > 0 && (
+                    <span style={{
+                      fontSize: "11px",
+                      fontWeight: 500,
+                      padding: "3px 9px",
+                      borderRadius: "999px",
+                      background: "#f8fafc",
+                      color: "#64748b",
+                      border: "1px solid #e2e8f0"
+                    }}>
+                      Style context: {narrativeWorkbench.priorMonthsLoaded.map(formatMonthKey).join(", ")}
+                    </span>
+                  )}
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                  {narrativeWorkbench?.reportUrl && (
+                    <a
+                      href={narrativeWorkbench.reportUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "5px",
+                        padding: "6px 12px",
+                        background: "#ffffff",
+                        color: "#334155",
+                        border: "1px solid #cbd5e1",
+                        borderRadius: "6px",
+                        fontSize: "12px",
+                        fontWeight: 600,
+                        textDecoration: "none"
+                      }}
+                    >
+                      <span>Open deck</span>
+                      <span style={{ fontSize: "11px" }}>↗</span>
+                    </a>
+                  )}
+
+                  {slides.length > 0 && (
+                    <button
+                      type="button"
+                      disabled={isBusy}
+                      onClick={handleDraftAllSlides}
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "6px",
+                        padding: "7px 14px",
+                        background: generatingSlideNum === "__ALL__" ? "#1e40af" : "#2563eb",
+                        color: "#ffffff",
+                        border: "none",
+                        borderRadius: "6px",
+                        fontSize: "12px",
+                        fontWeight: 600,
+                        cursor: isBusy ? "not-allowed" : "pointer",
+                        opacity: isBusy && generatingSlideNum !== "__ALL__" ? 0.65 : 1
+                      }}
+                    >
+                      {generatingSlideNum === "__ALL__" && <Spinner size="13px" color="#ffffff" />}
+                      <span>
+                        {generatingSlideNum === "__ALL__" && batchDraftProgress
+                          ? `Drafting slide ${batchDraftProgress.current}/${batchDraftProgress.total}: ${batchDraftProgress.slideTitle}...`
+                          : "Draft all slides"}
+                      </span>
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    disabled={isBusy}
+                    onClick={() => setNarrativeModalClient(null)}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      fontSize: "22px",
+                      lineHeight: 1,
+                      color: "#64748b",
+                      cursor: isBusy ? "not-allowed" : "pointer",
+                      padding: "2px 6px"
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+              </div>
+
+              {/* Alerts / Notices Banner */}
+              {(narrativeError || narrativeNotice || narrativeWorkbench?.overheadMismatchWarning) && (
+                <div style={{
+                  padding: "10px 22px",
+                  borderBottom: "1px solid #e2e8f0",
+                  background: "#ffffff",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "8px"
+                }}>
+                  {narrativeError && (
+                    <div style={{
+                      padding: "9px 12px",
+                      borderRadius: "6px",
+                      background: "#fef2f2",
+                      border: "1px solid #fecaca",
+                      color: "#b91c1c",
+                      fontSize: "12px",
+                      fontWeight: 500,
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center"
+                    }}>
+                      <span>{narrativeError}</span>
+                      <button
+                        type="button"
+                        onClick={() => setNarrativeError("")}
+                        style={{ background: "none", border: "none", color: "#b91c1c", cursor: "pointer", fontWeight: 700 }}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  )}
+
+                  {narrativeNotice && (
+                    <div style={{
+                      padding: "9px 12px",
+                      borderRadius: "6px",
+                      background: narrativeNotice.type === "error" ? "#fef2f2" : "#f0fdf4",
+                      border: `1px solid ${narrativeNotice.type === "error" ? "#fecaca" : "#bbf7d0"}`,
+                      color: narrativeNotice.type === "error" ? "#b91c1c" : "#15803d",
+                      fontSize: "12px",
+                      fontWeight: 600,
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center"
+                    }}>
+                      <span>{narrativeNotice.text}</span>
+                      <button
+                        type="button"
+                        onClick={() => setNarrativeNotice(null)}
+                        style={{ background: "none", border: "none", color: "inherit", cursor: "pointer", fontWeight: 700 }}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  )}
+
+                  {narrativeWorkbench?.overheadMismatchWarning && (
+                    <div style={{
+                      padding: "9px 12px",
+                      borderRadius: "6px",
+                      background: "#fffbeb",
+                      border: "1px solid #fde68a",
+                      color: "#92400e",
+                      fontSize: "12px",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      gap: "12px",
+                      flexWrap: "wrap"
+                    }}>
+                      <span>{narrativeWorkbench.overheadMismatchWarning.message}</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const clientObj = narrativeModalClient;
+                          setNarrativeModalClient(null);
+                          openOverheadModal(clientObj);
+                        }}
+                        style={{
+                          padding: "4px 10px",
+                          background: "#ffffff",
+                          color: "#92400e",
+                          border: "1px solid #fcd34d",
+                          borderRadius: "5px",
+                          fontSize: "11px",
+                          fontWeight: 600,
+                          cursor: "pointer"
+                        }}
+                      >
+                        Manage overhead expenses
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Main 3-Pane Body */}
+              {narrativeLoading ? (
+                <div style={{
+                  flex: 1,
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  color: "#64748b",
+                  padding: "40px"
+                }}>
+                  <Spinner size="30px" />
+                  <div style={{ marginTop: "14px", fontSize: "14px", fontWeight: 600, color: "#334155" }}>
+                    Reading presentation slides, embedded charts, tables, prior decks, and supplier transactions...
+                  </div>
+                  <div style={{ marginTop: "4px", fontSize: "12px", color: "#64748b" }}>
+                    This typically takes 3 to 5 seconds.
+                  </div>
+                </div>
+              ) : slides.length === 0 ? (
+                <div style={{
+                  flex: 1,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  color: "#64748b",
+                  fontSize: "13px",
+                  padding: "40px"
+                }}>
+                  No narrative slides found in this presentation.
+                </div>
+              ) : (
+                <div style={{
+                  flex: 1,
+                  display: "grid",
+                  gridTemplateColumns: "255px minmax(420px, 1.15fr) minmax(390px, 1fr)",
+                  minHeight: 0,
+                  overflow: "hidden"
+                }}>
+                  {/* ── LEFT PANE: SLIDE NAVIGATOR ──────────────────────────────── */}
+                  <div style={{
+                    borderRight: "1px solid #e2e8f0",
+                    background: "#f8fafc",
+                    overflowY: "auto",
+                    padding: "12px 10px",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "6px"
+                  }}>
+                    <div style={{
+                      fontSize: "11px",
+                      fontWeight: 700,
+                      color: "#64748b",
+                      padding: "2px 8px 6px",
+                      letterSpacing: "0.02em"
+                    }}>
+                      Narrative slides ({slides.length})
+                    </div>
+
+                    {slides.map(slide => {
+                      const isSelected = activeSlide?.slideNumber === slide.slideNumber;
+                      const isGeneratingThis = generatingSlideNum === slide.slideNumber || (generatingSlideNum === "__ALL__" && batchDraftProgress?.slideNumber === slide.slideNumber);
+                      const hasDraft = Boolean(slide.draftText && slide.draftText.trim() && !slide.isUneditedClone);
+
+                      let badgeLabel = "Empty";
+                      let badgeBg = "#f1f5f9";
+                      let badgeColor = "#64748b";
+                      let badgeBorder = "#cbd5e1";
+
+                      if (slide.status === "applied") {
+                        badgeLabel = "Applied";
+                        badgeBg = "#dcfce7";
+                        badgeColor = "#15803d";
+                        badgeBorder = "#bbf7d0";
+                      } else if (hasDraft || slide.status === "drafted") {
+                        badgeLabel = "Drafted";
+                        badgeBg = "#dbeafe";
+                        badgeColor = "#1d4ed8";
+                        badgeBorder = "#bfdbfe";
+                      } else if (slide.isUneditedClone) {
+                        badgeLabel = "Cloned";
+                        badgeBg = "#fef3c7";
+                        badgeColor = "#b45309";
+                        badgeBorder = "#fde68a";
+                      } else if (slide.deckText) {
+                        badgeLabel = "In deck";
+                        badgeBg = "#f1f5f9";
+                        badgeColor = "#475569";
+                        badgeBorder = "#cbd5e1";
+                      }
+
+                      return (
+                        <button
+                          key={slide.slideNumber}
+                          type="button"
+                          onClick={() => setActiveSlideNumber(slide.slideNumber)}
+                          style={{
+                            textAlign: "left",
+                            padding: "10px 11px",
+                            borderRadius: "8px",
+                            border: isSelected ? "1.5px solid #2563eb" : "1px solid #e2e8f0",
+                            background: isSelected ? "#eff6ff" : "#ffffff",
+                            cursor: "pointer",
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: "5px",
+                            transition: "all 0.12s ease"
+                          }}
+                        >
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "6px" }}>
+                            <span style={{
+                              fontSize: "11px",
+                              fontWeight: 700,
+                              color: isSelected ? "#1d4ed8" : "#64748b"
+                            }}>
+                              Slide {slide.slideNumber}
+                            </span>
+
+                            <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                              {slide.hasFlag && (
+                                <span
+                                  title="Red flag on slide"
+                                  style={{
+                                    fontSize: "10px",
+                                    fontWeight: 700,
+                                    padding: "1px 6px",
+                                    borderRadius: "999px",
+                                    background: "#fef2f2",
+                                    color: "#b91c1c",
+                                    border: "1px solid #fecaca"
+                                  }}
+                                >
+                                  Flag
+                                </span>
+                              )}
+                              <span style={{
+                                fontSize: "10px",
+                                fontWeight: 600,
+                                padding: "1px 7px",
+                                borderRadius: "999px",
+                                background: badgeBg,
+                                color: badgeColor,
+                                border: `1px solid ${badgeBorder}`,
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "4px"
+                              }}>
+                                {isGeneratingThis && <Spinner size="9px" />}
+                                <span>{isGeneratingThis ? "Drafting" : badgeLabel}</span>
+                              </span>
+                            </div>
+                          </div>
+
+                          <div style={{
+                            fontSize: "12.5px",
+                            fontWeight: 600,
+                            color: "#0f172a",
+                            lineHeight: 1.3
+                          }}>
+                            {slide.slideTitle}
+                          </div>
+
+                          {slide.chartCode && (
+                            <div style={{
+                              fontSize: "10.5px",
+                              fontFamily: "monospace",
+                              color: "#64748b"
+                            }}>
+                              {slide.chartCode}
+                            </div>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* ── MIDDLE PANE: SLIDE EVIDENCE (CHART + TABLE + TRANSACTIONS + HISTORY) ── */}
+                  {activeSlide && (
+                    <div style={{
+                      borderRight: "1px solid #e2e8f0",
+                      background: "#ffffff",
+                      overflowY: "auto",
+                      padding: "18px 20px",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: "18px"
+                    }}>
+                      {/* 1. Embedded Chart PNGs */}
+                      {activeSlide.chartImages?.length > 0 && (
+                        <div style={{
+                          border: "1px solid #e2e8f0",
+                          borderRadius: "8px",
+                          overflow: "hidden",
+                          background: "#ffffff"
+                        }}>
+                          <div style={{
+                            padding: "8px 12px",
+                            background: "#f8fafc",
+                            borderBottom: "1px solid #e2e8f0",
+                            fontSize: "12px",
+                            fontWeight: 600,
+                            color: "#334155",
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center"
+                          }}>
+                            <span>Slide chart visual ({activeSlide.chartImages.length})</span>
+                            <span style={{ fontSize: "11px", color: "#64748b", fontWeight: 400 }}>
+                              Passed to Claude vision
+                            </span>
+                          </div>
+                          <div style={{
+                            padding: "12px",
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: "10px",
+                            alignItems: "center",
+                            background: "#ffffff"
+                          }}>
+                            {activeSlide.chartImages.map((img, idx) => (
+                              <img
+                                key={idx}
+                                src={`data:${img.mimeType || "image/png"};base64,${img.base64}`}
+                                alt={`${activeSlide.slideTitle} chart ${idx + 1}`}
+                                style={{
+                                  maxWidth: "100%",
+                                  maxHeight: "290px",
+                                  objectFit: "contain",
+                                  borderRadius: "4px",
+                                  border: "1px solid #f1f5f9"
+                                }}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* 2. Slide Data Table(s) */}
+                      {activeSlide.tables?.length > 0 && activeSlide.tables.map((tbl, tIdx) => (
+                        <div
+                          key={tIdx}
+                          style={{
+                            border: "1px solid #e2e8f0",
+                            borderRadius: "8px",
+                            overflow: "hidden"
+                          }}
+                        >
+                          <div style={{
+                            padding: "8px 12px",
+                            background: "#f8fafc",
+                            borderBottom: "1px solid #e2e8f0",
+                            fontSize: "12px",
+                            fontWeight: 600,
+                            color: "#334155",
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center"
+                          }}>
+                            <span>Slide data table{activeSlide.tables.length > 1 ? ` ${tIdx + 1}` : ""}</span>
+                            {activeSlide.chartCode && (
+                              <span style={{ fontSize: "11px", fontFamily: "monospace", color: "#64748b" }}>
+                                {activeSlide.chartCode}
+                              </span>
+                            )}
+                          </div>
+                          <div style={{ overflowX: "auto", maxHeight: "340px" }}>
+                            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "11.5px" }}>
+                              <tbody>
+                                {tbl.map((row, rIdx) => {
+                                  const isHeader = rIdx === 0;
+                                  const firstCell = String(row[0] || "").trim();
+                                  const isSummaryRow =
+                                    !isHeader &&
+                                    (/^(total|gross profit|operating profit|net profit|ebitda)/i.test(firstCell));
+
+                                  return (
+                                    <tr
+                                      key={rIdx}
+                                      style={{
+                                        background: isHeader ? "#f1f5f9" : (isSummaryRow ? "#f8fafc" : "#ffffff"),
+                                        borderBottom: "1px solid #f1f5f9",
+                                        fontWeight: isHeader || isSummaryRow ? 700 : 400
+                                      }}
+                                    >
+                                      {row.map((cell, cIdx) => (
+                                        <td
+                                          key={cIdx}
+                                          style={{
+                                            padding: "6px 10px",
+                                            textAlign: cIdx === 0 ? "left" : "right",
+                                            fontFamily: cIdx === 0 || isHeader ? "inherit" : "monospace",
+                                            color: String(cell || "").trim().startsWith("-") || String(cell || "").trim().startsWith("(")
+                                              ? "#b91c1c"
+                                              : "#0f172a",
+                                            whiteSpace: cIdx === 0 ? "normal" : "nowrap"
+                                          }}
+                                        >
+                                          {cell}
+                                        </td>
+                                      ))}
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      ))}
+
+                      {/* 3. Supplier Transactions Breakdown (Overheads Slide) */}
+                      {activeSlide.slideTransactions && (
+                        <div style={{
+                          border: "1px solid #bae6fd",
+                          borderRadius: "8px",
+                          overflow: "hidden",
+                          background: "#f8fafc"
+                        }}>
+                          <div style={{
+                            padding: "8px 12px",
+                            background: "#e0f2fe",
+                            borderBottom: "1px solid #bae6fd",
+                            fontSize: "12px",
+                            fontWeight: 600,
+                            color: "#0369a1",
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center"
+                          }}>
+                            <span>Supplier transactions from reconciliation ({activeSlide.slideTransactions.yyMm})</span>
+                            <span style={{ fontSize: "11px", fontWeight: 500 }}>
+                              Included in AI prompt
+                            </span>
+                          </div>
+                          <div style={{ padding: "10px 12px", maxHeight: "260px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "8px" }}>
+                            {Object.keys(activeSlide.slideTransactions.matchedByCategory || {}).length > 0 ? (
+                              Object.entries(activeSlide.slideTransactions.matchedByCategory).map(([cat, items]) => (
+                                <div key={cat} style={{ background: "#ffffff", border: "1px solid #e2e8f0", borderRadius: "6px", padding: "8px 10px" }}>
+                                  <div style={{ fontSize: "11.5px", fontWeight: 700, color: "#0f172a", marginBottom: "4px" }}>
+                                    {cat}
+                                  </div>
+                                  <div style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
+                                    {items.map((t, idx) => (
+                                      <div key={idx} style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", color: "#475569", gap: "8px" }}>
+                                        <span>
+                                          <strong>{t.payee}</strong>
+                                          {t.description ? ` — ${t.description}` : ""}
+                                          {t.date ? <span style={{ color: "#94a3b8", marginLeft: "4px" }}>({t.date})</span> : null}
+                                        </span>
+                                        <span style={{ fontFamily: "monospace", fontWeight: 600, color: "#0f172a", whiteSpace: "nowrap" }}>
+                                          {t.netFormatted}
+                                        </span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              ))
+                            ) : (
+                              (activeSlide.slideTransactions.topTransactions || []).slice(0, 12).map((t, idx) => (
+                                <div key={idx} style={{ display: "flex", justifyContent: "space-between", fontSize: "11.5px", color: "#334155", borderBottom: "1px solid #e2e8f0", paddingBottom: "4px" }}>
+                                  <span>
+                                    <span style={{ color: "#0369a1", fontWeight: 600 }}>[{t.category}]</span>{" "}
+                                    <strong>{t.payee}</strong>
+                                    {t.description ? ` — ${t.description}` : ""}
+                                  </span>
+                                  <span style={{ fontFamily: "monospace", fontWeight: 600 }}>{t.netFormatted}</span>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* 4. Historical Narrative Reference (T-1 and T-2) */}
+                      <div style={{
+                        border: "1px solid #e2e8f0",
+                        borderRadius: "8px",
+                        overflow: "hidden",
+                        background: "#f8fafc"
+                      }}>
+                        <div style={{
+                          padding: "8px 12px",
+                          background: "#f1f5f9",
+                          borderBottom: "1px solid #e2e8f0",
+                          fontSize: "12px",
+                          fontWeight: 600,
+                          color: "#334155"
+                        }}>
+                          Previous months&apos; commentary for this slide
+                        </div>
+                        <div style={{ padding: "12px", display: "flex", flexDirection: "column", gap: "12px" }}>
+                          {activeSlide.previousNarratives?.length > 0 ? (
+                            activeSlide.previousNarratives.map((prev, idx) => (
+                              <div
+                                key={idx}
+                                style={{
+                                  background: "#ffffff",
+                                  border: "1px solid #e2e8f0",
+                                  borderRadius: "6px",
+                                  padding: "10px 12px"
+                                }}
+                              >
+                                <div style={{
+                                  display: "flex",
+                                  justifyContent: "space-between",
+                                  alignItems: "center",
+                                  marginBottom: "6px"
+                                }}>
+                                  <span style={{ fontSize: "11.5px", fontWeight: 700, color: "#0f172a" }}>
+                                    {formatMonthKey(prev.monthKey)} (slide {prev.slideNumber})
+                                    {prev.hasFlag ? " — flagged" : ""}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleUpdateSlideLocalField(activeSlide.slideNumber, "draftText", prev.text)}
+                                    style={{
+                                      background: "none",
+                                      border: "1px solid #cbd5e1",
+                                      borderRadius: "4px",
+                                      padding: "2px 8px",
+                                      fontSize: "11px",
+                                      color: "#475569",
+                                      cursor: "pointer"
+                                    }}
+                                  >
+                                    Copy to editor
+                                  </button>
+                                </div>
+                                <div style={{
+                                  fontSize: "12px",
+                                  color: "#334155",
+                                  whiteSpace: "pre-wrap",
+                                  lineHeight: 1.5
+                                }}>
+                                  {prev.text}
+                                </div>
+                              </div>
+                            ))
+                          ) : (
+                            <div style={{ fontSize: "12px", color: "#64748b" }}>
+                              No prior month narrative found for this slide.
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ── RIGHT PANE: NARRATIVE EDITOR & STEER CONTROLS ───────────── */}
+                  {activeSlide && (
+                    <div style={{
+                      background: "#ffffff",
+                      padding: "18px 20px",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: "14px",
+                      overflowY: "auto"
+                    }}>
+                      {/* Slide Header */}
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "10px" }}>
+                        <div>
+                          <div style={{ fontSize: "11px", fontWeight: 700, color: "#2563eb" }}>
+                            Slide {activeSlide.slideNumber} {activeSlide.chartCode ? `· ${activeSlide.chartCode}` : ""}
+                          </div>
+                          <h3 style={{ margin: "2px 0 0", fontSize: "16px", fontWeight: 700, color: "#0f172a" }}>
+                            {activeSlide.slideTitle}
+                          </h3>
+                        </div>
+
+                        {activeSlide.hasFlag && (
+                          <span style={{
+                            fontSize: "11px",
+                            fontWeight: 600,
+                            padding: "4px 10px",
+                            borderRadius: "999px",
+                            background: "#fef2f2",
+                            color: "#b91c1c",
+                            border: "1px solid #fecaca"
+                          }}>
+                            Red flag on slide — include &apos;The flag:&apos; bullet
+                          </span>
+                        )}
+                      </div>
+
+                      {activeSlide.isUneditedClone && !activeSlide.draftText && (
+                        <div style={{
+                          padding: "8px 12px",
+                          borderRadius: "6px",
+                          background: "#fffbeb",
+                          border: "1px solid #fde68a",
+                          color: "#92400e",
+                          fontSize: "12px"
+                        }}>
+                          This slide in the presentation currently contains last month&apos;s cloned text. Click <strong>Draft this slide</strong> to write fresh commentary for {formatMonthKey(narrativeWorkbench?.reportMonthKey || selectedReportMonthKey)}.
+                        </div>
+                      )}
+
+                      {/* Steer / Context Box + Regenerate Button */}
+                      <div style={{
+                        background: "#f8fafc",
+                        border: "1px solid #e2e8f0",
+                        borderRadius: "8px",
+                        padding: "12px",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: "8px"
+                      }}>
+                        <label style={{ fontSize: "12px", fontWeight: 600, color: "#334155" }}>
+                          Optional steer or context for this slide:
+                        </label>
+                        <textarea
+                          rows={2}
+                          value={activeSlide.steerText || ""}
+                          onChange={(e) => handleUpdateSlideLocalField(activeSlide.slideNumber, "steerText", e.target.value)}
+                          placeholder="e.g. Mention that the £3k legal fee in G&A was a one-off trademark renewal, or keep to 3 short bullets..."
+                          style={{
+                            width: "100%",
+                            padding: "8px 10px",
+                            fontSize: "12.5px",
+                            border: "1px solid #cbd5e1",
+                            borderRadius: "6px",
+                            boxSizing: "border-box",
+                            fontFamily: "inherit",
+                            resize: "vertical"
+                          }}
+                        />
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                          <span style={{ fontSize: "11px", color: "#64748b" }}>
+                            {activeSlide.isTakeawaysSlide
+                              ? "Synthesises headline performance and key takeaways across all slides."
+                              : "Analyses the slide table, chart visual, and prior months' tone."}
+                          </span>
+                          <button
+                            type="button"
+                            disabled={isBusy}
+                            onClick={() => handleDraftSingleSlide(activeSlide.slideNumber)}
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "6px",
+                              padding: "6px 14px",
+                              background: "#0f172a",
+                              color: "#ffffff",
+                              border: "none",
+                              borderRadius: "6px",
+                              fontSize: "12px",
+                              fontWeight: 600,
+                              cursor: isBusy ? "not-allowed" : "pointer",
+                              opacity: isBusy ? 0.7 : 1
+                            }}
+                          >
+                            {generatingSlideNum === activeSlide.slideNumber && <Spinner size="12px" color="#ffffff" />}
+                            <span>
+                              {generatingSlideNum === activeSlide.slideNumber
+                                ? "Drafting..."
+                                : (activeSlide.draftText ? "Regenerate slide" : "Draft this slide")}
+                            </span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Narrative Textarea */}
+                      <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "6px", minHeight: "260px" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
+                          <label style={{ fontSize: "12px", fontWeight: 600, color: "#334155" }}>
+                            Slide narrative commentary:
+                          </label>
+                          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const cur = activeSlide.draftText || "";
+                                const prefix = cur && !cur.endsWith("\n") ? "\n• " : "• ";
+                                handleUpdateSlideLocalField(activeSlide.slideNumber, "draftText", cur + prefix);
+                              }}
+                              style={{
+                                background: "#f8fafc",
+                                border: "1px solid #cbd5e1",
+                                borderRadius: "4px",
+                                padding: "2px 8px",
+                                fontSize: "11px",
+                                fontWeight: 600,
+                                color: "#475569",
+                                cursor: "pointer"
+                              }}
+                            >
+                              + Bullet
+                            </button>
+                            {activeSlide.deckText && (
+                              <button
+                                type="button"
+                                onClick={() => handleUpdateSlideLocalField(activeSlide.slideNumber, "draftText", activeSlide.deckText)}
+                                style={{
+                                  background: "#f8fafc",
+                                  border: "1px solid #cbd5e1",
+                                  borderRadius: "4px",
+                                  padding: "2px 8px",
+                                  fontSize: "11px",
+                                  color: "#64748b",
+                                  cursor: "pointer"
+                                }}
+                              >
+                                Load current deck text
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        <textarea
+                          value={activeSlide.draftText || ""}
+                          onChange={(e) => handleUpdateSlideLocalField(activeSlide.slideNumber, "draftText", e.target.value)}
+                          placeholder={
+                            activeSlide.isTakeawaysSlide
+                              ? "Month in review\n• ...\n\nKey takeaways from this report\n• ... (see slide 6)"
+                              : "• First observation...\n• Second observation..."
+                          }
+                          style={{
+                            flex: 1,
+                            width: "100%",
+                            minHeight: "240px",
+                            padding: "12px 14px",
+                            fontSize: "13.5px",
+                            lineHeight: 1.6,
+                            color: "#0f172a",
+                            border: "1px solid #cbd5e1",
+                            borderRadius: "8px",
+                            boxSizing: "border-box",
+                            fontFamily: "inherit",
+                            resize: "vertical"
+                          }}
+                        />
+
+                        <div style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          fontSize: "11.5px",
+                          color: "#64748b"
+                        }}>
+                          <span>
+                            {activeDraftWords} words
+                            {prevMonthWords > 0 ? ` (last month: ${prevMonthWords} words)` : ""}
+                          </span>
+                          <button
+                            type="button"
+                            disabled={isBusy || !activeSlide.draftText?.trim()}
+                            onClick={() => handleApplyNarrativeToDeck(activeSlide.slideNumber)}
+                            style={{
+                              background: "none",
+                              border: "none",
+                              color: (!isBusy && activeSlide.draftText?.trim()) ? "#2563eb" : "#94a3b8",
+                              fontSize: "12px",
+                              fontWeight: 600,
+                              cursor: (!isBusy && activeSlide.draftText?.trim()) ? "pointer" : "not-allowed",
+                              padding: 0
+                            }}
+                          >
+                            Apply this slide only to deck →
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Modal Footer */}
+              <div style={{
+                padding: "14px 22px",
+                borderTop: "1px solid #e2e8f0",
+                background: "#f8fafc",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                flexWrap: "wrap",
+                gap: "12px"
+              }}>
+                <div style={{ fontSize: "12px", color: "#64748b" }}>
+                  {narrativeDirty ? (
+                    <span style={{ color: "#0369a1", fontWeight: 600 }}>
+                      Unsaved edits in workbench — click &apos;Save draft&apos; or &apos;Apply all to presentation&apos;.
+                    </span>
+                  ) : narrativeWorkbench?.updatedAt ? (
+                    <span>
+                      Last saved: {new Date(narrativeWorkbench.updatedAt).toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}
+                    </span>
+                  ) : (
+                    <span>Bullets starting with &apos;• &apos; are automatically formatted into native Google Slides bullet lists.</span>
+                  )}
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    disabled={isBusy}
+                    onClick={() => setNarrativeModalClient(null)}
+                    style={{
+                      padding: "8px 16px",
+                      background: "#ffffff",
+                      color: "#334155",
+                      border: "1px solid #cbd5e1",
+                      borderRadius: "6px",
+                      fontSize: "13px",
+                      fontWeight: 600,
+                      cursor: isBusy ? "not-allowed" : "pointer"
+                    }}
+                  >
+                    Close
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={isBusy || draftedSlidesCount === 0}
+                    onClick={handleSaveNarrativeDrafts}
+                    style={{
+                      padding: "8px 16px",
+                      background: "#ffffff",
+                      color: draftedSlidesCount === 0 ? "#94a3b8" : "#0f172a",
+                      border: "1px solid #cbd5e1",
+                      borderRadius: "6px",
+                      fontSize: "13px",
+                      fontWeight: 600,
+                      cursor: (isBusy || draftedSlidesCount === 0) ? "not-allowed" : "pointer",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "6px"
+                    }}
+                  >
+                    {narrativeSaving && <Spinner size="13px" />}
+                    <span>Save draft</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={isBusy || draftedSlidesCount === 0}
+                    onClick={() => handleApplyNarrativeToDeck(null)}
+                    style={{
+                      padding: "8px 20px",
+                      background: draftedSlidesCount === 0 ? "#94a3b8" : "#16a34a",
+                      color: "#ffffff",
+                      border: "none",
+                      borderRadius: "6px",
+                      fontSize: "13px",
+                      fontWeight: 600,
+                      cursor: (isBusy || draftedSlidesCount === 0) ? "not-allowed" : "pointer",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "6px"
+                    }}
+                  >
+                    {narrativeApplying && <Spinner size="14px" color="#ffffff" />}
+                    <span>Apply all to presentation ({draftedSlidesCount})</span>
                   </button>
                 </div>
               </div>

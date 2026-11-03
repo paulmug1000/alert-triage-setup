@@ -2319,7 +2319,7 @@ export async function handleEomGetReportingData(req, res, sheets) {
     // 3. Fetch EomReportingConfig from Reporting Control spreadsheet
     const configResp = await withRetry(() => sheets.spreadsheets.values.get({
       spreadsheetId: rcId,
-      range: "EomReportingConfig!A2:H500",
+      range: "EomReportingConfig!A2:I500",
       valueRenderOption: "FORMATTED_VALUE"
     }));
     const configMap = {};
@@ -2338,13 +2338,21 @@ export async function handleEomGetReportingData(req, res, sheets) {
           if (parsed && typeof parsed === "object") overheadFinalisedByMonth = parsed;
         } catch (_) {}
       }
+      let narrativeStatusByMonth = {};
+      if (r[8]) {
+        try {
+          const parsed = JSON.parse(String(r[8]));
+          if (parsed && typeof parsed === "object") narrativeStatusByMonth = parsed;
+        } catch (_) {}
+      }
       configMap[cName] = {
         emailTo: r[1] || "",
         emailSubj: r[2] || "",
         emailBody: r[3] || "",
         folderUrl: r[4] || "",
         webAppUrl: r[5] || "",
-        overheadFinalisedByMonth
+        overheadFinalisedByMonth,
+        narrativeStatusByMonth
       };
     });
 
@@ -2404,6 +2412,8 @@ export async function handleEomGetReportingData(req, res, sheets) {
 
       const overheadFinalisedByMonth = conf.overheadFinalisedByMonth || {};
       const overheadFinalisedAt = targetReportMonth ? (overheadFinalisedByMonth[targetReportMonth] || null) : null;
+      const narrativeStatusByMonth = conf.narrativeStatusByMonth || {};
+      const narrativeStatusForMonth = targetReportMonth ? (narrativeStatusByMonth[targetReportMonth] || null) : null;
 
       return {
         clientName: name,
@@ -2421,7 +2431,9 @@ export async function handleEomGetReportingData(req, res, sheets) {
         reportHistory: history,
         overheadFinalisedByMonth,
         overheadFinalisedAt,
-        isOverheadFinalised: Boolean(overheadFinalisedAt)
+        isOverheadFinalised: Boolean(overheadFinalisedAt),
+        narrativeStatusByMonth,
+        narrativeStatusForMonth
       };
     });
 
@@ -3895,3 +3907,11 @@ export async function handleEomConfirmOverheadExpenses(req, res, sheets) {
     return res.status(500).json({ success: false, error: err.message });
   }
 }
+
+export {
+  handleEomGetNarrativeWorkbench,
+  handleEomGenerateNarrative,
+  handleEomSaveNarrativeDraft,
+  handleEomApplyNarrativeToDeck
+} from "./eomNarrativeService";
+

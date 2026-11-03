@@ -446,12 +446,12 @@ export const DeepDiveEngine = {
           if (!row) continue;
 
           // Cross-reference row index i with staffByRow to guarantee name, role and delPct
-          // even if client sheet formula scrambled row 304+ column A
+          // Prioritize staffObj because calculation row i is strictly computed for top-table staff row 4 + i
           const staffObj = staffByRow[i];
-          const name = (row[0] && String(row[0]).trim()) || (staffObj ? staffObj.name : "");
+          const name = (staffObj && staffObj.name) || (row[0] && String(row[0]).trim()) || "";
           if (!name || !name.trim()) continue;
 
-          const role = (row[1] && String(row[1]).trim()) || (staffObj ? staffObj.role : "");
+          const role = (staffObj && staffObj.role) || (row[1] && String(row[1]).trim()) || "";
 
           const salary = parseMoney(row[colIdx]);
           const erNic = parseMoney(row[colIdx + 2]);
@@ -460,7 +460,9 @@ export const DeepDiveEngine = {
 
           if (Math.abs(totalCost) < 0.01) continue;
 
-          let delPctRaw = row[6] !== undefined && String(row[6]).trim() !== "" ? row[6] : (staffObj ? staffObj.deliveryPct : "0%");
+          let delPctRaw = (staffObj && staffObj.deliveryPct !== undefined && String(staffObj.deliveryPct).trim() !== "")
+            ? staffObj.deliveryPct
+            : (row[6] !== undefined && String(row[6]).trim() !== "" ? row[6] : "0%");
           let delPct = parseMoney(delPctRaw);
           if (String(delPctRaw).includes("%")) delPct = delPct / 100;
           else if (delPct > 1) delPct = delPct / 100;

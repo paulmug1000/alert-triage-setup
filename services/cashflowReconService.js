@@ -787,6 +787,7 @@ export async function getCashflowReconData({
 
         // Parse [6] Unreconciled Items CD4:CN60
         const rawUnreconRows = vRanges[6]?.values || [];
+        const isQbDa1 = da1Platform.toLowerCase().includes("quick");
         unreconciledItems = rawUnreconRows.map((r, i) => {
           const date = r[2] || "";
           const payee = r[3] || "";
@@ -794,12 +795,20 @@ export async function getCashflowReconData({
           const amount = r[5] || "";
           const category = r[9] || "";
           const vat = r[10] || "";
+          const numAmt = parseNumeric(amount);
+          const absAmt = Math.abs(numAmt);
+          // In Xero mode (DA1="Xero"), outflows in CI are negative (< 0).
+          // In QuickBooks mode (DA1="Quickbooks"), outflows in CI are positive (> 0).
+          const isNegative = isQbDa1 ? numAmt > 0 : numAmt < 0;
           return {
             rowNum: i + 4,
             date,
             payee,
             particulars,
-            amount,
+            amount: absAmt || amount,
+            outAmount: isNegative ? absAmt : 0,
+            inAmount: !isNegative ? absAmt : 0,
+            isNegative,
             category: category.trim(),
             vatApplies: vat.trim() || "No"
           };
@@ -1057,6 +1066,21 @@ export async function syncReconUnreconciledItems({
   const sheets = await getSheetsClient();
   const cleanId = extractSheetIdFromUrl(reconSheetId) || reconSheetId;
 
+  // Read DA1 platform setting on this tab so CI sign matches the sheet's DA3:DA formula:
+  // CP4 is =-if(CN4="Yes",CI4/1.2,CI4) and DA3 is =sumif($CM$3:$CM$350,CZ3,$CP$3:$CP$350)*if(DA$1="Xero",1,-1)
+  // Therefore, DA1="Xero" expects outflows in CI to be negative, while DA1="Quickbooks" expects outflows in CI to be positive.
+  let isQbDa1 = false;
+  try {
+    const da1Resp = await withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: cleanId,
+      range: `'${tabName}'!DA1`
+    }));
+    const da1Val = String(da1Resp.data.values?.[0]?.[0] || "").trim().toLowerCase();
+    isQbDa1 = da1Val.includes("quick");
+  } catch (e) {
+    isQbDa1 = false;
+  }
+
   // Clear existing CD4:CI100 and CM4:CN100
   await withRetry(() => sheets.spreadsheets.values.batchClear({
     spreadsheetId: cleanId,
@@ -1076,7 +1100,18 @@ export async function syncReconUnreconciledItems({
     const date = u.date || "";
     const payee = u.payee || "";
     const particulars = u.particulars || "";
-    const amt = u.amount ? (u.isNegative ? `-${Math.abs(u.amount)}` : String(u.amount)) : "";
+    const rawNum = Math.abs(parseNumeric(u.amount || u.outAmount || u.inAmount));
+    const isOutflow = u.isNegative !== undefined
+      ? Boolean(u.isNegative)
+      : (parseNumeric(u.outAmount) > 0 || parseNumeric(u.amount) < 0);
+    let amt = "";
+    if (rawNum > 0) {
+      if (isQbDa1) {
+        amt = isOutflow ? String(rawNum) : `-${rawNum}`;
+      } else {
+        amt = isOutflow ? `-${rawNum}` : String(rawNum);
+      }
+    }
     const cat = u.category || "";
     const vat = u.vatApplies || "No";
 

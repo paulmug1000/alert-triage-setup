@@ -543,6 +543,63 @@ export function formatBankDateDMmmYy(dateObj) {
 }
 
 /**
+ * Splits a CSV line while respecting double-quoted fields (e.g. "£2,000.00")
+ */
+function splitCsvLine(line) {
+  const result = [];
+  let current = "";
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (ch === "," && !inQuotes) {
+      result.push(current.trim());
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  result.push(current.trim());
+  return result.map(c => c.replace(/^["']|["']$/g, "").trim());
+}
+
+/**
+ * Parses a numeric currency cell string (returns null if empty or non-numeric)
+ */
+function parseCellNumber(rawCell) {
+  if (rawCell == null) return null;
+  const str = String(rawCell).trim();
+  if (!str) return null;
+  const withoutCurr = str.replace(/^[£$€\s]+|[£$€\s]+$/g, "");
+  const isParenNeg = /^\(.*\)$/.test(withoutCurr);
+  const numStr = withoutCurr.replace(/[()£$€,\s]/g, "");
+  if (numStr === "" || isNaN(Number(numStr))) return null;
+  const val = parseFloat(numStr);
+  return isParenNeg ? -Math.abs(val) : val;
+}
+
+/**
+ * Determines whether a VAT column cell indicates VAT applies ("Yes" vs "No")
+ */
+function parseVatAppliesCell(rawVat) {
+  if (!rawVat) return "No";
+  const v = String(rawVat).trim().toLowerCase();
+  if (!v || v.includes("no vat") || v.includes("exempt") || v.includes("zero") || /^0(?:\.0+)?%/.test(v) || v === "no" || v === "none") {
+    return "No";
+  }
+  if (v === "yes" || v.includes("20%") || v.includes("20.0%") || v.includes("standard") || /[1-9]\d*(?:\.\d+)?%/.test(v)) {
+    return "Yes";
+  }
+  return "No";
+}
+
+/**
  * Parses user-pasted text (tab-separated from Xero/QB reports) or CSV/Excel rows
  * and applies strict month-boundary filtering.
  */
@@ -583,7 +640,7 @@ export function parseUnreconciledItems({
       if (line.includes("\t")) {
         return line.split(/\t/).map(c => c.trim());
       } else if (line.includes(",")) {
-        return line.split(/,/).map(c => c.trim().replace(/^["']|["']$/g, ""));
+        return splitCsvLine(line);
       } else if (/\s{2,}/.test(line)) {
         return line.split(/\s{2,}/).map(c => c.trim());
       } else {
@@ -631,8 +688,33 @@ export function parseUnreconciledItems({
   const SUMMARY_REGEX = /\b(statement balance|balance in xero|balance as per|calculated balance out by|imported statement balance|total outstanding|total payments|total receipts|total unreconciled|closing balance|opening balance|bank account:|account number:|page \d+ of \d+|reconciliation summary|reconciliation report|bank reconciliation|totals summary)\b/i;
 
   let currentSection = null;
+  let activeColumnMap = null;
   const items = [];
   const skippedLines = [];
+
+  // Detect if headerless 7-column QuickBooks format (Date, DESCRIPTION, Payee, Categorise, VAT, SPENT, RECEIVED)
+  const firstRowLower = (inputRows[0] || []).join(" ").toLowerCase();
+  if (!firstRowLower.startsWith("date") && inputRows.some(r => r.length === 7 && parseBankDate(r[0]))) {
+    const looksLikeQb7Col = inputRows.every(r => {
+      if (!r.join("").trim()) return true;
+      if (r.length !== 7 || !parseBankDate(r[0])) return false;
+      const col5Num = parseCellNumber(r[5]);
+      const col6Num = parseCellNumber(r[6]);
+      return (col5Num !== null && col6Num === null) || (col5Num === null && col6Num !== null);
+    });
+    if (looksLikeQb7Col) {
+      activeColumnMap = {
+        dateCol: 0,
+        descCol: 1,
+        payeeCol: 2,
+        refCol: -1,
+        vatCol: 4,
+        spentCol: 5,
+        receivedCol: 6,
+        amountCol: -1
+      };
+    }
+  }
 
   inputRows.forEach((cols, idx) => {
     const joinedLine = cols.join(" ").trim();
@@ -690,67 +772,155 @@ export function parseUnreconciledItems({
       return;
     }
 
-    // Skip table header rows
+    // Detect and record table column headers before skipping header row
     if (lower.startsWith("date") || lower.startsWith("cheque no") || lower.startsWith("description") || lower.startsWith("reference") || lower.startsWith("status")) {
+      const colMap = {
+        dateCol: -1,
+        descCol: -1,
+        payeeCol: -1,
+        refCol: -1,
+        vatCol: -1,
+        spentCol: -1,
+        receivedCol: -1,
+        amountCol: -1
+      };
+      cols.forEach((h, cIdx) => {
+        const hl = String(h || "").trim().toLowerCase();
+        if (!hl) return;
+        if (colMap.dateCol === -1 && (hl === "date" || hl.includes("transaction date") || hl.includes("statement date"))) colMap.dateCol = cIdx;
+        else if (colMap.descCol === -1 && (hl === "description" || hl === "particulars" || hl === "details" || hl === "memo")) colMap.descCol = cIdx;
+        else if (colMap.payeeCol === -1 && (hl === "payee" || hl === "contact" || hl === "name")) colMap.payeeCol = cIdx;
+        else if (colMap.refCol === -1 && (hl === "reference" || hl === "ref" || hl.includes("cheque") || hl.includes("check no"))) colMap.refCol = cIdx;
+        else if (colMap.vatCol === -1 && (hl === "vat" || hl === "tax" || hl === "tax rate")) colMap.vatCol = cIdx;
+        else if (colMap.spentCol === -1 && (hl === "spent" || hl === "out" || hl === "money out" || hl === "debit" || hl === "payment" || hl === "payments" || hl.startsWith("spent "))) colMap.spentCol = cIdx;
+        else if (colMap.receivedCol === -1 && (hl === "received" || hl === "in" || hl === "money in" || hl === "credit" || hl === "deposit" || hl === "deposits" || hl === "receipt" || hl === "receipts" || hl.startsWith("received "))) colMap.receivedCol = cIdx;
+        else if (colMap.amountCol === -1 && (hl === "amount" || hl === "total" || hl === "value")) colMap.amountCol = cIdx;
+      });
+      if (colMap.spentCol !== -1 || colMap.receivedCol !== -1) {
+        activeColumnMap = colMap;
+      }
       skippedLines.push({ line: joinedLine, reason: "Column headers" });
       return;
     }
 
-    // Filter out columns that are empty
-    const cleanCols = cols.filter(c => c !== "");
-    if (cleanCols.length < 2) {
-      skippedLines.push({ line: joinedLine, reason: "Not enough columns" });
-      return;
-    }
-
-    // Find date column anywhere in the first 5 columns
     let dateObj = null;
-    let dateColIdx = -1;
-    for (let c = 0; c < Math.min(cleanCols.length, 5); c++) {
-      const d = parseBankDate(cleanCols[c]);
-      if (d) {
-        dateObj = d;
-        dateColIdx = c;
-        break;
-      }
-    }
-
-    if (!dateObj) {
-      skippedLines.push({ line: joinedLine, reason: "No date found" });
-      return;
-    }
-
-    // Find amount column (search from end backwards)
+    let displayDateFallback = "";
     let amount = 0;
-    let amountColIdx = -1;
-    let isParenNeg = false;
-    for (let c = cleanCols.length - 1; c > dateColIdx; c--) {
-      const raw = cleanCols[c].replace(/^[£$€]/, "").trim();
-      isParenNeg = /^\(.*\)$/.test(raw);
-      const numStr = raw.replace(/[()£$€,\s]/g, "");
-      if (numStr !== "" && !isNaN(Number(numStr))) {
-        amount = parseFloat(numStr);
-        if (isParenNeg) amount = -Math.abs(amount);
-        amountColIdx = c;
-        break;
+    let isNegative = false;
+    let payee = "Unreconciled item";
+    let particulars = "";
+    let reference = "";
+    let vatApplies = "No";
+
+    // Path A: Header-mapped dual-column format (e.g. QuickBooks CSV with SPENT and RECEIVED columns)
+    if (activeColumnMap && (activeColumnMap.spentCol !== -1 || activeColumnMap.receivedCol !== -1)) {
+      if (activeColumnMap.dateCol !== -1 && cols[activeColumnMap.dateCol]) {
+        dateObj = parseBankDate(cols[activeColumnMap.dateCol]);
+        displayDateFallback = cols[activeColumnMap.dateCol];
       }
+      if (!dateObj) {
+        for (let c = 0; c < Math.min(cols.length, 5); c++) {
+          const d = parseBankDate(cols[c]);
+          if (d) {
+            dateObj = d;
+            displayDateFallback = cols[c];
+            break;
+          }
+        }
+      }
+      if (!dateObj) {
+        skippedLines.push({ line: joinedLine, reason: "No date found" });
+        return;
+      }
+
+      const spentVal = activeColumnMap.spentCol !== -1 ? parseCellNumber(cols[activeColumnMap.spentCol]) : null;
+      const receivedVal = activeColumnMap.receivedCol !== -1 ? parseCellNumber(cols[activeColumnMap.receivedCol]) : null;
+      const singleAmtVal = activeColumnMap.amountCol !== -1 ? parseCellNumber(cols[activeColumnMap.amountCol]) : null;
+
+      if (spentVal !== null && Math.abs(spentVal) > 0) {
+        amount = Math.abs(spentVal);
+        isNegative = true;
+      } else if (receivedVal !== null && Math.abs(receivedVal) > 0) {
+        amount = Math.abs(receivedVal);
+        isNegative = false;
+      } else if (singleAmtVal !== null && Math.abs(singleAmtVal) > 0) {
+        amount = Math.abs(singleAmtVal);
+        isNegative = singleAmtVal < 0;
+      } else {
+        skippedLines.push({ line: joinedLine, reason: "No amount found" });
+        return;
+      }
+
+      const rawDesc = activeColumnMap.descCol !== -1 ? String(cols[activeColumnMap.descCol] || "").trim() : "";
+      const rawPayee = activeColumnMap.payeeCol !== -1 ? String(cols[activeColumnMap.payeeCol] || "").trim() : "";
+      payee = rawPayee || rawDesc || "Unreconciled item";
+      particulars = rawDesc || rawPayee || payee;
+      reference = activeColumnMap.refCol !== -1 ? String(cols[activeColumnMap.refCol] || "").trim() : "";
+
+      if (activeColumnMap.vatCol !== -1) {
+        vatApplies = parseVatAppliesCell(cols[activeColumnMap.vatCol]);
+      }
+    } else {
+      // Path B: Standard single-amount format (e.g. Xero Reconciliation Summary or generic CSV/paste)
+      const cleanCols = cols.filter(c => c !== "");
+      if (cleanCols.length < 2) {
+        skippedLines.push({ line: joinedLine, reason: "Not enough columns" });
+        return;
+      }
+
+      let dateColIdx = -1;
+      for (let c = 0; c < Math.min(cleanCols.length, 5); c++) {
+        const d = parseBankDate(cleanCols[c]);
+        if (d) {
+          dateObj = d;
+          dateColIdx = c;
+          displayDateFallback = cleanCols[c];
+          break;
+        }
+      }
+
+      if (!dateObj) {
+        skippedLines.push({ line: joinedLine, reason: "No date found" });
+        return;
+      }
+
+      let amountColIdx = -1;
+      let isParenNeg = false;
+      for (let c = cleanCols.length - 1; c > dateColIdx; c--) {
+        const raw = cleanCols[c].replace(/^[£$€]/, "").trim();
+        isParenNeg = /^\(.*\)$/.test(raw);
+        const numStr = raw.replace(/[()£$€,\s]/g, "");
+        if (numStr !== "" && !isNaN(Number(numStr))) {
+          amount = parseFloat(numStr);
+          if (isParenNeg) amount = -Math.abs(amount);
+          amountColIdx = c;
+          break;
+        }
+      }
+
+      if (amountColIdx === -1) {
+        skippedLines.push({ line: joinedLine, reason: "No amount found" });
+        return;
+      }
+
+      const rawTextCols = cleanCols.filter((_, cIdx) => cIdx !== dateColIdx && cIdx !== amountColIdx);
+      const textCols = [];
+      rawTextCols.forEach(tc => {
+        if (/^(20(?:\.0)?%\s*[a-z]*|no\s*vat|0(?:\.0)?%\s*[a-z]*|exempt)$/i.test(tc.trim())) {
+          vatApplies = parseVatAppliesCell(tc);
+        } else {
+          textCols.push(tc);
+        }
+      });
+
+      payee = textCols[0] || "Unreconciled item";
+      particulars = textCols.length >= 2 ? textCols[1] : payee;
+      reference = textCols.length >= 3 ? textCols[2] : "";
+
+      isNegative = amount < 0 || isParenNeg;
+      if (currentSection === "payments") isNegative = true;
+      else if (currentSection === "receipts") isNegative = false;
     }
-
-    if (amountColIdx === -1) {
-      skippedLines.push({ line: joinedLine, reason: "No amount found" });
-      return;
-    }
-
-    // Remaining text columns between date and amount are payee/particulars/ref
-    const textCols = cleanCols.filter((_, cIdx) => cIdx !== dateColIdx && cIdx !== amountColIdx);
-    let payee = textCols[0] || "Unreconciled item";
-    let particulars = textCols.length >= 2 ? textCols[1] : payee;
-    let reference = textCols.length >= 3 ? textCols[2] : "";
-
-    // Determine direction (in vs out)
-    let isNegative = amount < 0 || isParenNeg;
-    if (currentSection === "payments") isNegative = true;
-    else if (currentSection === "receipts") isNegative = false;
 
     const absAmt = Math.abs(amount);
 
@@ -764,7 +934,7 @@ export function parseUnreconciledItems({
     items.push({
       id: `unrecon_${Date.now()}_${idx}`,
       date: formattedDate || dateObj.iso,
-      displayDate: formattedDate || cleanCols[dateColIdx],
+      displayDate: formattedDate || displayDateFallback,
       isoDate: dateObj.iso,
       payee,
       particulars: particulars || payee,
@@ -783,7 +953,7 @@ export function parseUnreconciledItems({
       isReconciled: false,
       source: "unreconciled_pasted",
       suggestedCategory: isNegative ? "Outgoings" : "Revenue",
-      vatApplies: "No",
+      vatApplies,
       category: "",
       rawLine: joinedLine
     });
@@ -1147,11 +1317,12 @@ export async function autoReconcileClientBankTransactions({
     const fullYear = yy < 100 ? 2000 + yy : yy;
     const tabMonthKey = `${fullYear}-${String(mm).padStart(2, "0")}`;
 
-    // Read existing bank transactions, unreconciled items, and tracked bank accounts
+    // Read existing bank transactions, unreconciled items, tracked bank accounts, and DA1 platform
     const rangesToFetch = [
       `'${tabName}'!A3:Q200`,
       `'${tabName}'!CD4:CN60`,
-      `'KeyInfo'!H12:H21`
+      `'KeyInfo'!H12:H21`,
+      `'${tabName}'!DA1`
     ];
 
     const batchRes = await withRetry(() => sheets.spreadsheets.values.batchGet({
@@ -1163,6 +1334,8 @@ export async function autoReconcileClientBankTransactions({
     const rawTx = batchRes.data.valueRanges?.[0]?.values || [];
     const rawUnrecon = batchRes.data.valueRanges?.[1]?.values || [];
     const rawAccounts = batchRes.data.valueRanges?.[2]?.values || [];
+    const da1Raw = String(batchRes.data.valueRanges?.[3]?.values?.[0]?.[0] || "").trim();
+    const isQbDa1 = da1Raw.toLowerCase().includes("quick");
 
     const trackedBankAccounts = rawAccounts
       .map(r => String(r[0] || "").trim())
@@ -1200,13 +1373,18 @@ export async function autoReconcileClientBankTransactions({
       const amount = r[5] || "";
       const category = String(r[9] || "").trim();
       const vatApplies = String(r[10] || "").trim() || "No";
+      const numAmt = parseCellNumber(amount) ?? 0;
+      const absAmt = Math.abs(numAmt);
+      const isNegative = isQbDa1 ? numAmt > 0 : numAmt < 0;
       return {
         rowNum: i + 4,
         date,
         payee,
         particulars,
-        amount,
-        outAmount: amount,
+        amount: absAmt || amount,
+        outAmount: isNegative ? absAmt : 0,
+        inAmount: !isNegative ? absAmt : 0,
+        isNegative,
         category,
         vatApplies
       };

@@ -13,7 +13,7 @@
 import { getSheetsClient, withRetry, getSheetGid, colLetterToNum } from "./sheetsClient.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { sanitizeCashAdjustmentInput } from "./cashflowReconService.js";
-import { memoryCache } from "./cacheService.js";
+import { memoryCache, invalidatePmaClientCache } from "./cacheService.js";
 import { redisClient } from "./redisClient.js";
 
 export function colIdxToLetter(colIdx) {
@@ -306,23 +306,9 @@ export async function saveCashBatch({
     });
   }
 
-  // Execute value batch update
-  if (validValueUpdates.length > 0) {
-    await withRetry(async () => {
-      return await sheets.spreadsheets.values.batchUpdate({
-        spreadsheetId: cleanId,
-        requestBody: {
-          valueInputOption: "USER_ENTERED",
-          data: validValueUpdates.map((v) => ({
-            range: v.range,
-            values: v.values,
-          })),
-        },
-      });
-    });
-  }
-
   // Update notes if provided (allowed for any cell Col B onwards)
+  // Execute structural/metadata spreadsheets.batchUpdate FIRST while the sheet is idle,
+  // then write cell values SECOND so note updates never block behind Cash formula recalculation.
   const validNoteRequests = [];
   if (cellNotes && Array.isArray(cellNotes) && cellNotes.length > 0) {
     const gid = await getSheetGid(sheets, cleanId, "Cash");
@@ -358,16 +344,25 @@ export async function saveCashBatch({
     }
   }
 
+  // Execute value batch update SECOND
+  if (validValueUpdates.length > 0) {
+    await withRetry(async () => {
+      return await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: cleanId,
+        requestBody: {
+          valueInputOption: "USER_ENTERED",
+          data: validValueUpdates.map((v) => ({
+            range: v.range,
+            values: v.values,
+          })),
+        },
+      });
+    });
+  }
+
   // Invalidate caches
   try {
-    const cacheKey = `pma_cash_${cleanId}`;
-    const portalKey = `pulse:portal:cash:${cleanId}`;
-    if (redisClient?.isOpen) {
-      await Promise.all([redisClient.del(cacheKey), redisClient.del(portalKey)]);
-    } else {
-      memoryCache.delete(cacheKey);
-      memoryCache.delete(portalKey);
-    }
+    await invalidatePmaClientCache(cleanId, null, ["cash"]);
   } catch {}
 
   // Log activity
@@ -448,14 +443,7 @@ export async function saveCashCellNote({
 
   // Invalidate caches
   try {
-    const cacheKey = `pma_cash_${cleanId}`;
-    const portalKey = `pulse:portal:cash:${cleanId}`;
-    if (redisClient?.isOpen) {
-      await Promise.all([redisClient.del(cacheKey), redisClient.del(portalKey)]);
-    } else {
-      memoryCache.delete(cacheKey);
-      memoryCache.delete(portalKey);
-    }
+    await invalidatePmaClientCache(cleanId, null, ["cash"]);
   } catch {}
 
   await logPmaActivity({

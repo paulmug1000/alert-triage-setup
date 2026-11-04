@@ -2,7 +2,7 @@ import { getSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
 import { verifyUserAuthorizedForSheet, sanitizeFormulaInput, isReadOnlySession } from "../../../services/userPermissions.js";
 import { redisClient } from "../../../services/redisClient.js";
-import { memoryCache } from "../../../services/cacheService.js";
+import { memoryCache, invalidatePmaClientCache } from "../../../services/cacheService.js";
 import { logPulseActivity } from "../../../services/pulseLogger.js";
 import { hasActiveCrmIntegration, isCrmDrivenTab, getCrmDisplayName, isPlaceholderInvoice, NO_END_DATE_SHEET_VALUE, isNoEndDateSentinel } from "../../../utils/helpers.js";
 import { buildRetainerChildRowsWritePlan } from "../../../services/retainers.js";
@@ -77,24 +77,41 @@ export default async function handler(req, res) {
     const confirmedSheetName = confirmedSheetObj.properties.title;
     const confirmedSheetId = confirmedSheetObj.properties.sheetId;
 
-    // 2. Read parent row from Pipeline
-    const parentResp = await withRetry(() =>
-      sheets.spreadsheets.values.get({
-        spreadsheetId: clientSheetId,
-        range: `${pipelineSheetName}!A${pRow}:DH${pRow}`,
-        valueRenderOption: "FORMULA",
-      })
-    );
-    const parentData = parentResp.data?.values?.[0] || [];
-    const parentClient = (parentData[0] || "").trim();
-    const parentJobName = (parentData[1] || "").trim();
+    // 2. Read parent + potential child rows from Pipeline, Pipeline headers, and Confirmed rows in parallel
+    const [pipelineWindowResp, confDataResp, pHeaderResp] = await Promise.all([
+      withRetry(() =>
+        sheets.spreadsheets.values.get({
+          spreadsheetId: clientSheetId,
+          range: `${pipelineSheetName}!A${pRow}:DH${pRow + 10}`,
+          valueRenderOption: "FORMULA",
+        })
+      ),
+      withRetry(() =>
+        sheets.spreadsheets.values.get({
+          spreadsheetId: clientSheetId,
+          range: `${confirmedSheetName}!A:BH`,
+          valueRenderOption: "FORMATTED_VALUE",
+        })
+      ),
+      withRetry(() =>
+        sheets.spreadsheets.values.get({
+          spreadsheetId: clientSheetId,
+          range: `${pipelineSheetName}!1:2`,
+          valueRenderOption: "FORMATTED_VALUE",
+        })
+      ).catch(() => null),
+    ]);
+    const pipelineWindowRows = pipelineWindowResp.data?.values || [];
+    const parentData = pipelineWindowRows[0] || [];
+    const parentClient = String(parentData[0] ?? "").trim();
+    const parentJobName = String(parentData[1] ?? "").trim();
 
     if (!parentClient && !parentJobName) {
       throw new Error(`Pipeline row ${pRow} does not contain client or job name`);
     }
 
     // Guard: Prevent manual promotion of CRM-originated pipeline deals
-    const parentProjectCode = (parentData[2] || "").trim();
+    const parentProjectCode = String(parentData[2] ?? "").trim();
     if (parentProjectCode) {
       let crmTool = "None";
       let crmDrives = "NA";
@@ -131,22 +148,15 @@ export default async function handler(req, res) {
       }
     }
 
-    // 3. Find child rows in Pipeline (batch read up to 10 rows below)
+    // 3. Find child rows in Pipeline (from already-loaded window)
     const childRows = [];
     const childRowsData = [];
-    const potentialChildrenResp = await withRetry(() =>
-      sheets.spreadsheets.values.get({
-        spreadsheetId: clientSheetId,
-        range: `${pipelineSheetName}!A${pRow + 1}:DH${pRow + 10}`,
-        valueRenderOption: "FORMULA",
-      })
-    );
-    const nextRows = potentialChildrenResp.data?.values || [];
+    const nextRows = pipelineWindowRows.slice(1);
 
     for (let i = 0; i < nextRows.length; i++) {
-      const r = nextRows[i];
-      const rClient = (r[0] || "").trim();
-      const rJobName = (r[1] || "").trim();
+      const r = nextRows[i] || [];
+      const rClient = String(r[0] ?? "").trim();
+      const rJobName = String(r[1] ?? "").trim();
       if (
         rClient.toLowerCase() === parentClient.toLowerCase() &&
         rJobName.toLowerCase() === parentJobName.toLowerCase()
@@ -161,13 +171,6 @@ export default async function handler(req, res) {
     const totalRowsNeeded = 1 + childRows.length;
 
     // 4. Find last job row in Confirmed sheet
-    const confDataResp = await withRetry(() =>
-      sheets.spreadsheets.values.get({
-        spreadsheetId: clientSheetId,
-        range: `${confirmedSheetName}!A:BH`,
-        valueRenderOption: "FORMATTED_VALUE",
-      })
-    );
     const allConfRows = confDataResp.data?.values || [];
     let lastJobRow = 1;
     for (let r = allConfRows.length - 1; r >= 0; r--) {
@@ -454,28 +457,11 @@ export default async function handler(req, res) {
       console.warn("⚠️ Pre-write formatting/grouping in Confirmed warning (non-fatal):", structErr.message);
     }
 
-    await withRetry(() =>
-      sheets.spreadsheets.values.batchUpdate({
-        spreadsheetId: clientSheetId,
-        requestBody: {
-          valueInputOption: "USER_ENTERED",
-          data: confirmedBatchData,
-        },
-      })
-    );
-
-    // 8. Update Pipeline row: set % likelihood to 100% and Copied to Conf? to "Yes"
+    // 8. Update Pipeline row: set % likelihood to 100% and Copied to Conf? to "Yes" in the same batchUpdate
     let likelihoodCol = "AN";
     let copiedStatusCol = "DD";
     try {
-      const pHeaderResp = await withRetry(() =>
-        sheets.spreadsheets.values.get({
-          spreadsheetId: clientSheetId,
-          range: `${pipelineSheetName}!1:2`,
-          valueRenderOption: "FORMATTED_VALUE",
-        })
-      );
-      const rows = pHeaderResp.data?.values || [];
+      const rows = pHeaderResp?.data?.values || [];
       const headerRow = rows[1] && rows[1].length > 10 ? rows[1] : (rows[0] || []);
       const lIdx = headerRow.findIndex((h) => {
         const s = String(h || "").trim().toLowerCase();
@@ -495,55 +481,49 @@ export default async function handler(req, res) {
       console.warn("⚠️ Failed to detect pipeline header columns, falling back to AN & DD:", e.message);
     }
 
+    confirmedBatchData.push(
+      {
+        range: `${pipelineSheetName}!${likelihoodCol}${pRow}`,
+        values: [["100%"]],
+      },
+      {
+        range: `${pipelineSheetName}!${copiedStatusCol}${pRow}`,
+        values: [["Yes"]],
+      }
+    );
+
     await withRetry(() =>
       sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: clientSheetId,
         requestBody: {
           valueInputOption: "USER_ENTERED",
-          data: [
-            {
-              range: `${pipelineSheetName}!${likelihoodCol}${pRow}`,
-              values: [["100%"]],
-            },
-            {
-              range: `${pipelineSheetName}!${copiedStatusCol}${pRow}`,
-              values: [["Yes"]],
-            },
-          ],
+          data: confirmedBatchData,
         },
       })
     );
 
-    // 9. Invalidate In-Memory and Redis caches
-    memoryCache.del(`pulse:portal:*:${clientSheetId}*`);
+    // 9. Invalidate In-Memory and Redis caches across both Portal and PMA
     try {
-      const keys = await redisClient.keys(`pulse:portal:*:${clientSheetId}*`);
-      if (keys.length > 0) {
-        await redisClient.del(keys);
-      }
+      await invalidatePmaClientCache(clientSheetId, null, ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]);
     } catch (cacheErr) {
-      console.warn("⚠️ Redis invalidation warning:", cacheErr.message);
+      console.warn("⚠️ Cache invalidation warning:", cacheErr.message);
     }
 
-    // 10. Log Activity
-    try {
-      await logPulseActivity(sheets, {
-        clientName: verifiedClientName || clientName || parentClient || "Client",
-        category: "JOB",
-        action: "JOB_CONFIRMED",
-        summary: `Confirmed job: "${parentJobName || "Job"}" (Pipeline row ${pRow} → Confirmed row ${targetParentRow})`,
-        details: {
-          jobName: parentJobName,
-          client: parentClient,
-          pipelineRow: pRow,
-          confirmedRow: targetParentRow,
-          childRowsCount: childRows.length
-        },
-        user: sessionUser.name || sessionUser.email
-      });
-    } catch (logErr) {
-      console.warn("⚠️ Failed to log confirm-job activity:", logErr.message);
-    }
+    // 10. Log Activity (non-blocking)
+    logPulseActivity(sheets, {
+      clientName: verifiedClientName || clientName || parentClient || "Client",
+      category: "JOB",
+      action: "JOB_CONFIRMED",
+      summary: `Confirmed job: "${parentJobName || "Job"}" (Pipeline row ${pRow} → Confirmed row ${targetParentRow})`,
+      details: {
+        jobName: parentJobName,
+        client: parentClient,
+        pipelineRow: pRow,
+        confirmedRow: targetParentRow,
+        childRowsCount: childRows.length
+      },
+      user: sessionUser.name || sessionUser.email
+    }).catch((logErr) => console.warn("⚠️ Failed to log confirm-job activity:", logErr.message));
 
     return res.status(200).json({
       success: true,

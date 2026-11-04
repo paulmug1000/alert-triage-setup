@@ -28,6 +28,17 @@ export default function DeleteInvoiceFromPulseModal({
     return null;
   }, [target, allClientsMap]);
 
+  const resolvedMasterSheetId = useMemo(() => {
+    if (target?.masterSheetId) return target.masterSheetId;
+    if (target?.clientInfo?.masterSheetId) return target.clientInfo.masterSheetId;
+    const cName = target?.clientName || target?.alert?.clientName;
+    if (cName && allClientsMap) {
+      const match = allClientsMap[cName] || Object.values(allClientsMap).find(c => c.clientName?.toLowerCase() === cName.toLowerCase());
+      if (match?.masterSheetId) return match.masterSheetId;
+    }
+    return null;
+  }, [target, allClientsMap]);
+
   const { alert, clientName, confirmedRow, slotNum, invoiceRef, jobName, endClientName, projectCode, amount, sentDate } = target || {};
 
   // Live check on open: scan the spreadsheet live to verify where the invoiceRef actually lives right now
@@ -107,6 +118,7 @@ export default function DeleteInvoiceFromPulseModal({
           body: JSON.stringify({
             action: "update_invoice_slot",
             clientSheetId: resolvedClientSheetId,
+            masterSheetId: resolvedMasterSheetId || "",
             clientName: clientName || "",
             tabName: "Confirmed",
             rowNum: effectiveRowNum,

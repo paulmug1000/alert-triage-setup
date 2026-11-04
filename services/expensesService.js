@@ -17,7 +17,7 @@
 import { getSheetsClient, withRetry, getSheetGid, colLetterToNum, extractSheetIdFromUrl } from "./sheetsClient.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { sanitizeFormulaInput } from "./userPermissions.js";
-import { memoryCache } from "./cacheService.js";
+import { memoryCache, invalidatePmaClientCache } from "./cacheService.js";
 import { redisClient } from "./redisClient.js";
 import { getClients } from "./workspaces.js";
 
@@ -384,8 +384,9 @@ export async function saveExpenseMetadata({
   // Invalidate cache
   const cacheKey = `pma_expenses_${clientSheetId}`;
   try {
+    memoryCache.del(cacheKey);
     if (redisClient?.isOpen) await redisClient.del(cacheKey);
-    else memoryCache.delete(cacheKey);
+    await invalidatePmaClientCache(clientSheetId, null, ["outgoings", "views", "cash"]);
   } catch { }
 
   await logPmaActivity({
@@ -433,8 +434,9 @@ export async function toggleExpenseDelivery({
   // Invalidate cache
   const cacheKey = `pma_expenses_${clientSheetId}`;
   try {
+    memoryCache.del(cacheKey);
     if (redisClient?.isOpen) await redisClient.del(cacheKey);
-    else memoryCache.delete(cacheKey);
+    await invalidatePmaClientCache(clientSheetId, null, ["outgoings", "views", "cash"]);
   } catch { }
 
   await logPmaActivity({
@@ -561,8 +563,9 @@ export async function saveExpenseAmount({
   // Invalidate cache
   const cacheKey = `pma_expenses_${clientSheetId}`;
   try {
+    memoryCache.del(cacheKey);
     if (redisClient?.isOpen) await redisClient.del(cacheKey);
-    else memoryCache.delete(cacheKey);
+    await invalidatePmaClientCache(clientSheetId, null, ["outgoings", "views", "cash"]);
   } catch { }
 
   await logPmaActivity({

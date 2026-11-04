@@ -75,6 +75,9 @@ export default function InvoicesNewJobModal({
 
   // Fetch client's default days to pay from DataChgAlert!B52 (Master Sheet)
   useEffect(() => {
+    if (typeof invoicesClient?.defaultDaysToPay === "number" && !isNaN(invoicesClient.defaultDaysToPay)) {
+      return;
+    }
     let isMounted = true;
     const fetchDefaultDays = async () => {
       if (!invoicesClient?.clientSheetId && !invoicesClient?.masterSheetId) return;
@@ -142,10 +145,24 @@ export default function InvoicesNewJobModal({
         onMarkPullPending(invoicesClient.masterSheetId);
       }
 
+      const createdJobSummary = {
+        rowNum: data.newRowNum,
+        client: inv.client || "",
+        jobName: jobName.trim(),
+        projectCode: projectCode.trim(),
+        revenue: parseFloat(revenue) || 0,
+        directCosts: parseFloat(directCosts) || 0,
+        vatYesNo,
+        projectType,
+        startDate,
+        endDate: isRetainerNoEnd ? "No end date" : endDate,
+        daysToPay: safeDaysToPay,
+      };
+
       onClose();
       // Trigger all the state updates back in the parent component
       if (typeof onSuccess === "function") {
-        await onSuccess(inv);
+        await onSuccess(inv, createdJobSummary);
       }
     } catch (e) { setError(e.message); setSaving(false); }
   };

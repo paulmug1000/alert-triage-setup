@@ -2,7 +2,7 @@ import { getSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
 import { verifyUserAuthorizedForSheet, sanitizeFormulaInput, isReadOnlySession } from "../../../services/userPermissions.js";
 import { redisClient } from "../../../services/redisClient.js";
-import { memoryCache } from "../../../services/cacheService.js";
+import { memoryCache, invalidatePmaClientCache } from "../../../services/cacheService.js";
 import { logPulseActivity } from "../../../services/pulseLogger.js";
 import { provisionRetainerChildRows_ } from "../../../services/retainers.js";
 import {
@@ -69,15 +69,19 @@ const parseExpenseStatus = (val) => {
 /**
  * Finds the last row containing actual job data in cols 1-39 or 42-60.
  */
-async function findLastJobRow(sheets, spreadsheetId, sheetName, minRow = 1) {
-  const dataResp = await withRetry(() =>
-    sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: `${sheetName}!A:BH`,
-      valueRenderOption: "FORMATTED_VALUE",
-    })
-  );
-  const allRows = dataResp.data?.values || [];
+async function findLastJobRow(sheets, spreadsheetId, sheetName, minRow = 1, cachedRowsRef = null) {
+  let allRows = cachedRowsRef?.rows || null;
+  if (!allRows) {
+    const dataResp = await withRetry(() =>
+      sheets.spreadsheets.values.get({
+        spreadsheetId,
+        range: `${sheetName}!A:BH`,
+        valueRenderOption: "FORMATTED_VALUE",
+      })
+    );
+    allRows = dataResp.data?.values || [];
+    if (cachedRowsRef) cachedRowsRef.rows = allRows;
+  }
   let lastJobRow = minRow;
   for (let r = allRows.length - 1; r >= 0; r--) {
     const rowData = allRows[r] || [];
@@ -95,15 +99,19 @@ async function findLastJobRow(sheets, spreadsheetId, sheetName, minRow = 1) {
  * Finds the second blank row after all job data and moves it directly after insertAfterRow.
  * Matches the original GAS findAndMoveBlankRow logic 1:1.
  */
-async function findAndMoveBlankRow(sheets, spreadsheetId, sheetId, sheetName, insertAfterRow) {
-  const dataResp = await withRetry(() =>
-    sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: `${sheetName}!A:BH`,
-      valueRenderOption: "FORMATTED_VALUE",
-    })
-  );
-  const allRows = dataResp.data?.values || [];
+async function findAndMoveBlankRow(sheets, spreadsheetId, sheetId, sheetName, insertAfterRow, cachedRowsRef = null) {
+  let allRows = cachedRowsRef?.rows || null;
+  if (!allRows) {
+    const dataResp = await withRetry(() =>
+      sheets.spreadsheets.values.get({
+        spreadsheetId,
+        range: `${sheetName}!A:BH`,
+        valueRenderOption: "FORMATTED_VALUE",
+      })
+    );
+    allRows = dataResp.data?.values || [];
+    if (cachedRowsRef) cachedRowsRef.rows = allRows;
+  }
   let lastJobRow = insertAfterRow;
   for (let r = allRows.length - 1; r >= 0; r--) {
     const rowData = allRows[r] || [];
@@ -192,6 +200,12 @@ async function findAndMoveBlankRow(sheets, spreadsheetId, sheetId, sheetName, in
       },
     })
   );
+
+  // Update cachedRowsRef in memory to reflect moved row
+  if (cachedRowsRef?.rows && Array.isArray(cachedRowsRef.rows)) {
+    const movedRow = cachedRowsRef.rows.splice(blankRowToMove - 1, 1)[0] || [];
+    cachedRowsRef.rows.splice(targetRow - 1, 0, movedRow);
+  }
 
   return targetRow;
 }
@@ -372,14 +386,14 @@ export default async function handler(req, res) {
     }
     const verifiedClientName = auth.clientName;
 
-    // 1. Determine target sheet name and sheet metadata
+    // 1. Determine target sheet name and sheet metadata (including rowGroups to avoid a second metadata fetch later)
     const parsedLikelihoodNum = parseFloat(String(job.likelihood || "").replace(/[%,\s]/g, ""));
     const isLikelihood100 = !isNaN(parsedLikelihoodNum) && (parsedLikelihoodNum >= 100 || (parsedLikelihoodNum === 1 && String(job.likelihood).includes("1")));
     const isTargetConfirmed = String(job.type || "").toLowerCase() === "confirmed" || isLikelihood100;
     const metaResp = await withRetry(() =>
       sheets.spreadsheets.get({
         spreadsheetId: clientSheetId,
-        fields: "sheets.properties",
+        fields: "sheets(properties.sheetId,properties.title,rowGroups)",
       })
     );
     const sheetMetaList = metaResp.data?.sheets || [];
@@ -586,8 +600,9 @@ export default async function handler(req, res) {
     };
     let existingChildRows = sanitizeContiguousChildren(parentRow, job.childRowNumbers);
 
+    const deferredClearRanges = [];
     if (isSheetChange) {
-      // Clear old rows on the previous sheet
+      // Defer clearing old rows on the previous sheet until after all structural operations complete
       const oldSheetName = wasPipeline ? "Pipeline" : "Confirmed";
       const minOldRow = 2;
       const oldRow = parseInt(job.rowNumber, 10);
@@ -613,9 +628,8 @@ export default async function handler(req, res) {
           } catch (_) { }
         }
         const rowsToClear = [oldRow, ...verifiedOldChildren].filter((r) => r >= minOldRow);
-        const oldClearRanges = [];
         for (const r of rowsToClear) {
-          oldClearRanges.push(
+          deferredClearRanges.push(
             `${oldSheetName}!A${r}:AM${r}`,
             `${oldSheetName}!AN${r}`,
             `${oldSheetName}!AP${r}:BH${r}`,
@@ -623,47 +637,53 @@ export default async function handler(req, res) {
             `${oldSheetName}!DD${r}`
           );
         }
-        if (oldClearRanges.length > 0) {
-          try {
-            await withRetry(() =>
-              sheets.spreadsheets.values.batchClear({
-                spreadsheetId: clientSheetId,
-                requestBody: { ranges: oldClearRanges },
-              })
-            );
-          } catch (clearErr) {
-            console.warn(`Warning clearing old rows on ${oldSheetName}:`, clearErr.message);
-          }
-        }
       }
       // Target sheet will place this as a new job at first blank row
       existingChildRows = [];
     }
 
     const minTargetRow = 2;
+    const cachedRowsRef = { rows: null };
+    const preloadedFormulaRowsByRowNum = new Map();
+    const maxCols = 96;
+    let existingParentRow = [];
+
     if (isNewJob || isNaN(parentRow) || parentRow < minTargetRow) {
-      const lastJobRow = await findLastJobRow(sheets, clientSheetId, sheetName, 1);
+      const lastJobRow = await findLastJobRow(sheets, clientSheetId, sheetName, 1, cachedRowsRef);
       parentRow = Math.max(minTargetRow, lastJobRow + 1);
       existingChildRows = [];
+      const parentRowResp = await withRetry(() =>
+        sheets.spreadsheets.values.get({
+          spreadsheetId: clientSheetId,
+          range: `${sheetName}!A${parentRow}:CR${parentRow}`,
+          valueRenderOption: "FORMULA",
+        })
+      );
+      existingParentRow = parentRowResp.data?.values?.[0] || [];
     } else {
-      // For existing job on the same sheet, verify or discover child rows directly below parentRow
+      // Single combined read for existing parent row (FORMULA) + child row inspection window directly below parentRow
       try {
         const checkCount = Math.max(10, existingChildRows.length);
         const inspectResp = await withRetry(() =>
           sheets.spreadsheets.values.get({
             spreadsheetId: clientSheetId,
-            range: `${sheetName}!A${parentRow + 1}:BH${parentRow + checkCount}`,
-            valueRenderOption: "FORMATTED_VALUE",
+            range: `${sheetName}!A${parentRow}:CR${parentRow + checkCount}`,
+            valueRenderOption: "FORMULA",
           })
         );
-        const nextRows = inspectResp.data?.values || [];
+        const windowRows = inspectResp.data?.values || [];
+        existingParentRow = windowRows[0] || [];
+        for (let idx = 0; idx < windowRows.length; idx++) {
+          preloadedFormulaRowsByRowNum.set(parentRow + idx, windowRows[idx] || []);
+        }
+        const nextRows = windowRows.slice(1);
         const verifiedChildren = [];
         for (let i = 0; i < nextRows.length; i++) {
           const r = nextRows[i] || [];
-          const rClient = (r[cols.client] || "").trim();
-          const rJobName = (r[cols.jobName] || "").trim();
-          const rRev = (r[cols.revenue] || "").trim();
-          const rDc = (r[cols.directCosts] || "").trim();
+          const rClient = String(r[cols.client] ?? "").trim();
+          const rJobName = String(r[cols.jobName] ?? "").trim();
+          const rRev = String(r[cols.revenue] ?? "").trim();
+          const rDc = String(r[cols.directCosts] ?? "").trim();
           const isExplicitChild = existingChildRows.includes(parentRow + 1 + i);
           const isAutoMatchedChild =
             rClient.toLowerCase() === String(job.client || "").toLowerCase() &&
@@ -679,17 +699,6 @@ export default async function handler(req, res) {
         console.warn("Child row auto-detection warning:", e.message);
       }
     }
-
-    // Read existing parent row early so we can detect Project -> Retainer conversions and preserve formula columns
-    const maxCols = 96;
-    const parentRowResp = await withRetry(() =>
-      sheets.spreadsheets.values.get({
-        spreadsheetId: clientSheetId,
-        range: `${sheetName}!A${parentRow}:CR${parentRow}`,
-        valueRenderOption: "FORMULA",
-      })
-    );
-    const existingParentRow = parentRowResp.data?.values?.[0] || [];
 
     // 4. INVOICE AND EXPENSE PACKING LOGIC (1:1 with Original App)
     const validInvoices = (job.invoices || []).filter(
@@ -772,6 +781,7 @@ export default async function handler(req, res) {
 
     // 5. MANAGE CHILD ROWS (reuse existing, create new via moveDimension, or clear unused)
     const actualChildRows = [];
+    let didMoveRows = false;
 
     for (let idx = 0; idx < totalChildRowsNeeded; idx++) {
       if (existingChildRows[idx]) {
@@ -784,8 +794,10 @@ export default async function handler(req, res) {
           clientSheetId,
           sheetId,
           sheetName,
-          insertAfterRow
+          insertAfterRow,
+          cachedRowsRef
         );
+        didMoveRows = true;
         actualChildRows.push(newChildRow);
       }
     }
@@ -797,31 +809,16 @@ export default async function handler(req, res) {
       return s;
     };
 
-    // Clear any excess child rows that are no longer needed (safe segmented ranges preserving AO and BI:BW)
+    // Defer clearing any excess child rows that are no longer needed until after all structural operations complete
     if (existingChildRows.length > totalChildRowsNeeded) {
-      const excessClearRanges = [];
       for (let i = totalChildRowsNeeded; i < existingChildRows.length; i++) {
         const rowToClear = existingChildRows[i];
-        excessClearRanges.push(
+        deferredClearRanges.push(
           `${sheetName}!A${rowToClear}:AM${rowToClear}`,
           `${sheetName}!AN${rowToClear}`,
           `${sheetName}!AP${rowToClear}:BH${rowToClear}`,
           `${sheetName}!BX${rowToClear}:CR${rowToClear}`
         );
-      }
-      if (excessClearRanges.length > 0) {
-        try {
-          await withRetry(() =>
-            sheets.spreadsheets.values.batchClear({
-              spreadsheetId: clientSheetId,
-              requestBody: {
-                ranges: excessClearRanges,
-              },
-            })
-          );
-        } catch (e) {
-          console.warn("Warning clearing unused child rows:", e.message);
-        }
       }
     }
 
@@ -856,16 +853,30 @@ export default async function handler(req, res) {
     ];
 
     // 7. PREPARE CHILD ROWS (segmented into identical safe bands)
+    const missingChildRows = [];
     for (let k = 0; k < totalChildRowsNeeded; k++) {
       const childRowNum = actualChildRows[k];
-      const childRowResp = await withRetry(() =>
-        sheets.spreadsheets.values.get({
+      if (didMoveRows || !preloadedFormulaRowsByRowNum.has(childRowNum)) {
+        missingChildRows.push(childRowNum);
+      }
+    }
+    if (missingChildRows.length > 0) {
+      const childBatchResp = await withRetry(() =>
+        sheets.spreadsheets.values.batchGet({
           spreadsheetId: clientSheetId,
-          range: `${sheetName}!A${childRowNum}:CR${childRowNum}`,
+          ranges: missingChildRows.map((rNum) => `${sheetName}!A${rNum}:CR${rNum}`),
           valueRenderOption: "FORMULA",
         })
       );
-      const existingChildRow = childRowResp.data?.values?.[0] || [];
+      const valueRanges = childBatchResp.data?.valueRanges || [];
+      missingChildRows.forEach((rNum, idx) => {
+        preloadedFormulaRowsByRowNum.set(rNum, valueRanges[idx]?.values?.[0] || []);
+      });
+    }
+
+    for (let k = 0; k < totalChildRowsNeeded; k++) {
+      const childRowNum = actualChildRows[k];
+      const existingChildRow = preloadedFormulaRowsByRowNum.get(childRowNum) || [];
       const updatedChildRow = new Array(maxCols).fill("");
       for (let c = 0; c < maxCols; c++) {
         if (existingChildRow[c] !== undefined) {
@@ -901,28 +912,20 @@ export default async function handler(req, res) {
       );
     }
 
-    // 7.1. EXECUTE BATCH UPDATE (atomic, preserves Column AO and BI:BW untouched)
-    await withRetry(() =>
-      sheets.spreadsheets.values.batchUpdate({
-        spreadsheetId: clientSheetId,
-        requestBody: {
-          valueInputOption: "USER_ENTERED",
-          data: batchUpdateData,
-        },
-      })
-    );
-
-    // 7.5. GROUP CHILD ROWS (grouped with other children, but not with parent)
+    // 7.1. GROUP CHILD ROWS FIRST (while sheet is idle so structural batchUpdate completes in <1s)
     try {
-      const metaWithGroups = await withRetry(() =>
-        sheets.spreadsheets.get({
-          spreadsheetId: clientSheetId,
-          fields: "sheets(properties.sheetId,properties.title,rowGroups)",
-        })
-      );
-      const currentSheetObj = (metaWithGroups.data?.sheets || []).find(
-        (s) => s.properties?.sheetId === sheetId
-      );
+      let currentSheetObj = targetSheetObj;
+      if (didMoveRows) {
+        const metaWithGroups = await withRetry(() =>
+          sheets.spreadsheets.get({
+            spreadsheetId: clientSheetId,
+            fields: "sheets(properties.sheetId,properties.title,rowGroups)",
+          })
+        );
+        currentSheetObj = (metaWithGroups.data?.sheets || []).find(
+          (s) => s.properties?.sheetId === sheetId
+        );
+      }
       const existingRowGroups = currentSheetObj?.rowGroups || [];
       const groupRequests = [];
 
@@ -1090,44 +1093,60 @@ export default async function handler(req, res) {
       console.warn("⚠️ Row grouping warning (non-fatal):", groupErr.message);
     }
 
-    // 8. INVALIDATE CACHES FOR THIS CLIENT
-    try {
-      memoryCache.del(`pulse:portal:*:${clientSheetId}*`);
-      const keys = await redisClient.keys(`pulse:portal:*:${clientSheetId}*`);
-      if (keys.length > 0) {
-        await redisClient.del(keys);
+    // 7.5. EXECUTE VALUE WRITES & DEFERRED CLEARS SECOND (atomic, preserves Column AO and BI:BW untouched)
+    await withRetry(() =>
+      sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: clientSheetId,
+        requestBody: {
+          valueInputOption: "USER_ENTERED",
+          data: batchUpdateData,
+        },
+      })
+    );
+
+    if (deferredClearRanges.length > 0) {
+      try {
+        await withRetry(() =>
+          sheets.spreadsheets.values.batchClear({
+            spreadsheetId: clientSheetId,
+            requestBody: { ranges: deferredClearRanges },
+          })
+        );
+      } catch (clearErr) {
+        console.warn("Warning clearing unused/old rows:", clearErr.message);
       }
+    }
+
+    // 8. INVALIDATE CACHES FOR THIS CLIENT (BOTH PORTAL AND PMA)
+    try {
+      await invalidatePmaClientCache(clientSheetId, null, ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]);
     } catch (cacheErr) {
       console.warn("⚠️ Cache invalidation warning:", cacheErr.message);
     }
 
-    // 9. LOG ACTIVITY
-    try {
-      const jobName = job.jobName || "Untitled Job";
-      const action = isNewJob ? "JOB_CREATED" : "JOB_MODIFIED";
-      const summary = isNewJob
-        ? `Created new job: "${jobName}" (${sheetName})`
-        : `Updated job: "${jobName}" (${sheetName})`;
+    // 9. LOG ACTIVITY (NON-BLOCKING)
+    const jobName = job.jobName || "Untitled Job";
+    const action = isNewJob ? "JOB_CREATED" : "JOB_MODIFIED";
+    const summary = isNewJob
+      ? `Created new job: "${jobName}" (${sheetName})`
+      : `Updated job: "${jobName}" (${sheetName})`;
 
-      await logPulseActivity(sheets, {
-        clientName: verifiedClientName || clientName || "Client",
-        category: "JOB",
-        action,
-        summary,
-        details: {
-          jobName,
-          client: job.client,
-          sheetName,
-          revenue: job.revenue,
-          isNewJob,
-          rowNumber: parentRow,
-          childRows: actualChildRows.length
-        },
-        user: sessionUser.name || sessionUser.email
-      });
-    } catch (logErr) {
-      console.warn("⚠️ Failed to log job activity:", logErr.message);
-    }
+    logPulseActivity(sheets, {
+      clientName: verifiedClientName || clientName || "Client",
+      category: "JOB",
+      action,
+      summary,
+      details: {
+        jobName,
+        client: job.client,
+        sheetName,
+        revenue: job.revenue,
+        isNewJob,
+        rowNumber: parentRow,
+        childRows: actualChildRows.length
+      },
+      user: sessionUser.name || sessionUser.email
+    }).catch((logErr) => console.warn("⚠️ Failed to log job activity:", logErr.message));
 
     if (shouldProvisionRetainerSchedule) {
       await provisionRetainerChildRows_(sheets, {

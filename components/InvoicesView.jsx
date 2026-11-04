@@ -1131,7 +1131,7 @@ export default function InvoicesView({
           invoicesClient={invoicesClient}
           onClose={() => setInvoicesNewJob(null)}
           onMarkPullPending={(masterId) => outgoingsPullPendingRef.current = masterId}
-          onSuccess={async (inv) => {
+          onSuccess={async (inv, createdJobSummary) => {
             if (addAssignedAppId) {
               addAssignedAppId(inv.invoiceNo, invoicesClient?.clientName);
               if (inv.reference && inv.reference !== inv.invoiceNo) {
@@ -1153,7 +1153,44 @@ export default function InvoicesView({
               if (updatedCounts["invoiceDashboardDiscr"] === 0) updatedFlags.invoiceDashboardDiscr = false;
               return { ...c, alertCounts: updatedCounts, flags: updatedFlags };
             }));
-            await loadInvoicesJobs(invoicesClient, invoicesShowAll, false, true);
+            if (createdJobSummary?.rowNum) {
+              const invAmt = parseFloat(inv.amount) || 0;
+              const revAmt = parseFloat(createdJobSummary.revenue) || invAmt;
+              setInvoicesJobs(prev => [
+                {
+                  rowNum: createdJobSummary.rowNum,
+                  client: createdJobSummary.client || inv.client || "",
+                  jobName: createdJobSummary.jobName || inv.job || "",
+                  projectCode: createdJobSummary.projectCode || "",
+                  revenue: revAmt,
+                  directCosts: parseFloat(createdJobSummary.directCosts) || 0,
+                  vat: createdJobSummary.vatYesNo || "No",
+                  projectRetainer: createdJobSummary.projectType || "Project",
+                  startDate: createdJobSummary.startDate || "",
+                  endDate: createdJobSummary.endDate || "",
+                  invoicedAmount: invAmt,
+                  uninvoicedAmount: revAmt - invAmt,
+                  slots: [
+                    {
+                      slotNum: 1,
+                      amount: invAmt,
+                      ref: inv.invoiceNo || "",
+                      sentDate: inv.sentDate || "",
+                      daysToPay: createdJobSummary.daysToPay ?? 30,
+                      status: inv.status || "Sent",
+                      hasData: true,
+                    },
+                    { slotNum: 2, amount: 0, ref: "", sentDate: "", daysToPay: "", status: "", hasData: false },
+                    { slotNum: 3, amount: 0, ref: "", sentDate: "", daysToPay: "", status: "", hasData: false },
+                  ],
+                },
+                ...(Array.isArray(prev) ? prev : []),
+              ]);
+            }
+            if (invoicesClient?.clientSheetId) {
+              invalidateCachedClientData?.(invoicesClient.clientSheetId);
+            }
+            loadInvoicesJobs(invoicesClient, invoicesShowAll, true, true);
           }}
         />
       )}

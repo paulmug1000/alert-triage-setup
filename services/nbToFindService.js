@@ -20,7 +20,7 @@
 import { getSheetsClient, withRetry, getSheetGid, colLetterToNum } from "./sheetsClient.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { sanitizeFormulaInput } from "./userPermissions.js";
-import { memoryCache } from "./cacheService.js";
+import { memoryCache, invalidatePmaClientCache } from "./cacheService.js";
 import { redisClient } from "./redisClient.js";
 
 export function colIdxToLetter(colIdx) {
@@ -360,8 +360,9 @@ export async function saveNBToFindSettings({
   // Invalidate cache
   const cacheKey = `pma_nbtofind_${clientSheetId}`;
   try {
+    memoryCache.del(cacheKey);
     if (redisClient?.isOpen) await redisClient.del(cacheKey);
-    else memoryCache.delete(cacheKey);
+    await invalidatePmaClientCache(clientSheetId, null, ["views", "jobs"]);
   } catch {}
 
   await logPmaActivity({
@@ -469,8 +470,9 @@ export async function saveNBToFindMonthlyValues({
   // Invalidate cache
   const cacheKey = `pma_nbtofind_${clientSheetId}`;
   try {
+    memoryCache.del(cacheKey);
     if (redisClient?.isOpen) await redisClient.del(cacheKey);
-    else memoryCache.delete(cacheKey);
+    await invalidatePmaClientCache(clientSheetId, null, ["views", "jobs"]);
   } catch {}
 
   await logPmaActivity({

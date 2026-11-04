@@ -21,7 +21,7 @@
 import { getSheetsClient, withRetry, getSheetGid } from "./sheetsClient.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { sanitizeFormulaInput } from "./userPermissions.js";
-import { memoryCache } from "./cacheService.js";
+import { memoryCache, invalidatePmaClientCache } from "./cacheService.js";
 import { redisClient } from "./redisClient.js";
 
 export function colIdxToLetter(colIdx) {
@@ -516,11 +516,11 @@ export async function getSalariesData({ clientName, masterSheetId, clientSheetId
 export async function invalidateSalariesCache(masterSheetId, clientSheetId) {
   const cacheKey = `salaries_data:${masterSheetId}:${clientSheetId}`;
   try {
+    memoryCache.del(cacheKey);
     if (redisClient && redisClient.isOpen) {
       await redisClient.del(cacheKey);
-    } else {
-      memoryCache.delete(cacheKey);
     }
+    await invalidatePmaClientCache(clientSheetId, masterSheetId, ["outgoings", "views", "cash"]);
   } catch (e) {
     console.warn("Failed to invalidate salaries cache:", e?.message);
   }

@@ -2,7 +2,7 @@ import { getSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
 import { verifyUserAuthorizedForSheet, sanitizeFormulaInput, isReadOnlySession } from "../../../services/userPermissions.js";
 import { redisClient } from "../../../services/redisClient.js";
-import { memoryCache } from "../../../services/cacheService.js";
+import { memoryCache, invalidatePmaClientCache, del2TierCache } from "../../../services/cacheService.js";
 import { logPulseActivity } from "../../../services/pulseLogger.js";
 
 export default async function handler(req, res) {
@@ -120,38 +120,35 @@ export default async function handler(req, res) {
       })
     );
 
-    // Invalidate caches for this client
+    // Invalidate caches for this client across both Portal and PMA
     try {
-      memoryCache.del(`pulse:portal:*:${clientSheetId}*`);
-      const keys = await redisClient.keys(`pulse:portal:*:${clientSheetId}*`);
-      if (keys.length > 0) {
-        await redisClient.del(keys);
-      }
+      await Promise.all([
+        del2TierCache(`pma_expenses_${clientSheetId}*`),
+        invalidatePmaClientCache(clientSheetId, null, ["outgoings", "views", "cash"]),
+      ]);
     } catch (cacheErr) {
       console.warn("⚠️ Cache invalidation warning:", cacheErr.message);
     }
 
-    // Log Activity
-    try {
-      await logPulseActivity(sheets, {
-        clientName: verifiedClientName || clientName || "Client",
-        category: isContractor ? "CONTRACTORS" : "EXPENSES",
-        action: isContractor ? "CONTRACTOR_CREATED" : "EXPENSE_CREATED",
-        summary: `Added new ${isContractor ? "contractor" : "expense category"} '${nameClean}' (Row ${targetRow})`,
-        details: {
-          name: nameClean,
-          vat: vatClean,
-          invoiceTiming: invClean,
-          paymentTiming: payClean,
-          deliveryPct: pctClean,
-          row: targetRow,
-          clientName: verifiedClientName || clientName,
-        },
-        user: sessionUser.name || sessionUser.email,
-      });
-    } catch (logErr) {
+    // Log Activity asynchronously without blocking response
+    logPulseActivity(sheets, {
+      clientName: verifiedClientName || clientName || "Client",
+      category: isContractor ? "CONTRACTORS" : "EXPENSES",
+      action: isContractor ? "CONTRACTOR_CREATED" : "EXPENSE_CREATED",
+      summary: `Added new ${isContractor ? "contractor" : "expense category"} '${nameClean}' (Row ${targetRow})`,
+      details: {
+        name: nameClean,
+        vat: vatClean,
+        invoiceTiming: invClean,
+        paymentTiming: payClean,
+        deliveryPct: pctClean,
+        row: targetRow,
+        clientName: verifiedClientName || clientName,
+      },
+      user: sessionUser.name || sessionUser.email,
+    }).catch((logErr) => {
       console.warn("⚠️ Failed to log outgoing row creation:", logErr.message);
-    }
+    });
 
     const isDeliveryBool = pctClean === "100%" || (parseFloat(pctClean) || 0) > 0;
 

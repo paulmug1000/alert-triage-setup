@@ -158,6 +158,7 @@ export async function invalidatePmaClientCache(clientSheetId, masterSheetId, sco
       patterns.push(`pulse:pma:direct_costs_jobs:${cleanClientId}*`);
       patterns.push(`pulse:portal:*:${cleanClientId}*`);
       patterns.push(`pulse:view_data:${cleanClientId}:*`);
+      patterns.push(`pma_nbtofind_${cleanClientId}*`);
     }
     if (allScopes || scopes.includes("invoices")) {
       patterns.push(`pulse:pma:invoice_jobs:${cleanClientId}*`);
@@ -168,6 +169,8 @@ export async function invalidatePmaClientCache(clientSheetId, masterSheetId, sco
       patterns.push(`pulse:pma:outgoings:${cleanClientId}*`);
       patterns.push(`pulse:pma:direct_costs_jobs:${cleanClientId}*`);
       patterns.push(`pulse:pma:jobs:${cleanClientId}*`);
+      patterns.push(`pma_expenses_${cleanClientId}*`);
+      patterns.push(`salaries_data:${cleanClientId}*`);
     }
     if (allScopes || scopes.includes("retainers")) {
       patterns.push(`pulse:pma:retainer_jobs:${cleanClientId}*`);
@@ -177,6 +180,9 @@ export async function invalidatePmaClientCache(clientSheetId, masterSheetId, sco
     if (allScopes || scopes.includes("views")) {
       patterns.push(`pulse:view_data:${cleanClientId}:*`);
       patterns.push(`pulse:portal:*:${cleanClientId}*`);
+      patterns.push(`pma_expenses_${cleanClientId}*`);
+      patterns.push(`pma_nbtofind_${cleanClientId}*`);
+      patterns.push(`salaries_data:${cleanClientId}*`);
     }
     if (allScopes || scopes.includes("cash")) {
       patterns.push(`pma_cash_${cleanClientId}*`);

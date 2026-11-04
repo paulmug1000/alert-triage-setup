@@ -3973,7 +3973,7 @@ export async function handleAnalyzeAlert(req, res, sheets) {
             try {
               const confirmedResp = await sheets.spreadsheets.values.get({
                 spreadsheetId: alert.clientId,
-                range: `Confirmed!BX2:CR2000`,
+                range: `Confirmed!BX2:CR5000`,
               });
               const expRows = confirmedResp.data.values || [];
               const matchingSlots = [];
@@ -4024,7 +4024,7 @@ export async function handleAnalyzeAlert(req, res, sheets) {
             try {
               const confJobResp = await sheets.spreadsheets.values.get({
                 spreadsheetId: alert.clientId,
-                range: `Confirmed!A2:B2000`,
+                range: `Confirmed!A2:B5000`,
               });
               const jobRows = confJobResp.data.values || [];
               const normJob = jobName.toLowerCase().trim();

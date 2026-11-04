@@ -3,6 +3,7 @@ import { resolveClientNameBySheetId } from "./workspaces.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { parseMonthHeader, FULL_MONTH_NAMES } from "./viewsService.js";
 import { sanitizeFormulaInput } from "./userPermissions.js";
+import { invalidatePmaClientCache } from "./cacheService.js";
 
 
 // Google Sheets light green 3 (used on Incredibble Cash tab)
@@ -917,7 +918,69 @@ export async function syncReconBankTransactions({
   const sheets = await getSheetsClient();
   const cleanId = extractSheetIdFromUrl(reconSheetId) || reconSheetId;
 
-  // Clear existing A3:J150 and Q3:Q150
+  // 1. Manage background formatting FIRST while the Recon sheet is idle (<1s):
+  // reset regular rows to white, and highlight newly reconciled rows green (#dcfce7)
+  if (transactions.length > 0) {
+    try {
+      const tabGid = await getSheetGid(sheets, cleanId, tabName);
+      const WHITE_RGB = { red: 1, green: 1, blue: 1 };
+      const NEW_GREEN_RGB = { red: 0.862745, green: 0.988235, blue: 0.905882 }; // #dcfce7
+
+      // Reset all active bank feed rows (and clear any past highlights up to row 150) to white
+      const maxRowToClear = Math.max(2 + transactions.length, 120);
+      const colorRequests = [
+        {
+          repeatCell: {
+            range: {
+              sheetId: tabGid,
+              startRowIndex: 2, // Row 3 (0-indexed)
+              endRowIndex: maxRowToClear,
+              startColumnIndex: 1, // Col B
+              endColumnIndex: 16   // Col P
+            },
+            cell: {
+              userEnteredFormat: {
+                backgroundColor: WHITE_RGB
+              }
+            },
+            fields: "userEnteredFormat.backgroundColor"
+          }
+        }
+      ];
+
+      // Highlight only genuinely newly reconciled transactions in light green
+      transactions.forEach((tx, idx) => {
+        if (tx.isNew) {
+          colorRequests.push({
+            repeatCell: {
+              range: {
+                sheetId: tabGid,
+                startRowIndex: idx + 2,
+                endRowIndex: idx + 3,
+                startColumnIndex: 1, // Col B
+                endColumnIndex: 16   // Col P
+              },
+              cell: {
+                userEnteredFormat: {
+                  backgroundColor: NEW_GREEN_RGB
+                }
+              },
+              fields: "userEnteredFormat.backgroundColor"
+            }
+          });
+        }
+      });
+
+      await withRetry(() => sheets.spreadsheets.batchUpdate({
+        spreadsheetId: cleanId,
+        requestBody: { requests: colorRequests }
+      }));
+    } catch (colorErr) {
+      console.warn("Could not update bank transaction background formatting:", colorErr.message);
+    }
+  }
+
+  // 2. Clear existing A3:J200 and Q3:Q200, then write transaction values SECOND
   await withRetry(() => sheets.spreadsheets.values.batchClear({
     spreadsheetId: cleanId,
     requestBody: {
@@ -964,65 +1027,6 @@ export async function syncReconBankTransactions({
       ]
     }
   }));
-
-  // Manage background formatting: reset regular rows to white, and highlight newly reconciled rows green (#dcfce7)
-  try {
-    const tabGid = await getSheetGid(sheets, cleanId, tabName);
-    const WHITE_RGB = { red: 1, green: 1, blue: 1 };
-    const NEW_GREEN_RGB = { red: 0.862745, green: 0.988235, blue: 0.905882 }; // #dcfce7
-
-    // 1. Reset all active bank feed rows (and clear any past highlights up to row 150) to white
-    const maxRowToClear = Math.max(2 + transactions.length, 120);
-    const colorRequests = [
-      {
-        repeatCell: {
-          range: {
-            sheetId: tabGid,
-            startRowIndex: 2, // Row 3 (0-indexed)
-            endRowIndex: maxRowToClear,
-            startColumnIndex: 1, // Col B
-            endColumnIndex: 16   // Col P
-          },
-          cell: {
-            userEnteredFormat: {
-              backgroundColor: WHITE_RGB
-            }
-          },
-          fields: "userEnteredFormat.backgroundColor"
-        }
-      }
-    ];
-
-    // 2. Highlight only genuinely newly reconciled transactions in light green
-    transactions.forEach((tx, idx) => {
-      if (tx.isNew) {
-        colorRequests.push({
-          repeatCell: {
-            range: {
-              sheetId: tabGid,
-              startRowIndex: idx + 2,
-              endRowIndex: idx + 3,
-              startColumnIndex: 1, // Col B
-              endColumnIndex: 16   // Col P
-            },
-            cell: {
-              userEnteredFormat: {
-                backgroundColor: NEW_GREEN_RGB
-              }
-            },
-            fields: "userEnteredFormat.backgroundColor"
-          }
-        });
-      }
-    });
-
-    await withRetry(() => sheets.spreadsheets.batchUpdate({
-      spreadsheetId: cleanId,
-      requestBody: { requests: colorRequests }
-    }));
-  } catch (colorErr) {
-    console.warn("Could not update bank transaction background formatting:", colorErr.message);
-  }
 
   return { success: true, count: transactions.length };
 }
@@ -1134,46 +1138,40 @@ export async function updateCashAdjustment({
     } catch (_) {}
   }
 
-  await withRetry(() => sheets.spreadsheets.values.update({
+  const updateRes = await withRetry(() => sheets.spreadsheets.values.update({
     spreadsheetId: cleanClientSheetId,
     range: cellRange,
     valueInputOption: "USER_ENTERED",
+    includeValuesInResponse: true,
+    responseValueRenderOption: "FORMATTED_VALUE",
     requestBody: { values: [[safeValue]] }
   }));
 
-  // Fetch updated formatted value
-  let formattedValue = value ?? "";
-  try {
-    const getRes = await withRetry(() => sheets.spreadsheets.values.get({
-      spreadsheetId: cleanClientSheetId,
-      range: cellRange,
-      valueRenderOption: "FORMATTED_VALUE"
-    }));
-    formattedValue = getRes.data.values?.[0]?.[0] ?? formattedValue;
-  } catch (e) {
-    console.warn("Could not fetch formatted cell value:", e);
-  }
+  const formattedValue = updateRes.data?.updatedData?.values?.[0]?.[0] ?? (value ?? "");
 
-  let resolvedClient = clientName || "";
-  if (!resolvedClient) {
-    resolvedClient = await resolveClientNameBySheetId(sheets, cleanClientSheetId, automationCommanderSheetId);
-  }
+  await invalidatePmaClientCache(cleanClientSheetId, null, ["cash"]).catch(() => {});
 
-  logPmaActivity(sheets, {
-    automationCommanderSheetId,
-    clientName: resolvedClient,
-    category: "CASH_RECON",
-    action: "Cash Adjustment Updated",
-    summary: `Updated Cash adjustment cell ${cellRange} to ${formattedValue}`,
-    details: {
-      tab: "Cash",
-      cellRef: `${colLetter}${rowNum}`,
-      sheetRow: rowNum,
-      colLetter,
-      newValue: formattedValue,
-      clientName: resolvedClient
+  (async () => {
+    let resolvedClient = clientName || "";
+    if (!resolvedClient) {
+      resolvedClient = await resolveClientNameBySheetId(sheets, cleanClientSheetId, automationCommanderSheetId);
     }
-  }).catch(e => console.error("PMA log failed:", e));
+    await logPmaActivity(sheets, {
+      automationCommanderSheetId,
+      clientName: resolvedClient,
+      category: "CASH_RECON",
+      action: "Cash Adjustment Updated",
+      summary: `Updated Cash adjustment cell ${cellRange} to ${formattedValue}`,
+      details: {
+        tab: "Cash",
+        cellRef: `${colLetter}${rowNum}`,
+        sheetRow: rowNum,
+        colLetter,
+        newValue: formattedValue,
+        clientName: resolvedClient
+      }
+    });
+  })().catch(e => console.error("PMA log failed:", e));
 
   return { success: true, cellRef: `${colLetter}${rowNum}`, formattedValue };
 }
@@ -1226,27 +1224,30 @@ export async function toggleCashCellResolved({
     }
   }));
 
-  const colLetter = colIndexToLetter(colIndex + 1);
-  let resolvedClient = clientName || "";
-  if (!resolvedClient) {
-    resolvedClient = await resolveClientNameBySheetId(sheets, cleanClientSheetId, automationCommanderSheetId);
-  }
+  await invalidatePmaClientCache(cleanClientSheetId, null, ["cash"]).catch(() => {});
 
-  logPmaActivity(sheets, {
-    automationCommanderSheetId,
-    clientName: resolvedClient,
-    category: "CASH_RECON",
-    action: resolved ? "Cash Cell Marked Resolved" : "Cash Cell Unmarked Resolved",
-    summary: `${resolved ? "Marked resolved" : "Unmarked resolved"} on Cash!${colLetter}${rowNum}`,
-    details: {
-      tab: "Cash",
-      cellRef: `${colLetter}${rowNum}`,
-      sheetRow: rowNum,
-      colIndex,
-      resolved,
-      clientName: resolvedClient
+  const colLetter = colIndexToLetter(colIndex + 1);
+  (async () => {
+    let resolvedClient = clientName || "";
+    if (!resolvedClient) {
+      resolvedClient = await resolveClientNameBySheetId(sheets, cleanClientSheetId, automationCommanderSheetId);
     }
-  }).catch(e => console.error("PMA log failed:", e));
+    await logPmaActivity(sheets, {
+      automationCommanderSheetId,
+      clientName: resolvedClient,
+      category: "CASH_RECON",
+      action: resolved ? "Cash Cell Marked Resolved" : "Cash Cell Unmarked Resolved",
+      summary: `${resolved ? "Marked resolved" : "Unmarked resolved"} on Cash!${colLetter}${rowNum}`,
+      details: {
+        tab: "Cash",
+        cellRef: `${colLetter}${rowNum}`,
+        sheetRow: rowNum,
+        colIndex,
+        resolved,
+        clientName: resolvedClient
+      }
+    });
+  })().catch(e => console.error("PMA log failed:", e));
 
   return { success: true, cellRef: `${colLetter}${rowNum}`, resolved };
 }
@@ -1298,27 +1299,30 @@ export async function updateCashCellNote({
     }
   }));
 
-  const colLetter = colIndexToLetter(colIndex + 1);
-  let resolvedClient = clientName || "";
-  if (!resolvedClient) {
-    resolvedClient = await resolveClientNameBySheetId(sheets, cleanClientSheetId, automationCommanderSheetId);
-  }
+  await invalidatePmaClientCache(cleanClientSheetId, null, ["cash"]).catch(() => {});
 
-  logPmaActivity(sheets, {
-    automationCommanderSheetId,
-    clientName: resolvedClient,
-    category: "CASH_RECON",
-    action: "Cash Cell Note Updated",
-    summary: `Updated note on Cash!${colLetter}${rowNum}: "${note || ""}"`,
-    details: {
-      tab: "Cash",
-      cellRef: `${colLetter}${rowNum}`,
-      sheetRow: rowNum,
-      colIndex,
-      note,
-      clientName: resolvedClient
+  const colLetter = colIndexToLetter(colIndex + 1);
+  (async () => {
+    let resolvedClient = clientName || "";
+    if (!resolvedClient) {
+      resolvedClient = await resolveClientNameBySheetId(sheets, cleanClientSheetId, automationCommanderSheetId);
     }
-  }).catch(e => console.error("PMA log failed:", e));
+    await logPmaActivity(sheets, {
+      automationCommanderSheetId,
+      clientName: resolvedClient,
+      category: "CASH_RECON",
+      action: "Cash Cell Note Updated",
+      summary: `Updated note on Cash!${colLetter}${rowNum}: "${note || ""}"`,
+      details: {
+        tab: "Cash",
+        cellRef: `${colLetter}${rowNum}`,
+        sheetRow: rowNum,
+        colIndex,
+        note,
+        clientName: resolvedClient
+      }
+    });
+  })().catch(e => console.error("PMA log failed:", e));
 
   return { success: true, cellRef: `${colLetter}${rowNum}`, note };
 }
@@ -1349,30 +1353,7 @@ export async function batchMatchCashflowActuals({
     throw new Error("Invalid Cash column");
   }
 
-  // 1. Batch update adjustment formulas
-  if (adjustments.length > 0) {
-    const dataUpdates = adjustments
-      .filter(adj => ALLOWED_ADJUSTMENT_ROWS.has(parseInt(adj?.sheetRow, 10)))
-      .map(adj => {
-        const cleanFormula = typeof adj.formula === "string" ? adj.formula.trim().replace(/^['’]=/, "=") : adj.formula;
-        return {
-          range: `Cash!${cleanCol}${parseInt(adj.sheetRow, 10)}`,
-          values: [[sanitizeCashAdjustmentInput(cleanFormula)]]
-        };
-      });
-
-    if (dataUpdates.length > 0) {
-      await withRetry(() => sheets.spreadsheets.values.batchUpdate({
-        spreadsheetId: cleanClientSheetId,
-        requestBody: {
-          valueInputOption: "USER_ENTERED",
-          data: dataUpdates
-        }
-      }));
-    }
-  }
-
-  // 2. Batch update resolved background colors
+  // 1. Batch update resolved background colors FIRST while the sheet is idle (<1s)
   const validResolvedRows = (resolvedRows || []).map(r => parseInt(r, 10)).filter(r => !isNaN(r) && r >= 3 && r <= 80);
   if (validResolvedRows.length > 0 && cashTabSheetId) {
     const formatRequests = validResolvedRows.map(rowNum => ({
@@ -1401,25 +1382,51 @@ export async function batchMatchCashflowActuals({
     }));
   }
 
-  let resolvedClient = clientName || "";
-  if (!resolvedClient) {
-    resolvedClient = await resolveClientNameBySheetId(sheets, cleanClientSheetId, automationCommanderSheetId);
+  // 2. Batch update adjustment formulas SECOND so formatting never waits on formula recalculation
+  if (adjustments.length > 0) {
+    const dataUpdates = adjustments
+      .filter(adj => ALLOWED_ADJUSTMENT_ROWS.has(parseInt(adj?.sheetRow, 10)))
+      .map(adj => {
+        const cleanFormula = typeof adj.formula === "string" ? adj.formula.trim().replace(/^['’]=/, "=") : adj.formula;
+        return {
+          range: `Cash!${cleanCol}${parseInt(adj.sheetRow, 10)}`,
+          values: [[sanitizeCashAdjustmentInput(cleanFormula)]]
+        };
+      });
+
+    if (dataUpdates.length > 0) {
+      await withRetry(() => sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: cleanClientSheetId,
+        requestBody: {
+          valueInputOption: "USER_ENTERED",
+          data: dataUpdates
+        }
+      }));
+    }
   }
 
-  logPmaActivity(sheets, {
-    automationCommanderSheetId,
-    clientName: resolvedClient,
-    category: "CASH_RECON",
-    action: "Matched Actuals Applied",
-    summary: `Applied actuals matching and resolved ${resolvedRows.length} items in target month ${colLetter}`,
-    details: {
-      tab: "Cash",
-      colLetter,
-      adjustmentsCount: adjustments.length,
-      resolvedCount: resolvedRows.length,
-      clientName: resolvedClient
+  await invalidatePmaClientCache(cleanClientSheetId, null, ["cash"]).catch(() => {});
+
+  (async () => {
+    let resolvedClient = clientName || "";
+    if (!resolvedClient) {
+      resolvedClient = await resolveClientNameBySheetId(sheets, cleanClientSheetId, automationCommanderSheetId);
     }
-  }).catch(e => console.error("PMA log failed:", e));
+    await logPmaActivity(sheets, {
+      automationCommanderSheetId,
+      clientName: resolvedClient,
+      category: "CASH_RECON",
+      action: "Matched Actuals Applied",
+      summary: `Applied actuals matching and resolved ${resolvedRows.length} items in target month ${colLetter}`,
+      details: {
+        tab: "Cash",
+        colLetter,
+        adjustmentsCount: adjustments.length,
+        resolvedCount: resolvedRows.length,
+        clientName: resolvedClient
+      }
+    });
+  })().catch(e => console.error("PMA log failed:", e));
 
   return { success: true, count: adjustments.length };
 }

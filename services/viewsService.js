@@ -4,7 +4,7 @@ import { logPmaActivity } from "./pmaLogger.js";
 import { getSessionUser } from "./authService.js";
 import { isUserAuthorizedForClient, sanitizeFormulaInput, verifyUserAuthorizedForSheet, isReadOnlySession, canViewSalariesAndDividends } from "./userPermissions.js";
 import { sanitizeSpreadsheetTerms } from "../utils/helpers.js";
-import { memoryCache } from "./cacheService.js";
+import { memoryCache, invalidatePmaClientCache } from "./cacheService.js";
 import { redisClient } from "./redisClient.js";
 
 
@@ -463,10 +463,6 @@ export async function handleUpdateViewCell(req, res, sheets) {
       }
       resolvedClient = auth.clientName || resolvedClient;
     }
-  } else if (!resolvedClient) {
-    try {
-      resolvedClient = await resolveClientNameBySheetId(sheets, extractSheetIdFromUrl(clientSheetId || masterSheetId) || clientSheetId || masterSheetId);
-    } catch (e) {}
   }
 
   const cleanColLetter = String(colLetter || "").trim().toUpperCase();
@@ -581,35 +577,25 @@ export async function handleUpdateViewCell(req, res, sheets) {
     // Sanitize user inputs to prevent CSV / Spreadsheet formula injection (CWE-1236)
     const safeValue = sanitizeFormulaInput(value ?? "");
 
-    await withRetry(() =>
+    const updateRes = await withRetry(() =>
       sheets.spreadsheets.values.update({
         spreadsheetId: sheetIdClean,
         range: cellRange,
         valueInputOption: "USER_ENTERED",
+        includeValuesInResponse: true,
+        responseValueRenderOption: "FORMATTED_VALUE",
         requestBody: { values: [[safeValue]] }
       })
     );
 
-    // Fetch the updated cell's formatted value and header row in a single batchGet
     let formattedValue = value ?? "";
-    let rawHeader = req.body.headerLabel || req.body.monthLabel || "";
-    try {
-      const getRes = await withRetry(() =>
-        sheets.spreadsheets.values.batchGet({
-          spreadsheetId: sheetIdClean,
-          ranges: [cellRange, `${targetTab}!${colLetter}1`],
-          valueRenderOption: "FORMATTED_VALUE"
-        })
-      );
-      if (getRes.data.valueRanges?.[0]?.values?.[0]?.[0] !== undefined) {
-        formattedValue = getRes.data.valueRanges[0].values[0][0];
-      }
-      if (!rawHeader && getRes.data.valueRanges?.[1]?.values?.[0]?.[0]) {
-        rawHeader = getRes.data.valueRanges[1].values[0][0];
-      }
-    } catch (e) {
-      console.warn("Could not fetch formatted cell value and header:", e);
+    const returnedCellVal = updateRes?.data?.updatedData?.values?.[0]?.[0];
+    if (returnedCellVal !== undefined) {
+      formattedValue = returnedCellVal;
     }
+
+    let rawHeader = req.body.headerLabel || req.body.monthLabel || "";
+    const monthText = colIndex >= 6 && rawHeader ? getFullMonthYear(rawHeader) : "";
 
     let updatedMatrix = null;
     if (screenTab === "budget") {
@@ -628,108 +614,127 @@ export async function handleUpdateViewCell(req, res, sheets) {
       }
     }
 
-    let resolvedClient = req.body.clientName || "";
-    if (!resolvedClient) {
-      resolvedClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
-    }
+    (async () => {
+      try {
+        let resolvedClient = req.body.clientName || "";
+        if (!resolvedClient) {
+          resolvedClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
+        }
+        let headerForLog = rawHeader;
+        if (!headerForLog && colIndex >= 6) {
+          try {
+            const hRes = await sheets.spreadsheets.values.get({
+              spreadsheetId: sheetIdClean,
+              range: `${targetTab}!${colLetter}1`,
+              valueRenderOption: "FORMATTED_VALUE"
+            });
+            headerForLog = hRes.data?.values?.[0]?.[0] || "";
+          } catch (_) {}
+        }
+        const resolvedMonthText = colIndex >= 6 ? getFullMonthYear(headerForLog) : "";
+        const ident = contractorName || rowDescription || `Row ${rowNum}`;
+        const isCleared = formattedValue === "" || formattedValue === null || formattedValue === undefined;
+        let summary = "";
 
-    const ident = contractorName || rowDescription || `Row ${rowNum}`;
-    const isCleared = formattedValue === "" || formattedValue === null || formattedValue === undefined;
-    let summary = "";
-    let monthText = "";
+        if (colIndex >= 6) {
+          if (resolvedMonthText) {
+            summary = isCleared
+              ? `Updated ${ident} for ${resolvedMonthText} (cleared)`
+              : `Updated ${ident} for ${resolvedMonthText} to ${formattedValue}`;
+          } else {
+            summary = isCleared
+              ? `Updated ${ident} (cleared)`
+              : `Updated ${ident} to ${formattedValue}`;
+          }
+        } else if (colIndex === 0) {
+          const typeLabel = screenTab === "contractors" ? "contractor name" : (screenTab === "budget" ? "name / description" : "outgoing description");
+          summary = isCleared
+            ? `Cleared ${typeLabel} (was "${ident}")`
+            : `Updated ${typeLabel} to "${formattedValue}"`;
+        } else if (colIndex === 1) {
+          if (screenTab === "budget" && rowNum === 142) {
+            summary = isCleared
+              ? `Cleared Des. CoS % for Making up CoS`
+              : `Updated Des. CoS % for Making up CoS to "${formattedValue}"`;
+          } else if (screenTab === "budget" && rowNum >= 58 && rowNum <= 112) {
+            summary = isCleared
+              ? `Cleared Equiv salary for ${ident}`
+              : `Updated Equiv salary for ${ident} to "${formattedValue}"`;
+          } else {
+            summary = isCleared
+              ? `Cleared VAT? for ${ident}`
+              : `Updated VAT? for ${ident} to "${formattedValue}"`;
+          }
+        } else if (colIndex === 2) {
+          if (screenTab === "budget" && rowNum >= 58 && rowNum <= 112) {
+            summary = isCleared
+              ? `Cleared start month for ${ident}`
+              : `Updated start month for ${ident} to "${formattedValue}"`;
+          } else {
+            summary = isCleared
+              ? `Cleared Inv? for ${ident}`
+              : `Updated Inv? for ${ident} to "${formattedValue}"`;
+          }
+        } else if (colIndex === 3) {
+          if (screenTab === "budget" && rowNum >= 58 && rowNum <= 112) {
+            summary = isCleared
+              ? `Cleared end month for ${ident}`
+              : `Updated end month for ${ident} to "${formattedValue}"`;
+          } else {
+            summary = isCleared
+              ? `Cleared Pay? for ${ident}`
+              : `Updated Pay? for ${ident} to "${formattedValue}"`;
+          }
+        } else if (colIndex === 4) {
+          summary = isCleared
+            ? `Cleared Del for ${ident}`
+            : `Updated Del for ${ident} to "${formattedValue}"`;
+        } else if (colIndex === 5) {
+          summary = isCleared
+            ? `Cleared Likl. % for ${ident}`
+            : `Updated Likl. % for ${ident} to "${formattedValue}"`;
+        } else {
+          summary = isCleared
+            ? `Updated ${ident} (cleared)`
+            : `Updated ${ident} to ${formattedValue}`;
+        }
 
-    if (colIndex >= 6) {
-      // Month forecast / actual column
-      monthText = getFullMonthYear(rawHeader);
-      if (monthText) {
-        summary = isCleared
-          ? `Updated ${ident} for ${monthText} (cleared)`
-          : `Updated ${ident} for ${monthText} to ${formattedValue}`;
-      } else {
-        summary = isCleared
-          ? `Updated ${ident} (cleared)`
-          : `Updated ${ident} to ${formattedValue}`;
+        await logPmaActivity(sheets, {
+          automationCommanderSheetId: req.body.automationCommanderSheetId,
+          clientName: resolvedClient,
+          category: screenTab === "budget" ? "BUDGET" : "EXPENSES",
+          action: screenTab === "budget" ? "Budget Cell Updated" : (screenTab === "contractors" ? "Contractor Cell Updated" : "Outgoing Cell Updated"),
+          summary,
+          details: {
+            tab: targetTab,
+            cellRef: `${colLetter}${rowNum}`,
+            sheetRow: rowNum,
+            colLetter,
+            month: resolvedMonthText || undefined,
+            fieldName: resolvedMonthText || headerForLog || colLetter,
+            rowIdentifier: ident,
+            newValue: formattedValue,
+            screenTab,
+            clientName: resolvedClient
+          }
+        });
+      } catch (e) {
+        console.error("PMA log failed:", e);
       }
-    } else if (colIndex === 0) {
-      const typeLabel = screenTab === "contractors" ? "contractor name" : (screenTab === "budget" ? "name / description" : "outgoing description");
-      summary = isCleared
-        ? `Cleared ${typeLabel} (was "${ident}")`
-        : `Updated ${typeLabel} to "${formattedValue}"`;
-    } else if (colIndex === 1) {
-      if (screenTab === "budget" && rowNum === 142) {
-        summary = isCleared
-          ? `Cleared Des. CoS % for Making up CoS`
-          : `Updated Des. CoS % for Making up CoS to "${formattedValue}"`;
-      } else if (screenTab === "budget" && rowNum >= 58 && rowNum <= 112) {
-        summary = isCleared
-          ? `Cleared Equiv salary for ${ident}`
-          : `Updated Equiv salary for ${ident} to "${formattedValue}"`;
-      } else {
-        summary = isCleared
-          ? `Cleared VAT? for ${ident}`
-          : `Updated VAT? for ${ident} to "${formattedValue}"`;
-      }
-    } else if (colIndex === 2) {
-      if (screenTab === "budget" && rowNum >= 58 && rowNum <= 112) {
-        summary = isCleared
-          ? `Cleared start month for ${ident}`
-          : `Updated start month for ${ident} to "${formattedValue}"`;
-      } else {
-        summary = isCleared
-          ? `Cleared Inv? for ${ident}`
-          : `Updated Inv? for ${ident} to "${formattedValue}"`;
-      }
-    } else if (colIndex === 3) {
-      if (screenTab === "budget" && rowNum >= 58 && rowNum <= 112) {
-        summary = isCleared
-          ? `Cleared end month for ${ident}`
-          : `Updated end month for ${ident} to "${formattedValue}"`;
-      } else {
-        summary = isCleared
-          ? `Cleared Pay? for ${ident}`
-          : `Updated Pay? for ${ident} to "${formattedValue}"`;
-      }
-    } else if (colIndex === 4) {
-      summary = isCleared
-        ? `Cleared Del for ${ident}`
-        : `Updated Del for ${ident} to "${formattedValue}"`;
-    } else if (colIndex === 5) {
-      summary = isCleared
-        ? `Cleared Likl. % for ${ident}`
-        : `Updated Likl. % for ${ident} to "${formattedValue}"`;
-    } else {
-      summary = isCleared
-        ? `Updated ${ident} (cleared)`
-        : `Updated ${ident} to ${formattedValue}`;
-    }
+    })();
 
-    logPmaActivity(sheets, {
-      automationCommanderSheetId: req.body.automationCommanderSheetId,
-      clientName: resolvedClient,
-      category: screenTab === "budget" ? "BUDGET" : "EXPENSES",
-      action: screenTab === "budget" ? "Budget Cell Updated" : (screenTab === "contractors" ? "Contractor Cell Updated" : "Outgoing Cell Updated"),
-      summary,
-      details: {
-        tab: targetTab,
-        cellRef: `${colLetter}${rowNum}`,
-        sheetRow: rowNum,
-        colLetter,
-        month: monthText || undefined,
-        fieldName: monthText || rawHeader || colLetter,
-        rowIdentifier: ident,
-        newValue: formattedValue,
-        screenTab,
-        clientName: resolvedClient
-      }
-    }).catch(e => console.error("PMA log failed:", e));
-
-    // Invalidate cached view data
+    // Invalidate cached view data across both PMA and Portal
     const cleanId = extractSheetIdFromUrl(sheetIdClean) || sheetIdClean;
     memoryCache.del(`pulse:view_data:${cleanId}:*`);
     memoryCache.del(`pulse:view_data:${cleanId}:${screenTab}`);
     if (redisClient?.isOpen) {
       redisClient.del(`pulse:view_data:${cleanId}:${screenTab}`).catch(() => {});
     }
+    invalidatePmaClientCache(
+      extractSheetIdFromUrl(clientSheetId) || cleanId,
+      extractSheetIdFromUrl(masterSheetId) || null,
+      screenTab === "budget" ? ["views"] : ["outgoings", "views", "cash"]
+    ).catch(() => {});
 
     return res.status(200).json({
       success: true,
@@ -777,10 +782,6 @@ export async function handleSpreadViewRow(req, res, sheets) {
       }
       resolvedClient = auth.clientName || resolvedClient;
     }
-  } else if (!resolvedClient) {
-    try {
-      resolvedClient = await resolveClientNameBySheetId(sheets, extractSheetIdFromUrl(clientSheetId || masterSheetId) || clientSheetId || masterSheetId);
-    } catch (e) {}
   }
 
   const rowNum = parseInt(sheetRow, 10);
@@ -853,20 +854,33 @@ export async function handleSpreadViewRow(req, res, sheets) {
       console.warn("Could not fetch updated budget matrix after spread:", e);
     }
 
-    logPmaActivity(sheets, {
-      automationCommanderSheetId: req.body.automationCommanderSheetId,
-      clientName: resolvedClient,
-      category: "BUDGET",
-      action: "Budget Row Spread",
-      summary: `Spread ${rowDescription || `Row ${rowNum}`} across ${startColLetter}-${endColLetter}`,
-      details: {
-        tab: targetTab,
-        range,
-        sheetRow: rowNum,
-        values: safeValues,
-        clientName: resolvedClient,
-      },
-    }).catch((e) => console.error("PMA log failed:", e));
+    (async () => {
+      try {
+        if (!resolvedClient) {
+          resolvedClient = await resolveClientNameBySheetId(
+            sheets,
+            extractSheetIdFromUrl(clientSheetId || masterSheetId) || clientSheetId || masterSheetId,
+            req.body.automationCommanderSheetId
+          );
+        }
+        await logPmaActivity(sheets, {
+          automationCommanderSheetId: req.body.automationCommanderSheetId,
+          clientName: resolvedClient,
+          category: "BUDGET",
+          action: "Budget Row Spread",
+          summary: `Spread ${rowDescription || `Row ${rowNum}`} across ${startColLetter}-${endColLetter}`,
+          details: {
+            tab: targetTab,
+            range,
+            sheetRow: rowNum,
+            values: safeValues,
+            clientName: resolvedClient,
+          },
+        });
+      } catch (e) {
+        console.error("PMA log failed:", e);
+      }
+    })();
 
     const cleanId = extractSheetIdFromUrl(sheetIdClean) || sheetIdClean;
     memoryCache.del(`pulse:view_data:${cleanId}:*`);
@@ -874,6 +888,11 @@ export async function handleSpreadViewRow(req, res, sheets) {
     if (redisClient?.isOpen) {
       redisClient.del(`pulse:view_data:${cleanId}:budget`).catch(() => {});
     }
+    invalidatePmaClientCache(
+      extractSheetIdFromUrl(clientSheetId) || cleanId,
+      extractSheetIdFromUrl(masterSheetId) || null,
+      ["views"]
+    ).catch(() => {});
 
     return res.status(200).json({
       success: true,

@@ -2,7 +2,7 @@ import { getSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
 import { verifyUserAuthorizedForSheet, sanitizeFormulaInput, isReadOnlySession } from "../../../services/userPermissions.js";
 import { redisClient } from "../../../services/redisClient.js";
-import { memoryCache } from "../../../services/cacheService.js";
+import { memoryCache, invalidatePmaClientCache } from "../../../services/cacheService.js";
 import { logPulseActivity } from "../../../services/pulseLogger.js";
 import { isPlaceholderInvoice, isPlaceholderExpense } from "../../../utils/helpers.js";
 
@@ -75,40 +75,43 @@ export default async function handler(req, res) {
     const pipelineSheetName = pipelineSheetObj.properties.title;
     const pipelineSheetId = pipelineSheetObj.properties.sheetId;
 
-    // 2. Read parent row from Confirmed
-    const parentResp = await withRetry(() =>
-      sheets.spreadsheets.values.get({
-        spreadsheetId: clientSheetId,
-        range: `${confirmedSheetName}!A${cRow}:CZ${cRow}`,
-        valueRenderOption: "FORMULA",
-      })
-    );
-    const parentData = parentResp.data?.values?.[0] || [];
-    const parentClient = (parentData[0] || "").trim();
-    const parentJobName = (parentData[1] || "").trim();
-    const parentProjectCode = (parentData[2] || "").trim();
+    // 2. Read parent + child rows from Confirmed and all Pipeline rows (A:AN) in parallel
+    const [confWindowResp, pipelineDataResp] = await Promise.all([
+      withRetry(() =>
+        sheets.spreadsheets.values.get({
+          spreadsheetId: clientSheetId,
+          range: `${confirmedSheetName}!A${cRow}:CZ${cRow + 25}`,
+          valueRenderOption: "FORMULA",
+        })
+      ),
+      withRetry(() =>
+        sheets.spreadsheets.values.get({
+          spreadsheetId: clientSheetId,
+          range: `${pipelineSheetName}!A:AN`,
+          valueRenderOption: "FORMATTED_VALUE",
+        })
+      ),
+    ]);
+    const confWindowRows = confWindowResp.data?.values || [];
+    const parentData = confWindowRows[0] || [];
+    const parentClient = String(parentData[0] ?? "").trim();
+    const parentJobName = String(parentData[1] ?? "").trim();
+    const parentProjectCode = String(parentData[2] ?? "").trim();
     const parentRevenue = parentData[32]; // Col 33
 
     if (!parentClient && !parentJobName) {
       throw new Error(`Confirmed row ${cRow} does not contain client or job name`);
     }
 
-    // 3. Find child rows in Confirmed (batch read up to 10 rows below)
+    // 3. Find child rows in Confirmed (from already-loaded window)
     const confirmedChildRows = [];
     const confirmedChildRowsData = [];
-    const potentialChildrenResp = await withRetry(() =>
-      sheets.spreadsheets.values.get({
-        spreadsheetId: clientSheetId,
-        range: `${confirmedSheetName}!A${cRow + 1}:CZ${cRow + 10}`,
-        valueRenderOption: "FORMULA",
-      })
-    );
-    const nextRows = potentialChildrenResp.data?.values || [];
+    const nextRows = confWindowRows.slice(1);
 
     for (let i = 0; i < nextRows.length; i++) {
-      const r = nextRows[i];
-      const rClient = (r[0] || "").trim();
-      const rJobName = (r[1] || "").trim();
+      const r = nextRows[i] || [];
+      const rClient = String(r[0] ?? "").trim();
+      const rJobName = String(r[1] ?? "").trim();
       if (
         rClient.toLowerCase() === parentClient.toLowerCase() &&
         rJobName.toLowerCase() === parentJobName.toLowerCase()
@@ -162,13 +165,6 @@ export default async function handler(req, res) {
     }
 
     // 4. Look for existing Pipeline row
-    const pipelineDataResp = await withRetry(() =>
-      sheets.spreadsheets.values.get({
-        spreadsheetId: clientSheetId,
-        range: `${pipelineSheetName}!A:AG`,
-        valueRenderOption: "FORMATTED_VALUE",
-      })
-    );
     const allPipelineRows = pipelineDataResp.data?.values || [];
 
     let pipelineRow = null;
@@ -234,20 +230,10 @@ export default async function handler(req, res) {
       }
       targetLikelihood = lVal;
     } else if (isExistingJob) {
-      try {
-        const existingLikelihoodResp = await withRetry(() =>
-          sheets.spreadsheets.values.get({
-            spreadsheetId: clientSheetId,
-            range: `${pipelineSheetName}!AN${pipelineRow}`,
-            valueRenderOption: "FORMATTED_VALUE",
-          })
-        );
-        const currLikelihood = String(existingLikelihoodResp.data?.values?.[0]?.[0] || "");
-        if (!currLikelihood.includes("100") && currLikelihood !== "1" && currLikelihood !== "") {
-          targetLikelihood = currLikelihood;
-        }
-      } catch (e) {
-        console.warn("⚠️ Failed reading existing pipeline likelihood:", e.message);
+      const existingRow = allPipelineRows[pipelineRow - 1] || [];
+      const currLikelihood = String(existingRow[39] || "");
+      if (!currLikelihood.includes("100") && currLikelihood !== "1" && currLikelihood !== "") {
+        targetLikelihood = currLikelihood;
       }
     }
 
@@ -332,19 +318,12 @@ export default async function handler(req, res) {
       pipelineChildRows.push(targetChildRow);
     }
 
-    await withRetry(() =>
-      sheets.spreadsheets.values.batchUpdate({
-        spreadsheetId: clientSheetId,
-        requestBody: {
-          valueInputOption: "USER_ENTERED",
-          data: pipelineBatchData,
-        },
-      })
-    );
+    const clearRowRanges = [cRow, ...confirmedChildRows];
 
-    // Group child rows in Pipeline sheet and ensure target rows in Pipeline are visible
+    // Group child rows in Pipeline and remove dimension group in Confirmed BEFORE cell writes/clears
+    // so structural spreadsheets.batchUpdate executes while the sheet is idle (<1s).
     try {
-      const pipeRequests = [
+      const structRequests = [
         {
           updateDimensionProperties: {
             range: {
@@ -371,7 +350,7 @@ export default async function handler(req, res) {
 
         if (!exactMatch) {
           for (const g of overlappingGroups) {
-            pipeRequests.push({
+            structRequests.push({
               deleteDimensionGroup: {
                 range: {
                   sheetId: pipelineSheetId,
@@ -383,7 +362,7 @@ export default async function handler(req, res) {
             });
           }
 
-          pipeRequests.push({
+          structRequests.push({
             addDimensionGroup: {
               range: {
                 sheetId: pipelineSheetId,
@@ -394,7 +373,7 @@ export default async function handler(req, res) {
             },
           });
         }
-        pipeRequests.push({
+        structRequests.push({
           updateDimensionProperties: {
             range: {
               sheetId: pipelineSheetId,
@@ -407,41 +386,7 @@ export default async function handler(req, res) {
           },
         });
       }
-      if (pipeRequests.length > 0) {
-        await withRetry(() =>
-          sheets.spreadsheets.batchUpdate({
-            spreadsheetId: clientSheetId,
-            requestBody: {
-              requests: pipeRequests,
-            },
-          })
-        );
-      }
-    } catch (groupErr) {
-      console.warn("⚠️ Grouping child rows in Pipeline warning (non-fatal):", groupErr.message);
-    }
 
-    // 7. Clear data from Confirmed sheet
-    // Safe ranges: A:AM (1-39), AP:BH (42-60), BX:CR (76-96)
-    const clearRowRanges = [cRow, ...confirmedChildRows];
-    for (const r of clearRowRanges) {
-      await withRetry(() =>
-        sheets.spreadsheets.values.batchClear({
-          spreadsheetId: clientSheetId,
-          requestBody: {
-            ranges: [
-              `${confirmedSheetName}!A${r}:AM${r}`,
-              `${confirmedSheetName}!AP${r}:BH${r}`,
-              `${confirmedSheetName}!BX${r}:CR${r}`,
-            ],
-          },
-        })
-      );
-    }
-
-    // If Confirmed had a dimension group for the child rows, remove it and unhide cleared rows
-    try {
-      const confCleanupReqs = [];
       if (confirmedChildRows.length > 0) {
         const childStartIndex = confirmedChildRows[0] - 1;
         const childEndIndex = confirmedChildRows[confirmedChildRows.length - 1];
@@ -450,7 +395,7 @@ export default async function handler(req, res) {
           (g) => g.range?.startIndex <= childStartIndex && g.range?.endIndex >= childEndIndex
         );
         if (groupToDelete) {
-          confCleanupReqs.push(
+          structRequests.push(
             {
               deleteDimensionGroup: {
                 range: {
@@ -477,7 +422,7 @@ export default async function handler(req, res) {
         }
       }
       for (const rNum of clearRowRanges) {
-        confCleanupReqs.push({
+        structRequests.push({
           updateDimensionProperties: {
             range: {
               sheetId: confirmedSheetId,
@@ -490,50 +435,77 @@ export default async function handler(req, res) {
           },
         });
       }
-      if (confCleanupReqs.length > 0) {
-        await withRetry(() =>
-          sheets.spreadsheets.batchUpdate({
+
+      if (structRequests.length > 0) {
+        await sheets.spreadsheets.batchUpdate(
+          {
             spreadsheetId: clientSheetId,
             requestBody: {
-              requests: confCleanupReqs,
+              requests: structRequests,
             },
-          })
+          },
+          { timeout: 10000, retry: false }
         );
       }
-    } catch (delGroupErr) {
-      console.warn("⚠️ Delete dimension group in Confirmed warning (non-fatal):", delGroupErr.message);
+    } catch (groupErr) {
+      console.warn("⚠️ Structural grouping update warning (non-fatal):", groupErr.message);
     }
 
-    // 8. Invalidate In-Memory and Redis caches
-    memoryCache.del(`pulse:portal:*:${clientSheetId}*`);
+    // 7. Write Pipeline data and clear Confirmed data in a single parallel round-trip
+    // Safe ranges: A:AM (1-39), AP:BH (42-60), BX:CR (76-96)
+    const batchClearRanges = [];
+    for (const r of clearRowRanges) {
+      batchClearRanges.push(
+        `${confirmedSheetName}!A${r}:AM${r}`,
+        `${confirmedSheetName}!AP${r}:BH${r}`,
+        `${confirmedSheetName}!BX${r}:CR${r}`
+      );
+    }
+
+    await Promise.all([
+      withRetry(() =>
+        sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: clientSheetId,
+          requestBody: {
+            valueInputOption: "USER_ENTERED",
+            data: pipelineBatchData,
+          },
+        })
+      ),
+      batchClearRanges.length > 0
+        ? withRetry(() =>
+            sheets.spreadsheets.values.batchClear({
+              spreadsheetId: clientSheetId,
+              requestBody: {
+                ranges: batchClearRanges,
+              },
+            })
+          )
+        : Promise.resolve(),
+    ]);
+
+    // 8. Invalidate In-Memory and Redis caches across both Portal and PMA
     try {
-      const keys = await redisClient.keys(`pulse:portal:*:${clientSheetId}*`);
-      if (keys.length > 0) {
-        await redisClient.del(keys);
-      }
+      await invalidatePmaClientCache(clientSheetId, null, ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]);
     } catch (cacheErr) {
-      console.warn("⚠️ Redis invalidation warning:", cacheErr.message);
+      console.warn("⚠️ Cache invalidation warning:", cacheErr.message);
     }
 
-    // 9. Log Activity
-    try {
-      await logPulseActivity(sheets, {
-        clientName: verifiedClientName || clientName || parentClient || "Client",
-        category: "JOB",
-        action: "JOB_UNCONFIRMED",
-        summary: `Unconfirmed job: "${parentJobName || "Job"}" (Confirmed row ${cRow} → Pipeline row ${pipelineRow})`,
-        details: {
-          jobName: parentJobName,
-          client: parentClient,
-          confirmedRow: cRow,
-          pipelineRow,
-          childRowsCount: confirmedChildRows.length
-        },
-        user: sessionUser.name || sessionUser.email
-      });
-    } catch (logErr) {
-      console.warn("⚠️ Failed to log unconfirm-job activity:", logErr.message);
-    }
+    // 9. Log Activity (non-blocking)
+    logPulseActivity(sheets, {
+      clientName: verifiedClientName || clientName || parentClient || "Client",
+      category: "JOB",
+      action: "JOB_UNCONFIRMED",
+      summary: `Unconfirmed job: "${parentJobName || "Job"}" (Confirmed row ${cRow} → Pipeline row ${pipelineRow})`,
+      details: {
+        jobName: parentJobName,
+        client: parentClient,
+        confirmedRow: cRow,
+        pipelineRow,
+        childRowsCount: confirmedChildRows.length
+      },
+      user: sessionUser.name || sessionUser.email
+    }).catch((logErr) => console.warn("⚠️ Failed to log unconfirm-job activity:", logErr.message));
 
     return res.status(200).json({
       success: true,

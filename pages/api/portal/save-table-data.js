@@ -2,7 +2,7 @@ import { getSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, withRetry, colLetterToNum } from "../../../services/sheetsClient.js";
 import { verifyUserAuthorizedForSheet, sanitizeFormulaInput, isReadOnlySession } from "../../../services/userPermissions.js";
 import { redisClient } from "../../../services/redisClient.js";
-import { memoryCache } from "../../../services/cacheService.js";
+import { memoryCache, invalidatePmaClientCache, del2TierCache } from "../../../services/cacheService.js";
 import { logPulseActivity } from "../../../services/pulseLogger.js";
 import { assertTrustedOrigin } from "../../../utils/helpers.js";
 
@@ -133,50 +133,49 @@ export default async function handler(req, res) {
       })
     );
 
-    // Invalidate caches for this client
+    // Invalidate caches for this client across both Portal and PMA
     try {
-      memoryCache.del(`pulse:portal:*:${clientSheetId}*`);
-      const keys = await redisClient.keys(`pulse:portal:*:${clientSheetId}*`);
-      if (keys.length > 0) {
-        await redisClient.del(keys);
-      }
+      await Promise.all([
+        del2TierCache(`pma_expenses_${clientSheetId}*`),
+        del2TierCache(`pma_nbtofind_${clientSheetId}*`),
+        del2TierCache(`salaries_data:*:${clientSheetId}*`),
+        invalidatePmaClientCache(clientSheetId, null, ["outgoings", "views", "cash", "jobs"]),
+      ]);
     } catch (cacheErr) {
       console.warn("⚠️ Cache invalidation warning:", cacheErr.message);
     }
 
-    // Log Activity
-    try {
-      const sLower = String(sheetName || "").toLowerCase();
-      let category = "OUTGOINGS";
-      let action = "OUTGOINGS_MODIFIED";
-      if (sLower.includes("salar")) {
-        category = "SALARIES";
-        action = "SALARIES_MODIFIED";
-      } else if (sLower.includes("divid")) {
-        category = "DIVIDENDS";
-        action = "DIVIDENDS_MODIFIED";
-      } else if (sLower.includes("nb to find") || sLower.includes("nbtofind")) {
-        category = "NB_TO_FIND";
-        action = "NB_TO_FIND_MODIFIED";
-      }
-
-      const summary = `Updated ${sheetName} (${data.length} cell${data.length > 1 ? "s" : ""} updated)`;
-
-      await logPulseActivity(sheets, {
-        clientName: verifiedClientName || clientName || "Client",
-        category,
-        action,
-        summary,
-        details: {
-          sheetName,
-          clientName: verifiedClientName || clientName,
-          cellCount: data.length
-        },
-        user: sessionUser.name || sessionUser.email
-      });
-    } catch (logErr) {
-      console.warn("⚠️ Failed to log table update activity:", logErr.message);
+    // Log Activity asynchronously without blocking response
+    const sLower = String(sheetName || "").toLowerCase();
+    let category = "OUTGOINGS";
+    let action = "OUTGOINGS_MODIFIED";
+    if (sLower.includes("salar")) {
+      category = "SALARIES";
+      action = "SALARIES_MODIFIED";
+    } else if (sLower.includes("divid")) {
+      category = "DIVIDENDS";
+      action = "DIVIDENDS_MODIFIED";
+    } else if (sLower.includes("nb to find") || sLower.includes("nbtofind")) {
+      category = "NB_TO_FIND";
+      action = "NB_TO_FIND_MODIFIED";
     }
+
+    const summary = `Updated ${sheetName} (${data.length} cell${data.length > 1 ? "s" : ""} updated)`;
+
+    logPulseActivity(sheets, {
+      clientName: verifiedClientName || clientName || "Client",
+      category,
+      action,
+      summary,
+      details: {
+        sheetName,
+        clientName: verifiedClientName || clientName,
+        cellCount: data.length
+      },
+      user: sessionUser.name || sessionUser.email
+    }).catch((logErr) => {
+      console.warn("⚠️ Failed to log table update activity:", logErr.message);
+    });
 
     return res.status(200).json({
       success: true,

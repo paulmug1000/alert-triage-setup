@@ -347,13 +347,39 @@ export async function handleRenameRetainerJob(req, res, sheets) {
   }
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
-    const resp = await sheets.spreadsheets.values.get({
-      spreadsheetId: sheetIdClean,
-      range: "Confirmed!A1:CR5000",
-      valueRenderOption: "FORMATTED_VALUE",
-    });
-    const rows = resp.data.values || [];
-    const resolvedParent = resolveRetainerParentRow_(rows, parentRowNum, oldClient, oldJobName);
+    const pRow = parseInt(parentRowNum, 10) || 2;
+    const winStart = Math.max(1, pRow - 20);
+    const winEnd = pRow + 60;
+
+    // Fast path: read local window (A:AM) around parentRowNum instead of 5000x96 cells
+    let rows = [];
+    let resolvedParent = null;
+    try {
+      const winResp = await sheets.spreadsheets.values.get({
+        spreadsheetId: sheetIdClean,
+        range: `Confirmed!A${winStart}:AM${winEnd}`,
+        valueRenderOption: "FORMATTED_VALUE",
+      });
+      const winVals = winResp.data.values || [];
+      const sparseRows = new Array(winStart - 1).fill([]);
+      for (let i = 0; i < winVals.length; i++) sparseRows.push(winVals[i]);
+      const candidate = resolveRetainerParentRow_(sparseRows, pRow, oldClient, oldJobName);
+      if (candidate && candidate.rowNum < winEnd - 2) {
+        rows = sparseRows;
+        resolvedParent = candidate;
+      }
+    } catch (_) {}
+
+    if (!resolvedParent) {
+      const resp = await sheets.spreadsheets.values.get({
+        spreadsheetId: sheetIdClean,
+        range: "Confirmed!A1:AM5000",
+        valueRenderOption: "FORMATTED_VALUE",
+      });
+      rows = resp.data.values || [];
+      resolvedParent = resolveRetainerParentRow_(rows, parentRowNum, oldClient, oldJobName);
+    }
+
     if (!resolvedParent) {
       return res.status(400).json({ success: false, error: "Row mismatch - job may have moved. Please refresh and try again." });
     }
@@ -378,22 +404,26 @@ export async function handleRenameRetainerJob(req, res, sheets) {
       requestBody: { valueInputOption: "RAW", data },
     });
 
-    let tenantClient = req.body.clientName || "";
-    if (!tenantClient) {
-      tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
-    }
-    const endClient = oldClient || "";
-    const jobIdentifier = endClient ? `"${endClient} - ${oldJobName}"` : `"${oldJobName}"`;
-    const newJobIdentifier = endClient ? `"${endClient} - ${newJobName}"` : `"${newJobName}"`;
+    await invalidatePmaClientCache(sheetIdClean, null, ["jobs", "invoices", "retainers", "cash"]).catch(() => {});
 
-    logPmaActivity(sheets, {
-      automationCommanderSheetId: req.body.automationCommanderSheetId,
-      clientName: tenantClient,
-      category: "RETAINER",
-      action: "Retainer Renamed",
-      summary: `Renamed retainer ${jobIdentifier} to ${newJobIdentifier}`,
-      details: { oldJobName, newJobName, endClient, clientName: tenantClient, rowsUpdated: targetRows.length }
-    }).catch(e => console.error("PMA log failed:", e));
+    (async () => {
+      let tenantClient = req.body.clientName || "";
+      if (!tenantClient) {
+        tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
+      }
+      const endClient = oldClient || "";
+      const jobIdentifier = endClient ? `"${endClient} - ${oldJobName}"` : `"${oldJobName}"`;
+      const newJobIdentifier = endClient ? `"${endClient} - ${newJobName}"` : `"${newJobName}"`;
+
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId: req.body.automationCommanderSheetId,
+        clientName: tenantClient,
+        category: "RETAINER",
+        action: "Retainer Renamed",
+        summary: `Renamed retainer ${jobIdentifier} to ${newJobIdentifier}`,
+        details: { oldJobName, newJobName, endClient, clientName: tenantClient, rowsUpdated: targetRows.length }
+      });
+    })().catch(e => console.error("PMA log failed:", e));
 
     return res.status(200).json({ success: true, rowsUpdated: targetRows.length });
   } catch (err) {
@@ -1573,6 +1603,8 @@ export async function handleChangeRetainerMonthlyAmount(req, res, sheets) {
         requestBody: { valueInputOption: "RAW", data: updateData },
       });
 
+      await invalidatePmaClientCache(sheetIdClean, null, ["jobs", "invoices", "retainers", "cash"]).catch(() => {});
+
       return res.status(200).json({
         success: true,
         updatedInPlace: true,
@@ -1875,21 +1907,25 @@ export async function handleChangeRetainerMonthlyAmount(req, res, sheets) {
         : Promise.resolve(),
     ]);
 
-    let tenantClient = req.body.clientName || "";
-    if (!tenantClient) {
-      tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
-    }
-    const endClient = client || "";
-    const jobIdentifier = endClient ? `"${endClient} - ${jobName}"` : `"${jobName}"`;
+    await invalidatePmaClientCache(sheetIdClean, null, ["jobs", "invoices", "retainers", "cash"]).catch(() => {});
 
-    logPmaActivity(sheets, {
-      automationCommanderSheetId: req.body.automationCommanderSheetId,
-      clientName: tenantClient,
-      category: "RETAINER",
-      action: "Retainer Monthly Amount Changed",
-      summary: `Changed monthly amount for ${jobIdentifier} to £${newMonthlyAmount}`,
-      details: { jobName, newMonthlyAmount, endClient, clientName: tenantClient, changeMonth, changeYear, changeWholeRetainer: !!changeWholeRetainer }
-    }).catch(e => console.error("PMA log failed:", e));
+    (async () => {
+      let tenantClient = req.body.clientName || "";
+      if (!tenantClient) {
+        tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
+      }
+      const endClient = client || "";
+      const jobIdentifier = endClient ? `"${endClient} - ${jobName}"` : `"${jobName}"`;
+
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId: req.body.automationCommanderSheetId,
+        clientName: tenantClient,
+        category: "RETAINER",
+        action: "Retainer Monthly Amount Changed",
+        summary: `Changed monthly amount for ${jobIdentifier} to £${newMonthlyAmount}`,
+        details: { jobName, newMonthlyAmount, endClient, clientName: tenantClient, changeMonth, changeYear, changeWholeRetainer: !!changeWholeRetainer }
+      });
+    })().catch(e => console.error("PMA log failed:", e));
 
     return res.status(200).json({ success: true, newParentRowNum, newJobName, relabelledRows: relabelRows.length });
   } catch (err) {
@@ -3370,19 +3406,23 @@ export async function handleTidyUpRetainers(req, res, sheets) {
       }
     }
 
-    let tenantClient = req.body.clientName || "";
-    if (!tenantClient) {
-      tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
-    }
+    await invalidatePmaClientCache(sheetIdClean, null, ["jobs", "invoices", "retainers", "cash"]).catch(() => {});
 
-    logPmaActivity(sheets, {
-      automationCommanderSheetId: req.body.automationCommanderSheetId,
-      clientName: tenantClient,
-      category: "RETAINER",
-      action: "Retainers Tidied",
-      summary: `Completed retainer tidy-up routine for ${tenantClient || "Client"} (${moveRequests.length} blocks relocated)`,
-      details: { clientName: tenantClient, movesCount: moveRequests.length }
-    }).catch(e => console.error("PMA log failed:", e));
+    (async () => {
+      let tenantClient = req.body.clientName || "";
+      if (!tenantClient) {
+        tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
+      }
+
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId: req.body.automationCommanderSheetId,
+        clientName: tenantClient,
+        category: "RETAINER",
+        action: "Retainers Tidied",
+        summary: `Completed retainer tidy-up routine for ${tenantClient || "Client"} (${moveRequests.length} blocks relocated)`,
+        details: { clientName: tenantClient, movesCount: moveRequests.length }
+      });
+    })().catch(e => console.error("PMA log failed:", e));
 
     return res.status(200).json({ success: true, moves: moveRequests.length });
 
@@ -3702,40 +3742,31 @@ export async function handleApplyRetainerSplitInvoice(req, res, sheets) {
 
     const writeData = [
       { range: `Confirmed!AP${missingRowNum}`, values: [[standardMonthlyAmount]] },
-      { range: `Confirmed!AQ${missingRowNum}`, values: [[altInvoiceNo || ""]] },
+      { range: `Confirmed!AQ${missingRowNum}`, values: [[sanitizeFormulaInput(altInvoiceNo || "")]] },
       { range: `Confirmed!AS${missingRowNum}`, values: [[defaultDaysToPay]] },
-      { range: `Confirmed!AT${missingRowNum}`, values: [[altStatus || ""]] },
+      { range: `Confirmed!AT${missingRowNum}`, values: [[sanitizeFormulaInput(altStatus || "")]] },
     ];
-    const dateWriteData = [];
     const parsedAltSentDate = retParseSheetDate(altSentDate);
-    if (parsedAltSentDate) dateWriteData.push({ range: `Confirmed!AR${missingRowNum}`, values: [[retFmtDate(parsedAltSentDate)]] });
-
-    await sheets.spreadsheets.values.batchUpdate({
-      spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "RAW", data: writeData },
-    });
-    if (dateWriteData.length > 0) {
-      await sheets.spreadsheets.values.batchUpdate({
-        spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "USER_ENTERED", data: dateWriteData },
-      });
-    }
+    if (parsedAltSentDate) writeData.push({ range: `Confirmed!AR${missingRowNum}`, values: [[retFmtDate(parsedAltSentDate)]] });
 
     const monthStart = new Date(extraJobYear, extraJobMonth, 1);
     const monthEnd = new Date(extraJobYear, extraJobMonth + 1, 0);
     const vatYesNo = (parseFloat(vatAmount) || 0) > 0 ? "Yes" : "No";
 
     if (existingConfirmedRow) {
-      const extraWriteData = [
-        { range: `Confirmed!B${existingConfirmedRow}`, values: [[extraJobName]] },
+      writeData.push(
+        { range: `Confirmed!B${existingConfirmedRow}`, values: [[sanitizeFormulaInput(extraJobName)]] },
         { range: `Confirmed!D${existingConfirmedRow}`, values: [[parentRow[3] || ""]] },
-        { range: `Confirmed!E${existingConfirmedRow}`, values: [[parentRow[4] || ""]] },
+        { range: `Confirmed!E${existingConfirmedRow}`, values: [[sanitizeFormulaInput(parentRow[4] || "")]] },
         { range: `Confirmed!AG${existingConfirmedRow}`, values: [[difference]] },
         { range: `Confirmed!AJ${existingConfirmedRow}`, values: [["Retainer"]] },
-        { range: `Confirmed!AK${existingConfirmedRow}`, values: [[parentRow[36] || ""]] },
+        { range: `Confirmed!AK${existingConfirmedRow}`, values: [[sanitizeFormulaInput(parentRow[36] || "")]] },
         { range: `Confirmed!AP${existingConfirmedRow}`, values: [[difference]] },
-      ];
+      );
       await sheets.spreadsheets.values.batchUpdate({
-        spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "RAW", data: extraWriteData },
+        spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "USER_ENTERED", data: writeData },
       });
+      await invalidatePmaClientCache(sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(() => {});
       return res.status(200).json({ success: true, mode: "converted", extraJobRow: existingConfirmedRow });
     } else {
       const metaResp = await sheets.spreadsheets.get({
@@ -3745,12 +3776,10 @@ export async function handleApplyRetainerSplitInvoice(req, res, sheets) {
       const gridSheetId = confirmedSheet.properties.sheetId;
       let currentMaxRows = confirmedSheet.properties.gridProperties.rowCount;
 
-      const freshResp = await sheets.spreadsheets.values.get({
-        spreadsheetId: sheetIdClean, range: "Confirmed!A1:CR" + currentMaxRows, valueRenderOption: "UNFORMATTED_VALUE",
-      });
-      const trueLastRow = await retFindTrueLastRow(sheets, sheetIdClean, freshResp.data.values || []);
+      const trueLastRow = await retFindTrueLastRow(sheets, sheetIdClean, rows);
       const newRowNum = trueLastRow + 1;
 
+      // 1. Structural insertDimension FIRST while sheet is idle (<1s)
       if ((currentMaxRows - (trueLastRow + 1)) < 1) {
         await sheets.spreadsheets.batchUpdate({
           spreadsheetId: sheetIdClean,
@@ -3762,48 +3791,48 @@ export async function handleApplyRetainerSplitInvoice(req, res, sheets) {
         });
       }
 
-      const newWriteData = [
-        { range: `Confirmed!A${newRowNum}`, values: [[client]] },
-        { range: `Confirmed!B${newRowNum}`, values: [[extraJobName]] },
+      // 2. Write all cell values SECOND in a single batchUpdate
+      writeData.push(
+        { range: `Confirmed!A${newRowNum}`, values: [[sanitizeFormulaInput(client)]] },
+        { range: `Confirmed!B${newRowNum}`, values: [[sanitizeFormulaInput(extraJobName)]] },
         { range: `Confirmed!D${newRowNum}`, values: [[parentRow[3] || ""]] },
-        { range: `Confirmed!E${newRowNum}`, values: [[parentRow[4] || ""]] },
+        { range: `Confirmed!E${newRowNum}`, values: [[sanitizeFormulaInput(parentRow[4] || "")]] },
         { range: `Confirmed!AG${newRowNum}`, values: [[difference]] },
         { range: `Confirmed!AI${newRowNum}`, values: [[vatYesNo]] },
         { range: `Confirmed!AJ${newRowNum}`, values: [["Retainer"]] },
-        { range: `Confirmed!AK${newRowNum}`, values: [[parentRow[36] || ""]] },
-        { range: `Confirmed!AP${newRowNum}`, values: [[difference]] },
-        { range: `Confirmed!AQ${newRowNum}`, values: [[altInvoiceNo || ""]] },
-        { range: `Confirmed!AS${newRowNum}`, values: [[defaultDaysToPay]] },
-        { range: `Confirmed!AT${newRowNum}`, values: [[altStatus || ""]] },
-      ];
-      const newDateWriteData = [
+        { range: `Confirmed!AK${newRowNum}`, values: [[sanitizeFormulaInput(parentRow[36] || "")]] },
         { range: `Confirmed!AL${newRowNum}`, values: [[retFmtDate(monthStart)]] },
         { range: `Confirmed!AM${newRowNum}`, values: [[retFmtDate(monthEnd)]] },
-      ];
-      if (parsedAltSentDate) newDateWriteData.push({ range: `Confirmed!AR${newRowNum}`, values: [[retFmtDate(parsedAltSentDate)]] });
+        { range: `Confirmed!AP${newRowNum}`, values: [[difference]] },
+        { range: `Confirmed!AQ${newRowNum}`, values: [[sanitizeFormulaInput(altInvoiceNo || "")]] },
+        { range: `Confirmed!AS${newRowNum}`, values: [[defaultDaysToPay]] },
+        { range: `Confirmed!AT${newRowNum}`, values: [[sanitizeFormulaInput(altStatus || "")]] },
+      );
+      if (parsedAltSentDate) writeData.push({ range: `Confirmed!AR${newRowNum}`, values: [[retFmtDate(parsedAltSentDate)]] });
 
       await sheets.spreadsheets.values.batchUpdate({
-        spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "RAW", data: newWriteData },
-      });
-      await sheets.spreadsheets.values.batchUpdate({
-        spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "USER_ENTERED", data: newDateWriteData },
+        spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "USER_ENTERED", data: writeData },
       });
 
-      let tenantClient = req.body.clientName || "";
-      if (!tenantClient) {
-        tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
-      }
-      const endClient = client || "";
-      const jobIdentifier = endClient ? `"${endClient} - ${jobName || extraJobName || "Retainer"}"` : `"${jobName || extraJobName || "Retainer"}"`;
+      await invalidatePmaClientCache(sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(() => {});
 
-      logPmaActivity(sheets, {
-        automationCommanderSheetId: req.body.automationCommanderSheetId,
-        clientName: tenantClient,
-        category: "RETAINER",
-        action: "Retainer Split Invoice Applied",
-        summary: `Applied retainer invoice split for #${altInvoiceNo || "Invoice"} on ${jobIdentifier}`,
-        details: { clientName: tenantClient, endClient, altInvoiceNo, difference, extraJobName }
-      }).catch(e => console.error("PMA log failed:", e));
+      (async () => {
+        let tenantClient = req.body.clientName || "";
+        if (!tenantClient) {
+          tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
+        }
+        const endClient = client || "";
+        const jobIdentifier = endClient ? `"${endClient} - ${jobName || extraJobName || "Retainer"}"` : `"${jobName || extraJobName || "Retainer"}"`;
+
+        await logPmaActivity(sheets, {
+          automationCommanderSheetId: req.body.automationCommanderSheetId,
+          clientName: tenantClient,
+          category: "RETAINER",
+          action: "Retainer Split Invoice Applied",
+          summary: `Applied retainer invoice split for #${altInvoiceNo || "Invoice"} on ${jobIdentifier}`,
+          details: { clientName: tenantClient, endClient, altInvoiceNo, difference, extraJobName }
+        });
+      })().catch(e => console.error("PMA log failed:", e));
 
       return res.status(200).json({ success: true, mode: "created", extraJobRow: newRowNum });
     }
@@ -3828,25 +3857,27 @@ export async function handleDeleteRetainer(req, res, sheets) {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
     const masterIdClean = extractSheetIdFromUrl(masterSheetId) || masterSheetId;
 
-    const allLocks = await checkAllGASLocks(sheets, masterIdClean);
+    const [allLocks, metaResp, resp] = await Promise.all([
+      checkAllGASLocks(sheets, masterIdClean),
+      sheets.spreadsheets.get({
+        spreadsheetId: sheetIdClean,
+        fields: "sheets(properties.sheetId,properties.title,properties.gridProperties,rowGroups)"
+      }),
+      sheets.spreadsheets.values.get({
+        spreadsheetId: sheetIdClean,
+        range: "Confirmed!A1:CR5000",
+        valueRenderOption: "UNFORMATTED_VALUE",
+      }),
+    ]);
+
     if (allLocks.invoice.locked) return res.status(400).json({ success: false, error: allLocks.invoice.message });
     if (allLocks.expense.locked) return res.status(400).json({ success: false, error: allLocks.expense.message });
     if (allLocks.crm.locked) return res.status(400).json({ success: false, error: allLocks.crm.message });
 
-    const metaResp = await sheets.spreadsheets.get({
-      spreadsheetId: sheetIdClean,
-      fields: "sheets(properties.sheetId,properties.title,properties.gridProperties,rowGroups)"
-    });
     const confirmedSheet = metaResp.data.sheets.find(s => s.properties.title === "Confirmed");
     if (!confirmedSheet) return res.status(400).json({ success: false, error: "Confirmed tab not found" });
     const confirmedSheetId = confirmedSheet.properties.sheetId;
-    const maxRows = confirmedSheet.properties.gridProperties?.rowCount || 2000;
 
-    const resp = await sheets.spreadsheets.values.get({
-      spreadsheetId: sheetIdClean,
-      range: `Confirmed!A1:CR${maxRows}`,
-      valueRenderOption: "UNFORMATTED_VALUE",
-    });
     const allRows = resp.data.values || [];
 
     const pIdx = parentRowNum - 1;
@@ -3922,6 +3953,65 @@ export async function handleDeleteRetainer(req, res, sheets) {
       );
     }
 
+    const cleanupRequests = [];
+    if (rowsToClear.length > 1) {
+      const childStart = rowsToClear[1] - 1;
+      const childEnd = rowsToClear[rowsToClear.length - 1];
+      const existingGroups = confirmedSheet.rowGroups || [];
+      const matchGroup = existingGroups.find(
+        g => g.range?.startIndex <= childStart && g.range?.endIndex >= childEnd
+      );
+      if (matchGroup) {
+        cleanupRequests.push({
+          deleteDimensionGroup: {
+            range: {
+              sheetId: confirmedSheetId,
+              dimension: "ROWS",
+              startIndex: matchGroup.range.startIndex,
+              endIndex: matchGroup.range.endIndex,
+            }
+          }
+        });
+        cleanupRequests.push({
+          updateDimensionProperties: {
+            range: {
+              sheetId: confirmedSheetId,
+              dimension: "ROWS",
+              startIndex: matchGroup.range.startIndex,
+              endIndex: matchGroup.range.endIndex,
+            },
+            properties: { hiddenByUser: false },
+            fields: "hiddenByUser",
+          },
+        });
+      }
+    }
+    if (rowsToClear.length > 0) {
+      cleanupRequests.push({
+        updateDimensionProperties: {
+          range: {
+            sheetId: confirmedSheetId,
+            dimension: "ROWS",
+            startIndex: rowsToClear[0] - 1,
+            endIndex: rowsToClear[rowsToClear.length - 1],
+          },
+          properties: { hiddenByUser: false },
+          fields: "hiddenByUser",
+        },
+      });
+    }
+
+    // Execute structural group deletion / row unhiding FIRST while the sheet is idle (<1s),
+    // then clear cell values SECOND so structural batchUpdate never blocks behind formula recalculation.
+    if (cleanupRequests.length > 0) {
+      await withRetry(() =>
+        sheets.spreadsheets.batchUpdate({
+          spreadsheetId: sheetIdClean,
+          requestBody: { requests: cleanupRequests }
+        })
+      ).catch(groupErr => console.warn("⚠️ Delete dimension group / unhide warning (non-fatal):", groupErr.message));
+    }
+
     await withRetry(() =>
       sheets.spreadsheets.values.batchClear({
         spreadsheetId: sheetIdClean,
@@ -3929,80 +4019,23 @@ export async function handleDeleteRetainer(req, res, sheets) {
       })
     );
 
-    // If there was a dimension group for the child rows, remove it and ensure cleared rows are unhidden
-    try {
-      const cleanupRequests = [];
-      if (rowsToClear.length > 1) {
-        const childStart = rowsToClear[1] - 1;
-        const childEnd = rowsToClear[rowsToClear.length - 1];
-        const existingGroups = confirmedSheet.rowGroups || [];
-        const matchGroup = existingGroups.find(
-          g => g.range?.startIndex <= childStart && g.range?.endIndex >= childEnd
-        );
-        if (matchGroup) {
-          cleanupRequests.push({
-            deleteDimensionGroup: {
-              range: {
-                sheetId: confirmedSheetId,
-                dimension: "ROWS",
-                startIndex: matchGroup.range.startIndex,
-                endIndex: matchGroup.range.endIndex,
-              }
-            }
-          });
-          cleanupRequests.push({
-            updateDimensionProperties: {
-              range: {
-                sheetId: confirmedSheetId,
-                dimension: "ROWS",
-                startIndex: matchGroup.range.startIndex,
-                endIndex: matchGroup.range.endIndex,
-              },
-              properties: { hiddenByUser: false },
-              fields: "hiddenByUser",
-            },
-          });
-        }
-      }
-      if (rowsToClear.length > 0) {
-        cleanupRequests.push({
-          updateDimensionProperties: {
-            range: {
-              sheetId: confirmedSheetId,
-              dimension: "ROWS",
-              startIndex: rowsToClear[0] - 1,
-              endIndex: rowsToClear[rowsToClear.length - 1],
-            },
-            properties: { hiddenByUser: false },
-            fields: "hiddenByUser",
-          },
-        });
-      }
-      if (cleanupRequests.length > 0) {
-        await withRetry(() =>
-          sheets.spreadsheets.batchUpdate({
-            spreadsheetId: sheetIdClean,
-            requestBody: { requests: cleanupRequests }
-          })
-        );
-      }
-    } catch (groupErr) {
-      console.warn("⚠️ Delete dimension group / unhide warning (non-fatal):", groupErr.message);
-    }
+    await invalidatePmaClientCache(sheetIdClean, masterIdClean, ["jobs", "invoices", "retainers", "cash"]).catch(() => {});
 
-    let tenantClient = req.body.clientName || "";
-    if (!tenantClient) {
-      tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
-    }
+    (async () => {
+      let tenantClient = req.body.clientName || "";
+      if (!tenantClient) {
+        tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
+      }
 
-    logPmaActivity(sheets, {
-      automationCommanderSheetId: req.body.automationCommanderSheetId,
-      clientName: tenantClient,
-      category: "RETAINER",
-      action: "Retainer Deleted",
-      summary: `Deleted retainer "${pJob || jobName}" (${rowsToClear.length} rows cleared) for ${pClient || tenantClient}`,
-      details: { clientName: tenantClient, endClient: pClient, jobName: pJob || jobName, rowsToClear }
-    }).catch(e => console.error("PMA log failed:", e));
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId: req.body.automationCommanderSheetId,
+        clientName: tenantClient,
+        category: "RETAINER",
+        action: "Retainer Deleted",
+        summary: `Deleted retainer "${pJob || jobName}" (${rowsToClear.length} rows cleared) for ${pClient || tenantClient}`,
+        details: { clientName: tenantClient, endClient: pClient, jobName: pJob || jobName, rowsToClear }
+      });
+    })().catch(e => console.error("PMA log failed:", e));
 
     return res.status(200).json({ success: true, clearedRows: rowsToClear.length });
   } catch (err) {

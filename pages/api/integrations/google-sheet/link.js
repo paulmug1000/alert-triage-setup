@@ -8,7 +8,7 @@
  */
 
 import { getSessionUser } from "../../../../services/authService.js";
-import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, isReadOnlySession } from "../../../../services/userPermissions.js";
+import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, isReadOnlySession, resolveMasterSheetIdByClientName } from "../../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../../services/sheetsClient.js";
 import { linkGoogleSheetToClient } from "../../../../services/googleSheetService.js";
 import { updateClientChecklistTask } from "../../../../services/setupService.js";
@@ -33,10 +33,10 @@ export default async function handler(req, res) {
 
   const { clientKey, masterSheetId, url, tabName, headerRowNum = 1, keyHeaders = "", spreadsheetTitle = "" } = req.body;
 
-  if (!clientKey || !masterSheetId || !url) {
+  if (!clientKey || !url) {
     return res.status(400).json({
       success: false,
-      error: "Missing required clientKey, masterSheetId, or url parameters"
+      error: "Missing required clientKey or url parameters"
     });
   }
 
@@ -44,22 +44,32 @@ export default async function handler(req, res) {
     return res.status(403).json({ success: false, error: "Access denied to this client." });
   }
 
-  if (!sessionUser.isAdmin && masterSheetId) {
-    try {
-      const sheets = await getSheetsClient();
-      const auth = await verifyUserAuthorizedForSheet(sessionUser, masterSheetId, clientKey, sheets);
+  let resolvedMasterSheetId = masterSheetId || "";
+  try {
+    const sheets = await getSheetsClient();
+    if (!resolvedMasterSheetId) {
+      resolvedMasterSheetId = await resolveMasterSheetIdByClientName(sheets, clientKey);
+    }
+    if (!resolvedMasterSheetId) {
+      return res.status(400).json({
+        success: false,
+        error: "Could not resolve master configuration for this client."
+      });
+    }
+    if (!sessionUser.isAdmin) {
+      const auth = await verifyUserAuthorizedForSheet(sessionUser, resolvedMasterSheetId, clientKey, sheets);
       if (!auth.authorized) {
         return res.status(auth.status || 403).json({ success: false, error: auth.error });
       }
-    } catch (authErr) {
-      return res.status(403).json({ success: false, error: "Failed to verify sheet authorization." });
     }
+  } catch (authErr) {
+    return res.status(403).json({ success: false, error: "Failed to verify sheet authorization." });
   }
 
   try {
     const linkResult = await linkGoogleSheetToClient({
       clientKey,
-      masterSheetId,
+      masterSheetId: resolvedMasterSheetId,
       url,
       tabName: tabName || "Sheet1",
       headerRowNum,
@@ -68,13 +78,13 @@ export default async function handler(req, res) {
     });
 
     // Check if vault record exists; update metadata or create connected status record
-    const existingGrant = await getIntegrationTokens({ clientKey, tool: "googlesheet" });
+    const existingGrant = await getIntegrationTokens({ clientKey, masterSheetId: resolvedMasterSheetId, tool: "googlesheet" });
     const resolvedTitle = String(spreadsheetTitle || existingGrant?.metadata?.spreadsheetTitle || "").trim();
     if (existingGrant) {
       await saveIntegrationTokens({
         clientKey,
         clientName: existingGrant.clientName || clientKey,
-        masterSheetId: masterSheetId || existingGrant.masterSheetId,
+        masterSheetId: resolvedMasterSheetId || existingGrant.masterSheetId,
         tool: "googlesheet",
         tokens: existingGrant.tokens,
         metadata: {
@@ -92,7 +102,7 @@ export default async function handler(req, res) {
       await saveIntegrationTokens({
         clientKey,
         clientName: clientKey,
-        masterSheetId,
+        masterSheetId: resolvedMasterSheetId,
         tool: "googlesheet",
         tokens: {
           accessToken: "manual_link",
@@ -117,7 +127,7 @@ export default async function handler(req, res) {
       clientName: clientKey,
       tool: "googlesheet",
       tenantName: existingGrant?.metadata?.userEmail || resolvedTitle || tabName || "Google Sheet",
-      masterSheetId
+      masterSheetId: resolvedMasterSheetId
     }).catch(err => console.error("Notification email error:", err.message));
 
     // Auto-complete Setup task p2_connect_crm

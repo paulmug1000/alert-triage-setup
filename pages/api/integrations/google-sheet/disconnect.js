@@ -5,9 +5,9 @@
  */
 
 import { getSessionUser } from "../../../../services/authService.js";
-import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, isReadOnlySession, matchesClientName } from "../../../../services/userPermissions.js";
+import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, isReadOnlySession, matchesClientName, resolveMasterSheetIdByClientName } from "../../../../services/userPermissions.js";
 import { getSheetsClient, withRetry } from "../../../../services/sheetsClient.js";
-import { deleteIntegrationTokens } from "../../../../services/vaultService.js";
+import { deleteIntegrationTokens, invalidateIntegrationsCache } from "../../../../services/vaultService.js";
 import { updateClientChecklistTask } from "../../../../services/setupService.js";
 import { redisClient } from "../../../../services/redisClient.js";
 import { assertTrustedOrigin } from "../../../../utils/helpers.js";
@@ -43,18 +43,19 @@ export default async function handler(req, res) {
 
   try {
     const sheets = await getSheetsClient();
-    if (!sessionUser.isAdmin && masterSheetId) {
-      const auth = await verifyUserAuthorizedForSheet(sessionUser, masterSheetId, clientKey, sheets);
+    const resolvedMasterSheetId = masterSheetId || (await resolveMasterSheetIdByClientName(sheets, targetClient));
+    if (!sessionUser.isAdmin && resolvedMasterSheetId) {
+      const auth = await verifyUserAuthorizedForSheet(sessionUser, resolvedMasterSheetId, targetClient, sheets);
       if (!auth.authorized) {
         return res.status(auth.status || 403).json({ success: false, error: auth.error });
       }
     }
 
-    // 1. Clear KeyInfo!X11:X15 and reset Q8 in master sheet if available
-    if (masterSheetId) {
+    // 1. Clear KeyInfo!X11:X15 in master sheet if available (preserve Q8 CRM tool selection)
+    if (resolvedMasterSheetId) {
       await withRetry(() =>
         sheets.spreadsheets.values.batchUpdate({
-          spreadsheetId: masterSheetId,
+          spreadsheetId: resolvedMasterSheetId,
           requestBody: {
             valueInputOption: "USER_ENTERED",
             data: [
@@ -62,8 +63,7 @@ export default async function handler(req, res) {
               { range: "KeyInfo!X12", values: [[""]] },
               { range: "KeyInfo!X13", values: [[""]] },
               { range: "KeyInfo!X14", values: [[""]] },
-              { range: "KeyInfo!X15", values: [[""]] },
-              { range: "KeyInfo!Q8", values: [["None"]] }
+              { range: "KeyInfo!X15", values: [[""]] }
             ]
           }
         })
@@ -71,12 +71,12 @@ export default async function handler(req, res) {
     }
 
     // 2. Remove vault record
-    await deleteIntegrationTokens({ clientKey, masterSheetId, tool: "googlesheet" });
+    await deleteIntegrationTokens({ clientKey: targetClient, masterSheetId: resolvedMasterSheetId, tool: "googlesheet" });
 
     // 3. Reset task in setup checklist
     try {
       await updateClientChecklistTask(sheets, {
-        clientName: clientKey,
+        clientName: targetClient,
         taskId: "p2_connect_crm",
         isCompleted: false,
         metadata: "Disconnected",
@@ -85,7 +85,7 @@ export default async function handler(req, res) {
     } catch (e) {}
 
     // 4. Invalidate Redis setup cache
-    const cleanClient = String(clientKey || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
+    const cleanClient = String(targetClient || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
     const redisKey = `pulse:setup:${cleanClient}`;
     if (redisClient?.isOpen) {
       try {
@@ -94,10 +94,13 @@ export default async function handler(req, res) {
           const prev = JSON.parse(raw);
           delete prev.googleSheetUrl;
           delete prev.googleSheetTab;
+          delete prev.googleSheetTitle;
           await redisClient.set(redisKey, JSON.stringify(prev));
         }
       } catch (e) {}
     }
+
+    await invalidateIntegrationsCache();
 
     return res.status(200).json({
       success: true,

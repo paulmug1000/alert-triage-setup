@@ -8,7 +8,7 @@
  */
 
 import { getSessionUser } from "../../../../services/authService.js";
-import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, isReadOnlySession } from "../../../../services/userPermissions.js";
+import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, isReadOnlySession, resolveMasterSheetIdByClientName } from "../../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../../services/sheetsClient.js";
 import { linkExcelToClient } from "../../../../services/excelIntegrationService.js";
 import { updateClientChecklistTask } from "../../../../services/setupService.js";
@@ -45,10 +45,10 @@ export default async function handler(req, res) {
     keyHeaders = ""
   } = req.body;
 
-  if (!clientKey || !masterSheetId || ((!driveId || !fileId) && !url) || !sheetName) {
+  if (!clientKey || ((!driveId || !fileId) && !url) || !sheetName) {
     return res.status(400).json({
       success: false,
-      error: "Missing required parameters (clientKey, masterSheetId, sheetName, and either url or driveId/fileId)"
+      error: "Missing required parameters (clientKey, sheetName, and either url or driveId/fileId)"
     });
   }
 
@@ -56,22 +56,32 @@ export default async function handler(req, res) {
     return res.status(403).json({ success: false, error: "Access denied to this client." });
   }
 
-  if (!sessionUser.isAdmin && masterSheetId) {
-    try {
-      const sheets = await getSheetsClient();
-      const auth = await verifyUserAuthorizedForSheet(sessionUser, masterSheetId, clientKey, sheets);
+  let resolvedMasterSheetId = masterSheetId || "";
+  try {
+    const sheets = await getSheetsClient();
+    if (!resolvedMasterSheetId) {
+      resolvedMasterSheetId = await resolveMasterSheetIdByClientName(sheets, clientKey);
+    }
+    if (!resolvedMasterSheetId) {
+      return res.status(400).json({
+        success: false,
+        error: "Could not resolve master configuration for this client."
+      });
+    }
+    if (!sessionUser.isAdmin) {
+      const auth = await verifyUserAuthorizedForSheet(sessionUser, resolvedMasterSheetId, clientKey, sheets);
       if (!auth.authorized) {
         return res.status(auth.status || 403).json({ success: false, error: auth.error });
       }
-    } catch (authErr) {
-      return res.status(403).json({ success: false, error: "Failed to verify sheet authorization." });
     }
+  } catch (authErr) {
+    return res.status(403).json({ success: false, error: "Failed to verify sheet authorization." });
   }
 
   try {
     const linkResult = await linkExcelToClient({
       clientKey,
-      masterSheetId,
+      masterSheetId: resolvedMasterSheetId,
       tenantId,
       clientId,
       clientSecret,

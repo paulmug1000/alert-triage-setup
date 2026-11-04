@@ -18,7 +18,7 @@ import { redisClient } from "./redisClient.js";
 import { getIntegrationStatus } from "./vaultService.js";
 import { getSheetsClient, getDriveClient, withRetry, extractSheetIdFromUrl, sanitizeFormulaInput } from "./sheetsClient.js";
 import { logPmaActivity, DEFAULT_AC_SHEET_ID } from "./pmaLogger.js";
-import { isUserAuthorizedForClient } from "./userPermissions.js";
+import { isUserAuthorizedForClient, resolveMasterSheetIdByClientName } from "./userPermissions.js";
 
 export const TRACKER_SHEET_ID = "1tx4rRD55-W53-B9Z_kMAJjXMf0nrIE9CCczYXFR84co";
 export const REPORTING_CONTROL_SHEET_ID = "1uAJS6ZWn0o-GPU9Ea3DIVU9nzQoRnXrMfmBcQYHNJ_s";
@@ -158,43 +158,54 @@ export async function getClientSetupConfig({ clientName, masterSheetId, forceShe
 
   // Fast path: Only query Google Sheets API if:
   // 1) forceSheetSync is true, OR
-  // 2) Redis does not have accountingTool and crmTool cached yet
-  const hasCachedTools = config && typeof config.accountingTool === "string" && typeof config.crmTool === "string";
+  // 2) Redis does not have accountingTool and crmTool cached yet, OR
+  // 3) Both tools are cached as 'None' (in case KeyInfo!Q4/Q8 was updated directly in the sheet)
+  const hasCachedTools =
+    config &&
+    typeof config.accountingTool === "string" &&
+    typeof config.crmTool === "string" &&
+    !(config.accountingTool === "None" && config.crmTool === "None");
   const needsSheetSync = forceSheetSync || !hasCachedTools;
 
+  let resolvedMasterSheetId = masterSheetId || config?.masterSheetId || "";
   let sheetQ4 = config?.accountingTool || "None";
   let sheetQ8 = config?.crmTool || "None";
   let sheetQ9 = config?.crmDrives || "NA";
 
-  if (needsSheetSync && masterSheetId) {
+  if (needsSheetSync) {
     try {
       const sheets = await getSheetsClient();
-      const res = await withRetry(() =>
-        sheets.spreadsheets.values.get({
-          spreadsheetId: masterSheetId,
-          range: "KeyInfo!Q4:Q9"
-        })
-      );
-      const rows = res.data.values || [];
-      sheetQ4 = (rows[0] && rows[0][0]) ? String(rows[0][0]).trim() : "None";
-      sheetQ8 = (rows[4] && rows[4][0]) ? String(rows[4][0]).trim() : "None";
-      sheetQ9 = (rows[5] && rows[5][0]) ? String(rows[5][0]).trim() : "NA";
+      if (!resolvedMasterSheetId) {
+        resolvedMasterSheetId = await resolveMasterSheetIdByClientName(sheets, clientName);
+      }
+      if (resolvedMasterSheetId) {
+        const res = await withRetry(() =>
+          sheets.spreadsheets.values.get({
+            spreadsheetId: resolvedMasterSheetId,
+            range: "KeyInfo!Q4:Q9"
+          })
+        );
+        const rows = res.data.values || [];
+        sheetQ4 = (rows[0] && rows[0][0]) ? String(rows[0][0]).trim() : "None";
+        sheetQ8 = (rows[4] && rows[4][0]) ? String(rows[4][0]).trim() : "None";
+        sheetQ9 = (rows[5] && rows[5][0]) ? String(rows[5][0]).trim() : "NA";
 
-      // Persist to Redis so future visits load instantly from memory
-      const updatedRecord = {
-        ...(config || {}),
-        clientName,
-        masterSheetId: masterSheetId || config?.masterSheetId || "",
-        setupMode: config?.setupMode === true,
-        requestConnections: config?.requestConnections === true,
-        accountingTool: sheetQ4,
-        crmTool: sheetQ8,
-        crmDrives: sheetQ9,
-        sheetSyncedAt: new Date().toISOString(),
-        updatedAt: config?.updatedAt || new Date().toISOString()
-      };
-      await redisClient.set(redisKey, JSON.stringify(updatedRecord));
-      config = updatedRecord;
+        // Persist to Redis so future visits load instantly from memory
+        const updatedRecord = {
+          ...(config || {}),
+          clientName,
+          masterSheetId: resolvedMasterSheetId,
+          setupMode: config?.setupMode === true,
+          requestConnections: config?.requestConnections === true,
+          accountingTool: sheetQ4,
+          crmTool: sheetQ8,
+          crmDrives: sheetQ9,
+          sheetSyncedAt: new Date().toISOString(),
+          updatedAt: config?.updatedAt || new Date().toISOString()
+        };
+        await redisClient.set(redisKey, JSON.stringify(updatedRecord));
+        config = updatedRecord;
+      }
     } catch (sheetErr) {
       console.log(`Note reading KeyInfo!Q4:Q9 for ${clientName}:`, sheetErr.message);
     }
@@ -212,7 +223,7 @@ export async function getClientSetupConfig({ clientName, masterSheetId, forceShe
   if (isOAuthTool(accountingTool)) {
     accountingStatus = await getIntegrationStatus({
       clientKey: clientName,
-      masterSheetId,
+      masterSheetId: resolvedMasterSheetId,
       tool: accountingTool
     });
   }
@@ -224,7 +235,7 @@ export async function getClientSetupConfig({ clientName, masterSheetId, forceShe
   if (isOAuthTool(crmTool)) {
     crmStatus = await getIntegrationStatus({
       clientKey: clientName,
-      masterSheetId,
+      masterSheetId: resolvedMasterSheetId,
       tool: crmKey
     });
   }
@@ -410,37 +421,51 @@ export async function getClientSetupStatusForPortal({ clientName, masterSheetId 
   }
 
   // If no Redis config or missing tool selections, attempt reading KeyInfo!Q4:Q9
+  let resolvedMasterSheetId = masterSheetId || config?.masterSheetId || "";
   let accountingTool = config?.accountingTool || "None";
   let crmTool = config?.crmTool || "None";
 
-  if ((accountingTool === "None" || crmTool === "None") && masterSheetId) {
+  if (accountingTool === "None" || crmTool === "None" || !resolvedMasterSheetId) {
     try {
       const sheets = await getSheetsClient();
-      const res = await withRetry(() =>
-        sheets.spreadsheets.values.get({
-          spreadsheetId: masterSheetId,
-          range: "KeyInfo!Q4:Q9"
-        })
-      );
-      const rows = res.data.values || [];
-      const sheetQ4 = (rows[0] && rows[0][0]) ? String(rows[0][0]).trim() : "None";
-      const sheetQ8 = (rows[4] && rows[4][0]) ? String(rows[4][0]).trim() : "None";
-      if (accountingTool === "None" && sheetQ4 !== "None") accountingTool = sheetQ4;
-      if (crmTool === "None" && sheetQ8 !== "None") crmTool = sheetQ8;
+      if (!resolvedMasterSheetId) {
+        resolvedMasterSheetId = await resolveMasterSheetIdByClientName(sheets, clientName);
+      }
+      if (resolvedMasterSheetId && (accountingTool === "None" || crmTool === "None")) {
+        const res = await withRetry(() =>
+          sheets.spreadsheets.values.get({
+            spreadsheetId: resolvedMasterSheetId,
+            range: "KeyInfo!Q4:Q9"
+          })
+        );
+        const rows = res.data.values || [];
+        const sheetQ4 = (rows[0] && rows[0][0]) ? String(rows[0][0]).trim() : "None";
+        const sheetQ8 = (rows[4] && rows[4][0]) ? String(rows[4][0]).trim() : "None";
+        const sheetQ9 = (rows[5] && rows[5][0]) ? String(rows[5][0]).trim() : "NA";
+        if (accountingTool === "None" && sheetQ4 !== "None") accountingTool = sheetQ4;
+        if (crmTool === "None" && sheetQ8 !== "None") crmTool = sheetQ8;
 
-      // Cache back to Redis so we don't hit Google Sheets API repeatedly
-      if (!config) {
-        config = {
-          clientName,
-          masterSheetId,
-          setupMode: false,
-          requestConnections: false,
-          accountingTool,
-          crmTool,
-          crmDrives: (rows[5] && rows[5][0]) ? String(rows[5][0]).trim() : "NA",
-          updatedAt: new Date().toISOString()
-        };
-        await redisClient.set(redisKey, JSON.stringify(config)).catch(() => {});
+        // Cache back to Redis whenever config was missing OR tool selections changed in KeyInfo!Q4:Q9
+        const shouldPersist =
+          !config ||
+          config.accountingTool !== accountingTool ||
+          config.crmTool !== crmTool ||
+          !config.masterSheetId;
+        if (shouldPersist) {
+          config = {
+            ...(config || {}),
+            clientName,
+            masterSheetId: resolvedMasterSheetId,
+            setupMode: config?.setupMode === true,
+            requestConnections: config?.requestConnections === true,
+            accountingTool,
+            crmTool,
+            crmDrives: config?.crmDrives || sheetQ9,
+            sheetSyncedAt: new Date().toISOString(),
+            updatedAt: config?.updatedAt || new Date().toISOString()
+          };
+          await redisClient.set(redisKey, JSON.stringify(config)).catch(() => { });
+        }
       }
     } catch (sheetErr) {
       // Non-fatal sheet read note
@@ -459,7 +484,7 @@ export async function getClientSetupStatusForPortal({ clientName, masterSheetId 
     const cleanTool = cleanLower.includes("sheet") ? "googlesheet" : cleanLower.includes("excel") ? "excel" : cleanLower;
     let status = await getIntegrationStatus({
       clientKey: clientName,
-      masterSheetId,
+      masterSheetId: resolvedMasterSheetId,
       tool: cleanTool
     });
 
@@ -562,7 +587,7 @@ export function revalidateClientsSetupInBackground(clients = []) {
         try {
           const raw = await redisClient.get(redisKey);
           if (raw) config = JSON.parse(raw);
-        } catch {}
+        } catch { }
 
         const lastSynced = config?.sheetSyncedAt ? new Date(config.sheetSyncedAt).getTime() : 0;
         const isStale = (now - lastSynced) > ONE_HOUR || !config?.directCostsMode;
@@ -869,7 +894,7 @@ export async function getSetupProcessTemplate(sheets, forceRefresh = false) {
     tasks.sort((a, b) => a.order - b.order);
 
     const templateData = { phases, tasks };
-    await redisClient.set(cacheKey, JSON.stringify(templateData), { EX: 86400 }).catch(() => {});
+    await redisClient.set(cacheKey, JSON.stringify(templateData), { EX: 86400 }).catch(() => { });
     return templateData;
   } catch (err) {
     console.error("Error reading setup process template from sheet:", err.message);
@@ -933,7 +958,7 @@ export async function saveSetupProcessTemplate(sheets, { phases, tasks }, userEm
     tasks: tasks.slice().sort((a, b) => a.order - b.order)
   };
 
-  await redisClient.set("pulse:setup:process_template", JSON.stringify(templateData), { EX: 86400 }).catch(() => {});
+  await redisClient.set("pulse:setup:process_template", JSON.stringify(templateData), { EX: 86400 }).catch(() => { });
 
   // Clear client checklist caches so updated template displays immediately
   try {
@@ -952,7 +977,7 @@ export async function saveSetupProcessTemplate(sheets, { phases, tasks }, userEm
     action: "edit_setup_process",
     summary: `Updated setup process template: ${tasks.length} steps configured across ${phases.length} phases`,
     user: userEmail
-  }).catch(() => {});
+  }).catch(() => { });
 
   return templateData;
 }
@@ -1026,7 +1051,7 @@ export async function getAllClientsSetupOverview(sheets, sessionUser, allOutgoin
     try {
       const raw = await redisClient.get(redisKey);
       if (raw) cached = JSON.parse(raw);
-    } catch {}
+    } catch { }
 
     const setupMode = cached?.setupMode === true;
     const accountingTool = cached?.accountingTool || "None";
@@ -1190,7 +1215,7 @@ export async function getClientChecklistState(sheets, clientName, masterSheetId)
   // Cache back to Redis
   const flatTaskList = [];
   phases.forEach(p => p.tasks.forEach(t => flatTaskList.push({ taskId: t.id, ...t })));
-  await redisClient.set(checklistRedisKey, JSON.stringify(flatTaskList), { EX: 86400 }).catch(() => {});
+  await redisClient.set(checklistRedisKey, JSON.stringify(flatTaskList), { EX: 86400 }).catch(() => { });
 
   return {
     clientName,
@@ -1263,7 +1288,7 @@ export async function updateClientChecklistTask(sheets, { clientName, taskId, is
   }
 
   // 2. Invalidate checklist cache
-  await redisClient.del(getChecklistRedisKey(clientName)).catch(() => {});
+  await redisClient.del(getChecklistRedisKey(clientName)).catch(() => { });
 
   // 3. Log activity
   logPmaActivity({
@@ -1271,7 +1296,7 @@ export async function updateClientChecklistTask(sheets, { clientName, taskId, is
     details: `${isCompleted ? "Completed" : "Unchecked"} task "${taskTitle}" for ${clientName}`,
     clientName,
     userEmail: userEmail || "Admin"
-  }).catch(() => {});
+  }).catch(() => { });
 
   // Return fresh checklist state and sync overview
   const freshChecklist = await getClientChecklistState(sheets, clientName);
@@ -1421,7 +1446,7 @@ export async function saveMasterKeyInfoSettings(sheets, { masterSheetId, clientN
         }));
         const allClientKeys = await redisClient.keys("pulse:all_clients:*");
         if (allClientKeys.length > 0) await redisClient.del(allClientKeys);
-      } catch {}
+      } catch { }
     }
   }
 
@@ -1430,7 +1455,7 @@ export async function saveMasterKeyInfoSettings(sheets, { masterSheetId, clientN
     details: `Updated Master Sheet KeyInfo financial parameters for ${clientName}`,
     clientName,
     userEmail: userEmail || "Admin"
-  }).catch(() => {});
+  }).catch(() => { });
 
   return await getMasterKeyInfoSettings(sheets, masterSheetId);
 }
@@ -1485,7 +1510,7 @@ export async function saveScriptIdsToTracker(sheets, { clientName, clientScriptI
     details: `Saved Script IDs into Client Version Tracker row ${rowNum} for ${clientName}`,
     clientName,
     userEmail: userEmail || "Admin"
-  }).catch(() => {});
+  }).catch(() => { });
 
   return { success: true, rowNum };
 }
@@ -1573,7 +1598,7 @@ export async function saveDeploymentUrl(sheets, { clientName, masterSheetId, dep
     details: `Saved Master GAS deployment URL for ${clientName}`,
     clientName,
     userEmail: userEmail || "Admin"
-  }).catch(() => {});
+  }).catch(() => { });
 
   return { success: true };
 }
@@ -1930,15 +1955,15 @@ export async function provisionNewClientSystem({
     updatedAt: now,
     updatedBy: userEmail
   };
-  await redisClient.set(getSetupRedisKey(cleanClientName), JSON.stringify(setupConfigRecord)).catch(() => {});
-  await redisClient.del(getChecklistRedisKey(cleanClientName)).catch(() => {});
+  await redisClient.set(getSetupRedisKey(cleanClientName), JSON.stringify(setupConfigRecord)).catch(() => { });
+  await redisClient.del(getChecklistRedisKey(cleanClientName)).catch(() => { });
 
   logPmaActivity({
     action: "client_provisioned",
     details: `Successfully provisioned new client "${cleanClientName}" with folder & sheets`,
     clientName: cleanClientName,
     userEmail
-  }).catch(() => {});
+  }).catch(() => { });
 
   console.log(`✅ Client "${cleanClientName}" successfully provisioned!`);
 

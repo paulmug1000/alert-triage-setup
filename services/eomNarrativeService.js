@@ -1,5 +1,5 @@
 import zlib from "zlib";
-import { getDriveClient, withRetry, extractSheetIdFromUrl } from "./sheetsClient";
+import { getDriveClient, getGoogleAuth, withRetry, extractSheetIdFromUrl } from "./sheetsClient";
 import { anthropic } from "./claudeClient";
 import { logClaudeUsage_ } from "./systemConfig";
 import { logPmaActivity } from "./pmaLogger";
@@ -247,11 +247,16 @@ export function parsePptxBuffer(pptxBuffer, options = { includeImages: true }) {
       }
     }
 
-    // 2. Extract speaker notes & [ChartRef] code
+    // 2. Extract speaker notes, [ChartRef] code, and real Google Slides pageId (g...)
     let speakerNotes = "";
     let chartCode = "";
+    let pageId = "";
     if (notesTargetPath && zipMap.has(notesTargetPath)) {
       const notesXml = zipMap.get(notesTargetPath).toString("utf8");
+      const pageIdMatch = notesXml.match(/name="Google Shape;\d+;([^":]+):notes"/);
+      if (pageIdMatch) {
+        pageId = pageIdMatch[1];
+      }
       const notesSpRegex = /<p:sp\b[\s\S]*?<\/p:sp>/g;
       const noteParts = [];
       let nsm;
@@ -389,11 +394,21 @@ export function parsePptxBuffer(pptxBuffer, options = { includeImages: true }) {
         continue;
       }
 
+      // Skip bottom-right slide number box (y > 360pt / 4572000 EMU, x > 600pt / 7620000 EMU, cx < 85pt / 1079500 EMU)
+      if (y > 4572000 && x > 7620000 && cx < 1079500) {
+        continue;
+      }
+
       if (rawText.includes("🚩")) {
         hasFlag = true;
         if (rawText.replace(/🚩/g, "").trim() === "") {
           continue;
         }
+      }
+
+      // Skip tiny badges or shapes narrower than 95pt (1206500 EMU) or shorter than 35pt (444500 EMU) unless it's a title
+      if (y >= 700000 && (cx < 1206500 || cy < 444500)) {
+        continue;
       }
 
       const maxFontSize = paragraphs.reduce((max, p) => Math.max(max, p.fontSizePt || 0), 0);
@@ -478,6 +493,7 @@ export function parsePptxBuffer(pptxBuffer, options = { includeImages: true }) {
 
     slides.push({
       slideNumber,
+      pageId,
       slideTitle: slideTitle || (chartCode ? chartCode.replace(/^\[|\]$/g, "") : `Slide ${slideNumber}`),
       speakerNotes,
       chartCode,

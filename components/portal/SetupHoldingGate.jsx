@@ -648,10 +648,10 @@ export default function SetupHoldingGate({
                         ? "#FFFBEB"
                         : "#FEF2F2",
                   border: `1px solid ${localFeedback.type === "success"
-                      ? "#A7F3D0"
-                      : localFeedback.type === "warning"
-                        ? "#FDE68A"
-                        : "#FECACA"
+                    ? "#A7F3D0"
+                    : localFeedback.type === "warning"
+                      ? "#FDE68A"
+                      : "#FECACA"
                     }`,
                   color:
                     localFeedback.type === "success"

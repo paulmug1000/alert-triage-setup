@@ -11,6 +11,12 @@ let _l1Integrations = null;
 let _l1CachedAt = 0;
 const L1_TTL_MS = 60 * 1000; // 60 seconds in-memory cache
 
+export function clearSsrClientsMemoryCache() {
+  _l1Clients = null;
+  _l1Integrations = null;
+  _l1CachedAt = 0;
+}
+
 function parseCookies(cookieHeader) {
   if (!cookieHeader) return {};
   return cookieHeader.split(";").reduce((acc, pair) => {
@@ -142,10 +148,37 @@ export async function getSsrInitialPmaData(sessionUser) {
         ]);
         if (Array.isArray(res)) {
           if (res[0]) {
-            try { rawClients = JSON.parse(res[0]); _l1Clients = rawClients; } catch {}
+            try { rawClients = JSON.parse(res[0]); } catch {}
           }
           if (res[1]) {
             try { rawIntegrations = JSON.parse(res[1]); _l1Integrations = rawIntegrations; } catch {}
+          }
+          if (rawClients && Array.isArray(rawClients.clientsArray) && rawClients.clientsArray.length > 0) {
+            try {
+              const normalizeClientKey = (str) => String(str || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
+              const setupKeys = rawClients.clientsArray.map(c => `pulse:setup:${normalizeClientKey(c.clientName)}`);
+              const setupRawList = await Promise.race([
+                redisClient.mGet(setupKeys),
+                new Promise((resolve) => setTimeout(() => resolve(null), 400))
+              ]);
+              if (Array.isArray(setupRawList)) {
+                rawClients.clientsArray.forEach((c, idx) => {
+                  const sRaw = setupRawList[idx];
+                  if (sRaw) {
+                    try {
+                      const cfg = JSON.parse(sRaw);
+                      const revFocus = String(cfg.revenueFocus || "Revenue").trim();
+                      const rawDcMode = String(cfg.directCostsMode || "Contractors").trim();
+                      c.directCostsMode = revFocus.toLowerCase() === "income" ? "Pass-through" : (rawDcMode === "Pass-through" ? "Pass-through" : "Contractors");
+                      if (cfg.accountingTool) c.accountingTool = cfg.accountingTool;
+                      if (cfg.crmTool) c.crmTool = cfg.crmTool;
+                      if (cfg.crmDrives) c.crmDrives = cfg.crmDrives;
+                    } catch {}
+                  }
+                });
+              }
+            } catch {}
+            _l1Clients = rawClients;
           }
           if (rawClients || rawIntegrations) _l1CachedAt = now;
         }

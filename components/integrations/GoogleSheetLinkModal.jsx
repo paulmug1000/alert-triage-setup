@@ -271,7 +271,7 @@ export default function GoogleSheetLinkModal({
   // Preload Google Picker script in background when modal opens and user is connected
   useEffect(() => {
     if (isOpen && isConnected) {
-      loadGooglePickerApi().catch(() => {});
+      loadGooglePickerApi().catch(() => { });
     }
   }, [isOpen, isConnected]);
 

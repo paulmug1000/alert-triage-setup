@@ -985,6 +985,7 @@ export default function CashflowWorkbenchView({
   onOpenOffsetModal,
   onRequestMatchAll,
   onSwitchToMatrix,
+  onRegisterActions,
   onLiveSignedActualsChange,
   onLiveUnreconItemsChange,
   applyingRecon = false,
@@ -1822,6 +1823,25 @@ export default function CashflowWorkbenchView({
     }
   };
 
+  // Register action triggers with parent header bar
+  useEffect(() => {
+    if (onRegisterActions) {
+      onRegisterActions({
+        onUpdateBankTransactions: () => handleUpdateBankTransactions(),
+        onRestartMonth: () => handleRestartMonth(),
+        updatingTxns,
+        fetchingApi,
+        disabled: updatingTxns || fetchingApi
+      });
+    }
+  }, [onRegisterActions, updatingTxns, fetchingApi]);
+
+  useEffect(() => {
+    return () => {
+      if (onRegisterActions) onRegisterActions(null);
+    };
+  }, [onRegisterActions]);
+
   // 3a. Helper to match unreconciled entries in the Bank Feed List
   const isSameUnreconEntry = (u, tx) => {
     if (tx.id && u.id && u.id === tx.id) return true;
@@ -2515,78 +2535,19 @@ export default function CashflowWorkbenchView({
         </div>
       ) : (
         <>
-          {/* Top Action Bar */}
-          <div style={{
-            padding: "10px 16px",
-            background: "#ffffff",
-            borderRadius: "10px",
-            border: "1px solid #cbd5e1",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "flex-end",
-            flexWrap: "wrap",
-            gap: "10px",
-            boxShadow: "0 1px 2px rgba(0,0,0,0.03)"
-          }}>
-            {/* Action buttons on the right */}
-            <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", marginLeft: "auto" }}>
-              <button
-                onClick={handleUpdateBankTransactions}
-                disabled={updatingTxns || fetchingApi}
-                title="Check accounting bank feeds for new, updated, or deleted transactions"
-                style={{
-                  padding: "6px 12px",
-                  background: "#f8fafc",
-                  color: "#0369a1",
-                  border: "1px solid #cbd5e1",
-                  borderRadius: "6px",
-                  fontSize: "12px",
-                  fontWeight: "600",
-                  cursor: (updatingTxns || fetchingApi) ? "default" : "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "6px"
-                }}
-              >
-                {updatingTxns ? <Spinner size={12} /> : null} Check for updated transactions
-              </button>
-
-              <button
-                onClick={handleRestartMonth}
-                disabled={fetchingApi || updatingTxns}
-                title="Clear all transaction and unreconciled data and restart guided setup"
-                style={{
-                  padding: "6px 12px",
-                  background: "#f8fafc",
-                  color: "#0369a1",
-                  border: "1px solid #cbd5e1",
-                  borderRadius: "6px",
-                  fontSize: "12px",
-                  fontWeight: "600",
-                  cursor: (fetchingApi || updatingTxns) ? "default" : "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "6px"
-                }}
-              >
-                Restart month
-              </button>
-            </div>
-          </div>
-
           {/* Messages */}
           {apiMsg && (
-            <div style={{ padding: "8px 12px", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", fontSize: "12px", color: "#166534" }}>
+            <div style={{ padding: "8px 12px", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", fontSize: "12px", color: "#166534", marginBottom: "10px" }}>
               {apiMsg}
             </div>
           )}
           {syncMsg && (
-            <div style={{ padding: "8px 12px", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", fontSize: "12px", color: "#166534" }}>
+            <div style={{ padding: "8px 12px", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", fontSize: "12px", color: "#166534", marginBottom: "10px" }}>
               {syncMsg}
             </div>
           )}
           {tabError && (
-            <div style={{ padding: "8px 12px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "6px", fontSize: "12px", color: "#991b1b" }}>
+            <div style={{ padding: "8px 12px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "6px", fontSize: "12px", color: "#991b1b", marginBottom: "10px" }}>
               ⚠️ {tabError}
             </div>
           )}

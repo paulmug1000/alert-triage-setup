@@ -47,8 +47,9 @@ export default function CashflowReconTab({
   const [error, setError] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
 
-  // View Mode: 'workbench' (Split screen two-pane) or 'matrix' (Full Cash spreadsheet grid)
-  const [viewMode, setViewMode] = useState("workbench");
+  // 3-Month Rolling Cashflow Modal State & Header Action Triggers
+  const [isMatrixModalOpen, setIsMatrixModalOpen] = useState(false);
+  const [workbenchActions, setWorkbenchActions] = useState(null);
 
   // Month navigation (allows shifting target month delta from default)
   const [monthDelta, setMonthDelta] = useState(0);
@@ -1973,140 +1974,157 @@ export default function CashflowReconTab({
                 </div>
               </div>
 
-              {/* Right: Reconciled & ready toggle, EoM task complete button and Sheet links */}
-              <div style={{ display: "flex", alignItems: "flex-start", gap: "12px", flexWrap: "wrap" }}>
-                {reconData && (
-                  <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: "3px" }}>
-                    <label style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: "6px",
-                      cursor: updatingReconStatus ? "wait" : "pointer",
-                      userSelect: "none",
-                      padding: "5px 10px",
-                      borderRadius: "6px",
-                      background: reconData?.isReconciledComplete ? "#f0fdf4" : "#f8fafc",
-                      border: `1px solid ${reconData?.isReconciledComplete ? "#86efac" : "#cbd5e1"}`
-                    }}>
-                      <input
-                        type="checkbox"
-                        checked={Boolean(reconData?.isReconciledComplete)}
-                        disabled={updatingReconStatus}
-                        onChange={handleToggleReconciledComplete}
-                        style={{ width: "14px", height: "14px", cursor: "pointer", accentColor: "#15803d" }}
-                      />
-                      <span style={{
+              {/* Right: Reconciled & ready toggle, EoM task complete, Sheet links, and Action buttons underneath */}
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "8px" }}>
+                {/* Top row: Reconciled & ready + EoM complete + sheet links */}
+                <div style={{ display: "flex", alignItems: "flex-start", gap: "10px", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                  {reconData && (
+                    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: "3px" }}>
+                      <label style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "6px",
+                        cursor: updatingReconStatus ? "wait" : "pointer",
+                        userSelect: "none",
+                        padding: "5px 10px",
+                        borderRadius: "6px",
+                        background: reconData?.isReconciledComplete ? "#f0fdf4" : "#f8fafc",
+                        border: `1px solid ${reconData?.isReconciledComplete ? "#86efac" : "#cbd5e1"}`
+                      }}>
+                        <input
+                          type="checkbox"
+                          checked={Boolean(reconData?.isReconciledComplete)}
+                          disabled={updatingReconStatus}
+                          onChange={handleToggleReconciledComplete}
+                          style={{ width: "14px", height: "14px", cursor: "pointer", accentColor: "#15803d" }}
+                        />
+                        <span style={{
+                          fontSize: "12px",
+                          fontWeight: "600",
+                          color: reconData?.isReconciledComplete ? "#15803d" : "#475569"
+                        }}>
+                          Reconciled & ready for automated P&L updates
+                        </span>
+                        {updatingReconStatus && <Spinner size={11} />}
+                      </label>
+                      {outgoingsSyncStatus && (
+                        <div style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "5px",
+                          paddingLeft: "4px",
+                          fontSize: "11px",
+                          fontWeight: "500",
+                          color: outgoingsSyncStatus.state === "error"
+                            ? "#dc2626"
+                            : outgoingsSyncStatus.state === "done"
+                              ? "#15803d"
+                              : "#64748b"
+                        }}>
+                          {outgoingsSyncStatus.state === "syncing" && <Spinner size={10} />}
+                          <span>{outgoingsSyncStatus.text}</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {linkedTask && onTaskMarkedDone && (
+                    <button
+                      onClick={() => onTaskMarkedDone(selectedClient, linkedTask.taskId)}
+                      style={{
+                        padding: "6px 12px",
+                        background: isLinkedTaskDone ? "#f0fdf4" : "#f1f5f9",
+                        border: isLinkedTaskDone ? "1px solid #86efac" : "1px solid #cbd5e1",
+                        color: isLinkedTaskDone ? "#166534" : "#475569",
+                        borderRadius: "6px",
                         fontSize: "12px",
                         fontWeight: "600",
-                        color: reconData?.isReconciledComplete ? "#15803d" : "#475569"
-                      }}>
-                        Reconciled & ready for automated P&L updates
-                      </span>
-                      {updatingReconStatus && <Spinner size={11} />}
-                    </label>
-                    {outgoingsSyncStatus && (
-                      <div style={{
+                        cursor: "pointer"
+                      }}
+                    >
+                      {isLinkedTaskDone ? "✓ EoM task marked complete" : "Mark EoM task complete"}
+                    </button>
+                  )}
+
+                  {isAdmin && currentClientInfo?.clientSheetId && (
+                    <a
+                      href={`https://docs.google.com/spreadsheets/d/${currentClientInfo.clientSheetId}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{ fontSize: "12px", color: "#0284c7", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: "4px", fontWeight: "600", paddingTop: "5px" }}
+                    >
+                      Client sheet ↗
+                    </a>
+                  )}
+
+                  {isAdmin && currentClientInfo?.reconSheetId && (
+                    <a
+                      href={`https://docs.google.com/spreadsheets/d/${currentClientInfo.reconSheetId}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{ fontSize: "12px", color: "#0284c7", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: "4px", fontWeight: "600", paddingTop: "5px" }}
+                    >
+                      Recon sheet ↗
+                    </a>
+                  )}
+                </div>
+
+                {/* Sub-row directly underneath: Check for updated transactions + Restart month */}
+                {workbenchActions && (
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                    <button
+                      type="button"
+                      onClick={workbenchActions.onUpdateBankTransactions}
+                      disabled={workbenchActions.disabled}
+                      title="Check accounting bank feeds for new, updated, or deleted transactions"
+                      style={{
+                        padding: "5px 10px",
+                        background: "#f8fafc",
+                        color: "#0369a1",
+                        border: "1px solid #cbd5e1",
+                        borderRadius: "6px",
+                        fontSize: "11.5px",
+                        fontWeight: "600",
+                        cursor: workbenchActions.disabled ? "default" : "pointer",
                         display: "inline-flex",
                         alignItems: "center",
                         gap: "5px",
-                        paddingLeft: "4px",
-                        fontSize: "11px",
-                        fontWeight: "500",
-                        color: outgoingsSyncStatus.state === "error"
-                          ? "#dc2626"
-                          : outgoingsSyncStatus.state === "done"
-                            ? "#15803d"
-                            : "#64748b"
-                      }}>
-                        {outgoingsSyncStatus.state === "syncing" && <Spinner size={10} />}
-                        <span>{outgoingsSyncStatus.text}</span>
-                      </div>
-                    )}
+                        transition: "all 0.15s ease"
+                      }}
+                    >
+                      {workbenchActions.updatingTxns ? <Spinner size={11} /> : null}
+                      <span>Check for updated transactions</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={workbenchActions.onRestartMonth}
+                      disabled={workbenchActions.disabled}
+                      title="Clear all transaction and unreconciled data and restart guided setup"
+                      style={{
+                        padding: "5px 10px",
+                        background: "#f8fafc",
+                        color: "#0369a1",
+                        border: "1px solid #cbd5e1",
+                        borderRadius: "6px",
+                        fontSize: "11.5px",
+                        fontWeight: "600",
+                        cursor: workbenchActions.disabled ? "default" : "pointer",
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "5px",
+                        transition: "all 0.15s ease"
+                      }}
+                    >
+                      Restart month
+                    </button>
                   </div>
-                )}
-
-                {linkedTask && onTaskMarkedDone && (
-                  <button
-                    onClick={() => onTaskMarkedDone(selectedClient, linkedTask.taskId)}
-                    style={{
-                      padding: "6px 12px",
-                      background: isLinkedTaskDone ? "#f0fdf4" : "#f1f5f9",
-                      border: isLinkedTaskDone ? "1px solid #86efac" : "1px solid #cbd5e1",
-                      color: isLinkedTaskDone ? "#166534" : "#475569",
-                      borderRadius: "6px",
-                      fontSize: "12px",
-                      fontWeight: "600",
-                      cursor: "pointer"
-                    }}
-                  >
-                    {isLinkedTaskDone ? "✓ EoM task marked complete" : "Mark EoM task complete"}
-                  </button>
-                )}
-
-                {isAdmin && currentClientInfo?.clientSheetId && (
-                  <a
-                    href={`https://docs.google.com/spreadsheets/d/${currentClientInfo.clientSheetId}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    style={{ fontSize: "12px", color: "#0284c7", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: "4px", fontWeight: "600" }}
-                  >
-                    Client sheet ↗
-                  </a>
-                )}
-
-                {isAdmin && currentClientInfo?.reconSheetId && (
-                  <a
-                    href={`https://docs.google.com/spreadsheets/d/${currentClientInfo.reconSheetId}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    style={{ fontSize: "12px", color: "#0284c7", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: "4px", fontWeight: "600" }}
-                  >
-                    Recon sheet ↗
-                  </a>
                 )}
               </div>
             </div>
           </div>
         )}
       </div>
-
-      {/* Dedicated Tabs: Transaction Recon / Cashflow Finalisation (styled like By month / By job tabs on Contractors screen) */}
-      {selectedClient && reconData && (
-        <div style={{ display: "flex", gap: "8px", marginBottom: "16px", borderBottom: "1px solid #e0e0e0" }}>
-          <button
-            onClick={() => setViewMode("workbench")}
-            title="Transaction recon: Bank transactions alongside breakdowns and P&L additions"
-            style={{
-              padding: "8px 16px",
-              background: "none",
-              border: "none",
-              borderBottom: viewMode === "workbench" ? "2px solid #0066cc" : "2px solid transparent",
-              color: viewMode === "workbench" ? "#0066cc" : "#666666",
-              fontWeight: viewMode === "workbench" ? "700" : "500",
-              fontSize: "14px",
-              cursor: "pointer"
-            }}
-          >
-            Transaction recon
-          </button>
-          <button
-            onClick={() => setViewMode("matrix")}
-            title="Cashflow finalisation: Client cashflow forecast and variance resolution"
-            style={{
-              padding: "8px 16px",
-              background: "none",
-              border: "none",
-              borderBottom: viewMode === "matrix" ? "2px solid #0066cc" : "2px solid transparent",
-              color: viewMode === "matrix" ? "#0066cc" : "#666666",
-              fontWeight: viewMode === "matrix" ? "700" : "500",
-              fontSize: "14px",
-              cursor: "pointer"
-            }}
-          >
-            Cashflow finalisation
-          </button>
-        </div>
-      )}
 
       {/* Messages / Alerts */}
       {error && (
@@ -2141,1491 +2159,1575 @@ export default function CashflowReconTab({
             Retrieving figures for the selected month.
           </p>
         </div>
-      ) : viewMode === "workbench" ? (
-        <CashflowWorkbenchView
-          reconData={reconData}
-          selectedClient={selectedClient}
-          clientInfo={currentClientInfo}
-          eomMonthKey={eomMonthKey}
-          effectiveMonthKey={effectiveMonthKey}
-          automationCommanderSheetId={automationCommanderSheetId}
-          onRefresh={() => loadData(selectedClient, { silent: Boolean(reconData) })}
-          onTabCreated={(tab) => {
-            setReconData(prev => prev ? ({ ...prev, hasTargetTab: true, reconError: null }) : prev);
-            loadData(selectedClient, { silent: Boolean(reconData) });
-          }}
-          isAdmin={isAdmin}
-          groupedElements={groupedElements}
-          targetCol={targetCol}
-          nextCol={nextCol}
-          isCombinedTransferMode={isCombinedTransferMode}
-          combinedTransferTxVal={combinedTransferTxVal}
-          getCategoryTxAmount={getCategoryTxAmount}
-          isReconUsedForRow={isReconUsedForRow}
-          isReconUsedForTransfer={isReconUsedForTransfer}
-          onUseReconFigures={handleUseReconFigures}
-          onUseCombinedTransferRecon={handleUseCombinedTransferRecon}
-          onStartEdit={handleStartEdit}
-          onToggleResolved={handleToggleResolved}
-          onOpenNote={handleOpenNote}
-          onOpenOffsetModal={handleOpenOffsetModal}
-          onRequestMatchAll={() => setShowMatchConfirm(true)}
-          onSwitchToMatrix={() => setViewMode("matrix")}
-          onLiveSignedActualsChange={setLiveSignedActuals}
-          onLiveUnreconItemsChange={setLiveUnreconItems}
-          applyingRecon={applyingRecon}
-          applyingReconRow={applyingReconRow}
-          resolvingCellKey={resolvingCellKey}
-          matchingActuals={matchingActuals}
-        />
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: "12px", width: "fit-content", maxWidth: "100%" }}>
-          {/* Cashflow Finalisation Toolbar: Match Actuals + Legend */}
-          <div style={{
-            padding: "10px 16px",
-            background: "#ffffff",
-            borderRadius: "10px",
-            border: "1px solid #cbd5e1",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            flexWrap: "wrap",
-            gap: "10px",
-            boxShadow: "0 1px 2px rgba(0,0,0,0.03)"
-          }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
-              <button
-                onClick={() => setShowMatchConfirm(true)}
-                disabled={matchingActuals || !reconData?.reconActuals}
-                title="Applies reconciliation figures to adjustments and marks all target month items resolved"
+        <>
+          <CashflowWorkbenchView
+            reconData={reconData}
+            selectedClient={selectedClient}
+            clientInfo={currentClientInfo}
+            eomMonthKey={eomMonthKey}
+            effectiveMonthKey={effectiveMonthKey}
+            automationCommanderSheetId={automationCommanderSheetId}
+            onRefresh={() => loadData(selectedClient, { silent: Boolean(reconData) })}
+            onTabCreated={(tab) => {
+              setReconData(prev => prev ? ({ ...prev, hasTargetTab: true, reconError: null }) : prev);
+              loadData(selectedClient, { silent: Boolean(reconData) });
+            }}
+            isAdmin={isAdmin}
+            groupedElements={groupedElements}
+            targetCol={targetCol}
+            nextCol={nextCol}
+            isCombinedTransferMode={isCombinedTransferMode}
+            combinedTransferTxVal={combinedTransferTxVal}
+            getCategoryTxAmount={getCategoryTxAmount}
+            isReconUsedForRow={isReconUsedForRow}
+            isReconUsedForTransfer={isReconUsedForTransfer}
+            onUseReconFigures={handleUseReconFigures}
+            onUseCombinedTransferRecon={handleUseCombinedTransferRecon}
+            onStartEdit={handleStartEdit}
+            onToggleResolved={handleToggleResolved}
+            onOpenNote={handleOpenNote}
+            onOpenOffsetModal={handleOpenOffsetModal}
+            onRequestMatchAll={() => setShowMatchConfirm(true)}
+            onSwitchToMatrix={() => setIsMatrixModalOpen(true)}
+            onRegisterActions={setWorkbenchActions}
+            onLiveSignedActualsChange={setLiveSignedActuals}
+            onLiveUnreconItemsChange={setLiveUnreconItems}
+            applyingRecon={applyingRecon}
+            applyingReconRow={applyingReconRow}
+            resolvingCellKey={resolvingCellKey}
+            matchingActuals={matchingActuals}
+          />
+
+          {/* 3-Month Rolling Cashflow Modal */}
+          {isMatrixModalOpen && (
+            <div
+              onClick={() => setIsMatrixModalOpen(false)}
+              style={{
+                position: "fixed",
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                background: "rgba(15, 23, 42, 0.55)",
+                backdropFilter: "blur(2px)",
+                zIndex: 950,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                padding: "20px"
+              }}
+            >
+              <div
+                onClick={(e) => e.stopPropagation()}
                 style={{
-                  padding: "7px 16px",
-                  background: "#15803d",
-                  color: "#ffffff",
-                  border: "none",
-                  borderRadius: "6px",
-                  fontSize: "12px",
-                  fontWeight: "700",
-                  cursor: matchingActuals || !reconData?.reconActuals ? "default" : "pointer",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: "6px",
-                  boxShadow: "0 1px 2px rgba(0,0,0,0.06)"
+                  background: "#ffffff",
+                  borderRadius: "12px",
+                  width: "96vw",
+                  maxWidth: "1320px",
+                  maxHeight: "92vh",
+                  display: "flex",
+                  flexDirection: "column",
+                  boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.25)",
+                  border: "1px solid #cbd5e1",
+                  overflow: "hidden"
                 }}
               >
-                {matchingActuals ? <Spinner size={12} /> : "⚡"} Match actuals
-              </button>
-              <span style={{ fontSize: "12px", color: "#64748b" }}>
-                Applies bank recon figures and resolves all target month cash items
-              </span>
-            </div>
-
-            <div style={{ display: "flex", alignItems: "center", gap: "12px", fontSize: "11px", color: "#64748b", flexWrap: "wrap" }}>
-              <span style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
-                <span style={{ width: "10px", height: "10px", background: "#dcfce7", border: "1px solid #86efac", borderRadius: "2px", display: "inline-block" }}></span>
-                Matched transaction
-              </span>
-              <span style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
-                <span style={{ width: "10px", height: "10px", background: "#fee2e2", border: "1px solid #fca5a5", borderRadius: "2px", display: "inline-block" }}></span>
-                Variance
-              </span>
-              <span style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
-                <span style={{ width: "10px", height: "10px", background: RESOLVED_GREEN, border: "1px solid #86efac", borderRadius: "2px", display: "inline-block" }}></span>
-                Resolved actual
-              </span>
-              <span style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
-                <span style={{ width: "10px", height: "10px", background: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: "2px", display: "inline-block" }}></span>
-                Editable adjustment
-              </span>
-            </div>
-          </div>
-
-          {/* Overhauled Modern Cashflow Finalisation: Grouped Category Cards with Dedicated Total Column */}
-          <div style={{ width: "fit-content", maxWidth: "100%" }}>
-            <div style={{ overflowX: "auto", paddingBottom: "12px" }}>
-              <div style={{ minWidth: "972px", width: "fit-content" }}>
-                {/* 1. Header Bar: Segmented with clear blank space around Target Month */}
+                {/* Modal Header */}
                 <div style={{
-                  display: "grid",
-                  gridTemplateColumns: gridTemplateColumns,
-                  alignItems: "stretch",
-                  background: "transparent",
-                  color: "#ffffff",
-                  fontSize: "12px",
-                  fontWeight: "700",
-                  marginBottom: "10px"
+                  padding: "14px 20px",
+                  borderBottom: "1px solid #e2e8f0",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  background: "#f8fafc"
                 }}>
-                  <div style={{
-                    padding: "10px 14px",
-                    gridColumn: "1",
-                    background: DARK_GREEN,
-                    borderTopLeftRadius: "10px",
-                    borderBottomLeftRadius: "10px",
-                    display: "flex",
-                    alignItems: "center"
-                  }}>
-                    Cash movement
+                  <div>
+                    <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700", color: "#0f172a" }}>
+                      3-month rolling cashflow
+                    </h3>
+                    <p style={{ margin: "2px 0 0", fontSize: "12px", color: "#64748b" }}>
+                      {selectedClient} — {reconData?.targetMonthLabel || "Target month"}
+                    </p>
                   </div>
-
-                  {reconData.selectedCols.map((col, cIndex) => {
-                    const isTarget = col.type === "target";
-                    const gridCol = colPositions[cIndex];
-                    const isPrev = cIndex === 0 || col.type === "prev";
-                    const isLast = cIndex === reconData.selectedCols.length - 1;
-
-                    return (
-                      <React.Fragment key={col.colIdx}>
-                        <div
-                          style={{
-                            gridColumn: `${gridCol}`,
-                            padding: "10px 10px",
-                            textAlign: "right",
-                            background: isTarget ? "#15803d" : DARK_GREEN,
-                            borderTopLeftRadius: isTarget ? "10px" : (!isPrev && !isTarget ? "10px" : "0"),
-                            borderBottomLeftRadius: isTarget ? "10px" : (!isPrev && !isTarget ? "10px" : "0"),
-                            borderTopRightRadius: isPrev && !isTarget ? "10px" : (isLast ? "10px" : "0"),
-                            borderBottomRightRadius: isPrev && !isTarget ? "10px" : (isLast ? "10px" : "0"),
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "flex-end",
-                            gap: "6px"
-                          }}
-                        >
-                          <span>{col.label}</span>
-                          {isTarget && (
-                            <span style={{
-                              fontSize: "9px",
-                              padding: "1px 5px",
-                              background: "#ffffff",
-                              color: "#15803d",
-                              borderRadius: "4px",
-                              fontWeight: "800",
-                              textTransform: "uppercase"
-                            }}>
-                              Target
-                            </span>
-                          )}
-                        </div>
-
-                        {isTarget && (
-                          <>
-                            <div
-                              style={{
-                                gridColumn: `${totalColPosition}`,
-                                padding: "10px 10px",
-                                textAlign: "center",
-                                background: "#15803d",
-                                borderLeft: "1px solid rgba(255, 255, 255, 0.2)",
-                                fontWeight: "700",
-                                display: "flex",
-                                alignItems: "center",
-                                justifyContent: "center"
-                              }}
-                            >
-                              Pulse total
-                            </div>
-                            <div
-                              style={{
-                                gridColumn: `${txColPosition}`,
-                                padding: "10px 10px",
-                                textAlign: "center",
-                                background: "#15803d",
-                                borderLeft: "1px solid rgba(255, 255, 255, 0.2)",
-                                borderTopRightRadius: "10px",
-                                borderBottomRightRadius: "10px",
-                                fontWeight: "700",
-                                display: "flex",
-                                alignItems: "center",
-                                justifyContent: "center"
-                              }}
-                            >
-                              Transactions total
-                            </div>
-                          </>
-                        )}
-                      </React.Fragment>
-                    );
-                  })}
+                  <button
+                    type="button"
+                    onClick={() => setIsMatrixModalOpen(false)}
+                    title="Close 3-month view"
+                    style={{
+                      background: "none",
+                      border: "none",
+                      fontSize: "20px",
+                      lineHeight: "1",
+                      cursor: "pointer",
+                      color: "#64748b",
+                      padding: "4px 8px",
+                      borderRadius: "6px"
+                    }}
+                  >
+                    ✕
+                  </button>
                 </div>
 
-                {/* 2. Operational Movement Cards (with 8px gap between categories) */}
-                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                  {groupedElements.filter(e => !e.isSummary).map((elem) => {
-                    if (elem.type === "compound_transfer") {
-                      return (
-                        <div
-                          key={elem.id}
-                          style={{
-                            display: "grid",
-                            gridTemplateColumns: gridTemplateColumns,
-                            gridTemplateRows: "auto auto auto auto",
-                            background: "#ffffff",
-                            border: "1px solid #bae6fd",
-                            borderLeft: "4px solid #0284c7",
-                            borderRadius: "10px",
-                            boxShadow: "0 1px 3px rgba(2, 132, 199, 0.08)",
-                            overflow: "hidden",
-                            transition: "box-shadow 0.15s, border-color 0.15s"
-                          }}
-                        >
-                          {/* Spacers before/after Target Month */}
-                          {spacerBeforeTarget && (
-                            <div
-                              style={{
-                                gridColumn: `${spacerBeforeTarget}`,
-                                gridRow: "1 / span 4",
-                                background: "#f8fafc",
-                                borderLeft: "1px solid #e2e8f0",
-                                borderRight: "1px solid #e2e8f0"
-                              }}
-                            />
-                          )}
-                          {spacerAfterTarget && (
-                            <div
-                              style={{
-                                gridColumn: `${spacerAfterTarget}`,
-                                gridRow: "1 / span 4",
-                                background: "#f8fafc",
-                                borderLeft: "1px solid #e2e8f0",
-                                borderRight: "1px solid #e2e8f0"
-                              }}
-                            />
-                          )}
-
-                          {/* Row 1 Title: Corporation tax */}
-                          <div
-                            style={{
-                              gridColumn: "1",
-                              gridRow: "1",
-                              padding: "8px 14px",
-                              fontWeight: "700",
-                              fontSize: "13px",
-                              color: "#0f172a",
-                              borderBottom: "1px dashed #f1f5f9",
-                              display: "flex",
-                              flexDirection: "column",
-                              justifyContent: "center",
-                              gap: "2px"
-                            }}
-                          >
-                            <span>{elem.corpTitle || "Corporation tax"}</span>
-                            <span style={{
-                              fontSize: "9px",
-                              fontWeight: "700",
-                              color: "#0369a1",
-                              background: "#e0f2fe",
-                              padding: "1px 5px",
-                              borderRadius: "4px",
-                              width: "fit-content"
-                            }}>
-                              Transfers mode
-                            </span>
-                          </div>
-
-                          {/* Row 2 Title: Corp tax adjustment */}
-                          <div
-                            style={{
-                              gridColumn: "1",
-                              gridRow: "2",
-                              padding: "6px 14px 7px 24px",
-                              color: "#64748b",
-                              fontStyle: "italic",
-                              fontSize: "11px",
-                              display: "flex",
-                              alignItems: "center",
-                              background: "#fafbfc",
-                              borderBottom: "1px solid #e2e8f0"
-                            }}
-                          >
-                            <span>↳ Adjustment</span>
-                          </div>
-
-                          {/* Row 3 Title: VAT */}
-                          <div
-                            style={{
-                              gridColumn: "1",
-                              gridRow: "3",
-                              padding: "8px 14px",
-                              fontWeight: "700",
-                              fontSize: "13px",
-                              color: "#0f172a",
-                              borderBottom: "1px dashed #f1f5f9",
-                              display: "flex",
-                              alignItems: "center"
-                            }}
-                          >
-                            <span>{elem.vatTitle || "VAT"}</span>
-                          </div>
-
-                          {/* Row 4 Title: VAT adjustment */}
-                          <div
-                            style={{
-                              gridColumn: "1",
-                              gridRow: "4",
-                              padding: "6px 14px 7px 24px",
-                              color: "#64748b",
-                              fontStyle: "italic",
-                              fontSize: "11px",
-                              display: "flex",
-                              alignItems: "center",
-                              background: "#fafbfc"
-                            }}
-                          >
-                            <span>↳ Adjustment</span>
-                          </div>
-
-                          {/* Month Columns across all 4 rows */}
-                          {reconData.selectedCols.map((col, cIndex) => {
-                            const isTargetCol = col.type === "target";
-                            const gridCol = colPositions[cIndex];
-                            const corpBaseCell = elem.corpBaseRow.cells[cIndex];
-                            const corpAdjCell = elem.corpAdjRow?.cells[cIndex];
-                            const vatBaseCell = elem.vatBaseRow.cells[cIndex];
-                            const vatAdjCell = elem.vatAdjRow?.cells[cIndex];
-
-                            const corpBaseVal = (corpBaseCell?.numVal !== undefined && corpBaseCell?.numVal !== null) ? corpBaseCell.numVal : parseAmount(corpBaseCell?.v);
-                            const corpAdjVal = (corpAdjCell?.numVal !== undefined && corpAdjCell?.numVal !== null) ? corpAdjCell.numVal : parseAmount(corpAdjCell?.v);
-                            const vatBaseVal = (vatBaseCell?.numVal !== undefined && vatBaseCell?.numVal !== null) ? vatBaseCell.numVal : parseAmount(vatBaseCell?.v);
-                            const vatAdjVal = (vatAdjCell?.numVal !== undefined && vatAdjCell?.numVal !== null) ? vatAdjCell.numVal : parseAmount(vatAdjCell?.v);
-
-                            const corpTotal = corpBaseVal + corpAdjVal;
-                            const vatTotal = vatBaseVal + vatAdjVal;
-                            const combinedTotalVal = corpTotal + vatTotal;
-                            const combinedTotalFmt = formatGBP(combinedTotalVal);
-
-                            const corpBg = corpBaseCell?.isResolved ? RESOLVED_GREEN : (isTargetCol ? "#f8fafc" : "#ffffff");
-                            const vatBg = vatBaseCell?.isResolved ? RESOLVED_GREEN : (isTargetCol ? "#f8fafc" : "#ffffff");
-
-                            return (
-                              <React.Fragment key={col.colIdx}>
-                                {/* Row 1: Corp tax base */}
-                                <div
-                                  style={{
-                                    gridColumn: `${gridCol}`,
-                                    gridRow: "1",
-                                    padding: "8px 10px",
-                                    background: corpBg,
-                                    borderBottom: "1px dashed #f1f5f9",
-                                    display: "flex",
-                                    alignItems: "center",
-                                    justifyContent: isTargetCol ? "space-between" : "flex-end",
-                                    gap: "6px"
-                                  }}
-                                >
-                                  {isTargetCol ? (
-                                    <>
-                                      <div style={{ display: "inline-flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
-                                        {renderNoteButton(elem.corpBaseRow, corpBaseCell)}
-                                        <button
-                                          onClick={() => handleToggleResolved(corpBaseCell)}
-                                          disabled={resolvingCellKey === `${corpBaseCell?.sheetRow}_${corpBaseCell?.colIdx}`}
-                                          title={corpBaseCell?.isResolved ? "Un-mark resolved" : "Mark resolved"}
-                                          style={{
-                                            padding: "2px 7px",
-                                            borderRadius: "4px",
-                                            border: corpBaseCell?.isResolved ? "1px solid #86efac" : "1px solid #cbd5e1",
-                                            background: corpBaseCell?.isResolved ? "#dcfce7" : "#ffffff",
-                                            color: corpBaseCell?.isResolved ? "#166534" : "#475569",
-                                            fontSize: "9px",
-                                            fontWeight: "700",
-                                            textTransform: "uppercase",
-                                            cursor: resolvingCellKey === `${corpBaseCell?.sheetRow}_${corpBaseCell?.colIdx}` ? "wait" : "pointer",
-                                            flexShrink: 0,
-                                            display: "inline-flex",
-                                            alignItems: "center",
-                                            gap: "4px"
-                                          }}
-                                        >
-                                          {resolvingCellKey === `${corpBaseCell?.sheetRow}_${corpBaseCell?.colIdx}` ? <Spinner size={9} /> : null}
-                                          {corpBaseCell?.isResolved ? "Resolved" : "Resolve"}
-                                        </button>
-                                      </div>
-                                      <span style={{ display: "inline-block", minWidth: "80px", textAlign: "right", padding: "3px 8px", fontWeight: "700", fontVariantNumeric: "tabular-nums", color: "#0f172a", fontSize: "12px", whiteSpace: "nowrap" }}>
-                                        {corpBaseCell?.v || "£0.00"}
-                                      </span>
-                                    </>
-                                  ) : (
-                                    <div style={{ display: "inline-flex", alignItems: "center", gap: "6px", flexShrink: 0 }}>
-                                      {renderNoteButton(elem.corpBaseRow, corpBaseCell)}
-                                      <span style={{ display: "inline-block", minWidth: "80px", textAlign: "right", padding: "3px 8px", fontVariantNumeric: "tabular-nums", color: "#334155", fontSize: "12px", whiteSpace: "nowrap" }}>
-                                        {corpBaseCell?.v || "£0.00"}
-                                      </span>
-                                    </div>
-                                  )}
-                                </div>
-
-                                {/* Row 2: Corp tax adjustment */}
-                                <div
-                                  style={{
-                                    gridColumn: `${gridCol}`,
-                                    gridRow: "2",
-                                    padding: "5px 10px 6px",
-                                    background: isTargetCol ? "#f8fafc" : "#fafbfc",
-                                    borderBottom: "1px solid #e2e8f0",
-                                    display: "flex",
-                                    alignItems: "center",
-                                    justifyContent: isTargetCol ? "space-between" : "flex-end",
-                                    gap: "6px"
-                                  }}
-                                >
-                                  {isTargetCol ? (
-                                    <>
-                                      <div style={{ display: "inline-flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
-                                        {renderNoteButton(elem.corpAdjRow, corpAdjCell)}
-                                      </div>
-                                      <span
-                                        onClick={() => handleStartEdit(elem.corpAdjRow, corpAdjCell)}
-                                        title="Click to edit corporation tax adjustment"
-                                        style={{
-                                          display: "inline-block",
-                                          minWidth: "80px",
-                                          textAlign: "right",
-                                          padding: "3px 8px",
-                                          background: "#ffffff",
-                                          border: "1px solid #cbd5e1",
-                                          borderRadius: "4px",
-                                          cursor: "pointer",
-                                          fontVariantNumeric: "tabular-nums",
-                                          fontSize: "11px",
-                                          color: "#334155",
-                                          fontWeight: "600",
-                                          boxShadow: "0 1px 2px rgba(0,0,0,0.02)",
-                                          whiteSpace: "nowrap",
-                                          boxSizing: "border-box"
-                                        }}
-                                      >
-                                        {corpAdjCell?.v || "£0.00"}
-                                      </span>
-                                    </>
-                                  ) : (
-                                    <div style={{ display: "inline-flex", alignItems: "center", gap: "6px", flexShrink: 0 }}>
-                                      {renderNoteButton(elem.corpAdjRow, corpAdjCell)}
-                                      <span
-                                        onClick={() => handleStartEdit(elem.corpAdjRow, corpAdjCell)}
-                                        title="Click to edit adjustment"
-                                        style={{
-                                          display: "inline-block",
-                                          minWidth: "80px",
-                                          textAlign: "right",
-                                          padding: "3px 8px",
-                                          background: "#ffffff",
-                                          border: "1px solid #cbd5e1",
-                                          borderRadius: "4px",
-                                          cursor: "pointer",
-                                          fontVariantNumeric: "tabular-nums",
-                                          fontSize: "11px",
-                                          color: "#334155",
-                                          fontWeight: "600",
-                                          whiteSpace: "nowrap",
-                                          boxSizing: "border-box"
-                                        }}
-                                      >
-                                        {corpAdjCell?.v || "£0.00"}
-                                      </span>
-                                    </div>
-                                  )}
-                                </div>
-
-                                {/* Row 3: VAT base */}
-                                <div
-                                  style={{
-                                    gridColumn: `${gridCol}`,
-                                    gridRow: "3",
-                                    padding: "8px 10px",
-                                    background: vatBg,
-                                    borderBottom: "1px dashed #f1f5f9",
-                                    display: "flex",
-                                    alignItems: "center",
-                                    justifyContent: isTargetCol ? "space-between" : "flex-end",
-                                    gap: "6px"
-                                  }}
-                                >
-                                  {isTargetCol ? (
-                                    <>
-                                      <div style={{ display: "inline-flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
-                                        {renderNoteButton(elem.vatBaseRow, vatBaseCell)}
-                                        <button
-                                          onClick={() => handleToggleResolved(vatBaseCell)}
-                                          disabled={resolvingCellKey === `${vatBaseCell?.sheetRow}_${vatBaseCell?.colIdx}`}
-                                          title={vatBaseCell?.isResolved ? "Un-mark resolved" : "Mark resolved"}
-                                          style={{
-                                            padding: "2px 7px",
-                                            borderRadius: "4px",
-                                            border: vatBaseCell?.isResolved ? "1px solid #86efac" : "1px solid #cbd5e1",
-                                            background: vatBaseCell?.isResolved ? "#dcfce7" : "#ffffff",
-                                            color: vatBaseCell?.isResolved ? "#166534" : "#475569",
-                                            fontSize: "9px",
-                                            fontWeight: "700",
-                                            textTransform: "uppercase",
-                                            cursor: resolvingCellKey === `${vatBaseCell?.sheetRow}_${vatBaseCell?.colIdx}` ? "wait" : "pointer",
-                                            flexShrink: 0,
-                                            display: "inline-flex",
-                                            alignItems: "center",
-                                            gap: "4px"
-                                          }}
-                                        >
-                                          {resolvingCellKey === `${vatBaseCell?.sheetRow}_${vatBaseCell?.colIdx}` ? <Spinner size={9} /> : null}
-                                          {vatBaseCell?.isResolved ? "Resolved" : "Resolve"}
-                                        </button>
-                                      </div>
-                                      <span style={{ display: "inline-block", minWidth: "80px", textAlign: "right", padding: "3px 8px", fontWeight: "700", fontVariantNumeric: "tabular-nums", color: "#0f172a", fontSize: "12px", whiteSpace: "nowrap" }}>
-                                        {vatBaseCell?.v || "£0.00"}
-                                      </span>
-                                    </>
-                                  ) : (
-                                    <div style={{ display: "inline-flex", alignItems: "center", gap: "6px", flexShrink: 0 }}>
-                                      {renderNoteButton(elem.vatBaseRow, vatBaseCell)}
-                                      <span style={{ display: "inline-block", minWidth: "80px", textAlign: "right", padding: "3px 8px", fontVariantNumeric: "tabular-nums", color: "#334155", fontSize: "12px", whiteSpace: "nowrap" }}>
-                                        {vatBaseCell?.v || "£0.00"}
-                                      </span>
-                                    </div>
-                                  )}
-                                </div>
-
-                                {/* Row 4: VAT adjustment (with Combined Transfer Recon button) */}
-                                <div
-                                  style={{
-                                    gridColumn: `${gridCol}`,
-                                    gridRow: "4",
-                                    padding: "5px 10px 6px",
-                                    background: isTargetCol ? "#f8fafc" : "#fafbfc",
-                                    display: "flex",
-                                    alignItems: "center",
-                                    justifyContent: isTargetCol ? "space-between" : "flex-end",
-                                    gap: "6px"
-                                  }}
-                                >
-                                  {isTargetCol ? (
-                                    <>
-                                      <div style={{ display: "inline-flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
-                                        {renderNoteButton(elem.vatAdjRow, vatAdjCell)}
-                                        {(() => {
-                                          const isReconUsed = isReconUsedForTransfer(elem);
-                                          const isThisRowApplying = applyingRecon && applyingReconRow === elem.vatAdjRow?.sheetRow;
-                                          return (
-                                            <button
-                                              onClick={() => handleUseCombinedTransferRecon(elem, col)}
-                                              disabled={applyingRecon}
-                                              title={isReconUsed ? "Combined transfer recon actual is currently applied" : "Reconcile combined Corporation tax + VAT against Transfer total"}
-                                              style={{
-                                                padding: "2px 7px",
-                                                borderRadius: "4px",
-                                                border: isReconUsed ? "1px solid #86efac" : "1px solid #bfdbfe",
-                                                background: isReconUsed ? "#dcfce7" : "#eff6ff",
-                                                color: isReconUsed ? "#166534" : "#1d4ed8",
-                                                fontSize: "9px",
-                                                fontWeight: "700",
-                                                textTransform: "uppercase",
-                                                cursor: applyingRecon ? "default" : "pointer",
-                                                opacity: isThisRowApplying ? 0.7 : 1,
-                                                flexShrink: 0,
-                                                display: "inline-flex",
-                                                alignItems: "center",
-                                                gap: "4px"
-                                              }}
-                                            >
-                                              {isThisRowApplying ? <Spinner size={9} /> : null}
-                                              Recon
-                                            </button>
-                                          );
-                                        })()}
-                                        {nextCol && (
-                                          <button
-                                            type="button"
-                                            onClick={() => handleOpenOffsetModal({
-                                              baseRow: elem.vatBaseRow,
-                                              adjRow: elem.vatAdjRow,
-                                              title: "Tax transfers (Corporation tax & VAT)",
-                                              mappedItemType: "tax_transfer",
-                                              isCombinedTransfer: true,
-                                              combinedElem: elem
-                                            })}
-                                            title={`Offset combined tax transfers in ${nextCol.label}`}
-                                            style={{
-                                              padding: "2px 6px",
-                                              borderRadius: "4px",
-                                              border: "1px solid #cbd5e1",
-                                              background: "#ffffff",
-                                              color: "#475569",
-                                              fontSize: "9px",
-                                              fontWeight: "700",
-                                              cursor: "pointer"
-                                            }}
-                                          >
-                                            ⇄ {(nextCol.label || "Next").split(" ")[0]}
-                                          </button>
-                                        )}
-                                      </div>
-                                      <span
-                                        onClick={() => handleStartEdit(elem.vatAdjRow, vatAdjCell)}
-                                        title="Click to edit VAT / transfer adjustment"
-                                        style={{
-                                          display: "inline-block",
-                                          minWidth: "80px",
-                                          textAlign: "right",
-                                          padding: "3px 8px",
-                                          background: "#ffffff",
-                                          border: "1px solid #cbd5e1",
-                                          borderRadius: "4px",
-                                          cursor: "pointer",
-                                          fontVariantNumeric: "tabular-nums",
-                                          fontSize: "11px",
-                                          color: "#334155",
-                                          fontWeight: "600",
-                                          boxShadow: "0 1px 2px rgba(0,0,0,0.02)",
-                                          whiteSpace: "nowrap",
-                                          boxSizing: "border-box"
-                                        }}
-                                      >
-                                        {vatAdjCell?.v || "£0.00"}
-                                      </span>
-                                    </>
-                                  ) : (
-                                    <div style={{ display: "inline-flex", alignItems: "center", gap: "6px", flexShrink: 0 }}>
-                                      {renderNoteButton(elem.vatAdjRow, vatAdjCell)}
-                                      <span
-                                        onClick={() => handleStartEdit(elem.vatAdjRow, vatAdjCell)}
-                                        title="Click to edit adjustment"
-                                        style={{
-                                          display: "inline-block",
-                                          minWidth: "80px",
-                                          textAlign: "right",
-                                          padding: "3px 8px",
-                                          background: "#ffffff",
-                                          border: "1px solid #cbd5e1",
-                                          borderRadius: "4px",
-                                          cursor: "pointer",
-                                          fontVariantNumeric: "tabular-nums",
-                                          fontSize: "11px",
-                                          color: "#334155",
-                                          fontWeight: "600",
-                                          whiteSpace: "nowrap",
-                                          boxSizing: "border-box"
-                                        }}
-                                      >
-                                        {vatAdjCell?.v || "£0.00"}
-                                      </span>
-                                    </div>
-                                  )}
-                                </div>
-
-                                {/* Spanning Pulse Total Column (All 4 rows) */}
-                                {isTargetCol && (
-                                  <div
-                                    style={{
-                                      gridColumn: `${totalColPosition}`,
-                                      gridRow: "1 / span 4",
-                                      padding: "8px 10px",
-                                      background: "#f0f9ff",
-                                      borderLeft: "1px solid #bae6fd",
-                                      borderRight: "1px solid #bae6fd",
-                                      display: "flex",
-                                      flexDirection: "column",
-                                      alignItems: "center",
-                                      justifyContent: "center",
-                                      gap: "3px"
-                                    }}
-                                  >
-                                    <span style={{ fontSize: "10px", color: "#64748b", fontVariantNumeric: "tabular-nums" }}>
-                                      Corp: {formatGBP(corpTotal)}
-                                    </span>
-                                    <span style={{ fontSize: "10px", color: "#64748b", fontVariantNumeric: "tabular-nums" }}>
-                                      VAT: {formatGBP(vatTotal)}
-                                    </span>
-                                    <div style={{ width: "80%", height: "1px", background: "#bae6fd", margin: "2px 0" }} />
-                                    <span
-                                      style={{
-                                        fontSize: "12px",
-                                        fontWeight: "700",
-                                        fontVariantNumeric: "tabular-nums",
-                                        color: "#0f172a"
-                                      }}
-                                      title={`Combined Corporation tax (${formatGBP(corpTotal)}) + VAT (${formatGBP(vatTotal)}) = ${combinedTotalFmt}`}
-                                    >
-                                      {combinedTotalFmt}
-                                    </span>
-                                  </div>
-                                )}
-
-                                {/* Spanning Transactions Total (Transfer) Column (All 4 rows) */}
-                                {isTargetCol && (() => {
-                                  const txVal = combinedTransferTxVal;
-                                  const isAvailable = txVal !== null && txVal !== undefined;
-                                  const isMatch = isAvailable && (
-                                    Math.abs(combinedTotalVal - txVal) < 0.05 ||
-                                    (Math.sign(combinedTotalVal) !== Math.sign(txVal) && Math.abs(Math.abs(combinedTotalVal) - Math.abs(txVal)) < 0.05)
-                                  );
-                                  return (
-                                    <div
-                                      style={{
-                                        gridColumn: `${txColPosition}`,
-                                        gridRow: "1 / span 4",
-                                        padding: "8px 10px",
-                                        background: "#f0f9ff",
-                                        borderRight: "1px solid #bae6fd",
-                                        display: "flex",
-                                        flexDirection: "column",
-                                        alignItems: "center",
-                                        justifyContent: "center",
-                                        gap: "4px"
-                                      }}
-                                    >
-                                      <span style={{ fontSize: "9px", fontWeight: "700", color: "#0369a1", textTransform: "uppercase", letterSpacing: "0.03em" }}>
-                                        Transfer
-                                      </span>
-                                      {isAvailable ? (
-                                        <span
-                                          style={{
-                                            padding: "4px 10px",
-                                            borderRadius: "14px",
-                                            fontSize: "11px",
-                                            fontWeight: "700",
-                                            fontVariantNumeric: "tabular-nums",
-                                            background: isMatch ? "#dcfce7" : "#fee2e2",
-                                            color: isMatch ? "#166534" : "#991b1b",
-                                            border: isMatch ? "1px solid #86efac" : "1px solid #fca5a5",
-                                            display: "inline-block",
-                                            boxShadow: "0 1px 2px rgba(0,0,0,0.02)"
-                                          }}
-                                          title={isMatch
-                                            ? `Matches combined Corp tax + VAT total: ${formatGBP(txVal)}`
-                                            : `Mismatch: Transfer amount ${formatGBP(txVal)} vs Combined total ${combinedTotalFmt} (Diff: ${formatGBP(txVal - combinedTotalVal)})`
-                                          }
-                                        >
-                                          {formatGBP(txVal)}
-                                        </span>
-                                      ) : (
-                                        <span style={{ color: "#94a3b8", fontSize: "12px" }}>—</span>
-                                      )}
-                                    </div>
-                                  );
-                                })()}
-                              </React.Fragment>
-                            );
-                          })}
-                        </div>
-                      );
-                    }
-
-                    if (elem.type === "compound") {
-                      return (
-                        <div
-                          key={elem.id}
-                          style={{
-                            display: "grid",
-                            gridTemplateColumns: gridTemplateColumns,
-                            gridTemplateRows: "auto auto",
-                            background: "#ffffff",
-                            border: "1px solid #e2e8f0",
-                            borderRadius: "10px",
-                            boxShadow: "0 1px 2px rgba(15, 23, 42, 0.04)",
-                            overflow: "hidden",
-                            transition: "box-shadow 0.15s, border-color 0.15s"
-                          }}
-                          onMouseEnter={(e) => {
-                            e.currentTarget.style.borderColor = "#cbd5e1";
-                            e.currentTarget.style.boxShadow = "0 3px 6px -1px rgba(15, 23, 42, 0.07)";
-                          }}
-                          onMouseLeave={(e) => {
-                            e.currentTarget.style.borderColor = "#e2e8f0";
-                            e.currentTarget.style.boxShadow = "0 1px 2px rgba(15, 23, 42, 0.04)";
-                          }}
-                        >
-                          {/* Row 1: Forecast Category Title */}
-                          <div
-                            style={{
-                              gridColumn: "1",
-                              gridRow: "1",
-                              padding: "8px 14px",
-                              fontWeight: "700",
-                              fontSize: "13px",
-                              color: "#0f172a",
-                              borderBottom: "1px dashed #f1f5f9",
-                              display: "flex",
-                              alignItems: "center"
-                            }}
-                          >
-                            <span>{elem.title}</span>
-                          </div>
-
-                          {/* Spacers before/after Target Month */}
-                          {spacerBeforeTarget && (
-                            <div
-                              style={{
-                                gridColumn: `${spacerBeforeTarget}`,
-                                gridRow: "1 / span 2",
-                                background: "#f8fafc",
-                                borderLeft: "1px solid #e2e8f0",
-                                borderRight: "1px solid #e2e8f0"
-                              }}
-                            />
-                          )}
-                          {spacerAfterTarget && (
-                            <div
-                              style={{
-                                gridColumn: `${spacerAfterTarget}`,
-                                gridRow: "1 / span 2",
-                                background: "#f8fafc",
-                                borderLeft: "1px solid #e2e8f0",
-                                borderRight: "1px solid #e2e8f0"
-                              }}
-                            />
-                          )}
-
-                          {/* Row 1: Forecast Month Columns */}
-                          {reconData.selectedCols.map((col, cIndex) => {
-                            const isTargetCol = col.type === "target";
-                            const gridCol = colPositions[cIndex];
-                            const baseCell = elem.baseRow.cells[cIndex];
-                            const adjCell = elem.adjRow?.cells[cIndex];
-                            const baseVal = (baseCell?.numVal !== undefined && baseCell?.numVal !== null) ? baseCell.numVal : parseAmount(baseCell?.v);
-                            const adjVal = (adjCell?.numVal !== undefined && adjCell?.numVal !== null) ? adjCell.numVal : parseAmount(adjCell?.v);
-                            const totalVal = baseVal + adjVal;
-                            const totalFmt = formatGBP(totalVal);
-                            let cellBg = baseCell?.isResolved ? RESOLVED_GREEN : (isTargetCol ? "#f8fafc" : "#ffffff");
-
-                            return (
-                              <React.Fragment key={col.colIdx}>
-                                <div
-                                  style={{
-                                    gridColumn: `${gridCol}`,
-                                    gridRow: "1",
-                                    padding: "8px 10px",
-                                    background: cellBg,
-                                    borderBottom: "1px dashed #f1f5f9",
-                                    display: "flex",
-                                    alignItems: "center",
-                                    justifyContent: isTargetCol ? "space-between" : "flex-end",
-                                    gap: "6px"
-                                  }}
-                                >
-                                  {isTargetCol ? (
-                                    <>
-                                      <div style={{ display: "inline-flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
-                                        {renderNoteButton(elem.baseRow, baseCell)}
-                                        <button
-                                          onClick={() => handleToggleResolved(baseCell)}
-                                          disabled={resolvingCellKey === `${baseCell?.sheetRow}_${baseCell?.colIdx}`}
-                                          title={baseCell?.isResolved ? "Un-mark resolved" : "Mark resolved"}
-                                          style={{
-                                            padding: "2px 7px",
-                                            borderRadius: "4px",
-                                            border: baseCell?.isResolved ? "1px solid #86efac" : "1px solid #cbd5e1",
-                                            background: baseCell?.isResolved ? "#dcfce7" : "#ffffff",
-                                            color: baseCell?.isResolved ? "#166534" : "#475569",
-                                            fontSize: "9px",
-                                            fontWeight: "700",
-                                            textTransform: "uppercase",
-                                            cursor: resolvingCellKey === `${baseCell?.sheetRow}_${baseCell?.colIdx}` ? "wait" : "pointer",
-                                            flexShrink: 0,
-                                            display: "inline-flex",
-                                            alignItems: "center",
-                                            gap: "4px"
-                                          }}
-                                        >
-                                          {resolvingCellKey === `${baseCell?.sheetRow}_${baseCell?.colIdx}` ? <Spinner size={9} /> : null}
-                                          {baseCell?.isResolved ? "Resolved" : "Resolve"}
-                                        </button>
-                                      </div>
-                                      <span
-                                        style={{
-                                          display: "inline-block",
-                                          minWidth: "80px",
-                                          textAlign: "right",
-                                          padding: "3px 8px",
-                                          border: "1px solid transparent",
-                                          boxSizing: "border-box",
-                                          fontWeight: "700",
-                                          fontVariantNumeric: "tabular-nums",
-                                          color: "#0f172a",
-                                          fontSize: "12px",
-                                          whiteSpace: "nowrap"
-                                        }}
-                                      >
-                                        {baseCell?.v || "£0.00"}
-                                      </span>
-                                    </>
-                                  ) : (
-                                    <div style={{ display: "inline-flex", alignItems: "center", gap: "6px", flexShrink: 0 }}>
-                                      {renderNoteButton(elem.baseRow, baseCell)}
-                                      <span
-                                        style={{
-                                          display: "inline-block",
-                                          minWidth: "80px",
-                                          textAlign: "right",
-                                          padding: "3px 8px",
-                                          border: "1px solid transparent",
-                                          boxSizing: "border-box",
-                                          fontVariantNumeric: "tabular-nums",
-                                          color: "#334155",
-                                          fontSize: "12px",
-                                          whiteSpace: "nowrap"
-                                        }}
-                                      >
-                                        {baseCell?.v || "£0.00"}
-                                      </span>
-                                    </div>
-                                  )}
-                                </div>
-
-                                {/* Spanning Net Total Column (Unshaded) */}
-                                {isTargetCol && (
-                                  <div
-                                    style={{
-                                      gridColumn: `${totalColPosition}`,
-                                      gridRow: "1 / span 2",
-                                      padding: "6px 10px",
-                                      background: "#f8fafc",
-                                      borderLeft: "1px solid #e2e8f0",
-                                      borderRight: "1px solid #e2e8f0",
-                                      display: "flex",
-                                      alignItems: "center",
-                                      justifyContent: "center"
-                                    }}
-                                  >
-                                    <span
-                                      style={{
-                                        fontSize: "12px",
-                                        fontWeight: "700",
-                                        fontVariantNumeric: "tabular-nums",
-                                        color: "#0f172a",
-                                        display: "inline-block"
-                                      }}
-                                      title={`Forecast: ${baseCell?.v || "£0.00"} + Adjustment: ${adjCell?.v || "£0.00"} = Net: ${totalFmt}`}
-                                    >
-                                      {totalFmt}
-                                    </span>
-                                  </div>
-                                )}
-
-                                {/* Spanning Transaction Amount Column */}
-                                {isTargetCol && (() => {
-                                  const txVal = getCategoryTxAmount(elem.mappedItemType, elem.title);
-                                  const isAvailable = txVal !== null && txVal !== undefined;
-                                  const isMatch = isAvailable && (
-                                    Math.abs(totalVal - txVal) < 0.05 ||
-                                    (Math.sign(totalVal) !== Math.sign(txVal) && Math.abs(Math.abs(totalVal) - Math.abs(txVal)) < 0.05)
-                                  );
-                                  return (
-                                    <div
-                                      style={{
-                                        gridColumn: `${txColPosition}`,
-                                        gridRow: "1 / span 2",
-                                        padding: "6px 10px",
-                                        background: "#f8fafc",
-                                        borderRight: "1px solid #e2e8f0",
-                                        display: "flex",
-                                        alignItems: "center",
-                                        justifyContent: "center"
-                                      }}
-                                    >
-                                      {isAvailable ? (
-                                        <span
-                                          style={{
-                                            padding: "4px 10px",
-                                            borderRadius: "14px",
-                                            fontSize: "11px",
-                                            fontWeight: "700",
-                                            fontVariantNumeric: "tabular-nums",
-                                            background: isMatch ? "#dcfce7" : "#fee2e2",
-                                            color: isMatch ? "#166534" : "#991b1b",
-                                            border: isMatch ? "1px solid #86efac" : "1px solid #fca5a5",
-                                            display: "inline-block",
-                                            boxShadow: "0 1px 2px rgba(0,0,0,0.02)"
-                                          }}
-                                          title={isMatch
-                                            ? `Matches Total (Net): ${formatGBP(txVal)}`
-                                            : `Mismatch: Transaction amount ${formatGBP(txVal)} vs Total (Net) ${formatGBP(totalVal)} (Diff: ${formatGBP(txVal - totalVal)})`
-                                          }
-                                        >
-                                          {formatGBP(txVal)}
-                                        </span>
-                                      ) : (
-                                        <span style={{ color: "#94a3b8", fontSize: "12px" }}>—</span>
-                                      )}
-                                    </div>
-                                  );
-                                })()}
-                              </React.Fragment>
-                            );
-                          })}
-
-                          {/* Row 2: Adjustment Label */}
-                          <div
-                            style={{
-                              gridColumn: "1",
-                              gridRow: "2",
-                              padding: "6px 14px 7px 24px",
-                              color: "#64748b",
-                              fontStyle: "italic",
-                              fontSize: "11px",
-                              display: "flex",
-                              alignItems: "center",
-                              background: "#fafbfc"
-                            }}
-                          >
-                            <span>↳ Adjustment</span>
-                          </div>
-
-                          {/* Row 2: Adjustment Month Columns */}
-                          {reconData.selectedCols.map((col, cIndex) => {
-                            const isTargetCol = col.type === "target";
-                            const gridCol = colPositions[cIndex];
-                            const adjCell = elem.adjRow?.cells[cIndex];
-
-                            return (
-                              <div
-                                key={`adj_${col.colIdx}`}
-                                style={{
-                                  gridColumn: `${gridCol}`,
-                                  gridRow: "2",
-                                  padding: "5px 10px 6px",
-                                  background: isTargetCol ? "#f8fafc" : "#fafbfc",
-                                  display: "flex",
-                                  alignItems: "center",
-                                  justifyContent: isTargetCol ? "space-between" : "flex-end",
-                                  gap: "6px"
-                                }}
-                              >
-                                {isTargetCol ? (
-                                  <>
-                                    <div style={{ display: "inline-flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
-                                      {renderNoteButton(elem.adjRow, adjCell)}
-                                      {(() => {
-                                        const isReconUsed = isReconUsedForRow(elem.baseRow);
-                                        const isThisRowApplying = applyingRecon && (applyingReconRow === elem.adjRow?.sheetRow || applyingReconRow === elem.baseRow?.targetAdjustmentRow);
-                                        return (
-                                          <button
-                                            onClick={() => handleUseReconFigures(elem.baseRow, elem.baseRow.cells[cIndex])}
-                                            disabled={applyingRecon}
-                                            title={isReconUsed ? "Recon actual figure is currently applied" : `Apply recon actual for ${elem.title}`}
-                                            style={{
-                                              padding: "2px 7px",
-                                              borderRadius: "4px",
-                                              border: isReconUsed ? "1px solid #86efac" : "1px solid #bfdbfe",
-                                              background: isReconUsed ? "#dcfce7" : "#eff6ff",
-                                              color: isReconUsed ? "#166534" : "#1d4ed8",
-                                              fontSize: "9px",
-                                              fontWeight: "700",
-                                              textTransform: "uppercase",
-                                              cursor: applyingRecon ? "default" : "pointer",
-                                              opacity: isThisRowApplying ? 0.7 : 1,
-                                              flexShrink: 0,
-                                              display: "inline-flex",
-                                              alignItems: "center",
-                                              gap: "4px"
-                                            }}
-                                          >
-                                            {isThisRowApplying ? <Spinner size={9} /> : null}
-                                            Recon
-                                          </button>
-                                        );
-                                      })()}
-                                      {nextCol && (
-                                        <button
-                                          type="button"
-                                          onClick={() => handleOpenOffsetModal({
-                                            baseRow: elem.baseRow,
-                                            adjRow: elem.adjRow,
-                                            title: elem.title,
-                                            mappedItemType: elem.mappedItemType
-                                          })}
-                                          title={`Offset in ${nextCol.label}`}
-                                          style={{
-                                            padding: "2px 6px",
-                                            borderRadius: "4px",
-                                            border: "1px solid #cbd5e1",
-                                            background: "#ffffff",
-                                            color: "#475569",
-                                            fontSize: "9px",
-                                            fontWeight: "700",
-                                            cursor: "pointer"
-                                          }}
-                                        >
-                                          ⇄ {(nextCol.label || "Next").split(" ")[0]}
-                                        </button>
-                                      )}
-                                    </div>
-
-                                    {/* Thin Grey Input Box for Adjustment */}
-                                    <span
-                                      onClick={() => handleStartEdit(elem.adjRow, adjCell)}
-                                      title="Click to edit adjustment"
-                                      style={{
-                                        display: "inline-block",
-                                        minWidth: "80px",
-                                        textAlign: "right",
-                                        padding: "3px 8px",
-                                        background: "#ffffff",
-                                        border: "1px solid #cbd5e1",
-                                        borderRadius: "4px",
-                                        cursor: "pointer",
-                                        fontVariantNumeric: "tabular-nums",
-                                        fontSize: "11px",
-                                        color: "#334155",
-                                        fontWeight: "600",
-                                        boxShadow: "0 1px 2px rgba(0,0,0,0.02)",
-                                        whiteSpace: "nowrap",
-                                        boxSizing: "border-box"
-                                      }}
-                                    >
-                                      {adjCell?.v || "£0.00"}
-                                    </span>
-                                  </>
-                                ) : (
-                                  <div style={{ display: "inline-flex", alignItems: "center", gap: "6px", flexShrink: 0 }}>
-                                    {renderNoteButton(elem.adjRow, adjCell)}
-                                    <span
-                                      onClick={() => handleStartEdit(elem.adjRow, adjCell)}
-                                      title="Click to edit adjustment"
-                                      style={{
-                                        display: "inline-block",
-                                        minWidth: "80px",
-                                        textAlign: "right",
-                                        padding: "3px 8px",
-                                        background: "#ffffff",
-                                        border: "1px solid #cbd5e1",
-                                        borderRadius: "4px",
-                                        cursor: "pointer",
-                                        fontVariantNumeric: "tabular-nums",
-                                        fontSize: "11px",
-                                        color: "#334155",
-                                        fontWeight: "600",
-                                        whiteSpace: "nowrap",
-                                        boxSizing: "border-box"
-                                      }}
-                                    >
-                                      {adjCell?.v || "£0.00"}
-                                    </span>
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      );
-                    }
-
-                    // Single operational card
-                    const row = elem.row;
-                    return (
-                      <div
-                        key={elem.id}
-                        style={{
-                          display: "grid",
-                          gridTemplateColumns: gridTemplateColumns,
-                          alignItems: "center",
-                          background: "#ffffff",
-                          border: "1px solid #e2e8f0",
-                          borderRadius: "10px",
-                          boxShadow: "0 1px 2px rgba(15, 23, 42, 0.04)",
-                          overflow: "hidden"
-                        }}
-                      >
-                        {/* Spacers before/after Target Month */}
-                        {spacerBeforeTarget && (
-                          <div
-                            style={{
-                              gridColumn: `${spacerBeforeTarget}`,
-                              background: "#f8fafc",
-                              borderLeft: "1px solid #e2e8f0",
-                              borderRight: "1px solid #e2e8f0",
-                              alignSelf: "stretch"
-                            }}
-                          />
-                        )}
-                        {spacerAfterTarget && (
-                          <div
-                            style={{
-                              gridColumn: `${spacerAfterTarget}`,
-                              background: "#f8fafc",
-                              borderLeft: "1px solid #e2e8f0",
-                              borderRight: "1px solid #e2e8f0",
-                              alignSelf: "stretch"
-                            }}
-                          />
-                        )}
-                        <div style={{ gridColumn: "1", padding: "8px 14px", fontWeight: "600", fontSize: "12px", color: "#1e293b" }}>
-                          {elem.title}
-                        </div>
-                        {row.cells.map((cell, cIndex) => {
-                          const isTargetCol = reconData.selectedCols[cIndex]?.type === "target";
-                          const gridCol = colPositions[cIndex];
-                          if (isTargetCol) {
-                            return (
-                              <div
-                                key={cell.colIdx}
-                                style={{
-                                  gridColumn: `${gridCol} / ${gridCol + 3}`,
-                                  padding: "8px 10px",
-                                  textAlign: "right",
-                                  display: "flex",
-                                  alignItems: "center",
-                                  justifyContent: "flex-end",
-                                  gap: "6px"
-                                }}
-                              >
-                                {renderNoteButton(row, cell)}
-                                <span
-                                  style={{
-                                    display: "inline-block",
-                                    minWidth: "80px",
-                                    textAlign: "right",
-                                    padding: "3px 8px",
-                                    border: "1px solid transparent",
-                                    boxSizing: "border-box",
-                                    fontVariantNumeric: "tabular-nums",
-                                    fontSize: "12px",
-                                    color: "#334155",
-                                    whiteSpace: "nowrap"
-                                  }}
-                                >
-                                  {cell.v || ""}
-                                </span>
-                              </div>
-                            );
-                          }
-                          return (
-                            <div
-                              key={cell.colIdx}
-                              style={{
-                                gridColumn: `${gridCol}`,
-                                padding: "8px 10px",
-                                textAlign: "right",
-                                display: "flex",
-                                alignItems: "center",
-                                justifyContent: "flex-end",
-                                gap: "6px"
-                              }}
-                            >
-                              {renderNoteButton(row, cell)}
-                              <span
-                                style={{
-                                  display: "inline-block",
-                                  minWidth: "80px",
-                                  textAlign: "right",
-                                  padding: "3px 8px",
-                                  border: "1px solid transparent",
-                                  boxSizing: "border-box",
-                                  fontVariantNumeric: "tabular-nums",
-                                  fontSize: "12px",
-                                  color: "#334155",
-                                  whiteSpace: "nowrap"
-                                }}
-                              >
-                                {cell.v || ""}
-                              </span>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    );
-                  })}
-                </div>
-
-                {/* 3. Section Separator for Reconciliation & Cash Balance */}
-                {groupedElements.some(e => e.isSummary) && (
-                  <>
+                {/* Modal Body */}
+                <div style={{
+                  flex: 1,
+                  overflowY: "auto",
+                  overflowX: "auto",
+                  padding: "20px"
+                }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "12px", width: "fit-content", minWidth: "100%" }}>
+                    {/* Cashflow Finalisation Toolbar: Match Actuals + Legend */}
                     <div style={{
+                      padding: "10px 16px",
+                      background: "#ffffff",
+                      borderRadius: "10px",
+                      border: "1px solid #cbd5e1",
                       display: "flex",
                       alignItems: "center",
-                      gap: "12px",
-                      marginTop: "16px",
-                      marginBottom: "10px",
-                      padding: "0 4px"
+                      justifyContent: "space-between",
+                      flexWrap: "wrap",
+                      gap: "10px",
+                      boxShadow: "0 1px 2px rgba(0,0,0,0.03)"
                     }}>
-                      <div style={{ height: "1px", flex: 1, background: "#e2e8f0" }} />
-                      <span style={{ fontSize: "11px", fontWeight: "700", color: "#64748b", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                        Reconciliation & Cash Balance
-                      </span>
-                      <div style={{ height: "1px", flex: 1, background: "#e2e8f0" }} />
+                      <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+                        <button
+                          onClick={() => setShowMatchConfirm(true)}
+                          disabled={matchingActuals || !reconData?.reconActuals}
+                          title="Applies reconciliation figures to adjustments and marks all target month items resolved"
+                          style={{
+                            padding: "7px 16px",
+                            background: "#15803d",
+                            color: "#ffffff",
+                            border: "none",
+                            borderRadius: "6px",
+                            fontSize: "12px",
+                            fontWeight: "700",
+                            cursor: matchingActuals || !reconData?.reconActuals ? "default" : "pointer",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "6px",
+                            boxShadow: "0 1px 2px rgba(0,0,0,0.06)"
+                          }}
+                        >
+                          {matchingActuals ? <Spinner size={12} /> : "⚡"} Match actuals
+                        </button>
+                        <span style={{ fontSize: "12px", color: "#64748b" }}>
+                          Applies bank recon figures and resolves all target month cash items
+                        </span>
+                      </div>
+
+                      <div style={{ display: "flex", alignItems: "center", gap: "12px", fontSize: "11px", color: "#64748b", flexWrap: "wrap" }}>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                          <span style={{ width: "10px", height: "10px", background: "#dcfce7", border: "1px solid #86efac", borderRadius: "2px", display: "inline-block" }}></span>
+                          Matched transaction
+                        </span>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                          <span style={{ width: "10px", height: "10px", background: "#fee2e2", border: "1px solid #fca5a5", borderRadius: "2px", display: "inline-block" }}></span>
+                          Variance
+                        </span>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                          <span style={{ width: "10px", height: "10px", background: RESOLVED_GREEN, border: "1px solid #86efac", borderRadius: "2px", display: "inline-block" }}></span>
+                          Resolved actual
+                        </span>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                          <span style={{ width: "10px", height: "10px", background: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: "2px", display: "inline-block" }}></span>
+                          Editable adjustment
+                        </span>
+                      </div>
                     </div>
 
-                    {/* 4. Summary & Balance Cards */}
-                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                      {groupedElements.filter(e => e.isSummary).map((elem) => {
-                        const row = elem.row;
-                        const isDiff = elem.isDifference;
-                        const isClosing = elem.title.toLowerCase().includes("closing balance");
-                        const isOpening = elem.title.toLowerCase().includes("opening balance");
-                        const isNet = elem.title.toLowerCase().includes("net cash movement");
-
-                        let cardBg = "#ffffff";
-                        let cardBorder = "1px solid #e2e8f0";
-                        const targetCell = row.cells.find((_, cIdx) => reconData.selectedCols[cIdx]?.type === "target");
-                        const valNum = parseAmount(targetCell?.v);
-
-                        if (isDiff) {
-                          if (valNum === 0) {
-                            cardBg = "#f0fdf4";
-                            cardBorder = "1px solid #86efac";
-                          } else {
-                            cardBg = "#fef2f2";
-                            cardBorder = "1px solid #fca5a5";
-                          }
-                        } else if (isClosing) {
-                          cardBg = "#eff6ff";
-                          cardBorder = "1px solid #93c5fd";
-                        } else if (isNet) {
-                          cardBg = "#f8fafc";
-                          cardBorder = "1px solid #cbd5e1";
-                        } else if (isOpening) {
-                          cardBg = "#fafbfc";
-                          cardBorder = "1px solid #e2e8f0";
-                        }
-
-                        return (
-                          <div
-                            key={elem.id}
-                            style={{
-                              display: "grid",
-                              gridTemplateColumns: gridTemplateColumns,
-                              alignItems: "center",
-                              background: cardBg,
-                              border: cardBorder,
-                              borderRadius: "10px",
-                              boxShadow: "0 1px 2px rgba(15, 23, 42, 0.03)",
-                              overflow: "hidden"
-                            }}
-                          >
-                            {/* Spacers before/after Target Month */}
-                            {spacerBeforeTarget && (
-                              <div
-                                style={{
-                                  gridColumn: `${spacerBeforeTarget}`,
-                                  background: "#f8fafc",
-                                  borderLeft: "1px solid #e2e8f0",
-                                  borderRight: "1px solid #e2e8f0",
-                                  alignSelf: "stretch"
-                                }}
-                              />
-                            )}
-                            {spacerAfterTarget && (
-                              <div
-                                style={{
-                                  gridColumn: `${spacerAfterTarget}`,
-                                  background: "#f8fafc",
-                                  borderLeft: "1px solid #e2e8f0",
-                                  borderRight: "1px solid #e2e8f0",
-                                  alignSelf: "stretch"
-                                }}
-                              />
-                            )}
-                            {/* Title */}
-                            <div
-                              style={{
-                                gridColumn: "1",
-                                padding: "9px 14px",
-                                fontWeight: elem.isSummary ? "700" : "500",
-                                fontSize: "12px",
-                                color: isDiff ? (valNum === 0 ? "#166534" : "#991b1b") : (isClosing || isNet ? "#1e40af" : "#1e293b"),
-                                display: "flex",
-                                alignItems: "center",
-                                gap: "8px"
-                              }}
-                            >
-                              <span>{elem.title}</span>
-                              {isDiff && valNum === 0 && (
-                                <span style={{
-                                  fontSize: "9px",
-                                  padding: "1px 6px",
-                                  background: "#dcfce7",
-                                  color: "#166534",
-                                  borderRadius: "4px",
-                                  fontWeight: "800",
-                                  textTransform: "uppercase"
-                                }}>
-                                  In Balance ✓
-                                </span>
-                              )}
+                    {/* Overhauled Modern Cashflow Finalisation: Grouped Category Cards with Dedicated Total Column */}
+                    <div style={{ width: "fit-content", maxWidth: "100%" }}>
+                      <div style={{ overflowX: "auto", paddingBottom: "12px" }}>
+                        <div style={{ minWidth: "972px", width: "fit-content" }}>
+                          {/* 1. Header Bar: Segmented with clear blank space around Target Month */}
+                          <div style={{
+                            display: "grid",
+                            gridTemplateColumns: gridTemplateColumns,
+                            alignItems: "stretch",
+                            background: "transparent",
+                            color: "#ffffff",
+                            fontSize: "12px",
+                            fontWeight: "700",
+                            marginBottom: "10px"
+                          }}>
+                            <div style={{
+                              padding: "10px 14px",
+                              gridColumn: "1",
+                              background: DARK_GREEN,
+                              borderTopLeftRadius: "10px",
+                              borderBottomLeftRadius: "10px",
+                              display: "flex",
+                              alignItems: "center"
+                            }}>
+                              Cash movement
                             </div>
 
-                            {/* Month Columns */}
-                            {row.cells.map((cell, cIndex) => {
-                              const isTargetCol = reconData.selectedCols[cIndex]?.type === "target";
+                            {reconData.selectedCols.map((col, cIndex) => {
+                              const isTarget = col.type === "target";
                               const gridCol = colPositions[cIndex];
-                              const cellValNum = parseAmount(cell.v);
+                              const isPrev = cIndex === 0 || col.type === "prev";
+                              const isLast = cIndex === reconData.selectedCols.length - 1;
 
-                              if (isTargetCol) {
-                                return (
+                              return (
+                                <React.Fragment key={col.colIdx}>
                                   <div
-                                    key={cell.colIdx}
                                     style={{
-                                      gridColumn: `${gridCol} / ${gridCol + 3}`,
-                                      padding: "9px 10px",
+                                      gridColumn: `${gridCol}`,
+                                      padding: "10px 10px",
                                       textAlign: "right",
+                                      background: isTarget ? "#15803d" : DARK_GREEN,
+                                      borderTopLeftRadius: isTarget ? "10px" : (!isPrev && !isTarget ? "10px" : "0"),
+                                      borderBottomLeftRadius: isTarget ? "10px" : (!isPrev && !isTarget ? "10px" : "0"),
+                                      borderTopRightRadius: isPrev && !isTarget ? "10px" : (isLast ? "10px" : "0"),
+                                      borderBottomRightRadius: isPrev && !isTarget ? "10px" : (isLast ? "10px" : "0"),
                                       display: "flex",
                                       alignItems: "center",
                                       justifyContent: "flex-end",
-                                      gap: "8px",
-                                      fontWeight: elem.isSummary ? "700" : "500",
-                                      fontSize: "12px",
-                                      color: isDiff ? (cellValNum === 0 ? "#166534" : "#991b1b") : (isClosing || isNet ? "#1e40af" : "#1e293b")
+                                      gap: "6px"
                                     }}
                                   >
-                                    {renderNoteButton(row, cell)}
-                                    <span
+                                    <span>{col.label}</span>
+                                    {isTarget && (
+                                      <span style={{
+                                        fontSize: "9px",
+                                        padding: "1px 5px",
+                                        background: "#ffffff",
+                                        color: "#15803d",
+                                        borderRadius: "4px",
+                                        fontWeight: "800",
+                                        textTransform: "uppercase"
+                                      }}>
+                                        Target
+                                      </span>
+                                    )}
+                                  </div>
+
+                                  {isTarget && (
+                                    <>
+                                      <div
+                                        style={{
+                                          gridColumn: `${totalColPosition}`,
+                                          padding: "10px 10px",
+                                          textAlign: "center",
+                                          background: "#15803d",
+                                          borderLeft: "1px solid rgba(255, 255, 255, 0.2)",
+                                          fontWeight: "700",
+                                          display: "flex",
+                                          alignItems: "center",
+                                          justifyContent: "center"
+                                        }}
+                                      >
+                                        Pulse total
+                                      </div>
+                                      <div
+                                        style={{
+                                          gridColumn: `${txColPosition}`,
+                                          padding: "10px 10px",
+                                          textAlign: "center",
+                                          background: "#15803d",
+                                          borderLeft: "1px solid rgba(255, 255, 255, 0.2)",
+                                          borderTopRightRadius: "10px",
+                                          borderBottomRightRadius: "10px",
+                                          fontWeight: "700",
+                                          display: "flex",
+                                          alignItems: "center",
+                                          justifyContent: "center"
+                                        }}
+                                      >
+                                        Transactions total
+                                      </div>
+                                    </>
+                                  )}
+                                </React.Fragment>
+                              );
+                            })}
+                          </div>
+
+                          {/* 2. Operational Movement Cards (with 8px gap between categories) */}
+                          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                            {groupedElements.filter(e => !e.isSummary).map((elem) => {
+                              if (elem.type === "compound_transfer") {
+                                return (
+                                  <div
+                                    key={elem.id}
+                                    style={{
+                                      display: "grid",
+                                      gridTemplateColumns: gridTemplateColumns,
+                                      gridTemplateRows: "auto auto auto auto",
+                                      background: "#ffffff",
+                                      border: "1px solid #bae6fd",
+                                      borderLeft: "4px solid #0284c7",
+                                      borderRadius: "10px",
+                                      boxShadow: "0 1px 3px rgba(2, 132, 199, 0.08)",
+                                      overflow: "hidden",
+                                      transition: "box-shadow 0.15s, border-color 0.15s"
+                                    }}
+                                  >
+                                    {/* Spacers before/after Target Month */}
+                                    {spacerBeforeTarget && (
+                                      <div
+                                        style={{
+                                          gridColumn: `${spacerBeforeTarget}`,
+                                          gridRow: "1 / span 4",
+                                          background: "#f8fafc",
+                                          borderLeft: "1px solid #e2e8f0",
+                                          borderRight: "1px solid #e2e8f0"
+                                        }}
+                                      />
+                                    )}
+                                    {spacerAfterTarget && (
+                                      <div
+                                        style={{
+                                          gridColumn: `${spacerAfterTarget}`,
+                                          gridRow: "1 / span 4",
+                                          background: "#f8fafc",
+                                          borderLeft: "1px solid #e2e8f0",
+                                          borderRight: "1px solid #e2e8f0"
+                                        }}
+                                      />
+                                    )}
+
+                                    {/* Row 1 Title: Corporation tax */}
+                                    <div
                                       style={{
-                                        display: "inline-block",
-                                        minWidth: "80px",
-                                        textAlign: "right",
-                                        padding: "3px 8px",
-                                        border: "1px solid transparent",
-                                        boxSizing: "border-box",
-                                        fontVariantNumeric: "tabular-nums",
-                                        whiteSpace: "nowrap"
+                                        gridColumn: "1",
+                                        gridRow: "1",
+                                        padding: "8px 14px",
+                                        fontWeight: "700",
+                                        fontSize: "13px",
+                                        color: "#0f172a",
+                                        borderBottom: "1px dashed #f1f5f9",
+                                        display: "flex",
+                                        flexDirection: "column",
+                                        justifyContent: "center",
+                                        gap: "2px"
                                       }}
                                     >
-                                      {isDiff && cellValNum === 0 ? "✓ £0.00" : (cell.v || "")}
-                                    </span>
+                                      <span>{elem.corpTitle || "Corporation tax"}</span>
+                                      <span style={{
+                                        fontSize: "9px",
+                                        fontWeight: "700",
+                                        color: "#0369a1",
+                                        background: "#e0f2fe",
+                                        padding: "1px 5px",
+                                        borderRadius: "4px",
+                                        width: "fit-content"
+                                      }}>
+                                        Transfers mode
+                                      </span>
+                                    </div>
+
+                                    {/* Row 2 Title: Corp tax adjustment */}
+                                    <div
+                                      style={{
+                                        gridColumn: "1",
+                                        gridRow: "2",
+                                        padding: "6px 14px 7px 24px",
+                                        color: "#64748b",
+                                        fontStyle: "italic",
+                                        fontSize: "11px",
+                                        display: "flex",
+                                        alignItems: "center",
+                                        background: "#fafbfc",
+                                        borderBottom: "1px solid #e2e8f0"
+                                      }}
+                                    >
+                                      <span>↳ Adjustment</span>
+                                    </div>
+
+                                    {/* Row 3 Title: VAT */}
+                                    <div
+                                      style={{
+                                        gridColumn: "1",
+                                        gridRow: "3",
+                                        padding: "8px 14px",
+                                        fontWeight: "700",
+                                        fontSize: "13px",
+                                        color: "#0f172a",
+                                        borderBottom: "1px dashed #f1f5f9",
+                                        display: "flex",
+                                        alignItems: "center"
+                                      }}
+                                    >
+                                      <span>{elem.vatTitle || "VAT"}</span>
+                                    </div>
+
+                                    {/* Row 4 Title: VAT adjustment */}
+                                    <div
+                                      style={{
+                                        gridColumn: "1",
+                                        gridRow: "4",
+                                        padding: "6px 14px 7px 24px",
+                                        color: "#64748b",
+                                        fontStyle: "italic",
+                                        fontSize: "11px",
+                                        display: "flex",
+                                        alignItems: "center",
+                                        background: "#fafbfc"
+                                      }}
+                                    >
+                                      <span>↳ Adjustment</span>
+                                    </div>
+
+                                    {/* Month Columns across all 4 rows */}
+                                    {reconData.selectedCols.map((col, cIndex) => {
+                                      const isTargetCol = col.type === "target";
+                                      const gridCol = colPositions[cIndex];
+                                      const corpBaseCell = elem.corpBaseRow.cells[cIndex];
+                                      const corpAdjCell = elem.corpAdjRow?.cells[cIndex];
+                                      const vatBaseCell = elem.vatBaseRow.cells[cIndex];
+                                      const vatAdjCell = elem.vatAdjRow?.cells[cIndex];
+
+                                      const corpBaseVal = (corpBaseCell?.numVal !== undefined && corpBaseCell?.numVal !== null) ? corpBaseCell.numVal : parseAmount(corpBaseCell?.v);
+                                      const corpAdjVal = (corpAdjCell?.numVal !== undefined && corpAdjCell?.numVal !== null) ? corpAdjCell.numVal : parseAmount(corpAdjCell?.v);
+                                      const vatBaseVal = (vatBaseCell?.numVal !== undefined && vatBaseCell?.numVal !== null) ? vatBaseCell.numVal : parseAmount(vatBaseCell?.v);
+                                      const vatAdjVal = (vatAdjCell?.numVal !== undefined && vatAdjCell?.numVal !== null) ? vatAdjCell.numVal : parseAmount(vatAdjCell?.v);
+
+                                      const corpTotal = corpBaseVal + corpAdjVal;
+                                      const vatTotal = vatBaseVal + vatAdjVal;
+                                      const combinedTotalVal = corpTotal + vatTotal;
+                                      const combinedTotalFmt = formatGBP(combinedTotalVal);
+
+                                      const corpBg = corpBaseCell?.isResolved ? RESOLVED_GREEN : (isTargetCol ? "#f8fafc" : "#ffffff");
+                                      const vatBg = vatBaseCell?.isResolved ? RESOLVED_GREEN : (isTargetCol ? "#f8fafc" : "#ffffff");
+
+                                      return (
+                                        <React.Fragment key={col.colIdx}>
+                                          {/* Row 1: Corp tax base */}
+                                          <div
+                                            style={{
+                                              gridColumn: `${gridCol}`,
+                                              gridRow: "1",
+                                              padding: "8px 10px",
+                                              background: corpBg,
+                                              borderBottom: "1px dashed #f1f5f9",
+                                              display: "flex",
+                                              alignItems: "center",
+                                              justifyContent: isTargetCol ? "space-between" : "flex-end",
+                                              gap: "6px"
+                                            }}
+                                          >
+                                            {isTargetCol ? (
+                                              <>
+                                                <div style={{ display: "inline-flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
+                                                  {renderNoteButton(elem.corpBaseRow, corpBaseCell)}
+                                                  <button
+                                                    onClick={() => handleToggleResolved(corpBaseCell)}
+                                                    disabled={resolvingCellKey === `${corpBaseCell?.sheetRow}_${corpBaseCell?.colIdx}`}
+                                                    title={corpBaseCell?.isResolved ? "Un-mark resolved" : "Mark resolved"}
+                                                    style={{
+                                                      padding: "2px 7px",
+                                                      borderRadius: "4px",
+                                                      border: corpBaseCell?.isResolved ? "1px solid #86efac" : "1px solid #cbd5e1",
+                                                      background: corpBaseCell?.isResolved ? "#dcfce7" : "#ffffff",
+                                                      color: corpBaseCell?.isResolved ? "#166534" : "#475569",
+                                                      fontSize: "9px",
+                                                      fontWeight: "700",
+                                                      textTransform: "uppercase",
+                                                      cursor: resolvingCellKey === `${corpBaseCell?.sheetRow}_${corpBaseCell?.colIdx}` ? "wait" : "pointer",
+                                                      flexShrink: 0,
+                                                      display: "inline-flex",
+                                                      alignItems: "center",
+                                                      gap: "4px"
+                                                    }}
+                                                  >
+                                                    {resolvingCellKey === `${corpBaseCell?.sheetRow}_${corpBaseCell?.colIdx}` ? <Spinner size={9} /> : null}
+                                                    {corpBaseCell?.isResolved ? "Resolved" : "Resolve"}
+                                                  </button>
+                                                </div>
+                                                <span style={{ display: "inline-block", minWidth: "80px", textAlign: "right", padding: "3px 8px", fontWeight: "700", fontVariantNumeric: "tabular-nums", color: "#0f172a", fontSize: "12px", whiteSpace: "nowrap" }}>
+                                                  {corpBaseCell?.v || "£0.00"}
+                                                </span>
+                                              </>
+                                            ) : (
+                                              <div style={{ display: "inline-flex", alignItems: "center", gap: "6px", flexShrink: 0 }}>
+                                                {renderNoteButton(elem.corpBaseRow, corpBaseCell)}
+                                                <span style={{ display: "inline-block", minWidth: "80px", textAlign: "right", padding: "3px 8px", fontVariantNumeric: "tabular-nums", color: "#334155", fontSize: "12px", whiteSpace: "nowrap" }}>
+                                                  {corpBaseCell?.v || "£0.00"}
+                                                </span>
+                                              </div>
+                                            )}
+                                          </div>
+
+                                          {/* Row 2: Corp tax adjustment */}
+                                          <div
+                                            style={{
+                                              gridColumn: `${gridCol}`,
+                                              gridRow: "2",
+                                              padding: "5px 10px 6px",
+                                              background: isTargetCol ? "#f8fafc" : "#fafbfc",
+                                              borderBottom: "1px solid #e2e8f0",
+                                              display: "flex",
+                                              alignItems: "center",
+                                              justifyContent: isTargetCol ? "space-between" : "flex-end",
+                                              gap: "6px"
+                                            }}
+                                          >
+                                            {isTargetCol ? (
+                                              <>
+                                                <div style={{ display: "inline-flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
+                                                  {renderNoteButton(elem.corpAdjRow, corpAdjCell)}
+                                                </div>
+                                                <span
+                                                  onClick={() => handleStartEdit(elem.corpAdjRow, corpAdjCell)}
+                                                  title="Click to edit corporation tax adjustment"
+                                                  style={{
+                                                    display: "inline-block",
+                                                    minWidth: "80px",
+                                                    textAlign: "right",
+                                                    padding: "3px 8px",
+                                                    background: "#ffffff",
+                                                    border: "1px solid #cbd5e1",
+                                                    borderRadius: "4px",
+                                                    cursor: "pointer",
+                                                    fontVariantNumeric: "tabular-nums",
+                                                    fontSize: "11px",
+                                                    color: "#334155",
+                                                    fontWeight: "600",
+                                                    boxShadow: "0 1px 2px rgba(0,0,0,0.02)",
+                                                    whiteSpace: "nowrap",
+                                                    boxSizing: "border-box"
+                                                  }}
+                                                >
+                                                  {corpAdjCell?.v || "£0.00"}
+                                                </span>
+                                              </>
+                                            ) : (
+                                              <div style={{ display: "inline-flex", alignItems: "center", gap: "6px", flexShrink: 0 }}>
+                                                {renderNoteButton(elem.corpAdjRow, corpAdjCell)}
+                                                <span
+                                                  onClick={() => handleStartEdit(elem.corpAdjRow, corpAdjCell)}
+                                                  title="Click to edit adjustment"
+                                                  style={{
+                                                    display: "inline-block",
+                                                    minWidth: "80px",
+                                                    textAlign: "right",
+                                                    padding: "3px 8px",
+                                                    background: "#ffffff",
+                                                    border: "1px solid #cbd5e1",
+                                                    borderRadius: "4px",
+                                                    cursor: "pointer",
+                                                    fontVariantNumeric: "tabular-nums",
+                                                    fontSize: "11px",
+                                                    color: "#334155",
+                                                    fontWeight: "600",
+                                                    whiteSpace: "nowrap",
+                                                    boxSizing: "border-box"
+                                                  }}
+                                                >
+                                                  {corpAdjCell?.v || "£0.00"}
+                                                </span>
+                                              </div>
+                                            )}
+                                          </div>
+
+                                          {/* Row 3: VAT base */}
+                                          <div
+                                            style={{
+                                              gridColumn: `${gridCol}`,
+                                              gridRow: "3",
+                                              padding: "8px 10px",
+                                              background: vatBg,
+                                              borderBottom: "1px dashed #f1f5f9",
+                                              display: "flex",
+                                              alignItems: "center",
+                                              justifyContent: isTargetCol ? "space-between" : "flex-end",
+                                              gap: "6px"
+                                            }}
+                                          >
+                                            {isTargetCol ? (
+                                              <>
+                                                <div style={{ display: "inline-flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
+                                                  {renderNoteButton(elem.vatBaseRow, vatBaseCell)}
+                                                  <button
+                                                    onClick={() => handleToggleResolved(vatBaseCell)}
+                                                    disabled={resolvingCellKey === `${vatBaseCell?.sheetRow}_${vatBaseCell?.colIdx}`}
+                                                    title={vatBaseCell?.isResolved ? "Un-mark resolved" : "Mark resolved"}
+                                                    style={{
+                                                      padding: "2px 7px",
+                                                      borderRadius: "4px",
+                                                      border: vatBaseCell?.isResolved ? "1px solid #86efac" : "1px solid #cbd5e1",
+                                                      background: vatBaseCell?.isResolved ? "#dcfce7" : "#ffffff",
+                                                      color: vatBaseCell?.isResolved ? "#166534" : "#475569",
+                                                      fontSize: "9px",
+                                                      fontWeight: "700",
+                                                      textTransform: "uppercase",
+                                                      cursor: resolvingCellKey === `${vatBaseCell?.sheetRow}_${vatBaseCell?.colIdx}` ? "wait" : "pointer",
+                                                      flexShrink: 0,
+                                                      display: "inline-flex",
+                                                      alignItems: "center",
+                                                      gap: "4px"
+                                                    }}
+                                                  >
+                                                    {resolvingCellKey === `${vatBaseCell?.sheetRow}_${vatBaseCell?.colIdx}` ? <Spinner size={9} /> : null}
+                                                    {vatBaseCell?.isResolved ? "Resolved" : "Resolve"}
+                                                  </button>
+                                                </div>
+                                                <span style={{ display: "inline-block", minWidth: "80px", textAlign: "right", padding: "3px 8px", fontWeight: "700", fontVariantNumeric: "tabular-nums", color: "#0f172a", fontSize: "12px", whiteSpace: "nowrap" }}>
+                                                  {vatBaseCell?.v || "£0.00"}
+                                                </span>
+                                              </>
+                                            ) : (
+                                              <div style={{ display: "inline-flex", alignItems: "center", gap: "6px", flexShrink: 0 }}>
+                                                {renderNoteButton(elem.vatBaseRow, vatBaseCell)}
+                                                <span style={{ display: "inline-block", minWidth: "80px", textAlign: "right", padding: "3px 8px", fontVariantNumeric: "tabular-nums", color: "#334155", fontSize: "12px", whiteSpace: "nowrap" }}>
+                                                  {vatBaseCell?.v || "£0.00"}
+                                                </span>
+                                              </div>
+                                            )}
+                                          </div>
+
+                                          {/* Row 4: VAT adjustment (with Combined Transfer Recon button) */}
+                                          <div
+                                            style={{
+                                              gridColumn: `${gridCol}`,
+                                              gridRow: "4",
+                                              padding: "5px 10px 6px",
+                                              background: isTargetCol ? "#f8fafc" : "#fafbfc",
+                                              display: "flex",
+                                              alignItems: "center",
+                                              justifyContent: isTargetCol ? "space-between" : "flex-end",
+                                              gap: "6px"
+                                            }}
+                                          >
+                                            {isTargetCol ? (
+                                              <>
+                                                <div style={{ display: "inline-flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
+                                                  {renderNoteButton(elem.vatAdjRow, vatAdjCell)}
+                                                  {(() => {
+                                                    const isReconUsed = isReconUsedForTransfer(elem);
+                                                    const isThisRowApplying = applyingRecon && applyingReconRow === elem.vatAdjRow?.sheetRow;
+                                                    return (
+                                                      <button
+                                                        onClick={() => handleUseCombinedTransferRecon(elem, col)}
+                                                        disabled={applyingRecon}
+                                                        title={isReconUsed ? "Combined transfer recon actual is currently applied" : "Reconcile combined Corporation tax + VAT against Transfer total"}
+                                                        style={{
+                                                          padding: "2px 7px",
+                                                          borderRadius: "4px",
+                                                          border: isReconUsed ? "1px solid #86efac" : "1px solid #bfdbfe",
+                                                          background: isReconUsed ? "#dcfce7" : "#eff6ff",
+                                                          color: isReconUsed ? "#166534" : "#1d4ed8",
+                                                          fontSize: "9px",
+                                                          fontWeight: "700",
+                                                          textTransform: "uppercase",
+                                                          cursor: applyingRecon ? "default" : "pointer",
+                                                          opacity: isThisRowApplying ? 0.7 : 1,
+                                                          flexShrink: 0,
+                                                          display: "inline-flex",
+                                                          alignItems: "center",
+                                                          gap: "4px"
+                                                        }}
+                                                      >
+                                                        {isThisRowApplying ? <Spinner size={9} /> : null}
+                                                        Recon
+                                                      </button>
+                                                    );
+                                                  })()}
+                                                  {nextCol && (
+                                                    <button
+                                                      type="button"
+                                                      onClick={() => handleOpenOffsetModal({
+                                                        baseRow: elem.vatBaseRow,
+                                                        adjRow: elem.vatAdjRow,
+                                                        title: "Tax transfers (Corporation tax & VAT)",
+                                                        mappedItemType: "tax_transfer",
+                                                        isCombinedTransfer: true,
+                                                        combinedElem: elem
+                                                      })}
+                                                      title={`Offset combined tax transfers in ${nextCol.label}`}
+                                                      style={{
+                                                        padding: "2px 6px",
+                                                        borderRadius: "4px",
+                                                        border: "1px solid #cbd5e1",
+                                                        background: "#ffffff",
+                                                        color: "#475569",
+                                                        fontSize: "9px",
+                                                        fontWeight: "700",
+                                                        cursor: "pointer"
+                                                      }}
+                                                    >
+                                                      ⇄ {(nextCol.label || "Next").split(" ")[0]}
+                                                    </button>
+                                                  )}
+                                                </div>
+                                                <span
+                                                  onClick={() => handleStartEdit(elem.vatAdjRow, vatAdjCell)}
+                                                  title="Click to edit VAT / transfer adjustment"
+                                                  style={{
+                                                    display: "inline-block",
+                                                    minWidth: "80px",
+                                                    textAlign: "right",
+                                                    padding: "3px 8px",
+                                                    background: "#ffffff",
+                                                    border: "1px solid #cbd5e1",
+                                                    borderRadius: "4px",
+                                                    cursor: "pointer",
+                                                    fontVariantNumeric: "tabular-nums",
+                                                    fontSize: "11px",
+                                                    color: "#334155",
+                                                    fontWeight: "600",
+                                                    boxShadow: "0 1px 2px rgba(0,0,0,0.02)",
+                                                    whiteSpace: "nowrap",
+                                                    boxSizing: "border-box"
+                                                  }}
+                                                >
+                                                  {vatAdjCell?.v || "£0.00"}
+                                                </span>
+                                              </>
+                                            ) : (
+                                              <div style={{ display: "inline-flex", alignItems: "center", gap: "6px", flexShrink: 0 }}>
+                                                {renderNoteButton(elem.vatAdjRow, vatAdjCell)}
+                                                <span
+                                                  onClick={() => handleStartEdit(elem.vatAdjRow, vatAdjCell)}
+                                                  title="Click to edit adjustment"
+                                                  style={{
+                                                    display: "inline-block",
+                                                    minWidth: "80px",
+                                                    textAlign: "right",
+                                                    padding: "3px 8px",
+                                                    background: "#ffffff",
+                                                    border: "1px solid #cbd5e1",
+                                                    borderRadius: "4px",
+                                                    cursor: "pointer",
+                                                    fontVariantNumeric: "tabular-nums",
+                                                    fontSize: "11px",
+                                                    color: "#334155",
+                                                    fontWeight: "600",
+                                                    whiteSpace: "nowrap",
+                                                    boxSizing: "border-box"
+                                                  }}
+                                                >
+                                                  {vatAdjCell?.v || "£0.00"}
+                                                </span>
+                                              </div>
+                                            )}
+                                          </div>
+
+                                          {/* Spanning Pulse Total Column (All 4 rows) */}
+                                          {isTargetCol && (
+                                            <div
+                                              style={{
+                                                gridColumn: `${totalColPosition}`,
+                                                gridRow: "1 / span 4",
+                                                padding: "8px 10px",
+                                                background: "#f0f9ff",
+                                                borderLeft: "1px solid #bae6fd",
+                                                borderRight: "1px solid #bae6fd",
+                                                display: "flex",
+                                                flexDirection: "column",
+                                                alignItems: "center",
+                                                justifyContent: "center",
+                                                gap: "3px"
+                                              }}
+                                            >
+                                              <span style={{ fontSize: "10px", color: "#64748b", fontVariantNumeric: "tabular-nums" }}>
+                                                Corp: {formatGBP(corpTotal)}
+                                              </span>
+                                              <span style={{ fontSize: "10px", color: "#64748b", fontVariantNumeric: "tabular-nums" }}>
+                                                VAT: {formatGBP(vatTotal)}
+                                              </span>
+                                              <div style={{ width: "80%", height: "1px", background: "#bae6fd", margin: "2px 0" }} />
+                                              <span
+                                                style={{
+                                                  fontSize: "12px",
+                                                  fontWeight: "700",
+                                                  fontVariantNumeric: "tabular-nums",
+                                                  color: "#0f172a"
+                                                }}
+                                                title={`Combined Corporation tax (${formatGBP(corpTotal)}) + VAT (${formatGBP(vatTotal)}) = ${combinedTotalFmt}`}
+                                              >
+                                                {combinedTotalFmt}
+                                              </span>
+                                            </div>
+                                          )}
+
+                                          {/* Spanning Transactions Total (Transfer) Column (All 4 rows) */}
+                                          {isTargetCol && (() => {
+                                            const txVal = combinedTransferTxVal;
+                                            const isAvailable = txVal !== null && txVal !== undefined;
+                                            const isMatch = isAvailable && (
+                                              Math.abs(combinedTotalVal - txVal) < 0.05 ||
+                                              (Math.sign(combinedTotalVal) !== Math.sign(txVal) && Math.abs(Math.abs(combinedTotalVal) - Math.abs(txVal)) < 0.05)
+                                            );
+                                            return (
+                                              <div
+                                                style={{
+                                                  gridColumn: `${txColPosition}`,
+                                                  gridRow: "1 / span 4",
+                                                  padding: "8px 10px",
+                                                  background: "#f0f9ff",
+                                                  borderRight: "1px solid #bae6fd",
+                                                  display: "flex",
+                                                  flexDirection: "column",
+                                                  alignItems: "center",
+                                                  justifyContent: "center",
+                                                  gap: "4px"
+                                                }}
+                                              >
+                                                <span style={{ fontSize: "9px", fontWeight: "700", color: "#0369a1", textTransform: "uppercase", letterSpacing: "0.03em" }}>
+                                                  Transfer
+                                                </span>
+                                                {isAvailable ? (
+                                                  <span
+                                                    style={{
+                                                      padding: "4px 10px",
+                                                      borderRadius: "14px",
+                                                      fontSize: "11px",
+                                                      fontWeight: "700",
+                                                      fontVariantNumeric: "tabular-nums",
+                                                      background: isMatch ? "#dcfce7" : "#fee2e2",
+                                                      color: isMatch ? "#166534" : "#991b1b",
+                                                      border: isMatch ? "1px solid #86efac" : "1px solid #fca5a5",
+                                                      display: "inline-block",
+                                                      boxShadow: "0 1px 2px rgba(0,0,0,0.02)"
+                                                    }}
+                                                    title={isMatch
+                                                      ? `Matches combined Corp tax + VAT total: ${formatGBP(txVal)}`
+                                                      : `Mismatch: Transfer amount ${formatGBP(txVal)} vs Combined total ${combinedTotalFmt} (Diff: ${formatGBP(txVal - combinedTotalVal)})`
+                                                    }
+                                                  >
+                                                    {formatGBP(txVal)}
+                                                  </span>
+                                                ) : (
+                                                  <span style={{ color: "#94a3b8", fontSize: "12px" }}>—</span>
+                                                )}
+                                              </div>
+                                            );
+                                          })()}
+                                        </React.Fragment>
+                                      );
+                                    })}
                                   </div>
                                 );
                               }
 
-                              return (
-                                <div
-                                  key={cell.colIdx}
-                                  style={{
-                                    gridColumn: `${gridCol}`,
-                                    padding: "9px 10px",
-                                    textAlign: "right",
-                                    display: "flex",
-                                    alignItems: "center",
-                                    justifyContent: "flex-end",
-                                    gap: "6px",
-                                    fontWeight: elem.isSummary ? "700" : "500",
-                                    fontSize: "12px",
-                                    color: isDiff ? (cellValNum === 0 ? "#166534" : "#991b1b") : (isClosing || isNet ? "#1e40af" : "#1e293b")
-                                  }}
-                                >
-                                  {renderNoteButton(row, cell)}
-                                  <span
+                              if (elem.type === "compound") {
+                                return (
+                                  <div
+                                    key={elem.id}
                                     style={{
-                                      display: "inline-block",
-                                      minWidth: "80px",
-                                      textAlign: "right",
-                                      padding: "3px 8px",
-                                      border: "1px solid transparent",
-                                      boxSizing: "border-box",
-                                      fontVariantNumeric: "tabular-nums",
-                                      whiteSpace: "nowrap"
+                                      display: "grid",
+                                      gridTemplateColumns: gridTemplateColumns,
+                                      gridTemplateRows: "auto auto",
+                                      background: "#ffffff",
+                                      border: "1px solid #e2e8f0",
+                                      borderRadius: "10px",
+                                      boxShadow: "0 1px 2px rgba(15, 23, 42, 0.04)",
+                                      overflow: "hidden",
+                                      transition: "box-shadow 0.15s, border-color 0.15s"
+                                    }}
+                                    onMouseEnter={(e) => {
+                                      e.currentTarget.style.borderColor = "#cbd5e1";
+                                      e.currentTarget.style.boxShadow = "0 3px 6px -1px rgba(15, 23, 42, 0.07)";
+                                    }}
+                                    onMouseLeave={(e) => {
+                                      e.currentTarget.style.borderColor = "#e2e8f0";
+                                      e.currentTarget.style.boxShadow = "0 1px 2px rgba(15, 23, 42, 0.04)";
                                     }}
                                   >
-                                    {isDiff && cellValNum === 0 ? "✓ £0.00" : (cell.v || "")}
-                                  </span>
+                                    {/* Row 1: Forecast Category Title */}
+                                    <div
+                                      style={{
+                                        gridColumn: "1",
+                                        gridRow: "1",
+                                        padding: "8px 14px",
+                                        fontWeight: "700",
+                                        fontSize: "13px",
+                                        color: "#0f172a",
+                                        borderBottom: "1px dashed #f1f5f9",
+                                        display: "flex",
+                                        alignItems: "center"
+                                      }}
+                                    >
+                                      <span>{elem.title}</span>
+                                    </div>
+
+                                    {/* Spacers before/after Target Month */}
+                                    {spacerBeforeTarget && (
+                                      <div
+                                        style={{
+                                          gridColumn: `${spacerBeforeTarget}`,
+                                          gridRow: "1 / span 2",
+                                          background: "#f8fafc",
+                                          borderLeft: "1px solid #e2e8f0",
+                                          borderRight: "1px solid #e2e8f0"
+                                        }}
+                                      />
+                                    )}
+                                    {spacerAfterTarget && (
+                                      <div
+                                        style={{
+                                          gridColumn: `${spacerAfterTarget}`,
+                                          gridRow: "1 / span 2",
+                                          background: "#f8fafc",
+                                          borderLeft: "1px solid #e2e8f0",
+                                          borderRight: "1px solid #e2e8f0"
+                                        }}
+                                      />
+                                    )}
+
+                                    {/* Row 1: Forecast Month Columns */}
+                                    {reconData.selectedCols.map((col, cIndex) => {
+                                      const isTargetCol = col.type === "target";
+                                      const gridCol = colPositions[cIndex];
+                                      const baseCell = elem.baseRow.cells[cIndex];
+                                      const adjCell = elem.adjRow?.cells[cIndex];
+                                      const baseVal = (baseCell?.numVal !== undefined && baseCell?.numVal !== null) ? baseCell.numVal : parseAmount(baseCell?.v);
+                                      const adjVal = (adjCell?.numVal !== undefined && adjCell?.numVal !== null) ? adjCell.numVal : parseAmount(adjCell?.v);
+                                      const totalVal = baseVal + adjVal;
+                                      const totalFmt = formatGBP(totalVal);
+                                      let cellBg = baseCell?.isResolved ? RESOLVED_GREEN : (isTargetCol ? "#f8fafc" : "#ffffff");
+
+                                      return (
+                                        <React.Fragment key={col.colIdx}>
+                                          <div
+                                            style={{
+                                              gridColumn: `${gridCol}`,
+                                              gridRow: "1",
+                                              padding: "8px 10px",
+                                              background: cellBg,
+                                              borderBottom: "1px dashed #f1f5f9",
+                                              display: "flex",
+                                              alignItems: "center",
+                                              justifyContent: isTargetCol ? "space-between" : "flex-end",
+                                              gap: "6px"
+                                            }}
+                                          >
+                                            {isTargetCol ? (
+                                              <>
+                                                <div style={{ display: "inline-flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
+                                                  {renderNoteButton(elem.baseRow, baseCell)}
+                                                  <button
+                                                    onClick={() => handleToggleResolved(baseCell)}
+                                                    disabled={resolvingCellKey === `${baseCell?.sheetRow}_${baseCell?.colIdx}`}
+                                                    title={baseCell?.isResolved ? "Un-mark resolved" : "Mark resolved"}
+                                                    style={{
+                                                      padding: "2px 7px",
+                                                      borderRadius: "4px",
+                                                      border: baseCell?.isResolved ? "1px solid #86efac" : "1px solid #cbd5e1",
+                                                      background: baseCell?.isResolved ? "#dcfce7" : "#ffffff",
+                                                      color: baseCell?.isResolved ? "#166534" : "#475569",
+                                                      fontSize: "9px",
+                                                      fontWeight: "700",
+                                                      textTransform: "uppercase",
+                                                      cursor: resolvingCellKey === `${baseCell?.sheetRow}_${baseCell?.colIdx}` ? "wait" : "pointer",
+                                                      flexShrink: 0,
+                                                      display: "inline-flex",
+                                                      alignItems: "center",
+                                                      gap: "4px"
+                                                    }}
+                                                  >
+                                                    {resolvingCellKey === `${baseCell?.sheetRow}_${baseCell?.colIdx}` ? <Spinner size={9} /> : null}
+                                                    {baseCell?.isResolved ? "Resolved" : "Resolve"}
+                                                  </button>
+                                                </div>
+                                                <span
+                                                  style={{
+                                                    display: "inline-block",
+                                                    minWidth: "80px",
+                                                    textAlign: "right",
+                                                    padding: "3px 8px",
+                                                    border: "1px solid transparent",
+                                                    boxSizing: "border-box",
+                                                    fontWeight: "700",
+                                                    fontVariantNumeric: "tabular-nums",
+                                                    color: "#0f172a",
+                                                    fontSize: "12px",
+                                                    whiteSpace: "nowrap"
+                                                  }}
+                                                >
+                                                  {baseCell?.v || "£0.00"}
+                                                </span>
+                                              </>
+                                            ) : (
+                                              <div style={{ display: "inline-flex", alignItems: "center", gap: "6px", flexShrink: 0 }}>
+                                                {renderNoteButton(elem.baseRow, baseCell)}
+                                                <span
+                                                  style={{
+                                                    display: "inline-block",
+                                                    minWidth: "80px",
+                                                    textAlign: "right",
+                                                    padding: "3px 8px",
+                                                    border: "1px solid transparent",
+                                                    boxSizing: "border-box",
+                                                    fontVariantNumeric: "tabular-nums",
+                                                    color: "#334155",
+                                                    fontSize: "12px",
+                                                    whiteSpace: "nowrap"
+                                                  }}
+                                                >
+                                                  {baseCell?.v || "£0.00"}
+                                                </span>
+                                              </div>
+                                            )}
+                                          </div>
+
+                                          {/* Spanning Net Total Column (Unshaded) */}
+                                          {isTargetCol && (
+                                            <div
+                                              style={{
+                                                gridColumn: `${totalColPosition}`,
+                                                gridRow: "1 / span 2",
+                                                padding: "6px 10px",
+                                                background: "#f8fafc",
+                                                borderLeft: "1px solid #e2e8f0",
+                                                borderRight: "1px solid #e2e8f0",
+                                                display: "flex",
+                                                alignItems: "center",
+                                                justifyContent: "center"
+                                              }}
+                                            >
+                                              <span
+                                                style={{
+                                                  fontSize: "12px",
+                                                  fontWeight: "700",
+                                                  fontVariantNumeric: "tabular-nums",
+                                                  color: "#0f172a",
+                                                  display: "inline-block"
+                                                }}
+                                                title={`Forecast: ${baseCell?.v || "£0.00"} + Adjustment: ${adjCell?.v || "£0.00"} = Net: ${totalFmt}`}
+                                              >
+                                                {totalFmt}
+                                              </span>
+                                            </div>
+                                          )}
+
+                                          {/* Spanning Transaction Amount Column */}
+                                          {isTargetCol && (() => {
+                                            const txVal = getCategoryTxAmount(elem.mappedItemType, elem.title);
+                                            const isAvailable = txVal !== null && txVal !== undefined;
+                                            const isMatch = isAvailable && (
+                                              Math.abs(totalVal - txVal) < 0.05 ||
+                                              (Math.sign(totalVal) !== Math.sign(txVal) && Math.abs(Math.abs(totalVal) - Math.abs(txVal)) < 0.05)
+                                            );
+                                            return (
+                                              <div
+                                                style={{
+                                                  gridColumn: `${txColPosition}`,
+                                                  gridRow: "1 / span 2",
+                                                  padding: "6px 10px",
+                                                  background: "#f8fafc",
+                                                  borderRight: "1px solid #e2e8f0",
+                                                  display: "flex",
+                                                  alignItems: "center",
+                                                  justifyContent: "center"
+                                                }}
+                                              >
+                                                {isAvailable ? (
+                                                  <span
+                                                    style={{
+                                                      padding: "4px 10px",
+                                                      borderRadius: "14px",
+                                                      fontSize: "11px",
+                                                      fontWeight: "700",
+                                                      fontVariantNumeric: "tabular-nums",
+                                                      background: isMatch ? "#dcfce7" : "#fee2e2",
+                                                      color: isMatch ? "#166534" : "#991b1b",
+                                                      border: isMatch ? "1px solid #86efac" : "1px solid #fca5a5",
+                                                      display: "inline-block",
+                                                      boxShadow: "0 1px 2px rgba(0,0,0,0.02)"
+                                                    }}
+                                                    title={isMatch
+                                                      ? `Matches Total (Net): ${formatGBP(txVal)}`
+                                                      : `Mismatch: Transaction amount ${formatGBP(txVal)} vs Total (Net) ${formatGBP(totalVal)} (Diff: ${formatGBP(txVal - totalVal)})`
+                                                    }
+                                                  >
+                                                    {formatGBP(txVal)}
+                                                  </span>
+                                                ) : (
+                                                  <span style={{ color: "#94a3b8", fontSize: "12px" }}>—</span>
+                                                )}
+                                              </div>
+                                            );
+                                          })()}
+                                        </React.Fragment>
+                                      );
+                                    })}
+
+                                    {/* Row 2: Adjustment Label */}
+                                    <div
+                                      style={{
+                                        gridColumn: "1",
+                                        gridRow: "2",
+                                        padding: "6px 14px 7px 24px",
+                                        color: "#64748b",
+                                        fontStyle: "italic",
+                                        fontSize: "11px",
+                                        display: "flex",
+                                        alignItems: "center",
+                                        background: "#fafbfc"
+                                      }}
+                                    >
+                                      <span>↳ Adjustment</span>
+                                    </div>
+
+                                    {/* Row 2: Adjustment Month Columns */}
+                                    {reconData.selectedCols.map((col, cIndex) => {
+                                      const isTargetCol = col.type === "target";
+                                      const gridCol = colPositions[cIndex];
+                                      const adjCell = elem.adjRow?.cells[cIndex];
+
+                                      return (
+                                        <div
+                                          key={`adj_${col.colIdx}`}
+                                          style={{
+                                            gridColumn: `${gridCol}`,
+                                            gridRow: "2",
+                                            padding: "5px 10px 6px",
+                                            background: isTargetCol ? "#f8fafc" : "#fafbfc",
+                                            display: "flex",
+                                            alignItems: "center",
+                                            justifyContent: isTargetCol ? "space-between" : "flex-end",
+                                            gap: "6px"
+                                          }}
+                                        >
+                                          {isTargetCol ? (
+                                            <>
+                                              <div style={{ display: "inline-flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
+                                                {renderNoteButton(elem.adjRow, adjCell)}
+                                                {(() => {
+                                                  const isReconUsed = isReconUsedForRow(elem.baseRow);
+                                                  const isThisRowApplying = applyingRecon && (applyingReconRow === elem.adjRow?.sheetRow || applyingReconRow === elem.baseRow?.targetAdjustmentRow);
+                                                  return (
+                                                    <button
+                                                      onClick={() => handleUseReconFigures(elem.baseRow, elem.baseRow.cells[cIndex])}
+                                                      disabled={applyingRecon}
+                                                      title={isReconUsed ? "Recon actual figure is currently applied" : `Apply recon actual for ${elem.title}`}
+                                                      style={{
+                                                        padding: "2px 7px",
+                                                        borderRadius: "4px",
+                                                        border: isReconUsed ? "1px solid #86efac" : "1px solid #bfdbfe",
+                                                        background: isReconUsed ? "#dcfce7" : "#eff6ff",
+                                                        color: isReconUsed ? "#166534" : "#1d4ed8",
+                                                        fontSize: "9px",
+                                                        fontWeight: "700",
+                                                        textTransform: "uppercase",
+                                                        cursor: applyingRecon ? "default" : "pointer",
+                                                        opacity: isThisRowApplying ? 0.7 : 1,
+                                                        flexShrink: 0,
+                                                        display: "inline-flex",
+                                                        alignItems: "center",
+                                                        gap: "4px"
+                                                      }}
+                                                    >
+                                                      {isThisRowApplying ? <Spinner size={9} /> : null}
+                                                      Recon
+                                                    </button>
+                                                  );
+                                                })()}
+                                                {nextCol && (
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => handleOpenOffsetModal({
+                                                      baseRow: elem.baseRow,
+                                                      adjRow: elem.adjRow,
+                                                      title: elem.title,
+                                                      mappedItemType: elem.mappedItemType
+                                                    })}
+                                                    title={`Offset in ${nextCol.label}`}
+                                                    style={{
+                                                      padding: "2px 6px",
+                                                      borderRadius: "4px",
+                                                      border: "1px solid #cbd5e1",
+                                                      background: "#ffffff",
+                                                      color: "#475569",
+                                                      fontSize: "9px",
+                                                      fontWeight: "700",
+                                                      cursor: "pointer"
+                                                    }}
+                                                  >
+                                                    ⇄ {(nextCol.label || "Next").split(" ")[0]}
+                                                  </button>
+                                                )}
+                                              </div>
+
+                                              {/* Thin Grey Input Box for Adjustment */}
+                                              <span
+                                                onClick={() => handleStartEdit(elem.adjRow, adjCell)}
+                                                title="Click to edit adjustment"
+                                                style={{
+                                                  display: "inline-block",
+                                                  minWidth: "80px",
+                                                  textAlign: "right",
+                                                  padding: "3px 8px",
+                                                  background: "#ffffff",
+                                                  border: "1px solid #cbd5e1",
+                                                  borderRadius: "4px",
+                                                  cursor: "pointer",
+                                                  fontVariantNumeric: "tabular-nums",
+                                                  fontSize: "11px",
+                                                  color: "#334155",
+                                                  fontWeight: "600",
+                                                  boxShadow: "0 1px 2px rgba(0,0,0,0.02)",
+                                                  whiteSpace: "nowrap",
+                                                  boxSizing: "border-box"
+                                                }}
+                                              >
+                                                {adjCell?.v || "£0.00"}
+                                              </span>
+                                            </>
+                                          ) : (
+                                            <div style={{ display: "inline-flex", alignItems: "center", gap: "6px", flexShrink: 0 }}>
+                                              {renderNoteButton(elem.adjRow, adjCell)}
+                                              <span
+                                                onClick={() => handleStartEdit(elem.adjRow, adjCell)}
+                                                title="Click to edit adjustment"
+                                                style={{
+                                                  display: "inline-block",
+                                                  minWidth: "80px",
+                                                  textAlign: "right",
+                                                  padding: "3px 8px",
+                                                  background: "#ffffff",
+                                                  border: "1px solid #cbd5e1",
+                                                  borderRadius: "4px",
+                                                  cursor: "pointer",
+                                                  fontVariantNumeric: "tabular-nums",
+                                                  fontSize: "11px",
+                                                  color: "#334155",
+                                                  fontWeight: "600",
+                                                  whiteSpace: "nowrap",
+                                                  boxSizing: "border-box"
+                                                }}
+                                              >
+                                                {adjCell?.v || "£0.00"}
+                                              </span>
+                                            </div>
+                                          )}
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                );
+                              }
+
+                              // Single operational card
+                              const row = elem.row;
+                              return (
+                                <div
+                                  key={elem.id}
+                                  style={{
+                                    display: "grid",
+                                    gridTemplateColumns: gridTemplateColumns,
+                                    alignItems: "center",
+                                    background: "#ffffff",
+                                    border: "1px solid #e2e8f0",
+                                    borderRadius: "10px",
+                                    boxShadow: "0 1px 2px rgba(15, 23, 42, 0.04)",
+                                    overflow: "hidden"
+                                  }}
+                                >
+                                  {/* Spacers before/after Target Month */}
+                                  {spacerBeforeTarget && (
+                                    <div
+                                      style={{
+                                        gridColumn: `${spacerBeforeTarget}`,
+                                        background: "#f8fafc",
+                                        borderLeft: "1px solid #e2e8f0",
+                                        borderRight: "1px solid #e2e8f0",
+                                        alignSelf: "stretch"
+                                      }}
+                                    />
+                                  )}
+                                  {spacerAfterTarget && (
+                                    <div
+                                      style={{
+                                        gridColumn: `${spacerAfterTarget}`,
+                                        background: "#f8fafc",
+                                        borderLeft: "1px solid #e2e8f0",
+                                        borderRight: "1px solid #e2e8f0",
+                                        alignSelf: "stretch"
+                                      }}
+                                    />
+                                  )}
+                                  <div style={{ gridColumn: "1", padding: "8px 14px", fontWeight: "600", fontSize: "12px", color: "#1e293b" }}>
+                                    {elem.title}
+                                  </div>
+                                  {row.cells.map((cell, cIndex) => {
+                                    const isTargetCol = reconData.selectedCols[cIndex]?.type === "target";
+                                    const gridCol = colPositions[cIndex];
+                                    if (isTargetCol) {
+                                      return (
+                                        <div
+                                          key={cell.colIdx}
+                                          style={{
+                                            gridColumn: `${gridCol} / ${gridCol + 3}`,
+                                            padding: "8px 10px",
+                                            textAlign: "right",
+                                            display: "flex",
+                                            alignItems: "center",
+                                            justifyContent: "flex-end",
+                                            gap: "6px"
+                                          }}
+                                        >
+                                          {renderNoteButton(row, cell)}
+                                          <span
+                                            style={{
+                                              display: "inline-block",
+                                              minWidth: "80px",
+                                              textAlign: "right",
+                                              padding: "3px 8px",
+                                              border: "1px solid transparent",
+                                              boxSizing: "border-box",
+                                              fontVariantNumeric: "tabular-nums",
+                                              fontSize: "12px",
+                                              color: "#334155",
+                                              whiteSpace: "nowrap"
+                                            }}
+                                          >
+                                            {cell.v || ""}
+                                          </span>
+                                        </div>
+                                      );
+                                    }
+                                    return (
+                                      <div
+                                        key={cell.colIdx}
+                                        style={{
+                                          gridColumn: `${gridCol}`,
+                                          padding: "8px 10px",
+                                          textAlign: "right",
+                                          display: "flex",
+                                          alignItems: "center",
+                                          justifyContent: "flex-end",
+                                          gap: "6px"
+                                        }}
+                                      >
+                                        {renderNoteButton(row, cell)}
+                                        <span
+                                          style={{
+                                            display: "inline-block",
+                                            minWidth: "80px",
+                                            textAlign: "right",
+                                            padding: "3px 8px",
+                                            border: "1px solid transparent",
+                                            boxSizing: "border-box",
+                                            fontVariantNumeric: "tabular-nums",
+                                            fontSize: "12px",
+                                            color: "#334155",
+                                            whiteSpace: "nowrap"
+                                          }}
+                                        >
+                                          {cell.v || ""}
+                                        </span>
+                                      </div>
+                                    );
+                                  })}
                                 </div>
                               );
                             })}
                           </div>
-                        );
-                      })}
+
+                          {/* 3. Section Separator for Reconciliation & Cash Balance */}
+                          {groupedElements.some(e => e.isSummary) && (
+                            <>
+                              <div style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: "12px",
+                                marginTop: "16px",
+                                marginBottom: "10px",
+                                padding: "0 4px"
+                              }}>
+                                <div style={{ height: "1px", flex: 1, background: "#e2e8f0" }} />
+                                <span style={{ fontSize: "11px", fontWeight: "700", color: "#64748b", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                                  Reconciliation & Cash Balance
+                                </span>
+                                <div style={{ height: "1px", flex: 1, background: "#e2e8f0" }} />
+                              </div>
+
+                              {/* 4. Summary & Balance Cards */}
+                              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                                {groupedElements.filter(e => e.isSummary).map((elem) => {
+                                  const row = elem.row;
+                                  const isDiff = elem.isDifference;
+                                  const isClosing = elem.title.toLowerCase().includes("closing balance");
+                                  const isOpening = elem.title.toLowerCase().includes("opening balance");
+                                  const isNet = elem.title.toLowerCase().includes("net cash movement");
+
+                                  let cardBg = "#ffffff";
+                                  let cardBorder = "1px solid #e2e8f0";
+                                  const targetCell = row.cells.find((_, cIdx) => reconData.selectedCols[cIdx]?.type === "target");
+                                  const valNum = parseAmount(targetCell?.v);
+
+                                  if (isDiff) {
+                                    if (valNum === 0) {
+                                      cardBg = "#f0fdf4";
+                                      cardBorder = "1px solid #86efac";
+                                    } else {
+                                      cardBg = "#fef2f2";
+                                      cardBorder = "1px solid #fca5a5";
+                                    }
+                                  } else if (isClosing) {
+                                    cardBg = "#eff6ff";
+                                    cardBorder = "1px solid #93c5fd";
+                                  } else if (isNet) {
+                                    cardBg = "#f8fafc";
+                                    cardBorder = "1px solid #cbd5e1";
+                                  } else if (isOpening) {
+                                    cardBg = "#fafbfc";
+                                    cardBorder = "1px solid #e2e8f0";
+                                  }
+
+                                  return (
+                                    <div
+                                      key={elem.id}
+                                      style={{
+                                        display: "grid",
+                                        gridTemplateColumns: gridTemplateColumns,
+                                        alignItems: "center",
+                                        background: cardBg,
+                                        border: cardBorder,
+                                        borderRadius: "10px",
+                                        boxShadow: "0 1px 2px rgba(15, 23, 42, 0.03)",
+                                        overflow: "hidden"
+                                      }}
+                                    >
+                                      {/* Spacers before/after Target Month */}
+                                      {spacerBeforeTarget && (
+                                        <div
+                                          style={{
+                                            gridColumn: `${spacerBeforeTarget}`,
+                                            background: "#f8fafc",
+                                            borderLeft: "1px solid #e2e8f0",
+                                            borderRight: "1px solid #e2e8f0",
+                                            alignSelf: "stretch"
+                                          }}
+                                        />
+                                      )}
+                                      {spacerAfterTarget && (
+                                        <div
+                                          style={{
+                                            gridColumn: `${spacerAfterTarget}`,
+                                            background: "#f8fafc",
+                                            borderLeft: "1px solid #e2e8f0",
+                                            borderRight: "1px solid #e2e8f0",
+                                            alignSelf: "stretch"
+                                          }}
+                                        />
+                                      )}
+                                      {/* Title */}
+                                      <div
+                                        style={{
+                                          gridColumn: "1",
+                                          padding: "9px 14px",
+                                          fontWeight: elem.isSummary ? "700" : "500",
+                                          fontSize: "12px",
+                                          color: isDiff ? (valNum === 0 ? "#166534" : "#991b1b") : (isClosing || isNet ? "#1e40af" : "#1e293b"),
+                                          display: "flex",
+                                          alignItems: "center",
+                                          gap: "8px"
+                                        }}
+                                      >
+                                        <span>{elem.title}</span>
+                                        {isDiff && valNum === 0 && (
+                                          <span style={{
+                                            fontSize: "9px",
+                                            padding: "1px 6px",
+                                            background: "#dcfce7",
+                                            color: "#166534",
+                                            borderRadius: "4px",
+                                            fontWeight: "800",
+                                            textTransform: "uppercase"
+                                          }}>
+                                            In Balance ✓
+                                          </span>
+                                        )}
+                                      </div>
+
+                                      {/* Month Columns */}
+                                      {row.cells.map((cell, cIndex) => {
+                                        const isTargetCol = reconData.selectedCols[cIndex]?.type === "target";
+                                        const gridCol = colPositions[cIndex];
+                                        const cellValNum = parseAmount(cell.v);
+
+                                        if (isTargetCol) {
+                                          return (
+                                            <div
+                                              key={cell.colIdx}
+                                              style={{
+                                                gridColumn: `${gridCol} / ${gridCol + 3}`,
+                                                padding: "9px 10px",
+                                                textAlign: "right",
+                                                display: "flex",
+                                                alignItems: "center",
+                                                justifyContent: "flex-end",
+                                                gap: "8px",
+                                                fontWeight: elem.isSummary ? "700" : "500",
+                                                fontSize: "12px",
+                                                color: isDiff ? (cellValNum === 0 ? "#166534" : "#991b1b") : (isClosing || isNet ? "#1e40af" : "#1e293b")
+                                              }}
+                                            >
+                                              {renderNoteButton(row, cell)}
+                                              <span
+                                                style={{
+                                                  display: "inline-block",
+                                                  minWidth: "80px",
+                                                  textAlign: "right",
+                                                  padding: "3px 8px",
+                                                  border: "1px solid transparent",
+                                                  boxSizing: "border-box",
+                                                  fontVariantNumeric: "tabular-nums",
+                                                  whiteSpace: "nowrap"
+                                                }}
+                                              >
+                                                {isDiff && cellValNum === 0 ? "✓ £0.00" : (cell.v || "")}
+                                              </span>
+                                            </div>
+                                          );
+                                        }
+
+                                        return (
+                                          <div
+                                            key={cell.colIdx}
+                                            style={{
+                                              gridColumn: `${gridCol}`,
+                                              padding: "9px 10px",
+                                              textAlign: "right",
+                                              display: "flex",
+                                              alignItems: "center",
+                                              justifyContent: "flex-end",
+                                              gap: "6px",
+                                              fontWeight: elem.isSummary ? "700" : "500",
+                                              fontSize: "12px",
+                                              color: isDiff ? (cellValNum === 0 ? "#166534" : "#991b1b") : (isClosing || isNet ? "#1e40af" : "#1e293b")
+                                            }}
+                                          >
+                                            {renderNoteButton(row, cell)}
+                                            <span
+                                              style={{
+                                                display: "inline-block",
+                                                minWidth: "80px",
+                                                textAlign: "right",
+                                                padding: "3px 8px",
+                                                border: "1px solid transparent",
+                                                boxSizing: "border-box",
+                                                fontVariantNumeric: "tabular-nums",
+                                                whiteSpace: "nowrap"
+                                              }}
+                                            >
+                                              {isDiff && cellValNum === 0 ? "✓ £0.00" : (cell.v || "")}
+                                            </span>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                  </>
-                )}
+                  </div>
+                </div>
               </div>
             </div>
-          </div>
-        </div>
+          )}
+        </>
       )}
 
       {/* Edit Adjustment Modal */}

@@ -39,7 +39,7 @@ import {
   handleCreateOutgoingsVendor, handleGetOutgoings, handleGetDirectCostsJobs,
   handleGetInvoiceJobs, handleGetAllClientJobs, handleUpdateJobField, handleUpdateJobFields,
   handleAssignExpenseToJob, handleUpdateExpenseSlot, handleAssignInvoiceToJob,
-  handleUpdateInvoiceSlot, handleMoveInvoiceToJob, handleVerifyInvoiceSlot, handleCreateJobFromInvoice, handleAddNewJob, handleUpdateOutgoingNote,
+  handleUpdateInvoiceSlot, handleMoveInvoiceToJob, handleVerifyInvoiceSlot, handleCreateJobFromInvoice, handleAddNewJob, handleUpdateOutgoingNote, handleSetMakingUpCosZero,
   handleFireOutgoingsPull, handleMarkPipelineCopied, handleDeleteDirectJob, handleMarkPipelineAlreadyConfirmed, handleGetDefaultDaysToPay, getClientWebAppUrl
 } from "../../services/workspaces";
 import {
@@ -251,6 +251,7 @@ export default async function handler(req, res) {
       delete_retainer: ["retainers", "jobs", "invoices", "cash"],
       create_outgoings_vendor: ["outgoings"],
       update_outgoing_note: ["outgoings", "cash"],
+      set_making_up_cos_zero: ["outgoings", "cash"],
       mark_expense_assigned: ["outgoings", "cash"],
       prune_assigned_expenses: ["outgoings", "cash"],
       delete_invoice_from_pulse: ["invoices", "jobs", "cash"],
@@ -664,6 +665,8 @@ export default async function handler(req, res) {
 
     } else if (action === "update_outgoing_note") {
       return await handleUpdateOutgoingNote(req, res, sheets);
+    } else if (action === "set_making_up_cos_zero") {
+      return await handleSetMakingUpCosZero(req, res, sheets);
     } else if (action === "get_claude_settings") {
       return await handleGetClaudeSettings(req, res, sheets);
     } else if (action === "save_claude_settings") {

@@ -115,6 +115,7 @@ export function useOutgoings(assignedAppIds, assignedByClient, setAssignedByClie
         contractors: cachedGrid.data.contractors,
         months: cachedGrid.data.months,
         directCostsMode: cachedGrid.data.directCostsMode || cachedInbox?.data?.directCostsMode || client?.directCostsMode || "Contractors",
+        makingUpCos: cachedGrid.data.makingUpCos || null,
       });
       const now = new Date();
       const curIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
@@ -160,6 +161,7 @@ export function useOutgoings(assignedAppIds, assignedByClient, setAssignedByClie
             contractors: merged,
             months: gridData.months,
             directCostsMode: gridData.directCostsMode || prev?.directCostsMode || client?.directCostsMode || "Contractors",
+            makingUpCos: gridData.makingUpCos || prev?.makingUpCos || null,
           };
         });
         const now = new Date();

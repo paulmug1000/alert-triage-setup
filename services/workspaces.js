@@ -652,6 +652,7 @@ export async function handleGetOutgoings(req, res, sheets) {
         cached &&
         Array.isArray(cached.contractors) &&
         cached.directCostsMode !== undefined &&
+        cached.makingUpCos !== undefined &&
         (cached.contractors.length === 0 || cached.contractors[0]?.deliveryPct !== undefined)
       ) {
         return res.status(200).json(cached);
@@ -798,7 +799,41 @@ export async function handleGetOutgoings(req, res, sheets) {
       }
     }
 
-    const payload = { success: true, contractors, extraOutgoingsRows, months, directCostsMode };
+    // Row 111 is "Making up CoS" formula row; Row 112 is the "Zero" override row
+    const row111Values = extraRows[0]?.values || [];
+    const row112Values = extraRows[1]?.values || [];
+    const cosRawName = String(row111Values[0]?.formattedValue || "").trim();
+    const cosPct = String(row112Values[0]?.formattedValue || "").trim();
+
+    const makingUpCosCells = {};
+    for (const month of months) {
+      const cell111 = row111Values[month.colIndex];
+      const cell112 = row112Values[month.colIndex];
+
+      const val111Str = cell111?.formattedValue || "";
+      const val111Num = typeof cell111?.effectiveValue?.numberValue === "number"
+        ? cell111.effectiveValue.numberValue
+        : parseFloat(String(val111Str).replace(/[^0-9.-]/g, "")) || 0;
+
+      const raw112 = String(cell112?.formattedValue || cell112?.effectiveValue?.stringValue || "").trim();
+      const isZero = raw112.toUpperCase() === "ZERO";
+
+      makingUpCosCells[month.colLetter] = {
+        amount: val111Num,
+        formatted: val111Str || (val111Num ? `£${val111Num.toLocaleString("en-GB")}` : "£0"),
+        isZero,
+        overrideValue: raw112,
+        note: cell111?.note || "",
+      };
+    }
+
+    const makingUpCos = {
+      name: cosRawName || "Making up Cos",
+      pct: cosPct || "",
+      cells: makingUpCosCells,
+    };
+
+    const payload = { success: true, contractors, extraOutgoingsRows, months, directCostsMode, makingUpCos };
     await set2TierCache(cacheKey, payload, 120);
     return res.status(200).json(payload);
   } catch (err) {
@@ -5800,6 +5835,96 @@ export async function handleUpdateOutgoingNote(req, res, sheets) {
     return res.status(200).json({ success: true, cellRef, blockCount: (blocks || []).length, cellTotal });
   } catch (err) {
     console.error("❌ update_outgoing_note error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function handleSetMakingUpCosZero(req, res, sheets) {
+  const { clientSheetId, colLetter, zero, clientName, automationCommanderSheetId } = req.body;
+  if (!clientSheetId || !colLetter) {
+    return res.status(400).json({ success: false, error: "Missing required fields: clientSheetId, colLetter" });
+  }
+  const cleanColLetter = String(colLetter).trim().toUpperCase();
+  if (!/^[E-Z]$|^A[A-Z]$/.test(cleanColLetter)) {
+    return res.status(400).json({ success: false, error: "Invalid Outgoings monthly column" });
+  }
+
+  const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+  const sessionUser = getSessionUser(req);
+  if (sessionUser && !sessionUser.isAdmin) {
+    const auth = await verifyUserAuthorizedForSheet(sessionUser, sheetIdClean, clientName, sheets);
+    if (!auth.authorized) {
+      return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
+    }
+  }
+
+  try {
+    const cellRange = `Outgoings!${cleanColLetter}112`;
+    const writeValue = zero ? "Zero" : "";
+
+    await withRetry(() =>
+      sheets.spreadsheets.values.update({
+        spreadsheetId: sheetIdClean,
+        range: cellRange,
+        valueInputOption: "USER_ENTERED",
+        requestBody: { values: [[writeValue]] },
+      })
+    );
+
+    // Read back row 111 in that column to get recalculated value
+    let recalculatedAmount = 0;
+    let recalculatedFormatted = "£0";
+    try {
+      const readResp = await withRetry(() =>
+        sheets.spreadsheets.get({
+          spreadsheetId: sheetIdClean,
+          ranges: [`Outgoings!${cleanColLetter}111`],
+          includeGridData: true,
+          fields: "sheets.data.rowData.values(effectiveValue,formattedValue)",
+        })
+      );
+      const cell111 = readResp.data.sheets?.[0]?.data?.[0]?.rowData?.[0]?.values?.[0];
+      if (cell111) {
+        recalculatedFormatted = cell111.formattedValue || "";
+        recalculatedAmount = typeof cell111.effectiveValue?.numberValue === "number"
+          ? cell111.effectiveValue.numberValue
+          : parseFloat(String(cell111.formattedValue || "").replace(/[^0-9.-]/g, "")) || 0;
+      }
+    } catch (e) {
+      console.warn("Could not read back recalculated row 111:", e.message);
+    }
+
+    // Invalidate caches
+    await invalidatePmaClientCache(sheetIdClean, null, ["outgoings", "views", "cash"]).catch(() => { });
+
+    const bgLog = logPmaActivity(sheets, {
+      automationCommanderSheetId,
+      clientName: clientName || "",
+      category: "EXPENSES",
+      action: zero ? "Making up Cos zeroed" : "Making up Cos restored",
+      summary: zero
+        ? `Zeroed Making up Cos for ${cleanColLetter} (row 112)`
+        : `Restored Making up Cos for ${cleanColLetter} (cleared row 112)`,
+      details: {
+        cellRef: cellRange,
+        colLetter: cleanColLetter,
+        zero: !!zero,
+        amount: recalculatedAmount,
+      },
+      user: sessionUser?.email || "Unknown user",
+    }).catch(e => console.error("PMA log failed:", e));
+    try { waitUntil(bgLog); } catch (_) { }
+
+    return res.status(200).json({
+      success: true,
+      colLetter: cleanColLetter,
+      isZero: !!zero,
+      overrideValue: writeValue,
+      amount: recalculatedAmount,
+      formatted: recalculatedFormatted || (recalculatedAmount ? `£${recalculatedAmount.toLocaleString("en-GB")}` : "£0"),
+    });
+  } catch (err) {
+    console.error("❌ set_making_up_cos_zero error:", err);
     return res.status(500).json({ success: false, error: err.message });
   }
 }

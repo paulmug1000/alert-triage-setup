@@ -339,6 +339,7 @@ export default function OutgoingsView({
   const [outgoingsReplacePrompt, setOutgoingsReplacePrompt] = useState(null); // { exp, contractor, colLetter, realBlocks, manualTotal, blocksToKeep }
   const [replacingCellAction, setReplacingCellAction] = useState(null);
   const [savingContractorCellKey, setSavingContractorCellKey] = useState(null);
+  const [savingCosMonth, setSavingCosMonth] = useState(null);
   const [contractorSearch, setContractorSearch] = useState("");
   const [directCostsJobSearch, setDirectCostsJobSearch] = useState("");
   const [selectedJobForDetail, setSelectedJobForDetail] = useState(null);
@@ -649,6 +650,86 @@ export default function OutgoingsView({
       console.error("updateCell error:", e);
     } finally {
       setSavingContractorCellKey(prev => (prev === cellKey ? null : prev));
+    }
+  };
+
+  const handleToggleMakingUpCosZero = async (colLetter, newZeroState) => {
+    setSavingCosMonth(colLetter);
+
+    // Optimistic UI update
+    setOutgoingsData(prev => {
+      if (!prev?.makingUpCos) return prev;
+      const curCell = prev.makingUpCos.cells?.[colLetter] || {};
+      const previousAmount = curCell._prevAmount !== undefined ? curCell._prevAmount : curCell.amount;
+      const previousFormatted = curCell._prevFormatted !== undefined ? curCell._prevFormatted : curCell.formatted;
+      return {
+        ...prev,
+        makingUpCos: {
+          ...prev.makingUpCos,
+          cells: {
+            ...prev.makingUpCos.cells,
+            [colLetter]: {
+              ...curCell,
+              isZero: newZeroState,
+              amount: newZeroState ? 0 : (previousAmount || 0),
+              formatted: newZeroState ? "£0" : (previousFormatted || "£0"),
+              _prevAmount: previousAmount,
+              _prevFormatted: previousFormatted,
+            }
+          }
+        }
+      };
+    });
+
+    try {
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "set_making_up_cos_zero",
+          clientSheetId: outgoingsClient?.clientSheetId,
+          clientName: outgoingsClient?.clientName || outgoingsClient?.name || "",
+          automationCommanderSheetId,
+          colLetter,
+          zero: newZeroState,
+        }),
+      });
+      const data = await res.json();
+      if (data?.success) {
+        setOutgoingsData(prev => {
+          if (!prev?.makingUpCos) return prev;
+          const curCell = prev.makingUpCos.cells?.[colLetter] || {};
+          return {
+            ...prev,
+            makingUpCos: {
+              ...prev.makingUpCos,
+              cells: {
+                ...prev.makingUpCos.cells,
+                [colLetter]: {
+                  ...curCell,
+                  isZero: data.isZero,
+                  amount: data.amount,
+                  formatted: data.formatted,
+                  overrideValue: data.overrideValue,
+                  _prevAmount: !data.isZero ? data.amount : curCell._prevAmount,
+                  _prevFormatted: !data.isZero ? data.formatted : curCell._prevFormatted,
+                }
+              }
+            }
+          };
+        });
+        if (typeof invalidateCachedClientData === "function" && outgoingsClient?.clientSheetId) {
+          invalidateCachedClientData(outgoingsClient.clientSheetId, "outgoings");
+        }
+      } else {
+        console.error("Failed to update Making up Cos:", data?.error);
+        await loadOutgoings(outgoingsClient, true);
+      }
+    } catch (err) {
+      console.error("Error updating Making up Cos zero:", err);
+      await loadOutgoings(outgoingsClient, true);
+    } finally {
+      setSavingCosMonth(null);
     }
   };
 
@@ -1718,6 +1799,111 @@ export default function OutgoingsView({
                       {visibleMonths.map(m => (
                         <td key={m.colLetter} style={{ borderTop: "1px solid #e0e0e0", borderRight: "1px solid #e0e0e0", background: "#ffffff" }} />
                       ))}
+                    </tr>
+                  )}
+                  {/* Making up Cos row beneath the table */}
+                  {outgoingsData && (
+                    <tr style={{ background: "#f8fafc" }}>
+                      <td style={{
+                        padding: "10px 12px",
+                        borderTop: "2px solid #cbd5e1",
+                        borderBottom: "1px solid #e2e8f0",
+                        borderRight: "1px solid #e0e0e0",
+                        background: "#f8fafc",
+                        position: "sticky",
+                        left: 0,
+                        zIndex: 2,
+                      }}>
+                        <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+                          <div style={{ fontWeight: "700", fontSize: "12px", color: "#1e293b", display: "flex", alignItems: "center", gap: "6px" }}>
+                            <span>Making up Cos</span>
+                            {isAdmin && (
+                              <span style={{ fontSize: "10px", fontWeight: "normal", color: "#64748b" }}>
+                                (row 111)
+                              </span>
+                            )}
+                          </div>
+                          {outgoingsData.makingUpCos?.pct && (
+                            <div style={{ fontSize: "10px", color: "#64748b" }}>
+                              Target: {outgoingsData.makingUpCos.pct}
+                            </div>
+                          )}
+                        </div>
+                      </td>
+                      {visibleMonths.map(m => {
+                        const cosCell = outgoingsData.makingUpCos?.cells?.[m.colLetter] || { amount: 0, formatted: "£0", isZero: false };
+                        const isZero = !!cosCell.isZero;
+                        const isSaving = savingCosMonth === m.colLetter;
+                        const isCurr = isCurrentMonth(m.isoMonth || m.label);
+
+                        return (
+                          <td
+                            key={m.colLetter}
+                            style={{
+                              padding: "8px 10px",
+                              borderTop: "2px solid #cbd5e1",
+                              borderBottom: "1px solid #e2e8f0",
+                              borderRight: "1px solid #e0e0e0",
+                              background: isCurr ? "#f1f5f9" : "#f8fafc",
+                              verticalAlign: "middle",
+                            }}
+                          >
+                            <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                              <div style={{
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                gap: "4px",
+                              }}>
+                                <span style={{
+                                  fontWeight: "700",
+                                  fontSize: "12px",
+                                  color: isZero ? "#94a3b8" : "#1e293b",
+                                  textDecoration: isZero ? "line-through" : "none",
+                                }}>
+                                  {cosCell.formatted || (cosCell.amount ? `£${cosCell.amount.toLocaleString("en-GB")}` : "£0")}
+                                </span>
+                                {isSaving && (
+                                  <span style={{
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    gap: "3px",
+                                    fontSize: "10px",
+                                    color: "#2563eb",
+                                  }}>
+                                    <Spinner size={10} color="#2563eb" /> Saving...
+                                  </span>
+                                )}
+                              </div>
+                              <label style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "5px",
+                                fontSize: "11px",
+                                color: isZero ? "#b91c1c" : "#475569",
+                                fontWeight: isZero ? "600" : "500",
+                                cursor: isSaving ? "wait" : "pointer",
+                                userSelect: "none",
+                              }}>
+                                <input
+                                  type="checkbox"
+                                  checked={isZero}
+                                  disabled={isSaving}
+                                  onChange={(e) => handleToggleMakingUpCosZero(m.colLetter, e.target.checked)}
+                                  style={{
+                                    cursor: isSaving ? "wait" : "pointer",
+                                    accentColor: "#b91c1c",
+                                    width: "13px",
+                                    height: "13px",
+                                    margin: 0,
+                                  }}
+                                />
+                                <span>Zero</span>
+                              </label>
+                            </div>
+                          </td>
+                        );
+                      })}
                     </tr>
                   )}
                 </tbody>

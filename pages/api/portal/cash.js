@@ -127,16 +127,19 @@ export default async function handler(req, res) {
     const resp = await withRetry(() =>
       sheets.spreadsheets.get({
         spreadsheetId: clientSheetId,
-        ranges: ["Cash!A1:AZ80", "AppData!G59"],
+        ranges: ["Cash!A1:AZ80", "AppData!G59", "KeyInfo!B10"],
         fields: "sheets(properties.title,data.rowData.values(formattedValue,note))",
       })
     );
 
     const cashSheet = resp.data?.sheets?.find((s) => s.properties?.title === "Cash");
     const appDataSheet = resp.data?.sheets?.find((s) => s.properties?.title === "AppData");
+    const keyInfoSheet = resp.data?.sheets?.find((s) => s.properties?.title === "KeyInfo");
     const rawRows = cashSheet?.data?.[0]?.rowData || [];
     const g59Val = String(appDataSheet?.data?.[0]?.rowData?.[0]?.values?.[0]?.formattedValue || "").trim().toLowerCase();
+    const b10Val = String(keyInfoSheet?.data?.[0]?.rowData?.[0]?.values?.[0]?.formattedValue || "").trim().toLowerCase();
     const showChart = g59Val === "yes";
+    const isTransfersMode = b10Val.includes("transfer");
 
     if (!rawRows.length) {
       return res.status(404).json({ success: false, error: "Cash sheet is empty or not found" });
@@ -236,6 +239,7 @@ export default async function handler(req, res) {
       excludingPipeline: excludingPipelineRows,
       includingPipeline: includingPipelineRows,
       showChart,
+      isTransfersMode,
     };
 
     // Cache in L1 memory and Redis

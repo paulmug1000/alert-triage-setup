@@ -397,11 +397,9 @@ export default function CashflowBreakdownView({
       const results = [];
       const rows = data?.includingPipeline || data?.excludingPipeline || [];
       const corpRow = rows.find((r) => (r.label || "").toLowerCase() === "corporation tax");
-      const corpAdj = rows.find((r) => (r.label || "").toLowerCase() === "corporation tax adjustment");
       const vatRow = rows.find((r) => (r.label || "").toLowerCase() === "vat");
-      const vatAdj = rows.find((r) => (r.label || "").toLowerCase() === "vat adjustment");
 
-      const corpVal = getRowValue(corpRow, selectedMonthIdx) + getRowValue(corpAdj, selectedMonthIdx);
+      const corpVal = getRowValue(corpRow, selectedMonthIdx);
       if (Math.abs(corpVal) > 0.01) {
         results.push({
           name: "Corporation tax",
@@ -409,7 +407,7 @@ export default function CashflowBreakdownView({
         });
       }
 
-      const vatVal = getRowValue(vatRow, selectedMonthIdx) + getRowValue(vatAdj, selectedMonthIdx);
+      const vatVal = getRowValue(vatRow, selectedMonthIdx);
       if (Math.abs(vatVal) > 0.01) {
         results.push({
           name: "VAT",
@@ -1340,7 +1338,7 @@ export default function CashflowBreakdownView({
                       </p>
                     </td>
                   </tr>
-                ) : listData.length === 0 ? (
+                ) : listData.length === 0 && Math.abs(manualAdjustment) <= 2 ? (
                   <tr>
                     <td colSpan={2} style={{ padding: "2.5rem 0", textAlign: "center", color: "#94a3b8", fontSize: "14px" }}>
                       No transactions in this period.

@@ -91,6 +91,7 @@ export default function CashflowReconTab({
 
   // Status for Reconciled & ready for automated P&L updates
   const [updatingReconStatus, setUpdatingReconStatus] = useState(false);
+  const [outgoingsSyncStatus, setOutgoingsSyncStatus] = useState(null);
 
   const handleToggleReconciledComplete = async () => {
     const tabName = reconData?.reconTabName || reconData?.tabName;
@@ -107,6 +108,8 @@ export default function CashflowReconTab({
           tabName,
           isComplete: nextVal,
           clientName: selectedClient,
+          clientSheetId: currentClientInfo?.clientSheetId,
+          masterSheetId: currentClientInfo?.masterSheetId,
           automationCommanderSheetId
         })
       });
@@ -114,18 +117,52 @@ export default function CashflowReconTab({
       if (!data.success) throw new Error(data.error || "Failed to update status");
 
       setReconData(prev => prev ? ({ ...prev, isReconciledComplete: nextVal }) : prev);
-      setSuccessMsg(nextVal ? "Month marked as reconciled & ready for automated P&L updates" : "Month marked as in-progress");
-      setTimeout(() => setSuccessMsg(""), 3500);
+      setUpdatingReconStatus(false);
 
-      fetch("/api/triage", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "sync_client_expense_breakdown",
-          clientName: selectedClient,
-          automationCommanderSheetId
-        })
-      }).catch(e => console.warn("Failed to trigger P&L breakdown sync:", e));
+      // Show subtle inline progress beneath the checkbox while Outgoings actuals sync runs
+      setOutgoingsSyncStatus({
+        state: "syncing",
+        text: nextVal
+          ? "Pushing reconciled actuals to Outgoings…"
+          : "Reverting month to forecast in Outgoings…"
+      });
+
+      try {
+        const syncResp = await fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "sync_client_expense_breakdown",
+            clientName: selectedClient,
+            clientSheetId: currentClientInfo?.clientSheetId,
+            masterSheetId: currentClientInfo?.masterSheetId,
+            automationCommanderSheetId
+          })
+        });
+        const syncData = await syncResp.json();
+        if (syncData?.success) {
+          setOutgoingsSyncStatus({
+            state: "done",
+            text: nextVal
+              ? "✓ Outgoings updated with actuals"
+              : "✓ Outgoings reverted to forecast"
+          });
+          setTimeout(() => {
+            setOutgoingsSyncStatus(prev => (prev?.state === "done" ? null : prev));
+          }, 8000);
+        } else {
+          throw new Error(syncData?.error || "Sync returned an error");
+        }
+      } catch (syncErr) {
+        console.warn("Failed to trigger P&L breakdown sync:", syncErr);
+        setOutgoingsSyncStatus({
+          state: "error",
+          text: "Could not push actuals to Outgoings — please try toggling again"
+        });
+        setTimeout(() => {
+          setOutgoingsSyncStatus(prev => (prev?.state === "error" ? null : prev));
+        }, 8000);
+      }
     } catch (err) {
       setError(`Failed to update reconciliation status: ${err.message}`);
       setTimeout(() => setError(""), 4000);
@@ -381,7 +418,9 @@ export default function CashflowReconTab({
       .replace(/\b(adjustment|adjustments|outgoing|incoming)\b/gi, "")
       .replace(/\s+/g, " ")
       .trim() || "Cashflow";
-    const cleanLower = cleanTitle.toLowerCase();
+    const cleanLower = mappedItemType === "tax_transfer"
+      ? "tax transfers (Corporation tax & VAT)"
+      : cleanTitle.toLowerCase();
     const isInflowCat = mappedItemType === "confirmed_cash" || mappedItemType === "non_operating_income" ||
       cleanLower.includes("incoming") || cleanLower.includes("confirmed cash") || cleanLower.includes("revenue");
 
@@ -1935,35 +1974,55 @@ export default function CashflowReconTab({
               </div>
 
               {/* Right: Reconciled & ready toggle, EoM task complete button and Sheet links */}
-              <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: "12px", flexWrap: "wrap" }}>
                 {reconData && (
-                  <label style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "6px",
-                    cursor: updatingReconStatus ? "wait" : "pointer",
-                    userSelect: "none",
-                    padding: "5px 10px",
-                    borderRadius: "6px",
-                    background: reconData?.isReconciledComplete ? "#f0fdf4" : "#f8fafc",
-                    border: `1px solid ${reconData?.isReconciledComplete ? "#86efac" : "#cbd5e1"}`
-                  }}>
-                    <input
-                      type="checkbox"
-                      checked={Boolean(reconData?.isReconciledComplete)}
-                      disabled={updatingReconStatus}
-                      onChange={handleToggleReconciledComplete}
-                      style={{ width: "14px", height: "14px", cursor: "pointer", accentColor: "#15803d" }}
-                    />
-                    <span style={{
-                      fontSize: "12px",
-                      fontWeight: "600",
-                      color: reconData?.isReconciledComplete ? "#15803d" : "#475569"
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: "3px" }}>
+                    <label style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "6px",
+                      cursor: updatingReconStatus ? "wait" : "pointer",
+                      userSelect: "none",
+                      padding: "5px 10px",
+                      borderRadius: "6px",
+                      background: reconData?.isReconciledComplete ? "#f0fdf4" : "#f8fafc",
+                      border: `1px solid ${reconData?.isReconciledComplete ? "#86efac" : "#cbd5e1"}`
                     }}>
-                      Reconciled & ready for automated P&L updates
-                    </span>
-                    {updatingReconStatus && <Spinner size={11} />}
-                  </label>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(reconData?.isReconciledComplete)}
+                        disabled={updatingReconStatus}
+                        onChange={handleToggleReconciledComplete}
+                        style={{ width: "14px", height: "14px", cursor: "pointer", accentColor: "#15803d" }}
+                      />
+                      <span style={{
+                        fontSize: "12px",
+                        fontWeight: "600",
+                        color: reconData?.isReconciledComplete ? "#15803d" : "#475569"
+                      }}>
+                        Reconciled & ready for automated P&L updates
+                      </span>
+                      {updatingReconStatus && <Spinner size={11} />}
+                    </label>
+                    {outgoingsSyncStatus && (
+                      <div style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "5px",
+                        paddingLeft: "4px",
+                        fontSize: "11px",
+                        fontWeight: "500",
+                        color: outgoingsSyncStatus.state === "error"
+                          ? "#dc2626"
+                          : outgoingsSyncStatus.state === "done"
+                            ? "#15803d"
+                            : "#64748b"
+                      }}>
+                        {outgoingsSyncStatus.state === "syncing" && <Spinner size={10} />}
+                        <span>{outgoingsSyncStatus.text}</span>
+                      </div>
+                    )}
+                  </div>
                 )}
 
                 {linkedTask && onTaskMarkedDone && (
@@ -2676,12 +2735,12 @@ export default function CashflowReconTab({
                                             onClick={() => handleOpenOffsetModal({
                                               baseRow: elem.vatBaseRow,
                                               adjRow: elem.vatAdjRow,
-                                              title: elem.vatTitle || "VAT",
+                                              title: "Tax transfers (Corporation tax & VAT)",
                                               mappedItemType: "tax_transfer",
                                               isCombinedTransfer: true,
                                               combinedElem: elem
                                             })}
-                                            title={`Offset in ${nextCol.label}`}
+                                            title={`Offset combined tax transfers in ${nextCol.label}`}
                                             style={{
                                               padding: "2px 6px",
                                               borderRadius: "4px",

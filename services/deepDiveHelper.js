@@ -1569,6 +1569,7 @@ export function buildDeepDiveData({
   isScenarioView = false,
   scenariosConfig = null,
   cellNote = "",
+  flatBreakdown = null,
 }) {
   if (!keyData) {
     return {
@@ -2591,25 +2592,10 @@ export function buildDeepDiveData({
     };
   }
 
-  // 14. Cash Dividends (Matching WebApp.html line 17273)
-  if (ddType === "cashDividends" || ddType === "divCash") {
-    return {
-      title: "Dividends as salary",
-      period: periodLabel,
-      total: cellValue,
-      items: [],
-      sections: [
-        {
-          title: "Dividends as salary",
-          amount: parseMoney(cellValue),
-          isAccordion: false,
-        },
-      ],
-    };
-  }
-
-  // 15. Flat Cash Flow Detail Rows (Matching WebApp.html lines 17272-17283)
+  // 14. Cash Dividends & 15. Flat Cash Flow Detail Rows (Matching WebApp.html lines 17272-17283)
   const cashFlatTitles = {
+    cashDividends: "Dividends as salary",
+    divCash: "Dividends as salary",
     taxCash: "Corporation tax",
     vatCash: "VAT",
     nonOpIncCash: "Non-operating income",
@@ -2621,18 +2607,42 @@ export function buildDeepDiveData({
 
   if (cashFlatTitles[ddType]) {
     const displayTitle = cashFlatTitles[ddType];
+    const sections = [];
+
+    if (flatBreakdown && (Array.isArray(flatBreakdown.baseItems) || Math.abs(Number(flatBreakdown.adjTotal) || 0) > 0.01)) {
+      (flatBreakdown.baseItems || []).forEach((item) => {
+        if (Math.abs(Number(item.amount) || 0) > 0.01) {
+          sections.push({
+            title: item.title || displayTitle,
+            amount: Number(item.amount) || 0,
+            isAccordion: false,
+          });
+        }
+      });
+      const adjVal = Number(flatBreakdown.adjTotal) || 0;
+      if (Math.abs(adjVal) > 0.01) {
+        sections.push({
+          title: formatAdjustmentLabel("Manual adjustment", cellNote),
+          amount: adjVal,
+          isAdjustment: true,
+        });
+      }
+    }
+
+    if (sections.length === 0) {
+      sections.push({
+        title: cellNote ? formatAdjustmentLabel(displayTitle, cellNote) : displayTitle,
+        amount: parseMoney(cellValue),
+        isAccordion: false,
+      });
+    }
+
     return {
       title: displayTitle,
       period: periodLabel,
       total: cellValue,
       items: [],
-      sections: [
-        {
-          title: displayTitle,
-          amount: parseMoney(cellValue),
-          isAccordion: false,
-        },
-      ],
+      sections,
     };
   }
 

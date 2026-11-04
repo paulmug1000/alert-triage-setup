@@ -258,7 +258,9 @@ export default async function handler(req, res) {
       mark_expense_assigned: ["outgoings", "cash"],
       prune_assigned_expenses: ["outgoings", "cash"],
       delete_invoice_from_pulse: ["invoices", "jobs", "cash"],
-      eom_add_zero_budget_category: ["budget"]
+      eom_add_zero_budget_category: ["budget"],
+      set_recon_month_ready: ["outgoings", "expenses", "cash", "views"],
+      sync_client_expense_breakdown: ["outgoings", "expenses", "cash", "views"]
     };
 
     const originalJson = res.json.bind(res);
@@ -1088,8 +1090,8 @@ export default async function handler(req, res) {
 
     } else if (action === "sync_client_expense_breakdown") {
       try {
-        const { clientName, automationCommanderSheetId } = req.body;
-        if (!(await checkTriageClientAuth(sheets, sessionUser, clientName, []))) {
+        const { clientName, automationCommanderSheetId, clientSheetId, masterSheetId } = req.body;
+        if (!(await checkTriageClientAuth(sheets, sessionUser, clientName, [clientSheetId, masterSheetId].filter(Boolean)))) {
           return res.status(403).json({ success: false, error: "Access denied to this client" });
         }
         const webAppUrl = await getClientWebAppUrl(sheets, clientName, automationCommanderSheetId);
@@ -1110,6 +1112,16 @@ export default async function handler(req, res) {
           const gasText = await gasResp.text();
           let gasData = null;
           try { gasData = JSON.parse(gasText); } catch (e) { }
+
+          // Bust PMA & Portal caches so Outgoings, Expenses, and Cashflow immediately reflect updated actuals
+          await invalidatePmaClientCache(clientSheetId, masterSheetId, ["outgoings", "expenses", "cash", "views"]).catch(() => { });
+          if (clientSheetId && redisClient?.isOpen) {
+            await Promise.all([
+              redisClient.del(`pulse:portal:keydata:${clientSheetId}`).catch(() => { }),
+              redisClient.del(`pulse:portal:cash:${clientSheetId}`).catch(() => { })
+            ]);
+          }
+
           return res.status(200).json({ success: true, gasResult: gasData || gasText });
         }
         return res.status(200).json({ success: true, message: "No Master Web App URL configured" });

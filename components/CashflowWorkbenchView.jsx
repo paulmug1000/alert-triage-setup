@@ -3260,12 +3260,6 @@ export default function CashflowWorkbenchView({
                                     {/* Row 2: Corp tax adjustment */}
                                     <div style={{ gridColumn: "1", gridRow: "2", padding: "4px 8px 5px 18px", color: "#64748b", fontStyle: "italic", fontSize: "10.5px", background: "#fafbfc", borderBottom: "1px solid #e2e8f0", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "4px" }}>
                                       <span>↳ Adjustment</span>
-                                      {renderOffsetBtn({
-                                        baseRow: elem.corpBaseRow,
-                                        adjRow: elem.corpAdjRow,
-                                        title: elem.corpTitle || "Corporation tax",
-                                        mappedItemType: "corporation_tax"
-                                      })}
                                     </div>
                                     <div style={{ gridColumn: "2", gridRow: "2", padding: "4px 8px 5px", background: "#f8fafc", borderBottom: "1px solid #e2e8f0", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "4px" }}>
                                       <div style={{ display: "inline-flex", alignItems: "center", gap: "3px" }}>
@@ -3332,7 +3326,7 @@ export default function CashflowWorkbenchView({
                                       {renderOffsetBtn({
                                         baseRow: elem.vatBaseRow,
                                         adjRow: elem.vatAdjRow,
-                                        title: elem.vatTitle || "VAT",
+                                        title: "Tax transfers (Corporation tax & VAT)",
                                         mappedItemType: "tax_transfer",
                                         isCombinedTransfer: true,
                                         combinedElem: elem

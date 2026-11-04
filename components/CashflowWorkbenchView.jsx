@@ -1620,7 +1620,7 @@ export default function CashflowWorkbenchView({
     if (unassignedOutgoingsCount > 0) {
       setCustomModal({
         title: "Category required",
-        message: `Please select a category for each unreconciled outgoing item (${unassignedOutgoingsCount} remaining) before confirming.`,
+        message: `Please select a category for each unreconciled outgoing item (${unassignedOutgoingsCount} remaining) and then confirm.`,
         type: "warning"
       });
       return;
@@ -5074,7 +5074,7 @@ export default function CashflowWorkbenchView({
                     }}>
                       <span>⚠️</span>
                       <span>
-                        Please select a category for each unreconciled outgoing item ({unassignedOutgoingsCount} remaining) before confirming.
+                        Please select a category for each unreconciled outgoing item ({unassignedOutgoingsCount} remaining) and then confirm.
                       </span>
                     </div>
                   )}

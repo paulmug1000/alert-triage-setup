@@ -1,5 +1,6 @@
 import zlib from "zlib";
-import { getDriveClient, getGoogleAuth, withRetry, extractSheetIdFromUrl } from "./sheetsClient";
+import { getDriveClient, getSlidesClient, getGoogleAuth, withRetry, extractSheetIdFromUrl } from "./sheetsClient";
+import { redisClient } from "./redisClient";
 import { anthropic } from "./claudeClient";
 import { logClaudeUsage_ } from "./systemConfig";
 import { logPmaActivity } from "./pmaLogger";
@@ -1149,9 +1150,15 @@ function sanitizeNarrativePunctuation_(text) {
     .replace(/\s+–\s+/g, " - ");
 }
 
+const sleep_ = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 /**
- * Fetches full-slide high-resolution PNG previews directly from Google Slides
- * using each slide's real Google Slides pageId (`g...`) and the Service Account OAuth token.
+ * Fetches full-slide high-resolution PNG previews with Redis caching and paced fetching:
+ * 1. Checks Redis cache first (TTL 3 days) for each slide by presentationId + pageId.
+ * 2. For missing slides, calls the official Google Slides API (getThumbnail) sequentially/paced.
+ * 3. If Google Slides API is unavailable or throws, falls back to the paced Google Docs export endpoint
+ *    with an inter-request delay and exponential retry backoff on HTTP 429.
+ * 4. Stores successful previews in Redis so repeat visits and slide switches load in <5ms.
  */
 async function fetchSlidePreviewsMap_(presentationId, slidesList) {
   const previewMap = new Map();
@@ -1159,36 +1166,119 @@ async function fetchSlidePreviewsMap_(presentationId, slidesList) {
     return previewMap;
   }
 
+  const validSlides = slidesList.filter(s => s && s.pageId && s.slideNumber);
+  if (validSlides.length === 0) return previewMap;
+
+  const missingSlides = [];
+
+  // 1. Check Redis cache first
+  for (const s of validSlides) {
+    const sNum = Number(s.slideNumber);
+    const cacheKey = `slide_preview:${presentationId}:${s.pageId}`;
+    try {
+      if (redisClient && redisClient.isOpen) {
+        const cached = await redisClient.get(cacheKey);
+        if (cached && typeof cached === "string" && cached.length > 500) {
+          previewMap.set(sNum, cached);
+          continue;
+        }
+      }
+    } catch (_) {}
+    missingSlides.push(s);
+  }
+
+  if (missingSlides.length === 0) {
+    return previewMap;
+  }
+
+  // 2. Prepare Google clients
+  let slidesApi = null;
+  let authToken = null;
+  try {
+    slidesApi = await getSlidesClient();
+  } catch (err) {
+    console.warn("[fetchSlidePreviewsMap_] Could not init slidesApi:", err.message);
+  }
+
   try {
     const auth = getGoogleAuth();
     const client = await auth.getClient();
     const tokenRes = await client.getAccessToken();
-    const token = tokenRes?.token || tokenRes;
-    if (!token) return previewMap;
-
-    const validSlides = slidesList.filter(s => s && s.pageId && s.slideNumber);
-    const concurrency = 5;
-    for (let i = 0; i < validSlides.length; i += concurrency) {
-      const batch = validSlides.slice(i, i + concurrency);
-      await Promise.all(
-        batch.map(async s => {
-          try {
-            const url = `https://docs.google.com/presentation/d/${encodeURIComponent(presentationId)}/export/png?id=${encodeURIComponent(presentationId)}&pageid=${encodeURIComponent(s.pageId)}`;
-            const resp = await fetch(url, {
-              headers: { Authorization: `Bearer ${token}` }
-            });
-            if (resp.ok && (resp.headers.get("content-type") || "").startsWith("image/")) {
-              const ab = await resp.arrayBuffer();
-              previewMap.set(Number(s.slideNumber), Buffer.from(ab).toString("base64"));
-            }
-          } catch (err) {
-            console.warn(`[fetchSlidePreviewsMap_] Could not fetch preview for slide ${s.slideNumber}:`, err.message);
-          }
-        })
-      );
-    }
+    authToken = tokenRes?.token || tokenRes;
   } catch (err) {
-    console.warn("[fetchSlidePreviewsMap_] Auth/fetch warning:", err.message);
+    console.warn("[fetchSlidePreviewsMap_] Could not get auth token:", err.message);
+  }
+
+  // 3. Process missing slides with pacing
+  for (let i = 0; i < missingSlides.length; i++) {
+    const s = missingSlides[i];
+    const sNum = Number(s.slideNumber);
+    const cacheKey = `slide_preview:${presentationId}:${s.pageId}`;
+    let base64 = "";
+
+    // Method A: Official Google Slides API (1600x900, 300 req/min quota)
+    if (slidesApi) {
+      try {
+        const thumbRes = await slidesApi.presentations.pages.getThumbnail({
+          presentationId,
+          pageObjectId: s.pageId,
+          "thumbnailProperties.thumbnailSize": "LARGE"
+        });
+        const contentUrl = thumbRes?.data?.contentUrl;
+        if (contentUrl) {
+          const imgResp = await fetch(contentUrl);
+          if (imgResp.ok) {
+            const ab = await imgResp.arrayBuffer();
+            base64 = Buffer.from(ab).toString("base64");
+          }
+        }
+      } catch (slidesApiErr) {
+        if (i === 0) {
+          console.warn("[fetchSlidePreviewsMap_] Slides API error, will fallback to web export:", slidesApiErr.message);
+        }
+      }
+    }
+
+    // Method B: Fallback to paced Google Docs web export with retry on 429
+    if (!base64 && authToken) {
+      let attempts = 0;
+      while (!base64 && attempts < 3) {
+        attempts++;
+        try {
+          const url = `https://docs.google.com/presentation/d/${encodeURIComponent(presentationId)}/export/png?id=${encodeURIComponent(presentationId)}&pageid=${encodeURIComponent(s.pageId)}`;
+          const resp = await fetch(url, {
+            headers: { Authorization: `Bearer ${authToken}` }
+          });
+          if (resp.ok && (resp.headers.get("content-type") || "").startsWith("image/")) {
+            const ab = await resp.arrayBuffer();
+            base64 = Buffer.from(ab).toString("base64");
+          } else if (resp.status === 429) {
+            console.warn(`[fetchSlidePreviewsMap_] 429 on slide ${sNum} (attempt ${attempts}), waiting ${attempts * 600}ms...`);
+            await sleep_(attempts * 600);
+          } else {
+            break;
+          }
+        } catch (fetchErr) {
+          console.warn(`[fetchSlidePreviewsMap_] Web export error on slide ${sNum}:`, fetchErr.message);
+          break;
+        }
+      }
+    }
+
+    if (base64) {
+      previewMap.set(sNum, base64);
+      // Cache in Redis for 3 days (259200 seconds)
+      try {
+        if (redisClient && redisClient.isOpen) {
+          await redisClient.set(cacheKey, base64, { EX: 86400 * 3 });
+        }
+      } catch (_) {}
+    }
+
+    // Pacing delay between slide fetches to prevent rate spikes
+    if (i < missingSlides.length - 1) {
+      await sleep_(250);
+    }
   }
 
   return previewMap;
@@ -2253,6 +2343,18 @@ export async function handleEomApplyNarrativeToDeck(req, res, sheets) {
       ...u,
       pageId: u.pageId || pageIdBySlide.get(Number(u.slideNumber)) || ""
     }));
+
+    // Invalidate stale Redis slide preview cache for updated slides
+    for (const item of previewInput) {
+      if (item.pageId) {
+        try {
+          if (redisClient && redisClient.isOpen) {
+            await redisClient.del(`slide_preview:${presentationId}:${item.pageId}`);
+          }
+        } catch (_) {}
+      }
+    }
+
     const refreshedPreviewMap = await fetchSlidePreviewsMap_(presentationId, previewInput);
     const updatedPreviewsBySlide = {};
     for (const [sNum, b64] of refreshedPreviewMap.entries()) {

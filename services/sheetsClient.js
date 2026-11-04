@@ -59,7 +59,8 @@ export function getGoogleAuth() {
     credentials,
     scopes: [
       "https://www.googleapis.com/auth/spreadsheets",
-      "https://www.googleapis.com/auth/drive"
+      "https://www.googleapis.com/auth/drive",
+      "https://www.googleapis.com/auth/presentations"
     ],
   });
 }
@@ -72,6 +73,11 @@ export async function getSheetsClient() {
 export async function getDriveClient() {
   const auth = getGoogleAuth();
   return google.drive({ version: "v3", auth });
+}
+
+export async function getSlidesClient() {
+  const auth = getGoogleAuth();
+  return google.slides({ version: "v1", auth });
 }
 
 export async function withRetry(operation, maxRetries = 5) {

@@ -37,12 +37,7 @@ function loadGooglePickerApi() {
 
     const existingScript = document.querySelector('script[src="https://apis.google.com/js/api.js"]');
     if (existingScript) {
-      existingScript.addEventListener("load", onGapiLoaded, { once: true });
-      existingScript.addEventListener("error", () => {
-        gapiLoadingPromise = null;
-        reject(new Error("Failed to load Google API script from apis.google.com."));
-      }, { once: true });
-      return;
+      existingScript.remove();
     }
 
     const script = document.createElement("script");
@@ -51,6 +46,7 @@ function loadGooglePickerApi() {
     script.defer = true;
     script.onload = onGapiLoaded;
     script.onerror = () => {
+      script.remove();
       gapiLoadingPromise = null;
       reject(new Error("Failed to load Google API script from apis.google.com."));
     };

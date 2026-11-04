@@ -82,7 +82,7 @@ export default async function handler(req, res) {
         metadata: "Disconnected",
         userEmail: sessionUser.email || "System"
       });
-    } catch (e) {}
+    } catch (e) { }
 
     // 4. Invalidate Redis setup cache
     const cleanClient = String(targetClient || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
@@ -97,7 +97,7 @@ export default async function handler(req, res) {
           delete prev.googleSheetTitle;
           await redisClient.set(redisKey, JSON.stringify(prev));
         }
-      } catch (e) {}
+      } catch (e) { }
     }
 
     await invalidateIntegrationsCache();

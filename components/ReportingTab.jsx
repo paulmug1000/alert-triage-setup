@@ -1522,6 +1522,7 @@ export default function ReportingTab({
           clientName: narrativeWorkbench.clientName,
           reportMonthKey: narrativeWorkbench.reportMonthKey,
           presentationId: narrativeWorkbench.presentationId,
+          donorPresentationId: narrativeWorkbench.donorPresentationId || "",
           folderUrl: narrativeWorkbench.folderUrl || narrativeModalClient.folderUrl || "",
           webAppUrl: narrativeModalClient.webAppUrl || systemWebAppUrl || "",
           totalNarrativeSlides: (narrativeWorkbench.slides || []).length,

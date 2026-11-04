@@ -241,8 +241,10 @@ export default function CashflowReconTab({
 
   const combinedTransferTxVal = useMemo(() => {
     if (!effectiveReconActuals) return null;
-    return (effectiveReconActuals.transfer || 0) + (effectiveReconActuals.corpTax || 0) + (effectiveReconActuals.vat || 0);
-  }, [effectiveReconActuals]);
+    return isCombinedTransferMode
+      ? (effectiveReconActuals.transfer || 0)
+      : (effectiveReconActuals.transfer || 0) + (effectiveReconActuals.corpTax || 0) + (effectiveReconActuals.vat || 0);
+  }, [effectiveReconActuals, isCombinedTransferMode]);
 
   // Target month column info
   const targetCol = useMemo(() => {
@@ -253,7 +255,6 @@ export default function CashflowReconTab({
   // Helper: check if recon figure is actively in use for a row
   const isReconUsedForRow = useCallback((row) => {
     if (!row.mappedItemType || !row.targetAdjustmentRow || !effectiveReconActuals || !reconData?.rows) return false;
-    if (reconAppliedRows.has(row.targetAdjustmentRow)) return true;
 
     // Check destination adjustment cell formula in target month column
     const adjRowObj = reconData.rows.find(r => r.sheetRow === row.targetAdjustmentRow);
@@ -271,20 +272,20 @@ export default function CashflowReconTab({
       else if (row.mappedItemType === "vat") reconVal = effectiveReconActuals.vat;
       else if (row.mappedItemType === "non_operating_income") reconVal = effectiveReconActuals.nonOperatingIncome;
       else if (row.mappedItemType === "non_operating_expenses") reconVal = effectiveReconActuals.nonOperatingExpenses;
+      else if (row.mappedItemType === "other_cash_movements") reconVal = effectiveReconActuals.other;
 
-      const reconFixed = reconVal !== undefined ? reconVal.toFixed(2) : "";
+      const reconFixed = reconVal !== undefined && reconVal !== null ? Number(reconVal).toFixed(2) : "";
       if (reconFixed && (raw.includes(reconFixed) || raw.replace(/^['’]/, "").includes(reconFixed))) {
         return true;
       }
     }
     return false;
-  }, [reconAppliedRows, reconData, effectiveReconActuals, targetCol]);
+  }, [reconData, effectiveReconActuals, targetCol]);
 
   // Helper: check if combined transfer recon figure is actively in use on VAT adjustment row
   const isReconUsedForTransfer = useCallback((elem) => {
     const vatAdjRowNum = elem?.vatAdjRow?.sheetRow;
     if (!vatAdjRowNum || !reconData?.rows || combinedTransferTxVal === null) return false;
-    if (reconAppliedRows.has(vatAdjRowNum)) return true;
 
     const adjRowObj = reconData.rows.find(r => r.sheetRow === vatAdjRowNum);
     const adjCell = adjRowObj?.cells.find(c => c.colIdx === targetCol?.colIdx);
@@ -298,7 +299,7 @@ export default function CashflowReconTab({
       }
     }
     return false;
-  }, [reconAppliedRows, reconData, combinedTransferTxVal, targetCol]);
+  }, [reconData, combinedTransferTxVal, targetCol]);
 
   // Handle Mark Resolved Toggle
   const handleToggleResolved = async (cell) => {
@@ -441,14 +442,18 @@ export default function CashflowReconTab({
         }
       });
 
+      const closingRowObj = prev.rows.find(row => (row.label || "").toLowerCase().trim() === "closing balance");
+      const closingRowNum = closingRowObj?.sheetRow;
+
       const newRows = prev.rows.map(r => {
         const adjUpdate = adjMap.get(r.sheetRow);
         const isResolvedTarget = resolvedSet.has(r.sheetRow);
         const lowerLabel = (r.label || "").toLowerCase().trim();
         const isNetRow = lowerLabel.includes("net cash movement");
         const isClosingRow = lowerLabel === "closing balance";
+        const isDiffRow = Boolean(r.isDifferenceRow);
 
-        if (!adjUpdate && !isResolvedTarget && !(totalDelta !== 0 && (isNetRow || isClosingRow))) {
+        if (!adjUpdate && !isResolvedTarget && !(totalDelta !== 0 && (isNetRow || isClosingRow || isDiffRow))) {
           return r;
         }
 
@@ -468,6 +473,14 @@ export default function CashflowReconTab({
           } else if (totalDelta !== 0 && (isNetRow || isClosingRow)) {
             const curNum = (c.numVal !== undefined && c.numVal !== null) ? c.numVal : parseAmount(c.v);
             const nextNum = curNum + totalDelta;
+            updated.numVal = nextNum;
+            updated.v = formatGBP(nextNum);
+          } else if (totalDelta !== 0 && isDiffRow && String(c.v || "").trim() !== "") {
+            const curNum = (c.numVal !== undefined && c.numVal !== null) ? c.numVal : parseAmount(c.v);
+            const rawUpper = String(c.rawVal || "").toUpperCase();
+            const isSubtracted = closingRowNum && rawUpper.includes(`-${colLetter.toUpperCase()}${closingRowNum}`);
+            const diffDelta = isSubtracted ? -totalDelta : totalDelta;
+            const nextNum = curNum + diffDelta;
             updated.numVal = nextNum;
             updated.v = formatGBP(nextNum);
           }
@@ -573,6 +586,10 @@ export default function CashflowReconTab({
     } else if (itemType === "non_operating_expenses") {
       reconVal = recon.nonOperatingExpenses || 0;
       targetAdjustmentRow = row.targetAdjustmentRow || 27; // Non-operating expenses adjustment
+      formula = `=${reconVal.toFixed(2)}-${cellRef}`;
+    } else if (itemType === "other_cash_movements") {
+      reconVal = recon.other || 0;
+      targetAdjustmentRow = row.targetAdjustmentRow || 30; // Other adjustments
       formula = `=${reconVal.toFixed(2)}-${cellRef}`;
     } else {
       return;
@@ -704,6 +721,8 @@ export default function CashflowReconTab({
           reconVal = recon.nonOperatingIncome || 0;
         } else if (itemType === "non_operating_expenses") {
           reconVal = recon.nonOperatingExpenses || 0;
+        } else if (itemType === "other_cash_movements") {
+          reconVal = recon.other || 0;
         }
 
         if (reconVal !== null && targetRow) {
@@ -768,6 +787,119 @@ export default function CashflowReconTab({
       setMatchingActuals(false);
     }
   };
+
+  // Automatically keep any already-applied Recon formulas in Cashflow finalisation in sync when liveSignedActuals changes
+  const prevLiveActualsRef = useRef(null);
+  const autoReconSyncTimerRef = useRef(null);
+  useEffect(() => {
+    prevLiveActualsRef.current = null;
+  }, [selectedClient, monthDelta]);
+
+  useEffect(() => {
+    if (!liveSignedActuals || !reconData?.rows || !targetCol || !currentClientInfo) return;
+    const prevActuals = prevLiveActualsRef.current;
+    prevLiveActualsRef.current = liveSignedActuals;
+    if (!prevActuals) return; // Initial hydration only
+
+    const colLetter = targetCol.colLetter;
+    const colIdx = targetCol.colIdx;
+    const mappedRows = (reconData.rows || []).filter(r => r.mappedItemType && !r.isAdjustmentRow);
+    const corpBaseRow = mappedRows.find(r => r.mappedItemType === "corporation_tax");
+    const vatBaseRow = mappedRows.find(r => r.mappedItemType === "vat");
+    const updatesToApply = [];
+
+    mappedRows.forEach(row => {
+      const itemType = row.mappedItemType;
+      if (isCombinedTransferMode && (itemType === "corporation_tax" || itemType === "vat")) return;
+      const targetRow = row.targetAdjustmentRow;
+      if (!targetRow) return;
+
+      let reconVal = null;
+      if (itemType === "confirmed_cash") reconVal = liveSignedActuals.revenue || 0;
+      else if (itemType === "salaries") reconVal = liveSignedActuals.salaries || 0;
+      else if (itemType === "dividends") reconVal = liveSignedActuals.dividends || 0;
+      else if (itemType === "contractors") reconVal = liveSignedActuals.contractors || 0;
+      else if (itemType === "direct_costs") reconVal = liveSignedActuals.directCosts || 0;
+      else if (itemType === "other_expenses") reconVal = liveSignedActuals.outgoings || 0;
+      else if (itemType === "corporation_tax") reconVal = liveSignedActuals.corpTax || 0;
+      else if (itemType === "vat") reconVal = liveSignedActuals.vat || 0;
+      else if (itemType === "non_operating_income") reconVal = liveSignedActuals.nonOperatingIncome || 0;
+      else if (itemType === "non_operating_expenses") reconVal = liveSignedActuals.nonOperatingExpenses || 0;
+      else if (itemType === "other_cash_movements") reconVal = liveSignedActuals.other || 0;
+      if (reconVal === null) return;
+
+      const adjRowObj = reconData.rows.find(r => r.sheetRow === targetRow);
+      const adjCell = adjRowObj?.cells.find(c => c.colIdx === colIdx);
+      const raw = typeof adjCell?.rawVal === "string" ? adjCell.rawVal.replace(/^['’]/, "").trim() : "";
+      const cellRef = `${colLetter}${row.sheetRow}`;
+      const reconRegex = new RegExp(`^=\\s*(-?\\d+(?:\\.\\d+)?)\\s*-\\s*${cellRef}$`, "i");
+      const m = raw.match(reconRegex);
+      if (m) {
+        const existingTarget = parseFloat(m[1]);
+        if (!isNaN(existingTarget) && Math.abs(existingTarget - reconVal) >= 0.005) {
+          updatesToApply.push({
+            sheetRow: targetRow,
+            formula: `=${reconVal.toFixed(2)}-${cellRef}`
+          });
+        }
+      }
+    });
+
+    if (isCombinedTransferMode && corpBaseRow && vatBaseRow && vatBaseRow.targetAdjustmentRow) {
+      const targetRow = vatBaseRow.targetAdjustmentRow;
+      const adjRowObj = reconData.rows.find(r => r.sheetRow === targetRow);
+      const adjCell = adjRowObj?.cells.find(c => c.colIdx === colIdx);
+      const raw = typeof adjCell?.rawVal === "string" ? adjCell.rawVal.replace(/^['’]/, "").trim() : "";
+      if (/^=\s*(-?\d+(?:\.\d+)?)\s*-\s*(?:SUM\(|\()/i.test(raw)) {
+        const m = raw.match(/^=\s*(-?\d+(?:\.\d+)?)/i);
+        const existingTarget = m ? parseFloat(m[1]) : NaN;
+        const transferVal = combinedTransferTxVal || 0;
+        if (!isNaN(existingTarget) && Math.abs(existingTarget - transferVal) >= 0.005) {
+          const r1 = corpBaseRow.sheetRow;
+          const r2 = corpBaseRow.targetAdjustmentRow || (r1 + 1);
+          const r3 = vatBaseRow.sheetRow;
+          const isContiguous = (r2 === r1 + 1) && (r3 === r2 + 1);
+          const transferFormula = isContiguous
+            ? `=${transferVal.toFixed(2)}-SUM(${colLetter}${r1}:${colLetter}${r3})`
+            : `=${transferVal.toFixed(2)}-(${colLetter}${r1}+${colLetter}${r2}+${colLetter}${r3})`;
+          updatesToApply.push({
+            sheetRow: targetRow,
+            formula: transferFormula
+          });
+        }
+      }
+    }
+
+    if (updatesToApply.length > 0) {
+      applyOptimisticCellUpdates(
+        updatesToApply.map(u => ({ sheetRow: u.sheetRow, rawVal: u.formula })),
+        colLetter,
+        []
+      );
+      if (autoReconSyncTimerRef.current) clearTimeout(autoReconSyncTimerRef.current);
+      autoReconSyncTimerRef.current = setTimeout(async () => {
+        try {
+          await fetch("/api/triage", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "batch_match_cashflow_actuals",
+              clientSheetId: currentClientInfo.clientSheetId,
+              cashTabSheetId: reconData.cashTabSheetId,
+              colIdx,
+              colLetter,
+              adjustments: updatesToApply,
+              resolvedRows: [],
+              clientName: selectedClient,
+              automationCommanderSheetId
+            })
+          });
+        } catch (err) {
+          console.error("Failed to auto-sync updated recon formula:", err);
+        }
+      }, 800);
+    }
+  }, [liveSignedActuals, reconData?.rows, reconData?.cashTabSheetId, targetCol, currentClientInfo, isCombinedTransferMode, combinedTransferTxVal, applyOptimisticCellUpdates, selectedClient, automationCommanderSheetId]);
 
   const executeApplyReconFormula = async (targetRow, colLetter, formula) => {
     if (!currentClientInfo) return;
@@ -1023,6 +1155,7 @@ export default function CashflowReconTab({
     if (itemType === "vat") return recon.vat ?? 0;
     if (itemType === "non_operating_income") return recon.nonOperatingIncome ?? 0;
     if (itemType === "non_operating_expenses") return recon.nonOperatingExpenses ?? 0;
+    if (itemType === "other_cash_movements") return recon.other ?? 0;
 
     // Fallback based on label text if mappedItemType was not set
     const l = (rowLabel || "").toLowerCase();
@@ -1036,6 +1169,7 @@ export default function CashflowReconTab({
     if (l.includes("vat")) return recon.vat ?? 0;
     if (l.includes("non-operating income")) return recon.nonOperatingIncome ?? 0;
     if (l.includes("non-operating expense")) return recon.nonOperatingExpenses ?? 0;
+    if (l.includes("other cash movement")) return recon.other ?? 0;
 
     return null;
   }, [effectiveReconActuals, combinedTransferTxVal]);
@@ -3143,6 +3277,7 @@ export default function CashflowReconTab({
                 )}
                 <li>Non-operating income</li>
                 <li>Non-operating expenses</li>
+                <li>Other cash movements</li>
               </ul>
             </div>
 

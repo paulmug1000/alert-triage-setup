@@ -1413,6 +1413,7 @@ export async function handleEomGetNarrativeWorkbench(req, res, sheets) {
       clientName,
       reportMonthKey: effectiveMonthKey,
       presentationId: resolved.targetDeck.presentationId,
+      donorPresentationId: validPriorDecks[0]?.presentationId || "",
       reportUrl: resolved.targetDeck.reportUrl,
       presentationTitle: resolved.targetDeck.title,
       folderUrl: resolved.folderUrl,
@@ -2141,6 +2142,7 @@ export async function handleEomApplyNarrativeToDeck(req, res, sheets) {
     clientName,
     reportMonthKey,
     presentationId,
+    donorPresentationId,
     folderUrl,
     webAppUrl,
     slideUpdates = [],
@@ -2184,6 +2186,7 @@ export async function handleEomApplyNarrativeToDeck(req, res, sheets) {
           secret,
           clientName,
           presentationId,
+          donorPresentationId: donorPresentationId || "",
           folderUrl: folderUrl || "",
           slideUpdates: slideUpdates.map(u => ({
             slideNumber: Number(u.slideNumber),
@@ -2241,8 +2244,16 @@ export async function handleEomApplyNarrativeToDeck(req, res, sheets) {
       };
     }
 
-    // Re-fetch updated full-slide PNG previews for any slides that provided a pageId
-    const refreshedPreviewMap = await fetchSlidePreviewsMap_(presentationId, slideUpdates);
+    // Re-fetch updated full-slide PNG previews using pageId from slideUpdates or gasData.slideResults
+    const pageIdBySlide = new Map();
+    for (const r of (gasData.slideResults || [])) {
+      if (r.slideNumber && r.pageId) pageIdBySlide.set(Number(r.slideNumber), r.pageId);
+    }
+    const previewInput = slideUpdates.map(u => ({
+      ...u,
+      pageId: u.pageId || pageIdBySlide.get(Number(u.slideNumber)) || ""
+    }));
+    const refreshedPreviewMap = await fetchSlidePreviewsMap_(presentationId, previewInput);
     const updatedPreviewsBySlide = {};
     for (const [sNum, b64] of refreshedPreviewMap.entries()) {
       updatedPreviewsBySlide[sNum] = b64;

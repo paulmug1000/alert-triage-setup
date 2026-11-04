@@ -32,6 +32,7 @@ const CATEGORY_COLORS = {
   VAT: { bg: "#ffedd5", color: "#9a3412", border: "#fdba74" },
   "Non-operating income": { bg: "#ecfdf5", color: "#065f46", border: "#a7f3d0" },
   "Non-operating expenses": { bg: "#fef2f2", color: "#991b1b", border: "#fecaca" },
+  Other: { bg: "#f3f4f6", color: "#374151", border: "#d1d5db" },
 };
 
 export function formatGBP(val) {
@@ -998,8 +999,8 @@ export default function CashflowWorkbenchView({
     return [defaultAccount || "Primary bank account"];
   }, [reconData, defaultAccount]);
 
-  // Brand new recon sheet check (no bank transactions and no unreconciled additions)
-  const hasStartedRecon = (bankTxns && bankTxns.length > 0) || (unreconItems && unreconItems.length > 0);
+  // Brand new recon sheet check (no bank transactions and no unreconciled additions; stay on Get Started while Guided Setup is open)
+  const hasStartedRecon = !isGuidedSetupOpen && ((bankTxns && bankTxns.length > 0) || (unreconItems && unreconItems.length > 0));
 
   // Tab check
   const hasTargetTab = localHasTargetTab !== null ? localHasTargetTab : Boolean(reconData?.hasTargetTab);
@@ -1054,9 +1055,11 @@ export default function CashflowWorkbenchView({
     }
   }, [reconData, creatingTab, tabError, handleCreateTab]);
 
-  // Sync state with incoming reconData (integrating unreconciled items into bank transactions list)
+  // Sync state with incoming reconData.bankTransactions / reconData.unreconciledItems
+  // (Only depend on the transaction arrays so optimistic Cash table updates in CashflowReconTab never overwrite local transaction edits)
   useEffect(() => {
-    if (reconData) {
+    if (isGuidedSetupOpen) return;
+    if (reconData?.bankTransactions || reconData?.unreconciledItems) {
       const rawBankTxns = reconData.bankTransactions || [];
       const rawUnreconItems = (reconData.unreconciledItems || []).map((item, idx) => ({
         ...item,
@@ -1090,7 +1093,7 @@ export default function CashflowWorkbenchView({
           const matchedUn = rawUnreconItems[unrecIdx];
           return {
             ...tx,
-            id: tx.id || matchedUn.id || `unrec_${matchedUn.rowNum || idx}`,
+            id: tx.id || (tx.rowNum ? `row_${tx.rowNum}` : (matchedUn.id || `unrec_${matchedUn.rowNum || idx}`)),
             accountName: tx.accountName || matchedUn.accountName || defaultAccount,
             category: tx.category || tx.suggestedCategory || (txIn > 0 ? "Revenue" : "Outgoings"),
             suggestedCategory: tx.suggestedCategory || tx.category || (txIn > 0 ? "Revenue" : "Outgoings"),
@@ -1119,8 +1122,8 @@ export default function CashflowWorkbenchView({
           const isNeg = u.isNegative !== undefined ? u.isNegative : (rawUAmt < 0 || String(u.amount || "").includes("-"));
           const absAmt = Math.abs(rawUAmt);
           mappedBankTxns.push({
-            id: u.id || `unrec_${u.rowNum || uIdx}_${Date.now()}`,
-            rowNum: u.rowNum,
+            id: u.id || `unrec_only_${u.rowNum || uIdx}`,
+            unreconRowNum: u.rowNum,
             date: u.date || "",
             payee: u.payee || "",
             particulars: u.particulars || "",
@@ -1143,16 +1146,20 @@ export default function CashflowWorkbenchView({
       setBankTxns(mappedBankTxns);
       setUnreconItems(rawUnreconItems);
     }
+  }, [reconData?.bankTransactions, reconData?.unreconciledItems, defaultAccount]);
+
+  useEffect(() => {
     if (reconData?.hasTargetTab !== undefined) {
       setLocalHasTargetTab(Boolean(reconData.hasTargetTab));
     }
     if (reconData?.trackedBankAccounts?.length) {
       setSelectedUploadAccount(prev => prev || reconData.trackedBankAccounts[0]);
     }
-  }, [reconData, defaultAccount]);
+  }, [reconData?.hasTargetTab, reconData?.trackedBankAccounts]);
 
-  // Background Auto-Save to Recon Sheet
-  const triggerAutoSync = useCallback(async (txnsToSave, unreconToSave) => {
+  // Background Auto-Save to Recon Sheet (Do not save during Guided Setup unless explicitly forced upon completion)
+  const triggerAutoSync = useCallback(async (txnsToSave, unreconToSave, options = {}) => {
+    if (isGuidedSetupOpen && !options.force) return;
     if (!clientInfo?.reconSheetId || !tabName) return;
     setAutoSaveStatus("saving");
     try {
@@ -1170,6 +1177,11 @@ export default function CashflowWorkbenchView({
       });
       const txData = await txResp.json();
       if (!txData.success) throw new Error(txData.error || "Failed to auto-sync transactions");
+
+      // Assign rowNum (idx + 3) in memory so subsequent single-row category edits have valid sheet coordinates
+      if (Array.isArray(txnsToSave) && txnsToSave.length > 0) {
+        setBankTxns(prev => prev.map((t, idx) => ({ ...t, rowNum: idx + 3 })));
+      }
 
       // 2. Sync unreconciled items if present (including empty array when all items are cleared)
       if (Array.isArray(unreconToSave)) {
@@ -1190,7 +1202,7 @@ export default function CashflowWorkbenchView({
       console.warn("Background auto-sync error:", err);
       setAutoSaveStatus("error");
     }
-  }, [clientInfo, tabName, selectedClient]);
+  }, [clientInfo, tabName, selectedClient, isGuidedSetupOpen]);
 
   // Count of newly imported bank transactions
   const newTxnsCount = useMemo(() => {
@@ -1228,13 +1240,22 @@ export default function CashflowWorkbenchView({
     }
   };
 
-  const triggerDebouncedAutoSync = useCallback((txnsToSave, unreconToSave) => {
+  const triggerDebouncedAutoSync = useCallback((txnsToSave, unreconToSave, options = {}) => {
+    if (isGuidedSetupOpen && !options.force) return;
     setAutoSaveStatus("saving");
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
     autoSaveTimerRef.current = setTimeout(() => {
-      triggerAutoSync(txnsToSave, unreconToSave);
+      triggerAutoSync(txnsToSave, unreconToSave, options);
     }, 1200);
-  }, [triggerAutoSync]);
+  }, [triggerAutoSync, isGuidedSetupOpen]);
+
+  // Standardized category resolution with canonical casing
+  const getResolvedCategory = useCallback((tx) => {
+    const raw = tx.category || tx.suggestedCategory || (parseAmount(tx.inAmount || tx.inAmt) > 0 ? "Revenue" : "Outgoings");
+    const str = String(raw || "").trim();
+    const match = VALID_RECON_CATEGORIES.find(c => c.toLowerCase() === str.toLowerCase());
+    return match || str || "Outgoings";
+  }, []);
 
   // Live Category Totals calculated from bankTxns in memory
   const liveCategoryTotals = useMemo(() => {
@@ -1250,32 +1271,40 @@ export default function CashflowWorkbenchView({
       Transfer: 0,
       "Corp tax": 0,
       VAT: 0,
+      "Non-operating income": 0,
+      "Non-operating expenses": 0,
       Other: 0
     };
 
     (bankTxns || []).forEach(tx => {
-      const cat = tx.category || tx.suggestedCategory || "Other";
+      const cat = getResolvedCategory(tx);
       const inVal = parseAmount(tx.inAmount || tx.inAmt);
       const outVal = parseAmount(tx.outAmount || tx.outAmt);
-      if (cat === "Revenue") {
-        totals.Revenue += inVal;
+      if (cat === "Revenue" || cat === "Non-operating income") {
+        totals[cat] = (totals[cat] || 0) + inVal;
       } else {
         totals[cat] = (totals[cat] || 0) + outVal;
       }
     });
 
     return totals;
-  }, [bankTxns]);
+  }, [bankTxns, getResolvedCategory]);
 
   // Live signed cashflow actuals (In - Out) matching Recon Sheet U3:X16 Column X & Cash tab sign convention
   const liveSignedActuals = useMemo(() => {
     if (!bankTxns || bankTxns.length === 0) return null;
-    let revenue = 0, salaries = 0, dividends = 0, contractors = 0, directCosts = 0, outgoings = 0, vat = 0, corpTax = 0, transfer = 0, nonOperatingIncome = 0, nonOperatingExpenses = 0;
+    let revenue = 0, salaries = 0, dividends = 0, contractors = 0, directCosts = 0, outgoings = 0, vat = 0, corpTax = 0, transfer = 0, nonOperatingIncome = 0, nonOperatingExpenses = 0, other = 0;
 
     bankTxns.forEach(tx => {
-      const cat = String(tx.category || tx.suggestedCategory || "Other").trim().toLowerCase();
-      const inVal = parseAmount(tx.inAmount || tx.inAmt);
-      const outVal = parseAmount(tx.outAmount || tx.outAmt);
+      const cat = getResolvedCategory(tx).toLowerCase();
+      let inVal = parseAmount(tx.inAmount || tx.inAmt);
+      let outVal = parseAmount(tx.outAmount || tx.outAmt);
+      if (inVal === 0 && outVal === 0 && tx.amount !== undefined && tx.amount !== "") {
+        const rawAmt = parseAmount(tx.amount);
+        const isNeg = tx.isNegative !== undefined ? tx.isNegative : (rawAmt < 0);
+        if (isNeg) outVal = Math.abs(rawAmt);
+        else inVal = Math.abs(rawAmt);
+      }
       const netVal = inVal - outVal; // Positive for inflows, negative for outflows
 
       if (cat.includes("non-operating income")) nonOperatingIncome += netVal;
@@ -1289,6 +1318,7 @@ export default function CashflowWorkbenchView({
       else if (cat === "vat") vat += netVal;
       else if (cat === "corp tax") corpTax += netVal;
       else if (cat === "transfer") transfer += netVal;
+      else if (cat === "other") other += netVal;
     });
 
     return {
@@ -1302,15 +1332,60 @@ export default function CashflowWorkbenchView({
       corpTax,
       transfer,
       nonOperatingIncome,
-      nonOperatingExpenses
+      nonOperatingExpenses,
+      other
     };
-  }, [bankTxns]);
+  }, [bankTxns, getResolvedCategory]);
+
+  // Direct local getters for Cashflow finalisation sub-tab so transaction list edits reflect in 0ms on the same render pass
+  const localCombinedTransferTxVal = useMemo(() => {
+    if (liveSignedActuals) {
+      return isCombinedTransferMode
+        ? (liveSignedActuals.transfer || 0)
+        : (liveSignedActuals.transfer || 0) + (liveSignedActuals.corpTax || 0) + (liveSignedActuals.vat || 0);
+    }
+    return combinedTransferTxVal;
+  }, [liveSignedActuals, isCombinedTransferMode, combinedTransferTxVal]);
+
+  const localGetCategoryTxAmount = useCallback((itemType, rowLabel = "") => {
+    const recon = liveSignedActuals || reconData?.reconActuals;
+    if (!recon) {
+      return getCategoryTxAmount ? getCategoryTxAmount(itemType, rowLabel) : null;
+    }
+    if (itemType === "tax_transfer") return localCombinedTransferTxVal ?? 0;
+    if (itemType === "confirmed_cash") return recon.revenue ?? 0;
+    if (itemType === "salaries") return recon.salaries ?? 0;
+    if (itemType === "dividends") return recon.dividends ?? 0;
+    if (itemType === "contractors") return recon.contractors ?? 0;
+    if (itemType === "direct_costs") return recon.directCosts ?? 0;
+    if (itemType === "other_expenses") return recon.outgoings ?? 0;
+    if (itemType === "corporation_tax") return recon.corpTax ?? 0;
+    if (itemType === "vat") return recon.vat ?? 0;
+    if (itemType === "non_operating_income") return recon.nonOperatingIncome ?? 0;
+    if (itemType === "non_operating_expenses") return recon.nonOperatingExpenses ?? 0;
+    if (itemType === "other_cash_movements") return recon.other ?? 0;
+
+    const l = (rowLabel || "").toLowerCase();
+    if (l.includes("revenue") || l.includes("confirmed cash") || l.includes("incoming cash")) return recon.revenue ?? 0;
+    if (l.includes("salar") || l.includes("payroll") || l.includes("paye") || l.includes("pension")) return recon.salaries ?? 0;
+    if (l.includes("dividend")) return recon.dividends ?? 0;
+    if (l.includes("contractor")) return recon.contractors ?? 0;
+    if (l.includes("direct cost")) return recon.directCosts ?? 0;
+    if (l.includes("other expense") || l.includes("outgoing") || l.includes("overhead")) return recon.outgoings ?? 0;
+    if (l.includes("corp")) return recon.corpTax ?? 0;
+    if (l.includes("vat")) return recon.vat ?? 0;
+    if (l.includes("non-operating income")) return recon.nonOperatingIncome ?? 0;
+    if (l.includes("non-operating expense")) return recon.nonOperatingExpenses ?? 0;
+    if (l.includes("other cash movement")) return recon.other ?? 0;
+
+    return getCategoryTxAmount ? getCategoryTxAmount(itemType, rowLabel) : null;
+  }, [liveSignedActuals, reconData?.reconActuals, localCombinedTransferTxVal, getCategoryTxAmount]);
 
   useEffect(() => {
-    if (onLiveSignedActualsChange) {
+    if (onLiveSignedActualsChange && !isGuidedSetupOpen) {
       onLiveSignedActualsChange(liveSignedActuals);
     }
-  }, [liveSignedActuals, onLiveSignedActualsChange]);
+  }, [liveSignedActuals, onLiveSignedActualsChange, isGuidedSetupOpen]);
 
   // Matches a cashflow comparison label to liveCategoryTotals
   const getLiveBankActual = useCallback((c) => {
@@ -1523,7 +1598,7 @@ export default function CashflowWorkbenchView({
       onConfirm: async () => {
         setBankTxns([]);
         setUnreconItems([]);
-        await triggerAutoSync([], []);
+        await triggerAutoSync([], [], { force: true });
         setGuidedStep(1);
         setGuidedCashAccountIdx(0);
         setIsGuidedSetupOpen(true);
@@ -1552,7 +1627,7 @@ export default function CashflowWorkbenchView({
     }
     setIsFinishingGuided(true);
     try {
-      await triggerAutoSync(bankTxns, unreconItems);
+      await triggerAutoSync(bankTxns, unreconItems, { force: true });
       setIsGuidedSetupOpen(false);
       setShowSetupCompletePopup(true);
     } catch (err) {
@@ -1646,19 +1721,21 @@ export default function CashflowWorkbenchView({
     }
   };
 
-  // 3. Category Change Handler (Guaranteed single-row isolation)
+  // 3. Category Change Handler (Guaranteed single-row isolation — never match by shared sourceId across bank transfer legs)
   const handleCategoryChange = async (tx, newCategory) => {
     const updated = bankTxns.map((t) => {
-      const isMatch = (tx.id && t.id && t.id === tx.id) ||
-        (tx.sourceId && t.sourceId && t.sourceId === tx.sourceId) ||
-        (tx.rowNum != null && t.rowNum != null && t.rowNum === tx.rowNum) ||
-        (tx === t);
+      const isMatch = (t === tx) ||
+        (tx.id && t.id && t.id === tx.id) ||
+        (!tx.id && tx.rowNum != null && t.rowNum != null && t.rowNum === tx.rowNum && Boolean(t.isReconciled) === Boolean(tx.isReconciled));
       if (isMatch) {
         return { ...t, category: newCategory, suggestedCategory: newCategory };
       }
       return t;
     });
     setBankTxns(updated);
+
+    // Do not save to the Recon Sheet while in Guided Setup (saved upon Finish Guided Setup)
+    if (isGuidedSetupOpen) return;
 
     // If transaction has an active rowNum in the Recon sheet, update cell in Google Sheets
     if (tx.rowNum && clientInfo?.reconSheetId && tabName) {
@@ -1688,7 +1765,8 @@ export default function CashflowWorkbenchView({
   // 3a. Handlers for Unreconciled Transactions in the Bank Feed List
   const isSameUnreconEntry = (u, tx) => {
     if (tx.id && u.id && u.id === tx.id) return true;
-    if (tx.rowNum != null && u.rowNum != null && u.rowNum === tx.rowNum) return true;
+    const txUnrecRow = tx.unreconRowNum ?? tx.rowNum;
+    if (txUnrecRow != null && u.rowNum != null && txUnrecRow === u.rowNum) return true;
     const uPayee = String(u.payee || u.particulars || "").trim().toLowerCase();
     const txPayee = String(tx.payee || tx.particulars || "").trim().toLowerCase();
     const uDateNorm = formatDateDMmmYy(u.date);
@@ -1700,7 +1778,7 @@ export default function CashflowWorkbenchView({
 
   const handleUnreconCategoryChange = (tx, newPlCategory) => {
     const updatedBank = bankTxns.map(t => {
-      const isMatch = (tx.id && t.id && t.id === tx.id) || (tx.rowNum != null && t.rowNum != null && t.rowNum === tx.rowNum) || (t === tx);
+      const isMatch = (t === tx) || (tx.id && t.id && t.id === tx.id) || (!tx.id && tx.rowNum != null && t.rowNum != null && t.rowNum === tx.rowNum);
       if (isMatch) {
         return { ...t, plCategory: newPlCategory };
       }
@@ -1720,7 +1798,7 @@ export default function CashflowWorkbenchView({
   const handleUnreconVatToggle = (tx) => {
     const nextVat = (tx.vatApplies === "Yes") ? "No" : "Yes";
     const updatedBank = bankTxns.map(t => {
-      const isMatch = (tx.id && t.id && t.id === tx.id) || (tx.rowNum != null && t.rowNum != null && t.rowNum === tx.rowNum) || (t === tx);
+      const isMatch = (t === tx) || (tx.id && t.id && t.id === tx.id) || (!tx.id && tx.rowNum != null && t.rowNum != null && t.rowNum === tx.rowNum);
       if (isMatch) {
         return { ...t, vatApplies: nextVat };
       }
@@ -1738,7 +1816,7 @@ export default function CashflowWorkbenchView({
   };
 
   const handleRemoveUnreconItem = (tx) => {
-    const updatedBank = bankTxns.filter(t => !((tx.id && t.id && t.id === tx.id) || (tx.rowNum != null && t.rowNum != null && t.rowNum === tx.rowNum) || (t === tx)));
+    const updatedBank = bankTxns.filter(t => !((t === tx) || (tx.id && t.id && t.id === tx.id) || (!tx.id && tx.rowNum != null && t.rowNum != null && t.rowNum === tx.rowNum)));
     const updatedUnrecon = unreconItems.filter(u => !isSameUnreconEntry(u, tx));
     setBankTxns(updatedBank);
     setUnreconItems(updatedUnrecon);
@@ -2024,14 +2102,6 @@ export default function CashflowWorkbenchView({
     }
   };
 
-  // Standardized category resolution with canonical casing
-  const getResolvedCategory = useCallback((tx) => {
-    const raw = tx.category || tx.suggestedCategory || (parseAmount(tx.inAmount || tx.inAmt) > 0 ? "Revenue" : "Outgoings");
-    const str = String(raw || "").trim();
-    const match = VALID_RECON_CATEGORIES.find(c => c.toLowerCase() === str.toLowerCase());
-    return match || str || "Outgoings";
-  }, []);
-
   // Distinct accounts discovered across tracked accounts & loaded transactions
   const distinctAccounts = useMemo(() => {
     const set = new Set();
@@ -2253,22 +2323,6 @@ export default function CashflowWorkbenchView({
           flexDirection: "column",
           alignItems: "center"
         }}>
-          <div style={{
-            width: "56px",
-            height: "56px",
-            borderRadius: "50%",
-            background: "#eff6ff",
-            border: "1px solid #bfdbfe",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            marginBottom: "16px",
-            color: "#0284c7"
-          }}>
-            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
-            </svg>
-          </div>
           <h3 style={{ fontSize: "18px", fontWeight: "700", color: "#0f172a", margin: "0 0 8px" }}>
             Get started with {reconData?.targetMonthLabel || "this month"}
           </h3>
@@ -2921,7 +2975,7 @@ export default function CashflowWorkbenchView({
                                 const combinedTotalVal = corpTotal + vatTotal;
                                 const combinedTotalFmt = formatGBP(combinedTotalVal);
 
-                                const txVal = combinedTransferTxVal;
+                                const txVal = localCombinedTransferTxVal;
                                 const isAvailable = txVal !== null && txVal !== undefined;
                                 const isMatch = isAvailable && (
                                   Math.abs(combinedTotalVal - txVal) < 0.05 ||
@@ -3176,7 +3230,7 @@ export default function CashflowWorkbenchView({
                                 const totalVal = baseVal + adjVal;
                                 const totalFmt = formatGBP(totalVal);
 
-                                const txVal = getCategoryTxAmount ? getCategoryTxAmount(elem.mappedItemType, elem.title) : null;
+                                const txVal = localGetCategoryTxAmount(elem.mappedItemType, elem.title);
                                 const isAvailable = txVal !== null && txVal !== undefined;
                                 const isMatch = isAvailable && (
                                   Math.abs(totalVal - txVal) < 0.05 ||
@@ -3627,33 +3681,39 @@ export default function CashflowWorkbenchView({
                     <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: "8px", background: "#f8fafc", padding: "4px 10px", borderRadius: "8px", border: "1px solid #cbd5e1" }}>
                         <span style={{ fontSize: "12px", fontWeight: "700", color: "#334155" }}>Target account:</span>
-                        <select
-                          value={selectedUploadAccount}
-                          onChange={e => setSelectedUploadAccount(e.target.value)}
-                          style={{
-                            padding: "4px 8px",
-                            fontSize: "11px",
-                            fontWeight: "600",
-                            borderRadius: "5px",
-                            border: "1px solid #cbd5e1",
-                            background: "#ffffff",
-                            color: "#0f172a",
-                            cursor: "pointer",
-                            minWidth: "180px"
-                          }}
-                        >
-                          {(reconData?.trackedBankAccounts || []).map(acc => (
-                            <option key={acc} value={acc}>
-                              {acc}
-                            </option>
-                          ))}
-                          {(reconData?.trackedNonCashBankAccounts || []).map(acc => (
-                            <option key={acc.name || acc} value={acc.name || acc}>
-                              {acc.name || acc} (Non-cash)
-                            </option>
-                          ))}
-                          <option value="">(All / unspecified account)</option>
-                        </select>
+                        {isGuidedSetupOpen ? (
+                          <span style={{ fontSize: "11px", fontWeight: "700", color: "#0f172a", padding: "4px 6px" }}>
+                            {selectedUploadAccount || defaultAccount}
+                          </span>
+                        ) : (
+                          <select
+                            value={selectedUploadAccount}
+                            onChange={e => setSelectedUploadAccount(e.target.value)}
+                            style={{
+                              padding: "4px 8px",
+                              fontSize: "11px",
+                              fontWeight: "600",
+                              borderRadius: "5px",
+                              border: "1px solid #cbd5e1",
+                              background: "#ffffff",
+                              color: "#0f172a",
+                              cursor: "pointer",
+                              minWidth: "180px"
+                            }}
+                          >
+                            {(reconData?.trackedBankAccounts || []).map(acc => (
+                              <option key={acc} value={acc}>
+                                {acc}
+                              </option>
+                            ))}
+                            {(reconData?.trackedNonCashBankAccounts || []).map(acc => (
+                              <option key={acc.name || acc} value={acc.name || acc}>
+                                {acc.name || acc} (Non-cash)
+                              </option>
+                            ))}
+                            <option value="">(All / unspecified account)</option>
+                          </select>
+                        )}
                       </div>
 
                       <div style={{ display: "flex", alignItems: "center", gap: "6px", background: "#f8fafc", padding: "4px 10px", borderRadius: "8px", border: "1px solid #cbd5e1", fontSize: "11px" }}>
@@ -3824,33 +3884,39 @@ export default function CashflowWorkbenchView({
 
                     {/* Target Account Selector */}
                     <div style={{ display: "flex", alignItems: "center", gap: "6px", background: "#ffffff", padding: "4px 8px", borderRadius: "6px", border: "1px solid #86efac" }}>
-                      <span style={{ fontSize: "11px", fontWeight: "700", color: "#166534" }}>🏦 Assign to:</span>
-                      <select
-                        value={selectedUploadAccount}
-                        onChange={e => setSelectedUploadAccount(e.target.value)}
-                        style={{
-                          padding: "3px 6px",
-                          fontSize: "11px",
-                          fontWeight: "600",
-                          borderRadius: "4px",
-                          border: "1px solid #cbd5e1",
-                          background: "#ffffff",
-                          color: "#166534",
-                          cursor: "pointer"
-                        }}
-                      >
-                        {(reconData?.trackedBankAccounts || []).map(acc => (
-                          <option key={acc} value={acc}>
-                            🏦 {acc}
-                          </option>
-                        ))}
-                        {(reconData?.trackedNonCashBankAccounts || []).map(acc => (
-                          <option key={acc.name || acc} value={acc.name || acc}>
-                            💳 {acc.name || acc} (Non-cash)
-                          </option>
-                        ))}
-                        <option value="">(All / unspecified account)</option>
-                      </select>
+                      <span style={{ fontSize: "11px", fontWeight: "700", color: "#166534" }}>Assign to:</span>
+                      {isGuidedSetupOpen ? (
+                        <span style={{ fontSize: "11px", fontWeight: "700", color: "#166534", padding: "2px 6px" }}>
+                          {selectedUploadAccount || defaultAccount}
+                        </span>
+                      ) : (
+                        <select
+                          value={selectedUploadAccount}
+                          onChange={e => setSelectedUploadAccount(e.target.value)}
+                          style={{
+                            padding: "3px 6px",
+                            fontSize: "11px",
+                            fontWeight: "600",
+                            borderRadius: "4px",
+                            border: "1px solid #cbd5e1",
+                            background: "#ffffff",
+                            color: "#166534",
+                            cursor: "pointer"
+                          }}
+                        >
+                          {(reconData?.trackedBankAccounts || []).map(acc => (
+                            <option key={acc} value={acc}>
+                              {acc}
+                            </option>
+                          ))}
+                          {(reconData?.trackedNonCashBankAccounts || []).map(acc => (
+                            <option key={acc.name || acc} value={acc.name || acc}>
+                              {acc.name || acc} (Non-cash)
+                            </option>
+                          ))}
+                          <option value="">(All / unspecified account)</option>
+                        </select>
+                      )}
                     </div>
 
                     {/* Quick Selection Buttons */}
@@ -4319,7 +4385,14 @@ export default function CashflowWorkbenchView({
               </div>
               <button
                 type="button"
-                onClick={() => setIsGuidedSetupOpen(false)}
+                onClick={() => {
+                  setBankTxns([]);
+                  setUnreconItems([]);
+                  setGuidedStep(1);
+                  setGuidedCashAccountIdx(0);
+                  setApiMsg("");
+                  setIsGuidedSetupOpen(false);
+                }}
                 style={{
                   background: "transparent",
                   border: "none",

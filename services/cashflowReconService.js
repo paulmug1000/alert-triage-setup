@@ -303,8 +303,8 @@ export async function getCashflowReconData({
       continue;
     }
 
-    const isAdjustmentRow = lowerLabel.includes("adjustment") || lowerLabel === "other cash movements";
-    
+    const isAdjustmentRow = lowerLabel.includes("adjustment");
+
     // Check if non-adjustment mapped row
     const isConfirmedCash = lowerLabel.includes("confirmed cash incoming");
     const isSalaries = lowerLabel === "salaries outgoing" || lowerLabel.includes("salaries outgoing");
@@ -316,6 +316,7 @@ export async function getCashflowReconData({
     const isVat = (lowerLabel === "vat" || lowerLabel.startsWith("vat ") || lowerLabel.includes(" vat")) && !lowerLabel.includes("adjustment");
     const isNonOpIncome = lowerLabel.includes("non-operating income") && !lowerLabel.includes("adjustment");
     const isNonOpExpenses = lowerLabel.includes("non-operating expense") && !lowerLabel.includes("adjustment");
+    const isOtherCashMovements = lowerLabel.includes("other cash movement") && !lowerLabel.includes("adjustment");
 
     let mappedItemType = null;
     let targetAdjustmentRow = null;
@@ -349,6 +350,9 @@ export async function getCashflowReconData({
     } else if (isNonOpExpenses) {
       mappedItemType = "non_operating_expenses";
       targetAdjustmentRow = nonOpExpensesAdjRow; // Non-operating expenses adjustment
+    } else if (isOtherCashMovements) {
+      mappedItemType = "other_cash_movements";
+      targetAdjustmentRow = otherAdjustmentsRow; // Other adjustments (row 30)
     }
 
     const parsedCells = selectedCols.map(col => {
@@ -370,9 +374,9 @@ export async function getCashflowReconData({
       const align = fmt.horizontalAlignment ? fmt.horizontalAlignment.toLowerCase() : null;
 
       const rawVal = cell.userEnteredValue?.formulaValue ??
-                     cell.userEnteredValue?.numberValue ??
-                     cell.userEnteredValue?.stringValue ??
-                     null;
+        cell.userEnteredValue?.numberValue ??
+        cell.userEnteredValue?.stringValue ??
+        null;
 
       const numVal = (typeof cell.effectiveValue?.numberValue === "number")
         ? cell.effectiveValue.numberValue
@@ -495,7 +499,7 @@ export async function getCashflowReconData({
 
         // Parse [0] U3:X16 Totals
         const rawReconRows = vRanges[0]?.values || [];
-        let revenue = 0, salaries = 0, dividends = 0, contractors = 0, directCosts = 0, outgoings = 0, vat = 0, corpTax = 0, transfer = 0, nonOperatingIncome = 0, nonOperatingExpenses = 0;
+        let revenue = 0, salaries = 0, dividends = 0, contractors = 0, directCosts = 0, outgoings = 0, vat = 0, corpTax = 0, transfer = 0, nonOperatingIncome = 0, nonOperatingExpenses = 0, other = 0;
 
         rawReconRows.forEach(r => {
           const label = String(r[0] || "").trim().toLowerCase();
@@ -512,6 +516,7 @@ export async function getCashflowReconData({
           else if (label.includes("transfer")) transfer += val;
           else if (label.includes("vat")) vat += val;
           else if (label.includes("corp") || label.includes("corporation tax") || (label.includes("tax") && !label.includes("vat"))) corpTax += val;
+          else if (label === "other" || (label.includes("other") && !label.includes("outgoing") && !label.includes("expense"))) other += val;
         });
 
         reconActuals = {
@@ -526,6 +531,7 @@ export async function getCashflowReconData({
           transfer,
           nonOperatingIncome,
           nonOperatingExpenses,
+          other,
           tabName: reconTabName
         };
 
@@ -1135,7 +1141,7 @@ export async function updateCashAdjustment({
       if (typeof evaluated === "number" && isFinite(evaluated)) {
         safeValue = Math.round(evaluated * 100) / 100;
       }
-    } catch (_) {}
+    } catch (_) { }
   }
 
   const updateRes = await withRetry(() => sheets.spreadsheets.values.update({
@@ -1149,7 +1155,7 @@ export async function updateCashAdjustment({
 
   const formattedValue = updateRes.data?.updatedData?.values?.[0]?.[0] ?? (value ?? "");
 
-  await invalidatePmaClientCache(cleanClientSheetId, null, ["cash"]).catch(() => {});
+  await invalidatePmaClientCache(cleanClientSheetId, null, ["cash"]).catch(() => { });
 
   (async () => {
     let resolvedClient = clientName || "";
@@ -1224,7 +1230,7 @@ export async function toggleCashCellResolved({
     }
   }));
 
-  await invalidatePmaClientCache(cleanClientSheetId, null, ["cash"]).catch(() => {});
+  await invalidatePmaClientCache(cleanClientSheetId, null, ["cash"]).catch(() => { });
 
   const colLetter = colIndexToLetter(colIndex + 1);
   (async () => {
@@ -1299,7 +1305,7 @@ export async function updateCashCellNote({
     }
   }));
 
-  await invalidatePmaClientCache(cleanClientSheetId, null, ["cash"]).catch(() => {});
+  await invalidatePmaClientCache(cleanClientSheetId, null, ["cash"]).catch(() => { });
 
   const colLetter = colIndexToLetter(colIndex + 1);
   (async () => {
@@ -1405,7 +1411,7 @@ export async function batchMatchCashflowActuals({
     }
   }
 
-  await invalidatePmaClientCache(cleanClientSheetId, null, ["cash"]).catch(() => {});
+  await invalidatePmaClientCache(cleanClientSheetId, null, ["cash"]).catch(() => { });
 
   (async () => {
     let resolvedClient = clientName || "";

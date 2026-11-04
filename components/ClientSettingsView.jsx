@@ -851,6 +851,7 @@ export default function ClientSettingsView({
 }) {
   const router = useRouter();
   const effectiveIsAdmin = Boolean(isAdmin || user?.isAdmin || user?.role === "Admin");
+  const isSysAdmin = effectiveIsAdmin;
 
   // Client selection - user must actively select a client unless managedClient or initialClientName is set
   const [selectedClientName, setSelectedClientName] = useState(() => {
@@ -1449,7 +1450,7 @@ export default function ClientSettingsView({
         return prev.filter(n => n !== name);
       } else {
         if (prev.length >= maxLimit) {
-          alert(`Maximum ${maxLimit} ${label} allowed (${cellRange}). Please uncheck an account before selecting another.`);
+          alert(`Maximum ${maxLimit} ${label} allowed${effectiveIsAdmin ? ` (${cellRange})` : ""}. Please uncheck an account before selecting another.`);
           return prev;
         }
         return [...prev, name];
@@ -6353,7 +6354,7 @@ export default function ClientSettingsView({
                     ? "Check accounts (credit cards, loans, non-cash accounts) to track for clearing unreconciled P&L additions. Maximum 6 accounts."
                     : "Check the accounts to include in Pulse. Maximum 10 accounts."}
                 </p>
-                {isSysAdmin && renderCellRef(bankModalTarget === "non-cash" ? "KeyInfo!H23:I28" : "KeyInfo!H12:I21")}
+                {effectiveIsAdmin && renderCellRef(bankModalTarget === "non-cash" ? "KeyInfo!H23:I28" : "KeyInfo!H12:I21")}
               </div>
               <button
                 type="button"

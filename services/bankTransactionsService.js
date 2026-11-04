@@ -39,8 +39,9 @@ export const VALID_RECON_CATEGORIES = [
 ];
 
 const STOP_WORDS = new Set([
-  "debit", "credit", "ref", "inv", "payment", "expense", "fee", "fees",
-  "bank", "transfer", "ltd", "limited", "inc", "the", "and", "to", "for", "from"
+  "debit", "credit", "ref", "inv", "invoice", "invoices", "bill", "bills", "voided",
+  "payment", "expense", "fee", "fees", "bank", "transfer", "ltd", "limited", "inc",
+  "the", "and", "to", "for", "from"
 ]);
 
 /**
@@ -993,36 +994,42 @@ export function parseUnreconciledItems({
  * and hardcoded rules.
  */
 export function autoCategorizeTransaction(tx, learningMap = new Map()) {
-  // If already tagged with high confidence (e.g. Sales invoice payment or Transfer)
-  if (tx.suggestedCategory && (tx.suggestedCategory === "Revenue" || tx.suggestedCategory === "Transfer")) {
-    return { category: tx.suggestedCategory, confidence: 1.0, reason: "GL Mapped" };
-  }
-
   const combinedText = `${tx.payee || ""} ${tx.particulars || ""} ${tx.reference || ""}`.toLowerCase();
   const outAmount = parseFloat(tx.outAmount) || 0;
   const inAmount = parseFloat(tx.inAmount) || 0;
+  const isOutflow = outAmount > 0 && inAmount === 0;
+  const isInflow = inAmount > 0 && outAmount === 0;
 
-  // 1. Hardcoded high-confidence regex rules
-  if (/\b(sdds|hmrc paye|paye|hmrc Cumbernauld)\b/i.test(combinedText)) {
-    return { category: "PAYE", confidence: 0.99, reason: "Rule: PAYE/SDDS" };
-  }
-  if (/\b(dividend|dividends)\b/i.test(combinedText)) {
-    return { category: "Dividends", confidence: 0.99, reason: "Rule: Dividend" };
-  }
-  if (/\b(salary|salaries|payroll|wage|wages)\b/i.test(combinedText)) {
-    return { category: "Salaries", confidence: 0.98, reason: "Rule: Salary" };
-  }
-  if (/\b(nest|nest pension|pension|peoples pension)\b/i.test(combinedText)) {
-    return { category: "Pension", confidence: 0.98, reason: "Rule: Pension" };
-  }
-  if (/\b(vat|hmrc vat)\b/i.test(combinedText)) {
-    return { category: "VAT", confidence: 0.98, reason: "Rule: VAT" };
-  }
-  if (/\b(corp tax|corporation tax|hmrc ct)\b/i.test(combinedText)) {
-    return { category: "Corp tax", confidence: 0.98, reason: "Rule: Corp Tax" };
+  // If already tagged with high confidence (e.g. Sales invoice payment or Transfer), verify direction safety
+  if (tx.suggestedCategory && (tx.suggestedCategory === "Revenue" || tx.suggestedCategory === "Transfer")) {
+    if (!(isOutflow && tx.suggestedCategory === "Revenue")) {
+      return { category: tx.suggestedCategory, confidence: 1.0, reason: "GL Mapped" };
+    }
   }
 
-  // 2. Learned Word Probability Match
+  // 1. Hardcoded high-confidence regex rules (only for outflows/transfers)
+  if (!isInflow) {
+    if (/\b(sdds|hmrc paye|paye|hmrc Cumbernauld)\b/i.test(combinedText)) {
+      return { category: "PAYE", confidence: 0.99, reason: "Rule: PAYE/SDDS" };
+    }
+    if (/\b(dividend|dividends)\b/i.test(combinedText)) {
+      return { category: "Dividends", confidence: 0.99, reason: "Rule: Dividend" };
+    }
+    if (/\b(salary|salaries|payroll|wage|wages)\b/i.test(combinedText)) {
+      return { category: "Salaries", confidence: 0.98, reason: "Rule: Salary" };
+    }
+    if (/\b(nest|nest pension|pension|peoples pension)\b/i.test(combinedText)) {
+      return { category: "Pension", confidence: 0.98, reason: "Rule: Pension" };
+    }
+    if (/\b(vat|hmrc vat)\b/i.test(combinedText)) {
+      return { category: "VAT", confidence: 0.98, reason: "Rule: VAT" };
+    }
+    if (/\b(corp tax|corporation tax|hmrc ct)\b/i.test(combinedText)) {
+      return { category: "Corp tax", confidence: 0.98, reason: "Rule: Corp Tax" };
+    }
+  }
+
+  // 2. Learned Word Probability Match (strictly respecting cash direction)
   const tokens = tokenizeText(combinedText);
   let bestLearnedCat = null;
   let highestProb = 0;
@@ -1030,6 +1037,8 @@ export function autoCategorizeTransaction(tx, learningMap = new Map()) {
   tokens.forEach(word => {
     if (learningMap.has(word)) {
       const match = learningMap.get(word);
+      if (isOutflow && match.category === "Revenue") return;
+      if (isInflow && !["Revenue", "Transfer", "Other"].includes(match.category)) return;
       if (match.probability > highestProb && match.probability >= 0.70) {
         highestProb = match.probability;
         bestLearnedCat = match.category;
@@ -1087,6 +1096,12 @@ export async function buildLearningMapFromReconSheet(reconSheetId, sheetsClient)
       rows.forEach(r => {
         const cat = String(r[16] || "").trim(); // Col Q is index 16
         if (!cat || !VALID_RECON_CATEGORIES.includes(cat)) return;
+        const outVal = parseFloat(r[8]) || 0;
+        const inVal = parseFloat(r[9]) || 0;
+        // Skip £0.00 / Voided rows and direction-mismatched historical rows
+        if (outVal === 0 && inVal === 0) return;
+        if (outVal > 0 && inVal === 0 && cat === "Revenue") return;
+        if (inVal > 0 && outVal === 0 && !["Revenue", "Transfer", "Other"].includes(cat)) return;
 
         const text = `${r[1] || ""} ${r[3] || ""} ${r[4] || ""} ${r[6] || ""}`;
         const tokens = tokenizeText(text);
@@ -1338,6 +1353,11 @@ export async function enrichUnreconciledItemPredictions({
             rows.forEach(r => {
               const cat = String(r[16] || "").trim();
               if (!cat || !VALID_RECON_CATEGORIES.includes(cat)) return;
+              const outVal = parseFloat(r[8]) || 0;
+              const inVal = parseFloat(r[9]) || 0;
+              if (outVal === 0 && inVal === 0) return;
+              if (outVal > 0 && inVal === 0 && cat === "Revenue") return;
+              if (inVal > 0 && outVal === 0 && !["Revenue", "Transfer", "Other"].includes(cat)) return;
               recordPrimaryObservation(r[3], r[4], r[6], cat, 1);
             });
           }
@@ -1456,8 +1476,9 @@ export async function enrichUnreconciledItemPredictions({
         let bestScore = 0;
         let totalScore = 0;
         for (const [cat, score] of matchedMap.entries()) {
-          // Ensure direction compatibility (don't categorize an outflow as Revenue unless negative revenue refund, or inflow as Salaries)
+          // Ensure direction compatibility (don't categorize an outflow as Revenue, or inflow as Salaries)
           if (isInflow && !["Revenue", "Transfer", "Other"].includes(cat)) continue;
+          if (isOutflow && cat === "Revenue") continue;
           totalScore += score;
           if (score > bestScore) {
             bestScore = score;
@@ -1477,9 +1498,13 @@ export async function enrichUnreconciledItemPredictions({
 
     // 3. Token-level learned match
     if (ruleOrWordPred.confidence >= 0.70) {
-      if (!isInflow || ["Revenue", "Transfer", "Other"].includes(ruleOrWordPred.category)) {
+      const cat = ruleOrWordPred.category;
+      if (
+        (!isInflow || ["Revenue", "Transfer", "Other"].includes(cat)) &&
+        !(isOutflow && cat === "Revenue")
+      ) {
         return {
-          category: ruleOrWordPred.category,
+          category: cat,
           confidence: ruleOrWordPred.confidence,
           reason: ruleOrWordPred.reason,
           isSuggested: true

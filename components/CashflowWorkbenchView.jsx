@@ -112,7 +112,8 @@ export function formatAmount2DP(val) {
   const num = parseAmount(val);
   if (num === 0 && (val === 0 || val === "0" || val === "0.00" || val === "£0.00")) return "£0.00";
   if (num === 0) return "£0.00";
-  return `£${num.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const sign = num < 0 ? "-" : "";
+  return `${sign}£${Math.abs(num).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 /**
@@ -126,10 +127,16 @@ export function buildAlignedComparison(bankItems = [], pulseItems = []) {
     return s.startsWith("#") || s === "—";
   };
 
-  // Filter out any invalid / formula error items
+  const parseAmt = (v) => parseFloat(String(v || "0").replace(/[£,\s]/g, "")) || 0;
+
+  // Filter out any invalid / formula error items and zero-value (e.g. Voided) lines
   const cleanBank = (bankItems || []).filter(b => {
     if (!b) return false;
-    return !isErr(b.date) && !isErr(b.payee) && !isErr(b.inAmt) && !isErr(b.outAmt) && !isErr(b.amount);
+    if (isErr(b.date) || isErr(b.payee) || isErr(b.inAmt) || isErr(b.outAmt) || isErr(b.amount)) return false;
+    const inVal = Math.abs(parseAmt(b.inAmt));
+    const outVal = Math.abs(parseAmt(b.outAmt));
+    const amtVal = Math.abs(parseAmt(b.amount));
+    return (inVal > 0 || outVal > 0 || amtVal > 0);
   });
 
   const cleanPulse = (pulseItems || []).filter(p => {
@@ -140,8 +147,6 @@ export function buildAlignedComparison(bankItems = [], pulseItems = []) {
   const matchedPairs = [];
   const usedBankIndices = new Set();
   const usedPulseIndices = new Set();
-
-  const parseAmt = (v) => parseFloat(String(v || "0").replace(/[£,\s]/g, "")) || 0;
 
   // Extract candidate reference numbers from text (e.g. "Invoice RV-1198 payment" -> ["1198"], "INV-1539" -> ["1539"])
   const extractCandidateRefs = (str) => {
@@ -328,7 +333,70 @@ export function buildAlignedComparison(bankItems = [], pulseItems = []) {
     }
   });
 
-  // 2A. 1 Bank item matches MULTIPLE Pulse items for the same client (payee match, sum equals bank)
+  // 2. Match by sheet matched ID (b.matched points to p.pulseId)
+  cleanBank.forEach((b, bIdx) => {
+    if (usedBankIndices.has(bIdx)) return;
+    if (!b.matched || b.matched === "No Match" || b.matched === "Matched") return;
+
+    const ids = String(b.matched).replace(/\*/g, "").split(",").map(s => s.trim()).filter(Boolean);
+    ids.forEach(id => {
+      const pIdx = cleanPulse.findIndex((p, idx) => !usedPulseIndices.has(idx) && (p.pulseId === id || p.matchedRow === id));
+      if (pIdx !== -1) {
+        matchedPairs.push({ bank: b, pulse: cleanPulse[pIdx], matchType: "sheet_id" });
+        usedBankIndices.add(bIdx);
+        usedPulseIndices.add(pIdx);
+      }
+    });
+  });
+
+  // 3A. Exact 1-to-1 amount + payee/client similarity + same date (highest 1-to-1 confidence)
+  cleanBank.forEach((b, bIdx) => {
+    if (usedBankIndices.has(bIdx)) return;
+    const bAmt = parseAmt(b.inAmt || b.outAmt || b.amount);
+    if (bAmt <= 0) return;
+
+    const bPayee = b.payee || b.particulars || "";
+    const bDateStr = formatDateDMmmYy(b.date);
+    if (!bDateStr) return;
+
+    const pIdx = cleanPulse.findIndex((p, idx) => {
+      if (usedPulseIndices.has(idx)) return false;
+      const pAmt = parseAmt(p.amount);
+      if (Math.abs(bAmt - pAmt) > 0.01) return false;
+      if (!namesMatch(bPayee, p.client)) return false;
+      const pDateStr = formatDateDMmmYy(p.expDate || p.payDate || p.date);
+      return Boolean(pDateStr && pDateStr === bDateStr);
+    });
+
+    if (pIdx !== -1) {
+      matchedPairs.push({ bank: b, pulse: cleanPulse[pIdx], matchType: "amt_name_date" });
+      usedBankIndices.add(bIdx);
+      usedPulseIndices.add(pIdx);
+    }
+  });
+
+  // 3B. Exact 1-to-1 amount + payee/client similarity (any date in month)
+  cleanBank.forEach((b, bIdx) => {
+    if (usedBankIndices.has(bIdx)) return;
+    const bAmt = parseAmt(b.inAmt || b.outAmt || b.amount);
+    if (bAmt <= 0) return;
+
+    const bPayee = b.payee || b.particulars || "";
+    const pIdx = cleanPulse.findIndex((p, idx) => {
+      if (usedPulseIndices.has(idx)) return false;
+      const pAmt = parseAmt(p.amount);
+      if (Math.abs(bAmt - pAmt) > 0.01) return false;
+      return namesMatch(bPayee, p.client);
+    });
+
+    if (pIdx !== -1) {
+      matchedPairs.push({ bank: b, pulse: cleanPulse[pIdx], matchType: "amt_name" });
+      usedBankIndices.add(bIdx);
+      usedPulseIndices.add(pIdx);
+    }
+  });
+
+  // 4A. 1 Bank item matches MULTIPLE Pulse items for the same client (payee match, sum equals bank)
   cleanBank.forEach((b, bIdx) => {
     if (usedBankIndices.has(bIdx)) return;
     const bAmt = parseAmt(b.inAmt || b.outAmt || b.amount);
@@ -375,71 +443,55 @@ export function buildAlignedComparison(bankItems = [], pulseItems = []) {
     }
   });
 
-  // 2B. Multiple Bank items matching 1 Pulse item by payee/client (partial deposits summing to pulse invoice)
+  // 4B. Multiple Bank items matching 1 Pulse item by payee/client (partial deposits summing to pulse invoice)
   cleanPulse.forEach((p, pIdx) => {
     if (usedPulseIndices.has(pIdx)) return;
     const pAmt = parseAmt(p.amount);
-    const pClient = String(p.client || "").toLowerCase().trim();
+    const pClient = String(p.client || "").trim();
     if (!pClient || pAmt <= 0) return;
 
     const candidateBankIndices = [];
     let sumBank = 0;
     cleanBank.forEach((b, bIdx) => {
       if (usedBankIndices.has(bIdx)) return;
-      const bPayee = String(b.payee || "").toLowerCase().trim();
-      if (bPayee && (bPayee.includes(pClient) || pClient.includes(bPayee))) {
+      const bAmt = parseAmt(b.inAmt || b.outAmt || b.amount);
+      if (bAmt <= 0) return;
+      const bPayee = b.payee || b.particulars || "";
+      if (bPayee && namesMatch(bPayee, pClient)) {
         candidateBankIndices.push(bIdx);
-        sumBank += parseAmt(b.inAmt || b.outAmt || b.amount);
+        sumBank += bAmt;
       }
     });
 
-    if (candidateBankIndices.length > 1 && Math.abs(sumBank - pAmt) < 0.05) {
-      const matchedBankItems = candidateBankIndices.map(i => cleanBank[i]);
-      matchedPairs.push({
-        bank: matchedBankItems,
-        pulse: p,
-        isMultiBank: true,
-        matchType: "payee_partial_sum"
-      });
-      candidateBankIndices.forEach(i => usedBankIndices.add(i));
-      usedPulseIndices.add(pIdx);
-    }
-  });
-
-  // 3. Match by sheet matched ID (b.matched points to p.pulseId)
-  cleanBank.forEach((b, bIdx) => {
-    if (usedBankIndices.has(bIdx)) return;
-    if (!b.matched || b.matched === "No Match" || b.matched === "Matched") return;
-
-    const ids = String(b.matched).replace(/\*/g, "").split(",").map(s => s.trim()).filter(Boolean);
-    ids.forEach(id => {
-      const pIdx = cleanPulse.findIndex((p, idx) => !usedPulseIndices.has(idx) && (p.pulseId === id || p.matchedRow === id));
-      if (pIdx !== -1) {
-        matchedPairs.push({ bank: b, pulse: cleanPulse[pIdx], matchType: "sheet_id" });
-        usedBankIndices.add(bIdx);
+    if (candidateBankIndices.length > 1) {
+      if (Math.abs(sumBank - pAmt) < 0.05) {
+        const matchedBankItems = candidateBankIndices.map(i => cleanBank[i]);
+        matchedPairs.push({
+          bank: matchedBankItems,
+          pulse: p,
+          isMultiBank: true,
+          matchType: "payee_partial_sum"
+        });
+        candidateBankIndices.forEach(i => usedBankIndices.add(i));
         usedPulseIndices.add(pIdx);
+      } else {
+        const candidateItems = candidateBankIndices.map(i => ({
+          idx: i,
+          amount: parseAmt(cleanBank[i].inAmt || cleanBank[i].outAmt || cleanBank[i].amount)
+        }));
+        const subset = findSubsetSum(candidateItems, pAmt);
+        if (subset && subset.length > 1) {
+          const matchedBankItems = subset.map(s => cleanBank[s.idx]);
+          matchedPairs.push({
+            bank: matchedBankItems,
+            pulse: p,
+            isMultiBank: true,
+            matchType: "payee_partial_sum"
+          });
+          subset.forEach(s => usedBankIndices.add(s.idx));
+          usedPulseIndices.add(pIdx);
+        }
       }
-    });
-  });
-
-  // 4. Match by exact amount + payee/client similarity
-  cleanBank.forEach((b, bIdx) => {
-    if (usedBankIndices.has(bIdx)) return;
-    const bAmt = parseAmt(b.inAmt || b.outAmt || b.amount);
-    if (bAmt <= 0) return;
-
-    const bPayee = b.payee || b.particulars || "";
-    const pIdx = cleanPulse.findIndex((p, idx) => {
-      if (usedPulseIndices.has(idx)) return false;
-      const pAmt = parseAmt(p.amount);
-      if (Math.abs(bAmt - pAmt) > 0.01) return false;
-      return namesMatch(bPayee, p.client);
-    });
-
-    if (pIdx !== -1) {
-      matchedPairs.push({ bank: b, pulse: cleanPulse[pIdx], matchType: "amt_name" });
-      usedBankIndices.add(bIdx);
-      usedPulseIndices.add(pIdx);
     }
   });
 
@@ -508,7 +560,18 @@ function AlignedBreakdownView({
     text: "#1e40af"
   };
 
-  const getBankAmt = (b) => (isCredit ? b?.inAmt || b?.amount || 0 : b?.outAmt || b?.amount || 0);
+  const getBankAmt = (b) => {
+    const inVal = parseAmount(b?.inAmt);
+    const outVal = parseAmount(b?.outAmt);
+    if (isCredit) {
+      if (inVal > 0) return inVal;
+      if (outVal > 0) return -outVal;
+      return b?.amount || 0;
+    }
+    if (outVal > 0) return outVal;
+    if (inVal > 0) return -inVal;
+    return b?.amount || 0;
+  };
   const getPulseDesc = (p) => {
     if (type === "contractors") return `${p.client || "Client"} — ${p.description || p.job || "Contractor payment"}`;
     return `${p.client || "Client"} — ${p.job || "Job"}`;
@@ -813,31 +876,42 @@ function AlignedBreakdownView({
                   ✓ All bank items matched
                 </div>
               ) : (
-                unmatchedBank.map((b, i) => (
-                  <div key={i} style={{ padding: "8px 10px", background: "#fff1f2", border: "1px solid #fecdd3", borderRadius: "6px" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                      <div style={{ display: "flex", flexDirection: "column" }}>
-                        <span style={{ fontWeight: "700", fontSize: "12px", color: "#1e293b" }}>
-                          {b.payee || b.particulars || "Deposit"}
-                        </span>
-                        {b.payee && b.particulars && b.particulars !== b.payee && (
-                          <span style={{ fontSize: "11px", color: "#64748b", marginTop: "1px" }}>
-                            {b.particulars}
+                unmatchedBank.map((b, i) => {
+                  const signedAmt = parseAmount(getBankAmt(b));
+                  const isOppositeDirection = signedAmt < 0;
+                  return (
+                    <div key={i} style={{ padding: "8px 10px", background: "#fff1f2", border: "1px solid #fecdd3", borderRadius: "6px" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                        <div style={{ display: "flex", flexDirection: "column" }}>
+                          <span style={{ fontWeight: "700", fontSize: "12px", color: "#1e293b" }}>
+                            {b.payee || b.particulars || "Deposit"}
                           </span>
-                        )}
+                          {b.payee && b.particulars && b.particulars !== b.payee && (
+                            <span style={{ fontSize: "11px", color: "#64748b", marginTop: "1px" }}>
+                              {b.particulars}
+                            </span>
+                          )}
+                        </div>
+                        <span style={{ fontWeight: "700", fontSize: "12px", color: "#e11d48" }}>
+                          {formatAmount2DP(signedAmt) || "£0.00"}
+                        </span>
                       </div>
-                      <span style={{ fontWeight: "700", fontSize: "12px", color: "#e11d48" }}>
-                        {formatAmount2DP(getBankAmt(b)) || "£0.00"}
-                      </span>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", color: "#64748b", marginTop: "6px", flexWrap: "wrap", gap: "4px" }}>
+                        <span>{formatDateDMmmYy(b.date) || "No date"}{b.ref ? ` • ${b.ref}` : ""}</span>
+                        <div style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                          {isOppositeDirection && (
+                            <span style={{ padding: "2px 6px", background: "#fef3c7", color: "#b45309", borderRadius: "4px", fontSize: "10px", fontWeight: "700", border: "1px solid #fde68a" }}>
+                              {isCredit ? "Outflow tagged as Revenue" : "Inflow tagged as expense"}
+                            </span>
+                          )}
+                          <span style={{ padding: "2px 6px", background: "#fee2e2", color: "#991b1b", borderRadius: "4px", fontSize: "10px", fontWeight: "700", border: "1px solid #fca5a5" }}>
+                            Unmatched
+                          </span>
+                        </div>
+                      </div>
                     </div>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", color: "#64748b", marginTop: "6px" }}>
-                      <span>{formatDateDMmmYy(b.date) || "No date"}{b.ref ? ` • ${b.ref}` : ""}</span>
-                      <span style={{ padding: "2px 6px", background: "#fee2e2", color: "#991b1b", borderRadius: "4px", fontSize: "10px", fontWeight: "700", border: "1px solid #fca5a5" }}>
-                        Unmatched
-                      </span>
-                    </div>
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
 
@@ -1454,12 +1528,18 @@ export default function CashflowWorkbenchView({
   // Live items for Revenue, Contractors, Direct costs derived directly from bankTxns in memory
   const liveRevenueBankItems = useMemo(() => {
     if (!bankTxns || bankTxns.length === 0) {
-      return (reconData?.revenueBreakdown?.bankItems || []).filter(b => !String(b.date || "").startsWith("#") && !String(b.payee || "").startsWith("#"));
+      return (reconData?.revenueBreakdown?.bankItems || []).filter(b => {
+        if (String(b.date || "").startsWith("#") || String(b.payee || "").startsWith("#")) return false;
+        return parseAmount(b.inAmt) > 0 || parseAmount(b.outAmt) > 0 || parseAmount(b.amount) > 0;
+      });
     }
     return bankTxns
       .filter(t => {
         const cat = t.category || t.suggestedCategory;
-        const inAmt = parseAmount(t.inAmount || t.inAmt || t.amount);
+        const inAmt = parseAmount(t.inAmount || t.inAmt);
+        const outAmt = parseAmount(t.outAmount || t.outAmt);
+        const rawAmt = parseAmount(t.amount);
+        if (inAmt === 0 && outAmt === 0 && rawAmt === 0) return false;
         return cat === "Revenue" || (inAmt > 0 && !cat);
       })
       .map(t => ({
@@ -1469,7 +1549,7 @@ export default function CashflowWorkbenchView({
         payee: t.payee,
         particulars: t.particulars,
         ref: t.reference,
-        outAmt: "",
+        outAmt: t.outAmount || t.outAmt || "",
         inAmt: t.inAmount || t.inAmt || t.amount || "",
         matched: t.matched || ""
       }));
@@ -1477,10 +1557,16 @@ export default function CashflowWorkbenchView({
 
   const liveContractorsBankItems = useMemo(() => {
     if (!bankTxns || bankTxns.length === 0) {
-      return (reconData?.contractorsBreakdown?.bankItems || []).filter(b => !String(b.date || "").startsWith("#") && !String(b.payee || "").startsWith("#"));
+      return (reconData?.contractorsBreakdown?.bankItems || []).filter(b => {
+        if (String(b.date || "").startsWith("#") || String(b.payee || "").startsWith("#")) return false;
+        return parseAmount(b.outAmt) > 0 || parseAmount(b.inAmt) > 0 || parseAmount(b.amount) > 0;
+      });
     }
     return bankTxns
-      .filter(t => (t.category || t.suggestedCategory) === "Contractors")
+      .filter(t => {
+        if ((t.category || t.suggestedCategory) !== "Contractors") return false;
+        return parseAmount(t.outAmount || t.outAmt) > 0 || parseAmount(t.inAmount || t.inAmt) > 0 || parseAmount(t.amount) > 0;
+      })
       .map(t => ({
         id: t.id,
         rowNum: t.rowNum,
@@ -1489,17 +1575,23 @@ export default function CashflowWorkbenchView({
         particulars: t.particulars,
         ref: t.reference,
         outAmt: t.outAmount || t.outAmt || t.amount || "",
-        inAmt: "",
+        inAmt: t.inAmount || t.inAmt || "",
         matched: t.matched || ""
       }));
   }, [bankTxns, reconData]);
 
   const liveDirectCostsBankItems = useMemo(() => {
     if (!bankTxns || bankTxns.length === 0) {
-      return (reconData?.directCostsBreakdown?.bankItems || []).filter(b => !String(b.date || "").startsWith("#") && !String(b.payee || "").startsWith("#"));
+      return (reconData?.directCostsBreakdown?.bankItems || []).filter(b => {
+        if (String(b.date || "").startsWith("#") || String(b.payee || "").startsWith("#")) return false;
+        return parseAmount(b.outAmt) > 0 || parseAmount(b.inAmt) > 0 || parseAmount(b.amount) > 0;
+      });
     }
     return bankTxns
-      .filter(t => (t.category || t.suggestedCategory) === "Direct costs")
+      .filter(t => {
+        if ((t.category || t.suggestedCategory) !== "Direct costs") return false;
+        return parseAmount(t.outAmount || t.outAmt) > 0 || parseAmount(t.inAmount || t.inAmt) > 0 || parseAmount(t.amount) > 0;
+      })
       .map(t => ({
         id: t.id,
         rowNum: t.rowNum,
@@ -1508,7 +1600,7 @@ export default function CashflowWorkbenchView({
         particulars: t.particulars,
         ref: t.reference,
         outAmt: t.outAmount || t.outAmt || t.amount || "",
-        inAmt: "",
+        inAmt: t.inAmount || t.inAmt || "",
         matched: t.matched || ""
       }));
   }, [bankTxns, reconData]);
@@ -1730,6 +1822,20 @@ export default function CashflowWorkbenchView({
     }
   };
 
+  // 3a. Helper to match unreconciled entries in the Bank Feed List
+  const isSameUnreconEntry = (u, tx) => {
+    if (tx.id && u.id && u.id === tx.id) return true;
+    const txUnrecRow = tx.unreconRowNum ?? tx.rowNum;
+    if (txUnrecRow != null && u.rowNum != null && txUnrecRow === u.rowNum) return true;
+    const uPayee = String(u.payee || u.particulars || "").trim().toLowerCase();
+    const txPayee = String(tx.payee || tx.particulars || "").trim().toLowerCase();
+    const uDateNorm = formatDateDMmmYy(u.date);
+    const txDateNorm = formatDateDMmmYy(tx.date);
+    const uAbsAmt = Math.abs(parseAmount(u.amount));
+    const txAbsAmt = Math.abs(parseAmount(tx.outAmount || tx.inAmount || tx.amount));
+    return Boolean(uPayee && uPayee === txPayee && (uDateNorm === txDateNorm || u.date === tx.date) && Math.abs(uAbsAmt - txAbsAmt) < 0.01);
+  };
+
   // 3. Category Change Handler (Guaranteed single-row isolation — never match by shared sourceId across bank transfer legs)
   const handleCategoryChange = async (tx, newCategory) => {
     const updated = bankTxns.map((t) => {
@@ -1793,20 +1899,6 @@ export default function CashflowWorkbenchView({
       // If transactions haven't been written to sheet rows yet or unreconciled item changed category, debounced save
       triggerDebouncedAutoSync(updated, updatedUnrecon);
     }
-  };
-
-  // 3a. Handlers for Unreconciled Transactions in the Bank Feed List
-  const isSameUnreconEntry = (u, tx) => {
-    if (tx.id && u.id && u.id === tx.id) return true;
-    const txUnrecRow = tx.unreconRowNum ?? tx.rowNum;
-    if (txUnrecRow != null && u.rowNum != null && txUnrecRow === u.rowNum) return true;
-    const uPayee = String(u.payee || u.particulars || "").trim().toLowerCase();
-    const txPayee = String(tx.payee || tx.particulars || "").trim().toLowerCase();
-    const uDateNorm = formatDateDMmmYy(u.date);
-    const txDateNorm = formatDateDMmmYy(tx.date);
-    const uAbsAmt = Math.abs(parseAmount(u.amount));
-    const txAbsAmt = Math.abs(parseAmount(tx.outAmount || tx.inAmount || tx.amount));
-    return Boolean(uPayee && uPayee === txPayee && (uDateNorm === txDateNorm || u.date === tx.date) && Math.abs(uAbsAmt - txAbsAmt) < 0.01);
   };
 
   const handleUnreconCategoryChange = (tx, newPlCategory) => {
@@ -2504,21 +2596,28 @@ export default function CashflowWorkbenchView({
             display: "grid",
             gridTemplateColumns: "1fr 1fr",
             gap: "14px",
-            minHeight: "680px"
+            minHeight: "680px",
+            alignItems: "stretch"
           }}>
             {/* ========================================================================= */}
             {/* LEFT PANE: Bank Transactions Feed & Categorisation                       */}
             {/* ========================================================================= */}
-            <div style={{
-              background: "#ffffff",
-              borderRadius: "10px",
-              border: "1px solid #cbd5e1",
-              display: "flex",
-              flexDirection: "column",
-              overflow: "hidden",
-              minWidth: 0,
-              boxShadow: "0 1px 3px rgba(0,0,0,0.03)"
-            }}>
+            <div style={{ position: "relative", minWidth: 0, minHeight: "680px" }}>
+              <div style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                background: "#ffffff",
+                borderRadius: "10px",
+                border: "1px solid #cbd5e1",
+                display: "flex",
+                flexDirection: "column",
+                overflow: "hidden",
+                minWidth: 0,
+                boxShadow: "0 1px 3px rgba(0,0,0,0.03)"
+              }}>
               {/* Header */}
               <div style={{ padding: "12px 14px", borderBottom: "1px solid #e2e8f0", background: "#f8fafc" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px", flexWrap: "wrap", gap: "8px" }}>
@@ -2634,7 +2733,7 @@ export default function CashflowWorkbenchView({
               </div>
 
               {/* Table */}
-              <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden", maxHeight: "640px" }}>
+              <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden" }}>
                 {filteredTxns.length === 0 ? (
                   <div style={{ textAlign: "center", padding: "50px 20px", color: "#94a3b8", fontSize: "12px" }}>
                     No transactions match the selected filters.
@@ -2832,6 +2931,7 @@ export default function CashflowWorkbenchView({
                   </table>
                 )}
               </div>
+              </div>
             </div>
 
             {/* ========================================================================= */}
@@ -2843,12 +2943,11 @@ export default function CashflowWorkbenchView({
               border: "1px solid #cbd5e1",
               display: "flex",
               flexDirection: "column",
-              overflow: "hidden",
               minWidth: 0,
               boxShadow: "0 1px 3px rgba(0,0,0,0.03)"
             }}>
               {/* Tabs */}
-              <div style={{ padding: "8px 12px", borderBottom: "1px solid #e2e8f0", background: "#f8fafc", display: "flex", gap: "6px", flexWrap: "wrap" }}>
+              <div style={{ padding: "8px 12px", borderBottom: "1px solid #e2e8f0", background: "#f8fafc", borderTopLeftRadius: "9px", borderTopRightRadius: "9px", display: "flex", gap: "6px", flexWrap: "wrap" }}>
                 {[
                   { id: "variance", label: "Cashflow finalisation" },
                   { id: "revenue", label: `Revenue (${liveRevenueBankItems.length})` },
@@ -2876,7 +2975,7 @@ export default function CashflowWorkbenchView({
               </div>
 
               {/* Tab Content */}
-              <div style={{ flex: 1, padding: "14px", overflowY: "auto", maxHeight: "640px" }}>
+              <div style={{ flex: 1, padding: "14px" }}>
                 {/* 1. Interactive Single-Tab Cashflow Finalisation */}
                 {activeRightTab === "variance" && (() => {
                   const targetColIndex = (reconData?.selectedCols || []).findIndex(c => c.type === "target");

@@ -255,6 +255,40 @@ export default function CashflowReconTab({
       : (effectiveReconActuals.transfer || 0) + (effectiveReconActuals.corpTax || 0) + (effectiveReconActuals.vat || 0);
   }, [effectiveReconActuals, isCombinedTransferMode]);
 
+  // Helper: retrieves transaction amount for a given category from effective recon actuals
+  const getCategoryTxAmount = useCallback((itemType, rowLabel = "") => {
+    if (!effectiveReconActuals) return null;
+    const recon = effectiveReconActuals;
+    if (itemType === "tax_transfer") return combinedTransferTxVal ?? 0;
+    if (itemType === "confirmed_cash") return recon.revenue ?? 0;
+    if (itemType === "salaries") return recon.salaries ?? 0;
+    if (itemType === "dividends") return recon.dividends ?? 0;
+    if (itemType === "contractors") return recon.contractors ?? 0;
+    if (itemType === "direct_costs") return recon.directCosts ?? 0;
+    if (itemType === "other_expenses") return recon.outgoings ?? 0;
+    if (itemType === "corporation_tax") return recon.corpTax ?? 0;
+    if (itemType === "vat") return recon.vat ?? 0;
+    if (itemType === "non_operating_income") return recon.nonOperatingIncome ?? 0;
+    if (itemType === "non_operating_expenses") return recon.nonOperatingExpenses ?? 0;
+    if (itemType === "other_cash_movements") return recon.other ?? 0;
+
+    // Fallback based on label text if mappedItemType was not set
+    const l = (rowLabel || "").toLowerCase();
+    if (l.includes("revenue") || l.includes("confirmed cash") || l.includes("incoming cash")) return recon.revenue ?? 0;
+    if (l.includes("salar") || l.includes("payroll") || l.includes("paye") || l.includes("pension")) return recon.salaries ?? 0;
+    if (l.includes("dividend")) return recon.dividends ?? 0;
+    if (l.includes("contractor")) return recon.contractors ?? 0;
+    if (l.includes("direct cost")) return recon.directCosts ?? 0;
+    if (l.includes("other expense") || l.includes("outgoing") || l.includes("overhead")) return recon.outgoings ?? 0;
+    if (l.includes("corp")) return recon.corpTax ?? 0;
+    if (l.includes("vat")) return recon.vat ?? 0;
+    if (l.includes("non-operating income")) return recon.nonOperatingIncome ?? 0;
+    if (l.includes("non-operating expense")) return recon.nonOperatingExpenses ?? 0;
+    if (l.includes("other cash movement")) return recon.other ?? 0;
+
+    return null;
+  }, [effectiveReconActuals, combinedTransferTxVal]);
+
   // Target and next month column info
   const targetCol = useMemo(() => {
     if (!reconData?.selectedCols) return null;
@@ -1637,40 +1671,6 @@ export default function CashflowReconTab({
 
     return elements;
   }, [reconData, isCombinedTransferMode]);
-
-  // Helper: retrieves transaction amount for a given category from effective recon actuals
-  const getCategoryTxAmount = useCallback((itemType, rowLabel = "") => {
-    if (!effectiveReconActuals) return null;
-    const recon = effectiveReconActuals;
-    if (itemType === "tax_transfer") return combinedTransferTxVal ?? 0;
-    if (itemType === "confirmed_cash") return recon.revenue ?? 0;
-    if (itemType === "salaries") return recon.salaries ?? 0;
-    if (itemType === "dividends") return recon.dividends ?? 0;
-    if (itemType === "contractors") return recon.contractors ?? 0;
-    if (itemType === "direct_costs") return recon.directCosts ?? 0;
-    if (itemType === "other_expenses") return recon.outgoings ?? 0;
-    if (itemType === "corporation_tax") return recon.corpTax ?? 0;
-    if (itemType === "vat") return recon.vat ?? 0;
-    if (itemType === "non_operating_income") return recon.nonOperatingIncome ?? 0;
-    if (itemType === "non_operating_expenses") return recon.nonOperatingExpenses ?? 0;
-    if (itemType === "other_cash_movements") return recon.other ?? 0;
-
-    // Fallback based on label text if mappedItemType was not set
-    const l = (rowLabel || "").toLowerCase();
-    if (l.includes("revenue") || l.includes("confirmed cash") || l.includes("incoming cash")) return recon.revenue ?? 0;
-    if (l.includes("salar") || l.includes("payroll") || l.includes("paye") || l.includes("pension")) return recon.salaries ?? 0;
-    if (l.includes("dividend")) return recon.dividends ?? 0;
-    if (l.includes("contractor")) return recon.contractors ?? 0;
-    if (l.includes("direct cost")) return recon.directCosts ?? 0;
-    if (l.includes("other expense") || l.includes("outgoing") || l.includes("overhead")) return recon.outgoings ?? 0;
-    if (l.includes("corp")) return recon.corpTax ?? 0;
-    if (l.includes("vat")) return recon.vat ?? 0;
-    if (l.includes("non-operating income")) return recon.nonOperatingIncome ?? 0;
-    if (l.includes("non-operating expense")) return recon.nonOperatingExpenses ?? 0;
-    if (l.includes("other cash movement")) return recon.other ?? 0;
-
-    return null;
-  }, [effectiveReconActuals, combinedTransferTxVal]);
 
   // Dynamic grid column coordinates for modern card view
   const { gridTemplateColumns, colPositions, totalColPosition, txColPosition, spacerBeforeTarget, spacerAfterTarget } = useMemo(() => {

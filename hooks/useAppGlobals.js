@@ -91,16 +91,27 @@ export function AppGlobalsProvider({ children }) {
     }
   }, []);
 
-  // Keep managedClient sheet IDs in sync with allClientsMap
+  // Keep managedClient sheet IDs and directCostsMode in sync with allClientsMap
   useEffect(() => {
     if (managedClient?.clientName && allClientsMap) {
       const targetName = managedClient.clientName.toLowerCase();
       const match = allClientsMap[managedClient.clientName] || Object.values(allClientsMap).find(c => c.clientName?.toLowerCase() === targetName);
-      if (match && (match.clientSheetId !== managedClient.clientSheetId || match.masterSheetId !== managedClient.masterSheetId)) {
-        setManagedClientState(prev => prev ? ({ ...prev, ...match }) : match);
+      if (
+        match &&
+        (match.clientSheetId !== managedClient.clientSheetId ||
+          match.masterSheetId !== managedClient.masterSheetId ||
+          (match.directCostsMode && match.directCostsMode !== managedClient.directCostsMode))
+      ) {
+        setManagedClientState(prev => {
+          const next = prev ? ({ ...prev, ...match }) : match;
+          if (typeof window !== "undefined") {
+            try { localStorage.setItem("pma_managed_client", JSON.stringify(next)); } catch {}
+          }
+          return next;
+        });
       }
     }
-  }, [allClientsMap, managedClient?.clientName, managedClient?.clientSheetId, managedClient?.masterSheetId]);
+  }, [allClientsMap, managedClient?.clientName, managedClient?.clientSheetId, managedClient?.masterSheetId, managedClient?.directCostsMode]);
 
   // Optimistic assignment cache TTL: 15 minutes max to avoid permanent alert suppression
   const ASSIGNED_APP_ID_TTL_MS = 15 * 60 * 1000;

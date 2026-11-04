@@ -1139,10 +1139,66 @@ async function saveNarrativeDraftsRecord_(sheets, {
 // ============================================================================
 
 /**
+ * Replaces any em dashes (—) or spaced en dashes (–) with normal hyphens (" - ")
+ * so narratives strictly follow the user's punctuation standard.
+ */
+function sanitizeNarrativePunctuation_(text) {
+  if (!text) return "";
+  return String(text)
+    .replace(/\s*—\s*/g, " - ")
+    .replace(/\s+–\s+/g, " - ");
+}
+
+/**
+ * Fetches full-slide high-resolution PNG previews directly from Google Slides
+ * using each slide's real Google Slides pageId (`g...`) and the Service Account OAuth token.
+ */
+async function fetchSlidePreviewsMap_(presentationId, slidesList) {
+  const previewMap = new Map();
+  if (!presentationId || !Array.isArray(slidesList) || slidesList.length === 0) {
+    return previewMap;
+  }
+
+  try {
+    const auth = getGoogleAuth();
+    const client = await auth.getClient();
+    const tokenRes = await client.getAccessToken();
+    const token = tokenRes?.token || tokenRes;
+    if (!token) return previewMap;
+
+    const validSlides = slidesList.filter(s => s && s.pageId && s.slideNumber);
+    const concurrency = 5;
+    for (let i = 0; i < validSlides.length; i += concurrency) {
+      const batch = validSlides.slice(i, i + concurrency);
+      await Promise.all(
+        batch.map(async s => {
+          try {
+            const url = `https://docs.google.com/presentation/d/${encodeURIComponent(presentationId)}/export/png?id=${encodeURIComponent(presentationId)}&pageid=${encodeURIComponent(s.pageId)}`;
+            const resp = await fetch(url, {
+              headers: { Authorization: `Bearer ${token}` }
+            });
+            if (resp.ok && (resp.headers.get("content-type") || "").startsWith("image/")) {
+              const ab = await resp.arrayBuffer();
+              previewMap.set(Number(s.slideNumber), Buffer.from(ab).toString("base64"));
+            }
+          } catch (err) {
+            console.warn(`[fetchSlidePreviewsMap_] Could not fetch preview for slide ${s.slideNumber}:`, err.message);
+          }
+        })
+      );
+    }
+  } catch (err) {
+    console.warn("[fetchSlidePreviewsMap_] Auth/fetch warning:", err.message);
+  }
+
+  return previewMap;
+}
+
+/**
  * POST /api/triage { action: "eom_get_narrative_workbench", clientName, reportMonthKey, folderUrl }
- * Exports the current month's presentation and up to 2 prior monthly presentations,
- * extracts tables, embedded chart PNGs, speaker notes, flags, and saved drafts,
- * and pulls supplier transaction details from the client's Recon sheet.
+ * Exports the current month's presentation and up to 4 prior monthly presentations,
+ * extracts tables, embedded chart PNGs, full-slide PNG previews, speaker notes, flags, and saved drafts,
+ * and pulls supplier transaction details from the client's Outgoings & Recon sheets.
  */
 export async function handleEomGetNarrativeWorkbench(req, res, sheets) {
   const sessionUser = getSessionUser(req);
@@ -1206,16 +1262,25 @@ export async function handleEomGetNarrativeWorkbench(req, res, sheets) {
         }
       : null;
 
+    const candidateNarrativeSlides = parsedSlides.filter(s => {
+      if (s.isNarrativeSlide) return true;
+      if (savedRecord.draftsBySlide?.[s.slideNumber]?.text && String(savedRecord.draftsBySlide[s.slideNumber].text).trim()) {
+        return true;
+      }
+      const normT = s.slideTitle.toLowerCase().trim();
+      return validPriorDecks.some(pd =>
+        pd.slides.some(ps => ps.slideTitle.toLowerCase().trim() === normT && Boolean(ps.currentText))
+      );
+    });
+
+    // Fetch full-slide PNG previews in parallel for all candidate narrative slides
+    const slidePreviewMap = await fetchSlidePreviewsMap_(
+      resolved.targetDeck.presentationId,
+      candidateNarrativeSlides
+    );
+
     // Match each narrative slide with its T-1..T-4 historical narratives and saved drafts
-    const narrativeSlides = parsedSlides
-      .filter(s => {
-        if (s.isNarrativeSlide) return true;
-        // Also include if a prior deck had commentary on this exact slide title
-        const normT = s.slideTitle.toLowerCase().trim();
-        return validPriorDecks.some(pd =>
-          pd.slides.some(ps => ps.slideTitle.toLowerCase().trim() === normT && Boolean(ps.currentText))
-        );
-      })
+    const narrativeSlides = candidateNarrativeSlides
       .map(slide => {
         const family = normalizeChartFamily_(slide.chartCode);
         const normTitle = slide.slideTitle.toLowerCase().trim();
@@ -1250,18 +1315,26 @@ export async function handleEomGetNarrativeWorkbench(req, res, sheets) {
         }
 
         const tMinus1Text = previousNarratives[0]?.text || "";
-        const isUneditedClone =
+        const deckIsUneditedClone =
           Boolean(slide.currentText && tMinus1Text) &&
           normalizeTextForComparison_(slide.currentText) === normalizeTextForComparison_(tMinus1Text);
 
         const savedDraft = savedRecord.draftsBySlide?.[slide.slideNumber] || null;
         const hasSavedDraftText = Boolean(savedDraft?.text && String(savedDraft.text).trim());
+        const savedDraftIsClone =
+          hasSavedDraftText &&
+          Boolean(tMinus1Text) &&
+          normalizeTextForComparison_(savedDraft.text) === normalizeTextForComparison_(tMinus1Text);
+
+        const isUneditedClone = hasSavedDraftText ? savedDraftIsClone : deckIsUneditedClone;
+
         const effectiveDraftText = hasSavedDraftText
-          ? savedDraft.text
-          : (isUneditedClone ? "" : slide.currentText);
+          ? sanitizeNarrativePunctuation_(savedDraft.text)
+          : (deckIsUneditedClone ? "" : sanitizeNarrativePunctuation_(slide.currentText));
+
         const slideStatus = hasSavedDraftText
           ? (savedDraft?.status || "drafted")
-          : (isUneditedClone ? "cloned" : (slide.currentText ? "existing" : "empty"));
+          : (deckIsUneditedClone ? "cloned" : (slide.currentText ? "existing" : "empty"));
 
         const effectiveHasFlag =
           typeof savedDraft?.hasFlag === "boolean" ? savedDraft.hasFlag : Boolean(slide.hasFlag);
@@ -1309,6 +1382,7 @@ export async function handleEomGetNarrativeWorkbench(req, res, sheets) {
 
         return {
           slideNumber: slide.slideNumber,
+          pageId: slide.pageId || "",
           slideTitle: slide.slideTitle,
           chartCode: slide.chartCode,
           speakerNotes: slide.speakerNotes,
@@ -1316,6 +1390,7 @@ export async function handleEomGetNarrativeWorkbench(req, res, sheets) {
           deckHasFlag: Boolean(slide.hasFlag),
           isTakeawaysSlide: slide.isTakeawaysSlide,
           isOverheadsSlide,
+          slidePreviewBase64: slidePreviewMap.get(slide.slideNumber) || "",
           tables: slide.tables,
           chartImages: slide.chartImages.map(img => ({
             mimeType: img.mimeType,
@@ -1437,21 +1512,24 @@ Your task is to write the slide narrative that accompanies the financial tables 
 ### Essential style, brevity & tone rules (strictly enforced)
 1. **EXTREME BREVITY & WORD-COUNT DISCIPLINE (CRITICAL)**:
    - These slide text boxes are compact. You MUST strictly match the word count and bullet count of the previous month's narrative on that specific slide (specified in \`<length_constraint>\`).
-   - If the previous month had 1 short bullet of 12 words (e.g. \`• Strong month in October; the rolling 12-month trend is now moving upwards\`), you MUST write 1 short bullet of ~12-18 words — NEVER 3 or 4 long paragraphs!
+   - If the previous month had 1 short bullet of 12 words (e.g. \`• Strong month in October; the rolling 12-month trend is now moving upwards\`), you MUST write 1 short bullet of ~12-18 words - NEVER 3 or 4 long paragraphs!
    - Write telegraphic, high-density commercial notes: drop unnecessary articles, conjunctions, and explanatory padding. Let the numbers and \`->\` arrows do the work.
-2. **UK English**: Always use UK spelling and formatting (e.g. utilisation, normalised, realised, programme, £, %).
-3. **Concise, commercial, direct voice**:
+2. **NO EM DASHES (STRICT RULE)**:
+   - NEVER use em dashes (\`—\`) or en dashes (\`–\`) anywhere in the narrative text.
+   - Always use a normal hyphen with spaces (\` - \`), a semicolon, or a comma instead.
+3. **UK English**: Always use UK spelling and formatting (e.g. utilisation, normalised, realised, programme, £, %).
+4. **Concise, commercial, direct voice**:
    - Never use filler phrases ("Overall, this chart illustrates...", "Looking at the table...", "It is pleasing to see..."), marketing fluff, or exclamation marks.
    - Use shorthand arrows (\`->\`) naturally when showing run-rate math or multi-step commercial consequences (e.g. \`£292k for the remaining 6 months -> £49k per month; current pipeline shows £179k across Oct-Dec -> £113k still to find\`).
    - Quote accurate figures (e.g. \`£92k vs £105k budget\`, \`55.1% vs 61.5% target\`, \`+£1,535 / +22.4%\`).
-4. **Red flag (\`🚩\`) handling**:
+5. **Red flag (\`🚩\`) handling**:
    - If the slide is marked as having a red flag (\`🚩\` = true), your final bullet MUST begin with \`• The flag: \` followed by a concise, direct explanation of the risk, pinch point, or shortfall.
    - If the slide does NOT have a red flag (\`🚩\` = false), do NOT include \`The flag:\`.
-5. **Continuity without cloning**:
+6. **Continuity without cloning**:
    - Study the client's prior months' narratives ($T-1$, $T-2$, etc.) for this exact slide to match sentence rhythm, exact bullet count, level of detail, and client-specific terminology.
    - NEVER copy last month's numbers or text verbatim. Tell this month's financial story clearly.
-6. **Formatting output**:
-   - Output ONLY the narrative text to go into the commentary box — no markdown code fences, no introductory preamble, and no trailing commentary.
+7. **Formatting output**:
+   - Output ONLY the narrative text to go into the commentary box - no markdown code fences, no introductory preamble, and no trailing commentary.
    - For standard slides: format every point as a bullet starting with \`• \` (one bullet per line).
    - For the **Business performance (\`[BusinessPerformance]\` / Slide 3)** overview slide ONLY:
      Format with two exact section headings (without bullets on the headings) separated by a blank line, and end every bullet in the second section with \`(see slide X)\` referencing the exact slide number in the deck:
@@ -1476,7 +1554,8 @@ function buildSlidePromptText_(slide, {
   parts.push(`Slide number: Slide ${slide.slideNumber}`);
   parts.push(`Slide title: ${slide.slideTitle}`);
   if (slide.chartCode) parts.push(`Slide chart/table code: ${slide.chartCode}`);
-  parts.push(`Red flag (🚩) on slide: ${slide.hasFlag ? "YES — include a concise '• The flag: ...' bullet explaining the risk/issue" : "NO — do NOT include 'The flag:'"}`);
+  parts.push(`Red flag (🚩) on slide: ${slide.hasFlag ? "YES - include a concise '• The flag: ...' bullet explaining the risk/issue" : "NO - do NOT include 'The flag:'"}`);
+  parts.push(`Punctuation rule: NEVER use em dashes (—). Use normal hyphens (" - ") instead.`);
 
   if (lengthMetrics) {
     parts.push(`\n<length_constraint>`);
@@ -1510,7 +1589,7 @@ function buildSlidePromptText_(slide, {
       parts.push(formatTableAsMarkdown_(tbl));
     });
   } else {
-    parts.push("(No table on this slide — rely on the attached chart image(s) and deck context)");
+    parts.push("(No table on this slide - rely on the attached slide/chart image(s) and deck context)");
   }
 
   if (slide.isOverheadsSlide && overheadMismatchWarning) {
@@ -1543,8 +1622,8 @@ function buildSlidePromptText_(slide, {
     for (const prev of slide.previousNarratives) {
       const wCount = countWords_(prev.text);
       const bCount = countBullets_(prev.text);
-      parts.push(`[${prev.monthKey} — Slide ${prev.slideNumber} (${prev.slideTitle})${prev.hasFlag ? " 🚩" : ""} — ${wCount} words, ${bCount} bullet(s)]:`);
-      parts.push(prev.text);
+      parts.push(`[${prev.monthKey} - Slide ${prev.slideNumber} (${prev.slideTitle})${prev.hasFlag ? " 🚩" : ""} - ${wCount} words, ${bCount} bullet(s)]:`);
+      parts.push(sanitizeNarrativePunctuation_(prev.text));
       if (prev.tables?.length > 0) {
         parts.push(`(${prev.monthKey} table for comparison:)`);
         parts.push(formatTableAsMarkdown_(prev.tables[0]));
@@ -1553,7 +1632,7 @@ function buildSlidePromptText_(slide, {
     }
   } else if (slide.deckText && !slide.isUneditedClone) {
     parts.push(`\n--- EXISTING TEXT ON THIS SLIDE ---`);
-    parts.push(slide.deckText);
+    parts.push(sanitizeNarrativePunctuation_(slide.deckText));
   }
 
   if (slide.isTakeawaysSlide && allSlidesSummaryForTakeaways) {
@@ -1566,7 +1645,7 @@ function buildSlidePromptText_(slide, {
     parts.push(String(steerText).trim());
   }
 
-  parts.push(`\nNow write the narrative for Slide ${slide.slideNumber} (${slide.slideTitle}) for ${reportMonthKey}. Stay strictly within ${lengthMetrics?.maxAllowedWords || 60} words. Output only the narrative text.`);
+  parts.push(`\nNow write the narrative for Slide ${slide.slideNumber} (${slide.slideTitle}) for ${reportMonthKey}. Stay strictly within ${lengthMetrics?.maxAllowedWords || 60} words and NEVER use em dashes (—). Output only the narrative text.`);
   return parts.join("\n");
 }
 
@@ -1588,7 +1667,7 @@ async function generateSingleSlideWithClaude_({
   if (shortenOnly && slide.draftText && String(slide.draftText).trim()) {
     const currentWords = countWords_(slide.draftText);
     const desiredMax = Math.min(lengthMetrics.maxAllowedWords, Math.max(12, Math.round(currentWords * 0.6)));
-    const prevSample = slide.previousNarratives?.[0]?.text || "";
+    const prevSample = sanitizeNarrativePunctuation_(slide.previousNarratives?.[0]?.text || "");
     const tightenMsg = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
       max_tokens: 600,
@@ -1598,7 +1677,7 @@ async function generateSingleSlideWithClaude_({
         {
           role: "user",
           content: `Tighten and shorten this draft narrative for Slide ${slide.slideNumber} (${slide.slideTitle}) so it is **at most ${desiredMax} words** (target ~${lengthMetrics.targetWords} words across ${lengthMetrics.targetBullets} bullet(s)).
-Keep the exact commercial numbers, \`->\` shorthand arrows, UK spelling, and ${slide.hasFlag ? "keep a concise '• The flag: ...' final bullet" : "do not include 'The flag:'"}.
+Keep the exact commercial numbers, \`->\` shorthand arrows, UK spelling, normal hyphens (" - ", never em dashes "—"), and ${slide.hasFlag ? "keep a concise '• The flag: ...' final bullet" : "do not include 'The flag:'"}.
 ${prevSample ? `\nReference for exact length and rhythm from last month (${lengthMetrics.prevWords} words):\n${prevSample}\n` : ""}
 Current draft to shorten (${currentWords} words):
 ${slide.draftText}
@@ -1607,28 +1686,42 @@ Output ONLY the shortened narrative text.`
         }
       ]
     });
-    const shortened = (tightenMsg.content || [])
-      .filter(b => b.type === "text")
-      .map(b => b.text)
-      .join("\n")
-      .trim();
-    return shortened || slide.draftText;
+    const shortened = sanitizeNarrativePunctuation_(
+      (tightenMsg.content || [])
+        .filter(b => b.type === "text")
+        .map(b => b.text)
+        .join("\n")
+        .trim()
+    );
+    return shortened || sanitizeNarrativePunctuation_(slide.draftText);
   }
 
   const userContentBlocks = [];
 
-  // Attach up to 3 chart PNG images from the slide for Claude vision analysis
-  const imagesToAttach = (slide.chartImages || []).slice(0, 3);
-  for (const img of imagesToAttach) {
-    if (img.base64) {
-      userContentBlocks.push({
-        type: "image",
-        source: {
-          type: "base64",
-          media_type: img.mimeType || "image/png",
-          data: img.base64
-        }
-      });
+  // Attach the full actual slide preview PNG if available so Claude sees the complete formatted slide
+  if (slide.slidePreviewBase64) {
+    userContentBlocks.push({
+      type: "image",
+      source: {
+        type: "base64",
+        media_type: "image/png",
+        data: slide.slidePreviewBase64
+      }
+    });
+  } else {
+    // Fallback: attach up to 3 chart PNG images from the slide
+    const imagesToAttach = (slide.chartImages || []).slice(0, 3);
+    for (const img of imagesToAttach) {
+      if (img.base64) {
+        userContentBlocks.push({
+          type: "image",
+          source: {
+            type: "base64",
+            media_type: img.mimeType || "image/png",
+            data: img.base64
+          }
+        });
+      }
     }
   }
 
@@ -1655,11 +1748,13 @@ Output ONLY the shortened narrative text.`
     messages: [{ role: "user", content: userContentBlocks }]
   });
 
-  let generatedText = (msg.content || [])
-    .filter(block => block.type === "text")
-    .map(block => block.text)
-    .join("\n")
-    .trim();
+  let generatedText = sanitizeNarrativePunctuation_(
+    (msg.content || [])
+      .filter(block => block.type === "text")
+      .map(block => block.text)
+      .join("\n")
+      .trim()
+  );
 
   let totalInputTokens = msg.usage?.input_tokens || 0;
   let totalOutputTokens = msg.usage?.output_tokens || 0;
@@ -1674,7 +1769,7 @@ Output ONLY the shortened narrative text.`
       : lengthMetrics.maxAllowedWords;
 
   if (generatedWords > effectiveMaxWords && (!steerText || !/detail|expand|longer/i.test(steerText))) {
-    const prevSample = slide.previousNarratives?.[0]?.text || "";
+    const prevSample = sanitizeNarrativePunctuation_(slide.previousNarratives?.[0]?.text || "");
     const targetBullets =
       slide.hasFlag && !slide.previousNarratives?.[0]?.hasFlag
         ? lengthMetrics.targetBullets + 1
@@ -1692,10 +1787,11 @@ Output ONLY the shortened narrative text.`
 
 Rewrite and condense the draft below so that it is **at most ${effectiveMaxWords} words** (ideally ~${lengthMetrics.targetWords} words) and has **${targetBullets} bullet(s)**.
 - Preserve the key commercial figures, variances, and \`->\` shorthand arrows.
+- NEVER use em dashes (—); use normal hyphens (" - ") instead.
 - Cut secondary commentary, repetitive phrasing, and wordy explanations.
 - ${slide.hasFlag ? "Keep a concise '• The flag: ...' bullet at the end." : "Do NOT include 'The flag:'."}
 ${slide.isTakeawaysSlide ? "- Keep the two section headings ('Month in review' and 'Key takeaways from this report') and the '(see slide X)' references at the end of each takeaway bullet." : ""}
-${prevSample ? `\nLast month's actual narrative on this slide (${lengthMetrics.prevWords} words — match this exact brevity and density):\n${prevSample}\n` : ""}
+${prevSample ? `\nLast month's actual narrative on this slide (${lengthMetrics.prevWords} words - match this exact brevity and density):\n${prevSample}\n` : ""}
 Draft to condense (${generatedWords} words):
 ${generatedText}
 
@@ -1704,11 +1800,13 @@ Output ONLY the condensed narrative text.`
       ]
     });
 
-    const tightenedText = (tightenMsg.content || [])
-      .filter(b => b.type === "text")
-      .map(b => b.text)
-      .join("\n")
-      .trim();
+    const tightenedText = sanitizeNarrativePunctuation_(
+      (tightenMsg.content || [])
+        .filter(b => b.type === "text")
+        .map(b => b.text)
+        .join("\n")
+        .trim()
+    );
 
     if (tightenedText) {
       generatedText = tightenedText;
@@ -1729,7 +1827,7 @@ Output ONLY the condensed narrative text.`
     ).catch(() => {});
   }
 
-  return generatedText;
+  return sanitizeNarrativePunctuation_(generatedText);
 }
 
 /**
@@ -1795,7 +1893,7 @@ export async function handleEomGenerateNarrative(req, res, sheets) {
           .map(s => {
             const currentDraft = draftsBySlide[s.slideNumber]?.text || s.draftText || s.deckText || "";
             const tblSummary = s.tables?.[0] ? formatTableAsMarkdown_(s.tables[0].slice(0, 12)) : "";
-            return `Slide ${s.slideNumber} — ${s.slideTitle} (${s.chartCode || ""})${s.hasFlag ? " [🚩 FLAGGED]" : ""}:\nDrafted narrative:\n${currentDraft || "(none)"}\nKey table rows:\n${tblSummary}`;
+            return `Slide ${s.slideNumber} - ${s.slideTitle} (${s.chartCode || ""})${s.hasFlag ? " [🚩 FLAGGED]" : ""}:\nDrafted narrative:\n${currentDraft || "(none)"}\nKey table rows:\n${tblSummary}`;
           })
           .join("\n\n");
       }
@@ -1889,7 +1987,7 @@ export async function handleEomGenerateNarrative(req, res, sheets) {
         .map(s => {
           const draftedText = draftsBySlide[s.slideNumber]?.text || "";
           const tblSummary = s.tables?.[0] ? formatTableAsMarkdown_(s.tables[0].slice(0, 12)) : "";
-          return `Slide ${s.slideNumber} — ${s.slideTitle} (${s.chartCode || ""})${s.hasFlag ? " [🚩 FLAGGED]" : ""}:\nDrafted narrative:\n${draftedText}\nKey table rows:\n${tblSummary}`;
+          return `Slide ${s.slideNumber} - ${s.slideTitle} (${s.chartCode || ""})${s.hasFlag ? " [🚩 FLAGGED]" : ""}:\nDrafted narrative:\n${draftedText}\nKey table rows:\n${tblSummary}`;
         })
         .join("\n\n");
 
@@ -1980,7 +2078,8 @@ export async function handleEomSaveNarrativeDraft(req, res, sheets) {
 
     for (const [sNum, item] of Object.entries(draftsMap)) {
       if (!item || typeof item !== "object") continue;
-      const newText = item.text !== undefined ? String(item.text) : (mergedDrafts[sNum]?.text || "");
+      const rawText = item.text !== undefined ? String(item.text) : (mergedDrafts[sNum]?.text || "");
+      const newText = sanitizeNarrativePunctuation_(rawText);
       mergedDrafts[sNum] = {
         ...(mergedDrafts[sNum] || {}),
         slideNumber: Number(sNum),
@@ -2024,7 +2123,7 @@ export async function handleEomSaveNarrativeDraft(req, res, sheets) {
  *   presentationId,
  *   folderUrl,
  *   webAppUrl,
- *   slideUpdates, // [{ slideNumber, shapeName, newText, hasFlag, isTakeawaysSlide, slideTitle, chartCode }]
+ *   slideUpdates, // [{ slideNumber, pageId, shapeName, newText, hasFlag, isTakeawaysSlide, slideTitle, chartCode }]
  *   totalNarrativeSlides,
  *   automationCommanderSheetId
  * }
@@ -2089,7 +2188,7 @@ export async function handleEomApplyNarrativeToDeck(req, res, sheets) {
           slideUpdates: slideUpdates.map(u => ({
             slideNumber: Number(u.slideNumber),
             shapeName: u.shapeName || "",
-            newText: String(u.newText || ""),
+            newText: sanitizeNarrativePunctuation_(String(u.newText || "")),
             hasFlag: typeof u.hasFlag === "boolean" ? u.hasFlag : undefined,
             isTakeawaysSlide: Boolean(u.isTakeawaysSlide)
           }))
@@ -2126,17 +2225,27 @@ export async function handleEomApplyNarrativeToDeck(req, res, sheets) {
 
     for (const u of slideUpdates) {
       const sNum = Number(u.slideNumber);
+      const cleanedText = u.newText !== undefined && String(u.newText).trim()
+        ? sanitizeNarrativePunctuation_(String(u.newText))
+        : (mergedDrafts[sNum]?.text || "");
       mergedDrafts[sNum] = {
         ...(mergedDrafts[sNum] || {}),
         slideNumber: sNum,
         slideTitle: u.slideTitle || mergedDrafts[sNum]?.slideTitle || `Slide ${sNum}`,
         chartCode: u.chartCode || mergedDrafts[sNum]?.chartCode || "",
-        text: u.newText !== undefined && String(u.newText).trim() ? String(u.newText) : (mergedDrafts[sNum]?.text || ""),
+        text: cleanedText,
         hasFlag: typeof u.hasFlag === "boolean" ? u.hasFlag : mergedDrafts[sNum]?.hasFlag,
         status: "applied",
         appliedAt: now,
         updatedAt: now
       };
+    }
+
+    // Re-fetch updated full-slide PNG previews for any slides that provided a pageId
+    const refreshedPreviewMap = await fetchSlidePreviewsMap_(presentationId, slideUpdates);
+    const updatedPreviewsBySlide = {};
+    for (const [sNum, b64] of refreshedPreviewMap.entries()) {
+      updatedPreviewsBySlide[sNum] = b64;
     }
 
     await saveNarrativeDraftsRecord_(sheets, {
@@ -2162,6 +2271,7 @@ export async function handleEomApplyNarrativeToDeck(req, res, sheets) {
       updatedCount: gasData.updatedCount || slideUpdates.length,
       slideResults: gasData.slideResults || [],
       draftsBySlide: mergedDrafts,
+      updatedPreviewsBySlide,
       status: "applied",
       updatedAt: now
     });

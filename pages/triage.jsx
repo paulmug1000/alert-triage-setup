@@ -208,7 +208,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
   const [alertAssignOverlay, setAlertAssignOverlay] = useState(null); // { mode: "invoices" | "outgoings", client }
 
   const EDIT_NAV_KEYS = useMemo(
-    () => new Set(["jobs", "outgoings", "invoices", "retainers", "salaries", "expenses", "nbtofind", "budget", "cash"]),
+    () => new Set(["jobs", "outgoings", "passthrough", "invoices", "retainers", "salaries", "expenses", "nbtofind", "budget", "cash"]),
     []
   );
 
@@ -524,9 +524,19 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
         let changed = false;
         const next = prev.map(c => {
           const fromMap = allClientsMap[c.clientName];
-          if (fromMap && !c.clientSheetId && fromMap.clientSheetId) {
+          if (
+            fromMap &&
+            ((!c.clientSheetId && fromMap.clientSheetId) ||
+              (fromMap.directCostsMode && fromMap.directCostsMode !== c.directCostsMode))
+          ) {
             changed = true;
-            return { ...fromMap, ...c, clientSheetId: fromMap.clientSheetId, masterSheetId: c.masterSheetId || fromMap.masterSheetId };
+            return {
+              ...fromMap,
+              ...c,
+              clientSheetId: c.clientSheetId || fromMap.clientSheetId,
+              masterSheetId: c.masterSheetId || fromMap.masterSheetId,
+              directCostsMode: fromMap.directCostsMode || c.directCostsMode,
+            };
           }
           return c;
         });
@@ -823,8 +833,8 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
     loadClients();
   });
   const handleNavTools = () => navigateWithGuard(() => { setActiveNav("tools"); loadClients(); });
-  const handleNavOutgoings = () => navigateWithGuard(() => { setActiveNav("outgoings"); loadClients(); });
-  const handleNavPassThrough = () => navigateWithGuard(() => { setActiveNav("passthrough"); loadClients(); });
+  const handleNavOutgoings = () => navigateWithGuard(() => { setActiveNav("outgoings"); loadClients(true); });
+  const handleNavPassThrough = () => navigateWithGuard(() => { setActiveNav("passthrough"); loadClients(true); });
   const handleNavInvoices = () => navigateWithGuard(() => { setActiveNav("invoices"); loadClients(); });
   const handleNavJobs = () => navigateWithGuard(() => { setActiveNav("jobs"); loadClients(); });
   const handleNavRetainers = () => navigateWithGuard(() => { setActiveNav("retainers"); loadClients(); });
@@ -1387,6 +1397,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
           isAdmin={isAdmin}
           managedClient={managedClient}
           onClearManagedClient={handleClearManagedClient}
+          onClientsChanged={() => loadClients(true)}
         />
       );
     }
@@ -1411,6 +1422,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
             setSettingsSubsection("");
           }}
           onRegisterNavGuard={registerNavGuard}
+          onClientsChanged={() => loadClients(true)}
         />
       );
     }

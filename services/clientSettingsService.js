@@ -18,6 +18,8 @@
 import { getSheetsClient, withRetry } from "./sheetsClient.js";
 import { redisClient } from "./redisClient.js";
 import { sanitizeFormulaInput } from "./userPermissions.js";
+import { clearAllClientsMemoryCache } from "./workspaces.js";
+import { clearSsrClientsMemoryCache } from "./ssrSession.js";
 
 const REDIS_SETTINGS_PREFIX = "pulse:client_settings:";
 const REDIS_SETTINGS_TTL = 1800; // 30 minutes cache
@@ -586,6 +588,33 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
   if (redisClient?.isOpen) {
     try {
       await redisClient.set(redisKey, JSON.stringify(settings), { EX: REDIS_SETTINGS_TTL });
+      if (settings.customisation) {
+        const cleanKey = String(clientName || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
+        const setupKey = `pulse:setup:${cleanKey}`;
+        let existingSetup = {};
+        try {
+          const rawSetup = await redisClient.get(setupKey);
+          if (rawSetup) existingSetup = JSON.parse(rawSetup);
+        } catch {}
+        const revFocus = String(settings.customisation.revenueFocus || "Revenue").trim();
+        const dcMode = revFocus === "Income"
+          ? "Pass-through"
+          : (settings.customisation.directCostsMode === "Pass-through" ? "Pass-through" : "Contractors");
+        if (existingSetup.revenueFocus !== revFocus || existingSetup.directCostsMode !== dcMode) {
+          await redisClient.set(setupKey, JSON.stringify({
+            ...existingSetup,
+            clientName,
+            masterSheetId,
+            revenueFocus: revFocus,
+            directCostsMode: dcMode,
+            sheetSyncedAt: new Date().toISOString()
+          }));
+          const allClientKeys = await redisClient.keys("pulse:all_clients:*");
+          if (allClientKeys.length > 0) await redisClient.del(allClientKeys);
+          clearAllClientsMemoryCache();
+          clearSsrClientsMemoryCache();
+        }
+      }
     } catch (err) {
       console.warn("⚠️ Failed to store client settings in Redis:", err.message);
     }
@@ -1050,6 +1079,8 @@ export async function saveClientSettings({
         }));
         const allClientKeys = await redisClient.keys("pulse:all_clients:*");
         if (allClientKeys.length > 0) await redisClient.del(allClientKeys);
+        clearAllClientsMemoryCache();
+        clearSsrClientsMemoryCache();
       }
     } catch (err) {
       console.warn("⚠️ Failed to invalidate Redis settings cache after save:", err.message);

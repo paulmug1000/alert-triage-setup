@@ -24,13 +24,19 @@ import CompanyChooser from "../../components/portal/CompanyChooser";
 import SetupHoldingGate from "../../components/portal/SetupHoldingGate";
 import Spinner from "../../components/Spinner";
 
-export default function PortalPage({ initialUser = null }) {
+export default function PortalPage({
+  initialUser = null,
+  initialSetupClient = null,
+  initialSetupStatus = null
+}) {
   const router = useRouter();
   const auth = useAuth(initialUser);
   const { isAuthenticated, authChecking, user, logout } = auth;
 
   const [clients, setClients] = useState([]);
-  const [selectedClient, setSelectedClient] = useState(null);
+  const [selectedClient, setSelectedClient] = useState(
+    () => initialSetupClient || initialUser?.initialSetupClient || null
+  );
   const [clientsLoaded, setClientsLoaded] = useState(false);
   const clientsFetchedRef = useRef(false);
   const lastLoggedClientRef = useRef(null);
@@ -38,10 +44,22 @@ export default function PortalPage({ initialUser = null }) {
   const [activeView, setActiveView] = useState("month");
 
   // Setup Mode & Tool Connection State
-  const [setupStatus, setSetupStatus] = useState(null);
+  const [setupStatus, setSetupStatus] = useState(
+    () => initialSetupStatus || initialUser?.initialSetupStatus || null
+  );
   const [loadingSetupStatus, setLoadingSetupStatus] = useState(false);
   const [isPreviewSetup, setIsPreviewSetup] = useState(false);
   const [oauthFeedback, setOauthFeedback] = useState(null);
+
+  // Immediately hydrate setup client & status when user logs in via OTP on client side
+  useEffect(() => {
+    if (user?.initialSetupClient && !selectedClient) {
+      setSelectedClient(user.initialSetupClient);
+    }
+    if (user?.initialSetupStatus && !setupStatus) {
+      setSetupStatus(user.initialSetupStatus);
+    }
+  }, [user, selectedClient, setupStatus]);
 
   // Monitor URL for ?preview=setup or OAuth return params (?integration=...&status=...)
   useEffect(() => {
@@ -185,6 +203,13 @@ export default function PortalPage({ initialUser = null }) {
       lastFetchedPayloadSheetIdRef.current = null;
       return;
     }
+    // Skip dashboard payload fetch for ClientUser when client is in setupMode
+    const isClientOnly = Boolean(
+      user && !(!user.isReadOnly && (user.isAdmin || user.role === "Admin" || user.role === "ClientManager"))
+    );
+    if (isClientOnly && (selectedClient?.setupMode === true || setupStatus?.setupMode === true)) {
+      return;
+    }
     if (lastFetchedPayloadSheetIdRef.current !== sheetId) {
       lastFetchedPayloadSheetIdRef.current = sheetId;
       setPayload(null);
@@ -194,7 +219,7 @@ export default function PortalPage({ initialUser = null }) {
       setBudgetData(null);
       fetchPayload(selectedClient, false);
     }
-  }, [selectedClient, fetchPayload]);
+  }, [selectedClient, fetchPayload, user, setupStatus?.setupMode]);
 
   const fetchPerformance = useCallback(async (client, bypassCache = false, isSilent = false) => {
     if (!client || !client.clientSheetId) return;
@@ -508,8 +533,24 @@ export default function PortalPage({ initialUser = null }) {
             String(parsed.clientName || "").trim().toLowerCase() === String(queryClient).trim().toLowerCase();
           if (matchesQuery) {
             activeClientSheetIdRef.current = parsed.clientSheetId;
+            if (parsed.setupStatus) {
+              setSetupStatus((prev) => prev || parsed.setupStatus);
+            }
             setSelectedClient((curr) => {
-              if (!curr || curr.clientSheetId !== parsed.clientSheetId) {
+              if (!curr) {
+                return parsed;
+              }
+              if (
+                String(curr.clientName || "").trim().toLowerCase() ===
+                String(parsed.clientName || "").trim().toLowerCase()
+              ) {
+                return {
+                  ...parsed,
+                  setupMode: Boolean(curr.setupMode ?? parsed.setupMode),
+                  setupStatus: curr.setupStatus || parsed.setupStatus || null
+                };
+              }
+              if (curr.clientSheetId !== parsed.clientSheetId) {
                 return parsed;
               }
               return curr;
@@ -584,10 +625,12 @@ export default function PortalPage({ initialUser = null }) {
                   (c) => c.clientName.toLowerCase() === String(queryClient).toLowerCase()
                 );
               }
-              // Priority 2: Match currently selected client (e.g. from fast restore)
-              if (!initial && selectedClient?.clientSheetId) {
+              // Priority 2: Match currently selected client (e.g. from fast restore or SSR setup hydration)
+              if (!initial && (selectedClient?.clientSheetId || selectedClient?.clientName)) {
                 initial = data.clients.find(
-                  (c) => c.clientSheetId === selectedClient.clientSheetId || c.clientName?.toLowerCase() === selectedClient.clientName?.toLowerCase()
+                  (c) =>
+                    (selectedClient.clientSheetId && c.clientSheetId === selectedClient.clientSheetId) ||
+                    c.clientName?.toLowerCase() === selectedClient.clientName?.toLowerCase()
                 );
               }
               // Priority 3: Check localStorage
@@ -609,6 +652,9 @@ export default function PortalPage({ initialUser = null }) {
             }
           }
 
+          if (initial?.setupStatus) {
+            setSetupStatus((prev) => prev || initial.setupStatus);
+          }
           setSelectedClient((curr) => {
             if (
               curr &&
@@ -649,6 +695,11 @@ export default function PortalPage({ initialUser = null }) {
       return;
     }
     activeClientSheetIdRef.current = client?.clientSheetId || null;
+    if (client?.setupStatus) {
+      setSetupStatus(client.setupStatus);
+    } else if (!client?.setupMode) {
+      setSetupStatus(null);
+    }
     setSelectedClient(client);
 
     // Synchronously clear previous client's data to eliminate any stale charts/sparklines flashing
@@ -685,26 +736,30 @@ export default function PortalPage({ initialUser = null }) {
         localStorage.removeItem("pulse_portal_active_client_obj");
       }
     }
-    // Clean URL: Keep URL as clean /pulse (preserving preview or status if set)
-    if (router.query.client || router.query.choose) {
-      const nextQuery = { ...router.query };
-      delete nextQuery.client;
-      delete nextQuery.choose;
-      router.replace({ pathname: "/pulse", query: nextQuery }, undefined, { shallow: true });
+    // Clean URL: Keep URL as clean /pulse using history.replaceState to avoid Next.js router navigation side-effects
+    if (typeof window !== "undefined") {
+      const p = new URLSearchParams(window.location.search);
+      if (p.has("client") || p.has("choose")) {
+        p.delete("client");
+        p.delete("choose");
+        const qs = p.toString();
+        window.history.replaceState({}, "", `${window.location.pathname}${qs ? `?${qs}` : ""}`);
+      }
     }
-  }, [selectedClient, logWorkspaceAccess, router]);
+  }, [selectedClient, logWorkspaceAccess]);
 
   // Clean URL: Strip any legacy ?client=... or ?choose=... so the address bar stays clean (/pulse)
   useEffect(() => {
     // Only clean URL once clients have actually finished loading and selection is settled!
-    if (!clientsLoaded) return;
-    if (router.query.client || router.query.choose) {
-      const nextQuery = { ...router.query };
-      delete nextQuery.client;
-      delete nextQuery.choose;
-      router.replace({ pathname: "/pulse", query: nextQuery }, undefined, { shallow: true });
+    if (!clientsLoaded || typeof window === "undefined") return;
+    const p = new URLSearchParams(window.location.search);
+    if (p.has("client") || p.has("choose")) {
+      p.delete("client");
+      p.delete("choose");
+      const qs = p.toString();
+      window.history.replaceState({}, "", `${window.location.pathname}${qs ? `?${qs}` : ""}`);
     }
-  }, [clientsLoaded, router, router.query.client, router.query.choose]);
+  }, [clientsLoaded]);
 
   // Handle in-page client parameter updates (e.g. shallow router changes or preview links)
   useEffect(() => {
@@ -862,9 +917,8 @@ export default function PortalPage({ initialUser = null }) {
     );
   }
 
-  // Only hold on the setup spinner if the selected client is explicitly flagged as in setupMode
-  // (or an admin explicitly requested ?preview=setup) and full setupStatus details are still fetching.
-  // For all normal logins, mount PortalShell + skeleton immediately!
+  // If the selected client is in setupMode (or an admin requested ?preview=setup) and full setupStatus
+  // details are still fetching, render SetupHoldingGate in its clean loading state (NEVER PortalShell / MonthViewSkeleton!).
   const isSetupCheckPending = Boolean(
     selectedClient &&
     ((isClientUser && selectedClient.setupMode === true && setupStatus === null) ||
@@ -873,26 +927,20 @@ export default function PortalPage({ initialUser = null }) {
 
   if (isSetupCheckPending) {
     return (
-      <>
-        <Head>
-          <title>{selectedClient?.clientName ? `Pulse - ${selectedClient.clientName}` : "Pulse"}</title>
-        </Head>
-        <PortalShell
-          clientName={selectedClient?.clientName || ""}
-          clients={clients}
-          onSelectClient={handleSelectClient}
-          activeView={activeView}
-          onSelectView={setActiveView}
-          user={user}
-          onLogout={handleLogout}
-          hasBudget={true}
-          hasCash={true}
-          setupStatus={null}
-          onPreviewSetup={() => setIsPreviewSetup(true)}
-        >
-          <MonthViewSkeleton />
-        </PortalShell>
-      </>
+      <SetupHoldingGate
+        clientName={selectedClient.clientName}
+        masterSheetId={selectedClient.masterSheetId}
+        clientSheetId={selectedClient.clientSheetId}
+        clients={clients}
+        onSelectClient={handleSelectClient}
+        user={user}
+        setupStatus={null}
+        isLoading={true}
+        onLogout={handleLogout}
+        isPreview={isPreviewSetup && isAdminOrManager}
+        onExitPreview={isPreviewSetup && isAdminOrManager ? () => setIsPreviewSetup(false) : null}
+        oauthFeedback={oauthFeedback}
+      />
     );
   }
 
@@ -1296,12 +1344,49 @@ function getViewTitle(key) {
 }
 
 import { getSsrSessionUser } from "../../services/ssrSession";
+import { redisClient } from "../../services/redisClient";
+import { getClientSetupStatusForPortal } from "../../services/setupService";
 
 export async function getServerSideProps(context) {
   const sessionUser = getSsrSessionUser(context.req);
+  let initialSetupClient = null;
+  let initialSetupStatus = null;
+
+  if (sessionUser) {
+    try {
+      const queryClient = typeof context.query?.client === "string" ? context.query.client.trim() : "";
+      const isPreview = context.query?.preview === "setup";
+      const assigned = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
+      const singleAssigned =
+        assigned.length === 1 && assigned[0] && assigned[0] !== "*"
+          ? String(assigned[0]).trim()
+          : "";
+      const candidateClientName = queryClient || singleAssigned;
+
+      if (candidateClientName && redisClient?.isOpen) {
+        const normKey = `pulse:setup:${candidateClientName.toLowerCase().replace(/[^a-z0-9_-]/g, "_")}`;
+        const rawSetup = await redisClient.get(normKey);
+        const parsedSetup = rawSetup ? JSON.parse(rawSetup) : null;
+        if (parsedSetup?.setupMode === true || isPreview) {
+          initialSetupStatus = await getClientSetupStatusForPortal({
+            clientName: parsedSetup?.clientName || candidateClientName,
+            masterSheetId: parsedSetup?.masterSheetId || ""
+          });
+          initialSetupClient = {
+            clientName: parsedSetup?.clientName || candidateClientName,
+            setupMode: Boolean(initialSetupStatus?.setupMode),
+            setupStatus: initialSetupStatus
+          };
+        }
+      }
+    } catch (_) {}
+  }
+
   return {
     props: {
       initialUser: sessionUser || null,
+      initialSetupClient,
+      initialSetupStatus,
     },
   };
 }

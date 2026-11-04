@@ -13,7 +13,8 @@ export default function OnboardingChecklistView({
   onOpenSheetEditor,
   onGoToBudget,
   onGoToTasks,
-  onSetupModeToggled
+  onSetupModeToggled,
+  onClientsChanged
 }) {
   const isUserAdmin = Boolean(
     !user?.isReadOnly && (user?.isAdmin || user?.role === "Admin") && user?.role !== "ClientManager"
@@ -594,6 +595,7 @@ export default function OnboardingChecklistView({
                 onSaved={() => {
                   advanceTaskExpansion("p2_keyinfo_settings", checklist?.phases);
                   loadChecklist();
+                  onClientsChanged?.();
                 }}
               />
             </div>

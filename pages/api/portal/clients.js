@@ -1,6 +1,7 @@
 import { getSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
 import { getCanonicalAcSheetId, matchesClientName, isPulseOnlyUser, installSheetIdBoundary } from "../../../services/userPermissions.js";
+import { getClientSetupStatusForPortal } from "../../../services/setupService.js";
 import { memoryCache } from "../../../services/cacheService.js";
 import { redisClient } from "../../../services/redisClient.js";
 
@@ -90,8 +91,9 @@ export default async function handler(req, res) {
 
     authorizedClients.sort((a, b) => a.clientName.localeCompare(b.clientName));
 
-    // Attach lightweight setupMode boolean from Redis so the Portal never blocks on a separate /api/setup/status spinner
+    // Attach lightweight setupMode boolean (and full setupStatus for setupMode clients) so the Portal never flashes a skeleton before SetupHoldingGate
     let setupModes = [];
+    let setupStatuses = [];
     if (redisClient?.isOpen && authorizedClients.length > 0) {
       try {
         const keys = authorizedClients.map(
@@ -106,15 +108,29 @@ export default async function handler(req, res) {
             return false;
           }
         });
+        setupStatuses = await Promise.all(
+          authorizedClients.map(async (c, idx) => {
+            if (!setupModes[idx]) return null;
+            try {
+              return await getClientSetupStatusForPortal({
+                clientName: c.clientName,
+                masterSheetId: c.masterSheetId
+              });
+            } catch {
+              return null;
+            }
+          })
+        );
       } catch (_) {}
     }
 
     const hideMasterId = isPulseOnlyUser(sessionUser);
     const safeClients = authorizedClients.map((c, idx) => {
       const setupMode = Boolean(setupModes[idx]);
+      const setupStatus = setupStatuses[idx] || null;
       return hideMasterId
-        ? { clientName: c.clientName, clientSheetId: c.clientSheetId, setupMode }
-        : { ...c, setupMode };
+        ? { clientName: c.clientName, clientSheetId: c.clientSheetId, setupMode, ...(setupStatus ? { setupStatus } : {}) }
+        : { ...c, setupMode, ...(setupStatus ? { setupStatus } : {}) };
     });
 
     return res.status(200).json({

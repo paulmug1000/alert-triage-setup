@@ -846,7 +846,8 @@ export default function ClientSettingsView({
   onSelectSection,
   user,
   isAdmin = false,
-  onRegisterNavGuard
+  onRegisterNavGuard,
+  onClientsChanged
 }) {
   const router = useRouter();
   const effectiveIsAdmin = Boolean(isAdmin || user?.isAdmin || user?.role === "Admin");
@@ -1235,6 +1236,7 @@ export default function ClientSettingsView({
         setIsDirty(false);
         setInitialSettingsSnapshot(JSON.stringify(settings));
         setLastSyncedAt(data.savedAt || new Date().toISOString());
+        onClientsChanged?.();
         setTimeout(() => setSaveSuccessMsg(""), 4000);
         return true;
       } else {

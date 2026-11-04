@@ -15,7 +15,8 @@ export default function SetupView({
   user,
   isAdmin,
   managedClient,
-  onClearManagedClient
+  onClearManagedClient,
+  onClientsChanged
 }) {
   const isUserAdmin = Boolean(
     !user?.isReadOnly && (isAdmin || user?.isAdmin || user?.role === "Admin") && user?.role !== "ClientManager"
@@ -1043,6 +1044,7 @@ export default function SetupView({
                 setSetupMode(newMode);
                 if (selectedClient) loadConfig(selectedClient);
               }}
+              onClientsChanged={onClientsChanged}
             />
           ) : (
             /* ====================================================================
@@ -1270,6 +1272,7 @@ export default function SetupView({
                           setSetupMode(newMode);
                           if (selectedClient) loadConfig(selectedClient);
                         }}
+                        onClientsChanged={onClientsChanged}
                       />
                     </div>
                   )}

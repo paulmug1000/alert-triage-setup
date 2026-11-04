@@ -5115,10 +5115,10 @@ export default function CashflowWorkbenchView({
                   Important next step:
                 </p>
                 <p style={{ margin: "0 0 6px" }}>
-                  Notice the <strong>Reconciled & ready for automated P&L updates</strong> checkbox in the top bar of the next screen.
+                  Once you&apos;re happy with the reconciliation, check the <strong>Reconciled & ready for automated P&L updates</strong> checkbox in the top bar of the next screen.
                 </p>
                 <p style={{ margin: 0 }}>
-                  Once you&apos;re happy with the reconciliation, check this box. This will allow the display of transaction breakdowns and start automatic updates.
+                  This will allow the display of transaction breakdowns in Pulse and will also start automatic updates.
                 </p>
               </div>
             </div>

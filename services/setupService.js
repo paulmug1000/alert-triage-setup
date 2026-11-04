@@ -19,6 +19,8 @@ import { getIntegrationStatus } from "./vaultService.js";
 import { getSheetsClient, getDriveClient, withRetry, extractSheetIdFromUrl, sanitizeFormulaInput } from "./sheetsClient.js";
 import { logPmaActivity, DEFAULT_AC_SHEET_ID } from "./pmaLogger.js";
 import { isUserAuthorizedForClient, resolveMasterSheetIdByClientName } from "./userPermissions.js";
+import { clearAllClientsMemoryCache } from "./workspaces.js";
+import { clearSsrClientsMemoryCache } from "./ssrSession.js";
 
 export const TRACKER_SHEET_ID = "1tx4rRD55-W53-B9Z_kMAJjXMf0nrIE9CCczYXFR84co";
 export const REPORTING_CONTROL_SHEET_ID = "1uAJS6ZWn0o-GPU9Ea3DIVU9nzQoRnXrMfmBcQYHNJ_s";
@@ -180,15 +182,19 @@ export async function getClientSetupConfig({ clientName, masterSheetId, forceShe
       }
       if (resolvedMasterSheetId) {
         const res = await withRetry(() =>
-          sheets.spreadsheets.values.get({
+          sheets.spreadsheets.values.batchGet({
             spreadsheetId: resolvedMasterSheetId,
-            range: "KeyInfo!Q4:Q9"
+            ranges: ["KeyInfo!Q4:Q9", "KeyInfo!B15", "KeyInfo!D8"]
           })
         );
-        const rows = res.data.values || [];
+        const valueRanges = res.data.valueRanges || [];
+        const rows = valueRanges[0]?.values || [];
         sheetQ4 = (rows[0] && rows[0][0]) ? String(rows[0][0]).trim() : "None";
         sheetQ8 = (rows[4] && rows[4][0]) ? String(rows[4][0]).trim() : "None";
         sheetQ9 = (rows[5] && rows[5][0]) ? String(rows[5][0]).trim() : "NA";
+        const sheetB15 = String(valueRanges[1]?.values?.[0]?.[0] || "Revenue").trim();
+        const rawD8 = String(valueRanges[2]?.values?.[0]?.[0] || "Contractors").trim();
+        const sheetD8 = sheetB15 === "Income" ? "Pass-through" : (rawD8 === "Pass-through" ? "Pass-through" : "Contractors");
 
         // Persist to Redis so future visits load instantly from memory
         const updatedRecord = {
@@ -200,10 +206,18 @@ export async function getClientSetupConfig({ clientName, masterSheetId, forceShe
           accountingTool: sheetQ4,
           crmTool: sheetQ8,
           crmDrives: sheetQ9,
+          revenueFocus: sheetB15,
+          directCostsMode: sheetD8,
           sheetSyncedAt: new Date().toISOString(),
           updatedAt: config?.updatedAt || new Date().toISOString()
         };
         await redisClient.set(redisKey, JSON.stringify(updatedRecord));
+        if (sheetD8 !== config?.directCostsMode || sheetB15 !== config?.revenueFocus) {
+          const allClientKeys = await redisClient.keys("pulse:all_clients:*");
+          if (allClientKeys.length > 0) await redisClient.del(allClientKeys);
+          clearAllClientsMemoryCache();
+          clearSsrClientsMemoryCache();
+        }
         config = updatedRecord;
       }
     } catch (sheetErr) {
@@ -580,6 +594,7 @@ export function revalidateClientsSetupInBackground(clients = []) {
       const ONE_HOUR = 60 * 60 * 1000;
       const now = Date.now();
 
+      let anyClientChanged = false;
       for (const c of clients) {
         if (!c.clientName || !c.masterSheetId) continue;
         const redisKey = getSetupRedisKey(c.clientName);
@@ -610,8 +625,15 @@ export function revalidateClientsSetupInBackground(clients = []) {
             const rawD8 = String(valueRanges[2]?.values?.[0]?.[0] || "Contractors").trim();
             const sheetD8 = sheetB15 === "Income" ? "Pass-through" : (rawD8 === "Pass-through" ? "Pass-through" : "Contractors");
 
-            if (sheetQ4 !== config?.accountingTool || sheetQ8 !== config?.crmTool || sheetQ9 !== config?.crmDrives) {
-              console.log(`🔄 Setup Background Sync: Updated tools for "${c.clientName}" in Redis: Acc=${sheetQ4}, CRM=${sheetQ8}`);
+            if (
+              sheetQ4 !== config?.accountingTool ||
+              sheetQ8 !== config?.crmTool ||
+              sheetQ9 !== config?.crmDrives ||
+              sheetB15 !== config?.revenueFocus ||
+              sheetD8 !== config?.directCostsMode
+            ) {
+              anyClientChanged = true;
+              console.log(`🔄 Setup Background Sync: Updated config for "${c.clientName}" in Redis: Acc=${sheetQ4}, CRM=${sheetQ8}, Mode=${sheetB15}/${sheetD8}`);
             }
 
             const updatedRecord = {
@@ -633,6 +655,14 @@ export function revalidateClientsSetupInBackground(clients = []) {
             // Ignore background revalidation errors for individual clients
           }
         }
+      }
+      if (anyClientChanged) {
+        try {
+          const allClientKeys = await redisClient.keys("pulse:all_clients:*");
+          if (allClientKeys.length > 0) await redisClient.del(allClientKeys);
+          clearAllClientsMemoryCache();
+          clearSsrClientsMemoryCache();
+        } catch { }
       }
     } catch (bgErr) {
       console.warn("Background setup revalidation notice:", bgErr.message);
@@ -1446,6 +1476,8 @@ export async function saveMasterKeyInfoSettings(sheets, { masterSheetId, clientN
         }));
         const allClientKeys = await redisClient.keys("pulse:all_clients:*");
         if (allClientKeys.length > 0) await redisClient.del(allClientKeys);
+        clearAllClientsMemoryCache();
+        clearSsrClientsMemoryCache();
       } catch { }
     }
   }

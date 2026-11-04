@@ -22,7 +22,8 @@ export default function SettingsView({
   initialSubsection = "",
   onSelectClient,
   onSelectSection,
-  onRegisterNavGuard
+  onRegisterNavGuard,
+  onClientsChanged
 }) {
   const { clientsWithFlags, isLoading, refreshTriage } = useTriage();
   // Only Admin is an internal staff role able to see all clients
@@ -328,6 +329,7 @@ export default function SettingsView({
             clientNavGuardRef.current = guardFn;
             onRegisterNavGuard?.(guardFn);
           }}
+          onClientsChanged={onClientsChanged}
         />
       ) : (
         <>

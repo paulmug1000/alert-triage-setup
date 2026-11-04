@@ -98,6 +98,7 @@ export default function ReportingTab({
   const [narrativeSaving, setNarrativeSaving] = useState(false);
   const [narrativeApplying, setNarrativeApplying] = useState(false);
   const [narrativeDirty, setNarrativeDirty] = useState(false);
+  const [zoomedSlidePreview, setZoomedSlidePreview] = useState(null); // { slideNumber, slideTitle, base64 }
 
   // Default report covered month is 1 month prior to the EoM work cycle (e.g. 2026-10 cycle reports on 2026-09)
   const defaultReportMonthKey = useMemo(() => {
@@ -1232,19 +1233,26 @@ export default function ReportingTab({
   };
 
   const handleUpdateSlideLocalField = (slideNumber, field, value) => {
+    const cleanValue = field === "draftText" && typeof value === "string"
+      ? value.replace(/\s*\u2014\s*/g, " - ")
+      : value;
     setNarrativeWorkbench(prev => {
       if (!prev) return prev;
       return {
         ...prev,
         slides: (prev.slides || []).map(s => {
           if (s.slideNumber !== slideNumber) return s;
-          const nextStatus = field === "draftText" && String(value || "").trim()
-            ? (s.status === "applied" ? "drafted" : (s.status === "cloned" || s.status === "empty" ? "drafted" : s.status))
+          const hasText = field === "draftText"
+            ? Boolean(String(cleanValue || "").trim())
+            : Boolean(String(s.draftText || "").trim());
+          const nextStatus = field === "draftText" && hasText
+            ? "drafted"
             : s.status;
           return {
             ...s,
-            [field]: value,
-            status: nextStatus
+            [field]: cleanValue,
+            status: nextStatus,
+            isUneditedClone: field === "draftText" && hasText ? false : s.isUneditedClone
           };
         })
       };
@@ -1464,7 +1472,7 @@ export default function ReportingTab({
       const data = await resp.json();
       if (!data.success) throw new Error(data.error || "Failed to save narrative drafts");
 
-      const draftedCount = (narrativeWorkbench.slides || []).filter(s => s.draftText && s.draftText.trim() && !s.isUneditedClone).length;
+      const draftedCount = (narrativeWorkbench.slides || []).filter(s => Boolean(s.draftText && s.draftText.trim())).length;
       updateClientNarrativeBadge(narrativeWorkbench.clientName, narrativeWorkbench.reportMonthKey, {
         status: data.status || "drafted",
         draftedCount,
@@ -1488,10 +1496,10 @@ export default function ReportingTab({
   const handleApplyNarrativeToDeck = async (onlySlideNumber = null) => {
     if (!narrativeWorkbench || !narrativeModalClient) return;
     const slidesToPush = (narrativeWorkbench.slides || []).filter(s => {
-      const hasNewText = Boolean(s.draftText && s.draftText.trim() && !s.isUneditedClone);
+      const hasNewText = Boolean(s.draftText && s.draftText.trim());
       const hasFlagChange = Boolean(s.hasFlag) !== Boolean(s.deckHasFlag);
       if (onlySlideNumber !== null) {
-        return s.slideNumber === onlySlideNumber && (Boolean(s.draftText && s.draftText.trim()) || hasFlagChange);
+        return s.slideNumber === onlySlideNumber && (hasNewText || hasFlagChange);
       }
       return hasNewText || hasFlagChange;
     });
@@ -1520,6 +1528,7 @@ export default function ReportingTab({
           automationCommanderSheetId,
           slideUpdates: slidesToPush.map(s => ({
             slideNumber: s.slideNumber,
+            pageId: s.pageId || "",
             shapeName: s.shapeName || "",
             newText: s.draftText && s.draftText.trim() ? s.draftText : "",
             hasFlag: Boolean(s.hasFlag),
@@ -1533,6 +1542,7 @@ export default function ReportingTab({
       if (!data.success) throw new Error(data.error || "Failed to apply narrative to presentation");
 
       const updatedSlideNums = new Set(slidesToPush.map(s => s.slideNumber));
+      const updatedPreviews = data.updatedPreviewsBySlide || {};
       setNarrativeWorkbench(prev => {
         if (!prev) return prev;
         const nextSlides = (prev.slides || []).map(s =>
@@ -1542,11 +1552,12 @@ export default function ReportingTab({
                 deckText: s.draftText && s.draftText.trim() ? s.draftText : s.deckText,
                 deckHasFlag: Boolean(s.hasFlag),
                 status: s.draftText && s.draftText.trim() ? "applied" : s.status,
-                isUneditedClone: s.draftText && s.draftText.trim() ? false : s.isUneditedClone
+                isUneditedClone: s.draftText && s.draftText.trim() ? false : s.isUneditedClone,
+                slidePreviewBase64: updatedPreviews[s.slideNumber] || s.slidePreviewBase64
               }
             : s
         );
-        const appliedOrDraftedCount = nextSlides.filter(s => s.draftText && s.draftText.trim() && !s.isUneditedClone).length;
+        const appliedOrDraftedCount = nextSlides.filter(s => Boolean(s.draftText && s.draftText.trim())).length;
         updateClientNarrativeBadge(prev.clientName, prev.reportMonthKey, {
           status: "applied",
           draftedCount: appliedOrDraftedCount,
@@ -3541,10 +3552,10 @@ export default function ReportingTab({
       {narrativeModalClient && (() => {
         const slides = narrativeWorkbench?.slides || [];
         const activeSlide = slides.find(s => s.slideNumber === activeSlideNumber) || slides[0] || null;
-        const draftedSlidesCount = slides.filter(s => s.draftText && s.draftText.trim() && !s.isUneditedClone).length;
+        const draftedSlidesCount = slides.filter(s => Boolean(s.draftText && s.draftText.trim())).length;
         const flagChangedSlidesCount = slides.filter(s => Boolean(s.hasFlag) !== Boolean(s.deckHasFlag)).length;
         const actionableSlidesCount = slides.filter(
-          s => (s.draftText && s.draftText.trim() && !s.isUneditedClone) || (Boolean(s.hasFlag) !== Boolean(s.deckHasFlag))
+          s => Boolean(s.draftText && s.draftText.trim()) || (Boolean(s.hasFlag) !== Boolean(s.deckHasFlag))
         ).length;
         const isBusy = Boolean(generatingSlideNum || narrativeSaving || narrativeApplying);
 
@@ -3880,7 +3891,7 @@ export default function ReportingTab({
                     {slides.map(slide => {
                       const isSelected = activeSlide?.slideNumber === slide.slideNumber;
                       const isGeneratingThis = generatingSlideNum === slide.slideNumber || (generatingSlideNum === "__ALL__" && batchDraftProgress?.slideNumber === slide.slideNumber);
-                      const hasDraft = Boolean(slide.draftText && slide.draftText.trim() && !slide.isUneditedClone);
+                      const hasDraft = Boolean(slide.draftText && slide.draftText.trim());
 
                       let badgeLabel = "Empty";
                       let badgeBg = "#f1f5f9";
@@ -3998,7 +4009,7 @@ export default function ReportingTab({
                     })}
                   </div>
 
-                  {/* ── MIDDLE PANE: SLIDE EVIDENCE (CHART + TABLE + TRANSACTIONS + HISTORY) ── */}
+                  {/* ── MIDDLE PANE: ACTUAL SLIDE PREVIEW + TRANSACTIONS + HISTORY ── */}
                   {activeSlide && (
                     <div style={{
                       borderRight: "1px solid #e2e8f0",
@@ -4009,72 +4020,19 @@ export default function ReportingTab({
                       flexDirection: "column",
                       gap: "18px"
                     }}>
-                      {/* 1. Embedded Chart PNGs */}
-                      {activeSlide.chartImages?.length > 0 && (
+                      {/* 1. Full Actual Google Slide Preview */}
+                      {activeSlide.slidePreviewBase64 ? (
                         <div style={{
                           flexShrink: 0,
-                          border: "1px solid #e2e8f0",
+                          border: "1px solid #cbd5e1",
                           borderRadius: "8px",
                           overflow: "hidden",
-                          background: "#ffffff"
+                          background: "#f8fafc",
+                          boxShadow: "0 1px 3px rgba(15, 23, 42, 0.06)"
                         }}>
                           <div style={{
                             padding: "8px 12px",
-                            background: "#f8fafc",
-                            borderBottom: "1px solid #e2e8f0",
-                            fontSize: "12px",
-                            fontWeight: 600,
-                            color: "#334155",
-                            display: "flex",
-                            justifyContent: "space-between",
-                            alignItems: "center"
-                          }}>
-                            <span>Slide chart visual ({activeSlide.chartImages.length})</span>
-                            <span style={{ fontSize: "11px", color: "#64748b", fontWeight: 400 }}>
-                              Passed to Claude vision
-                            </span>
-                          </div>
-                          <div style={{
-                            padding: "12px",
-                            display: "flex",
-                            flexDirection: "column",
-                            gap: "10px",
-                            alignItems: "center",
-                            background: "#ffffff"
-                          }}>
-                            {activeSlide.chartImages.map((img, idx) => (
-                              <img
-                                key={idx}
-                                src={`data:${img.mimeType || "image/png"};base64,${img.base64}`}
-                                alt={`${activeSlide.slideTitle} chart ${idx + 1}`}
-                                style={{
-                                  maxWidth: "100%",
-                                  maxHeight: "290px",
-                                  objectFit: "contain",
-                                  borderRadius: "4px",
-                                  border: "1px solid #f1f5f9"
-                                }}
-                              />
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* 2. Slide Data Table(s) */}
-                      {activeSlide.tables?.length > 0 && activeSlide.tables.map((tbl, tIdx) => (
-                        <div
-                          key={tIdx}
-                          style={{
-                            flexShrink: 0,
-                            border: "1px solid #e2e8f0",
-                            borderRadius: "8px",
-                            overflow: "hidden",
-                            background: "#ffffff"
-                          }}
-                        >
-                          <div style={{
-                            padding: "8px 12px",
-                            background: "#f8fafc",
+                            background: "#f1f5f9",
                             borderBottom: "1px solid #e2e8f0",
                             fontSize: "12px",
                             fontWeight: 600,
@@ -4085,62 +4043,183 @@ export default function ReportingTab({
                             gap: "8px"
                           }}>
                             <span>
-                              Slide data table{activeSlide.tables.length > 1 ? ` ${tIdx + 1}` : ""} ({Math.max(0, tbl.length - 1)} rows)
+                              Slide {activeSlide.slideNumber} preview: {activeSlide.slideTitle}
                             </span>
-                            {activeSlide.chartCode && (
-                              <span style={{ fontSize: "11px", fontFamily: "monospace", color: "#64748b" }}>
-                                {activeSlide.chartCode}
-                              </span>
-                            )}
+                            <button
+                              type="button"
+                              onClick={() => setZoomedSlidePreview({
+                                slideNumber: activeSlide.slideNumber,
+                                slideTitle: activeSlide.slideTitle,
+                                base64: activeSlide.slidePreviewBase64
+                              })}
+                              style={{
+                                background: "#ffffff",
+                                border: "1px solid #cbd5e1",
+                                borderRadius: "4px",
+                                padding: "2px 8px",
+                                fontSize: "11px",
+                                fontWeight: 600,
+                                color: "#334155",
+                                cursor: "pointer"
+                              }}
+                            >
+                              Enlarge slide
+                            </button>
                           </div>
-                          <div style={{ overflowX: "auto", overflowY: "auto", maxHeight: "560px" }}>
-                            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "11.5px" }}>
-                              <tbody>
-                                {tbl.map((row, rIdx) => {
-                                  const isHeader = rIdx === 0;
-                                  const firstCell = String(row[0] || "").trim();
-                                  const isSummaryRow =
-                                    !isHeader &&
-                                    (/^(total|gross profit|operating profit|net profit|ebitda)/i.test(firstCell));
-
-                                  return (
-                                    <tr
-                                      key={rIdx}
-                                      style={{
-                                        background: isHeader ? "#f1f5f9" : (isSummaryRow ? "#f8fafc" : "#ffffff"),
-                                        borderBottom: "1px solid #f1f5f9",
-                                        fontWeight: isHeader || isSummaryRow ? 700 : 400,
-                                        position: isHeader ? "sticky" : "static",
-                                        top: isHeader ? 0 : "auto",
-                                        zIndex: isHeader ? 1 : "auto"
-                                      }}
-                                    >
-                                      {row.map((cell, cIdx) => (
-                                        <td
-                                          key={cIdx}
-                                          style={{
-                                            padding: "6px 10px",
-                                            textAlign: cIdx === 0 ? "left" : "right",
-                                            fontFamily: cIdx === 0 || isHeader ? "inherit" : "monospace",
-                                            color: String(cell || "").trim().startsWith("-") || String(cell || "").trim().startsWith("(")
-                                              ? "#b91c1c"
-                                              : "#0f172a",
-                                            whiteSpace: cIdx === 0 ? "normal" : "nowrap"
-                                          }}
-                                        >
-                                          {cell}
-                                        </td>
-                                      ))}
-                                    </tr>
-                                  );
-                                })}
-                              </tbody>
-                            </table>
+                          <div
+                            onClick={() => setZoomedSlidePreview({
+                              slideNumber: activeSlide.slideNumber,
+                              slideTitle: activeSlide.slideTitle,
+                              base64: activeSlide.slidePreviewBase64
+                            })}
+                            title="Click to enlarge slide preview"
+                            style={{
+                              padding: "10px",
+                              background: "#e2e8f0",
+                              display: "flex",
+                              justifyContent: "center",
+                              alignItems: "center",
+                              cursor: "zoom-in"
+                            }}
+                          >
+                            <img
+                              src={`data:image/png;base64,${activeSlide.slidePreviewBase64}`}
+                              alt={`Slide ${activeSlide.slideNumber}: ${activeSlide.slideTitle}`}
+                              style={{
+                                width: "100%",
+                                height: "auto",
+                                display: "block",
+                                borderRadius: "4px",
+                                background: "#ffffff",
+                                boxShadow: "0 2px 8px rgba(15, 23, 42, 0.12)"
+                              }}
+                            />
                           </div>
                         </div>
-                      ))}
+                      ) : (
+                        <>
+                          {/* Fallback if slide PNG preview is unavailable: show embedded chart and raw table */}
+                          {activeSlide.chartImages?.length > 0 && (
+                            <div style={{
+                              flexShrink: 0,
+                              border: "1px solid #e2e8f0",
+                              borderRadius: "8px",
+                              overflow: "hidden",
+                              background: "#ffffff"
+                            }}>
+                              <div style={{
+                                padding: "8px 12px",
+                                background: "#f8fafc",
+                                borderBottom: "1px solid #e2e8f0",
+                                fontSize: "12px",
+                                fontWeight: 600,
+                                color: "#334155",
+                                display: "flex",
+                                justifyContent: "space-between",
+                                alignItems: "center"
+                              }}>
+                                <span>Slide chart visual ({activeSlide.chartImages.length})</span>
+                              </div>
+                              <div style={{
+                                padding: "12px",
+                                display: "flex",
+                                flexDirection: "column",
+                                gap: "10px",
+                                alignItems: "center",
+                                background: "#ffffff"
+                              }}>
+                                {activeSlide.chartImages.map((img, idx) => (
+                                  <img
+                                    key={idx}
+                                    src={`data:${img.mimeType || "image/png"};base64,${img.base64}`}
+                                    alt={`${activeSlide.slideTitle} chart ${idx + 1}`}
+                                    style={{
+                                      maxWidth: "100%",
+                                      maxHeight: "290px",
+                                      objectFit: "contain",
+                                      borderRadius: "4px",
+                                      border: "1px solid #f1f5f9"
+                                    }}
+                                  />
+                                ))}
+                              </div>
+                            </div>
+                          )}
 
-                      {/* 3. Supplier Transactions Breakdown (Overheads Slide) */}
+                          {activeSlide.tables?.length > 0 && activeSlide.tables.map((tbl, tIdx) => (
+                            <div
+                              key={tIdx}
+                              style={{
+                                flexShrink: 0,
+                                border: "1px solid #e2e8f0",
+                                borderRadius: "8px",
+                                overflow: "hidden",
+                                background: "#ffffff"
+                              }}
+                            >
+                              <div style={{
+                                padding: "8px 12px",
+                                background: "#f8fafc",
+                                borderBottom: "1px solid #e2e8f0",
+                                fontSize: "12px",
+                                fontWeight: 600,
+                                color: "#334155",
+                                display: "flex",
+                                justifyContent: "space-between",
+                                alignItems: "center",
+                                gap: "8px"
+                              }}>
+                                <span>
+                                  Slide data table{activeSlide.tables.length > 1 ? ` ${tIdx + 1}` : ""} ({Math.max(0, tbl.length - 1)} rows)
+                                </span>
+                              </div>
+                              <div style={{ overflowX: "auto", overflowY: "auto", maxHeight: "560px" }}>
+                                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "11.5px" }}>
+                                  <tbody>
+                                    {tbl.map((row, rIdx) => {
+                                      const isHeader = rIdx === 0;
+                                      const firstCell = String(row[0] || "").trim();
+                                      const isSummaryRow =
+                                        !isHeader &&
+                                        (/^(total|gross profit|operating profit|net profit|ebitda)/i.test(firstCell));
+
+                                      return (
+                                        <tr
+                                          key={rIdx}
+                                          style={{
+                                            background: isHeader ? "#f1f5f9" : (isSummaryRow ? "#f8fafc" : "#ffffff"),
+                                            borderBottom: "1px solid #f1f5f9",
+                                            fontWeight: isHeader || isSummaryRow ? 700 : 400
+                                          }}
+                                        >
+                                          {row.map((cell, cIdx) => (
+                                            <td
+                                              key={cIdx}
+                                              style={{
+                                                padding: "6px 10px",
+                                                textAlign: cIdx === 0 ? "left" : "right",
+                                                fontFamily: cIdx === 0 || isHeader ? "inherit" : "monospace",
+                                                color: String(cell || "").trim().startsWith("-") || String(cell || "").trim().startsWith("(")
+                                                  ? "#b91c1c"
+                                                  : "#0f172a",
+                                                whiteSpace: cIdx === 0 ? "normal" : "nowrap"
+                                              }}
+                                            >
+                                              {cell}
+                                            </td>
+                                          ))}
+                                        </tr>
+                                      );
+                                    })}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
+                          ))}
+                        </>
+                      )}
+
+                      {/* 2. Supplier Transactions Breakdown (Overheads Slide) */}
                       {activeSlide.slideTransactions && (() => {
                         const matchedByCat = activeSlide.slideTransactions.matchedByCategory || {};
                         const catEntries = Object.entries(matchedByCat).filter(([, list]) => Array.isArray(list) && list.length > 0);
@@ -4204,7 +4283,7 @@ export default function ReportingTab({
                                         <div key={idx} style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", color: "#475569", gap: "8px", borderTop: idx > 0 ? "1px dashed #f1f5f9" : "none", paddingTop: idx > 0 ? "3px" : 0 }}>
                                           <span>
                                             <strong>{t.payee}</strong>
-                                            {t.description ? ` — ${t.description}` : ""}
+                                            {t.description ? ` - ${t.description}` : ""}
                                             {t.date ? <span style={{ color: "#94a3b8", marginLeft: "4px" }}>({t.date})</span> : null}
                                           </span>
                                           <span style={{ fontFamily: "monospace", fontWeight: 600, color: "#0f172a", whiteSpace: "nowrap" }}>
@@ -4221,7 +4300,7 @@ export default function ReportingTab({
                                     <span>
                                       <span style={{ color: "#0369a1", fontWeight: 600 }}>[{t.category}]</span>{" "}
                                       <strong>{t.payee}</strong>
-                                      {t.description ? ` — ${t.description}` : ""}
+                                      {t.description ? ` - ${t.description}` : ""}
                                     </span>
                                     <span style={{ fontFamily: "monospace", fontWeight: 600 }}>{t.netFormatted}</span>
                                   </div>
@@ -4638,7 +4717,7 @@ export default function ReportingTab({
                 <div style={{ fontSize: "12px", color: "#64748b" }}>
                   {narrativeDirty ? (
                     <span style={{ color: "#0369a1", fontWeight: 600 }}>
-                      Unsaved edits in workbench — click &apos;Save draft&apos; or &apos;Apply all to presentation&apos;.
+                      Unsaved edits in workbench - click &apos;Save draft&apos; or &apos;Apply all to presentation&apos;.
                     </span>
                   ) : narrativeWorkbench?.updatedAt ? (
                     <span>
@@ -4714,6 +4793,78 @@ export default function ReportingTab({
                 </div>
               </div>
             </div>
+
+            {zoomedSlidePreview && (
+              <div
+                onClick={() => setZoomedSlidePreview(null)}
+                style={{
+                  position: "fixed",
+                  inset: 0,
+                  background: "rgba(15, 23, 42, 0.82)",
+                  zIndex: 10050,
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  padding: "24px",
+                  cursor: "zoom-out"
+                }}
+              >
+                <div
+                  onClick={(e) => e.stopPropagation()}
+                  style={{
+                    maxWidth: "1280px",
+                    width: "100%",
+                    background: "#ffffff",
+                    borderRadius: "10px",
+                    overflow: "hidden",
+                    boxShadow: "0 25px 50px rgba(0,0,0,0.45)"
+                  }}
+                >
+                  <div style={{
+                    padding: "10px 16px",
+                    background: "#0f172a",
+                    color: "#ffffff",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    fontSize: "13px",
+                    fontWeight: 600
+                  }}>
+                    <span>Slide {zoomedSlidePreview.slideNumber}: {zoomedSlidePreview.slideTitle}</span>
+                    <button
+                      type="button"
+                      onClick={() => setZoomedSlidePreview(null)}
+                      style={{
+                        background: "rgba(255,255,255,0.15)",
+                        border: "none",
+                        color: "#ffffff",
+                        borderRadius: "4px",
+                        padding: "4px 10px",
+                        fontSize: "12px",
+                        fontWeight: 600,
+                        cursor: "pointer"
+                      }}
+                    >
+                      Close preview
+                    </button>
+                  </div>
+                  <div style={{ padding: "14px", background: "#cbd5e1", display: "flex", justifyContent: "center" }}>
+                    <img
+                      src={`data:image/png;base64,${zoomedSlidePreview.base64}`}
+                      alt={`Slide ${zoomedSlidePreview.slideNumber}: ${zoomedSlidePreview.slideTitle}`}
+                      style={{
+                        maxWidth: "100%",
+                        maxHeight: "82vh",
+                        objectFit: "contain",
+                        borderRadius: "4px",
+                        background: "#ffffff"
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         );
       })()}

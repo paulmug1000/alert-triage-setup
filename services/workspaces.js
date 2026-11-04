@@ -20,6 +20,7 @@ import { isUserAuthorizedForClient, matchesClientName, sanitizeFormulaInput, get
 export { DEFAULT_AC_SHEET_ID, resolveClientNameBySheetId };
 import { logPmaActivity } from "./pmaLogger.js";
 import { getSessionUser } from "./authService.js";
+import { getSettingsRedisKey } from "./clientSettingsService.js";
 import { redisClient } from "./redisClient.js";
 import { memoryCache, get2TierCache, set2TierCache, invalidatePmaClientCache } from "./cacheService.js";
 import { resolveAssignedAlertsInMemoryAndCache } from "./alertState.js";
@@ -3626,7 +3627,7 @@ export async function handleUpdateExpenseSlot(req, res, sheets) {
     const bgTasks = (async () => {
       try {
         await invalidatePmaClientCache(sheetIdClean, masterSheetId, ["outgoings", "jobs"]);
-      } catch (_) {}
+      } catch (_) { }
       try {
         let tenantClient = req.body.clientName || "";
         if (!tenantClient) {
@@ -3660,7 +3661,7 @@ export async function handleUpdateExpenseSlot(req, res, sheets) {
         console.error("PMA log failed:", e);
       }
     })();
-    try { waitUntil(bgTasks); } catch (_) {}
+    try { waitUntil(bgTasks); } catch (_) { }
 
     return res.status(200).json({
       success: true,
@@ -4142,7 +4143,7 @@ export async function handleAssignInvoiceToJob(req, res, sheets) {
     const bgInvoiceTasks = (async () => {
       try {
         await invalidatePmaClientCache(sheetIdClean, masterSheetId, ["invoices", "jobs", "retainers", "cash"]);
-      } catch (_) {}
+      } catch (_) { }
       try {
         let tenantClient = req.body.clientName || "";
         if (!tenantClient) {
@@ -4339,7 +4340,7 @@ export async function handleMoveInvoiceToJob(req, res, sheets) {
     const bgTasks = (async () => {
       try {
         await invalidatePmaClientCache(sheetIdClean, masterSheetId, ["invoices", "jobs", "retainers", "cash"]);
-      } catch (_) {}
+      } catch (_) { }
       try {
         let tenantClient = req.body.clientName || "";
         if (!tenantClient) {
@@ -4367,7 +4368,7 @@ export async function handleMoveInvoiceToJob(req, res, sheets) {
         console.error("PMA log failed:", e);
       }
     })();
-    try { waitUntil(bgTasks); } catch (_) {}
+    try { waitUntil(bgTasks); } catch (_) { }
 
     return res.status(200).json({
       success: true,
@@ -4772,7 +4773,7 @@ export async function handleUpdateInvoiceSlot(req, res, sheets) {
     const bgTasks = (async () => {
       try {
         await invalidatePmaClientCache(sheetIdClean, masterSheetId, ["invoices", "jobs", "retainers", "cash"]);
-      } catch (_) {}
+      } catch (_) { }
       try {
         let tenantClient = req.body.clientName || "";
         if (!tenantClient) {
@@ -4806,7 +4807,7 @@ export async function handleUpdateInvoiceSlot(req, res, sheets) {
         console.error("PMA log failed:", e);
       }
     })();
-    try { waitUntil(bgTasks); } catch (_) {}
+    try { waitUntil(bgTasks); } catch (_) { }
 
     return res.status(200).json({
       success: true,
@@ -5062,7 +5063,7 @@ export async function handleCreateJobFromInvoice(req, res, sheets) {
     }
 
     memoryCache.del(`deleted_job_rows:${sheetIdClean}:confirmed`);
-    invalidatePmaClientCache(sheetIdClean, targetMasterId, ["jobs", "invoices", "retainers", "cash"]).catch(() => {});
+    invalidatePmaClientCache(sheetIdClean, targetMasterId, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
 
     return res.status(200).json({ success: true, newRowNum: newRow, backgroundProvisioning: isRetainer });
   } catch (err) {
@@ -5418,7 +5419,7 @@ export async function handleAddNewJob(req, res, sheets) {
 
     // Clear any deleted_job_rows tombstones and invalidate PMA job caches immediately so the new job is visible right away
     memoryCache.del(`deleted_job_rows:${sheetIdClean}:${targetTab.toLowerCase()}`);
-    invalidatePmaClientCache(sheetIdClean, targetMasterId, ["jobs", "invoices", "retainers", "cash"]).catch(() => {});
+    invalidatePmaClientCache(sheetIdClean, targetMasterId, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
 
     const formattedDateConf = formatSheetDate(jobData.dateConfirmed || jobData.dateAdded || new Date());
     const formattedStartDate = formatSheetDate(jobData.startDate);
@@ -5901,10 +5902,10 @@ export async function handleSetMakingUpCosZero(req, res, sheets) {
       automationCommanderSheetId,
       clientName: clientName || "",
       category: "EXPENSES",
-      action: zero ? "Making up Cos zeroed" : "Making up Cos restored",
+      action: zero ? "Making up CoS zeroed" : "Making up CoS restored",
       summary: zero
-        ? `Zeroed Making up Cos for ${cleanColLetter} (row 112)`
-        : `Restored Making up Cos for ${cleanColLetter} (cleared row 112)`,
+        ? `Zeroed Making up CoS for ${cleanColLetter} (row 112)`
+        : `Restored Making up CoS for ${cleanColLetter} (cleared row 112)`,
       details: {
         cellRef: cellRange,
         colLetter: cleanColLetter,
@@ -5925,6 +5926,165 @@ export async function handleSetMakingUpCosZero(req, res, sheets) {
     });
   } catch (err) {
     console.error("❌ set_making_up_cos_zero error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function handleSetMakingUpCosTarget(req, res, sheets) {
+  const { clientSheetId, targetPct, clientName, automationCommanderSheetId } = req.body;
+  if (!clientSheetId) {
+    return res.status(400).json({ success: false, error: "Missing required field: clientSheetId" });
+  }
+
+  const cleanNum = Math.min(100, Math.max(0, parseInt(String(targetPct).replace(/[^0-9]/g, ""), 10) || 0));
+  const formattedPct = `${cleanNum}%`;
+
+  const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+  const sessionUser = getSessionUser(req);
+  if (sessionUser && !sessionUser.isAdmin) {
+    const auth = await verifyUserAuthorizedForSheet(sessionUser, sheetIdClean, clientName, sheets);
+    if (!auth.authorized) {
+      return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
+    }
+  }
+
+  try {
+    // 1. Update Outgoings!A112 in Client Sheet
+    await withRetry(() =>
+      sheets.spreadsheets.values.update({
+        spreadsheetId: sheetIdClean,
+        range: "Outgoings!A112",
+        valueInputOption: "USER_ENTERED",
+        requestBody: { values: [[formattedPct]] },
+      })
+    );
+
+    // 2. Invalidate Client Settings cache in Redis so Client Settings immediately reflects the change
+    if (redisClient?.isOpen) {
+      try {
+        if (clientName) {
+          const settingsKey = getSettingsRedisKey(clientName);
+          await redisClient.del(settingsKey);
+        }
+        await redisClient.del(`pulse:client_settings:${sheetIdClean}`);
+      } catch (e) {
+        console.warn("Could not invalidate client settings cache:", e.message);
+      }
+    }
+
+    // 3. Read back header (months) and row 111 & 112 to get freshly recalculated figures across all months
+    const gridResp = await withRetry(() =>
+      sheets.spreadsheets.get({
+        spreadsheetId: sheetIdClean,
+        ranges: ["Outgoings!A1:BG1", "Outgoings!A111:BG112"],
+        includeGridData: true,
+        fields: "sheets.data.rowData.values(formattedValue,effectiveValue,note)",
+      })
+    );
+
+    const sheetGrids = gridResp.data.sheets?.[0]?.data || [];
+    const headerCells = sheetGrids[0]?.rowData?.[0]?.values || [];
+    const row111Values = sheetGrids[1]?.rowData?.[0]?.values || [];
+    const row112Values = sheetGrids[1]?.rowData?.[1]?.values || [];
+
+    const SHEET_EPOCH = new Date(1899, 11, 30);
+    const months = [];
+    for (let i = 6; i < headerCells.length; i++) {
+      const cell = headerCells[i];
+      if (!cell) continue;
+      const fv = cell.formattedValue || "";
+      const ev = cell.effectiveValue;
+
+      if (fv.toLowerCase().includes("total") || fv.toLowerCase().includes("fy")) continue;
+
+      let dateObj = null;
+      if (ev?.numberValue) {
+        const d = new Date(SHEET_EPOCH.getTime() + ev.numberValue * 86400000);
+        if (!isNaN(d.getTime()) && d.getFullYear() > 2020) dateObj = d;
+      }
+      if (!dateObj && fv) {
+        const d = new Date(fv);
+        if (!isNaN(d.getTime()) && d.getFullYear() > 2020) dateObj = d;
+      }
+
+      if (dateObj) {
+        const label = dateObj.toLocaleString("en-GB", { month: "short", year: "2-digit" });
+        const isoMonth = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, "0")}`;
+        months.push({ colIndex: i, colLetter: colIndexToLetter(i + 1), label, isoMonth });
+      }
+    }
+
+    const cosRawName = String(row111Values[0]?.formattedValue || "").trim();
+    const cosPct = String(row112Values[0]?.formattedValue || formattedPct).trim();
+
+    const makingUpCosCells = {};
+    for (const month of months) {
+      const cell111 = row111Values[month.colIndex];
+      const cell112 = row112Values[month.colIndex];
+
+      const val111Str = cell111?.formattedValue || "";
+      const val111Num = typeof cell111?.effectiveValue?.numberValue === "number"
+        ? cell111.effectiveValue.numberValue
+        : parseFloat(String(val111Str).replace(/[^0-9.-]/g, "")) || 0;
+
+      const raw112 = String(cell112?.formattedValue || cell112?.effectiveValue?.stringValue || "").trim();
+      const isZero = raw112.toUpperCase() === "ZERO";
+
+      makingUpCosCells[month.colLetter] = {
+        amount: val111Num,
+        formatted: val111Str || (val111Num ? `£${val111Num.toLocaleString("en-GB")}` : "£0"),
+        isZero,
+        overrideValue: raw112,
+        note: cell111?.note || "",
+      };
+    }
+
+    const makingUpCos = {
+      name: cosRawName || "Making up Cos",
+      pct: cosPct || formattedPct,
+      cells: makingUpCosCells,
+    };
+
+    // 4. Update outgoings cache with new makingUpCos
+    const outgoingsCacheKey = `pulse:pma:outgoings:${sheetIdClean}`;
+    if (redisClient?.isOpen) {
+      try {
+        const cachedRaw = await redisClient.get(outgoingsCacheKey);
+        if (cachedRaw) {
+          const parsed = JSON.parse(cachedRaw);
+          parsed.makingUpCos = makingUpCos;
+          await redisClient.set(outgoingsCacheKey, JSON.stringify(parsed), { EX: 120 });
+        } else {
+          await redisClient.del(outgoingsCacheKey);
+        }
+      } catch (e) { }
+    }
+
+    // Invalidate PMA cache for views
+    await invalidatePmaClientCache(sheetIdClean, null, ["views"]).catch(() => { });
+
+    // 5. Activity log
+    const bgLog = logPmaActivity(sheets, {
+      automationCommanderSheetId,
+      clientName: clientName || "",
+      category: "EXPENSES",
+      action: "Making up Cos target updated",
+      summary: `Updated Making up Cos target to ${formattedPct} in Outgoings!A112`,
+      details: {
+        cellRef: "Outgoings!A112",
+        targetPct: formattedPct,
+      },
+      user: sessionUser?.email || "Unknown user",
+    }).catch(e => console.error("PMA log failed:", e));
+    try { waitUntil(bgLog); } catch (_) { }
+
+    return res.status(200).json({
+      success: true,
+      targetPct: formattedPct,
+      makingUpCos,
+    });
+  } catch (err) {
+    console.error("❌ set_making_up_cos_target error:", err);
     return res.status(500).json({ success: false, error: err.message });
   }
 }
@@ -6021,11 +6181,11 @@ export async function handleDeleteDirectJob(req, res, sheets) {
       }),
       rowNums.length > 0
         ? withRetry(() =>
-            sheets.spreadsheets.get({
-              spreadsheetId: sheetIdClean,
-              fields: "sheets(properties,rowGroups)",
-            })
-          ).catch(() => null)
+          sheets.spreadsheets.get({
+            spreadsheetId: sheetIdClean,
+            fields: "sheets(properties,rowGroups)",
+          })
+        ).catch(() => null)
         : Promise.resolve(null),
     ]);
 

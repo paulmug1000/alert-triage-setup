@@ -1112,7 +1112,8 @@ export async function syncReconUnreconciledItems({
         amt = isOutflow ? `-${rawNum}` : String(rawNum);
       }
     }
-    const cat = u.category || "";
+    const rawPlCat = u.plCategory !== undefined ? u.plCategory : (u.category || "");
+    const cat = (rawPlCat && rawPlCat !== "Outgoings" && rawPlCat !== "Revenue") ? rawPlCat : "";
     const vat = u.vatApplies || "No";
 
     // CD:CI: [CD: '', CE: '', CF: Date, CG: Payee, CH: Particulars, CI: Amount]
@@ -1366,6 +1367,155 @@ export async function updateCashCellNote({
   })().catch(e => console.error("PMA log failed:", e));
 
   return { success: true, cellRef: `${colLetter}${rowNum}`, note };
+}
+
+/**
+ * Applies a future-month offset (linked formula e.g. =-G7 or custom carry-over amount)
+ * and optionally updates both the Target Month and Next Month adjustment cell notes in one call.
+ */
+export async function applyCashFutureOffset({
+  clientSheetId,
+  cashTabSheetId,
+  sheetRow,
+  targetColIdx,
+  targetColLetter,
+  nextColIdx,
+  nextColLetter,
+  targetValue, // optional: if also updating target month adjustment
+  nextValue,   // required: value or formula for next month adjustment (e.g. "=-G7" or "-4000")
+  targetNote,  // optional string (if !== undefined, updates target month note)
+  nextNote,    // optional string (if !== undefined, updates next month note)
+  clientName,
+  automationCommanderSheetId,
+  isAdmin = true
+}) {
+  if (!clientSheetId || !sheetRow || !nextColLetter) {
+    throw new Error("Missing clientSheetId, sheetRow, or nextColLetter");
+  }
+
+  const sheets = await getSheetsClient();
+  const cleanClientSheetId = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+  const rowNum = parseInt(sheetRow, 10);
+  const ALLOWED_ADJUSTMENT_ROWS = new Set([7, 9, 11, 13, 14, 15, 17, 19, 20, 21, 22, 25, 27, 29, 30]);
+  const cleanNextCol = String(nextColLetter).trim().toUpperCase();
+  const cleanTargetCol = targetColLetter ? String(targetColLetter).trim().toUpperCase() : "";
+
+  if (!ALLOWED_ADJUSTMENT_ROWS.has(rowNum) || !/^[B-Z]$|^A[A-K]$/.test(cleanNextCol)) {
+    throw new Error("Invalid adjustment row or column");
+  }
+
+  // 1. Update cell notes first (if provided) via spreadsheets.batchUpdate
+  const noteRequests = [];
+  if (targetNote !== undefined && targetColIdx !== undefined && cashTabSheetId !== undefined) {
+    const tColIdx = parseInt(targetColIdx, 10);
+    if (!isNaN(tColIdx) && tColIdx >= 1 && tColIdx <= 50) {
+      noteRequests.push({
+        updateCells: {
+          range: {
+            sheetId: cashTabSheetId,
+            startRowIndex: rowNum - 1,
+            endRowIndex: rowNum,
+            startColumnIndex: tColIdx,
+            endColumnIndex: tColIdx + 1
+          },
+          rows: [{ values: [{ note: targetNote || "" }] }],
+          fields: "note"
+        }
+      });
+    }
+  }
+
+  if (nextNote !== undefined && nextColIdx !== undefined && cashTabSheetId !== undefined) {
+    const nColIdx = parseInt(nextColIdx, 10);
+    if (!isNaN(nColIdx) && nColIdx >= 1 && nColIdx <= 50) {
+      noteRequests.push({
+        updateCells: {
+          range: {
+            sheetId: cashTabSheetId,
+            startRowIndex: rowNum - 1,
+            endRowIndex: rowNum,
+            startColumnIndex: nColIdx,
+            endColumnIndex: nColIdx + 1
+          },
+          rows: [{ values: [{ note: nextNote || "" }] }],
+          fields: "note"
+        }
+      });
+    }
+  }
+
+  if (noteRequests.length > 0) {
+    await withRetry(() => sheets.spreadsheets.batchUpdate({
+      spreadsheetId: cleanClientSheetId,
+      requestBody: { requests: noteRequests }
+    }));
+  }
+
+  // 2. Update value(s) / formula(s)
+  const valueData = [];
+  if (targetValue !== undefined && cleanTargetCol && /^[B-Z]$|^A[A-K]$/.test(cleanTargetCol)) {
+    const cleanTargetVal = typeof targetValue === "string" ? targetValue.trim().replace(/^['’]=/, "=") : targetValue;
+    valueData.push({
+      range: `Cash!${cleanTargetCol}${rowNum}`,
+      values: [[sanitizeCashAdjustmentInput(cleanTargetVal ?? "")]]
+    });
+  }
+
+  const cleanNextVal = typeof nextValue === "string" ? nextValue.trim().replace(/^['’]=/, "=") : nextValue;
+  let safeNextVal = sanitizeCashAdjustmentInput(cleanNextVal ?? "");
+  if (!isAdmin && typeof safeNextVal === "string" && safeNextVal.startsWith("=") && /^=[0-9+\-*/().\s]+$/.test(safeNextVal)) {
+    try {
+      const evaluated = Function(`"use strict"; return (${safeNextVal.slice(1)});`)();
+      if (typeof evaluated === "number" && isFinite(evaluated)) {
+        safeNextVal = Math.round(evaluated * 100) / 100;
+      }
+    } catch (_) { }
+  }
+
+  valueData.push({
+    range: `Cash!${cleanNextCol}${rowNum}`,
+    values: [[safeNextVal]]
+  });
+
+  await withRetry(() => sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId: cleanClientSheetId,
+    requestBody: {
+      valueInputOption: "USER_ENTERED",
+      data: valueData
+    }
+  }));
+
+  await invalidatePmaClientCache(cleanClientSheetId, null, ["cash"]).catch(() => { });
+
+  (async () => {
+    let resolvedClient = clientName || "";
+    if (!resolvedClient) {
+      resolvedClient = await resolveClientNameBySheetId(sheets, cleanClientSheetId, automationCommanderSheetId);
+    }
+    await logPmaActivity(sheets, {
+      automationCommanderSheetId,
+      clientName: resolvedClient,
+      category: "CASH_RECON",
+      action: "Cash Future Offset Applied",
+      summary: `Applied future-month cash offset on row ${rowNum} (${cleanNextCol}${rowNum}: ${safeNextVal})`,
+      details: {
+        tab: "Cash",
+        sheetRow: rowNum,
+        targetColLetter: cleanTargetCol,
+        nextColLetter: cleanNextCol,
+        nextValue: safeNextVal,
+        clientName: resolvedClient
+      }
+    });
+  })().catch(e => console.error("PMA log failed:", e));
+
+  return {
+    success: true,
+    sheetRow: rowNum,
+    nextValue: safeNextVal,
+    targetNote,
+    nextNote
+  };
 }
 
 /**

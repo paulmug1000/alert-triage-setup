@@ -192,18 +192,20 @@ export async function revokeQBToken(token, customClientId, customClientSecret) {
 }
 
 /**
- * Fetches bank accounts from QuickBooks Online API for a specific company (realmId).
+ * Fetches bank accounts and non-cash financial accounts (e.g. credit cards, line of credit)
+ * from QuickBooks Online API for a specific company (realmId).
  * 
  * @param {string} accessToken Active access token
  * @param {string} realmId Intuit company ID
- * @returns {Promise<Array<{ id: string, name: string, code: string, subType: string, currency: string, status: string, type: string }>>}
+ * @returns {Promise<Array<{ id: string, name: string, code: string, subType: string, currency: string, status: string, type: string, accountType: string }>>}
  */
 export async function fetchQuickBooksBankAccounts(accessToken, realmId) {
   if (!accessToken || !realmId) {
     throw new Error("Missing accessToken or realmId for fetchQuickBooksBankAccounts");
   }
 
-  const query = "select * from Account where AccountType = 'Bank'";
+  // Fetch Bank, Credit Card, and potential financial liability/asset accounts
+  const query = "SELECT * FROM Account WHERE AccountType IN ('Bank', 'Credit Card', 'Other Current Liability', 'Other Current Asset') MAXRESULTS 1000";
   const url = `https://quickbooks.api.intuit.com/v3/company/${realmId}/query?query=${encodeURIComponent(query)}&minorversion=73`;
   const res = await fetch(url, {
     method: "GET",
@@ -221,14 +223,46 @@ export async function fetchQuickBooksBankAccounts(accessToken, realmId) {
   const data = await res.json();
   const rawAccounts = data?.QueryResponse?.Account || [];
 
-  return rawAccounts.map(acc => ({
+  const relevantSubTypes = new Set(["LineOfCredit", "LoanPayable", "CashOnHand"]);
+  const relevantKeywords = /credit|card|amex|loan|borrow|overdraft|line of credit|capital on tap|barclaycard/i;
+  const excludedKeywords = /tax|vat|paye|nic|pension|wages|salary|salaries|accrual|depreciation|dividend|debtor|prepayment|stock|provision/i;
+
+  const filteredAccounts = rawAccounts.filter(acc => {
+    // 1. All Bank and Credit Card accounts are always included
+    if (acc.AccountType === "Bank" || acc.AccountType === "Credit Card") {
+      return true;
+    }
+
+    const name = String(acc.Name || "").trim();
+    const subType = String(acc.AccountSubType || "").trim();
+
+    // 2. Specific financial subtypes under Other Current Liability / Asset
+    if (relevantSubTypes.has(subType)) {
+      return true;
+    }
+
+    // 3. Bank or savings accounts misclassified under other asset types
+    if (/(?:savings|bank)\s*account/i.test(name)) {
+      return true;
+    }
+
+    // 4. Accounts matching card, loan, or credit keywords that are NOT general ledger control/tax accounts
+    if (relevantKeywords.test(name) && !excludedKeywords.test(name)) {
+      return true;
+    }
+
+    return false;
+  });
+
+  return filteredAccounts.map(acc => ({
     id: acc.Id || "",
     name: acc.Name || "",
     code: acc.AcctNum || "",
     subType: acc.AccountSubType || "",
     currency: acc.CurrencyRef?.value || "",
     status: acc.Active ? "ACTIVE" : "INACTIVE",
-    type: "BANK"
+    type: acc.AccountType === "Credit Card" ? "CREDIT_CARD" : (acc.AccountType || "BANK"),
+    accountType: acc.AccountType === "Credit Card" ? "Credit card" : (acc.AccountType === "Bank" ? "Bank" : (acc.AccountType || "Bank"))
   }));
 }
 

@@ -85,7 +85,7 @@ export const CRM_PULSE_FIELDS = [
 /**
  * Normalizes a client key for Redis storage.
  */
-function getSettingsRedisKey(clientName) {
+export function getSettingsRedisKey(clientName) {
   const clean = String(clientName || "")
     .trim()
     .toLowerCase()

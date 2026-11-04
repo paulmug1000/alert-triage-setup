@@ -71,8 +71,17 @@ export default function CashflowReconTab({
   // Track rows where recon has been applied during this session
   const [reconAppliedRows, setReconAppliedRows] = useState(new Set());
 
-  // Live signed category actuals pushed from CashflowWorkbenchView as bankTxns change
+  // Live signed category actuals and unreconciled items pushed from CashflowWorkbenchView as bankTxns change
   const [liveSignedActuals, setLiveSignedActuals] = useState(null);
+  const [liveUnreconItems, setLiveUnreconItems] = useState(null);
+
+  // Edit adjustment modal note drafts
+  const [editGeneralNote, setEditGeneralNote] = useState("");
+  const [editPulseNote, setEditPulseNote] = useState("");
+
+  // Future month offset modal
+  const [offsetModal, setOffsetModal] = useState(null);
+  const [savingOffset, setSavingOffset] = useState(false);
 
   // Note editor modal
   const [noteModal, setNoteModal] = useState(null);
@@ -246,11 +255,188 @@ export default function CashflowReconTab({
       : (effectiveReconActuals.transfer || 0) + (effectiveReconActuals.corpTax || 0) + (effectiveReconActuals.vat || 0);
   }, [effectiveReconActuals, isCombinedTransferMode]);
 
-  // Target month column info
+  // Target and next month column info
   const targetCol = useMemo(() => {
     if (!reconData?.selectedCols) return null;
     return reconData.selectedCols.find(c => c.type === "target") || reconData.selectedCols[1] || null;
   }, [reconData]);
+
+  const nextCol = useMemo(() => {
+    if (!reconData?.selectedCols) return null;
+    return reconData.selectedCols.find(c => c.type === "next") || reconData.selectedCols[2] || null;
+  }, [reconData]);
+
+  // Parse a raw cell note into internal general note + client-facing Pulse note
+  const parseNoteParts = useCallback((rawNote) => {
+    const raw = String(rawNote || "");
+    const match = raw.match(/\[Note:\s*([^\]]+)\]/i);
+    if (match) {
+      return {
+        generalNote: raw.replace(match[0], "").replace(/\n\s*\n/g, "\n").trim(),
+        pulseNote: match[1].trim()
+      };
+    }
+    return { generalNote: raw.trim(), pulseNote: "" };
+  }, []);
+
+  const formatCombinedNote = useCallback((generalText, pulseText) => {
+    const g = String(generalText || "").trim();
+    const p = String(pulseText || "").trim();
+    if (g && p) return `${g}\n[Note: ${p}]`;
+    if (p) return `[Note: ${p}]`;
+    if (g) return g;
+    return "";
+  }, []);
+
+  // Match unreconciled items belonging to a Cash row or adjustment row
+  const getUnreconItemsForRow = useCallback((mappedItemType, rowLabel = "") => {
+    const list = liveUnreconItems || reconData?.unreconciledItems || [];
+    if (!list || list.length === 0) return [];
+    const l = String(rowLabel || "").toLowerCase();
+
+    return list.filter(u => {
+      const cat = String(u.cashflowCategory || u.suggestedCategory || u.category || "").toLowerCase();
+      const rawAmt = parseAmount(u.amount || u.inAmount || u.outAmount);
+      const isOutflow = u.isNegative !== undefined ? Boolean(u.isNegative) : (parseAmount(u.outAmount) > 0 || rawAmt < 0);
+
+      if (mappedItemType === "confirmed_cash" || l.includes("incoming cash") || l.includes("confirmed cash") || l.includes("revenue")) {
+        return cat === "revenue" || (!isOutflow && (!cat || cat === "revenue"));
+      }
+      if (mappedItemType === "salaries" || l.includes("salar")) {
+        return cat === "salaries" || cat === "paye" || cat === "pension";
+      }
+      if (mappedItemType === "dividends" || l.includes("dividend")) {
+        return cat === "dividends";
+      }
+      if (mappedItemType === "contractors" || l.includes("contractor")) {
+        return cat === "contractors";
+      }
+      if (mappedItemType === "direct_costs" || l.includes("direct cost")) {
+        return cat === "direct costs";
+      }
+      if (mappedItemType === "other_expenses" || l.includes("other expense")) {
+        return cat === "outgoings" || (isOutflow && (!cat || !["salaries", "paye", "pension", "dividends", "contractors", "direct costs", "vat", "corp tax", "transfer", "other"].includes(cat)));
+      }
+      if (mappedItemType === "corporation_tax" || l.includes("corporation tax")) {
+        return cat === "corp tax";
+      }
+      if (mappedItemType === "vat" || mappedItemType === "tax_transfer" || l.includes("vat")) {
+        return cat === "vat" || cat === "transfer";
+      }
+      if (mappedItemType === "other_cash_movements" || l.includes("other adjustment") || l.includes("other cash")) {
+        return cat === "other";
+      }
+      return false;
+    });
+  }, [liveUnreconItems, reconData?.unreconciledItems]);
+
+  // Generate context-aware suggested internal & client-facing Pulse notes
+  const generateSuggestedNotesForRow = useCallback(({
+    rowLabel = "",
+    mappedItemType = "",
+    targetMonthLabel = "",
+    nextMonthLabel = "",
+    targetAdjVal = 0,
+    nextOffsetVal = null,
+    isLinkedOffset = false
+  }) => {
+    const tMonth = targetMonthLabel || targetCol?.label || reconData?.targetMonthLabel || "this month";
+    const nMonth = nextMonthLabel || nextCol?.label || "next month";
+    const cleanTitle = String(rowLabel || "Cashflow")
+      .replace(/^\s*↳\s*/i, "")
+      .replace(/\b(adjustment|adjustments|outgoing|incoming)\b/gi, "")
+      .replace(/\s+/g, " ")
+      .trim() || "Cashflow";
+    const cleanLower = cleanTitle.toLowerCase();
+    const isInflowCat = mappedItemType === "confirmed_cash" || mappedItemType === "non_operating_income" ||
+      cleanLower.includes("incoming") || cleanLower.includes("confirmed cash") || cleanLower.includes("revenue");
+
+    const unreconForCat = getUnreconItemsForRow(mappedItemType, rowLabel);
+    let unreconSummary = "";
+    if (unreconForCat.length > 0) {
+      const sample = unreconForCat.slice(0, 2).map(u => {
+        const p = String(u.payee || u.particulars || "item").trim();
+        const a = Math.abs(parseAmount(u.amount || u.inAmount || u.outAmount));
+        return `${p} ${formatGBP(a)}`;
+      }).join(", ");
+      unreconSummary = unreconForCat.length > 2
+        ? `${sample} + ${unreconForCat.length - 2} more`
+        : sample;
+    }
+
+    const absTarget = Math.abs(Number(targetAdjVal) || 0);
+    const fmtTargetAbs = formatGBP(absTarget);
+    const fmtTargetSigned = formatGBP(Number(targetAdjVal) || 0);
+
+    // Case 1: Single-month adjustment (no Next Month offset)
+    if (nextOffsetVal === null || nextOffsetVal === undefined) {
+      if (unreconForCat.length > 0) {
+        return {
+          targetGeneral: `Reconciled ${cleanLower} to ${tMonth} bank actuals (${fmtTargetSigned} adjustment; includes unreconciled ${isInflowCat ? "receipt" : "payment"}: ${unreconSummary}).`,
+          targetPulse: isInflowCat
+            ? `Includes ${fmtTargetAbs} received in the bank in ${tMonth} awaiting invoice reconciliation.`
+            : `Adjusted by ${fmtTargetSigned} to match actual ${cleanLower} paid in ${tMonth} (includes items awaiting reconciliation).`,
+          nextGeneral: "",
+          nextPulse: ""
+        };
+      }
+      return {
+        targetGeneral: `Reconciled ${cleanLower} to ${tMonth} bank transactions (${fmtTargetSigned} adjustment).`,
+        targetPulse: `Adjusted by ${fmtTargetSigned} to align with actual ${cleanLower} bank transactions in ${tMonth}.`,
+        nextGeneral: "",
+        nextPulse: ""
+      };
+    }
+
+    // Case 2: Two-month offset (Target Month + Next Month)
+    const numNext = Number(nextOffsetVal) || 0;
+    const absNext = Math.abs(numNext);
+    const fmtNextAbs = formatGBP(absNext);
+    const fmtNextSigned = formatGBP(numNext);
+
+    // 2a. Unreconciled receipt / payment timing lag (e.g. Thrive £4,350 unreconciled payment)
+    if (unreconForCat.length > 0 || (isLinkedOffset && isInflowCat)) {
+      const detailText = unreconSummary ? ` (${unreconSummary})` : ` (${fmtTargetAbs})`;
+      return {
+        targetGeneral: `Includes unreconciled bank ${isInflowCat ? "receipt" : "payment"}${detailText} in ${tMonth} not yet matched in accounting software. Linked offset applied in ${nMonth}.`,
+        targetPulse: isInflowCat
+          ? `Includes ${fmtTargetAbs} received in the bank in ${tMonth} awaiting invoice reconciliation.`
+          : `Includes ${fmtTargetAbs} paid in ${tMonth} awaiting bill reconciliation.`,
+        nextGeneral: isLinkedOffset
+          ? `Auto-reversing offset (${fmtNextSigned}) for ${tMonth} unreconciled ${cleanLower}${detailText} whose open invoice/bill pushed into ${nMonth}. Automatically clears once reconciled.`
+          : `Offset (${fmtNextSigned}) for ${tMonth} unreconciled ${cleanLower}${detailText} carried into ${nMonth}.`,
+        nextPulse: isInflowCat
+          ? `Adjusted by ${fmtNextSigned} to reflect revenue already received in the bank in ${tMonth}.`
+          : `Adjusted by ${fmtNextSigned} to reflect ${cleanLower} already paid in ${tMonth}.`
+      };
+    }
+
+    // 2b. Partial or full cash deferral / early payment across months (e.g. Orinoco salary deferral)
+    if (!isInflowCat && targetAdjVal > 0 && numNext < 0) {
+      return {
+        targetGeneral: `Reconciled ${cleanLower} to ${tMonth} bank actuals (${fmtTargetSigned} vs forecast). ${fmtNextAbs} deferred to ${nMonth}.`,
+        targetPulse: `Adjusted to match actual ${cleanLower} paid in ${tMonth} (${fmtNextAbs} deferred to ${nMonth}).`,
+        nextGeneral: `Carry-over ${cleanLower} outflow (${fmtNextSigned}) deferred from ${tMonth}.`,
+        nextPulse: `Includes ${fmtNextAbs} of ${tMonth} ${cleanLower} deferred into ${nMonth}.`
+      };
+    }
+
+    if (!isInflowCat && targetAdjVal < 0 && numNext > 0) {
+      return {
+        targetGeneral: `Reconciled ${cleanLower} to ${tMonth} bank actuals (${fmtTargetSigned} vs forecast). ${fmtNextAbs} offset in ${nMonth}.`,
+        targetPulse: `Adjusted to match actual ${cleanLower} paid in ${tMonth} (includes ${fmtNextAbs} paid ahead of ${nMonth}).`,
+        nextGeneral: `Offset (${fmtNextSigned}) for ${cleanLower} already paid in ${tMonth}.`,
+        nextPulse: `Reduced by ${fmtNextAbs} for ${cleanLower} already paid in ${tMonth}.`
+      };
+    }
+
+    return {
+      targetGeneral: `Reconciled ${cleanLower} for ${tMonth} (${fmtTargetSigned} adjustment) with ${fmtNextSigned} offset in ${nMonth}.`,
+      targetPulse: `Adjusted by ${fmtTargetSigned} to reflect ${tMonth} timing difference carried into ${nMonth}.`,
+      nextGeneral: `${isLinkedOffset ? "Auto-reversing offset" : "Carry-over adjustment"} (${fmtNextSigned}) from ${tMonth} ${cleanLower}.`,
+      nextPulse: `Adjusted by ${fmtNextSigned} to offset ${tMonth} ${cleanLower} timing difference.`
+    };
+  }, [targetCol, nextCol, reconData?.targetMonthLabel, getUnreconItemsForRow]);
 
   // Helper: check if recon figure is actively in use for a row
   const isReconUsedForRow = useCallback((row) => {
@@ -355,13 +541,21 @@ export default function CashflowReconTab({
 
   // Open Edit Cell Modal / Input
   const handleStartEdit = (row, cell) => {
+    const colObj = (reconData?.selectedCols || []).find(c => c.colIdx === cell.colIdx || c.colLetter === cell.colLetter);
+    const parentBaseRow = (reconData?.rows || []).find(r => r.targetAdjustmentRow === row.sheetRow);
+    const mappedType = row.mappedItemType || parentBaseRow?.mappedItemType || "";
+    const curNum = (cell?.numVal !== undefined && cell?.numVal !== null) ? cell.numVal : parseAmount(cell?.v);
+
     setEditingCell({
       sheetRow: row.sheetRow,
       colIdx: cell.colIdx,
       colLetter: cell.colLetter,
+      colLabel: colObj?.label || reconData?.targetMonthLabel || "",
       label: row.label,
+      mappedItemType: mappedType,
       currentValue: cell.v,
-      rawValue: cell.rawVal ?? cell.v
+      rawValue: cell.rawVal ?? cell.v,
+      currentNote: cell.note || ""
     });
     const rawStr = cell.rawVal !== null && cell.rawVal !== undefined ? String(cell.rawVal) : (cell.v || "");
     const cleanRaw = rawStr.replace(/^['’]=/, "=");
@@ -370,6 +564,25 @@ export default function CashflowReconTab({
       setEditValue(displayNum);
     } else {
       setEditValue(cleanRaw);
+    }
+
+    const existingParts = parseNoteParts(cell.note || "");
+    if (existingParts.generalNote || existingParts.pulseNote) {
+      setEditGeneralNote(existingParts.generalNote);
+      setEditPulseNote(existingParts.pulseNote);
+    } else if (Math.abs(curNum) >= 0.005) {
+      const suggested = generateSuggestedNotesForRow({
+        rowLabel: parentBaseRow?.label || row.label,
+        mappedItemType: mappedType,
+        targetMonthLabel: colObj?.label || reconData?.targetMonthLabel || "",
+        targetAdjVal: curNum,
+        nextOffsetVal: null
+      });
+      setEditGeneralNote(suggested.targetGeneral);
+      setEditPulseNote(suggested.targetPulse);
+    } else {
+      setEditGeneralNote("");
+      setEditPulseNote("");
     }
   };
 
@@ -386,7 +599,7 @@ export default function CashflowReconTab({
       const adjMap = new Map();
       let totalDelta = 0;
 
-      adjustmentsList.forEach(({ sheetRow, rawVal }) => {
+      adjustmentsList.forEach(({ sheetRow, rawVal, note }) => {
         const adjRow = prev.rows.find(r => r.sheetRow === sheetRow);
         const adjCell = adjRow?.cells.find(c => c.colIdx === colIdx);
         const oldVal = (adjCell?.numVal !== undefined && adjCell?.numVal !== null) ? adjCell.numVal : parseAmount(adjCell?.v);
@@ -396,6 +609,7 @@ export default function CashflowReconTab({
         const formulaMatch = str.match(/^=\s*(-?\d+(?:\.\d+)?)\s*-\s*([A-Z]+)(\d+)$/i);
         const sumFormulaMatch = str.match(/^=\s*(-?\d+(?:\.\d+)?)\s*-\s*SUM\(\s*([A-Z]+)(\d+)\s*:\s*([A-Z]+)(\d+)\s*\)$/i);
         const addFormulaMatch = str.match(/^=\s*(-?\d+(?:\.\d+)?)\s*-\s*\(\s*([A-Z]+)(\d+)\s*\+\s*([A-Z]+)(\d+)\s*\+\s*([A-Z]+)(\d+)\s*\)$/i);
+        const negCellMatch = str.match(/^=\s*-\s*([A-Z]+)(\d+)$/i);
         if (formulaMatch) {
           const targetTotal = parseFloat(formulaMatch[1]);
           const refRowNum = parseInt(formulaMatch[3], 10);
@@ -427,6 +641,14 @@ export default function CashflowReconTab({
             sumRef += refVal;
           });
           newNumVal = targetTotal - sumRef;
+        } else if (negCellMatch) {
+          const refColLetter = negCellMatch[1].toUpperCase();
+          const refRowNum = parseInt(negCellMatch[2], 10);
+          const refColObj = (prev.selectedCols || []).find(c => c.colLetter === refColLetter);
+          const refRow = prev.rows.find(r => r.sheetRow === refRowNum);
+          const refCell = refRow?.cells.find(c => c.colIdx === refColObj?.colIdx);
+          const refVal = (refCell?.numVal !== undefined && refCell?.numVal !== null) ? refCell.numVal : parseAmount(refCell?.v);
+          newNumVal = -refVal;
         } else if (str === "") {
           newNumVal = 0;
         } else if (!str.startsWith("=")) {
@@ -436,9 +658,9 @@ export default function CashflowReconTab({
         if (newNumVal !== null && !isNaN(newNumVal)) {
           const delta = newNumVal - oldVal;
           totalDelta += delta;
-          adjMap.set(sheetRow, { rawVal: str, newNumVal, delta });
+          adjMap.set(sheetRow, { rawVal: str, newNumVal, delta, note });
         } else {
-          adjMap.set(sheetRow, { rawVal: str, newNumVal: null, delta: 0 });
+          adjMap.set(sheetRow, { rawVal: str, newNumVal: null, delta: 0, note });
         }
       });
 
@@ -470,6 +692,9 @@ export default function CashflowReconTab({
               updated.numVal = adjUpdate.newNumVal;
               updated.v = formatGBP(adjUpdate.newNumVal);
             }
+            if (adjUpdate.note !== undefined) {
+              updated.note = adjUpdate.note;
+            }
           } else if (totalDelta !== 0 && (isNetRow || isClosingRow)) {
             const curNum = (c.numVal !== undefined && c.numVal !== null) ? c.numVal : parseAmount(c.v);
             const nextNum = curNum + totalDelta;
@@ -494,7 +719,7 @@ export default function CashflowReconTab({
     });
   }, []);
 
-  // Save Adjustment Edit
+  // Save Adjustment Edit (plus any note update entered in the Edit Adjustment modal)
   const handleSaveEdit = async () => {
     if (!editingCell || !currentClientInfo) return;
     setSavingEdit(true);
@@ -502,21 +727,50 @@ export default function CashflowReconTab({
     try {
       const cleanVal = typeof editValue === "string" ? editValue.trim().replace(/^['’]=/, "=") : editValue;
       const targetEdit = { ...editingCell };
-      applyOptimisticCellUpdates([{ sheetRow: targetEdit.sheetRow, rawVal: cleanVal }], targetEdit.colLetter);
-      const resp = await fetch("/api/triage", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "update_cash_adjustment",
-          clientSheetId: currentClientInfo.clientSheetId,
-          colLetter: targetEdit.colLetter,
-          sheetRow: targetEdit.sheetRow,
-          value: cleanVal,
-          clientName: selectedClient,
-          automationCommanderSheetId
-        })
-      });
-      const res = await resp.json();
+      const finalNote = formatCombinedNote(editGeneralNote, editPulseNote);
+      const noteChanged = finalNote !== String(targetEdit.currentNote || "").trim();
+
+      applyOptimisticCellUpdates(
+        [{ sheetRow: targetEdit.sheetRow, rawVal: cleanVal, note: noteChanged ? finalNote : undefined }],
+        targetEdit.colLetter
+      );
+
+      const requests = [
+        fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "update_cash_adjustment",
+            clientSheetId: currentClientInfo.clientSheetId,
+            colLetter: targetEdit.colLetter,
+            sheetRow: targetEdit.sheetRow,
+            value: cleanVal,
+            clientName: selectedClient,
+            automationCommanderSheetId
+          })
+        }).then(r => r.json())
+      ];
+
+      if (noteChanged && reconData?.cashTabSheetId !== undefined && reconData?.cashTabSheetId !== null) {
+        requests.push(
+          fetch("/api/triage", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "update_cash_cell_note",
+              clientSheetId: currentClientInfo.clientSheetId,
+              cashTabSheetId: reconData.cashTabSheetId,
+              sheetRow: targetEdit.sheetRow,
+              colIdx: targetEdit.colIdx,
+              note: finalNote,
+              clientName: selectedClient,
+              automationCommanderSheetId
+            })
+          }).then(r => r.json())
+        );
+      }
+
+      const [res] = await Promise.all(requests);
       if (!res.success) throw new Error(res.error || "Failed to save adjustment");
       setEditingCell(null);
       setSuccessMsg(isAdmin ? `Adjustment saved to Cash!${targetEdit.colLetter}${targetEdit.sheetRow}` : "Adjustment saved.");
@@ -942,12 +1196,26 @@ export default function CashflowReconTab({
   // Cell Note Editor
   const handleOpenNote = (row, cell) => {
     const rawNote = cell.note || "";
-    const match = rawNote.match(/\[Note:\s*([^\]]+)\]/i);
-    let pulseDraft = "";
-    let generalDraft = rawNote;
-    if (match) {
-      pulseDraft = match[1].trim();
-      generalDraft = rawNote.replace(match[0], "").replace(/\n\s*\n/g, "\n").trim();
+    const parsed = parseNoteParts(rawNote);
+    let generalDraft = parsed.generalNote;
+    let pulseDraft = parsed.pulseNote;
+
+    const colObj = (reconData?.selectedCols || []).find(c => c.colIdx === cell.colIdx || c.colLetter === cell.colLetter);
+    const parentBaseRow = (reconData?.rows || []).find(r => r.targetAdjustmentRow === row.sheetRow);
+    const mappedType = row.mappedItemType || parentBaseRow?.mappedItemType || "";
+    const isAdj = Boolean(row.isAdjustmentRow || (row.label && row.label.toLowerCase().includes("adjustment")));
+    const cellVal = (cell?.numVal !== undefined && cell?.numVal !== null) ? cell.numVal : parseAmount(cell?.v);
+
+    if (!generalDraft && !pulseDraft && isAdj && Math.abs(cellVal) >= 0.005) {
+      const suggested = generateSuggestedNotesForRow({
+        rowLabel: parentBaseRow?.label || row.label,
+        mappedItemType: mappedType,
+        targetMonthLabel: colObj?.label || reconData?.targetMonthLabel || "",
+        targetAdjVal: cellVal,
+        nextOffsetVal: null
+      });
+      generalDraft = suggested.targetGeneral;
+      pulseDraft = suggested.targetPulse;
     }
 
     setGeneralNoteDraft(generalDraft);
@@ -956,9 +1224,13 @@ export default function CashflowReconTab({
       sheetRow: row.sheetRow,
       colIdx: cell.colIdx,
       colLetter: cell.colLetter,
+      colLabel: colObj?.label || reconData?.targetMonthLabel || "",
       label: row.label,
+      parentLabel: parentBaseRow?.label || row.label,
+      mappedItemType: mappedType,
+      cellVal,
       currentNote: rawNote,
-      isAdjustmentRow: Boolean(row.isAdjustmentRow || (row.label && row.label.toLowerCase().includes("adjustment")))
+      isAdjustmentRow: isAdj
     });
   };
 
@@ -967,18 +1239,7 @@ export default function CashflowReconTab({
     setSavingNote(true);
     setError("");
 
-    const g = generalNoteDraft.trim();
-    const p = pulseNoteDraft.trim();
-    let finalNote = "";
-    if (g && p) {
-      finalNote = `${g}\n[Note: ${p}]`;
-    } else if (p) {
-      finalNote = `[Note: ${p}]`;
-    } else if (g) {
-      finalNote = g;
-    } else {
-      finalNote = "";
-    }
+    const finalNote = formatCombinedNote(generalNoteDraft, pulseNoteDraft);
 
     try {
       const resp = await fetch("/api/triage", {
@@ -1013,12 +1274,249 @@ export default function CashflowReconTab({
       });
 
       setNoteModal(null);
-      setSuccessMsg(`Note updated on Cash!${noteModal.colLetter}${noteModal.sheetRow}`);
+      setSuccessMsg(isAdmin ? `Note updated on Cash!${noteModal.colLetter}${noteModal.sheetRow}` : "Note updated.");
     } catch (err) {
       console.error("Error saving note:", err);
       setError(err.message);
     } finally {
       setSavingNote(false);
+    }
+  };
+
+  // Future Month Offset Modal (handles 100% auto-reversing timing offsets and partial/custom carry-overs)
+  const handleOpenOffsetModal = useCallback(({
+    baseRow,
+    adjRow,
+    title,
+    mappedItemType,
+    isCombinedTransfer = false,
+    combinedElem = null
+  }) => {
+    if (!adjRow || !targetCol || !nextCol || !reconData) return;
+
+    const targetColIndex = (reconData.selectedCols || []).findIndex(c => c.colIdx === targetCol.colIdx);
+    const nextColIndex = (reconData.selectedCols || []).findIndex(c => c.colIdx === nextCol.colIdx);
+    const tIdx = targetColIndex !== -1 ? targetColIndex : 1;
+    const nIdx = nextColIndex !== -1 ? nextColIndex : 2;
+
+    const targetBaseCell = baseRow?.cells?.[tIdx];
+    const targetAdjCell = adjRow?.cells?.[tIdx];
+    const nextAdjCell = adjRow?.cells?.[nIdx];
+
+    let baseVal = (targetBaseCell?.numVal !== undefined && targetBaseCell?.numVal !== null)
+      ? targetBaseCell.numVal
+      : parseAmount(targetBaseCell?.v);
+    const currentTargetAdjVal = (targetAdjCell?.numVal !== undefined && targetAdjCell?.numVal !== null)
+      ? targetAdjCell.numVal
+      : parseAmount(targetAdjCell?.v);
+    const currentNextAdjVal = (nextAdjCell?.numVal !== undefined && nextAdjCell?.numVal !== null)
+      ? nextAdjCell.numVal
+      : parseAmount(nextAdjCell?.v);
+
+    let txVal = getCategoryTxAmount(mappedItemType, title || baseRow?.label || adjRow?.label);
+    let reconFormula = "";
+    let reconAdjVal = currentTargetAdjVal;
+
+    if (isCombinedTransfer && combinedElem?.corpBaseRow && combinedElem?.corpAdjRow && combinedElem?.vatBaseRow) {
+      const cBase = combinedElem.corpBaseRow?.cells?.[tIdx];
+      const cAdj = combinedElem.corpAdjRow?.cells?.[tIdx];
+      const vBase = combinedElem.vatBaseRow?.cells?.[tIdx];
+      const cBaseNum = (cBase?.numVal !== undefined && cBase?.numVal !== null) ? cBase.numVal : parseAmount(cBase?.v);
+      const cAdjNum = (cAdj?.numVal !== undefined && cAdj?.numVal !== null) ? cAdj.numVal : parseAmount(cAdj?.v);
+      const vBaseNum = (vBase?.numVal !== undefined && vBase?.numVal !== null) ? vBase.numVal : parseAmount(vBase?.v);
+      baseVal = cBaseNum + cAdjNum + vBaseNum;
+      txVal = combinedTransferTxVal ?? 0;
+      reconAdjVal = txVal - baseVal;
+
+      const r1 = combinedElem.corpBaseRow.sheetRow;
+      const r2 = combinedElem.corpAdjRow.sheetRow;
+      const r3 = combinedElem.vatBaseRow.sheetRow;
+      const isContiguous = (r2 === r1 + 1) && (r3 === r2 + 1);
+      reconFormula = isContiguous
+        ? `=${txVal.toFixed(2)}-SUM(${targetCol.colLetter}${r1}:${targetCol.colLetter}${r3})`
+        : `=${txVal.toFixed(2)}-(${targetCol.colLetter}${r1}+${targetCol.colLetter}${r2}+${targetCol.colLetter}${r3})`;
+    } else if (baseRow && txVal !== null && txVal !== undefined) {
+      reconAdjVal = txVal - baseVal;
+      reconFormula = `=${txVal.toFixed(2)}-${targetCol.colLetter}${baseRow.sheetRow}`;
+    }
+
+    const isReconAlreadyUsed = isCombinedTransfer
+      ? isReconUsedForTransfer(combinedElem)
+      : (baseRow ? isReconUsedForRow(baseRow) : false);
+    const hasUnreconciledVariance = txVal !== null && txVal !== undefined &&
+      Math.abs((baseVal + currentTargetAdjVal) - txVal) >= 0.01;
+    const applyTargetReconDefault = Boolean(!isReconAlreadyUsed && hasUnreconciledVariance && reconFormula);
+    const effectiveTargetAdjVal = applyTargetReconDefault ? reconAdjVal : currentTargetAdjVal;
+
+    // Detect if next month already has a linked formula or custom value
+    const nextRawStr = typeof nextAdjCell?.rawVal === "string" ? nextAdjCell.rawVal.replace(/^['’]/, "").trim() : "";
+    const linkedFormulaStr = `=-${targetCol.colLetter}${adjRow.sheetRow}`;
+    const hasExistingNextOffset = Math.abs(currentNextAdjVal) >= 0.005 || nextRawStr.startsWith("=");
+    const isExistingCustom = hasExistingNextOffset &&
+      nextRawStr.toUpperCase() !== linkedFormulaStr.toUpperCase();
+
+    const initialMode = isExistingCustom ? "custom" : "linked";
+    const defaultCustomAmt = isExistingCustom
+      ? currentNextAdjVal
+      : Number((-effectiveTargetAdjVal).toFixed(2));
+    const effectiveNextVal = initialMode === "linked"
+      ? Number((-effectiveTargetAdjVal).toFixed(2))
+      : defaultCustomAmt;
+
+    const existingTargetNotes = parseNoteParts(targetAdjCell?.note || "");
+    const existingNextNotes = parseNoteParts(nextAdjCell?.note || "");
+    const suggested = generateSuggestedNotesForRow({
+      rowLabel: title || baseRow?.label || adjRow?.label,
+      mappedItemType,
+      targetMonthLabel: targetCol.label,
+      nextMonthLabel: nextCol.label,
+      targetAdjVal: effectiveTargetAdjVal,
+      nextOffsetVal: effectiveNextVal,
+      isLinkedOffset: initialMode === "linked"
+    });
+
+    setOffsetModal({
+      title: title || baseRow?.label || adjRow?.label,
+      mappedItemType,
+      baseSheetRow: baseRow?.sheetRow || null,
+      adjSheetRow: adjRow.sheetRow,
+      adjRowLabel: adjRow.label,
+      baseVal,
+      txVal,
+      currentTargetAdjVal,
+      reconAdjVal,
+      reconFormula,
+      isReconAlreadyUsed,
+      hasUnreconciledVariance,
+      applyTargetRecon: applyTargetReconDefault,
+      hasExistingNextOffset,
+      currentNextAdjVal,
+      offsetMode: initialMode, // "linked" | "custom"
+      customAmount: String(defaultCustomAmt),
+      targetGeneralNote: existingTargetNotes.generalNote || suggested.targetGeneral,
+      targetPulseNote: existingTargetNotes.pulseNote || suggested.targetPulse,
+      nextGeneralNote: existingNextNotes.generalNote || suggested.nextGeneral,
+      nextPulseNote: existingNextNotes.pulseNote || suggested.nextPulse
+    });
+  }, [targetCol, nextCol, reconData, getCategoryTxAmount, combinedTransferTxVal, isReconUsedForTransfer, isReconUsedForRow, parseNoteParts, generateSuggestedNotesForRow]);
+
+  const handleRefreshOffsetSuggestedNotes = useCallback((modalState) => {
+    const m = modalState || offsetModal;
+    if (!m || !targetCol || !nextCol) return;
+    const effectiveTargetAdj = m.applyTargetRecon ? m.reconAdjVal : m.currentTargetAdjVal;
+    const effectiveNextVal = m.offsetMode === "linked"
+      ? -effectiveTargetAdj
+      : (parseFloat(String(m.customAmount || "0").replace(/[£,\s]/g, "")) || 0);
+    const suggested = generateSuggestedNotesForRow({
+      rowLabel: m.title,
+      mappedItemType: m.mappedItemType,
+      targetMonthLabel: targetCol.label,
+      nextMonthLabel: nextCol.label,
+      targetAdjVal: effectiveTargetAdj,
+      nextOffsetVal: effectiveNextVal,
+      isLinkedOffset: m.offsetMode === "linked"
+    });
+    setOffsetModal(prev => prev ? ({
+      ...prev,
+      targetGeneralNote: suggested.targetGeneral,
+      targetPulseNote: suggested.targetPulse,
+      nextGeneralNote: suggested.nextGeneral,
+      nextPulseNote: suggested.nextPulse
+    }) : prev);
+  }, [offsetModal, targetCol, nextCol, generateSuggestedNotesForRow]);
+
+  const handleSaveOffset = async (clearNextOnly = false) => {
+    if (!offsetModal || !currentClientInfo || !reconData || !targetCol || !nextCol) return;
+    setSavingOffset(true);
+    setError("");
+
+    try {
+      const m = offsetModal;
+      const linkedFormula = `=-${targetCol.colLetter}${m.adjSheetRow}`;
+      let nextValueToWrite = "";
+      if (!clearNextOnly) {
+        if (m.offsetMode === "linked") {
+          nextValueToWrite = linkedFormula;
+        } else {
+          const cleanCustom = String(m.customAmount || "0").replace(/[£,\s]/g, "").trim();
+          nextValueToWrite = cleanCustom || "0";
+        }
+      }
+
+      const targetValueToWrite = (!clearNextOnly && m.applyTargetRecon && m.reconFormula)
+        ? m.reconFormula
+        : undefined;
+
+      const targetNoteCombined = clearNextOnly
+        ? undefined
+        : formatCombinedNote(m.targetGeneralNote, m.targetPulseNote);
+      const nextNoteCombined = clearNextOnly
+        ? ""
+        : formatCombinedNote(m.nextGeneralNote, m.nextPulseNote);
+
+      // Optimistically update target column (if applying target recon or note) and next column
+      if (targetValueToWrite !== undefined) {
+        applyOptimisticCellUpdates(
+          [{ sheetRow: m.adjSheetRow, rawVal: targetValueToWrite, note: targetNoteCombined }],
+          targetCol.colLetter
+        );
+      } else if (targetNoteCombined !== undefined) {
+        setReconData(prev => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            rows: prev.rows.map(r => r.sheetRow !== m.adjSheetRow ? r : {
+              ...r,
+              cells: r.cells.map(c => c.colIdx !== targetCol.colIdx ? c : { ...c, note: targetNoteCombined })
+            })
+          };
+        });
+      }
+
+      applyOptimisticCellUpdates(
+        [{ sheetRow: m.adjSheetRow, rawVal: nextValueToWrite, note: nextNoteCombined }],
+        nextCol.colLetter
+      );
+
+      const resp = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "apply_cash_future_offset",
+          clientSheetId: currentClientInfo.clientSheetId,
+          cashTabSheetId: reconData.cashTabSheetId,
+          sheetRow: m.adjSheetRow,
+          targetColLetter: targetCol.colLetter,
+          targetColIdx: targetCol.colIdx,
+          targetValue: targetValueToWrite,
+          targetNote: targetNoteCombined,
+          nextColLetter: nextCol.colLetter,
+          nextColIdx: nextCol.colIdx,
+          nextValue: nextValueToWrite,
+          nextNote: nextNoteCombined,
+          clientName: selectedClient,
+          automationCommanderSheetId
+        })
+      });
+      const res = await resp.json();
+      if (!res.success) throw new Error(res.error || "Failed to save future month offset");
+
+      if (targetValueToWrite !== undefined) {
+        setReconAppliedRows(prev => new Set([...prev, m.adjSheetRow]));
+      }
+      setOffsetModal(null);
+      setSuccessMsg(
+        clearNextOnly
+          ? `Cleared ${nextCol.label} offset for ${m.title}.`
+          : `Saved ${nextCol.label} offset and notes for ${m.title}.`
+      );
+      await loadData(selectedClient, { silent: true });
+    } catch (err) {
+      console.error("Error saving future month offset:", err);
+      setError(err.message);
+      await loadData(selectedClient, { silent: true });
+    } finally {
+      setSavingOffset(false);
     }
   };
 
@@ -1600,6 +2098,7 @@ export default function CashflowReconTab({
           isAdmin={isAdmin}
           groupedElements={groupedElements}
           targetCol={targetCol}
+          nextCol={nextCol}
           isCombinedTransferMode={isCombinedTransferMode}
           combinedTransferTxVal={combinedTransferTxVal}
           getCategoryTxAmount={getCategoryTxAmount}
@@ -1610,9 +2109,11 @@ export default function CashflowReconTab({
           onStartEdit={handleStartEdit}
           onToggleResolved={handleToggleResolved}
           onOpenNote={handleOpenNote}
+          onOpenOffsetModal={handleOpenOffsetModal}
           onRequestMatchAll={() => setShowMatchConfirm(true)}
           onSwitchToMatrix={() => setViewMode("matrix")}
           onLiveSignedActualsChange={setLiveSignedActuals}
+          onLiveUnreconItemsChange={setLiveUnreconItems}
           applyingRecon={applyingRecon}
           applyingReconRow={applyingReconRow}
           resolvingCellKey={resolvingCellKey}
@@ -2139,7 +2640,7 @@ export default function CashflowReconTab({
                                     <>
                                       <div style={{ display: "inline-flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
                                         {renderNoteButton(elem.vatAdjRow, vatAdjCell)}
-                                        {isAdmin && (() => {
+                                        {(() => {
                                           const isReconUsed = isReconUsedForTransfer(elem);
                                           const isThisRowApplying = applyingRecon && applyingReconRow === elem.vatAdjRow?.sheetRow;
                                           return (
@@ -2169,6 +2670,32 @@ export default function CashflowReconTab({
                                             </button>
                                           );
                                         })()}
+                                        {nextCol && (
+                                          <button
+                                            type="button"
+                                            onClick={() => handleOpenOffsetModal({
+                                              baseRow: elem.vatBaseRow,
+                                              adjRow: elem.vatAdjRow,
+                                              title: elem.vatTitle || "VAT",
+                                              mappedItemType: "tax_transfer",
+                                              isCombinedTransfer: true,
+                                              combinedElem: elem
+                                            })}
+                                            title={`Offset in ${nextCol.label}`}
+                                            style={{
+                                              padding: "2px 6px",
+                                              borderRadius: "4px",
+                                              border: "1px solid #cbd5e1",
+                                              background: "#ffffff",
+                                              color: "#475569",
+                                              fontSize: "9px",
+                                              fontWeight: "700",
+                                              cursor: "pointer"
+                                            }}
+                                          >
+                                            ⇄ {(nextCol.label || "Next").split(" ")[0]}
+                                          </button>
+                                        )}
                                       </div>
                                       <span
                                         onClick={() => handleStartEdit(elem.vatAdjRow, vatAdjCell)}
@@ -2605,7 +3132,7 @@ export default function CashflowReconTab({
                                   <>
                                     <div style={{ display: "inline-flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
                                       {renderNoteButton(elem.adjRow, adjCell)}
-                                      {isAdmin && (() => {
+                                      {(() => {
                                         const isReconUsed = isReconUsedForRow(elem.baseRow);
                                         const isThisRowApplying = applyingRecon && (applyingReconRow === elem.adjRow?.sheetRow || applyingReconRow === elem.baseRow?.targetAdjustmentRow);
                                         return (
@@ -2635,6 +3162,30 @@ export default function CashflowReconTab({
                                           </button>
                                         );
                                       })()}
+                                      {nextCol && (
+                                        <button
+                                          type="button"
+                                          onClick={() => handleOpenOffsetModal({
+                                            baseRow: elem.baseRow,
+                                            adjRow: elem.adjRow,
+                                            title: elem.title,
+                                            mappedItemType: elem.mappedItemType
+                                          })}
+                                          title={`Offset in ${nextCol.label}`}
+                                          style={{
+                                            padding: "2px 6px",
+                                            borderRadius: "4px",
+                                            border: "1px solid #cbd5e1",
+                                            background: "#ffffff",
+                                            color: "#475569",
+                                            fontSize: "9px",
+                                            fontWeight: "700",
+                                            cursor: "pointer"
+                                          }}
+                                        >
+                                          ⇄ {(nextCol.label || "Next").split(" ")[0]}
+                                        </button>
+                                      )}
                                     </div>
 
                                     {/* Thin Grey Input Box for Adjustment */}
@@ -3038,7 +3589,7 @@ export default function CashflowReconTab({
             borderRadius: "12px",
             padding: "20px 24px",
             width: "100%",
-            maxWidth: "420px",
+            maxWidth: "460px",
             boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)"
           }}>
             <h4 style={{ margin: "0 0 6px", fontSize: "16px", fontWeight: "700", color: "#0f172a" }}>
@@ -3068,9 +3619,93 @@ export default function CashflowReconTab({
                 borderRadius: "6px",
                 fontSize: "14px",
                 boxSizing: "border-box",
-                marginBottom: "16px"
+                marginBottom: "14px"
               }}
             />
+
+            <div style={{
+              background: "#f8fafc",
+              border: "1px solid #e2e8f0",
+              borderRadius: "8px",
+              padding: "12px",
+              marginBottom: "16px"
+            }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
+                <span style={{ fontSize: "11.5px", fontWeight: "700", color: "#334155" }}>
+                  Adjustment notes (optional)
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const parsedVal = parseFloat(String(editValue || "0").replace(/[£,\s]/g, "")) || parseAmount(editingCell.currentValue);
+                    const suggested = generateSuggestedNotesForRow({
+                      rowLabel: editingCell.label,
+                      mappedItemType: editingCell.mappedItemType,
+                      targetMonthLabel: editingCell.colLabel,
+                      targetAdjVal: parsedVal,
+                      nextOffsetVal: null
+                    });
+                    setEditGeneralNote(suggested.targetGeneral);
+                    setEditPulseNote(suggested.targetPulse);
+                  }}
+                  style={{
+                    padding: "2px 8px",
+                    borderRadius: "4px",
+                    border: "1px solid #cbd5e1",
+                    background: "#ffffff",
+                    color: "#0284c7",
+                    fontSize: "10.5px",
+                    fontWeight: "600",
+                    cursor: "pointer"
+                  }}
+                >
+                  ↻ Suggest notes
+                </button>
+              </div>
+
+              <div style={{ marginBottom: "10px" }}>
+                <label style={{ display: "block", fontSize: "11px", fontWeight: "700", color: "#334155", marginBottom: "3px" }}>
+                  Internal note <span style={{ fontWeight: "400", color: "#64748b" }}>(not shown to client in Pulse)</span>
+                </label>
+                <textarea
+                  value={editGeneralNote}
+                  onChange={e => setEditGeneralNote(e.target.value)}
+                  placeholder="Internal note for managers..."
+                  rows={2}
+                  style={{
+                    width: "100%",
+                    padding: "6px 10px",
+                    border: "1px solid #cbd5e1",
+                    borderRadius: "6px",
+                    fontSize: "12px",
+                    boxSizing: "border-box",
+                    fontFamily: "inherit"
+                  }}
+                />
+              </div>
+
+              <div>
+                <label style={{ display: "block", fontSize: "11px", fontWeight: "700", color: "#0047AB", marginBottom: "3px" }}>
+                  Client-facing Pulse note <span style={{ fontWeight: "400", color: "#64748b" }}>(shown in Pulse breakdowns)</span>
+                </label>
+                <textarea
+                  value={editPulseNote}
+                  onChange={e => setEditPulseNote(e.target.value)}
+                  placeholder="Client-facing explanation for this adjustment..."
+                  rows={2}
+                  style={{
+                    width: "100%",
+                    padding: "6px 10px",
+                    border: "1px solid #93c5fd",
+                    borderRadius: "6px",
+                    fontSize: "12px",
+                    boxSizing: "border-box",
+                    fontFamily: "inherit",
+                    background: "#f0f7ff"
+                  }}
+                />
+              </div>
+            </div>
 
             <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px" }}>
               <button
@@ -3349,12 +3984,41 @@ export default function CashflowReconTab({
             borderRadius: "12px",
             padding: "20px 24px",
             width: "100%",
-            maxWidth: "420px",
+            maxWidth: "460px",
             boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.1)"
           }}>
-            <h4 style={{ margin: "0 0 6px", fontSize: "16px", fontWeight: "700", color: "#0f172a" }}>
-              {isAdmin ? "Edit cell note" : "Edit note"}: {noteModal.label}
-            </h4>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", marginBottom: "6px" }}>
+              <h4 style={{ margin: 0, fontSize: "16px", fontWeight: "700", color: "#0f172a" }}>
+                {isAdmin ? "Edit cell note" : "Edit note"}: {noteModal.label}
+              </h4>
+              <button
+                type="button"
+                onClick={() => {
+                  const suggested = generateSuggestedNotesForRow({
+                    rowLabel: noteModal.parentLabel || noteModal.label,
+                    mappedItemType: noteModal.mappedItemType,
+                    targetMonthLabel: noteModal.colLabel,
+                    targetAdjVal: noteModal.cellVal || 0,
+                    nextOffsetVal: null
+                  });
+                  setGeneralNoteDraft(suggested.targetGeneral);
+                  setPulseNoteDraft(suggested.targetPulse);
+                }}
+                style={{
+                  padding: "3px 9px",
+                  borderRadius: "4px",
+                  border: "1px solid #cbd5e1",
+                  background: "#f8fafc",
+                  color: "#0284c7",
+                  fontSize: "11px",
+                  fontWeight: "600",
+                  cursor: "pointer",
+                  whiteSpace: "nowrap"
+                }}
+              >
+                ↻ Suggest notes
+              </button>
+            </div>
             {isAdmin && (
               <p style={{ margin: "0 0 14px", fontSize: "12px", color: "#64748b" }}>
                 Cell: <strong>Cash!{noteModal.colLetter}{noteModal.sheetRow}</strong>
@@ -3363,7 +4027,7 @@ export default function CashflowReconTab({
 
             <div style={{ marginBottom: "14px" }}>
               <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#334155", marginBottom: "4px" }}>
-                General notes <span style={{ fontWeight: "400", color: "#64748b", fontSize: "11px" }}>(internal only, not shown in Pulse)</span>
+                Internal note <span style={{ fontWeight: "400", color: "#64748b", fontSize: "11px" }}>(internal only, not shown in Pulse)</span>
               </label>
               <textarea
                 value={generalNoteDraft}
@@ -3384,7 +4048,7 @@ export default function CashflowReconTab({
 
             <div style={{ marginBottom: "16px" }}>
               <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#0047AB", marginBottom: "4px" }}>
-                Note that will describe adjustment in Pulse cashflow table <span style={{ fontWeight: "400", color: "#64748b", fontSize: "11px" }}>(client-facing)</span>
+                Client-facing Pulse note <span style={{ fontWeight: "400", color: "#64748b", fontSize: "11px" }}>(shown in Pulse breakdowns)</span>
               </label>
               <textarea
                 value={pulseNoteDraft}
@@ -3403,7 +4067,9 @@ export default function CashflowReconTab({
                 }}
               />
               <p style={{ margin: "4px 0 0", fontSize: "11px", color: "#64748b" }}>
-                💡 Saved with <code>[Note: ...]</code> wrapper for display in Pulse popovers and monthly breakdown pages.
+                {isAdmin
+                  ? <>Saved with <code>[Note: ...]</code> wrapper for display in Pulse popovers and monthly breakdown pages.</>
+                  : "Displayed to the client in Pulse cashflow popovers and monthly breakdown pages."}
               </p>
             </div>
 
@@ -3448,6 +4114,464 @@ export default function CashflowReconTab({
           </div>
         </div>
       )}
+
+      {/* Offset in Next Month Modal */}
+      {offsetModal && targetCol && nextCol && (() => {
+        const effectiveTargetAdj = offsetModal.applyTargetRecon ? offsetModal.reconAdjVal : offsetModal.currentTargetAdjVal;
+        const linkedOffsetVal = -effectiveTargetAdj;
+        const customOffsetVal = parseFloat(String(offsetModal.customAmount || "0").replace(/[£,\s]/g, "")) || 0;
+        const activeNextOffsetVal = offsetModal.offsetMode === "linked" ? linkedOffsetVal : customOffsetVal;
+        const nextShortLabel = (nextCol.label || "next month").split(" ")[0];
+
+        return (
+          <div style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: "rgba(15, 23, 42, 0.5)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1005,
+            padding: "16px"
+          }}>
+            <div style={{
+              background: "#ffffff",
+              borderRadius: "12px",
+              padding: "20px 24px",
+              width: "100%",
+              maxWidth: "580px",
+              maxHeight: "90vh",
+              overflowY: "auto",
+              boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.15)"
+            }}>
+              <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "10px", marginBottom: "10px" }}>
+                <div>
+                  <h4 style={{ margin: "0 0 4px", fontSize: "16px", fontWeight: "700", color: "#0f172a" }}>
+                    Offset in {nextCol.label}: {offsetModal.title}
+                  </h4>
+                  <p style={{ margin: 0, fontSize: "12px", color: "#64748b" }}>
+                    Carry over or reverse {targetCol.label} timing variances in {nextCol.label} with client-facing and internal notes.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setOffsetModal(null)}
+                  disabled={savingOffset}
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    fontSize: "16px",
+                    color: "#64748b",
+                    cursor: "pointer",
+                    padding: "2px 6px"
+                  }}
+                >
+                  ✕
+                </button>
+              </div>
+
+              {/* Target Month Summary Box */}
+              <div style={{
+                background: "#f8fafc",
+                border: "1px solid #e2e8f0",
+                borderRadius: "8px",
+                padding: "10px 12px",
+                marginBottom: "12px",
+                fontSize: "12px"
+              }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
+                  <div>
+                    <span style={{ color: "#64748b" }}>{targetCol.label} forecast: </span>
+                    <strong style={{ color: "#0f172a" }}>{formatGBP(offsetModal.baseVal)}</strong>
+                    {offsetModal.txVal !== null && offsetModal.txVal !== undefined && (
+                      <>
+                        <span style={{ color: "#94a3b8", margin: "0 6px" }}>•</span>
+                        <span style={{ color: "#64748b" }}>Transactions total: </span>
+                        <strong style={{ color: "#0f172a" }}>{formatGBP(offsetModal.txVal)}</strong>
+                      </>
+                    )}
+                  </div>
+                  <div>
+                    <span style={{ color: "#64748b" }}>{targetCol.label} adjustment: </span>
+                    <strong style={{ color: "#0284c7" }}>{formatGBP(effectiveTargetAdj)}</strong>
+                  </div>
+                </div>
+
+                {!offsetModal.isReconAlreadyUsed && offsetModal.hasUnreconciledVariance && offsetModal.reconFormula && (
+                  <label style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "7px",
+                    marginTop: "8px",
+                    paddingTop: "8px",
+                    borderTop: "1px dashed #cbd5e1",
+                    cursor: "pointer",
+                    fontSize: "12px",
+                    color: "#1e293b",
+                    fontWeight: "600"
+                  }}>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(offsetModal.applyTargetRecon)}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        const nextTargetAdj = checked ? offsetModal.reconAdjVal : offsetModal.currentTargetAdjVal;
+                        const nextDefaultCustom = Number((-nextTargetAdj).toFixed(2));
+                        const nextState = {
+                          ...offsetModal,
+                          applyTargetRecon: checked,
+                          customAmount: offsetModal.offsetMode === "linked" ? String(nextDefaultCustom) : offsetModal.customAmount
+                        };
+                        setOffsetModal(nextState);
+                        handleRefreshOffsetSuggestedNotes(nextState);
+                      }}
+                    />
+                    <span>
+                      Also apply {targetCol.label} reconciliation adjustment ({formatGBP(offsetModal.reconAdjVal)})
+                    </span>
+                  </label>
+                )}
+              </div>
+
+              {/* Next Month Offset Mode Selector */}
+              <div style={{ marginBottom: "14px" }}>
+                <label style={{ display: "block", fontSize: "12px", fontWeight: "700", color: "#334155", marginBottom: "6px" }}>
+                  {nextCol.label} offset method
+                </label>
+
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                  {/* Option 1: Linked 100% Auto-Reversing Offset */}
+                  <label
+                    onClick={() => {
+                      const nextState = { ...offsetModal, offsetMode: "linked" };
+                      setOffsetModal(nextState);
+                    }}
+                    style={{
+                      display: "flex",
+                      alignItems: "flex-start",
+                      gap: "9px",
+                      padding: "10px 12px",
+                      borderRadius: "8px",
+                      border: offsetModal.offsetMode === "linked" ? "1.5px solid #4f46e5" : "1px solid #cbd5e1",
+                      background: offsetModal.offsetMode === "linked" ? "#eef2ff" : "#ffffff",
+                      cursor: "pointer"
+                    }}
+                  >
+                    <input
+                      type="radio"
+                      name="offsetMode"
+                      checked={offsetModal.offsetMode === "linked"}
+                      onChange={() => {
+                        const nextState = { ...offsetModal, offsetMode: "linked" };
+                        setOffsetModal(nextState);
+                      }}
+                      style={{ marginTop: "3px" }}
+                    />
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" }}>
+                        <span style={{ fontSize: "12.5px", fontWeight: "700", color: "#1e293b" }}>
+                          Full linked offset (auto-reversing)
+                        </span>
+                        <span style={{ fontSize: "12.5px", fontWeight: "700", color: "#4338ca" }}>
+                          {formatGBP(linkedOffsetVal)}
+                        </span>
+                      </div>
+                      <p style={{ margin: "3px 0 0", fontSize: "11.5px", color: "#475569", lineHeight: "1.4" }}>
+                        Automatically reverses the {targetCol.label} adjustment in {nextCol.label}. If {targetCol.label} changes or an unreconciled payment is later matched in Xero/QuickBooks, {nextCol.label} automatically updates.
+                        {isAdmin && (
+                          <span style={{ marginLeft: "6px", padding: "1px 5px", background: "#e0e7ff", color: "#3730a3", borderRadius: "4px", fontFamily: "monospace", fontSize: "10.5px", fontWeight: "700" }}>
+                            =-{targetCol.colLetter}{offsetModal.adjSheetRow}
+                          </span>
+                        )}
+                      </p>
+                    </div>
+                  </label>
+
+                  {/* Option 2: Partial / Custom Carry-Over Amount */}
+                  <div
+                    onClick={() => {
+                      if (offsetModal.offsetMode !== "custom") {
+                        setOffsetModal(prev => prev ? ({ ...prev, offsetMode: "custom" }) : prev);
+                      }
+                    }}
+                    style={{
+                      display: "flex",
+                      alignItems: "flex-start",
+                      gap: "9px",
+                      padding: "10px 12px",
+                      borderRadius: "8px",
+                      border: offsetModal.offsetMode === "custom" ? "1.5px solid #4f46e5" : "1px solid #cbd5e1",
+                      background: offsetModal.offsetMode === "custom" ? "#eef2ff" : "#ffffff",
+                      cursor: "pointer"
+                    }}
+                  >
+                    <input
+                      type="radio"
+                      name="offsetMode"
+                      checked={offsetModal.offsetMode === "custom"}
+                      onChange={() => setOffsetModal(prev => prev ? ({ ...prev, offsetMode: "custom" }) : prev)}
+                      style={{ marginTop: "3px" }}
+                    />
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" }}>
+                        <span style={{ fontSize: "12.5px", fontWeight: "700", color: "#1e293b" }}>
+                          Partial or custom carry-over amount
+                        </span>
+                        <span style={{ fontSize: "12.5px", fontWeight: "700", color: "#4338ca" }}>
+                          {formatGBP(customOffsetVal)}
+                        </span>
+                      </div>
+                      <p style={{ margin: "3px 0 8px", fontSize: "11.5px", color: "#475569", lineHeight: "1.4" }}>
+                        Specify the exact amount deferred into {nextCol.label} (e.g. partial salary, contractor, or cost deferral).
+                      </p>
+
+                      {offsetModal.offsetMode === "custom" && (
+                        <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }} onClick={e => e.stopPropagation()}>
+                          <input
+                            type="text"
+                            value={offsetModal.customAmount}
+                            onChange={e => setOffsetModal(prev => prev ? ({ ...prev, customAmount: e.target.value }) : prev)}
+                            placeholder="e.g. -4000"
+                            style={{
+                              width: "140px",
+                              padding: "6px 10px",
+                              border: "1px solid #94a3b8",
+                              borderRadius: "6px",
+                              fontSize: "13px",
+                              fontWeight: "600",
+                              background: "#ffffff"
+                            }}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setOffsetModal(prev => prev ? ({ ...prev, customAmount: String(Number(linkedOffsetVal.toFixed(2))) }) : prev)}
+                            style={{
+                              padding: "4px 8px",
+                              borderRadius: "4px",
+                              border: "1px solid #cbd5e1",
+                              background: "#ffffff",
+                              color: "#334155",
+                              fontSize: "11px",
+                              fontWeight: "600",
+                              cursor: "pointer"
+                            }}
+                          >
+                            100% ({formatGBP(linkedOffsetVal)})
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setOffsetModal(prev => prev ? ({ ...prev, customAmount: String(Number((linkedOffsetVal * 0.5).toFixed(2))) }) : prev)}
+                            style={{
+                              padding: "4px 8px",
+                              borderRadius: "4px",
+                              border: "1px solid #cbd5e1",
+                              background: "#ffffff",
+                              color: "#334155",
+                              fontSize: "11px",
+                              fontWeight: "600",
+                              cursor: "pointer"
+                            }}
+                          >
+                            50% ({formatGBP(linkedOffsetVal * 0.5)})
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Suggested Notes for Both Months */}
+              <div style={{
+                background: "#f8fafc",
+                border: "1px solid #e2e8f0",
+                borderRadius: "8px",
+                padding: "12px",
+                marginBottom: "16px"
+              }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
+                  <span style={{ fontSize: "12px", fontWeight: "700", color: "#0f172a" }}>
+                    Suggested notes for {targetCol.label} and {nextCol.label}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => handleRefreshOffsetSuggestedNotes()}
+                    style={{
+                      padding: "3px 9px",
+                      borderRadius: "4px",
+                      border: "1px solid #cbd5e1",
+                      background: "#ffffff",
+                      color: "#0284c7",
+                      fontSize: "11px",
+                      fontWeight: "600",
+                      cursor: "pointer"
+                    }}
+                  >
+                    ↻ Refresh suggested notes
+                  </button>
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+                  {/* Target Month Notes */}
+                  <div style={{ background: "#ffffff", border: "1px solid #e2e8f0", borderRadius: "6px", padding: "9px" }}>
+                    <div style={{ fontSize: "11.5px", fontWeight: "700", color: "#15803d", marginBottom: "6px" }}>
+                      {targetCol.label} ({formatGBP(effectiveTargetAdj)})
+                    </div>
+                    <label style={{ display: "block", fontSize: "10.5px", fontWeight: "700", color: "#475569", marginBottom: "2px" }}>
+                      Internal note
+                    </label>
+                    <textarea
+                      value={offsetModal.targetGeneralNote}
+                      onChange={e => setOffsetModal(prev => prev ? ({ ...prev, targetGeneralNote: e.target.value }) : prev)}
+                      rows={2}
+                      style={{
+                        width: "100%",
+                        padding: "5px 7px",
+                        border: "1px solid #cbd5e1",
+                        borderRadius: "4px",
+                        fontSize: "11.5px",
+                        boxSizing: "border-box",
+                        fontFamily: "inherit",
+                        marginBottom: "6px"
+                      }}
+                    />
+                    <label style={{ display: "block", fontSize: "10.5px", fontWeight: "700", color: "#0047AB", marginBottom: "2px" }}>
+                      Client-facing Pulse note
+                    </label>
+                    <textarea
+                      value={offsetModal.targetPulseNote}
+                      onChange={e => setOffsetModal(prev => prev ? ({ ...prev, targetPulseNote: e.target.value }) : prev)}
+                      rows={2}
+                      style={{
+                        width: "100%",
+                        padding: "5px 7px",
+                        border: "1px solid #93c5fd",
+                        borderRadius: "4px",
+                        fontSize: "11.5px",
+                        boxSizing: "border-box",
+                        fontFamily: "inherit",
+                        background: "#f0f7ff"
+                      }}
+                    />
+                  </div>
+
+                  {/* Next Month Notes */}
+                  <div style={{ background: "#ffffff", border: "1px solid #e2e8f0", borderRadius: "6px", padding: "9px" }}>
+                    <div style={{ fontSize: "11.5px", fontWeight: "700", color: "#4338ca", marginBottom: "6px" }}>
+                      {nextCol.label} ({formatGBP(activeNextOffsetVal)})
+                    </div>
+                    <label style={{ display: "block", fontSize: "10.5px", fontWeight: "700", color: "#475569", marginBottom: "2px" }}>
+                      Internal note
+                    </label>
+                    <textarea
+                      value={offsetModal.nextGeneralNote}
+                      onChange={e => setOffsetModal(prev => prev ? ({ ...prev, nextGeneralNote: e.target.value }) : prev)}
+                      rows={2}
+                      style={{
+                        width: "100%",
+                        padding: "5px 7px",
+                        border: "1px solid #cbd5e1",
+                        borderRadius: "4px",
+                        fontSize: "11.5px",
+                        boxSizing: "border-box",
+                        fontFamily: "inherit",
+                        marginBottom: "6px"
+                      }}
+                    />
+                    <label style={{ display: "block", fontSize: "10.5px", fontWeight: "700", color: "#0047AB", marginBottom: "2px" }}>
+                      Client-facing Pulse note
+                    </label>
+                    <textarea
+                      value={offsetModal.nextPulseNote}
+                      onChange={e => setOffsetModal(prev => prev ? ({ ...prev, nextPulseNote: e.target.value }) : prev)}
+                      rows={2}
+                      style={{
+                        width: "100%",
+                        padding: "5px 7px",
+                        border: "1px solid #93c5fd",
+                        borderRadius: "4px",
+                        fontSize: "11.5px",
+                        boxSizing: "border-box",
+                        fontFamily: "inherit",
+                        background: "#f0f7ff"
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Actions */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                <div>
+                  {offsetModal.hasExistingNextOffset && (
+                    <button
+                      type="button"
+                      onClick={() => handleSaveOffset(true)}
+                      disabled={savingOffset}
+                      style={{
+                        padding: "6px 12px",
+                        borderRadius: "6px",
+                        border: "1px solid #fecaca",
+                        background: "#fef2f2",
+                        color: "#b91c1c",
+                        fontSize: "12px",
+                        fontWeight: "600",
+                        cursor: savingOffset ? "default" : "pointer"
+                      }}
+                    >
+                      Clear {nextShortLabel} offset
+                    </button>
+                  )}
+                </div>
+
+                <div style={{ display: "flex", gap: "8px" }}>
+                  <button
+                    type="button"
+                    onClick={() => setOffsetModal(null)}
+                    disabled={savingOffset}
+                    style={{
+                      padding: "6px 14px",
+                      borderRadius: "6px",
+                      border: "1px solid #cbd5e1",
+                      background: "#ffffff",
+                      color: "#475569",
+                      fontSize: "13px",
+                      fontWeight: "600",
+                      cursor: "pointer"
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSaveOffset(false)}
+                    disabled={savingOffset}
+                    style={{
+                      padding: "6px 18px",
+                      borderRadius: "6px",
+                      border: "none",
+                      background: "#4f46e5",
+                      color: "#ffffff",
+                      fontSize: "13px",
+                      fontWeight: "600",
+                      cursor: savingOffset ? "default" : "pointer",
+                      opacity: savingOffset ? 0.7 : 1,
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "6px"
+                    }}
+                  >
+                    {savingOffset ? <><Spinner size={12} color="#fff" /> Saving...</> : `Apply ${nextShortLabel} offset & notes`}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

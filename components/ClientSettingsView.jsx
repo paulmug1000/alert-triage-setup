@@ -1394,7 +1394,9 @@ export default function ClientSettingsView({
       (acc.name && acc.name.toLowerCase().includes(q)) ||
       (acc.code && acc.code.toLowerCase().includes(q)) ||
       (acc.currency && acc.currency.toLowerCase().includes(q)) ||
-      (acc.subType && acc.subType.toLowerCase().includes(q))
+      (acc.subType && acc.subType.toLowerCase().includes(q)) ||
+      (acc.type && acc.type.toLowerCase().includes(q)) ||
+      (acc.accountType && acc.accountType.toLowerCase().includes(q))
     );
   }, [combinedModalAccounts, bankSearchQuery]);
 
@@ -2742,7 +2744,7 @@ export default function ClientSettingsView({
                 fontWeight: "600"
               }}>
                 <Spinner size={18} color="#0066CC" />
-                Updating settings from Google Sheets...
+                Updating settings...
               </div>
             </div>
           )}
@@ -6343,14 +6345,15 @@ export default function ClientSettingsView({
               <div>
                 <h3 style={{ margin: "0 0 4px", fontSize: "16px", fontWeight: "700", color: "#0F172A" }}>
                   {bankModalTarget === "non-cash"
-                    ? `Select non-cash bank accounts from ${resolvedAccountingTool}`
-                    : `Select bank accounts from ${resolvedAccountingTool}`}
+                    ? `Select non-cash bank accounts from ${resolvedAccountingTool || "accounting tool"}`
+                    : `Select bank accounts from ${resolvedAccountingTool || "accounting tool"}`}
                 </h3>
                 <p style={{ margin: 0, fontSize: "12px", color: "#64748B" }}>
                   {bankModalTarget === "non-cash"
-                    ? "Check accounts (credit cards, loans, non-cash accounts) to track for clearing unreconciled P&L additions. Stored in KeyInfo!H23:H28, IDs in KeyInfo!I23:I28. Maximum 6 accounts."
-                    : "Check the accounts to include in Pulse. Names stored in KeyInfo!H12:H21, Accounting Tool IDs in KeyInfo!I12:I21. Maximum 10 accounts."}
+                    ? "Check accounts (credit cards, loans, non-cash accounts) to track for clearing unreconciled P&L additions. Maximum 6 accounts."
+                    : "Check the accounts to include in Pulse. Maximum 10 accounts."}
                 </p>
+                {isSysAdmin && renderCellRef(bankModalTarget === "non-cash" ? "KeyInfo!H23:I28" : "KeyInfo!H12:I21")}
               </div>
               <button
                 type="button"
@@ -6379,7 +6382,12 @@ export default function ClientSettingsView({
                 }}
               />
 
-              <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "10px", flexShrink: 0 }}>
+                <span style={{ fontSize: "12px", color: "#64748B", fontWeight: "500" }}>
+                  {bankSearchQuery.trim()
+                    ? `${filteredModalAccounts.length} of ${combinedModalAccounts.length} accounts`
+                    : `${combinedModalAccounts.length} ${combinedModalAccounts.length === 1 ? "account" : "accounts"} available`}
+                </span>
                 {(() => {
                   const maxLimit = bankModalTarget === "non-cash" ? 6 : 10;
                   const isOver = tempSelectedBankAccounts.length > maxLimit;
@@ -6493,7 +6501,17 @@ export default function ClientSettingsView({
                             {acc.code && <span style={{ background: "#F1F5F9", padding: "1px 6px", borderRadius: "4px", color: "#334155" }}>Code: {acc.code}</span>}
                             {acc.accountNumber && <span>Acct: ••••{acc.accountNumber.slice(-4)}</span>}
                             {acc.currency && <span style={{ background: "#E0E7FF", color: "#3730A3", padding: "1px 5px", borderRadius: "4px", fontWeight: "600" }}>{acc.currency}</span>}
-                            {acc.subType && <span>{acc.subType}</span>}
+                            {(acc.accountType?.toLowerCase() === "credit card" || acc.type === "CREDIT_CARD") && (
+                              <span style={{ background: "#FDF4FF", color: "#86198F", border: "1px solid #F0ABFC", padding: "1px 6px", borderRadius: "4px", fontWeight: "600" }}>
+                                Credit card
+                              </span>
+                            )}
+                            {acc.accountType && acc.accountType.toLowerCase() !== "bank" && acc.accountType.toLowerCase() !== "credit card" && (
+                              <span style={{ background: "#F8FAFC", color: "#475569", border: "1px solid #E2E8F0", padding: "1px 6px", borderRadius: "4px" }}>
+                                {acc.accountType}
+                              </span>
+                            )}
+                            {acc.subType && acc.subType.toLowerCase() !== "creditcard" && <span>{acc.subType}</span>}
                           </div>
                         </div>
                       </div>

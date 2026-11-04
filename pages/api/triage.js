@@ -39,7 +39,7 @@ import {
   handleCreateOutgoingsVendor, handleGetOutgoings, handleGetDirectCostsJobs,
   handleGetInvoiceJobs, handleGetAllClientJobs, handleUpdateJobField, handleUpdateJobFields,
   handleAssignExpenseToJob, handleUpdateExpenseSlot, handleAssignInvoiceToJob,
-  handleUpdateInvoiceSlot, handleMoveInvoiceToJob, handleVerifyInvoiceSlot, handleCreateJobFromInvoice, handleAddNewJob, handleUpdateOutgoingNote, handleSetMakingUpCosZero,
+  handleUpdateInvoiceSlot, handleMoveInvoiceToJob, handleVerifyInvoiceSlot, handleCreateJobFromInvoice, handleAddNewJob, handleUpdateOutgoingNote, handleSetMakingUpCosZero, handleSetMakingUpCosTarget,
   handleFireOutgoingsPull, handleMarkPipelineCopied, handleDeleteDirectJob, handleMarkPipelineAlreadyConfirmed, handleGetDefaultDaysToPay, getClientWebAppUrl
 } from "../../services/workspaces";
 import {
@@ -93,6 +93,7 @@ import {
   updateCashAdjustment,
   toggleCashCellResolved,
   updateCashCellNote,
+  applyCashFutureOffset,
   updateReconTransactionCategory,
   syncReconBankTransactions,
   syncReconUnreconciledItems,
@@ -108,6 +109,7 @@ import {
 import {
   fetchClientReconciledBankTransactions,
   parseUnreconciledItems,
+  enrichUnreconciledItemPredictions,
   recategoriseTransactions,
   autoReconcileClientBankTransactions
 } from "../../services/bankTransactionsService";
@@ -252,6 +254,7 @@ export default async function handler(req, res) {
       create_outgoings_vendor: ["outgoings"],
       update_outgoing_note: ["outgoings", "cash"],
       set_making_up_cos_zero: ["outgoings", "cash"],
+      set_making_up_cos_target: ["outgoings", "views", "settings"],
       mark_expense_assigned: ["outgoings", "cash"],
       prune_assigned_expenses: ["outgoings", "cash"],
       delete_invoice_from_pulse: ["invoices", "jobs", "cash"],
@@ -667,6 +670,8 @@ export default async function handler(req, res) {
       return await handleUpdateOutgoingNote(req, res, sheets);
     } else if (action === "set_making_up_cos_zero") {
       return await handleSetMakingUpCosZero(req, res, sheets);
+    } else if (action === "set_making_up_cos_target") {
+      return await handleSetMakingUpCosTarget(req, res, sheets);
     } else if (action === "get_claude_settings") {
       return await handleGetClaudeSettings(req, res, sheets);
     } else if (action === "save_claude_settings") {
@@ -779,6 +784,48 @@ export default async function handler(req, res) {
         return res.status(200).json(result);
       } catch (err) {
         console.error("❌ update_cash_cell_note error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "apply_cash_future_offset") {
+      try {
+        const {
+          clientSheetId,
+          cashTabSheetId,
+          sheetRow,
+          targetColIdx,
+          targetColLetter,
+          nextColIdx,
+          nextColLetter,
+          targetValue,
+          nextValue,
+          targetNote,
+          nextNote,
+          clientName,
+          automationCommanderSheetId
+        } = req.body;
+        if (!(await checkTriageClientAuth(sheets, sessionUser, clientName, [clientSheetId]))) {
+          return res.status(403).json({ success: false, error: "Access denied to this client" });
+        }
+        const result = await applyCashFutureOffset({
+          clientSheetId,
+          cashTabSheetId,
+          sheetRow,
+          targetColIdx,
+          targetColLetter,
+          nextColIdx,
+          nextColLetter,
+          targetValue,
+          nextValue,
+          targetNote,
+          nextNote,
+          clientName,
+          automationCommanderSheetId,
+          isAdmin: Boolean(sessionUser?.isAdmin || isSystemAuthorized)
+        });
+        return res.status(200).json(result);
+      } catch (err) {
+        console.error("❌ apply_cash_future_offset error:", err);
         return res.status(500).json({ success: false, error: err.message });
       }
 
@@ -912,8 +959,36 @@ export default async function handler(req, res) {
 
     } else if (action === "parse_unreconciled_items") {
       try {
-        const { rawText, rows, monthKey } = req.body;
+        const {
+          rawText,
+          rows,
+          monthKey,
+          clientName,
+          reconSheetId,
+          clientSheetId,
+          plAccountOptions,
+          existingTransactions,
+          knownContractors,
+          knownCustomers
+        } = req.body;
         const result = parseUnreconciledItems({ rawText, rows, monthKey });
+        if (result?.items?.length > 0 && (reconSheetId || clientSheetId || (existingTransactions && existingTransactions.length > 0))) {
+          let canEnrichFromSheets = true;
+          if ((reconSheetId || clientSheetId) && !req.isSystemAuthorized) {
+            canEnrichFromSheets = await checkTriageClientAuth(sheets, sessionUser, clientName, [reconSheetId, clientSheetId].filter(Boolean));
+          }
+          const enrichedItems = await enrichUnreconciledItemPredictions({
+            items: result.items,
+            reconSheetId: canEnrichFromSheets ? reconSheetId : "",
+            clientSheetId: canEnrichFromSheets ? clientSheetId : "",
+            plAccountOptions: plAccountOptions || [],
+            existingTransactions: existingTransactions || [],
+            knownContractors: knownContractors || [],
+            knownCustomers: knownCustomers || []
+          });
+          result.items = enrichedItems;
+          result.validItems = enrichedItems.filter(it => it.isInTargetMonth && it.isUnreconSection !== false);
+        }
         return res.status(200).json({ success: true, ...result });
       } catch (err) {
         console.error("❌ parse_unreconciled_items error:", err);

@@ -897,6 +897,7 @@ export default function CashflowWorkbenchView({
   isAdmin = false,
   groupedElements = [],
   targetCol = null,
+  nextCol = null,
   isCombinedTransferMode = false,
   combinedTransferTxVal = null,
   getCategoryTxAmount,
@@ -907,9 +908,11 @@ export default function CashflowWorkbenchView({
   onStartEdit,
   onToggleResolved,
   onOpenNote,
+  onOpenOffsetModal,
   onRequestMatchAll,
   onSwitchToMatrix,
   onLiveSignedActualsChange,
+  onLiveUnreconItemsChange,
   applyingRecon = false,
   applyingReconRow = null,
   resolvingCellKey = null,
@@ -1387,6 +1390,12 @@ export default function CashflowWorkbenchView({
     }
   }, [liveSignedActuals, onLiveSignedActualsChange, isGuidedSetupOpen]);
 
+  useEffect(() => {
+    if (onLiveUnreconItemsChange && !isGuidedSetupOpen) {
+      onLiveUnreconItemsChange(unreconItems);
+    }
+  }, [unreconItems, onLiveUnreconItemsChange, isGuidedSetupOpen]);
+
   // Matches a cashflow comparison label to liveCategoryTotals
   const getLiveBankActual = useCallback((c) => {
     if (!c?.label) return null;
@@ -1728,17 +1737,41 @@ export default function CashflowWorkbenchView({
         (tx.id && t.id && t.id === tx.id) ||
         (!tx.id && tx.rowNum != null && t.rowNum != null && t.rowNum === tx.rowNum && Boolean(t.isReconciled) === Boolean(tx.isReconciled));
       if (isMatch) {
-        return { ...t, category: newCategory, suggestedCategory: newCategory };
+        return {
+          ...t,
+          category: newCategory,
+          suggestedCategory: newCategory,
+          isCategorySuggested: false,
+          plCategory: newCategory === "Outgoings" ? (t.plCategory || "") : ""
+        };
       }
       return t;
     });
     setBankTxns(updated);
 
+    let updatedUnrecon = unreconItems;
+    if (tx.isReconciled === false) {
+      updatedUnrecon = unreconItems.map(u => {
+        if (isSameUnreconEntry(u, tx)) {
+          const nextPl = newCategory === "Outgoings" ? (u.plCategory || (u.category !== "Outgoings" && u.category !== "Revenue" ? u.category : "")) : "";
+          return {
+            ...u,
+            cashflowCategory: newCategory,
+            plCategory: nextPl,
+            category: nextPl,
+            isCategorySuggested: false
+          };
+        }
+        return u;
+      });
+      setUnreconItems(updatedUnrecon);
+    }
+
     // Do not save to the Recon Sheet while in Guided Setup (saved upon Finish Guided Setup)
     if (isGuidedSetupOpen) return;
 
-    // If transaction has an active rowNum in the Recon sheet, update cell in Google Sheets
-    if (tx.rowNum && clientInfo?.reconSheetId && tabName) {
+    // If transaction has an active rowNum in the Recon sheet and wasn't an unreconciled P&L reset, update cell in Google Sheets
+    if (tx.rowNum && clientInfo?.reconSheetId && tabName && tx.isReconciled !== false) {
       try {
         await fetch("/api/triage", {
           method: "POST",
@@ -1757,8 +1790,8 @@ export default function CashflowWorkbenchView({
         console.warn("Failed background category cell update:", e);
       }
     } else {
-      // If transactions haven't been written to sheet rows yet, debounced save
-      triggerDebouncedAutoSync(updated, unreconItems);
+      // If transactions haven't been written to sheet rows yet or unreconciled item changed category, debounced save
+      triggerDebouncedAutoSync(updated, updatedUnrecon);
     }
   };
 
@@ -1780,13 +1813,13 @@ export default function CashflowWorkbenchView({
     const updatedBank = bankTxns.map(t => {
       const isMatch = (t === tx) || (tx.id && t.id && t.id === tx.id) || (!tx.id && tx.rowNum != null && t.rowNum != null && t.rowNum === tx.rowNum);
       if (isMatch) {
-        return { ...t, plCategory: newPlCategory };
+        return { ...t, plCategory: newPlCategory, isPlSuggested: false };
       }
       return t;
     });
     const updatedUnrecon = unreconItems.map(u => {
       if (isSameUnreconEntry(u, tx)) {
-        return { ...u, category: newPlCategory };
+        return { ...u, category: newPlCategory, plCategory: newPlCategory, isPlSuggested: false };
       }
       return u;
     });
@@ -1906,7 +1939,14 @@ export default function CashflowWorkbenchView({
         body: JSON.stringify({
           action: "parse_unreconciled_items",
           rows,
-          monthKey: reconData?.targetMonthKey || effectiveMonthKey
+          monthKey: reconData?.targetMonthKey || effectiveMonthKey,
+          clientName: selectedClient,
+          reconSheetId: clientInfo?.reconSheetId,
+          clientSheetId: clientInfo?.clientSheetId,
+          plAccountOptions: reconData?.plAccountOptions || [],
+          existingTransactions: bankTxns,
+          knownContractors: reconData?.contractorsBreakdown?.pulseContractors || [],
+          knownCustomers: reconData?.revenueBreakdown?.pulseInvoices || []
         })
       });
       const res = await resp.json();
@@ -1947,7 +1987,14 @@ export default function CashflowWorkbenchView({
         body: JSON.stringify({
           action: "parse_unreconciled_items",
           rawText: pasteRawText,
-          monthKey: reconData?.targetMonthKey || effectiveMonthKey
+          monthKey: reconData?.targetMonthKey || effectiveMonthKey,
+          clientName: selectedClient,
+          reconSheetId: clientInfo?.reconSheetId,
+          clientSheetId: clientInfo?.clientSheetId,
+          plAccountOptions: reconData?.plAccountOptions || [],
+          existingTransactions: bankTxns,
+          knownContractors: reconData?.contractorsBreakdown?.pulseContractors || [],
+          knownCustomers: reconData?.revenueBreakdown?.pulseInvoices || []
         })
       });
       const data = await resp.json();
@@ -2007,18 +2054,41 @@ export default function CashflowWorkbenchView({
       });
       return;
     }
-    const taggedItems = selectedItems.map(it => ({
-      ...it,
-      date: formatDateDMmmYy(it.date || it.displayDate),
-      accountName: selectedUploadAccount || it.accountName || defaultAccount,
-      isReconciled: false,
-      vatApplies: it.vatApplies || "No",
-      plCategory: (it.plCategory && it.plCategory !== "Outgoings") ? it.plCategory : "",
-      category: (it.outAmount > 0 || it.isNegative) ? "Outgoings" : "Revenue",
-      suggestedCategory: (it.outAmount > 0 || it.isNegative) ? "Outgoings" : "Revenue"
-    }));
-    const nextUnrecon = [...unreconItems, ...taggedItems];
-    const nextBankTxns = [...bankTxns, ...taggedItems];
+    const taggedBankItems = [];
+    const taggedUnreconItems = [];
+
+    selectedItems.forEach(it => {
+      const fallbackCat = (it.outAmount > 0 || it.isNegative) ? "Outgoings" : "Revenue";
+      const resolvedCat = it.category || it.suggestedCategory || fallbackCat;
+      const resolvedPl = (resolvedCat === "Outgoings" && it.plCategory && it.plCategory !== "Outgoings" && it.plCategory !== "Revenue")
+        ? it.plCategory
+        : "";
+      const baseItem = {
+        ...it,
+        date: formatDateDMmmYy(it.date || it.displayDate),
+        accountName: selectedUploadAccount || it.accountName || defaultAccount,
+        isReconciled: false,
+        vatApplies: it.vatApplies || "No",
+        plCategory: resolvedPl,
+        cashflowCategory: resolvedCat,
+        isCategorySuggested: Boolean(it.isCategorySuggested),
+        isPlSuggested: Boolean(it.isPlSuggested && resolvedPl),
+        predictionSource: it.predictionSource || ""
+      };
+      taggedBankItems.push({
+        ...baseItem,
+        category: resolvedCat,
+        suggestedCategory: it.suggestedCategory || resolvedCat
+      });
+      taggedUnreconItems.push({
+        ...baseItem,
+        category: resolvedPl,
+        suggestedCategory: it.suggestedCategory || resolvedCat
+      });
+    });
+
+    const nextUnrecon = [...unreconItems, ...taggedUnreconItems];
+    const nextBankTxns = [...bankTxns, ...taggedBankItems];
     setUnreconItems(nextUnrecon);
     setBankTxns(nextBankTxns);
 
@@ -2811,6 +2881,9 @@ export default function CashflowWorkbenchView({
                 {activeRightTab === "variance" && (() => {
                   const targetColIndex = (reconData?.selectedCols || []).findIndex(c => c.type === "target");
                   const cIdx = targetColIndex !== -1 ? targetColIndex : 1;
+                  const nextColIndex = (reconData?.selectedCols || []).findIndex(c => c.type === "next");
+                  const nextColObj = nextCol || (nextColIndex !== -1 ? reconData?.selectedCols?.[nextColIndex] : null);
+                  const nextShortLabel = (nextColObj?.label || "Next").split(" ")[0];
                   const RESOLVED_BG = "#d9ead3";
                   const singleGridCols = "minmax(140px, 1.2fr) 185px 105px 115px";
 
@@ -2841,6 +2914,56 @@ export default function CashflowWorkbenchView({
                         }}
                       >
                         {hasNote ? "📝" : "💬"}
+                      </button>
+                    );
+                  };
+
+                  const renderOffsetBtn = ({ baseRow, adjRow, title, mappedItemType, isCombinedTransfer = false, combinedElem = null }) => {
+                    if (!onOpenOffsetModal || !adjRow || !nextColObj || nextColIndex === -1) return null;
+                    const nextAdjCell = adjRow?.cells?.[nextColIndex];
+                    const nextAdjVal = (nextAdjCell?.numVal !== undefined && nextAdjCell?.numVal !== null)
+                      ? nextAdjCell.numVal
+                      : parseAmount(nextAdjCell?.v);
+                    const hasNextOffset = Math.abs(nextAdjVal) >= 0.005 ||
+                      (typeof nextAdjCell?.rawVal === "string" && nextAdjCell.rawVal.trim().startsWith("="));
+
+                    return (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onOpenOffsetModal({
+                            baseRow,
+                            adjRow,
+                            title,
+                            mappedItemType,
+                            isCombinedTransfer,
+                            combinedElem
+                          });
+                        }}
+                        title={hasNextOffset
+                          ? `${nextColObj.label || nextShortLabel} adjustment: ${nextAdjCell?.v || formatGBP(nextAdjVal)}${nextAdjCell?.note ? `\nNote: ${nextAdjCell.note}` : ""}\nClick to edit or clear ${nextShortLabel} offset`
+                          : `Carry over or reverse this adjustment in ${nextColObj.label || nextShortLabel}`
+                        }
+                        style={{
+                          padding: "2px 6px",
+                          borderRadius: "4px",
+                          border: hasNextOffset ? "1px solid #c7d2fe" : "1px solid #cbd5e1",
+                          background: hasNextOffset ? "#eef2ff" : "#ffffff",
+                          color: hasNextOffset ? "#4338ca" : "#475569",
+                          fontSize: "8.5px",
+                          fontWeight: "700",
+                          fontStyle: "normal",
+                          cursor: "pointer",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "3px",
+                          whiteSpace: "nowrap",
+                          flexShrink: 0
+                        }}
+                      >
+                        <span>⇄</span>
+                        <span>{hasNextOffset ? `${nextShortLabel}: ${nextAdjCell?.v || formatGBP(nextAdjVal)}` : `Offset in ${nextShortLabel}`}</span>
                       </button>
                     );
                   };
@@ -3036,8 +3159,14 @@ export default function CashflowWorkbenchView({
                                     </div>
 
                                     {/* Row 2: Corp tax adjustment */}
-                                    <div style={{ gridColumn: "1", gridRow: "2", padding: "4px 10px 5px 18px", color: "#64748b", fontStyle: "italic", fontSize: "10.5px", background: "#fafbfc", borderBottom: "1px solid #e2e8f0", display: "flex", alignItems: "center" }}>
-                                      ↳ Adjustment
+                                    <div style={{ gridColumn: "1", gridRow: "2", padding: "4px 8px 5px 18px", color: "#64748b", fontStyle: "italic", fontSize: "10.5px", background: "#fafbfc", borderBottom: "1px solid #e2e8f0", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "4px" }}>
+                                      <span>↳ Adjustment</span>
+                                      {renderOffsetBtn({
+                                        baseRow: elem.corpBaseRow,
+                                        adjRow: elem.corpAdjRow,
+                                        title: elem.corpTitle || "Corporation tax",
+                                        mappedItemType: "corporation_tax"
+                                      })}
                                     </div>
                                     <div style={{ gridColumn: "2", gridRow: "2", padding: "4px 8px 5px", background: "#f8fafc", borderBottom: "1px solid #e2e8f0", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "4px" }}>
                                       <div style={{ display: "inline-flex", alignItems: "center", gap: "3px" }}>
@@ -3099,8 +3228,16 @@ export default function CashflowWorkbenchView({
                                     </div>
 
                                     {/* Row 4: VAT adjustment + Combined Recon button */}
-                                    <div style={{ gridColumn: "1", gridRow: "4", padding: "4px 10px 5px 18px", color: "#64748b", fontStyle: "italic", fontSize: "10.5px", background: "#fafbfc", display: "flex", alignItems: "center" }}>
-                                      ↳ Adjustment
+                                    <div style={{ gridColumn: "1", gridRow: "4", padding: "4px 8px 5px 18px", color: "#64748b", fontStyle: "italic", fontSize: "10.5px", background: "#fafbfc", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "4px" }}>
+                                      <span>↳ Adjustment</span>
+                                      {renderOffsetBtn({
+                                        baseRow: elem.vatBaseRow,
+                                        adjRow: elem.vatAdjRow,
+                                        title: elem.vatTitle || "VAT",
+                                        mappedItemType: "tax_transfer",
+                                        isCombinedTransfer: true,
+                                        combinedElem: elem
+                                      })}
                                     </div>
                                     <div style={{ gridColumn: "2", gridRow: "4", padding: "4px 8px 5px", background: "#f8fafc", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "4px" }}>
                                       <div style={{ display: "inline-flex", alignItems: "center", gap: "3px" }}>
@@ -3287,8 +3424,14 @@ export default function CashflowWorkbenchView({
                                     </div>
 
                                     {/* Row 2: Adjustment */}
-                                    <div style={{ gridColumn: "1", gridRow: "2", padding: "4px 10px 5px 18px", color: "#64748b", fontStyle: "italic", fontSize: "10.5px", background: "#fafbfc", display: "flex", alignItems: "center" }}>
-                                      ↳ Adjustment
+                                    <div style={{ gridColumn: "1", gridRow: "2", padding: "4px 8px 5px 18px", color: "#64748b", fontStyle: "italic", fontSize: "10.5px", background: "#fafbfc", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "4px" }}>
+                                      <span>↳ Adjustment</span>
+                                      {renderOffsetBtn({
+                                        baseRow: elem.baseRow,
+                                        adjRow: elem.adjRow,
+                                        title: elem.title,
+                                        mappedItemType: elem.mappedItemType
+                                      })}
                                     </div>
                                     <div style={{ gridColumn: "2", gridRow: "2", padding: "4px 8px 5px", background: "#f8fafc", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "4px" }}>
                                       <div style={{ display: "inline-flex", alignItems: "center", gap: "3px" }}>
@@ -4807,25 +4950,48 @@ export default function CashflowWorkbenchView({
                               <th style={{ padding: "6px 12px", textAlign: "left" }}>Account</th>
                               <th style={{ padding: "6px 12px", textAlign: "left" }}>Payee / Description</th>
                               <th style={{ padding: "6px 12px", textAlign: "right" }}>Amount</th>
-                              <th style={{ padding: "6px 12px", textAlign: "left" }}>P&L account</th>
+                              <th style={{ padding: "6px 12px", textAlign: "left" }}>Predicted category</th>
                               <th style={{ padding: "6px 12px", textAlign: "center" }}>VAT</th>
                             </tr>
                           </thead>
                           <tbody>
-                            {unreconItems.map((u, idx) => (
-                              <tr key={idx} style={{ borderBottom: "1px solid #f1f5f9" }}>
-                                <td style={{ padding: "6px 12px", color: "#64748b" }}>{formatDateDMmmYy(u.date)}</td>
-                                <td style={{ padding: "6px 12px", color: "#0369a1", fontWeight: "600" }}>{u.accountName || defaultAccount}</td>
-                                <td style={{ padding: "6px 12px", fontWeight: "600", color: "#1e293b" }}>{u.payee || u.particulars || "—"}</td>
-                                <td style={{ padding: "6px 12px", textAlign: "right", fontWeight: "600", color: u.outAmount > 0 ? "#b91c1c" : "#15803d" }}>
-                                  {formatAmount2DP(u.outAmount || u.inAmount || u.amount)}
-                                </td>
-                                <td style={{ padding: "6px 12px", color: "#475569" }}>{u.plCategory || u.category || "—"}</td>
-                                <td style={{ padding: "6px 12px", textAlign: "center", color: u.vatApplies === "Yes" ? "#166534" : "#64748b" }}>
-                                  {u.vatApplies || "No"}
-                                </td>
-                              </tr>
-                            ))}
+                            {unreconItems.map((u, idx) => {
+                              const primaryCat = u.cashflowCategory || u.suggestedCategory || (u.outAmount > 0 ? "Outgoings" : "Revenue");
+                              const displayCat = u.plCategory
+                                ? `${primaryCat} → ${u.plCategory}`
+                                : primaryCat;
+                              return (
+                                <tr key={idx} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                                  <td style={{ padding: "6px 12px", color: "#64748b" }}>{formatDateDMmmYy(u.date)}</td>
+                                  <td style={{ padding: "6px 12px", color: "#0369a1", fontWeight: "600" }}>{u.accountName || defaultAccount}</td>
+                                  <td style={{ padding: "6px 12px", fontWeight: "600", color: "#1e293b" }}>{u.payee || u.particulars || "—"}</td>
+                                  <td style={{ padding: "6px 12px", textAlign: "right", fontWeight: "600", color: u.outAmount > 0 ? "#b91c1c" : "#15803d" }}>
+                                    {formatAmount2DP(u.outAmount || u.inAmount || u.amount)}
+                                  </td>
+                                  <td style={{ padding: "6px 12px", color: "#475569" }}>
+                                    <div style={{ display: "inline-flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                                      <span>{displayCat || "—"}</span>
+                                      {(u.isCategorySuggested || u.isPlSuggested) && (
+                                        <span style={{
+                                          padding: "1px 5px",
+                                          borderRadius: "4px",
+                                          fontSize: "9.5px",
+                                          fontWeight: "700",
+                                          background: "#eff6ff",
+                                          color: "#1d4ed8",
+                                          border: "1px solid #bfdbfe"
+                                        }}>
+                                          Suggested
+                                        </span>
+                                      )}
+                                    </div>
+                                  </td>
+                                  <td style={{ padding: "6px 12px", textAlign: "center", color: u.vatApplies === "Yes" ? "#166534" : "#64748b" }}>
+                                    {u.vatApplies || "No"}
+                                  </td>
+                                </tr>
+                              );
+                            })}
                           </tbody>
                         </table>
                       </div>
@@ -4985,25 +5151,46 @@ export default function CashflowWorkbenchView({
                                 </td>
                                 <td style={{ padding: "6px 8px" }}>
                                   <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                                    <select
-                                      value={currentCat}
-                                      onChange={e => handleCategoryChange(t, e.target.value)}
-                                      style={{
-                                        padding: "3px 6px",
-                                        fontSize: "11px",
-                                        fontWeight: "600",
-                                        borderRadius: "4px",
-                                        background: catStyle.bg,
-                                        color: catStyle.color,
-                                        border: `1px solid ${catStyle.border}`,
-                                        cursor: "pointer",
-                                        width: "100%"
-                                      }}
-                                    >
-                                      {VALID_RECON_CATEGORIES.map(c => (
-                                        <option key={c} value={c}>{c}</option>
-                                      ))}
-                                    </select>
+                                    <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                                      <select
+                                        value={currentCat}
+                                        onChange={e => handleCategoryChange(t, e.target.value)}
+                                        style={{
+                                          padding: "3px 6px",
+                                          fontSize: "11px",
+                                          fontWeight: "600",
+                                          borderRadius: "4px",
+                                          background: catStyle.bg,
+                                          color: catStyle.color,
+                                          border: `1px solid ${catStyle.border}`,
+                                          cursor: "pointer",
+                                          flex: 1,
+                                          minWidth: 0
+                                        }}
+                                      >
+                                        {VALID_RECON_CATEGORIES.map(c => (
+                                          <option key={c} value={c}>{c}</option>
+                                        ))}
+                                      </select>
+                                      {isUnrecon && (t.isCategorySuggested || t.isPlSuggested) && (
+                                        <span
+                                          title="Predicted from previous 6 months of transactions"
+                                          style={{
+                                            padding: "1px 5px",
+                                            borderRadius: "4px",
+                                            fontSize: "9px",
+                                            fontWeight: "700",
+                                            background: "#eff6ff",
+                                            color: "#1d4ed8",
+                                            border: "1px solid #bfdbfe",
+                                            whiteSpace: "nowrap",
+                                            flexShrink: 0
+                                          }}
+                                        >
+                                          Suggested
+                                        </span>
+                                      )}
+                                    </div>
 
                                     {isUnrecon && currentCat === "Outgoings" && (
                                       <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>

@@ -249,15 +249,20 @@ export async function fetchXeroBankAccounts(accessToken, tenantId) {
   const data = await res.json();
   const rawAccounts = data?.Accounts || [];
 
-  return rawAccounts.map(acc => ({
-    id: acc.AccountID || "",
-    name: acc.Name || "",
-    code: acc.Code || "",
-    accountNumber: acc.BankAccountNumber || "",
-    currency: acc.CurrencyCode || "",
-    status: acc.Status || "ACTIVE",
-    type: acc.Type || "BANK"
-  }));
+  return rawAccounts.map(acc => {
+    const isCc = acc.BankAccountType === "CREDITCARD" || String(acc.Name || "").toLowerCase().includes("credit card");
+    return {
+      id: acc.AccountID || "",
+      name: acc.Name || "",
+      code: acc.Code || "",
+      accountNumber: acc.BankAccountNumber || "",
+      currency: acc.CurrencyCode || "",
+      status: acc.Status || "ACTIVE",
+      type: isCc ? "CREDIT_CARD" : (acc.Type || "BANK"),
+      subType: isCc ? "Credit card" : (acc.BankAccountType || acc.Type || "Bank account"),
+      accountType: isCc ? "Credit card" : "Bank"
+    };
+  });
 }
 
 export function parseXeroDate(val, dateString) {

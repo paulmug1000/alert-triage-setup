@@ -340,6 +340,9 @@ export default function OutgoingsView({
   const [replacingCellAction, setReplacingCellAction] = useState(null);
   const [savingContractorCellKey, setSavingContractorCellKey] = useState(null);
   const [savingCosMonth, setSavingCosMonth] = useState(null);
+  const [isEditingTarget, setIsEditingTarget] = useState(false);
+  const [targetInputValue, setTargetInputValue] = useState("");
+  const [isSavingTarget, setIsSavingTarget] = useState(false);
   const [contractorSearch, setContractorSearch] = useState("");
   const [directCostsJobSearch, setDirectCostsJobSearch] = useState("");
   const [selectedJobForDetail, setSelectedJobForDetail] = useState(null);
@@ -730,6 +733,64 @@ export default function OutgoingsView({
       await loadOutgoings(outgoingsClient, true);
     } finally {
       setSavingCosMonth(null);
+    }
+  };
+
+  const handleSaveTarget = async (inputVal) => {
+    setIsEditingTarget(false);
+    const cleanNum = Math.min(100, Math.max(0, parseInt(String(inputVal).replace(/[^0-9]/g, ""), 10) || 0));
+    const newTargetFormatted = `${cleanNum}%`;
+    const curNumeric = parseFloat(String(outgoingsData?.makingUpCos?.pct ?? "").replace(/[^0-9.]/g, "")) || 0;
+    const curTargetFormatted = `${curNumeric}%`;
+
+    if (newTargetFormatted === curTargetFormatted && outgoingsData?.makingUpCos?.pct !== undefined) {
+      return;
+    }
+
+    setIsSavingTarget(true);
+
+    // Optimistic UI update
+    setOutgoingsData(prev => {
+      if (!prev?.makingUpCos) return prev;
+      return {
+        ...prev,
+        makingUpCos: {
+          ...prev.makingUpCos,
+          pct: newTargetFormatted,
+        }
+      };
+    });
+
+    try {
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "set_making_up_cos_target",
+          clientSheetId: outgoingsClient?.clientSheetId,
+          clientName: outgoingsClient?.clientName || outgoingsClient?.name || "",
+          automationCommanderSheetId,
+          targetPct: cleanNum,
+        }),
+      });
+      const data = await res.json();
+      if (data?.success && data.makingUpCos) {
+        setOutgoingsData(prev => ({
+          ...prev,
+          makingUpCos: data.makingUpCos,
+        }));
+        if (typeof invalidateCachedClientData === "function" && outgoingsClient?.clientSheetId) {
+          invalidateCachedClientData(outgoingsClient.clientSheetId, "outgoings");
+        }
+      } else {
+        console.error("Failed to save Making up CoS target:", data?.error);
+        await loadOutgoings(outgoingsClient, true);
+      }
+    } catch (err) {
+      console.error("Error saving Making up CoS target:", err);
+      await loadOutgoings(outgoingsClient, true);
+    } finally {
+      setIsSavingTarget(false);
     }
   };
 
@@ -1802,110 +1863,201 @@ export default function OutgoingsView({
                     </tr>
                   )}
                   {/* Making up Cos row beneath the table */}
-                  {outgoingsData && (
-                    <tr style={{ background: "#f8fafc" }}>
-                      <td style={{
-                        padding: "10px 12px",
-                        borderTop: "2px solid #cbd5e1",
-                        borderBottom: "1px solid #e2e8f0",
-                        borderRight: "1px solid #e0e0e0",
-                        background: "#f8fafc",
-                        position: "sticky",
-                        left: 0,
-                        zIndex: 2,
-                      }}>
-                        <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
-                          <div style={{ fontWeight: "700", fontSize: "12px", color: "#1e293b", display: "flex", alignItems: "center", gap: "6px" }}>
-                            <span>Making up Cos</span>
-                            {isAdmin && (
-                              <span style={{ fontSize: "10px", fontWeight: "normal", color: "#64748b" }}>
-                                (row 111)
-                              </span>
-                            )}
-                          </div>
-                          {outgoingsData.makingUpCos?.pct && (
-                            <div style={{ fontSize: "10px", color: "#64748b" }}>
-                              Target: {outgoingsData.makingUpCos.pct}
-                            </div>
-                          )}
-                        </div>
-                      </td>
-                      {visibleMonths.map(m => {
-                        const cosCell = outgoingsData.makingUpCos?.cells?.[m.colLetter] || { amount: 0, formatted: "£0", isZero: false };
-                        const isZero = !!cosCell.isZero;
-                        const isSaving = savingCosMonth === m.colLetter;
-                        const isCurr = isCurrentMonth(m.isoMonth || m.label);
+                  {outgoingsData && (() => {
+                    const rawTargetPct = outgoingsData.makingUpCos?.pct;
+                    const numericTargetPct = parseFloat(String(rawTargetPct ?? "").replace(/[^0-9.]/g, "")) || 0;
+                    const isCosZeroTarget = numericTargetPct === 0;
 
-                        return (
-                          <td
-                            key={m.colLetter}
-                            style={{
-                              padding: "8px 10px",
-                              borderTop: "2px solid #cbd5e1",
-                              borderBottom: "1px solid #e2e8f0",
-                              borderRight: "1px solid #e0e0e0",
-                              background: isCurr ? "#f1f5f9" : "#f8fafc",
-                              verticalAlign: "middle",
-                            }}
-                          >
-                            <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                              <div style={{
-                                display: "flex",
-                                alignItems: "center",
-                                justifyContent: "space-between",
-                                gap: "4px",
-                              }}>
-                                <span style={{
-                                  fontWeight: "700",
-                                  fontSize: "12px",
-                                  color: isZero ? "#94a3b8" : "#1e293b",
-                                  textDecoration: isZero ? "line-through" : "none",
-                                }}>
-                                  {cosCell.formatted || (cosCell.amount ? `£${cosCell.amount.toLocaleString("en-GB")}` : "£0")}
+                    return (
+                      <tr style={{ background: "#f8fafc" }}>
+                        <td style={{
+                          padding: "10px 12px",
+                          borderTop: "2px solid #cbd5e1",
+                          borderBottom: "1px solid #e2e8f0",
+                          borderRight: "1px solid #e0e0e0",
+                          background: "#f8fafc",
+                          position: "sticky",
+                          left: 0,
+                          zIndex: 2,
+                        }}>
+                          <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+                            <div style={{ fontWeight: "700", fontSize: "12px", color: "#1e293b", display: "flex", alignItems: "center", gap: "6px" }}>
+                              <span>Making up CoS</span>
+                              {isAdmin && (
+                                <span style={{ fontSize: "10px", fontWeight: "normal", color: "#64748b" }}>
+                                  (row 111)
                                 </span>
-                                {isSaving && (
+                              )}
+                            </div>
+                            <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "3px" }}>
+                              <span style={{ fontSize: "11px", color: "#64748b" }}>Target:</span>
+                              {isEditingTarget ? (
+                                <div style={{ position: "relative", display: "inline-flex", alignItems: "center", width: "58px" }}>
+                                  <input
+                                    type="text"
+                                    autoFocus
+                                    value={targetInputValue}
+                                    disabled={isSavingTarget}
+                                    onChange={(e) => {
+                                      const raw = e.target.value.replace(/[^0-9]/g, "");
+                                      if (raw === "") {
+                                        setTargetInputValue("");
+                                        return;
+                                      }
+                                      const num = parseInt(raw, 10);
+                                      if (num > 100) {
+                                        setTargetInputValue("100");
+                                      } else {
+                                        setTargetInputValue(String(num));
+                                      }
+                                    }}
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Enter") {
+                                        e.preventDefault();
+                                        handleSaveTarget(targetInputValue);
+                                      } else if (e.key === "Escape") {
+                                        e.preventDefault();
+                                        setIsEditingTarget(false);
+                                      }
+                                    }}
+                                    onBlur={() => {
+                                      handleSaveTarget(targetInputValue);
+                                    }}
+                                    style={{
+                                      width: "100%",
+                                      padding: "2px 16px 2px 6px",
+                                      fontSize: "11px",
+                                      fontWeight: "600",
+                                      borderRadius: "4px",
+                                      border: "1px solid #2563eb",
+                                      outline: "none",
+                                      background: "#ffffff",
+                                      color: "#0f172a",
+                                      textAlign: "right",
+                                      boxSizing: "border-box",
+                                    }}
+                                  />
                                   <span style={{
+                                    position: "absolute",
+                                    right: "5px",
+                                    pointerEvents: "none",
+                                    fontSize: "11px",
+                                    fontWeight: "600",
+                                    color: "#64748b",
+                                  }}>%</span>
+                                </div>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setTargetInputValue(String(numericTargetPct));
+                                    setIsEditingTarget(true);
+                                  }}
+                                  disabled={isSavingTarget}
+                                  title="Click to edit target % (0-100)"
+                                  style={{
                                     display: "inline-flex",
                                     alignItems: "center",
-                                    gap: "3px",
-                                    fontSize: "10px",
-                                    color: "#2563eb",
-                                  }}>
-                                    <Spinner size={10} color="#2563eb" /> Saving...
-                                  </span>
-                                )}
-                              </div>
-                              <label style={{
-                                display: "inline-flex",
-                                alignItems: "center",
-                                gap: "5px",
-                                fontSize: "11px",
-                                color: isZero ? "#b91c1c" : "#475569",
-                                fontWeight: isZero ? "600" : "500",
-                                cursor: isSaving ? "wait" : "pointer",
-                                userSelect: "none",
-                              }}>
-                                <input
-                                  type="checkbox"
-                                  checked={isZero}
-                                  disabled={isSaving}
-                                  onChange={(e) => handleToggleMakingUpCosZero(m.colLetter, e.target.checked)}
-                                  style={{
-                                    cursor: isSaving ? "wait" : "pointer",
-                                    accentColor: "#b91c1c",
-                                    width: "13px",
-                                    height: "13px",
-                                    margin: 0,
+                                    gap: "4px",
+                                    background: isCosZeroTarget ? "#f1f5f9" : "#eff6ff",
+                                    border: `1px solid ${isCosZeroTarget ? "#cbd5e1" : "#bfdbfe"}`,
+                                    borderRadius: "4px",
+                                    padding: "2px 6px",
+                                    fontSize: "11px",
+                                    fontWeight: "600",
+                                    color: isCosZeroTarget ? "#64748b" : "#1d4ed8",
+                                    cursor: isSavingTarget ? "wait" : "pointer",
+                                    transition: "all 0.15s ease",
                                   }}
-                                />
-                                <span>Zero</span>
-                              </label>
+                                >
+                                  <span>{numericTargetPct}%</span>
+                                  <span style={{ fontSize: "10px", opacity: 0.7 }}>✎</span>
+                                </button>
+                              )}
+                              {isSavingTarget && <Spinner size={10} color="#2563eb" />}
                             </div>
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  )}
+                          </div>
+                        </td>
+                        {visibleMonths.map(m => {
+                          const cosCell = outgoingsData.makingUpCos?.cells?.[m.colLetter] || { amount: 0, formatted: "£0", isZero: false };
+                          const isZero = !!cosCell.isZero;
+                          const isSaving = savingCosMonth === m.colLetter;
+                          const isCurr = isCurrentMonth(m.isoMonth || m.label);
+                          const cellDisabled = isCosZeroTarget || isSaving;
+
+                          return (
+                            <td
+                              key={m.colLetter}
+                              style={{
+                                padding: "8px 10px",
+                                borderTop: "2px solid #cbd5e1",
+                                borderBottom: "1px solid #e2e8f0",
+                                borderRight: "1px solid #e0e0e0",
+                                background: isCosZeroTarget ? "#f8fafc" : (isCurr ? "#f1f5f9" : "#f8fafc"),
+                                verticalAlign: "middle",
+                                opacity: isCosZeroTarget ? 0.6 : 1,
+                              }}
+                              title={isCosZeroTarget ? "Making up CoS target is 0%" : ""}
+                            >
+                              <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                                <div style={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "space-between",
+                                  gap: "4px",
+                                }}>
+                                  <span style={{
+                                    fontWeight: "700",
+                                    fontSize: "12px",
+                                    color: (isCosZeroTarget || isZero) ? "#94a3b8" : "#1e293b",
+                                    textDecoration: (!isCosZeroTarget && isZero) ? "line-through" : "none",
+                                  }}>
+                                    {cosCell.formatted || (cosCell.amount ? `£${cosCell.amount.toLocaleString("en-GB")}` : "£0")}
+                                  </span>
+                                  {isSaving && (
+                                    <span style={{
+                                      display: "inline-flex",
+                                      alignItems: "center",
+                                      gap: "3px",
+                                      fontSize: "10px",
+                                      color: "#2563eb",
+                                    }}>
+                                      <Spinner size={10} color="#2563eb" /> Saving...
+                                    </span>
+                                  )}
+                                </div>
+                                <label style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: "5px",
+                                  fontSize: "11px",
+                                  color: isCosZeroTarget ? "#94a3b8" : (isZero ? "#b91c1c" : "#475569"),
+                                  fontWeight: isZero ? "600" : "500",
+                                  cursor: cellDisabled ? "not-allowed" : "pointer",
+                                  userSelect: "none",
+                                }}>
+                                  <input
+                                    type="checkbox"
+                                    checked={isZero && !isCosZeroTarget}
+                                    disabled={cellDisabled}
+                                    onChange={(e) => handleToggleMakingUpCosZero(m.colLetter, e.target.checked)}
+                                    style={{
+                                      cursor: cellDisabled ? "not-allowed" : "pointer",
+                                      accentColor: "#b91c1c",
+                                      width: "13px",
+                                      height: "13px",
+                                      margin: 0,
+                                    }}
+                                  />
+                                  <span>Zero</span>
+                                </label>
+                              </div>
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })()}
                 </tbody>
               </table>
             </div>
@@ -2096,7 +2248,7 @@ export default function OutgoingsView({
                                           rowNum: jr.rowNum,
                                           tabName: "Confirmed",
                                           clientSheetId: effectiveSheetId,
-                                            masterSheetId: effectiveClientObj?.masterSheetId,
+                                          masterSheetId: effectiveClientObj?.masterSheetId,
                                           clientName: effectiveClientName,
                                           crmTool: effectiveClientObj?.crmTool,
                                           crmDrives: effectiveClientObj?.crmDrives
@@ -2451,7 +2603,7 @@ export default function OutgoingsView({
                                             rowNum: jr.rowNum,
                                             tabName: "Confirmed",
                                             clientSheetId: effectiveSheetId,
-                                          masterSheetId: effectiveClientObj?.masterSheetId,
+                                            masterSheetId: effectiveClientObj?.masterSheetId,
                                             clientName: effectiveClientName,
                                             crmTool: effectiveClientObj?.crmTool,
                                             crmDrives: effectiveClientObj?.crmDrives

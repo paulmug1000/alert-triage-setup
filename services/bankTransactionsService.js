@@ -811,6 +811,7 @@ export function parseUnreconciledItems({
     let particulars = "";
     let reference = "";
     let vatApplies = "No";
+    let hasExplicitVat = false;
 
     // Path A: Header-mapped dual-column format (e.g. QuickBooks CSV with SPENT and RECEIVED columns)
     if (activeColumnMap && (activeColumnMap.spentCol !== -1 || activeColumnMap.receivedCol !== -1)) {
@@ -857,8 +858,9 @@ export function parseUnreconciledItems({
       particulars = rawDesc || rawPayee || payee;
       reference = activeColumnMap.refCol !== -1 ? String(cols[activeColumnMap.refCol] || "").trim() : "";
 
-      if (activeColumnMap.vatCol !== -1) {
+      if (activeColumnMap.vatCol !== -1 && String(cols[activeColumnMap.vatCol] || "").trim() !== "") {
         vatApplies = parseVatAppliesCell(cols[activeColumnMap.vatCol]);
+        hasExplicitVat = true;
       }
     } else {
       // Path B: Standard single-amount format (e.g. Xero Reconciliation Summary or generic CSV/paste)
@@ -908,6 +910,7 @@ export function parseUnreconciledItems({
       rawTextCols.forEach(tc => {
         if (/^(20(?:\.0)?%\s*[a-z]*|no\s*vat|0(?:\.0)?%\s*[a-z]*|exempt)$/i.test(tc.trim())) {
           vatApplies = parseVatAppliesCell(tc);
+          hasExplicitVat = true;
         } else {
           textCols.push(tc);
         }
@@ -954,6 +957,8 @@ export function parseUnreconciledItems({
       source: "unreconciled_pasted",
       suggestedCategory: isNegative ? "Outgoings" : "Revenue",
       vatApplies,
+      hasExplicitVat,
+      plCategory: "",
       category: "",
       rawLine: joinedLine
     });
@@ -1158,6 +1163,453 @@ export async function recategoriseTransactions({
     total: updated.length,
     transactions: updated
   };
+}
+
+/**
+ * Enriches parsed unreconciled items with intelligent predictions for:
+ * 1. Primary cashflow category (Outgoings, Salaries, PAYE, Pension, Contractors, Direct costs, VAT, Corp tax, Transfer, Revenue, Other)
+ * 2. Secondary P&L category (when Primary is "Outgoings") & VAT status ("Yes" / "No"),
+ *    learned from the last 6 months of Recon Sheet tabs (A3:Q150 & CD4:CN60),
+ *    current month's reconciled transactions, and Client Sheet Outgoings Row 300 JSON breakdown.
+ */
+export async function enrichUnreconciledItemPredictions({
+  items = [],
+  reconSheetId = "",
+  clientSheetId = "",
+  plAccountOptions = [],
+  existingTransactions = [],
+  knownContractors = [],
+  knownCustomers = []
+}) {
+  if (!Array.isArray(items) || items.length === 0) return items;
+
+  const normalizeKey = (s) => String(s || "")
+    .toLowerCase()
+    .replace(/\b(ltd|limited|inc|plc|llp|uk|co|company|corp|corporation|the)\b/g, " ")
+    .replace(/[^a-z0-9]/g, "")
+    .trim();
+
+  const normalizePlCat = (s) => String(s || "")
+    .replace(/^\d+\s*[-–:]\s*/, "")
+    .toLowerCase()
+    .trim();
+
+  // Build map of valid P&L options for canonical resolution
+  const validPlMap = new Map();
+  validPlMap.set("not an expense", "Not an expense");
+  (plAccountOptions || []).forEach(opt => {
+    const clean = String(opt || "").trim();
+    if (!clean || clean.toLowerCase().includes("p&l account") || clean.toLowerCase() === "outgoings") return;
+    validPlMap.set(clean.toLowerCase(), clean);
+    validPlMap.set(normalizePlCat(clean), clean);
+  });
+
+  const resolveCanonicalPlCategory = (rawCat) => {
+    if (!rawCat) return "";
+    const trimmed = String(rawCat).trim();
+    if (!trimmed || trimmed.toLowerCase() === "outgoings" || trimmed.toLowerCase().includes("p&l account")) return "";
+    const lower = trimmed.toLowerCase();
+    if (validPlMap.has(lower)) return validPlMap.get(lower);
+    const norm = normalizePlCat(trimmed);
+    if (validPlMap.has(norm)) return validPlMap.get(norm);
+    // If plAccountOptions wasn't provided yet, still allow valid non-generic strings
+    if (!plAccountOptions || plAccountOptions.length === 0) return trimmed;
+    return "";
+  };
+
+  // Primary category maps: exact payee -> Map<cat, count>, word -> Map<cat, count>
+  const payeePrimaryCounts = new Map();
+  const wordPrimaryCounts = new Map();
+  const wordPrimaryTotals = new Map();
+
+  // Secondary P&L category maps: exact supplier -> Map<plCat, { count, vatYes, vatNo }>
+  const supplierPlCounts = new Map();
+  const wordPlCounts = new Map();
+  const wordPlTotals = new Map();
+
+  const recordPrimaryObservation = (payeeStr, descStr, refStr, cat, weight = 1) => {
+    const cleanCat = String(cat || "").trim();
+    if (!cleanCat || !VALID_RECON_CATEGORIES.includes(cleanCat)) return;
+    const pKey = normalizeKey(payeeStr || descStr);
+    if (pKey && pKey.length >= 3) {
+      if (!payeePrimaryCounts.has(pKey)) payeePrimaryCounts.set(pKey, new Map());
+      const m = payeePrimaryCounts.get(pKey);
+      m.set(cleanCat, (m.get(cleanCat) || 0) + weight);
+    }
+    const tokens = tokenizeText(`${payeeStr || ""} ${descStr || ""} ${refStr || ""}`);
+    tokens.forEach(w => {
+      wordPrimaryTotals.set(w, (wordPrimaryTotals.get(w) || 0) + weight);
+      if (!wordPrimaryCounts.has(w)) wordPrimaryCounts.set(w, new Map());
+      const cm = wordPrimaryCounts.get(w);
+      cm.set(cleanCat, (cm.get(cleanCat) || 0) + weight);
+    });
+  };
+
+  const recordPlObservation = (supplierStr, descStr, rawPlCat, vatBool, weight = 1) => {
+    const canonicalPl = resolveCanonicalPlCategory(rawPlCat);
+    if (!canonicalPl) return;
+    const sKey = normalizeKey(supplierStr || descStr);
+    if (sKey && sKey.length >= 3) {
+      if (!supplierPlCounts.has(sKey)) supplierPlCounts.set(sKey, new Map());
+      const m = supplierPlCounts.get(sKey);
+      const cur = m.get(canonicalPl) || { count: 0, vatYes: 0, vatNo: 0 };
+      cur.count += weight;
+      if (vatBool === true) cur.vatYes += weight;
+      else if (vatBool === false) cur.vatNo += weight;
+      m.set(canonicalPl, cur);
+    }
+    const tokens = tokenizeText(`${supplierStr || ""} ${descStr || ""}`);
+    tokens.forEach(w => {
+      wordPlTotals.set(w, (wordPlTotals.get(w) || 0) + weight);
+      if (!wordPlCounts.has(w)) wordPlCounts.set(w, new Map());
+      const cm = wordPlCounts.get(w);
+      const cur = cm.get(canonicalPl) || { count: 0, vatYes: 0, vatNo: 0 };
+      cur.count += weight;
+      if (vatBool === true) cur.vatYes += weight;
+      else if (vatBool === false) cur.vatNo += weight;
+      cm.set(canonicalPl, cur);
+    });
+  };
+
+  // 1. Seed from current month's existing reconciled transactions & known contractors/customers
+  (existingTransactions || []).forEach(tx => {
+    const cat = tx.category || tx.suggestedCategory;
+    if (cat) {
+      recordPrimaryObservation(tx.payee, tx.particulars, tx.reference, cat, 2);
+    }
+    if (tx.plCategory) {
+      recordPlObservation(tx.payee, tx.particulars, tx.plCategory, tx.vatApplies === "Yes", 2);
+    }
+  });
+
+  (knownContractors || []).forEach(c => {
+    const name = typeof c === "string" ? c : (c?.client || c?.job || c?.description || "");
+    if (name) recordPrimaryObservation(name, "", "", "Contractors", 3);
+  });
+
+  (knownCustomers || []).forEach(c => {
+    const name = typeof c === "string" ? c : (c?.client || "");
+    if (name) recordPrimaryObservation(name, "", "", "Revenue", 3);
+  });
+
+  let sheets = null;
+  try {
+    if (reconSheetId || clientSheetId) {
+      sheets = await getSheetsClient();
+    }
+  } catch (e) {
+    console.warn("⚠️ Could not init sheets client for unreconciled predictions:", e.message);
+  }
+
+  // 2. Fetch last 6 monthly tabs from Recon Sheet (A3:Q150 + CD4:CN60) and Client Sheet Outgoings Row 300 in parallel
+  if (sheets) {
+    const tasks = [];
+
+    if (reconSheetId) {
+      const cleanReconId = extractSheetIdFromUrl(reconSheetId) || reconSheetId;
+      tasks.push((async () => {
+        try {
+          const meta = await withRetry(() => sheets.spreadsheets.get({
+            spreadsheetId: cleanReconId,
+            fields: "sheets.properties.title"
+          }));
+          const validTabs = (meta.data.sheets || [])
+            .map(s => s.properties.title)
+            .filter(t => /^\d{4}$/.test(t))
+            .slice(0, 6);
+
+          if (validTabs.length === 0) return;
+
+          const ranges = [
+            ...validTabs.map(t => `'${t}'!A3:Q150`),
+            ...validTabs.map(t => `'${t}'!CD4:CN60`)
+          ];
+          const batchResp = await withRetry(() => sheets.spreadsheets.values.batchGet({
+            spreadsheetId: cleanReconId,
+            ranges,
+            valueRenderOption: "UNFORMATTED_VALUE"
+          }));
+          const vRanges = batchResp.data.valueRanges || [];
+          const tabCount = validTabs.length;
+
+          // Process A3:Q150
+          for (let i = 0; i < tabCount; i++) {
+            const rows = vRanges[i]?.values || [];
+            rows.forEach(r => {
+              const cat = String(r[16] || "").trim();
+              if (!cat || !VALID_RECON_CATEGORIES.includes(cat)) return;
+              recordPrimaryObservation(r[3], r[4], r[6], cat, 1);
+            });
+          }
+
+          // Process CD4:CN60 (historical unreconciled items -> Col CM is r[9], Col CN is r[10])
+          for (let i = 0; i < tabCount; i++) {
+            const rows = vRanges[tabCount + i]?.values || [];
+            rows.forEach(r => {
+              const payee = String(r[3] || "").trim();
+              const particulars = String(r[4] || "").trim();
+              const plCat = String(r[9] || "").trim();
+              const vatStr = String(r[10] || "").trim().toLowerCase();
+              if (plCat) {
+                const vatBool = vatStr === "yes" ? true : (vatStr === "no" ? false : null);
+                recordPlObservation(payee, particulars, plCat, vatBool, 2);
+              }
+            });
+          }
+        } catch (err) {
+          console.warn("⚠️ Recon sheet history lookup warning:", err.message);
+        }
+      })());
+    }
+
+    if (clientSheetId) {
+      const cleanClientId = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+      tasks.push((async () => {
+        try {
+          const outResp = await withRetry(() => sheets.spreadsheets.values.get({
+            spreadsheetId: cleanClientSheetIdSafe(cleanClientId),
+            range: "Outgoings!G300:AZ300",
+            valueRenderOption: "UNFORMATTED_VALUE"
+          }));
+          const row300 = outResp.data.values?.[0] || [];
+          // Parse the most recent 8 populated month columns
+          const populatedCells = row300.filter(cell => typeof cell === "string" && cell.trim().startsWith("[")).slice(-8);
+          populatedCells.forEach(cellStr => {
+            try {
+              const txList = JSON.parse(cellStr);
+              if (!Array.isArray(txList)) return;
+              txList.forEach(entry => {
+                const supplier = String(entry?.s || "").trim();
+                const catName = String(entry?.c || "").trim();
+                if (!supplier || !catName || supplier.toLowerCase().includes("journal / adjustment")) return;
+                const vatAmt = parseFloat(entry?.v) || 0;
+                const hasVat = Math.abs(vatAmt) > 0.005;
+                recordPlObservation(supplier, entry?.r || "", catName, hasVat, 1.5);
+              });
+            } catch (_) { }
+          });
+        } catch (err) {
+          console.warn("⚠️ Outgoings Row 300 lookup warning:", err.message);
+        }
+      })());
+    }
+
+    await Promise.all(tasks);
+  }
+
+  function cleanClientSheetIdSafe(id) {
+    return id;
+  }
+
+  // Build word learningMap compatible with autoCategorizeTransaction
+  const learningMap = new Map();
+  for (const [word, totalCount] of wordPrimaryTotals.entries()) {
+    if (totalCount < 2) continue;
+    const catMap = wordPrimaryCounts.get(word);
+    let bestCat = null;
+    let maxCatCount = 0;
+    for (const [cat, count] of catMap.entries()) {
+      if (count > maxCatCount) {
+        maxCatCount = count;
+        bestCat = cat;
+      }
+    }
+    const probability = maxCatCount / totalCount;
+    if (probability >= 0.65) {
+      learningMap.set(word, { category: bestCat, probability });
+    }
+  }
+
+  // Helper to predict Primary Category for an item
+  const predictPrimary = (it) => {
+    const isOutflow = (parseFloat(it.outAmount) || 0) > 0 || Boolean(it.isNegative);
+    const isInflow = (parseFloat(it.inAmount) || 0) > 0 && !isOutflow;
+
+    // 1. Check high-confidence regex rules & token learningMap via autoCategorizeTransaction
+    const evalTx = {
+      payee: it.payee,
+      particulars: it.particulars,
+      reference: it.reference,
+      outAmount: it.outAmount,
+      inAmount: it.inAmount,
+      suggestedCategory: ""
+    };
+    const ruleOrWordPred = autoCategorizeTransaction(evalTx, learningMap);
+    if (ruleOrWordPred.reason && ruleOrWordPred.reason.startsWith("Rule:")) {
+      return { category: ruleOrWordPred.category, confidence: ruleOrWordPred.confidence, reason: ruleOrWordPred.reason, isSuggested: true };
+    }
+
+    // 2. Check exact or substring Payee match in payeePrimaryCounts
+    const pKey = normalizeKey(it.payee || it.particulars);
+    if (pKey && pKey.length >= 3) {
+      let matchedMap = payeePrimaryCounts.get(pKey);
+      if (!matchedMap) {
+        for (const [knownKey, m] of payeePrimaryCounts.entries()) {
+          if (knownKey.length >= 4 && (pKey.includes(knownKey) || knownKey.includes(pKey))) {
+            matchedMap = m;
+            break;
+          }
+        }
+      }
+      if (matchedMap) {
+        let bestCat = null;
+        let bestScore = 0;
+        let totalScore = 0;
+        for (const [cat, score] of matchedMap.entries()) {
+          // Ensure direction compatibility (don't categorize an outflow as Revenue unless negative revenue refund, or inflow as Salaries)
+          if (isInflow && !["Revenue", "Transfer", "Other"].includes(cat)) continue;
+          totalScore += score;
+          if (score > bestScore) {
+            bestScore = score;
+            bestCat = cat;
+          }
+        }
+        if (bestCat && totalScore > 0 && (bestScore / totalScore) >= 0.60) {
+          return {
+            category: bestCat,
+            confidence: Math.min(0.95, bestScore / totalScore),
+            reason: "Payee history",
+            isSuggested: true
+          };
+        }
+      }
+    }
+
+    // 3. Token-level learned match
+    if (ruleOrWordPred.confidence >= 0.70) {
+      if (!isInflow || ["Revenue", "Transfer", "Other"].includes(ruleOrWordPred.category)) {
+        return {
+          category: ruleOrWordPred.category,
+          confidence: ruleOrWordPred.confidence,
+          reason: ruleOrWordPred.reason,
+          isSuggested: true
+        };
+      }
+    }
+
+    // 4. Default direction fallback
+    return {
+      category: isOutflow ? "Outgoings" : "Revenue",
+      confidence: 0.55,
+      reason: isOutflow ? "Direction: Outflow" : "Direction: Inflow",
+      isSuggested: false
+    };
+  };
+
+  // Helper to predict Secondary P&L Category & VAT for "Outgoings" items
+  const predictPlAndVat = (it) => {
+    const sKey = normalizeKey(it.payee || it.particulars);
+    let bestPl = "";
+    let bestStats = null;
+    let bestConfidence = 0;
+
+    // 1. Exact or substring supplier match
+    if (sKey && sKey.length >= 3) {
+      let matchedMap = supplierPlCounts.get(sKey);
+      if (!matchedMap) {
+        for (const [knownKey, m] of supplierPlCounts.entries()) {
+          if (knownKey.length >= 4 && (sKey.includes(knownKey) || knownKey.includes(sKey))) {
+            matchedMap = m;
+            break;
+          }
+        }
+      }
+      if (matchedMap) {
+        let total = 0;
+        let topCount = 0;
+        for (const [plCat, stats] of matchedMap.entries()) {
+          total += stats.count;
+          if (stats.count > topCount) {
+            topCount = stats.count;
+            bestPl = plCat;
+            bestStats = stats;
+          }
+        }
+        if (bestPl && total > 0) {
+          bestConfidence = topCount / total;
+        }
+      }
+    }
+
+    // 2. Fallback to token-level P&L category match
+    if (!bestPl || bestConfidence < 0.60) {
+      const tokens = tokenizeText(`${it.payee || ""} ${it.particulars || ""}`);
+      let bestWordPl = "";
+      let bestWordProb = 0;
+      let bestWordStats = null;
+
+      tokens.forEach(w => {
+        const total = wordPlTotals.get(w) || 0;
+        if (total < 1.5) return;
+        const cm = wordPlCounts.get(w);
+        if (!cm) return;
+        for (const [plCat, stats] of cm.entries()) {
+          const prob = stats.count / total;
+          if (prob >= 0.70 && prob > bestWordProb) {
+            bestWordProb = prob;
+            bestWordPl = plCat;
+            bestWordStats = stats;
+          }
+        }
+      });
+
+      if (bestWordPl && bestWordProb >= 0.70) {
+        bestPl = bestWordPl;
+        bestStats = bestWordStats;
+        bestConfidence = bestWordProb;
+      }
+    }
+
+    if (!bestPl || bestConfidence < 0.60) {
+      return { plCategory: "", vatApplies: null, isPlSuggested: false };
+    }
+
+    let learnedVat = null;
+    if (bestPl === "Not an expense") {
+      learnedVat = "No";
+    } else if (bestStats) {
+      if (bestStats.vatYes > bestStats.vatNo) learnedVat = "Yes";
+      else if (bestStats.vatNo > bestStats.vatYes) learnedVat = "No";
+    }
+
+    return {
+      plCategory: bestPl,
+      vatApplies: learnedVat,
+      isPlSuggested: true,
+      plConfidence: bestConfidence
+    };
+  };
+
+  return items.map(it => {
+    const primary = predictPrimary(it);
+    const assignedCat = primary.category;
+    let plCategory = it.plCategory || "";
+    let vatApplies = it.vatApplies || "No";
+    let isPlSuggested = false;
+
+    if (assignedCat === "Outgoings") {
+      const plPred = predictPlAndVat(it);
+      if (plPred.plCategory) {
+        plCategory = plPred.plCategory;
+        isPlSuggested = true;
+        if (!it.hasExplicitVat && plPred.vatApplies) {
+          vatApplies = plPred.vatApplies;
+        }
+      }
+    }
+
+    return {
+      ...it,
+      category: assignedCat,
+      suggestedCategory: assignedCat,
+      isCategorySuggested: Boolean(primary.isSuggested),
+      categoryReason: primary.reason || "",
+      plCategory,
+      suggestedPlCategory: plCategory,
+      isPlSuggested,
+      vatApplies
+    };
+  });
 }
 
 import {

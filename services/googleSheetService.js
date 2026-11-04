@@ -24,7 +24,7 @@ export const GOOGLE_SHEET_SCOPES = [
   "openid",
   "email",
   "profile",
-  "https://www.googleapis.com/auth/spreadsheets.readonly"
+  "https://www.googleapis.com/auth/drive.file"
 ];
 
 /**
@@ -342,10 +342,10 @@ export async function inspectGoogleSpreadsheet({
     if (!metaRes.ok || metaJson.error) {
       const errMsg = metaJson.error?.message || metaRes.statusText || "";
       if (metaRes.status === 403 || errMsg.toLowerCase().includes("permission") || errMsg.toLowerCase().includes("caller does not have permission")) {
-        throw new Error("Your Google account does not have permission to access this Google Sheet. Please share the Google Sheet with your account (Viewer permissions) or sign in with an account that has access.");
+        throw new Error("Pulse does not have permission to read this Google Sheet yet. Please click 'Choose Google Sheet from Drive' to select the spreadsheet in the Google Drive picker.");
       }
       if (metaRes.status === 404 || errMsg.toLowerCase().includes("not found")) {
-        throw new Error("Google Sheet not found. Please verify the spreadsheet URL.");
+        throw new Error("Google Sheet not found or not yet authorised. Please select the spreadsheet using the Google Drive file picker.");
       }
       throw new Error(`Google Sheets API error: ${errMsg}`);
     }
@@ -429,7 +429,8 @@ export async function linkGoogleSheetToClient({
   url,
   tabName,
   headerRowNum = 1,
-  keyHeaders = ""
+  keyHeaders = "",
+  spreadsheetTitle = ""
 }) {
   if (!masterSheetId) throw new Error("Missing masterSheetId parameter");
   if (!url) throw new Error("Missing Google Sheet URL");
@@ -443,6 +444,7 @@ export async function linkGoogleSheetToClient({
   const cleanTab = String(tabName || "").trim() || "Sheet1";
   const rowNumStr = String(headerRowNum || 1);
   const cleanKeyHeaders = String(keyHeaders || "").trim();
+  const cleanTitle = String(spreadsheetTitle || "").trim();
 
   // Write to KeyInfo!X11:X14, clear legacy X15, and set Q8 to Google Sheet
   await withRetry(() =>
@@ -478,6 +480,7 @@ export async function linkGoogleSheetToClient({
         googleSheetTab: cleanTab,
         googleSheetHeaderRow: rowNumStr,
         googleSheetKeyHeaders: cleanKeyHeaders,
+        ...(cleanTitle ? { googleSheetTitle: cleanTitle } : {}),
         updatedAt: new Date().toISOString()
       };
       await redisClient.set(redisKey, JSON.stringify(updated));
@@ -489,6 +492,7 @@ export async function linkGoogleSheetToClient({
   return {
     success: true,
     spreadsheetId: targetId,
+    spreadsheetTitle: cleanTitle,
     url: url.trim(),
     tabName: cleanTab,
     headerRowNum: rowNumStr,

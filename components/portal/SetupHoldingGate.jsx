@@ -21,6 +21,8 @@ export default function SetupHoldingGate({
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
   const [clientDropdownOpen, setClientDropdownOpen] = useState(false);
   const [googleSheetModalOpen, setGoogleSheetModalOpen] = useState(false);
+  const [googleSheetConnectedAccount, setGoogleSheetConnectedAccount] = useState("");
+  const [googleSheetAutoOpenPicker, setGoogleSheetAutoOpenPicker] = useState(false);
   const [excelModalOpen, setExcelModalOpen] = useState(false);
   const [liveSetupStatus, setLiveSetupStatus] = useState(setupStatus);
   const [localFeedback, setLocalFeedback] = useState(oauthFeedback || null);
@@ -108,11 +110,23 @@ export default function SetupHoldingGate({
     const params = new URLSearchParams(window.location.search);
     const integration = params.get("integration") || params.get("tool");
     const status = params.get("status");
+    const modalParam = params.get("modal");
+    const accountParam = params.get("account") || params.get("tenant") || "";
     const err = params.get("error_description") || params.get("error") || params.get("message");
 
     if (integration && status) {
       const displayName = getToolDisplayName(integration);
-      if (status === "success") {
+      const isGoogleSheetPickerReturn =
+        String(integration).toLowerCase() === "googlesheet" &&
+        (status === "oauth_authorized" || modalParam === "picker");
+
+      if (isGoogleSheetPickerReturn) {
+        if (accountParam) {
+          setGoogleSheetConnectedAccount(accountParam);
+        }
+        setGoogleSheetAutoOpenPicker(true);
+        setGoogleSheetModalOpen(true);
+      } else if (status === "success") {
         setLocalFeedback({
           type: "success",
           message: `Thanks for connecting ${displayName}. Pulse is still in setup mode.`
@@ -922,13 +936,19 @@ export default function SetupHoldingGate({
         {googleSheetModalOpen && (
           <GoogleSheetLinkModal
             isOpen={googleSheetModalOpen}
-            onClose={() => setGoogleSheetModalOpen(false)}
+            onClose={() => {
+              setGoogleSheetModalOpen(false);
+              setGoogleSheetAutoOpenPicker(false);
+            }}
             clientName={clientName}
             masterSheetId={masterSheetId}
             clientSheetId={clientSheetId}
+            connectedAccount={googleSheetConnectedAccount}
+            autoOpenPicker={googleSheetAutoOpenPicker}
             redirectBack={computeRedirectBack()}
             isClientView={true}
             onSuccess={() => {
+              setGoogleSheetAutoOpenPicker(false);
               setLocalFeedback({
                 type: "success",
                 message: "Thanks for connecting Google Sheet. Pulse is still in setup mode."

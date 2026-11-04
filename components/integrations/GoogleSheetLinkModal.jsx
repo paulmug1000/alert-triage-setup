@@ -1,4 +1,64 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
+
+let gapiLoadingPromise = null;
+
+function loadGooglePickerApi() {
+  if (typeof window === "undefined") return Promise.reject(new Error("Browser environment required"));
+  if (window.google?.picker) return Promise.resolve(window.google.picker);
+  if (gapiLoadingPromise) return gapiLoadingPromise;
+
+  gapiLoadingPromise = new Promise((resolve, reject) => {
+    const onGapiLoaded = () => {
+      if (!window.gapi) {
+        gapiLoadingPromise = null;
+        reject(new Error("Failed to initialize Google API loader (gapi)."));
+        return;
+      }
+      window.gapi.load("picker", {
+        callback: () => {
+          if (window.google?.picker) {
+            resolve(window.google.picker);
+          } else {
+            gapiLoadingPromise = null;
+            reject(new Error("Failed to load Google Picker library."));
+          }
+        },
+        onerror: () => {
+          gapiLoadingPromise = null;
+          reject(new Error("Error loading Google Picker library."));
+        }
+      });
+    };
+
+    if (window.gapi) {
+      onGapiLoaded();
+      return;
+    }
+
+    const existingScript = document.querySelector('script[src="https://apis.google.com/js/api.js"]');
+    if (existingScript) {
+      existingScript.addEventListener("load", onGapiLoaded, { once: true });
+      existingScript.addEventListener("error", () => {
+        gapiLoadingPromise = null;
+        reject(new Error("Failed to load Google API script from apis.google.com."));
+      }, { once: true });
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.src = "https://apis.google.com/js/api.js";
+    script.async = true;
+    script.defer = true;
+    script.onload = onGapiLoaded;
+    script.onerror = () => {
+      gapiLoadingPromise = null;
+      reject(new Error("Failed to load Google API script from apis.google.com."));
+    };
+    document.body.appendChild(script);
+  });
+
+  return gapiLoadingPromise;
+}
 
 export default function GoogleSheetLinkModal({
   isOpen,
@@ -10,35 +70,30 @@ export default function GoogleSheetLinkModal({
   currentConfig,
   onSuccess,
   isClientView = false,
-  redirectBack = "/pma?nav=integrations"
+  redirectBack = "/pma?nav=integrations",
+  connectedAccount = "",
+  autoOpenPicker = false
 }) {
   const resolvedClientName = client?.clientName || clientName || "";
   const resolvedMasterSheetId = client?.masterSheetId || masterSheetId || "";
   const resolvedClientSheetId = client?.clientSheetId || clientSheetId || "";
 
-  const [url, setUrl] = useState(() => {
-    if (typeof window !== "undefined") {
-      const pUrl = new URLSearchParams(window.location.search).get("url");
-      if (pUrl) return pUrl;
-    }
-    if (currentConfig?.metadata?.url) return currentConfig.metadata.url;
-    if (currentConfig?.url) return currentConfig.url;
-    if (client?.integrations?.googlesheet?.metadata?.url) return client.integrations.googlesheet.metadata.url;
-    if (typeof window !== "undefined") {
-      const cached = window.sessionStorage.getItem("pulse_pending_google_sheet_url");
-      if (cached) return cached;
-    }
-    return "";
-  });
-  const [isLinkSubmitted, setIsLinkSubmitted] = useState(() => {
-    const hasConfigUrl = Boolean(
-      currentConfig?.metadata?.url ||
-      currentConfig?.url ||
-      client?.integrations?.googlesheet?.metadata?.url
-    );
-    const hasQueryUrl = typeof window !== "undefined" && Boolean(new URLSearchParams(window.location.search).get("url"));
-    return (hasConfigUrl && Boolean(currentConfig?.connected || client?.integrations?.googlesheet?.connected)) || hasQueryUrl;
-  });
+  const initialUrl =
+    currentConfig?.metadata?.url ||
+    currentConfig?.url ||
+    client?.integrations?.googlesheet?.metadata?.url ||
+    "";
+
+  const initialTitle =
+    currentConfig?.metadata?.spreadsheetTitle ||
+    client?.integrations?.googlesheet?.metadata?.spreadsheetTitle ||
+    "";
+
+  const [url, setUrl] = useState(initialUrl);
+  const [selectedSheetTitle, setSelectedSheetTitle] = useState(initialTitle);
+  const [isSheetSelected, setIsSheetSelected] = useState(Boolean(initialUrl));
+  const [openingPicker, setOpeningPicker] = useState(false);
+
   const [selectedTab, setSelectedTab] = useState(currentConfig?.metadata?.tabName || currentConfig?.tabName || "");
   const [headerRowNum, setHeaderRowNum] = useState(
     currentConfig?.metadata?.headerRowNum ? String(currentConfig.metadata.headerRowNum) : ""
@@ -63,52 +118,49 @@ export default function GoogleSheetLinkModal({
     return null;
   });
 
-  const handleSubmitLink = (e) => {
-    if (e && e.preventDefault) e.preventDefault();
-    const trimmed = (url || "").trim();
-    if (!trimmed) {
-      setError("Please paste your Google Sheet link.");
-      return;
-    }
-    if (trimmed.includes("sharepoint.com") || trimmed.includes("1drv.ms") || trimmed.includes("live.com")) {
-      setError("This looks like a Microsoft SharePoint/OneDrive link. Please use the Microsoft Excel CRM integration instead.");
-      return;
-    }
-    if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
-      setError("Please enter a valid web link starting with https://");
-      return;
-    }
-    if (!trimmed.includes("docs.google.com/spreadsheets")) {
-      setError("Please paste a valid Google Sheet link (e.g. https://docs.google.com/spreadsheets/d/...).");
-      return;
-    }
-    setError(null);
-    if (typeof window !== "undefined") {
-      window.sessionStorage.setItem("pulse_pending_google_sheet_url", trimmed);
-    }
-    setIsLinkSubmitted(true);
-    if (isConnected && !isClientView) {
-      handleInspect();
-    }
-  };
+  const autoOpenedRef = useRef(false);
 
   const isConnected = Boolean(
+    connectedAccount ||
     currentConfig?.connected ||
     client?.integrations?.googlesheet?.connected ||
     client?.crmStatus?.connected ||
     currentConfig?.metadata?.userEmail ||
     client?.integrations?.googlesheet?.metadata?.userEmail
   );
+
   const connectedEmail =
+    connectedAccount ||
     currentConfig?.metadata?.userEmail ||
     client?.integrations?.googlesheet?.metadata?.userEmail ||
     currentConfig?.tenantName ||
     client?.tenantName ||
     "Google Account";
 
-  const handleInspect = async (overrideTab, overrideRow) => {
-    if (!url.trim()) {
-      setError("Please enter a valid Google Sheet URL.");
+  // Sync url/title if currentConfig updates asynchronously after modal opens
+  useEffect(() => {
+    const cfgUrl =
+      currentConfig?.metadata?.url ||
+      currentConfig?.url ||
+      client?.integrations?.googlesheet?.metadata?.url ||
+      "";
+    const cfgTitle =
+      currentConfig?.metadata?.spreadsheetTitle ||
+      client?.integrations?.googlesheet?.metadata?.spreadsheetTitle ||
+      "";
+    if (cfgUrl && !url) {
+      setUrl(cfgUrl);
+      setIsSheetSelected(true);
+    }
+    if (cfgTitle && !selectedSheetTitle) {
+      setSelectedSheetTitle(cfgTitle);
+    }
+  }, [currentConfig, client, url, selectedSheetTitle]);
+
+  const handleInspect = useCallback(async (overrideTab, overrideRow, overrideUrl) => {
+    const targetUrl = (overrideUrl !== undefined ? overrideUrl : url).trim();
+    if (!targetUrl) {
+      setError("Please select a Google Sheet from Google Drive first.");
       return;
     }
     setError(null);
@@ -122,7 +174,7 @@ export default function GoogleSheetLinkModal({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          url: url.trim(),
+          url: targetUrl,
           clientKey: resolvedClientName,
           tabName: tabToUse || undefined,
           headerRowNum: rowToUse || undefined
@@ -133,6 +185,9 @@ export default function GoogleSheetLinkModal({
         throw new Error(data.error || "Failed to inspect Google Sheet");
       }
       setInspectionData(data);
+      if (data.title && !selectedSheetTitle) {
+        setSelectedSheetTitle(data.title);
+      }
       const chosenTab = data.selectedTab || data.defaultTab || data.tabs?.[0]?.title || "Sheet1";
       setSelectedTab(chosenTab);
       setHeaderRowNum(String(data.candidateHeaderRow || 1));
@@ -150,7 +205,96 @@ export default function GoogleSheetLinkModal({
     } finally {
       setInspecting(false);
     }
-  };
+  }, [url, selectedTab, headerRowNum, resolvedClientName, selectedSheetTitle]);
+
+  const handleOpenPicker = useCallback(async () => {
+    setError(null);
+    setOpeningPicker(true);
+
+    try {
+      const q = new URLSearchParams({
+        clientKey: resolvedClientName,
+        masterSheetId: resolvedMasterSheetId || ""
+      });
+      const [tokenRes] = await Promise.all([
+        fetch(`/api/integrations/google-sheet/picker-token?${q.toString()}`),
+        loadGooglePickerApi()
+      ]);
+      const tokenData = await tokenRes.json();
+
+      if (!tokenData.success) {
+        throw new Error(tokenData.error || "Could not initialize Google Drive file picker.");
+      }
+
+      const pickerApi = window.google?.picker;
+      if (!pickerApi) {
+        throw new Error("Google Picker library failed to initialize.");
+      }
+
+      const view = new pickerApi.DocsView(pickerApi.ViewId.SPREADSHEETS)
+        .setIncludeFolders(true)
+        .setMimeTypes("application/vnd.google-apps.spreadsheet");
+
+      const builder = new pickerApi.PickerBuilder()
+        .addView(view)
+        .setOAuthToken(tokenData.accessToken)
+        .setDeveloperKey(tokenData.developerKey)
+        .setTitle("Select your CRM Google Sheet")
+        .setOrigin(window.location.protocol + "//" + window.location.host)
+        .setCallback((data) => {
+          const action = data?.[pickerApi.Response.ACTION];
+          if (action === pickerApi.Action.PICKED) {
+            const doc = data?.[pickerApi.Response.DOCUMENTS]?.[0];
+            if (doc) {
+              const pickedId = doc[pickerApi.Document.ID];
+              const pickedName = doc[pickerApi.Document.NAME] || "Selected Google Sheet";
+              const pickedUrl = doc[pickerApi.Document.URL] || `https://docs.google.com/spreadsheets/d/${pickedId}/edit`;
+              setUrl(pickedUrl);
+              setSelectedSheetTitle(pickedName);
+              setIsSheetSelected(true);
+              setInspectionData(null);
+              setError(null);
+              if (!isClientView) {
+                handleInspect("", undefined, pickedUrl);
+              }
+            }
+          }
+        });
+
+      if (tokenData.appId) {
+        builder.setAppId(tokenData.appId);
+      }
+
+      const picker = builder.build();
+      picker.setVisible(true);
+    } catch (err) {
+      setError(err.message || "Failed to open Google Drive picker.");
+    } finally {
+      setOpeningPicker(false);
+    }
+  }, [resolvedClientName, resolvedMasterSheetId, isClientView, handleInspect]);
+
+  // Preload Google Picker script when modal opens and user is connected
+  useEffect(() => {
+    if (isOpen && isConnected) {
+      loadGooglePickerApi().catch(() => {});
+    }
+  }, [isOpen, isConnected]);
+
+  // Auto-open picker upon returning from OAuth if no sheet has been selected yet
+  useEffect(() => {
+    if (isOpen && isConnected && autoOpenPicker && !isSheetSelected && !autoOpenedRef.current) {
+      autoOpenedRef.current = true;
+      handleOpenPicker();
+    }
+  }, [isOpen, isConnected, autoOpenPicker, isSheetSelected, handleOpenPicker]);
+
+  // Automatically inspect existing linked sheet when opened in PMA view
+  useEffect(() => {
+    if (isOpen && isSheetSelected && isConnected && url && url.trim() && !inspectionData && !inspecting && !isClientView && !error) {
+      handleInspect();
+    }
+  }, [isOpen, isSheetSelected, isConnected, url, inspectionData, inspecting, isClientView, error, handleInspect]);
 
   const handleTabChange = (e) => {
     const newTab = e.target.value;
@@ -168,7 +312,7 @@ export default function GoogleSheetLinkModal({
 
   const handleSaveLink = async () => {
     if (!inspectionData?.spreadsheetId || !selectedTab) {
-      setError("Please inspect the sheet and choose a tab before linking.");
+      setError("Please select a spreadsheet and choose a tab before linking.");
       return;
     }
     if (!clientCol.trim() || !jobCol.trim()) {
@@ -195,6 +339,7 @@ export default function GoogleSheetLinkModal({
           clientKey: resolvedClientName,
           masterSheetId: resolvedMasterSheetId,
           url: url.trim(),
+          spreadsheetTitle: selectedSheetTitle || inspectionData?.title || "",
           tabName: selectedTab,
           headerRowNum: parseInt(headerRowNum, 10) || 1,
           keyHeaders
@@ -215,7 +360,7 @@ export default function GoogleSheetLinkModal({
 
   const handleClientSave = async () => {
     if (!url.trim()) {
-      setError("Please enter your Google Sheet URL.");
+      setError("Please select your Google Sheet from Google Drive first.");
       return;
     }
     setError(null);
@@ -233,7 +378,7 @@ export default function GoogleSheetLinkModal({
       });
       const inspectData = await inspectRes.json();
       if (!inspectData.success) {
-        throw new Error(inspectData.error || "Could not access sheet. Please verify the URL and authorization.");
+        throw new Error(inspectData.error || "Could not access spreadsheet. Please select the spreadsheet using the Google Drive file picker.");
       }
 
       const defaultTab = inspectData.selectedTab || inspectData.defaultTab || inspectData.tabs?.[0]?.title || "Sheet1";
@@ -256,6 +401,7 @@ export default function GoogleSheetLinkModal({
           clientKey: resolvedClientName,
           masterSheetId: resolvedMasterSheetId,
           url: url.trim(),
+          spreadsheetTitle: selectedSheetTitle || inspectData.title || "",
           tabName: defaultTab,
           headerRowNum: candidateRow,
           keyHeaders
@@ -275,60 +421,25 @@ export default function GoogleSheetLinkModal({
     }
   };
 
-  const handleUrlChange = (newUrl) => {
-    setUrl(newUrl);
-    if (typeof window !== "undefined") {
-      window.sessionStorage.setItem("pulse_pending_google_sheet_url", newUrl);
-    }
-  };
-
-  React.useEffect(() => {
-    if (typeof window !== "undefined") {
-      const p = new URLSearchParams(window.location.search);
-      const isGoogle = p.get("integration") === "googlesheet" || p.get("tool") === "googlesheet";
-      if (isGoogle && p.get("status") === "error") {
-        const msg = p.get("message") || p.get("error");
-        if (msg) setError(msg);
-        const queryUrl = p.get("url");
-        if (queryUrl && !url) {
-          setUrl(queryUrl);
-          setIsLinkSubmitted(true);
-        }
-      }
-    }
-  }, [isOpen]);
-
-  React.useEffect(() => {
-    if (isLinkSubmitted && isConnected && url && url.trim() && !inspectionData && !inspecting && !isClientView) {
-      handleInspect();
-    }
-  }, [isLinkSubmitted, isConnected]);
-
   const handleOAuthConnect = () => {
-    if (!url.trim()) {
-      setError("Please enter your Google Sheet URL above before signing in.");
-      return;
-    }
-    if (typeof window !== "undefined") {
-      window.sessionStorage.setItem("pulse_pending_google_sheet_url", url.trim());
-    }
+    setError(null);
     const q = new URLSearchParams({
       clientKey: resolvedClientName,
       clientName: resolvedClientName,
       masterSheetId: resolvedMasterSheetId || "",
       clientSheetId: resolvedClientSheetId || "",
-      url: url.trim(),
       redirectBack
     });
     window.location.href = `/api/integrations/google-sheet/connect?${q.toString()}`;
   };
 
   const availableHeaders = inspectionData?.headers || [];
+  const displaySheetTitle = selectedSheetTitle || inspectionData?.title || "Selected Google Sheet";
 
   const isWaitingForInspection =
     !isClientView &&
     !inspectionData &&
-    (inspecting || (isConnected && isLinkSubmitted && Boolean(url?.trim()) && !error));
+    (inspecting || (isConnected && isSheetSelected && Boolean(url?.trim()) && !error));
 
   if (!isOpen || !resolvedClientName) return null;
 
@@ -347,6 +458,12 @@ export default function GoogleSheetLinkModal({
       }}
       onClick={onClose}
     >
+      {/* Ensure Google Picker iframe dialog renders above modal overlay */}
+      <style>{`
+        .picker-dialog { z-index: 100002 !important; }
+        .picker-dialog-bg { z-index: 100001 !important; }
+      `}</style>
+
       <div
         style={{
           background: "#ffffff",
@@ -433,7 +550,7 @@ export default function GoogleSheetLinkModal({
                 lineHeight: "1.5"
               }}
             >
-              <strong>Read-only sync:</strong> Pulse reads your pipeline data and maintains deal tracking automatically. Your original Google Sheet is never modified.
+              <strong>Read-only sync:</strong> Pulse only accesses the specific spreadsheet you select in Google Drive and never modifies your file.
             </div>
           )}
 
@@ -453,222 +570,210 @@ export default function GoogleSheetLinkModal({
             </div>
           )}
 
-          {/* 1. Google Sheet URL (Initial Entry) */}
-          {!isLinkSubmitted && (
-            <div style={{ marginBottom: "20px" }}>
-              {!isClientView && (
-                <label style={{ display: "block", fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#64748b", marginBottom: "8px" }}>
-                  1. Paste link to your Google Sheet
-                </label>
-              )}
-              <p style={{ margin: "0 0 12px 0", fontSize: isClientView ? "14px" : "12.5px", color: isClientView ? "#1e293b" : "#475569", lineHeight: "1.5", fontWeight: isClientView ? 500 : 400 }}>
-                {isClientView
-                  ? "To start, please enter the URL of your CRM Google Sheet:"
-                  : "Paste the web link to your Google Sheet CRM."}
-              </p>
-              <form onSubmit={handleSubmitLink} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-                <input
-                  type="text"
-                  value={url}
-                  onChange={(e) => handleUrlChange(e.target.value)}
-                  placeholder="https://docs.google.com/spreadsheets/d/..."
+          {/* 1. Google Account Authorisation */}
+          <div style={{ marginBottom: "20px" }}>
+            {!isClientView ? (
+              <label style={{ display: "block", fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#64748b", marginBottom: "8px" }}>
+                1. Google account authorisation
+              </label>
+            ) : (
+              <label style={{ display: "block", fontSize: "13px", fontWeight: "600", color: "#1e293b", marginBottom: "6px" }}>
+                1. Sign in with Google
+              </label>
+            )}
+            {isConnected ? (
+              <div
+                style={{
+                  background: "#f0fdf4",
+                  border: "1px solid #bbf7d0",
+                  borderRadius: "8px",
+                  padding: "12px 14px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: "8px"
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                  <span style={{ color: "#166534", fontSize: "16px", fontWeight: "700" }}>✓</span>
+                  <div>
+                    <div style={{ fontSize: "13px", color: "#166534", fontWeight: "600" }}>
+                      Connected to {connectedEmail}
+                    </div>
+                    <div style={{ fontSize: "12px", color: "#15803d", marginTop: "2px" }}>
+                      {isSheetSelected
+                        ? "Google account authorised and spreadsheet selected."
+                        : "Google account authorised. Now choose your spreadsheet below."}
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleOAuthConnect}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    color: "#15803d",
+                    fontSize: "11.5px",
+                    fontWeight: "600",
+                    textDecoration: "underline",
+                    cursor: "pointer",
+                    whiteSpace: "nowrap"
+                  }}
+                >
+                  Switch account
+                </button>
+              </div>
+            ) : (
+              <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "8px", padding: "14px" }}>
+                <p style={{ margin: "0 0 12px 0", fontSize: isClientView ? "13px" : "12px", color: "#475569", lineHeight: "1.4" }}>
+                  {isClientView
+                    ? "Sign in with your Google account so you can choose your CRM Google Sheet from Google Drive."
+                    : "Sign in with Google to select the CRM Google Sheet from Google Drive."}
+                </p>
+                <button
+                  type="button"
+                  onClick={handleOAuthConnect}
                   style={{
                     width: "100%",
                     padding: "10px 14px",
                     borderRadius: "8px",
                     border: "1px solid #cbd5e1",
-                    fontSize: "13.5px",
-                    boxSizing: "border-box"
+                    background: "#ffffff",
+                    color: "#1e293b",
+                    fontSize: "13px",
+                    fontWeight: "600",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: "8px",
+                    boxShadow: "0 1px 2px rgba(0,0,0,0.05)"
                   }}
-                />
-                {url.trim() && (url.includes("sharepoint.com") || url.includes("1drv.ms") || url.includes("live.com")) && (
-                  <div style={{ fontSize: "11.5px", color: "#b91c1c" }}>
-                    This looks like a Microsoft SharePoint/OneDrive link. Please use the Microsoft Excel CRM integration instead.
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24">
+                    <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+                    <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+                    <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" />
+                    <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
+                  </svg>
+                  <span>Authorise with Google</span>
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* 2. Choose Google Sheet via Google Picker */}
+          {isConnected && (
+            <div style={{ marginBottom: "20px" }}>
+              {!isClientView ? (
+                <label style={{ display: "block", fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#64748b", marginBottom: "8px" }}>
+                  2. Select Google Sheet from Drive
+                </label>
+              ) : (
+                <label style={{ display: "block", fontSize: "13px", fontWeight: "600", color: "#1e293b", marginBottom: "6px" }}>
+                  2. Choose your CRM Google Sheet
+                </label>
+              )}
+
+              {isSheetSelected && url ? (
+                <div
+                  style={{
+                    background: "#f8fafc",
+                    border: "1px solid #e2e8f0",
+                    borderRadius: "8px",
+                    padding: "12px 14px"
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px" }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#166534", display: "flex", alignItems: "center", gap: "6px" }}>
+                        <span>✓</span>
+                        <span>Spreadsheet selected</span>
+                      </div>
+                      <div style={{ fontSize: "13px", fontWeight: "600", color: "#0f172a", marginTop: "4px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {displaySheetTitle}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleOpenPicker}
+                      disabled={openingPicker}
+                      style={{
+                        background: "#ffffff",
+                        border: "1px solid #cbd5e1",
+                        borderRadius: "6px",
+                        padding: "6px 12px",
+                        color: "#334155",
+                        fontSize: "12px",
+                        fontWeight: "600",
+                        cursor: openingPicker ? "wait" : "pointer",
+                        whiteSpace: "nowrap"
+                      }}
+                    >
+                      {openingPicker ? "Opening Drive..." : "Change spreadsheet"}
+                    </button>
                   </div>
-                )}
-                <div>
+                </div>
+              ) : (
+                <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "8px", padding: "14px" }}>
+                  <p style={{ margin: "0 0 12px 0", fontSize: isClientView ? "13px" : "12px", color: "#475569", lineHeight: "1.4" }}>
+                    {isClientView
+                      ? "Choose your CRM spreadsheet from Google Drive. Pulse will only have permission to read the specific file you select."
+                      : "Open the Google Drive file picker to select the CRM spreadsheet for this client."}
+                  </p>
                   <button
-                    type="submit"
-                    disabled={!url.trim()}
+                    type="button"
+                    onClick={handleOpenPicker}
+                    disabled={openingPicker}
                     style={{
-                      padding: "10px 20px",
+                      width: "100%",
+                      padding: "10px 14px",
                       borderRadius: "8px",
                       border: "none",
                       background: "#0f9d58",
                       color: "#ffffff",
                       fontSize: "13px",
                       fontWeight: "600",
-                      cursor: !url.trim() ? "not-allowed" : "pointer",
-                      opacity: !url.trim() ? 0.6 : 1,
+                      cursor: openingPicker ? "wait" : "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: "8px",
                       boxShadow: "0 1px 2px rgba(0,0,0,0.05)"
                     }}
                   >
-                    Submit link
-                  </button>
-                </div>
-              </form>
-            </div>
-          )}
-
-          {/* Step 1 Confirmed & Step 2 Authorisation (Revealed only after link is submitted) */}
-          {isLinkSubmitted && (
-            <>
-              {/* Confirmed Step 1 */}
-              <div
-                style={{
-                  marginBottom: "20px",
-                  background: "#f8fafc",
-                  border: "1px solid #e2e8f0",
-                  borderRadius: "8px",
-                  padding: "12px 14px"
-                }}
-              >
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#166534", display: "flex", alignItems: "center", gap: "6px" }}>
-                      <span>✓</span>
-                      <span>{isClientView ? "Spreadsheet link submitted" : "1. Google Sheet link submitted"}</span>
-                    </div>
-                    <div style={{ fontSize: "12px", color: "#0f172a", marginTop: "4px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "monospace" }}>
-                      {url}
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setIsLinkSubmitted(false)}
-                    style={{
-                      background: "none",
-                      border: "1px solid #cbd5e1",
-                      borderRadius: "6px",
-                      padding: "5px 10px",
-                      color: "#475569",
-                      fontSize: "11.5px",
-                      fontWeight: "600",
-                      cursor: "pointer",
-                      whiteSpace: "nowrap"
-                    }}
-                  >
-                    Change link
-                  </button>
-                </div>
-              </div>
-
-              {/* 2. Google Account Authorisation */}
-              <div style={{ marginBottom: isClientView ? "16px" : "20px" }}>
-                {!isClientView ? (
-                  <label style={{ display: "block", fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#64748b", marginBottom: "8px" }}>
-                    2. Google account authorisation
-                  </label>
-                ) : (
-                  <label style={{ display: "block", fontSize: "13px", fontWeight: "600", color: "#1e293b", marginBottom: "6px" }}>
-                    Authorise access with Google
-                  </label>
-                )}
-                {isConnected ? (
-                  <div
-                    style={{
-                      background: "#f0fdf4",
-                      border: "1px solid #bbf7d0",
-                      borderRadius: "8px",
-                      padding: "12px 14px",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between"
-                    }}
-                  >
-                    <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                      <span style={{ color: "#166534", fontSize: "16px", fontWeight: "700" }}>✓</span>
-                      <div>
-                        <div style={{ fontSize: "13px", color: "#166534", fontWeight: "600" }}>
-                          Connected to {connectedEmail}
-                        </div>
-                        <div style={{ fontSize: "12px", color: "#15803d", marginTop: "2px" }}>
-                          {isClientView ? "Authorised via Google. Ready to complete connection below." : "Ready to inspect sheet and map columns."}
-                        </div>
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={handleOAuthConnect}
-                      style={{
-                        background: "none",
-                        border: "none",
-                        color: "#15803d",
-                        fontSize: "11.5px",
-                        fontWeight: "600",
-                        textDecoration: "underline",
-                        cursor: "pointer",
-                        whiteSpace: "nowrap"
-                      }}
-                    >
-                      Switch account
-                    </button>
-                  </div>
-                ) : (
-                  <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "8px", padding: "14px" }}>
-                    <p style={{ margin: "0 0 12px 0", fontSize: isClientView ? "13px" : "12px", color: "#475569", lineHeight: "1.4" }}>
-                      {isClientView
-                        ? "Sign in with your Google account to grant Pulse secure, read-only access to this spreadsheet."
-                        : "Sign in to grant Pulse read-only access to this Google Sheet."}
-                    </p>
-                    <button
-                      type="button"
-                      onClick={handleOAuthConnect}
-                      style={{
-                        width: "100%",
-                        padding: "10px 14px",
-                        borderRadius: "8px",
-                        border: "1px solid #cbd5e1",
-                        background: "#ffffff",
-                        color: "#1e293b",
-                        fontSize: "13px",
-                        fontWeight: "600",
-                        cursor: "pointer",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        gap: "8px",
-                        boxShadow: "0 1px 2px rgba(0,0,0,0.05)"
-                      }}
-                    >
-                      <svg width="16" height="16" viewBox="0 0 24 24">
-                        <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
-                        <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
-                        <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" />
-                        <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
-                      </svg>
-                      <span>Authorise with Google</span>
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              {/* Client View: Primary Save Button */}
-              {isClientView && isConnected && (
-                <div style={{ marginBottom: "16px" }}>
-                  <button
-                    type="button"
-                    onClick={handleClientSave}
-                    disabled={linking || !url.trim()}
-                    style={{
-                      width: "100%",
-                      padding: "11px 16px",
-                      borderRadius: "8px",
-                      border: "none",
-                      background: "#0f9d58",
-                      color: "#ffffff",
-                      fontSize: "13.5px",
-                      fontWeight: "600",
-                      cursor: linking || !url.trim() ? "not-allowed" : "pointer",
-                      boxShadow: "0 1px 2px rgba(0,0,0,0.05)",
-                      opacity: !url.trim() ? 0.6 : 1
-                    }}
-                  >
-                    {linking ? "Saving..." : "Complete connection"}
+                    <span>{openingPicker ? "Opening Google Drive..." : "Choose Google Sheet from Drive"}</span>
                   </button>
                 </div>
               )}
-            </>
+            </div>
+          )}
+
+          {/* Client View: Primary Save Button once sheet is selected */}
+          {isClientView && isConnected && isSheetSelected && Boolean(url?.trim()) && (
+            <div style={{ marginBottom: "16px" }}>
+              <button
+                type="button"
+                onClick={handleClientSave}
+                disabled={linking || !url.trim()}
+                style={{
+                  width: "100%",
+                  padding: "11px 16px",
+                  borderRadius: "8px",
+                  border: "none",
+                  background: "#0f9d58",
+                  color: "#ffffff",
+                  fontSize: "13.5px",
+                  fontWeight: "600",
+                  cursor: linking || !url.trim() ? "not-allowed" : "pointer",
+                  boxShadow: "0 1px 2px rgba(0,0,0,0.05)",
+                  opacity: !url.trim() ? 0.6 : 1
+                }}
+              >
+                {linking ? "Saving..." : "Complete connection"}
+              </button>
+            </div>
           )}
 
           {/* Loading Spreadsheet Structure (PMA View) */}
@@ -709,7 +814,7 @@ export default function GoogleSheetLinkModal({
             </div>
           )}
 
-          {/* Inspection Results (Tabs + Header Row + Mapping) */}
+          {/* 3. Inspection Results (Tabs + Header Row + Mapping) */}
           {!isClientView && inspectionData && (
             <div
               style={{
@@ -721,7 +826,7 @@ export default function GoogleSheetLinkModal({
               }}
             >
               <h4 style={{ margin: "0 0 12px 0", fontSize: "13px", fontWeight: "700", color: "#0f172a" }}>
-                Choose tab
+                3. Choose tab
               </h4>
 
               <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: "10px", marginBottom: "14px" }}>

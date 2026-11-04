@@ -10,9 +10,9 @@
 
 import { getSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, extractSheetIdFromUrl, withRetry } from "../../../services/sheetsClient.js";
-import { getIntegrationTokens } from "../../../services/vaultService.js";
+import { getIntegrationTokens, updateRefreshedTokens } from "../../../services/vaultService.js";
 import { verifyUserAuthorizedForSheet, isReadOnlySession } from "../../../services/userPermissions.js";
-import { assertExternalCrmSpreadsheet } from "../../../services/googleSheetService.js";
+import { assertExternalCrmSpreadsheet, inspectGoogleSpreadsheet, refreshGoogleSheetTokens } from "../../../services/googleSheetService.js";
 import { assertSafeGraphId } from "../../../services/excelIntegrationService.js";
 import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
 import { sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
@@ -93,59 +93,67 @@ export default async function handler(req, res) {
         });
       }
 
-      // Check sheet accessibility
-      let sheetMeta;
+      // Obtain OAuth token from Vault if connected via Google Sign-In / Picker (drive.file)
+      let gsAccessToken = null;
+      if (clientKey || masterSheetId) {
+        const grant = await getIntegrationTokens({ clientKey, masterSheetId, tool: "googlesheet" }).catch(() => null);
+        if (grant && grant.tokens?.accessToken && !grant.tokens.accessToken.startsWith("manual_")) {
+          const isExpiring = grant.expiresAt && Date.now() > (grant.expiresAt - 60000);
+          if (isExpiring && grant.tokens.refreshToken) {
+            try {
+              const refreshed = await refreshGoogleSheetTokens(grant.tokens.refreshToken);
+              await updateRefreshedTokens({
+                clientKey: grant.clientKey || clientKey,
+                tool: "googlesheet",
+                tokens: {
+                  ...grant.tokens,
+                  accessToken: refreshed.accessToken,
+                  expiresIn: refreshed.expiresIn,
+                  expiresAt: Date.now() + (refreshed.expiresIn * 1000)
+                }
+              });
+              gsAccessToken = refreshed.accessToken;
+            } catch {
+              gsAccessToken = grant.tokens.accessToken;
+            }
+          } else {
+            gsAccessToken = grant.tokens.accessToken;
+          }
+        }
+      }
+
       try {
-        sheetMeta = await sheets.spreadsheets.get({
-          spreadsheetId: targetSheetId
+        const inspection = await inspectGoogleSpreadsheet({
+          url,
+          sheetId: targetSheetId,
+          accessToken: gsAccessToken,
+          tabName: tabName || null,
+          clientKey,
+          isAdmin: Boolean(sessionUser.isAdmin)
+        });
+        const availableTabs = (inspection.tabs || []).map(t => t.title || "");
+        if (tabName && !availableTabs.includes(tabName)) {
+          return res.status(200).json({
+            success: false,
+            error: `Tab "${tabName}" not found in remote sheet. Available tabs: ${availableTabs.slice(0, 5).join(", ")}${availableTabs.length > 5 ? "..." : ""}`
+          });
+        }
+        return res.status(200).json({
+          success: true,
+          verified: true,
+          tool: "Google Sheet",
+          sheetTitle: inspection.title || "Connected Sheet",
+          tabName: tabName || inspection.selectedTab || availableTabs[0] || "Sheet1",
+          headerCount: (inspection.headers || []).length,
+          hasSystemId: Boolean(inspection.hasSystemId),
+          message: `Successfully connected to remote Google Sheet "${inspection.title || targetSheetId}" (Tab: "${tabName || inspection.selectedTab || availableTabs[0]}", ${(inspection.headers || []).length} columns detected${inspection.hasSystemId ? ", System ID header present" : ""}).`
         });
       } catch (accessErr) {
-        if (accessErr.code === 403 || accessErr.message?.includes("403")) {
-          return res.status(200).json({
-            success: false,
-            error: "Google Sheets access denied: ensure the service account (alert-triage-backend@automation-commander.iam.gserviceaccount.com) has Viewer or Editor access."
-          });
-        }
-        if (accessErr.code === 404 || accessErr.message?.includes("404")) {
-          return res.status(200).json({
-            success: false,
-            error: `Target Google Sheet not found (ID: ${targetSheetId}). Verify the URL in KeyInfo!X11.`
-          });
-        }
         return res.status(200).json({
           success: false,
-          error: `Google Sheets error: ${accessErr.message}`
+          error: sessionUser.isAdmin ? accessErr.message : sanitizeSpreadsheetTerms(accessErr.message)
         });
       }
-
-      const availableTabs = (sheetMeta.data.sheets || []).map(s => s.properties?.title || "");
-      if (tabName && !availableTabs.includes(tabName)) {
-        return res.status(200).json({
-          success: false,
-          error: `Tab "${tabName}" not found in remote sheet. Available tabs: ${availableTabs.slice(0, 5).join(", ")}${availableTabs.length > 5 ? "..." : ""}`
-        });
-      }
-
-      // Read sample data to check row count and UUID column
-      const escapedTab = tabName ? tabName.replace(/'/g, "''") : "";
-      const sampleRange = escapedTab ? `'${escapedTab}'!1:5` : "1:5";
-      const sampleRes = await sheets.spreadsheets.values.get({
-        spreadsheetId: targetSheetId,
-        range: sampleRange
-      });
-      const headers = sampleRes.data.values?.[0] || [];
-      const hasSystemId = headers.some(h => String(h).trim() === "System ID (Do Not Edit)");
-
-      return res.status(200).json({
-        success: true,
-        verified: true,
-        tool: "Google Sheet",
-        sheetTitle: sheetMeta.data.properties?.title || "Connected Sheet",
-        tabName: tabName || availableTabs[0] || "Sheet1",
-        headerCount: headers.length,
-        hasSystemId,
-        message: `Successfully connected to remote Google Sheet "${sheetMeta.data.properties?.title || targetSheetId}" (Tab: "${tabName || availableTabs[0]}", ${headers.length} columns detected${hasSystemId ? ", System ID header present" : ""}).`
-      });
     }
 
     if (toolClean.includes("excel")) {

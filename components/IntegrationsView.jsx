@@ -203,6 +203,7 @@ export default function IntegrationsView({
       const urlParams = new URLSearchParams(window.location.search);
       const integration = urlParams.get("integration");
       const status = urlParams.get("status");
+      const modalParam = urlParams.get("modal");
       const clientParam = urlParams.get("client");
       const masterSheetIdParam = urlParams.get("masterSheetId");
       const errorMsg = urlParams.get("message") || urlParams.get("error");
@@ -210,11 +211,14 @@ export default function IntegrationsView({
       const returnedUrl = urlParams.get("url") || "";
 
       if (integration) {
-        const toolTitle = integration.charAt(0).toUpperCase() + integration.slice(1);
-        if (status === "success") {
+        const toolTitle = integration === "googlesheet" ? "Google Sheet" : integration.charAt(0).toUpperCase() + integration.slice(1);
+        const isPickerReturn = integration === "googlesheet" && (status === "oauth_authorized" || modalParam === "picker");
+        if (status === "success" || status === "oauth_authorized") {
           setFeedback({
             type: "success",
-            message: `Successfully connected ${toolTitle} for ${clientParam || "client"}${tenant ? ` (${tenant})` : ""}!`
+            message: isPickerReturn
+              ? `Google account authorised for ${clientParam || "client"}${tenant ? ` (${tenant})` : ""} — select the Google Sheet from Google Drive.`
+              : `Successfully connected ${toolTitle} for ${clientParam || "client"}${tenant ? ` (${tenant})` : ""}.`
           });
 
           // Automatically re-open the configuration modal for spreadsheet integrations
@@ -226,6 +230,8 @@ export default function IntegrationsView({
             const immediateClient = {
               clientName: clientParam,
               masterSheetId: masterSheetIdParam || "",
+              connectedAccount: accountEmail,
+              autoOpenPicker: isPickerReturn,
               integrations: {
                 [integration]: {
                   connected: true,
@@ -252,6 +258,8 @@ export default function IntegrationsView({
               if (matched) {
                 const mergedClient = {
                   ...matched,
+                  connectedAccount: accountEmail,
+                  autoOpenPicker: isPickerReturn,
                   integrations: {
                     ...matched.integrations,
                     [integration]: {
@@ -283,6 +291,8 @@ export default function IntegrationsView({
         // Clean query parameters from URL
         urlParams.delete("integration");
         urlParams.delete("status");
+        urlParams.delete("modal");
+        urlParams.delete("url");
         urlParams.delete("tenant");
         urlParams.delete("company");
         urlParams.delete("workspace");
@@ -1475,6 +1485,8 @@ export default function IntegrationsView({
           masterSheetId={googleSheetModalClient.masterSheetId}
           clientSheetId={googleSheetModalClient.clientSheetId}
           currentConfig={googleSheetModalClient.integrations?.googlesheet}
+          connectedAccount={googleSheetModalClient.connectedAccount || ""}
+          autoOpenPicker={Boolean(googleSheetModalClient.autoOpenPicker)}
           redirectBack="/pma?nav=integrations"
           onSuccess={async () => {
             await fetchAllStatus(true, true);

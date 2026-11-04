@@ -1,7 +1,7 @@
 import React from "react";
 import Spinner from "./Spinner";
 import TruncatedCode from "./TruncatedCode";
-import { stripRowInfo, parseUnreceivedExpensesDetail, parseStaleExpenseDetail, parseInfoAlertDetail, getInfoCardTitle, getProactiveCardTitle, filterAnalysisResultsForAlert, getCleanPLCategoryName, getAlertJobTarget, formatSeenTimestamp, parseRevenueMismatchDetail, parseDirectCostsMismatchDetail, toInputDateFormat, parseSheetDate, toSheetDateFormat, isNoEndDateSentinel, formatJobEndDateDisplay } from "../utils/helpers";
+import { stripRowInfo, sanitizeSpreadsheetTerms, parseUnreceivedExpensesDetail, parseStaleExpenseDetail, parseInfoAlertDetail, getInfoCardTitle, getProactiveCardTitle, filterAnalysisResultsForAlert, getCleanPLCategoryName, getAlertJobTarget, formatSeenTimestamp, parseRevenueMismatchDetail, parseDirectCostsMismatchDetail, toInputDateFormat, parseSheetDate, toSheetDateFormat, isNoEndDateSentinel, formatJobEndDateDisplay } from "../utils/helpers";
 
 const KNOWN_PROACTIVE_TYPES = new Set([
   "retainer_invoice",
@@ -861,7 +861,7 @@ export default function NonAdminAlertListView({
 
                         {alert.alertType === "retroactive_outgoings_update" && (
                           <div style={{ fontSize: "12px", color: "#555", marginTop: "2px", marginBottom: "4px", whiteSpace: "pre-line", lineHeight: "1.4" }}>
-                            {alert.detail || alert.detailsSnippet || m.details}
+                            {String(alert.detail || alert.detailsSnippet || m.details || "").split(/\r?\n/).map((line) => (line.match(/^\s*/)?.[0] || "") + sanitizeSpreadsheetTerms(line.trim())).join("\n")}
                           </div>
                         )}
 

@@ -5,13 +5,10 @@
  */
 
 import {
-  exchangeGoogleSheetCodeForTokens,
-  inspectGoogleSpreadsheet,
-  linkGoogleSheetToClient
+  exchangeGoogleSheetCodeForTokens
 } from "../../../../services/googleSheetService.js";
-import { saveIntegrationTokens } from "../../../../services/vaultService.js";
+import { saveIntegrationTokens, getIntegrationTokens } from "../../../../services/vaultService.js";
 import { verifySignedOAuthState } from "../../../../services/authService.js";
-import { notifyStaffOnClientConnection } from "../../../../services/connectionNotifier.js";
 import { sanitizeRedirectUrl } from "../../../../utils/helpers.js";
 
 function parseCookies(cookieHeader) {
@@ -93,27 +90,14 @@ export default async function handler(req, res) {
       console.warn("Note fetching Google userinfo:", uErr.message);
     }
 
-    // 5. If a spreadsheet URL was provided, verify access via user's Google token
-    let inspectData = null;
-    if (statePayload?.url) {
-      try {
-        inspectData = await inspectGoogleSpreadsheet({
-          url: statePayload.url,
-          accessToken: tokens.accessToken
-        });
-      } catch (accessErr) {
-        console.warn(`⚠️ Google Sheet access verification failed for ${clientName} (${userEmail}):`, accessErr.message);
-        const separator = returnUrl.includes("?") ? "&" : "?";
-        const clientParam = clientName && !returnUrl.includes("client=") ? `&client=${encodeURIComponent(clientName)}` : "";
-        const pendingUrl = `&url=${encodeURIComponent(statePayload.url)}`;
-        const helpfulMsg = accessErr.message || (userEmail
-          ? `Your Google account (${userEmail}) does not have permission to access the specified Google Sheet. Please share the Google Sheet with ${userEmail} (Viewer permissions) or sign in with an account that has access.`
-          : `The Google account you signed in with does not have permission to access the specified Google Sheet.`);
-        return res.redirect(`${returnUrl}${separator}integration=googlesheet&status=error&error=file_access_denied&message=${encodeURIComponent(helpfulMsg)}${clientParam}${pendingUrl}`);
-      }
-    }
+    // 5. Preserve any existing linked spreadsheet metadata if re-authorizing
+    const existingGrant = await getIntegrationTokens({
+      clientKey,
+      masterSheetId,
+      tool: "googlesheet"
+    }).catch(() => null);
 
-    // 6. Encrypt and store tokens in Central Vault ONLY after file access is verified
+    // 6. Encrypt and store OAuth tokens in Central Vault (spreadsheet selection occurs via Google Picker in the browser)
     await saveIntegrationTokens({
       clientKey,
       clientName,
@@ -121,60 +105,17 @@ export default async function handler(req, res) {
       tool: "googlesheet",
       tokens,
       metadata: {
+        ...(existingGrant?.metadata || {}),
         userEmail,
         accountName: userEmail ? `Google Account (${userEmail})` : "Google Account",
-        tenantName: userEmail || "Google Account",
-        url: statePayload?.url || "",
-        spreadsheetTitle: inspectData?.title || ""
+        tenantName: userEmail || "Google Account"
       }
     });
 
-    // 7. Auto-link Google Sheet behind the scenes
-    if (statePayload?.url && masterSheetId && inspectData) {
-      try {
-        const defaultTab = inspectData.selectedTab || inspectData.defaultTab || inspectData.tabs?.[0]?.title || "Sheet1";
-        const candidateRow = inspectData.candidateHeaderRow || 1;
-        const suggested = inspectData.suggestedMapping || {};
-        const keyHeaders = [
-          suggested.clientCol || "Client",
-          suggested.jobCol || "Job",
-          suggested.revCol || "None",
-          suggested.startCol || "None",
-          suggested.endCol || "None",
-          suggested.likeCol || "None"
-        ].join(", ");
-
-        await linkGoogleSheetToClient({
-          clientKey,
-          masterSheetId,
-          url: statePayload.url,
-          tabName: defaultTab,
-          headerRowNum: candidateRow,
-          keyHeaders
-        });
-        console.log(`✅ Auto-linked Google Sheet for ${clientName}`);
-      } catch (autoLinkErr) {
-        console.warn(`Auto-link Google Sheet notice for ${clientName}:`, autoLinkErr.message);
-      }
-    }
-
-    // 8. Notify staff only upon verified connection
-    notifyStaffOnClientConnection({
-      clientName,
-      tool: "googlesheet",
-      tenantName: userEmail || "Google Account",
-      masterSheetId
-    }).catch(err => console.error("Notification email error:", err.message));
-
     const separator = returnUrl.includes("?") ? "&" : "?";
     const clientParam = clientName && !returnUrl.includes("client=") ? `&client=${encodeURIComponent(clientName)}` : "";
-    const pendingUrl = statePayload?.url ? `&url=${encodeURIComponent(statePayload.url)}` : "";
 
-    // For client portal (/pulse), DO NOT pass modal=picker so modal doesn't pop up over confirmation
-    const isPmaReturn = returnUrl.startsWith("/pma");
-    const modalParam = isPmaReturn ? "&modal=picker" : "";
-
-    return res.redirect(`${returnUrl}${separator}integration=googlesheet&status=success&account=${encodeURIComponent(userEmail)}${clientParam}&tenant=${encodeURIComponent(userEmail)}${pendingUrl}${modalParam}`);
+    return res.redirect(`${returnUrl}${separator}integration=googlesheet&status=oauth_authorized&modal=picker&account=${encodeURIComponent(userEmail)}${clientParam}&tenant=${encodeURIComponent(userEmail)}`);
 
   } catch (err) {
     console.error("Google Sheet OAuth callback error:", err);

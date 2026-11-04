@@ -52,7 +52,11 @@ export default function PortalPage({ initialUser = null }) {
     const tool = router.query.integration || (typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("integration") : null);
     if (tool) {
       const status = router.query.status || (typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("status") : null);
-      if (status === "success") {
+      const modalParam = router.query.modal || (typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("modal") : null);
+      const isGoogleSheetPickerReturn = String(tool).toLowerCase() === "googlesheet" && (status === "oauth_authorized" || modalParam === "picker");
+      if (isGoogleSheetPickerReturn) {
+        // Handled directly inside SetupHoldingGate by reopening GoogleSheetLinkModal and launching the Google Picker
+      } else if (status === "success") {
         setOauthFeedback({
           type: "success",
           message: `Thanks for connecting ${String(tool)}. Pulse is still in setup mode.`

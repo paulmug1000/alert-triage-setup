@@ -13,6 +13,7 @@ import { getSheetsClient } from "../../../../services/sheetsClient.js";
 import { linkGoogleSheetToClient } from "../../../../services/googleSheetService.js";
 import { updateClientChecklistTask } from "../../../../services/setupService.js";
 import { saveIntegrationTokens, getIntegrationTokens } from "../../../../services/vaultService.js";
+import { notifyStaffOnClientConnection } from "../../../../services/connectionNotifier.js";
 import { assertTrustedOrigin } from "../../../../utils/helpers.js";
 
 export default async function handler(req, res) {
@@ -30,7 +31,7 @@ export default async function handler(req, res) {
     return res.status(403).json({ success: false, error: "Read-only session cannot link spreadsheets." });
   }
 
-  const { clientKey, masterSheetId, url, tabName, headerRowNum = 1, keyHeaders = "" } = req.body;
+  const { clientKey, masterSheetId, url, tabName, headerRowNum = 1, keyHeaders = "", spreadsheetTitle = "" } = req.body;
 
   if (!clientKey || !masterSheetId || !url) {
     return res.status(400).json({
@@ -62,11 +63,13 @@ export default async function handler(req, res) {
       url,
       tabName: tabName || "Sheet1",
       headerRowNum,
-      keyHeaders
+      keyHeaders,
+      spreadsheetTitle
     });
 
     // Check if vault record exists; update metadata or create connected status record
     const existingGrant = await getIntegrationTokens({ clientKey, tool: "googlesheet" });
+    const resolvedTitle = String(spreadsheetTitle || existingGrant?.metadata?.spreadsheetTitle || "").trim();
     if (existingGrant) {
       await saveIntegrationTokens({
         clientKey,
@@ -79,6 +82,7 @@ export default async function handler(req, res) {
           tabName: tabName || "Sheet1",
           url: url.trim(),
           spreadsheetId: linkResult.spreadsheetId,
+          spreadsheetTitle: resolvedTitle,
           headerRowNum,
           keyHeaders,
           accountName: existingGrant.metadata?.userEmail ? `Google Account (${existingGrant.metadata.userEmail})` : `Sheet: ${tabName || "Sheet1"}`
@@ -99,6 +103,7 @@ export default async function handler(req, res) {
           tabName: tabName || "Sheet1",
           url: url.trim(),
           spreadsheetId: linkResult.spreadsheetId,
+          spreadsheetTitle: resolvedTitle,
           headerRowNum,
           keyHeaders,
           accountName: `Sheet: ${tabName || "Sheet1"}`,
@@ -106,6 +111,14 @@ export default async function handler(req, res) {
         }
       });
     }
+
+    // Notify staff upon verified spreadsheet link
+    notifyStaffOnClientConnection({
+      clientName: clientKey,
+      tool: "googlesheet",
+      tenantName: existingGrant?.metadata?.userEmail || resolvedTitle || tabName || "Google Sheet",
+      masterSheetId
+    }).catch(err => console.error("Notification email error:", err.message));
 
     // Auto-complete Setup task p2_connect_crm
     try {

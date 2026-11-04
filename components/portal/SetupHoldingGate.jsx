@@ -75,17 +75,44 @@ export default function SetupHoldingGate({
     return map[String(tool).toLowerCase()] || tool;
   }, []);
 
+  const markToolConnectedOptimistically = useCallback((toolKey) => {
+    setLiveSetupStatus((prev) => {
+      const base = prev || setupStatus || {};
+      const cleanTarget = String(toolKey || "").toLowerCase();
+      const baseRequired = Array.isArray(base.requiredTools) ? base.requiredTools : [];
+      const nextRequired = baseRequired.map((t) =>
+        String(t.tool || "").toLowerCase() === cleanTarget
+          ? { ...t, connected: true, needsReconnect: false, status: "connected" }
+          : t
+      );
+      const nextUnconnected = nextRequired.filter((t) => !t.connected);
+      const nextConnected = nextRequired.filter((t) => t.connected);
+      const nextAllConnected = nextRequired.length === 0 || nextUnconnected.length === 0;
+      return {
+        ...base,
+        requiredTools: nextRequired,
+        configuredTools: nextRequired,
+        unconnectedTools: nextUnconnected,
+        connectedTools: nextConnected,
+        allToolsConnected: nextAllConnected,
+        hasDisconnectedTools: !nextAllConnected
+      };
+    });
+  }, [setupStatus]);
+
   const refreshSetupStatus = useCallback(async () => {
-    if (!clientName) return;
+    if (!clientName) return null;
     try {
       const res = await fetch(`/api/setup/status?clientName=${encodeURIComponent(clientName)}&masterSheetId=${encodeURIComponent(masterSheetId || "")}`);
       const data = await res.json();
       if (data.success && data.status) {
         setLiveSetupStatus(data.status);
+        return data.status;
       }
     } catch (e) {
       // non-fatal
     }
+    return null;
   }, [clientName, masterSheetId]);
 
   const computeRedirectBack = useCallback(() => {
@@ -602,7 +629,7 @@ export default function SetupHoldingGate({
             }}
           >
             {/* OAuth Feedback Notice if returned with error or status */}
-            {localFeedback && (
+            {localFeedback && !(viewMode === "completed" && localFeedback.type === "success") && (
               <div
                 style={{
                   marginBottom: "24px",
@@ -947,13 +974,18 @@ export default function SetupHoldingGate({
             autoOpenPicker={googleSheetAutoOpenPicker}
             redirectBack={computeRedirectBack()}
             isClientView={true}
-            onSuccess={() => {
+            onSuccess={async () => {
               setGoogleSheetAutoOpenPicker(false);
-              setLocalFeedback({
-                type: "success",
-                message: "Thanks for connecting Google Sheet. Pulse is still in setup mode."
-              });
-              refreshSetupStatus();
+              markToolConnectedOptimistically("googlesheet");
+              const updated = await refreshSetupStatus();
+              if (!updated?.allToolsConnected) {
+                setLocalFeedback({
+                  type: "success",
+                  message: "Thanks for connecting Google Sheet. Pulse is still in setup mode."
+                });
+              } else {
+                setLocalFeedback(null);
+              }
             }}
           />
         )}
@@ -968,12 +1000,17 @@ export default function SetupHoldingGate({
             clientSheetId={clientSheetId}
             redirectBack={computeRedirectBack()}
             isClientView={true}
-            onSuccess={() => {
-              setLocalFeedback({
-                type: "success",
-                message: "Thanks for connecting Microsoft Excel. Pulse is still in setup mode."
-              });
-              refreshSetupStatus();
+            onSuccess={async () => {
+              markToolConnectedOptimistically("excel");
+              const updated = await refreshSetupStatus();
+              if (!updated?.allToolsConnected) {
+                setLocalFeedback({
+                  type: "success",
+                  message: "Thanks for connecting Microsoft Excel. Pulse is still in setup mode."
+                });
+              } else {
+                setLocalFeedback(null);
+              }
             }}
           />
         )}

@@ -805,8 +805,8 @@ export function parseUnreconciledItems({
     unreconSectionCount: items.filter(i => i.isUnreconSection).length,
     otherSectionCount: items.filter(i => !i.isUnreconSection).length,
     totalLinesProcessed: inputRows.length,
-    inMonthCount: items.filter(it => it.isInTargetMonth && (!hasUnreconSection || i.isUnreconSection)).length,
-    otherMonthCount: items.filter(it => !it.isInTargetMonth && (!hasUnreconSection || i.isUnreconSection)).length,
+    inMonthCount: items.filter(it => it.isInTargetMonth && (!hasUnreconSection || it.isUnreconSection)).length,
+    otherMonthCount: items.filter(it => !it.isInTargetMonth && (!hasUnreconSection || it.isUnreconSection)).length,
     skippedSummaryCount: skippedLines.length,
     skippedLines,
     targetMonth: { year: targetYear, month: targetMonth, label: targetMonthLabel }

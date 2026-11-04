@@ -37,6 +37,11 @@ let _allClientsCachedAt = 0;
 let _assignedExpensesMemoryCache = null;
 let _assignedExpensesCachedAt = 0;
 
+export function clearAllClientsMemoryCache() {
+  _allClientsMemoryCache = null;
+  _allClientsCachedAt = 0;
+}
+
 export let assignedExpensesTabVerified = false;
 
 export async function ensureAssignedExpensesTab_(sheets, spreadsheetId) {
@@ -148,38 +153,52 @@ export async function getAllClients(sheets, sessionUser = { isAdmin: true }, byp
   // Enrich clientsArray and clientsObj with accountingTool, directCostsMode, and hasAccountingIntegration from Redis setup config
   if (redisClient?.isOpen && clientsArray && clientsArray.length > 0) {
     try {
-      const needsLookup = clientsArray.some(c => c.hasAccountingIntegration === undefined || c.directCostsMode === undefined);
-      if (needsLookup) {
-        const normalizeClientKey = (str) => String(str || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
-        const setupKeys = clientsArray.map(c => `pulse:setup:${normalizeClientKey(c.clientName)}`);
-        const configs = await redisClient.mGet(setupKeys);
-        clientsArray.forEach((c, idx) => {
-          const raw = configs[idx];
-          if (raw) {
-            try {
-              const cfg = JSON.parse(raw);
-              c.accountingTool = cfg.accountingTool || "None";
-              c.crmTool = cfg.crmTool || "None";
-              c.crmDrives = cfg.crmDrives || "NA";
-              const revFocus = String(cfg.revenueFocus || "Revenue").trim();
-              const rawDcMode = String(cfg.directCostsMode || "Contractors").trim();
-              c.directCostsMode = revFocus.toLowerCase() === "income" ? "Pass-through" : (rawDcMode === "Pass-through" ? "Pass-through" : "Contractors");
-              c.hasAccountingIntegration = ["xero", "quickbooks", "qb"].some(t => String(c.accountingTool).toLowerCase().includes(t));
-              if (clientsObj[c.clientName]) {
-                clientsObj[c.clientName].accountingTool = c.accountingTool;
-                clientsObj[c.clientName].crmTool = c.crmTool;
-                clientsObj[c.clientName].crmDrives = c.crmDrives;
-                clientsObj[c.clientName].directCostsMode = c.directCostsMode;
-                clientsObj[c.clientName].hasAccountingIntegration = c.hasAccountingIntegration;
-              }
-            } catch (_) { }
-          } else {
-            c.accountingTool = c.accountingTool || "None";
-            c.directCostsMode = c.directCostsMode || "Contractors";
-            c.hasAccountingIntegration = c.hasAccountingIntegration || false;
-          }
-        });
-        _allClientsMemoryCache = { clientsArray, clientsObj };
+      const normalizeClientKey = (str) => String(str || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
+      const setupKeys = clientsArray.map(c => `pulse:setup:${normalizeClientKey(c.clientName)}`);
+      const configs = await redisClient.mGet(setupKeys);
+      let anyConfigChanged = false;
+      clientsArray.forEach((c, idx) => {
+        const raw = configs[idx];
+        const prevAcc = c.accountingTool;
+        const prevCrm = c.crmTool;
+        const prevDrives = c.crmDrives;
+        const prevDcMode = c.directCostsMode;
+        const prevHasAcc = c.hasAccountingIntegration;
+        if (raw) {
+          try {
+            const cfg = JSON.parse(raw);
+            c.accountingTool = cfg.accountingTool || "None";
+            c.crmTool = cfg.crmTool || "None";
+            c.crmDrives = cfg.crmDrives || "NA";
+            const revFocus = String(cfg.revenueFocus || "Revenue").trim();
+            const rawDcMode = String(cfg.directCostsMode || "Contractors").trim();
+            c.directCostsMode = revFocus.toLowerCase() === "income" ? "Pass-through" : (rawDcMode === "Pass-through" ? "Pass-through" : "Contractors");
+            c.hasAccountingIntegration = ["xero", "quickbooks", "qb"].some(t => String(c.accountingTool).toLowerCase().includes(t));
+            if (clientsObj[c.clientName]) {
+              clientsObj[c.clientName].accountingTool = c.accountingTool;
+              clientsObj[c.clientName].crmTool = c.crmTool;
+              clientsObj[c.clientName].crmDrives = c.crmDrives;
+              clientsObj[c.clientName].directCostsMode = c.directCostsMode;
+              clientsObj[c.clientName].hasAccountingIntegration = c.hasAccountingIntegration;
+            }
+          } catch (_) { }
+        } else {
+          c.accountingTool = c.accountingTool || "None";
+          c.directCostsMode = c.directCostsMode || "Contractors";
+          c.hasAccountingIntegration = c.hasAccountingIntegration || false;
+        }
+        if (
+          c.accountingTool !== prevAcc ||
+          c.crmTool !== prevCrm ||
+          c.crmDrives !== prevDrives ||
+          c.directCostsMode !== prevDcMode ||
+          c.hasAccountingIntegration !== prevHasAcc
+        ) {
+          anyConfigChanged = true;
+        }
+      });
+      _allClientsMemoryCache = { clientsArray, clientsObj };
+      if (anyConfigChanged) {
         redisClient.set(cacheKey, JSON.stringify({ clientsArray, clientsObj }), { EX: 86400 * 7 }).catch(() => { });
       }
     } catch (cfgErr) {

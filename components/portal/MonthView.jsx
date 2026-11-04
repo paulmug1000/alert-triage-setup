@@ -1169,12 +1169,19 @@ function Sparkline({ data = [], width = 140, height = 36, color = "#0047AB", id 
     return { x, y, val };
   });
 
-  let linePath = `M ${points[0].x} ${points[0].y}`;
+  let linePath = `M ${points[0].x.toFixed(1)} ${points[0].y.toFixed(1)}`;
   for (let i = 0; i < points.length - 1; i++) {
-    const p0 = points[i];
-    const p1 = points[i + 1];
-    const mx = (p0.x + p1.x) / 2;
-    linePath += ` C ${mx} ${p0.y}, ${mx} ${p1.y}, ${p1.x} ${p1.y}`;
+    const p0 = i > 0 ? points[i - 1] : points[i];
+    const p1 = points[i];
+    const p2 = points[i + 1];
+    const p3 = i < points.length - 2 ? points[i + 2] : p2;
+
+    const cp1x = p1.x + (p2.x - p0.x) / 6;
+    const cp1y = p1.y + (p2.y - p0.y) / 6;
+    const cp2x = p2.x - (p3.x - p1.x) / 6;
+    const cp2y = p2.y - (p3.y - p1.y) / 6;
+
+    linePath += ` C ${cp1x.toFixed(1)} ${cp1y.toFixed(1)}, ${cp2x.toFixed(1)} ${cp2y.toFixed(1)}, ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`;
   }
 
   const baselineY = height;
@@ -1337,19 +1344,28 @@ function HomeLineChart({
   const getX = (idx) => padding.left + (idx / Math.max(months.length - 1, 1)) * chartW;
   const getY = (val) => padding.top + chartH - ((val - chartMin) / range) * chartH;
 
-  // Build SVG path strings with smooth curves (bezier)
+  // Build SVG path strings with smooth curves (Catmull-Rom to Cubic Bezier, matching Cashflow chart)
   const buildSmoothPath = (data) => {
     if (!data || data.length === 0) return "";
-    let d = `M ${getX(0)} ${getY(data[0])}`;
-    for (let i = 0; i < data.length - 1; i++) {
-      const x0 = getX(i);
-      const y0 = getY(data[i]);
-      const x1 = getX(i + 1);
-      const y1 = getY(data[i + 1]);
-      const mx = (x0 + x1) / 2;
-      d += ` C ${mx} ${y0}, ${mx} ${y1}, ${x1} ${y1}`;
+    const points = data.map((val, idx) => ({ x: getX(idx), y: getY(Number(val) || 0) }));
+    if (points.length === 1) return `M ${points[0].x.toFixed(1)} ${points[0].y.toFixed(1)}`;
+
+    let path = `M ${points[0].x.toFixed(1)} ${points[0].y.toFixed(1)}`;
+    for (let i = 0; i < points.length - 1; i++) {
+      const p0 = i > 0 ? points[i - 1] : points[i];
+      const p1 = points[i];
+      const p2 = points[i + 1];
+      const p3 = i < points.length - 2 ? points[i + 2] : p2;
+
+      // Tension 0.4 (Catmull-Rom to Cubic Bezier)
+      const cp1x = p1.x + (p2.x - p0.x) / 6;
+      const cp1y = p1.y + (p2.y - p0.y) / 6;
+      const cp2x = p2.x - (p3.x - p1.x) / 6;
+      const cp2y = p2.y - (p3.y - p1.y) / 6;
+
+      path += ` C ${cp1x.toFixed(1)} ${cp1y.toFixed(1)}, ${cp2x.toFixed(1)} ${cp2y.toFixed(1)}, ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`;
     }
-    return d;
+    return path;
   };
 
   const buildAreaPath = (linePath, firstIdx, lastIdx) => {

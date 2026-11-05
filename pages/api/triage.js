@@ -111,7 +111,8 @@ import {
   parseUnreconciledItems,
   enrichUnreconciledItemPredictions,
   recategoriseTransactions,
-  autoReconcileClientBankTransactions
+  autoReconcileClientBankTransactions,
+  checkClientBankReconciliationStatus
 } from "../../services/bankTransactionsService";
 import { handleClassifyPLCategory, handleUpdatePartPaidDate } from "../../services/proactiveChecks";
 import { getSessionUser, safeCompareSecret, sendOtp, verifyOtp, clearSessionCookie } from "../../services/authService";
@@ -300,6 +301,7 @@ export default async function handler(req, res) {
       "get_sweep_schedule",
       "get_agent_run_progress",
       "get_all_clients",
+      "check_bank_reconciliation_status",
       "get_assigned_expenses",
       "get_outgoings_inbox",
       "get_invoices_inbox",
@@ -921,6 +923,24 @@ export default async function handler(req, res) {
         return res.status(200).json(result);
       } catch (err) {
         console.error("❌ fetch_api_bank_transactions error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "check_bank_reconciliation_status") {
+      try {
+        const { clientName, masterSheetId, targetMonthKey, trackedAccountNames, clientSheetId, reconSheetId } = req.body;
+        if (!(await checkTriageClientAuth(sheets, sessionUser, clientName, [masterSheetId, clientSheetId, reconSheetId].filter(Boolean)))) {
+          return res.status(403).json({ success: false, error: "Access denied to this client" });
+        }
+        const result = await checkClientBankReconciliationStatus({
+          clientName,
+          masterSheetId,
+          targetMonthKey,
+          trackedAccountNames
+        });
+        return res.status(200).json(result);
+      } catch (err) {
+        console.error("❌ check_bank_reconciliation_status error:", err);
         return res.status(500).json({ success: false, error: err.message });
       }
 

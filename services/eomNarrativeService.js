@@ -685,7 +685,8 @@ async function resolveClientPresentations_(sheets, drive, clientName, reportMont
               monthKey: mKey,
               presentationId: file.id,
               reportUrl: file.webViewLink || `https://docs.google.com/presentation/d/${file.id}/edit`,
-              title: file.name
+              title: file.name,
+              modifiedTime: file.modifiedTime || ""
             });
           }
         }
@@ -1160,7 +1161,7 @@ const sleep_ = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  *    with an inter-request delay and exponential retry backoff on HTTP 429.
  * 4. Stores successful previews in Redis so repeat visits and slide switches load in <5ms.
  */
-async function fetchSlidePreviewsMap_(presentationId, slidesList) {
+async function fetchSlidePreviewsMap_(presentationId, slidesList, modifiedTime = "", forceRefresh = false) {
   const previewMap = new Map();
   if (!presentationId || !Array.isArray(slidesList) || slidesList.length === 0) {
     return previewMap;
@@ -1171,19 +1172,23 @@ async function fetchSlidePreviewsMap_(presentationId, slidesList) {
 
   const missingSlides = [];
 
-  // 1. Check Redis cache first
+  // 1. Check Redis cache first (skipped if forceRefresh is requested)
   for (const s of validSlides) {
     const sNum = Number(s.slideNumber);
-    const cacheKey = `slide_preview:${presentationId}:${s.pageId}`;
-    try {
-      if (redisClient && redisClient.isOpen) {
-        const cached = await redisClient.get(cacheKey);
-        if (cached && typeof cached === "string" && cached.length > 500) {
-          previewMap.set(sNum, cached);
-          continue;
+    const cacheKey = modifiedTime
+      ? `slide_preview:${presentationId}:${modifiedTime}:${s.pageId}`
+      : `slide_preview:${presentationId}:${s.pageId}`;
+    if (!forceRefresh) {
+      try {
+        if (redisClient && redisClient.isOpen) {
+          const cached = await redisClient.get(cacheKey);
+          if (cached && typeof cached === "string" && cached.length > 500) {
+            previewMap.set(sNum, cached);
+            continue;
+          }
         }
-      }
-    } catch (_) {}
+      } catch (_) {}
+    }
     missingSlides.push(s);
   }
 
@@ -1213,7 +1218,9 @@ async function fetchSlidePreviewsMap_(presentationId, slidesList) {
   for (let i = 0; i < missingSlides.length; i++) {
     const s = missingSlides[i];
     const sNum = Number(s.slideNumber);
-    const cacheKey = `slide_preview:${presentationId}:${s.pageId}`;
+    const cacheKey = modifiedTime
+      ? `slide_preview:${presentationId}:${modifiedTime}:${s.pageId}`
+      : `slide_preview:${presentationId}:${s.pageId}`;
     let base64 = "";
 
     // Method A: Official Google Slides API (1600x900, 300 req/min quota)
@@ -1245,7 +1252,7 @@ async function fetchSlidePreviewsMap_(presentationId, slidesList) {
       while (!base64 && attempts < 3) {
         attempts++;
         try {
-          const url = `https://docs.google.com/presentation/d/${encodeURIComponent(presentationId)}/export/png?id=${encodeURIComponent(presentationId)}&pageid=${encodeURIComponent(s.pageId)}`;
+          const url = `https://docs.google.com/presentation/d/${encodeURIComponent(presentationId)}/export/png?id=${encodeURIComponent(presentationId)}&pageid=${encodeURIComponent(s.pageId)}&t=${Date.now()}`;
           const resp = await fetch(url, {
             headers: { Authorization: `Bearer ${authToken}` }
           });
@@ -1296,7 +1303,7 @@ export async function handleEomGetNarrativeWorkbench(req, res, sheets) {
     return res.status(403).json({ success: false, error: "Admin access required." });
   }
 
-  const { clientName, reportMonthKey, folderUrl: incomingFolderUrl, masterSheetId: incomingMasterId } = req.body || {};
+  const { clientName, reportMonthKey, folderUrl: incomingFolderUrl, masterSheetId: incomingMasterId, forceRefresh = false } = req.body || {};
   if (!clientName) {
     return res.status(400).json({ success: false, error: "Client name is required." });
   }
@@ -1366,7 +1373,9 @@ export async function handleEomGetNarrativeWorkbench(req, res, sheets) {
     // Fetch full-slide PNG previews in parallel for all candidate narrative slides
     const slidePreviewMap = await fetchSlidePreviewsMap_(
       resolved.targetDeck.presentationId,
-      candidateNarrativeSlides
+      candidateNarrativeSlides,
+      resolved.targetDeck.modifiedTime || "",
+      Boolean(forceRefresh)
     );
 
     // Match each narrative slide with its T-1..T-4 historical narratives and saved drafts
@@ -1628,7 +1637,11 @@ Your task is to write the slide narrative that accompanies the financial tables 
      • [1 to 3 concise headline bullets covering revenue, gross profit/margin, overheads, and net profit for the month]
 
      Key takeaways from this report
-     • [4 to 6 concise bullets synthesising key insights across YTD, full-year forecast, targets, cashflow, bookings/pipeline, and utilisation, each ending with (see slide X)]`;
+     • [4 to 6 concise bullets synthesising key insights across YTD, full-year forecast, targets, cashflow, bookings/pipeline, and utilisation, each ending with (see slide X)]
+8. **Overhead expenses slide & negative variance commentary (CRITICAL)**:
+   - When commenting on negative budget variances (overspends) on the overhead expenses slide, look ONLY for **unusual, large, or one-off payments** (e.g. annual insurance renewal, lump-sum legal/professional fees, one-off project or equipment purchases) that caused the month's spend to spike.
+   - **DO NOT list routine monthly recurring subscriptions or regular direct debits** that are paid every single month (e.g. standard monthly tools like Workamajig, BambooHR, Fireflies, Ahrefs, Google Workspace, Slack, Xero/QuickBooks).
+   - If an overspend category contains only normal recurring monthly subscriptions with no unusual one-off spike, **do not list the individual subscriptions**. Instead, either note that there were no unusual transactions in that category (these reflect normal operating run-rates to be built into future budgets) or state the variance without reciting routine monthly subscription tools.`;
 
 function buildSlidePromptText_(slide, {
   clientName,
@@ -1690,7 +1703,11 @@ function buildSlidePromptText_(slide, {
 
   if (slide.slideTransactions) {
     parts.push(`\n--- SUPPLIER & TRANSACTION DETAILS FROM RECONCILIATION (${slide.slideTransactions.yyMm}) ---`);
-    parts.push(`Use these actual supplier/payee details to briefly explain significant overhead variances in brackets where helpful (do not list every micro-transaction; only cite the main drivers of notable budget variances or unbudgeted spend):`);
+    parts.push(`CRITICAL OVERHEAD RULE FOR NEGATIVE VARIANCES:`);
+    parts.push(`- Only highlight **unusual, large, or one-off payments** that pushed a category over budget (e.g. annual renewals, lump-sum legal/professional fees, one-off project or equipment purchases).`);
+    parts.push(`- NEVER list routine monthly subscriptions or standard SaaS tools paid every month (e.g. Workamajig, BambooHR, Fireflies, Ahrefs, PowerMyAnalytics, Xero/QuickBooks) as "variance drivers".`);
+    parts.push(`- If an overspend was caused by general higher volume or normal subscriptions rather than an unusual one-off payment, note that "there were no unusual transactions in this category" rather than listing monthly direct debits.`);
+    parts.push(`Available supplier transactions:`);
     const byCat = slide.slideTransactions.matchedByCategory || {};
     const catKeys = Object.keys(byCat);
     if (catKeys.length > 0) {

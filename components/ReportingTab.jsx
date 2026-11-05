@@ -1196,13 +1196,16 @@ export default function ReportingTab({
     }));
   }, [selectedReportMonthKey]);
 
-  const openNarrativeModal = async (client) => {
+  const openNarrativeModal = async (client, forceRefresh = false) => {
+    if (!client) return;
     setNarrativeModalClient(client);
     setNarrativeLoading(true);
     setNarrativeError("");
     setNarrativeNotice(null);
-    setNarrativeWorkbench(null);
-    setActiveSlideNumber(null);
+    if (!forceRefresh) {
+      setNarrativeWorkbench(null);
+      setActiveSlideNumber(null);
+    }
     setNarrativeDirty(false);
 
     try {
@@ -1214,7 +1217,8 @@ export default function ReportingTab({
           clientName: client.clientName,
           reportMonthKey: selectedReportMonthKey,
           folderUrl: client.folderUrl || "",
-          masterSheetId: client.masterSheetId || client.masterSheetUrl || ""
+          masterSheetId: client.masterSheetId || client.masterSheetUrl || "",
+          forceRefresh: Boolean(forceRefresh)
         })
       });
       const data = await parseJsonResponseSafely_(resp);
@@ -1222,7 +1226,15 @@ export default function ReportingTab({
 
       setNarrativeWorkbench(data);
       if (Array.isArray(data.slides) && data.slides.length > 0) {
-        setActiveSlideNumber(data.slides[0].slideNumber);
+        if (!forceRefresh || !activeSlideNumber) {
+          setActiveSlideNumber(data.slides[0].slideNumber);
+        }
+      }
+      if (forceRefresh) {
+        setNarrativeNotice({
+          type: "success",
+          text: "Reloaded latest slide data and previews from Google Slides."
+        });
       }
     } catch (err) {
       console.error("Error loading narrative workbench:", err);
@@ -1409,10 +1421,8 @@ export default function ReportingTab({
     setNarrativeError("");
     setNarrativeNotice(null);
 
-    // Order: detail slides first, then Slide 3 ([BusinessPerformance] / takeaways) last
-    const detailSlides = allSlides.filter(s => !s.isTakeawaysSlide);
-    const takeawaysSlides = allSlides.filter(s => s.isTakeawaysSlide);
-    const orderedQueue = [...detailSlides, ...takeawaysSlides];
+    // Natural slide order: always start on the earliest slide available in the deck
+    const orderedQueue = [...allSlides].sort((a, b) => Number(a.slideNumber) - Number(b.slideNumber));
 
     let workingSlides = [...allSlides];
     let completed = 0;
@@ -1426,7 +1436,7 @@ export default function ReportingTab({
           slideNumber: slide.slideNumber,
           slideTitle: slide.slideTitle
         });
-        setActiveSlideNumber(slide.slideNumber);
+        // Do not force active slide change here so the user remains on their currently viewed slide
 
         const resp = await fetch("/api/triage", {
           method: "POST",
@@ -1462,12 +1472,7 @@ export default function ReportingTab({
         } : prev);
       }
 
-      // Focus Slide 3 (Business performance) when batch completes so the user sees the full summary first
-      if (takeawaysSlides.length > 0) {
-        setActiveSlideNumber(takeawaysSlides[0].slideNumber);
-      } else if (workingSlides.length > 0) {
-        setActiveSlideNumber(workingSlides[0].slideNumber);
-      }
+      // Do not force active slide change so the user's active view is preserved
 
       const draftedCount = workingSlides.filter(s => s.draftText && s.draftText.trim() && !s.isUneditedClone).length;
       updateClientNarrativeBadge(narrativeWorkbench.clientName, narrativeWorkbench.reportMonthKey, {
@@ -1480,7 +1485,7 @@ export default function ReportingTab({
       setNarrativeDirty(false);
       setNarrativeNotice({
         type: "success",
-        text: `Drafted all ${orderedQueue.length} narrative slides (detail slides first, followed by executive takeaways on slide ${takeawaysSlides[0]?.slideNumber || 3}).`
+        text: `Drafted all ${orderedQueue.length} narrative slides in deck order.`
       });
     } catch (err) {
       console.error("Error batch drafting narrative:", err);
@@ -3741,6 +3746,28 @@ export default function ReportingTab({
                       <span style={{ fontSize: "11px" }}>↗</span>
                     </a>
                   )}
+
+                  <button
+                    type="button"
+                    disabled={isBusy}
+                    onClick={() => openNarrativeModal(narrativeModalClient, true)}
+                    title="Reload fresh slide tables and preview thumbnails directly from Google Slides"
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "5px",
+                      padding: "6px 12px",
+                      background: "#ffffff",
+                      color: "#334155",
+                      border: "1px solid #cbd5e1",
+                      borderRadius: "6px",
+                      fontSize: "12px",
+                      fontWeight: 600,
+                      cursor: isBusy ? "not-allowed" : "pointer"
+                    }}
+                  >
+                    <span>↻ Reload deck</span>
+                  </button>
 
                   {slides.length > 0 && (
                     <button

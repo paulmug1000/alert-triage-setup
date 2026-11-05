@@ -15,7 +15,7 @@
 
 import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
 import { getIntegrationTokens, updateRefreshedTokens, getSharedXeroGrant, updateSharedXeroGrantTokens } from "./vaultService.js";
-import { fetchXeroBankAccounts, fetchXeroAccountTransactions, refreshXeroTokens } from "./xeroService.js";
+import { fetchXeroBankAccounts, fetchXeroAccountTransactions, refreshXeroTokens, fetchXeroBankSummaryReport, parseXeroBankSummaryReport } from "./xeroService.js";
 import { fetchQuickBooksBankAccounts, fetchQuickBooksAccountTransactions, refreshQBTokens } from "./quickbooksService.js";
 import { syncReconBankTransactions, syncReconUnreconciledItems } from "./cashflowReconService.js";
 import { logPmaActivity } from "./pmaLogger.js";
@@ -1996,3 +1996,166 @@ export async function autoReconcileClientBankTransactions({
     reconciledMonths: results
   };
 }
+
+/**
+ * Checks month-end bank reconciliation health from connected accounting tool (Xero BankSummary).
+ * For Xero: Fetches BankSummary report for the target month, compares Statement Balance vs Ledger Balance
+ * across tracked bank accounts, and determines if accounts are 100% reconciled to the penny.
+ * For QuickBooks Online: Reports that bank statement feeds are not exposed via API by Intuit.
+ * 
+ * @param {Object} params
+ * @param {string} params.clientName
+ * @param {string} [params.masterSheetId]
+ * @param {string} params.targetMonthKey "YYYY-MM" e.g. "2026-10"
+ * @param {Array<string>} [params.trackedAccountNames] List of tracked bank account names from KeyInfo
+ * @returns {Promise<Object>} Reconciliation health check result
+ */
+export async function checkClientBankReconciliationStatus({
+  clientName,
+  masterSheetId,
+  targetMonthKey,
+  trackedAccountNames = []
+}) {
+  if (!clientName) throw new Error("Missing clientName for checkClientBankReconciliationStatus");
+  if (!targetMonthKey || !/^\d{4}-\d{2}$/.test(targetMonthKey)) {
+    throw new Error(`Invalid targetMonthKey '${targetMonthKey}'. Expected YYYY-MM.`);
+  }
+
+  const cleanMasterId = extractSheetIdFromUrl(masterSheetId) || masterSheetId;
+
+  // Resolve target month dates (e.g. 2026-10-01 to 2026-10-31)
+  const [targetYear, targetMonth] = targetMonthKey.split("-").map(Number);
+  const fromDate = `${targetYear}-${String(targetMonth).padStart(2, "0")}-01`;
+  const lastDay = new Date(targetYear, targetMonth, 0).getDate();
+  const toDate = `${targetYear}-${String(targetMonth).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
+
+  // 1. Resolve Accounting Tool Tokens (Xero priority, then QuickBooks)
+  let activeTool = null;
+  let activeTokens = null;
+
+  for (const candidateTool of ["xero", "quickbooks"]) {
+    const record = await getIntegrationTokens({ clientKey: clientName, masterSheetId: cleanMasterId, tool: candidateTool });
+    if (record && record.tokens?.accessToken) {
+      activeTool = candidateTool;
+      activeTokens = record;
+      break;
+    }
+  }
+
+  if (!activeTool) {
+    return {
+      success: true,
+      hasIntegration: false,
+      tool: null,
+      isSupported: false,
+      message: `No connected accounting tool found for ${clientName}.`
+    };
+  }
+
+  // 2. QuickBooks Online Handling
+  if (activeTool === "quickbooks") {
+    return {
+      success: true,
+      hasIntegration: true,
+      tool: "quickbooks",
+      isSupported: false,
+      allAccountsReconciled: false,
+      message: "QuickBooks Online does not expose bank statement balances via its API. Please upload or paste your bank statement lines."
+    };
+  }
+
+  // 3. Xero BankSummary Handling
+  let accessToken = activeTokens.tokens?.accessToken;
+  let tenantId = activeTokens.tenantId;
+  const isShared = Boolean(activeTokens.isSharedGrant);
+
+  const doRefreshXero = async () => {
+    const refreshToken = activeTokens.tokens?.refreshToken;
+    if (!refreshToken) throw new Error("No refresh token available to refresh Xero connection.");
+    console.log(`🔄 Bank Recon Health: Refreshing Xero access token for ${clientName}...`);
+    const refreshed = await refreshXeroTokens(refreshToken);
+    accessToken = refreshed.accessToken;
+    activeTokens.tokens = refreshed;
+    if (isShared) {
+      await updateSharedXeroGrantTokens(refreshed);
+    } else {
+      await updateRefreshedTokens({ clientKey: clientName, masterSheetId: cleanMasterId, tool: "xero", tokens: refreshed });
+    }
+    return refreshed.accessToken;
+  };
+
+  // Check expiration timestamp
+  const nowMs = Date.now();
+  let expiresAtMs = activeTokens.expiresAt || 0;
+  if (!expiresAtMs && activeTokens.tokens?.expiresAt) {
+    expiresAtMs = activeTokens.tokens.expiresAt < 10000000000 ? activeTokens.tokens.expiresAt * 1000 : activeTokens.tokens.expiresAt;
+  }
+  const isExpiringSoon = !expiresAtMs || (expiresAtMs - nowMs) < 300000;
+
+  if (isExpiringSoon && activeTokens.tokens?.refreshToken) {
+    try {
+      await doRefreshXero();
+    } catch (refErr) {
+      console.warn("⚠️ Token pre-refresh failed, will attempt with existing token:", refErr.message);
+    }
+  }
+
+  let reportJson = null;
+  try {
+    reportJson = await fetchXeroBankSummaryReport({ accessToken, tenantId, fromDate, toDate });
+  } catch (err) {
+    if (String(err.message).includes("401") || String(err.message).includes("Unauthorized")) {
+      try {
+        const freshToken = await doRefreshXero();
+        reportJson = await fetchXeroBankSummaryReport({ accessToken: freshToken, tenantId, fromDate, toDate });
+      } catch (retryErr) {
+        throw new Error(`Xero Bank Summary failed after token refresh: ${retryErr.message}`);
+      }
+    } else {
+      throw err;
+    }
+  }
+
+  const allAccounts = parseXeroBankSummaryReport(reportJson);
+
+  // Filter or match against trackedAccountNames if provided
+  const norm = (s) => String(s || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  const trackedNorms = (trackedAccountNames || []).map(norm).filter(Boolean);
+
+  let accounts = allAccounts;
+  if (trackedNorms.length > 0) {
+    const matched = allAccounts.filter(acc => {
+      const aNorm = norm(acc.accountName);
+      return trackedNorms.some(tn => aNorm.includes(tn) || tn.includes(aNorm));
+    });
+    if (matched.length > 0) {
+      accounts = matched;
+    }
+  }
+
+  const accountsWithFeeds = accounts.filter(a => a.hasStatementBalance);
+  const evaluatedAccounts = accountsWithFeeds.length > 0 ? accountsWithFeeds : accounts;
+
+  const allAccountsReconciled = evaluatedAccounts.length > 0 && evaluatedAccounts.every(a => a.isReconciled);
+  const totalDifference = evaluatedAccounts.reduce((sum, a) => sum + Math.abs(a.difference || 0), 0);
+
+  const monthShortName = new Date(targetYear, targetMonth - 1, 1).toLocaleString("en-GB", { month: "short" });
+
+  return {
+    success: true,
+    hasIntegration: true,
+    tool: "xero",
+    isSupported: true,
+    fromDate,
+    toDate,
+    targetMonthKey,
+    allAccountsReconciled,
+    totalDifference: Math.round(totalDifference * 100) / 100,
+    accounts: evaluatedAccounts,
+    allReportAccounts: allAccounts,
+    statusMessage: allAccountsReconciled
+      ? `All Xero bank accounts are 100% reconciled to the penny as of ${lastDay} ${monthShortName}. No bank statement upload is required.`
+      : `Xero statement balance differs from ledger by £${totalDifference.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} as of ${lastDay} ${monthShortName}. Please upload or paste unreconciled statement lines.`
+  };
+}
+

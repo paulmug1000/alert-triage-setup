@@ -472,3 +472,122 @@ export async function fetchXeroAccountTransactions({ accessToken, tenantId, acco
   return results;
 }
 
+/**
+ * Fetches the official Bank Summary report from Xero for a date range.
+ * 
+ * @param {Object} params
+ * @param {string} params.accessToken
+ * @param {string} params.tenantId
+ * @param {string} params.fromDate YYYY-MM-DD
+ * @param {string} params.toDate YYYY-MM-DD
+ * @returns {Promise<Object>} Raw Xero Bank Summary Report JSON
+ */
+export async function fetchXeroBankSummaryReport({ accessToken, tenantId, fromDate, toDate }) {
+  if (!accessToken || !tenantId) {
+    throw new Error("Missing accessToken or tenantId for fetchXeroBankSummaryReport");
+  }
+
+  const url = `https://api.xero.com/api.xro/2.0/Reports/BankSummary?fromDate=${encodeURIComponent(fromDate)}&toDate=${encodeURIComponent(toDate)}`;
+  const res = await fetch(url, {
+    method: "GET",
+    headers: {
+      "Authorization": `Bearer ${accessToken}`,
+      "Xero-tenant-id": tenantId,
+      "Accept": "application/json"
+    }
+  });
+
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(`Xero Bank Summary API error (${res.status}): ${errorText}`);
+  }
+
+  return await res.json();
+}
+
+/**
+ * Parses a Xero Bank Summary report into structured bank account reconciliation objects.
+ * Dynamically resolves header column indices so it is resilient to Xero column ordering.
+ * 
+ * @param {Object} reportJson
+ * @returns {Array<Object>} List of bank accounts with statement balance, ledger balance, and difference
+ */
+export function parseXeroBankSummaryReport(reportJson) {
+  const report = reportJson?.Reports?.[0];
+  if (!report || !Array.isArray(report.Rows)) return [];
+
+  // 1. Locate Header row to map column indexes
+  let headerCells = [];
+  for (const row of report.Rows) {
+    if (row.RowType === "Header" && Array.isArray(row.Cells)) {
+      headerCells = row.Cells.map(c => String(c?.Value || "").toLowerCase().trim());
+      break;
+    }
+  }
+
+  const colAccount = headerCells.findIndex(h => h.includes("account") || h.includes("bank"));
+  const colOpening = headerCells.findIndex(h => h.includes("opening"));
+  const colCashIn = headerCells.findIndex(h => h.includes("in") || h.includes("received"));
+  const colCashOut = headerCells.findIndex(h => h.includes("out") || h.includes("spent"));
+  const colClosingXero = headerCells.findIndex(h => (h.includes("closing") && !h.includes("statement")) || h.includes("balance in xero"));
+  const colStatement = headerCells.findIndex(h => h.includes("statement") || h.includes("bank statement"));
+  const colDifference = headerCells.findIndex(h => h.includes("diff") || h.includes("unreconciled"));
+
+  const parseNum = (cell) => {
+    if (!cell) return 0;
+    const valStr = String(cell.Value || "").trim();
+    if (!valStr || valStr === "-" || valStr === "—") return 0;
+    const clean = valStr.replace(/[£$€,\s]/g, "").replace(/\((.*?)\)/, "-$1");
+    const n = parseFloat(clean);
+    return isNaN(n) ? 0 : Math.round(n * 100) / 100;
+  };
+
+  const accounts = [];
+
+  function processRow(r) {
+    if (r.RowType === "Row" && Array.isArray(r.Cells)) {
+      const nameCell = r.Cells[colAccount !== -1 ? colAccount : 0];
+      const accountName = String(nameCell?.Value || "").trim();
+      if (!accountName || accountName.toLowerCase() === "total" || accountName.toLowerCase().startsWith("total ")) {
+        return;
+      }
+
+      const accountId = (nameCell?.Attributes || []).find(a => a.Id === "account")?.Value || "";
+      const statementCell = colStatement !== -1 ? r.Cells[colStatement] : null;
+      const statementValStr = String(statementCell?.Value || "").trim();
+      const hasStatementBalance = Boolean(statementValStr && statementValStr !== "-" && statementValStr !== "—");
+
+      const closingXeroBalance = parseNum(colClosingXero !== -1 ? r.Cells[colClosingXero] : r.Cells[4]);
+      const statementBalance = hasStatementBalance ? parseNum(statementCell) : null;
+
+      let difference = 0;
+      if (colDifference !== -1 && r.Cells[colDifference]) {
+        difference = parseNum(r.Cells[colDifference]);
+      } else if (hasStatementBalance) {
+        difference = Math.round(((statementBalance ?? 0) - closingXeroBalance) * 100) / 100;
+      }
+
+      // Reconciled: If statement balance is present, difference must be 0
+      const isReconciled = hasStatementBalance ? (Math.abs(difference) < 0.005) : false;
+
+      accounts.push({
+        accountId,
+        accountName,
+        openingBalance: parseNum(colOpening !== -1 ? r.Cells[colOpening] : r.Cells[1]),
+        cashIn: parseNum(colCashIn !== -1 ? r.Cells[colCashIn] : r.Cells[2]),
+        cashOut: parseNum(colCashOut !== -1 ? r.Cells[colCashOut] : r.Cells[3]),
+        closingXeroBalance,
+        statementBalance,
+        difference,
+        hasStatementBalance,
+        isReconciled
+      });
+    } else if (Array.isArray(r.Rows)) {
+      r.Rows.forEach(processRow);
+    }
+  }
+
+  report.Rows.forEach(processRow);
+  return accounts;
+}
+

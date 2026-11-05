@@ -1065,6 +1065,54 @@ export default function CashflowWorkbenchView({
   const [isDragOver, setIsDragOver] = useState(false);
   const [filterOnlyUnreconSection, setFilterOnlyUnreconSection] = useState(true);
   const [salariesDrawerOpen, setSalariesDrawerOpen] = useState(false);
+  const [staffBreakdownOpen, setStaffBreakdownOpen] = useState(false);
+  const [copiedNote, setCopiedNote] = useState(false);
+  const [applyingSalariesNote, setApplyingSalariesNote] = useState(false);
+
+  const handleApplySalariesNote = async () => {
+    if (!reconData?.generatedSalariesNote || !currentClientInfo) return;
+    const salariesRowObj = (reconData?.rows || []).find(r => r.mappedItemType === "salaries");
+    const targetAdjRow = salariesRowObj?.targetAdjustmentRow || 9;
+    if (!targetCol) return;
+
+    setApplyingSalariesNote(true);
+    try {
+      const resp = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "update_cash_cell_note",
+          clientSheetId: currentClientInfo.clientSheetId,
+          cashTabSheetId: reconData.cashTabSheetId,
+          sheetRow: targetAdjRow,
+          colIdx: targetCol.colIdx,
+          note: reconData.generatedSalariesNote,
+          clientName: selectedClient,
+          automationCommanderSheetId
+        })
+      });
+      const res = await resp.json();
+      if (!res.success) throw new Error(res.error || "Failed to save note");
+
+      setReconData(prev => {
+        if (!prev) return prev;
+        const newRows = prev.rows.map(r => {
+          if (r.sheetRow !== targetAdjRow) return r;
+          const newCells = r.cells.map(c => {
+            if (c.colIdx !== targetCol.colIdx) return c;
+            return { ...c, note: reconData.generatedSalariesNote };
+          });
+          return { ...r, cells: newCells };
+        });
+        return { ...prev, rows: newRows };
+      });
+      setSuccessMsg("Salaries explanation note saved to cashflow adjustment.");
+    } catch (err) {
+      setError(err.message || "Failed to save salaries note");
+    } finally {
+      setApplyingSalariesNote(false);
+    }
+  };
 
   // Default primary account derived from trackedBankAccounts
   const defaultAccount = useMemo(() => {
@@ -3808,6 +3856,152 @@ export default function CashflowWorkbenchView({
                                             </tbody>
                                           </table>
                                         </div>
+
+                                        {/* Person-by-Person Staff Payroll Breakdown */}
+                                        <div style={{ marginTop: "12px", borderTop: "1px solid #e2e8f0", paddingTop: "10px" }}>
+                                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
+                                            <button
+                                              type="button"
+                                              onClick={() => setStaffBreakdownOpen(prev => !prev)}
+                                              style={{
+                                                border: "none",
+                                                background: "none",
+                                                color: "#2563eb",
+                                                fontSize: "11px",
+                                                fontWeight: "600",
+                                                cursor: "pointer",
+                                                display: "inline-flex",
+                                                alignItems: "center",
+                                                gap: "4px",
+                                                padding: "0"
+                                              }}
+                                            >
+                                              <span>{staffBreakdownOpen ? "▴ Hide staff payroll breakdown" : `▾ View staff payroll breakdown (${(reconData?.staffPayrollBreakdown || []).length} staff)`}</span>
+                                            </button>
+                                          </div>
+
+                                          {staffBreakdownOpen && (
+                                            <div style={{ background: "#ffffff", borderRadius: "6px", border: "1px solid #e2e8f0", overflow: "hidden", marginBottom: "12px" }}>
+                                              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "10.5px" }}>
+                                                <thead>
+                                                  <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0" }}>
+                                                    <th style={{ textAlign: "left", padding: "5px 8px", fontWeight: "600", color: "#475569" }}>Staff member</th>
+                                                    <th style={{ textAlign: "right", padding: "5px 8px", fontWeight: "600", color: "#475569" }}>Expected net pay</th>
+                                                    <th style={{ textAlign: "right", padding: "5px 8px", fontWeight: "600", color: "#475569" }}>Bank paid</th>
+                                                    <th style={{ textAlign: "right", padding: "5px 8px", fontWeight: "600", color: "#475569" }}>Difference</th>
+                                                    <th style={{ textAlign: "center", padding: "5px 8px", fontWeight: "600", color: "#475569" }}>Status</th>
+                                                  </tr>
+                                                </thead>
+                                                <tbody>
+                                                  {(reconData?.staffPayrollBreakdown || []).map((s, idx) => {
+                                                    const isMatch = s.status === "matched" || Math.abs(s.diff) < 0.05;
+                                                    return (
+                                                      <tr key={idx} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                                                        <td style={{ padding: "5px 8px", color: "#0f172a" }}>
+                                                          <div style={{ fontWeight: "500" }}>{s.name}</div>
+                                                          {s.bankDesc && s.bankDesc !== "No bank payment detected" && (
+                                                            <div style={{ fontSize: "9.5px", color: "#64748b" }}>Bank: {s.bankDesc}</div>
+                                                          )}
+                                                        </td>
+                                                        <td
+                                                          style={{ padding: "5px 8px", textAlign: "right", fontVariantNumeric: "tabular-nums", color: "#334155" }}
+                                                          title={`Gross: £${s.gross.toFixed(2)} - PAYE: £${s.paye.toFixed(2)} - Ee NICs: £${s.eeNics.toFixed(2)} - Pension: £${s.eePension.toFixed(2)} - Student Loan: £${s.studLoan.toFixed(2)}`}
+                                                        >
+                                                          {formatGBP(s.expectedNet)}
+                                                        </td>
+                                                        <td style={{ padding: "5px 8px", textAlign: "right", fontVariantNumeric: "tabular-nums", color: "#334155" }}>
+                                                          {formatGBP(s.bankPaid)}
+                                                        </td>
+                                                        <td style={{
+                                                          padding: "5px 8px",
+                                                          textAlign: "right",
+                                                          fontVariantNumeric: "tabular-nums",
+                                                          fontWeight: "600",
+                                                          color: isMatch ? "#16a34a" : (s.diff < 0 ? "#dc2626" : "#2563eb")
+                                                        }}>
+                                                          {formatGBP(s.diff)}
+                                                        </td>
+                                                        <td style={{ padding: "5px 8px", textAlign: "center" }}>
+                                                          <span style={{
+                                                            padding: "2px 6px",
+                                                            borderRadius: "10px",
+                                                            fontSize: "9.5px",
+                                                            fontWeight: "600",
+                                                            background: isMatch ? "#f0fdf4" : s.status === "eor" ? "#fdf4ff" : s.status === "unpaid" ? "#f1f5f9" : "#fff7ed",
+                                                            color: isMatch ? "#16a34a" : s.status === "eor" ? "#9333ea" : s.status === "unpaid" ? "#64748b" : "#c2410c",
+                                                            border: `1px solid ${isMatch ? "#bbf7d0" : s.status === "eor" ? "#f5d0fe" : s.status === "unpaid" ? "#e2e8f0" : "#fed7aa"}`
+                                                          }}>
+                                                            {s.status === "matched" ? "Matched" : s.status === "eor" ? "EoR partner" : s.status === "unpaid" ? "Unpaid" : `Variance (${s.diff > 0 ? "+" : ""}${s.diff.toFixed(2)})`}
+                                                          </span>
+                                                        </td>
+                                                      </tr>
+                                                    );
+                                                  })}
+                                                </tbody>
+                                              </table>
+                                            </div>
+                                          )}
+                                        </div>
+
+                                        {/* Auto-Generated Salaries Explanation Card */}
+                                        {reconData?.generatedSalariesNote && (
+                                          <div style={{
+                                            marginTop: "10px",
+                                            padding: "8px 10px",
+                                            background: "#f8fafc",
+                                            border: "1px solid #e2e8f0",
+                                            borderRadius: "6px",
+                                            fontSize: "10.5px"
+                                          }}>
+                                            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "5px" }}>
+                                              <div style={{ fontWeight: "600", color: "#334155", display: "flex", alignItems: "center", gap: "6px" }}>
+                                                <span>Salaries variance explanation note</span>
+                                              </div>
+                                              <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                                <button
+                                                  type="button"
+                                                  onClick={() => {
+                                                    navigator.clipboard.writeText(reconData.generatedSalariesNote);
+                                                    setCopiedNote(true);
+                                                    setTimeout(() => setCopiedNote(false), 2000);
+                                                  }}
+                                                  style={{
+                                                    padding: "2px 7px",
+                                                    background: "#ffffff",
+                                                    border: "1px solid #cbd5e1",
+                                                    borderRadius: "4px",
+                                                    fontSize: "10px",
+                                                    fontWeight: "500",
+                                                    color: "#475569",
+                                                    cursor: "pointer"
+                                                  }}
+                                                >
+                                                  {copiedNote ? "Copied" : "Copy note"}
+                                                </button>
+                                                <button
+                                                  type="button"
+                                                  onClick={handleApplySalariesNote}
+                                                  disabled={applyingSalariesNote}
+                                                  style={{
+                                                    padding: "2px 7px",
+                                                    background: "#2563eb",
+                                                    border: "1px solid #1d4ed8",
+                                                    borderRadius: "4px",
+                                                    fontSize: "10px",
+                                                    fontWeight: "500",
+                                                    color: "#ffffff",
+                                                    cursor: applyingSalariesNote ? "not-allowed" : "pointer"
+                                                  }}
+                                                >
+                                                  {applyingSalariesNote ? "Applying…" : "Apply to adjustment note"}
+                                                </button>
+                                              </div>
+                                            </div>
+                                            <div style={{ color: "#475569", lineHeight: "1.4" }}>
+                                              {reconData.generatedSalariesNote}
+                                            </div>
+                                          </div>
+                                        )}
                                       </div>
                                     )}
                                   </div>

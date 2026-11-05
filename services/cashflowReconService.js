@@ -94,6 +94,11 @@ export function sanitizeCashAdjustmentInput(val) {
       return `'${str}`;
     }
 
+    // Sanctioned Recon IMPORTRANGE formula for Other Expenses adjustment (e.g. =IMPORTRANGE(KeyInfo!$G$1, "'2610'!X4")-H16)
+    if (/^=IMPORTRANGE\(\s*KeyInfo!\$G\$1\s*,\s*"'[0-9]{4}'!X[0-9]+"\s*\)\s*-\s*\$?[A-Z]{1,2}\$?[0-9]+$/i.test(str)) {
+      return str;
+    }
+
     // Strictly forbid dangerous exfiltration / external execution keywords
     const dangerousPattern = /(importxml|importhtml|importdata|importfeed|importrange|hyperlink|image|webservice|encodeurl|cmd|powershell|exec|script|shell|http:|https:|ftp:|file:)/i;
     if (dangerousPattern.test(str)) {
@@ -843,6 +848,23 @@ export async function getCashflowReconData({
     reconError = "No Recon Sheet configured in AutoUpdates for this client";
   }
 
+  // 9. Build detailed person-by-person payroll breakdown and intelligent variance explanation note
+  let staffPayrollBreakdown = [];
+  let generatedSalariesNote = "";
+  try {
+    const payrollResult = await buildStaffPayrollBreakdown_({
+      sheets,
+      clientSheetId: cleanClientSheetId,
+      targetMonthInfo,
+      bankTransactions,
+      cashflowComparisons
+    });
+    staffPayrollBreakdown = payrollResult.staff || [];
+    generatedSalariesNote = payrollResult.generatedNote || "";
+  } catch (payErr) {
+    console.warn("Could not build staff payroll breakdown:", payErr.message);
+  }
+
   return {
     success: true,
     clientSheetId: cleanClientSheetId,
@@ -867,6 +889,8 @@ export async function getCashflowReconData({
     contractorsBreakdown,
     directCostsBreakdown,
     unreconciledItems,
+    staffPayrollBreakdown,
+    generatedSalariesNote,
     plAdds,
     plAccountOptions: plAccountOptions || [],
     trackedBankAccounts: trackedBankAccounts || [],
@@ -874,6 +898,339 @@ export async function getCashflowReconData({
     da1Platform,
     accountingPlatform: da1Platform
   };
+}
+
+/**
+ * Ensures that KeyInfo!G1 in the Client Sheet is populated with the Recon Sheet URL
+ * so that dynamic IMPORTRANGE formulas can resolve immediately.
+ */
+async function ensureClientReconSheetUrl_(sheets, cleanClientSheetId, automationCommanderSheetId, clientName) {
+  try {
+    const res = await withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: cleanClientSheetId,
+      range: "KeyInfo!G1"
+    }));
+    const curVal = res.data?.values?.[0]?.[0];
+    if (curVal && String(curVal).trim().startsWith("http")) return curVal;
+
+    let reconUrl = "";
+    if (automationCommanderSheetId) {
+      const acRes = await withRetry(() => sheets.spreadsheets.values.get({
+        spreadsheetId: automationCommanderSheetId,
+        range: "AutoUpdates!A2:O100"
+      }));
+      const rows = acRes.data?.values || [];
+      const match = rows.find(r => matchesClientName(r[0], clientName) || (r[11] && r[11].includes(cleanClientSheetId)));
+      if (match && match[9]) {
+        const rawRecon = String(match[9]).trim();
+        reconUrl = rawRecon.startsWith("http")
+          ? rawRecon
+          : `https://docs.google.com/spreadsheets/d/${rawRecon}/edit`;
+      }
+    }
+
+    if (reconUrl) {
+      await withRetry(() => sheets.spreadsheets.values.update({
+        spreadsheetId: cleanClientSheetId,
+        range: "KeyInfo!G1",
+        valueInputOption: "USER_ENTERED",
+        requestBody: { values: [[reconUrl]] }
+      }));
+    }
+    return reconUrl;
+  } catch (err) {
+    console.warn("Could not ensure KeyInfo!G1 in Client Sheet:", err.message);
+  }
+}
+
+/**
+ * Build Person-by-Person Payroll Breakdown & Intelligent Explanation Note
+ * Matches imported payroll actuals from the Salaries sheet against bank transactions.
+ */
+async function buildStaffPayrollBreakdown_({
+  sheets,
+  clientSheetId,
+  targetMonthInfo,
+  bankTransactions,
+  cashflowComparisons
+}) {
+  try {
+    const SHORT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const targetLabel = `${SHORT_MONTHS[targetMonthInfo.month]} ${String(targetMonthInfo.year).slice(-2)}`;
+
+    const salRes = await withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: clientSheetId,
+      range: "Salaries!A1:ZZ60",
+      valueRenderOption: "FORMATTED_VALUE"
+    }));
+
+    const rows = salRes.data?.values || [];
+    if (rows.length < 4) return { staff: [], unmatchedBank: [], generatedNote: "" };
+
+    const header = rows[0] || [];
+    let octCol = -1;
+    for (let c = 0; c < header.length; c++) {
+      if (String(header[c] || "").trim().toLowerCase() === targetLabel.toLowerCase()) {
+        octCol = c;
+        break;
+      }
+    }
+    if (octCol === -1) return { staff: [], unmatchedBank: [], generatedNote: "" };
+
+    const cleanNum = (v) => {
+      if (!v) return 0;
+      const n = parseFloat(String(v).replace(/[£,\s]/g, ""));
+      return isNaN(n) ? 0 : n;
+    };
+
+    const staff = [];
+    for (let r = 3; r < rows.length; r++) {
+      const row = rows[r] || [];
+      const name = String(row[0] || "").trim();
+      if (!name || name.toLowerCase().includes("total") || name.toLowerCase().includes("likel") || name.toLowerCase().includes("allowance")) continue;
+      const gross = cleanNum(row[octCol]);
+      const eeNics = cleanNum(row[octCol + 1]);
+      const erNics = cleanNum(row[octCol + 2]);
+      const studLoan = cleanNum(row[octCol + 3]);
+      const eePension = cleanNum(row[octCol + 4]);
+      const erPension = cleanNum(row[octCol + 5]);
+      const paye = cleanNum(row[octCol + 6]);
+      // Net wage = Gross Salary - PAYE - Employee NICs - Student Loan - Employee Pension
+      const expectedNet = Math.round((gross - paye - eeNics - studLoan - eePension) * 100) / 100;
+      if (gross > 0 || expectedNet > 0) {
+        staff.push({
+          name,
+          gross,
+          paye,
+          eeNics,
+          erNics,
+          studLoan,
+          eePension,
+          erPension,
+          expectedNet,
+          bankPaid: 0,
+          diff: 0,
+          status: "unpaid",
+          matchReason: "",
+          matchedTxId: null,
+          bankDesc: "",
+          bankItems: []
+        });
+      }
+    }
+
+    // Filter bank transactions for Salaries category
+    const bankSalTxs = (bankTransactions || [])
+      .filter(tx => {
+        const cat = String(tx.category || "").trim().toLowerCase();
+        return cat === "salaries" || cat.includes("salar") || cat.includes("wages") || cat.includes("payroll");
+      })
+      .map(tx => ({
+        id: `tx_${tx.rowNum}`,
+        rowNum: tx.rowNum,
+        date: tx.date,
+        payee: tx.payee || "",
+        desc: tx.particulars || "",
+        outAmt: Math.abs(cleanNum(tx.outAmount || tx.amount || 0)),
+        matched: false,
+        matchedStaff: null,
+        matchType: null
+      }));
+
+    const normName = (s) => String(s || "").toLowerCase().replace(/[^a-z]/g, "");
+
+    // PASS 1: Direct Name Matching
+    bankSalTxs.forEach(tx => {
+      if (tx.matched) return;
+      const txText = `${tx.payee} ${tx.desc}`.toLowerCase();
+      staff.forEach(s => {
+        if (s.matched) return;
+        const parts = s.name.split(",").map(p => p.trim());
+        const surname = parts[0] || "";
+        const firstname = parts[1] || "";
+        const fullName = `${firstname} ${surname}`.trim();
+
+        const normFull = normName(fullName);
+        const normSur = normName(surname);
+        const normFirst = normName(firstname);
+        const textClean = normName(txText);
+
+        if (normFull && textClean.includes(normFull)) {
+          tx.matched = true;
+          tx.matchedStaff = s.name;
+          tx.matchType = "exact_name";
+          s.matched = true;
+          s.bankItems.push(tx);
+        } else if (normSur.length >= 4 && normFirst.length >= 3 && textClean.includes(normSur) && textClean.includes(normFirst)) {
+          tx.matched = true;
+          tx.matchedStaff = s.name;
+          tx.matchType = "name_parts";
+          s.matched = true;
+          s.bankItems.push(tx);
+        }
+      });
+    });
+
+    // PASS 2: Exact Net Amount Match with First Initial Check (e.g. Cross, Jennifer vs J. Mulholland)
+    bankSalTxs.forEach(tx => {
+      if (tx.matched) return;
+      const txText = `${tx.payee} ${tx.desc}`.toLowerCase();
+      staff.forEach(s => {
+        if (s.matched) return;
+        if (Math.abs(s.expectedNet - tx.outAmt) <= 0.01) {
+          const parts = s.name.split(",").map(p => p.trim());
+          const firstname = parts[1] || parts[0];
+          const firstInitial = (firstname[0] || "").toLowerCase();
+          const hasInitial = new RegExp(`\\b${firstInitial}[.\\s]`, "i").test(txText);
+          if (hasInitial) {
+            tx.matched = true;
+            tx.matchedStaff = s.name;
+            tx.matchType = "amount_and_initial";
+            s.matched = true;
+            s.bankItems.push(tx);
+          }
+        }
+      });
+    });
+
+    // PASS 3: Proximity Amount Match for Generic Bank Lines (e.g. "Reconcile Net Pay Summary")
+    bankSalTxs.forEach(tx => {
+      if (tx.matched) return;
+      const txText = `${tx.payee} ${tx.desc}`.toLowerCase();
+      const isGeneric = txText.includes("reconcile") || txText.includes("net pay") || txText.includes("summary") || txText.includes("payroll");
+      if (isGeneric) {
+        staff.forEach(s => {
+          if (s.matched) return;
+          if (Math.abs(s.expectedNet - tx.outAmt) <= 1.00) {
+            tx.matched = true;
+            tx.matchedStaff = s.name;
+            tx.matchType = "amount_generic_line";
+            s.matched = true;
+            s.bankItems.push(tx);
+          }
+        });
+      }
+    });
+
+    // PASS 4: EoR / Contractor (e.g. Rhys Krohn vs Leap29)
+    bankSalTxs.forEach(tx => {
+      if (tx.matched) return;
+      const txText = `${tx.payee} ${tx.desc}`.toLowerCase();
+      staff.forEach(s => {
+        if (s.name.toLowerCase().includes("eor") || s.name.toLowerCase().includes("rhys")) {
+          if (txText.includes("rhys") || txText.includes("leap29")) {
+            tx.matched = true;
+            tx.matchedStaff = s.name;
+            tx.matchType = "eor_partner";
+            s.matched = true;
+            s.bankItems.push(tx);
+          }
+        }
+      });
+    });
+
+    // Finalize staff item metrics
+    staff.forEach(s => {
+      const bankTotal = s.bankItems.reduce((acc, t) => acc + t.outAmt, 0);
+      s.bankPaid = Math.round(bankTotal * 100) / 100;
+      s.diff = Math.round((s.bankPaid - s.expectedNet) * 100) / 100;
+      if (s.bankItems.length > 0) {
+        const primaryTx = s.bankItems[0];
+        s.bankDesc = [primaryTx.payee, primaryTx.desc].filter(Boolean).join(" - ");
+        if (s.bankItems.length > 1) s.bankDesc += ` (+${s.bankItems.length - 1} more)`;
+        s.matchReason = primaryTx.matchType;
+        if (Math.abs(s.diff) <= 0.01) {
+          s.status = "matched";
+        } else if (s.name.toLowerCase().includes("eor")) {
+          s.status = "eor";
+        } else {
+          s.status = "variance";
+        }
+      } else {
+        s.status = "unpaid";
+        s.bankDesc = "No bank payment detected";
+      }
+    });
+
+    const unmatchedBank = bankSalTxs.filter(t => !t.matched);
+
+    // Build intelligent financial explanation note
+    const matchedCount = staff.filter(s => s.status === "matched").length;
+    const varianceItems = staff.filter(s => s.status === "variance");
+    const eorItems = staff.filter(s => s.status === "eor");
+    const unpaidItems = staff.filter(s => s.status === "unpaid" && s.expectedNet > 0);
+
+    const wagesComp = (cashflowComparisons || []).find(c => {
+      const l = (c.label || "").toLowerCase();
+      return l.includes("payroll") || (l.includes("salar") && !l.includes("total"));
+    });
+    const payeComp = (cashflowComparisons || []).find(c => (c.label || "").toLowerCase().includes("paye"));
+    const pensionComp = (cashflowComparisons || []).find(c => (c.label || "").toLowerCase().includes("pension"));
+
+    const noteParts = [];
+
+    // Net payroll part
+    const wagesDiffNum = parseFloat(String(wagesComp?.diff || "0").replace(/[£,\s]/g, "")) || 0;
+    const wagesSign = wagesDiffNum > 0 ? "+" : "-";
+    const wagesDiffStr = `${wagesSign}£${Math.abs(wagesDiffNum).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+    let wageNote = `Net payroll (${wagesDiffStr}): ${matchedCount} staff matched to the penny`;
+    if (varianceItems.length > 0) {
+      const vDetails = varianceItems.map(v => `${v.name.split(",")[0]} (${v.diff > 0 ? "+" : "-"}£${Math.abs(v.diff).toFixed(2)})`).join(", ");
+      wageNote += `; variances on ${vDetails}`;
+    }
+    if (eorItems.length > 0) {
+      const eorDetails = eorItems.map(e => `${e.name.replace(/\s*\(via EoR\)/i, "")} via EoR partner (£${e.bankPaid.toFixed(2)})`).join(", ");
+      wageNote += `; ${eorDetails}`;
+    }
+    if (unpaidItems.length > 0) {
+      const uDetails = unpaidItems.map(u => `${u.name.split(",")[0]} (£${u.expectedNet.toFixed(2)} expected)`).join(", ");
+      wageNote += `; no salary payment detected for ${uDetails}`;
+    }
+    if (unmatchedBank.length > 0) {
+      const unrecSum = unmatchedBank.reduce((sum, u) => sum + u.outAmt, 0);
+      wageNote += `; £${unrecSum.toFixed(2)} unmatched bank payments (${unmatchedBank.map(u => u.payee || u.desc).join(", ")})`;
+    }
+    noteParts.push(wageNote + ".");
+
+    // PAYE part
+    if (payeComp) {
+      const payeDiffNum = parseFloat(String(payeComp.diff || "0").replace(/[£,\s]/g, "")) || 0;
+      if (Math.abs(payeDiffNum) <= 0.01) {
+        noteParts.push("PAYE: exact match.");
+      } else {
+        const payeSign = payeDiffNum > 0 ? "+" : "-";
+        const actualStr = payeComp.bankRecon || payeComp.outAmount || "£0.00";
+        const forecastStr = payeComp.cashflow || "£0.00";
+        noteParts.push(`PAYE: HMRC payment ${payeSign}£${Math.abs(payeDiffNum).toFixed(2)} vs forecast (${actualStr} actual vs ${forecastStr} forecast).`);
+      }
+    }
+
+    // Pension part
+    if (pensionComp) {
+      const pensionDiffNum = parseFloat(String(pensionComp.diff || "0").replace(/[£,\s]/g, "")) || 0;
+      if (Math.abs(pensionDiffNum) <= 0.01) {
+        noteParts.push("Pension: exact match.");
+      } else {
+        const penSign = pensionDiffNum > 0 ? "+" : "-";
+        noteParts.push(`Pension: ${penSign}£${Math.abs(pensionDiffNum).toFixed(2)} variance against forecast.`);
+      }
+    }
+
+    const generatedNote = noteParts.join(" ");
+
+    return {
+      staff,
+      unmatchedBank,
+      matchedCount,
+      totalExpectedNet: Math.round(staff.reduce((acc, s) => acc + s.expectedNet, 0) * 100) / 100,
+      totalBankPaid: Math.round(staff.reduce((acc, s) => acc + s.bankPaid, 0) * 100) / 100,
+      generatedNote
+    };
+  } catch (err) {
+    console.warn("Could not build staff payroll breakdown:", err.message);
+    return { staff: [], unmatchedBank: [], generatedNote: "" };
+  }
 }
 
 /**
@@ -1178,6 +1535,11 @@ export async function updateCashAdjustment({
         safeValue = Math.round(evaluated * 100) / 100;
       }
     } catch (_) { }
+  }
+
+  // Ensure KeyInfo!G1 in Client Sheet has the Recon Sheet URL if dynamic IMPORTRANGE is used
+  if (typeof safeValue === "string" && safeValue.includes("KeyInfo!$G$1")) {
+    await ensureClientReconSheetUrl_(sheets, cleanClientSheetId, automationCommanderSheetId, clientName);
   }
 
   const updateRes = await withRetry(() => sheets.spreadsheets.values.update({
@@ -1575,6 +1937,11 @@ export async function batchMatchCashflowActuals({
 
   // 2. Batch update adjustment formulas SECOND so formatting never waits on formula recalculation
   if (adjustments.length > 0) {
+    const hasG1 = adjustments.some(a => typeof a?.formula === "string" && a.formula.includes("KeyInfo!$G$1"));
+    if (hasG1) {
+      await ensureClientReconSheetUrl_(sheets, cleanClientSheetId, automationCommanderSheetId, clientName);
+    }
+
     const dataUpdates = adjustments
       .filter(adj => ALLOWED_ADJUSTMENT_ROWS.has(parseInt(adj?.sheetRow, 10)))
       .map(adj => {

@@ -1862,19 +1862,108 @@ export async function checkStaleUnreconGapExpenses_(clientName, clientSheetId, s
   return alerts;
 }
 
+/**
+ * Detects the enclosing section for an account name in PLFromApp!A:A
+ * (e.g. Cost of sales / Operating expenses / Revenue / Other income / Other expenses)
+ */
+export function detectPLSectionForAccount(plRows, targetName) {
+  if (!Array.isArray(plRows) || !targetName) return null;
+  const cleanTarget = String(targetName)
+    .replace(/^\d+\s*[-–]\s*/, "")
+    .toLowerCase()
+    .trim();
+  const rawTarget = String(targetName).toLowerCase().trim();
+
+  let currentRawSection = "";
+  let currentSectionType = "";
+  let currentSuggestedChoice = "delivery_expense";
+
+  for (let i = 0; i < plRows.length; i++) {
+    const rawVal = String(plRows[i]?.[0] || "").trim();
+    if (!rawVal) continue;
+    const lower = rawVal.toLowerCase();
+
+    // Check if this row is a section header
+    if (/^(?:less\s+)?(?:cost\s+of\s+sales|cost\s+of\s+goods\s+sold|direct\s+costs?)/i.test(lower)) {
+      currentRawSection = rawVal;
+      currentSectionType = "Cost of sales (Direct costs)";
+      currentSuggestedChoice = "delivery_expense";
+      continue;
+    }
+    if (/^(?:less\s+)?(?:operating\s+expenses?|overheads?|expenses?|administrative\s+expenses?|admin\s+expenses?|indirect\s+expenses?)/i.test(lower)) {
+      currentRawSection = rawVal;
+      currentSectionType = "Operating expenses (Overheads)";
+      currentSuggestedChoice = "non_delivery_expense";
+      continue;
+    }
+    if (/^(?:income|revenue|turnover|trading\s+income)/i.test(lower) && !lower.startsWith("total ") && !lower.startsWith("net ")) {
+      currentRawSection = rawVal;
+      currentSectionType = "Revenue / Income";
+      currentSuggestedChoice = "revenue";
+      continue;
+    }
+    if (/^other\s+income|^non-operating\s+income/i.test(lower)) {
+      currentRawSection = rawVal;
+      currentSectionType = "Other income";
+      currentSuggestedChoice = "non_operating_income";
+      continue;
+    }
+    if (/^(?:less\s+)?(?:other\s+expenses?|non-operating\s+expenses?|finance\s+costs?)/i.test(lower)) {
+      currentRawSection = rawVal;
+      currentSectionType = "Other expenses";
+      currentSuggestedChoice = "non_operating_expense";
+      continue;
+    }
+
+    // Check if this row matches the target account
+    const normRow = rawVal.replace(/^\d+\s*[-–]\s*/, "").toLowerCase().trim();
+    if (lower === rawTarget || normRow === cleanTarget || (cleanTarget.length >= 4 && normRow.includes(cleanTarget)) || (normRow.length >= 4 && cleanTarget.includes(normRow))) {
+      if (currentRawSection) {
+        return {
+          rawSection: currentRawSection,
+          sectionType: currentSectionType,
+          suggestedClassification: currentSuggestedChoice
+        };
+      }
+    }
+  }
+
+  return currentRawSection ? {
+    rawSection: currentRawSection,
+    sectionType: currentSectionType,
+    suggestedClassification: currentSuggestedChoice
+  } : null;
+}
+
 export async function checkQuarantinedPLCategories_(clientName, masterSheetId, sharedData, sheets) {
   const alerts = [];
   try {
     if (!masterSheetId || !sheets) return alerts;
 
-    const compResp = await withRetry(() =>
-      sheets.spreadsheets.values.get({
-        spreadsheetId: masterSheetId,
-        range: "PLComp!B180:B229"
-      })
-    );
+    let compResp = null;
+    let plFromAppRows = [];
+    try {
+      compResp = await withRetry(() =>
+        sheets.spreadsheets.values.batchGet({
+          spreadsheetId: masterSheetId,
+          ranges: [
+            "PLComp!B180:B229",
+            "PLFromApp!A1:A350"
+          ]
+        })
+      );
+      plFromAppRows = compResp.data.valueRanges?.[1]?.values || [];
+    } catch (_) {
+      // Fallback to PLComp alone if PLFromApp is not found on master sheet
+      compResp = await withRetry(() =>
+        sheets.spreadsheets.values.get({
+          spreadsheetId: masterSheetId,
+          range: "PLComp!B180:B229"
+        })
+      );
+    }
 
-    const rows = compResp.data.values || [];
+    const rows = compResp.data.valueRanges ? (compResp.data.valueRanges[0]?.values || []) : (compResp.data.values || []);
     const quarantinedCats = [];
     rows.forEach((r, idx) => {
       const val = String(r[0] || "").trim();
@@ -1914,6 +2003,7 @@ export async function checkQuarantinedPLCategories_(clientName, masterSheetId, s
       const logInfo = logDetailsMap.get(catName.toLowerCase());
       const tsStr = logInfo?.timestamp || new Date().toISOString();
       const alertKey = `unmapped_pl_category|${clientName}|${catName}`;
+      const sectionInfo = detectPLSectionForAccount(plFromAppRows, catName);
 
       alerts.push({
         alertType: "unmapped_pl_category",
@@ -1926,7 +2016,10 @@ export async function checkQuarantinedPLCategories_(clientName, masterSheetId, s
         categoryName: catName,
         cleanName: catName,
         quarantineRow: q.rowNum,
-        detail: `The nominal account "${catName}" was detected in the P&L report but has not yet been classified. It has been temporarily quarantined in PLComp!B${q.rowNum} to protect Outgoings from unverified expenses. Please choose how this account should be classified.`,
+        plSection: sectionInfo?.rawSection || null,
+        plSectionType: sectionInfo?.sectionType || null,
+        suggestedClassification: sectionInfo?.suggestedClassification || "delivery_expense",
+        detail: `The nominal account "${catName}" was detected in the P&L report${sectionInfo?.sectionType ? ` under ${sectionInfo.sectionType}` : ""} but has not yet been classified. It has been temporarily quarantined in PLComp!B${q.rowNum} to protect Outgoings from unverified expenses. Please choose how this account should be classified.`,
         clientName,
         timestamp: tsStr,
         metadata: {
@@ -1936,7 +2029,10 @@ export async function checkQuarantinedPLCategories_(clientName, masterSheetId, s
           quarantineRow: q.rowNum,
           masterSheetId,
           timestamp: tsStr,
-          logDetails: logInfo?.details || ""
+          logDetails: logInfo?.details || "",
+          plSection: sectionInfo?.rawSection || null,
+          plSectionType: sectionInfo?.sectionType || null,
+          suggestedClassification: sectionInfo?.suggestedClassification || "delivery_expense"
         }
       });
     }

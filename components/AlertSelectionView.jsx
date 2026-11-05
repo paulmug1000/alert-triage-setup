@@ -13,7 +13,7 @@ import { useTasks } from "../contexts/TaskContext";
 import { useTriage } from "../contexts/TriageContext";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useAuth } from "../hooks/useAuth";
-import { ADMIN_ONLY_ALERT_TYPES, stripRowInfo, parseUnreceivedExpensesDetail, parseStaleExpenseDetail, parseInfoAlertDetail, getInfoCardTitle, getProactiveCardTitle, filterAnalysisResultsForAlert, getCleanPLCategoryName, getAlertJobTarget, formatSeenTimestamp, formatLikelihood, parseRevenueMismatchDetail, parseDirectCostsMismatchDetail, toInputDateFormat, parseSheetDate, toSheetDateFormat, isNoEndDateSentinel, formatJobEndDateDisplay, isStaleInvoiceSuppressedByRetainerAlert } from "../utils/helpers";
+import { ADMIN_ONLY_ALERT_TYPES, stripRowInfo, parseRetroactiveOutgoingsDetail, parseUnreceivedExpensesDetail, parseStaleExpenseDetail, parseInfoAlertDetail, getInfoCardTitle, getProactiveCardTitle, filterAnalysisResultsForAlert, getCleanPLCategoryName, getAlertJobTarget, formatSeenTimestamp, formatLikelihood, parseRevenueMismatchDetail, parseDirectCostsMismatchDetail, toInputDateFormat, parseSheetDate, toSheetDateFormat, isNoEndDateSentinel, formatJobEndDateDisplay, isStaleInvoiceSuppressedByRetainerAlert } from "../utils/helpers";
 
 const RICH_NOACTION_FLAG_GROUP = {
   crmCopiedConfChecked: "crm",
@@ -100,6 +100,9 @@ export default function AlertSelectionView({
   const [viewingJobTarget, setViewingJobTarget] = useState(null);
   const [viewingOutgoingsTarget, setViewingOutgoingsTarget] = useState(null);
   const [deleteInvoiceTarget, setDeleteInvoiceTarget] = useState(null);
+  const [expandedAutoLogAlerts, setExpandedAutoLogAlerts] = useState({});
+  const [autoLogModalAlert, setAutoLogModalAlert] = useState(null);
+  const [copiedAutoLog, setCopiedAutoLog] = useState(false);
 
   const handleViewJobOrExpense = (target) => {
     if (!target) return;
@@ -258,7 +261,7 @@ export default function AlertSelectionView({
 
   const handleApplyPLClassification = async (alert) => {
     const alertKey = alert.alertKey;
-    const classification = selectedClassifications[alertKey] || "delivery_expense";
+    const classification = selectedClassifications[alertKey] || alert.metadata?.suggestedClassification || alert.suggestedClassification || "delivery_expense";
     const categoryName = getCleanPLCategoryName(alert);
     const clientName = alert.clientName || selectedClient?.clientName;
     const clientInfo = (clientsWithFlags || []).find(c => c.clientName === clientName) || (allClientsMap && allClientsMap[clientName]);
@@ -2367,15 +2370,90 @@ export default function AlertSelectionView({
                                       );
                                     })()}
 
-                                    {alert.alertType === "retroactive_outgoings_update" && (
-                                      <div style={{ fontSize: "12px", color: "#555", marginTop: "2px", marginBottom: "4px", whiteSpace: "pre-line", lineHeight: "1.4" }}>
-                                        {alert.detail || alert.detailsSnippet || m.details}
-                                      </div>
-                                    )}
+                                    {alert.alertType === "retroactive_outgoings_update" && (() => {
+                                      const detailRaw = alert.detail || alert.detailsSnippet || m.details || "";
+                                      const parsed = parseRetroactiveOutgoingsDetail(detailRaw);
+                                      const isExpanded = !!expandedAutoLogAlerts[alert.alertKey];
+
+                                      return (
+                                        <div style={{ fontSize: "12px", color: "#555", marginTop: "2px", marginBottom: "4px", lineHeight: "1.4" }}>
+                                          <div style={{ whiteSpace: "pre-line" }}>
+                                            {isAdmin
+                                              ? parsed.basicText
+                                              : parsed.basicLines.map(l => (l.match(/^\s*/)?.[0] || "") + sanitizeSpreadsheetTerms(l.trim())).join("\n")
+                                            }
+                                          </div>
+
+                                          {parsed.hasMoreDetails && (
+                                            <div style={{ marginTop: "6px" }}>
+                                              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                                                <button
+                                                  type="button"
+                                                  className="triage-btn"
+                                                  onClick={() => setExpandedAutoLogAlerts(prev => ({ ...prev, [alert.alertKey]: !prev[alert.alertKey] }))}
+                                                  style={{
+                                                    fontSize: "11px",
+                                                    padding: "2px 8px",
+                                                    color: "#6366f1",
+                                                    borderColor: "#c7d2fe",
+                                                    background: "#f5f7ff",
+                                                    cursor: "pointer",
+                                                    borderRadius: "4px"
+                                                  }}
+                                                >
+                                                  {isExpanded ? "Hide full log details ▴" : "View full log details ▾"}
+                                                </button>
+                                                <button
+                                                  type="button"
+                                                  className="triage-btn"
+                                                  onClick={() => setAutoLogModalAlert(alert)}
+                                                  style={{
+                                                    fontSize: "11px",
+                                                    padding: "2px 8px",
+                                                    color: "#475569",
+                                                    borderColor: "#cbd5e1",
+                                                    background: "#f8fafc",
+                                                    cursor: "pointer",
+                                                    borderRadius: "4px"
+                                                  }}
+                                                >
+                                                  Open in modal ↗
+                                                </button>
+                                              </div>
+
+                                              {isExpanded && (
+                                                <div style={{
+                                                  fontFamily: "monospace",
+                                                  fontSize: "11px",
+                                                  color: "#334155",
+                                                  backgroundColor: "#f8fafc",
+                                                  border: "1px solid #e2e8f0",
+                                                  borderRadius: "4px",
+                                                  padding: "6px 8px",
+                                                  marginTop: "6px",
+                                                  whiteSpace: "pre-wrap",
+                                                  wordBreak: "break-word",
+                                                  maxHeight: "220px",
+                                                  overflowY: "auto"
+                                                }}>
+                                                  {isAdmin
+                                                    ? parsed.fullText
+                                                    : parsed.fullText.split(/\r?\n/).map(l => (l.match(/^\s*/)?.[0] || "") + sanitizeSpreadsheetTerms(l.trim())).join("\n")
+                                                  }
+                                                </div>
+                                              )}
+                                            </div>
+                                          )}
+                                        </div>
+                                      );
+                                    })()}
 
                                     {alert.alertType === "unmapped_pl_category" && (() => {
                                       const catName = alert.metadata?.categoryName || alert.metadata?.cleanName || alert.heading;
-                                      const currentChoice = selectedClassifications[alert.alertKey] || "delivery_expense";
+                                      const plSectionType = alert.metadata?.plSectionType || alert.plSectionType;
+                                      const plSection = alert.metadata?.plSection || alert.plSection;
+                                      const suggestedChoice = alert.metadata?.suggestedClassification || alert.suggestedClassification || "delivery_expense";
+                                      const currentChoice = selectedClassifications[alert.alertKey] || suggestedChoice;
                                       const isApplying = !!applyingClassification[alert.alertKey];
                                       const msg = classificationMsg[alert.alertKey];
 
@@ -2395,6 +2473,28 @@ export default function AlertSelectionView({
 
                                       return (
                                         <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "4px", marginTop: "2px", marginBottom: "4px" }}>
+                                          {plSectionType && (
+                                            <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "2px", marginBottom: "2px" }}>
+                                              <strong style={{ color: "#374151" }}>P&L section:</strong>
+                                              <span style={{
+                                                display: "inline-block",
+                                                padding: "2px 8px",
+                                                borderRadius: "4px",
+                                                fontSize: "11px",
+                                                fontWeight: "600",
+                                                backgroundColor: plSectionType.includes("Cost of sale") ? "#fef3c7" : plSectionType.includes("Operating") ? "#e0e7ff" : plSectionType.includes("Revenue") ? "#dcfce7" : "#f1f5f9",
+                                                color: plSectionType.includes("Cost of sale") ? "#92400e" : plSectionType.includes("Operating") ? "#3730a3" : plSectionType.includes("Revenue") ? "#166534" : "#475569",
+                                                border: "1px solid",
+                                                borderColor: plSectionType.includes("Cost of sale") ? "#fde68a" : plSectionType.includes("Operating") ? "#c7d2fe" : plSectionType.includes("Revenue") ? "#bbf7d0" : "#cbd5e1"
+                                              }}>
+                                                {plSectionType}
+                                              </span>
+                                              {plSection && plSection.toLowerCase() !== plSectionType.toLowerCase() && (
+                                                <span style={{ fontSize: "11px", color: "#6b7280" }}>({plSection})</span>
+                                              )}
+                                            </div>
+                                          )}
+
                                           <div style={{ color: "#4b5563", lineHeight: "1.4" }}>
                                             This account is currently quarantined to ensure unverified expenses are not included. Select how it should be mapped:
                                           </div>
@@ -3027,6 +3127,68 @@ export default function AlertSelectionView({
         )}
 
       </div>
+
+        {/* Full AutoLog entry modal */}
+        {autoLogModalAlert && (
+          <div style={styles.modalOverlay} onClick={e => { if (e.target === e.currentTarget) setAutoLogModalAlert(null); }}>
+            <div style={{ ...styles.modalCard, maxWidth: "680px", width: "95%" }}>
+              <h3 style={styles.modalTitle}>AutoLog entry: Retroactive P&L outgoings update</h3>
+              <p style={{ ...styles.modalSubtitle, marginBottom: "8px" }}>
+                <strong>Client:</strong> {autoLogModalAlert.clientName}
+                {autoLogModalAlert.timestamp && <span style={{ marginLeft: "10px" }}>• <strong>Timestamp:</strong> {autoLogModalAlert.timestamp}</span>}
+              </p>
+              {autoLogModalAlert.heading && (
+                <div style={{ fontSize: "12px", fontWeight: "600", color: "#374151", marginBottom: "8px" }}>
+                  {autoLogModalAlert.heading}
+                </div>
+              )}
+              <div style={{
+                fontFamily: "monospace",
+                fontSize: "11px",
+                color: "#1e293b",
+                backgroundColor: "#f8fafc",
+                border: "1px solid #cbd5e1",
+                borderRadius: "6px",
+                padding: "10px 12px",
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+                maxHeight: "380px",
+                overflowY: "auto"
+              }}>
+                {isAdmin
+                  ? (autoLogModalAlert.detail || autoLogModalAlert.detailsSnippet || autoLogModalAlert.metadata?.details || "")
+                  : String(autoLogModalAlert.detail || autoLogModalAlert.detailsSnippet || autoLogModalAlert.metadata?.details || "")
+                      .split(/\r?\n/)
+                      .map(l => (l.match(/^\s*/)?.[0] || "") + sanitizeSpreadsheetTerms(l.trim()))
+                      .join("\n")
+                }
+              </div>
+              <div style={{ ...styles.modalButtons, marginTop: "16px", display: "flex", justifyContent: "flex-end", gap: "8px" }}>
+                <button
+                  type="button"
+                  className="triage-btn"
+                  onClick={() => {
+                    const txt = autoLogModalAlert.detail || autoLogModalAlert.detailsSnippet || autoLogModalAlert.metadata?.details || "";
+                    navigator.clipboard.writeText(txt);
+                    setCopiedAutoLog(true);
+                    setTimeout(() => setCopiedAutoLog(false), 2000);
+                  }}
+                  style={styles.buttonSecondary}
+                >
+                  {copiedAutoLog ? "Copied" : "Copy to clipboard"}
+                </button>
+                <button
+                  type="button"
+                  className="triage-btn"
+                  onClick={() => setAutoLogModalAlert(null)}
+                  style={{ ...styles.buttonSecondary, background: "#1f2937", color: "#fff", borderColor: "#1f2937" }}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
       {retainerAlertResolution && (
         <RetainerAlertResolutionModal

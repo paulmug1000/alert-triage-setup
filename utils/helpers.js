@@ -991,6 +991,50 @@ export function parseDirectCostsMismatchDetail(detail = "") {
   return result;
 }
 
+/**
+ * Parse structured basic vs. detailed lines from a retroactive_outgoings_update alert detail.
+ * Returns basic lines (intro + category deltas) and flags whether extra transaction-level
+ * attribution details are available for inline expansion / modal view.
+ */
+export function parseRetroactiveOutgoingsDetail(detail = "") {
+  const raw = String(detail || "").trim();
+  if (!raw) {
+    return {
+      basicLines: [],
+      basicText: "",
+      fullText: "",
+      hasMoreDetails: false,
+    };
+  }
+
+  const lines = raw.split(/\r?\n/);
+  const basicLines = [];
+  let foundSubDetails = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    // Detect indented transaction-level sub-details (e.g. "  - Added new transaction...", "  - ...", "\t- ...")
+    const isSubDetail = /^\s{2,}-|^\t+-|^\s+-\s+/i.test(line);
+
+    if (isSubDetail) {
+      foundSubDetails = true;
+    } else {
+      basicLines.push(line);
+    }
+  }
+
+  const hasMoreDetails = foundSubDetails || lines.length > basicLines.length;
+
+  return {
+    basicLines,
+    basicText: basicLines.join("\n"),
+    fullText: raw,
+    hasMoreDetails,
+  };
+}
+
 
 export function filterAnalysisResultsForAlert(results, flagDetail) {
   if (!Array.isArray(results) || results.length <= 1 || !flagDetail) {

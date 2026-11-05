@@ -383,15 +383,34 @@ export async function fetchClientReconciledBankTransactions({
   transactions.sort((a, b) => (a.date || "").localeCompare(b.date || ""));
   nonCashTransactions.sort((a, b) => (a.date || "").localeCompare(b.date || ""));
 
-  // Strictly filter transactions to target month date range
+  // Helper: Detect internal pot transfers within the same bank account (ALL pot transfers are excluded)
+  const isInternalPotTransfer = (tx) => {
+    const acc = (tx.accountName || "").trim().toLowerCase();
+    const payee = (tx.payee || "").trim().toLowerCase();
+    const part = (tx.particulars || "").trim().toLowerCase();
+
+    const isSubOfAccount = acc && (
+      payee.startsWith(acc + ":") ||
+      part.startsWith(acc + ":") ||
+      (acc.includes(" ") && (payee.startsWith(acc + " - ") || part.startsWith(acc + " - ")))
+    );
+
+    return Boolean(isSubOfAccount);
+  };
+
+  // Strictly filter transactions to target month date range and exclude internal pot transfers
   const filteredTxns = transactions.filter(tx => {
     if (!tx.date) return false;
-    return tx.date >= startDate && tx.date <= endDate;
+    if (tx.date < startDate || tx.date > endDate) return false;
+    if (isInternalPotTransfer(tx)) return false;
+    return true;
   });
 
   const filteredNonCashTxns = nonCashTransactions.filter(tx => {
     if (!tx.date) return false;
-    return tx.date >= startDate && tx.date <= endDate;
+    if (tx.date < startDate || tx.date > endDate) return false;
+    if (isInternalPotTransfer(tx)) return false;
+    return true;
   });
 
   // Train learning map from historical recon tabs if reconSheetId provided

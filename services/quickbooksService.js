@@ -398,7 +398,29 @@ export async function fetchQuickBooksAccountTransactions({ accessToken, realmId,
       (trData?.QueryResponse?.Transfer || []).forEach(tr => {
         const toAcc = tr.ToAccountRef?.value;
         const fromAcc = tr.FromAccountRef?.value;
+        const toName = (tr.ToAccountRef?.name || "").trim();
+        const fromName = (tr.FromAccountRef?.name || "").trim();
         const amount = Math.abs(parseFloat(tr.Amount) || 0);
+
+        // Safe exclusion of internal pot/space transfers within the same bank account:
+        // The transfers setting is designed to work with EXTERNAL bank accounts.
+        // ALL "pot" / "space" transfers within the same bank account (e.g. "Starling Bank" and "Starling Bank:Marketing",
+        // "Starling Bank:Tax", or between two pots of the same parent) MUST be excluded completely.
+        const isFromSub = fromName.includes(":");
+        const isToSub = toName.includes(":");
+        const fromParent = isFromSub ? fromName.split(":")[0].trim().toLowerCase() : fromName.toLowerCase();
+        const toParent = isToSub ? toName.split(":")[0].trim().toLowerCase() : toName.toLowerCase();
+
+        const isSameParentHierarchy = (isFromSub || isToSub) && (
+          fromParent === toParent ||
+          fromName.toLowerCase().startsWith(toName.toLowerCase() + ":") ||
+          toName.toLowerCase().startsWith(fromName.toLowerCase() + ":")
+        );
+
+        if (isSameParentHierarchy) {
+          // Skip ALL pot transfers within the same bank account
+          return;
+        }
 
         if (toAcc === String(accountId)) {
           results.push({

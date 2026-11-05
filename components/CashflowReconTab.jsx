@@ -368,10 +368,8 @@ export default function CashflowReconTab({
 
   const combinedTransferTxVal = useMemo(() => {
     if (!effectiveReconActuals) return null;
-    return isCombinedTransferMode
-      ? (effectiveReconActuals.transfer || 0)
-      : (effectiveReconActuals.transfer || 0) + (effectiveReconActuals.corpTax || 0) + (effectiveReconActuals.vat || 0);
-  }, [effectiveReconActuals, isCombinedTransferMode]);
+    return (effectiveReconActuals.transfer || 0) + (effectiveReconActuals.corpTax || 0) + (effectiveReconActuals.vat || 0);
+  }, [effectiveReconActuals]);
 
   // Helper: retrieves transaction amount for a given category from effective recon actuals
   const getCategoryTxAmount = useCallback((itemType, rowLabel = "") => {
@@ -3169,7 +3167,7 @@ export default function CashflowReconTab({
                                                 }}
                                               >
                                                 <span style={{ fontSize: "9px", fontWeight: "700", color: "#0369a1", textTransform: "uppercase", letterSpacing: "0.03em" }}>
-                                                  Transfer
+                                                  Tax total
                                                 </span>
                                                 {isAvailable ? (
                                                   <span

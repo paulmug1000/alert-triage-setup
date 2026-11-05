@@ -1407,10 +1407,26 @@ export default function CashflowWorkbenchView({
       const cat = getResolvedCategory(tx);
       const inVal = parseAmount(tx.inAmount || tx.inAmt);
       const outVal = parseAmount(tx.outAmount || tx.outAmt);
-      if (cat === "Revenue" || cat === "Non-operating income") {
-        totals[cat] = (totals[cat] || 0) + inVal;
+      let canonicalKey = cat;
+      const lower = (cat || "").toLowerCase();
+      if (lower.includes("corp")) canonicalKey = "Corp tax";
+      else if (lower === "vat" || lower.includes("vat")) canonicalKey = "VAT";
+      else if (lower === "transfer" || lower.includes("transfer")) canonicalKey = "Transfer";
+      else if (lower === "salaries" || lower === "salary") canonicalKey = "Salaries";
+      else if (lower === "paye") canonicalKey = "PAYE";
+      else if (lower === "pension") canonicalKey = "Pension";
+      else if (lower === "dividends" || lower === "dividend") canonicalKey = "Dividends";
+      else if (lower === "contractors" || lower === "contractor") canonicalKey = "Contractors";
+      else if (lower === "direct costs" || lower === "direct cost") canonicalKey = "Direct costs";
+      else if (lower === "outgoings" || lower === "outgoing") canonicalKey = "Outgoings";
+      else if (lower.includes("non-operating income")) canonicalKey = "Non-operating income";
+      else if (lower.includes("non-operating expense")) canonicalKey = "Non-operating expenses";
+      else if (lower === "revenue") canonicalKey = "Revenue";
+
+      if (canonicalKey === "Revenue" || canonicalKey === "Non-operating income") {
+        totals[canonicalKey] = (totals[canonicalKey] || 0) + inVal;
       } else {
-        totals[cat] = (totals[cat] || 0) + outVal;
+        totals[canonicalKey] = (totals[canonicalKey] || 0) + outVal;
       }
     });
 
@@ -1437,15 +1453,15 @@ export default function CashflowWorkbenchView({
       if (cat.includes("non-operating income")) nonOperatingIncome += netVal;
       else if (cat.includes("non-operating expense")) nonOperatingExpenses += netVal;
       else if (cat === "revenue") revenue += netVal;
-      else if (cat === "salaries" || cat === "paye" || cat === "pension") salaries += netVal;
-      else if (cat === "dividends") dividends += netVal;
-      else if (cat === "contractors") contractors += netVal;
-      else if (cat === "direct costs") directCosts += netVal;
-      else if (cat === "outgoings") outgoings += netVal;
-      else if (cat === "vat") vat += netVal;
-      else if (cat === "corp tax") corpTax += netVal;
-      else if (cat === "transfer") transfer += netVal;
-      else if (cat === "other") other += netVal;
+      else if (cat === "salaries" || cat === "salary" || cat === "paye" || cat === "pension" || cat === "payroll" || cat === "wages") salaries += netVal;
+      else if (cat === "dividends" || cat === "dividend") dividends += netVal;
+      else if (cat === "contractors" || cat === "contractor") contractors += netVal;
+      else if (cat === "direct costs" || cat === "direct cost") directCosts += netVal;
+      else if (cat === "outgoings" || cat === "outgoing") outgoings += netVal;
+      else if (cat === "vat" || cat.includes("vat")) vat += netVal;
+      else if (cat === "corp tax" || cat === "corporation tax" || cat.includes("corp")) corpTax += netVal;
+      else if (cat === "transfer" || cat.includes("transfer")) transfer += netVal;
+      else if (cat === "other" || cat.includes("other")) other += netVal;
     });
 
     return {
@@ -1546,12 +1562,10 @@ export default function CashflowWorkbenchView({
   // Direct local getters for Cashflow finalisation sub-tab so transaction list edits reflect in 0ms on the same render pass
   const localCombinedTransferTxVal = useMemo(() => {
     if (liveSignedActuals) {
-      return isCombinedTransferMode
-        ? (liveSignedActuals.transfer || 0)
-        : (liveSignedActuals.transfer || 0) + (liveSignedActuals.corpTax || 0) + (liveSignedActuals.vat || 0);
+      return (liveSignedActuals.transfer || 0) + (liveSignedActuals.corpTax || 0) + (liveSignedActuals.vat || 0);
     }
     return combinedTransferTxVal;
-  }, [liveSignedActuals, isCombinedTransferMode, combinedTransferTxVal]);
+  }, [liveSignedActuals, combinedTransferTxVal]);
 
   const localGetCategoryTxAmount = useCallback((itemType, rowLabel = "") => {
     const recon = liveSignedActuals || reconData?.reconActuals;
@@ -3511,7 +3525,7 @@ export default function CashflowWorkbenchView({
                                       gap: "3px"
                                     }}>
                                       <span style={{ fontSize: "8.5px", fontWeight: "700", color: "#0369a1", textTransform: "uppercase" }}>
-                                        Transfer
+                                        Tax total
                                       </span>
                                       {isAvailable ? (
                                         <span
@@ -5434,7 +5448,18 @@ export default function CashflowWorkbenchView({
                                 <tr key={idx} style={{ borderBottom: "1px solid #f1f5f9" }}>
                                   <td style={{ padding: "6px 12px", color: "#64748b" }}>{formatDateDMmmYy(u.date)}</td>
                                   <td style={{ padding: "6px 12px", color: "#0369a1", fontWeight: "600" }}>{u.accountName || defaultAccount}</td>
-                                  <td style={{ padding: "6px 12px", fontWeight: "600", color: "#1e293b" }}>{u.payee || u.particulars || "—"}</td>
+                                  <td style={{ padding: "6px 12px", color: "#1e293b", minWidth: 0 }}>
+                                    <div style={{ fontWeight: "600" }}>{u.payee || u.particulars || "—"}</div>
+                                    {(u.particulars && u.particulars !== u.payee) ? (
+                                      <div style={{ fontSize: "10.5px", color: "#64748b", marginTop: "2px" }}>
+                                        {u.particulars}
+                                      </div>
+                                    ) : (u.reference && u.reference !== u.payee) ? (
+                                      <div style={{ fontSize: "10.5px", color: "#64748b", marginTop: "2px" }}>
+                                        {u.reference}
+                                      </div>
+                                    ) : null}
+                                  </td>
                                   <td style={{ padding: "6px 12px", textAlign: "right", fontWeight: "600", color: u.outAmount > 0 ? "#b91c1c" : "#15803d" }}>
                                     {formatAmount2DP(u.outAmount || u.inAmount || u.amount)}
                                   </td>
@@ -5594,8 +5619,19 @@ export default function CashflowWorkbenchView({
                                 <td style={{ padding: "6px 8px", color: "#0369a1", fontWeight: "600", whiteSpace: "nowrap" }}>
                                   {t.accountName || defaultAccount}
                                 </td>
-                                <td style={{ padding: "6px 8px", fontWeight: "600", color: "#1e293b" }}>
-                                  {t.payee || t.particulars || "—"}
+                                <td style={{ padding: "6px 8px", color: "#1e293b", minWidth: 0 }}>
+                                  <div style={{ fontWeight: "600", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                    {t.payee || t.particulars || "—"}
+                                  </div>
+                                  {(t.particulars && t.particulars !== t.payee) ? (
+                                    <div style={{ fontSize: "10px", color: "#64748b", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginTop: "2px" }}>
+                                      {t.particulars}
+                                    </div>
+                                  ) : (t.reference && t.reference !== t.payee) ? (
+                                    <div style={{ fontSize: "10px", color: "#64748b", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginTop: "2px" }}>
+                                      {t.reference}
+                                    </div>
+                                  ) : null}
                                 </td>
                                 <td style={{ padding: "6px 8px", textAlign: "center" }}>
                                   <span style={{

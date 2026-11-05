@@ -417,6 +417,35 @@ export async function fetchXeroAccountTransactions({ accessToken, tenantId, acco
         const isTo = toId === accountId;
         if (!isFrom && !isTo) return;
 
+        const fromName = (xf.FromBankAccount?.Name || "").trim();
+        const toName = (xf.ToBankAccount?.Name || "").trim();
+
+        // Safe exclusion of internal pot/space transfers within the same bank account:
+        // The transfers setting is designed to work with EXTERNAL bank accounts.
+        // ALL "pot" / "space" transfers within the same bank account MUST be excluded completely.
+        const isFromSub = fromName.includes(":") || fromName.includes(" - ");
+        const isToSub = toName.includes(":") || toName.includes(" - ");
+        const getParent = (n) => {
+          if (n.includes(":")) return n.split(":")[0].trim().toLowerCase();
+          if (n.includes(" - ")) return n.split(" - ")[0].trim().toLowerCase();
+          return n.toLowerCase();
+        };
+        const fromParent = getParent(fromName);
+        const toParent = getParent(toName);
+
+        const isSameParentHierarchy = (isFromSub || isToSub) && (
+          fromParent === toParent ||
+          fromName.toLowerCase().startsWith(toName.toLowerCase() + ":") ||
+          toName.toLowerCase().startsWith(fromName.toLowerCase() + ":") ||
+          fromName.toLowerCase().startsWith(toName.toLowerCase() + " - ") ||
+          toName.toLowerCase().startsWith(fromName.toLowerCase() + " - ")
+        );
+
+        if (isSameParentHierarchy) {
+          // Skip ALL pot transfers within the same bank account
+          return;
+        }
+
         const rawDate = parseXeroDate(xf.Date, xf.DateString);
         const total = Math.abs(parseFloat(xf.Amount) || 0);
         const otherAccountName = isFrom ? (xf.ToBankAccount?.Name || "Other Account") : (xf.FromBankAccount?.Name || "Other Account");

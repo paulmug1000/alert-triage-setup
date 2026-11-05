@@ -583,6 +583,17 @@ export async function getCashflowReconData({
             }
           }
 
+          // Safe exclusion of internal pot transfers within the same bank account:
+          // The transfers setting works with EXTERNAL bank accounts. ALL pot transfers within the same bank account are excluded.
+          const isSubPot = accountName && (
+            payee.toLowerCase().startsWith(accountName.toLowerCase() + ":") ||
+            particulars.toLowerCase().startsWith(accountName.toLowerCase() + ":") ||
+            (accountName.includes(" ") && (payee.toLowerCase().startsWith(accountName.toLowerCase() + " - ") || particulars.toLowerCase().startsWith(accountName.toLowerCase() + " - ")))
+          );
+          if (isSubPot) {
+            return null;
+          }
+
           return {
             rowNum: i + 3,
             date,
@@ -597,7 +608,7 @@ export async function getCashflowReconData({
             isNew,
             source: "recon_sheet"
           };
-        }).filter(t => t.date || t.payee || t.outAmount || t.inAmount);
+        }).filter(t => t && (t.date || t.payee || t.outAmount || t.inAmount));
 
         // Parse [2] Comparisons from U3:X16 (Categories) + U20:X50 (Forecasts)
         const rawCompRows = vRanges[2]?.values || [];

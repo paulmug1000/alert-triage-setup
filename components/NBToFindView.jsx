@@ -159,7 +159,7 @@ export default function NBToFindView({
             setLoading(false);
             return;
           }
-        } catch {}
+        } catch { }
       }
     }
 
@@ -255,8 +255,23 @@ export default function NBToFindView({
       });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || "Failed to save settings");
-      await fetchNBData(selectedClient, true, true);
+      if (newTargets !== undefined) setTargetsSetting(newTargets);
+      if (newBudget !== undefined) setBudgetSetting(newBudget);
+      if (newDirectPct !== undefined) setDirectCostsPct(newDirectPct);
+      setNbData((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          settings: {
+            ...prev.settings,
+            useTargets: newTargets !== undefined ? newTargets : prev.settings?.useTargets,
+            useBudgetForIncomeTargets: newBudget !== undefined ? newBudget : prev.settings?.useBudgetForIncomeTargets,
+            directCostsPercentage: newDirectPct !== undefined ? newDirectPct : prev.settings?.directCostsPercentage,
+          },
+        };
+      });
       showSuccess("Updated New Business configuration settings.");
+      fetchNBData(selectedClient, true, true);
     } catch (err) {
       console.error("Save settings error:", err);
       setError(err.message || "Failed to save settings");
@@ -289,8 +304,33 @@ export default function NBToFindView({
       });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || "Failed to update month status");
+      setNbData((prev) => {
+        if (!prev?.sections?.row25?.fyData) return prev;
+        const newFyData = { ...prev.sections.row25.fyData };
+        Object.keys(newFyData).forEach((fyKey) => {
+          const fy = newFyData[fyKey];
+          if (fy?.months) {
+            newFyData[fyKey] = {
+              ...fy,
+              months: fy.months.map((m) =>
+                m.colLetter === colLetter ? { ...m, value: nextVal } : m
+              ),
+            };
+          }
+        });
+        return {
+          ...prev,
+          sections: {
+            ...prev.sections,
+            row25: {
+              ...prev.sections.row25,
+              fyData: newFyData,
+            },
+          },
+        };
+      });
       showSuccess(isSysAdmin ? `Updated ${colLetter}25 to ${nextVal}.` : `Updated month status to ${nextVal}.`);
-      await fetchNBData(selectedClient, true, true);
+      fetchNBData(selectedClient, true, true);
     } catch (err) {
       console.error("Toggle month error:", err);
       setError(err.message || "Failed to update month status");
@@ -320,9 +360,37 @@ export default function NBToFindView({
       });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || "Failed to save targets");
+      const rowKey = `row${editingTargetsRow}`;
+      setNbData((prev) => {
+        if (!prev?.sections?.[rowKey]?.fyData) return prev;
+        const newFyData = { ...prev.sections[rowKey].fyData };
+        Object.keys(newFyData).forEach((fyKey) => {
+          const fy = newFyData[fyKey];
+          if (fy?.months) {
+            newFyData[fyKey] = {
+              ...fy,
+              months: fy.months.map((m) =>
+                targetInputs[m.colLetter] !== undefined
+                  ? { ...m, value: targetInputs[m.colLetter] }
+                  : m
+              ),
+            };
+          }
+        });
+        return {
+          ...prev,
+          sections: {
+            ...prev.sections,
+            [rowKey]: {
+              ...prev.sections[rowKey],
+              fyData: newFyData,
+            },
+          },
+        };
+      });
       setEditingTargets(false);
       showSuccess(`Saved monthly ${modeTermLower} targets${isSysAdmin ? ` (Row ${editingTargetsRow})` : ""} successfully.`);
-      await fetchNBData(selectedClient, true, true);
+      fetchNBData(selectedClient, true, true);
     } catch (err) {
       console.error("Save targets error:", err);
       setError(err.message || "Failed to save targets");
@@ -357,9 +425,37 @@ export default function NBToFindView({
       });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || "Failed to update value");
+      const rowKey = `row${editingSingleCell.rowNum}`;
+      setNbData((prev) => {
+        if (!prev?.sections?.[rowKey]?.fyData) return prev;
+        const newFyData = { ...prev.sections[rowKey].fyData };
+        Object.keys(newFyData).forEach((fyKey) => {
+          const fy = newFyData[fyKey];
+          if (fy?.months) {
+            newFyData[fyKey] = {
+              ...fy,
+              months: fy.months.map((m) =>
+                m.colLetter === editingSingleCell.colLetter
+                  ? { ...m, value: singleCellValue, note: singleCellNoteValue }
+                  : m
+              ),
+            };
+          }
+        });
+        return {
+          ...prev,
+          sections: {
+            ...prev.sections,
+            [rowKey]: {
+              ...prev.sections[rowKey],
+              fyData: newFyData,
+            },
+          },
+        };
+      });
       setEditingSingleCell(null);
       showSuccess(`Updated ${editingSingleCell.label} amount.`);
-      await fetchNBData(selectedClient, true, true);
+      fetchNBData(selectedClient, true, true);
     } catch (err) {
       console.error("Save single cell error:", err);
       setError(err.message || "Failed to update value");
@@ -572,8 +668,8 @@ export default function NBToFindView({
                   targetsSetting === "Yes" && budgetSetting === "Yes"
                     ? (isSysAdmin ? "Targets are derived from Budget!Row 26" : "Targets are derived from the budget")
                     : targetsSetting === "Yes"
-                    ? `Edit monthly total ${modeTermLower} targets${isSysAdmin ? " (Row 10)" : ""}`
-                    : `Edit monthly new business ${modeTermLower} figures${isSysAdmin ? " (Row 3)" : ""}`
+                      ? `Edit monthly total ${modeTermLower} targets${isSysAdmin ? " (Row 10)" : ""}`
+                      : `Edit monthly new business ${modeTermLower} figures${isSysAdmin ? " (Row 3)" : ""}`
                 }
                 style={{
                   padding: "7px 14px",

@@ -296,10 +296,10 @@ export default function ExpensesView({
           expenses: prev.expenses.map((e) =>
             e.sheetRow === exp.sheetRow
               ? {
-                  ...e,
-                  deliveryPct: targetIsDelivery ? "100%" : "0%",
-                  isDelivery: targetIsDelivery,
-                }
+                ...e,
+                deliveryPct: targetIsDelivery ? "100%" : "0%",
+                isDelivery: targetIsDelivery,
+              }
               : e
           ),
         };
@@ -433,7 +433,7 @@ export default function ExpensesView({
       if (!res.ok || !data.success) throw new Error(data.error || "Failed to add expense");
       setNewExpName("");
       showSuccess(`Added new expense "${newExpName.trim()}" successfully.`);
-      await fetchExpenses(selectedClient, true, true);
+      fetchExpenses(selectedClient, true, true);
     } catch (err) {
       console.error("Add expense error:", err);
       setError(err.message || "Failed to add expense");

@@ -380,9 +380,29 @@ export default function SalariesView({
       if (!res.ok || !data.success) {
         throw new Error(data.error || "Failed to save delivery %");
       }
+      setSalariesData((prev) => {
+        if (!prev?.dividends?.fyConfigs) return prev;
+        const nextFyConfigs = prev.dividends.fyConfigs.map((fy, idx) => {
+          if (idx !== selectedFyIdx) return fy;
+          return {
+            ...fy,
+            row118: {
+              ...fy.row118,
+              deliveryPct: dividendPctInput,
+            },
+          };
+        });
+        return {
+          ...prev,
+          dividends: {
+            ...prev.dividends,
+            fyConfigs: nextFyConfigs,
+          },
+        };
+      });
       setEditingDividendPct(false);
       showSuccess("Updated Dividends Delivery % successfully.");
-      await fetchSalaries(selectedClient, true, true);
+      fetchSalaries(selectedClient, true, true);
     } catch (err) {
       console.error("Save dividend pct error:", err);
       setError(err.message || "Error saving delivery %");
@@ -398,6 +418,7 @@ export default function SalariesView({
     setSaving(true);
     setError(null);
     try {
+      const targetRow = editingDividendMonth?.sheetRow || 118;
       const res = await fetch("/api/pma/salaries", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -406,7 +427,7 @@ export default function SalariesView({
           clientName: selectedClient.clientName,
           masterSheetId: selectedClient.masterSheetId,
           clientSheetId: selectedClient.clientSheetId,
-          sheetRow: editingDividendMonth?.sheetRow || 118,
+          sheetRow: targetRow,
           monthlyAmounts: {
             [colLetter]: newVal,
           },
@@ -416,9 +437,34 @@ export default function SalariesView({
       if (!res.ok || !data.success) {
         throw new Error(data.error || "Failed to save dividend amount");
       }
+      setSalariesData((prev) => {
+        if (!prev?.dividends?.fyConfigs) return prev;
+        const rowProp = targetRow === 119 ? "row119" : "row118";
+        const nextFyConfigs = prev.dividends.fyConfigs.map((fy) => {
+          const rowObj = fy[rowProp];
+          if (!rowObj?.months) return fy;
+          const updatedMonths = rowObj.months.map((m) =>
+            m.colLetter === colLetter ? { ...m, value: newVal } : m
+          );
+          return {
+            ...fy,
+            [rowProp]: {
+              ...rowObj,
+              months: updatedMonths,
+            },
+          };
+        });
+        return {
+          ...prev,
+          dividends: {
+            ...prev.dividends,
+            fyConfigs: nextFyConfigs,
+          },
+        };
+      });
       setEditingDividendMonth(null);
       showSuccess("Updated dividend amount successfully.");
-      await fetchSalaries(selectedClient, true, true);
+      fetchSalaries(selectedClient, true, true);
     } catch (err) {
       console.error("Save dividend amount error:", err);
       setError(err.message || "Error saving dividend amount");

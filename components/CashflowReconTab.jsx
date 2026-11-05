@@ -90,15 +90,32 @@ export default function CashflowReconTab({
   const [pulseNoteDraft, setPulseNoteDraft] = useState("");
   const [savingNote, setSavingNote] = useState(false);
 
-  // Status for Reconciled & ready for automated P&L updates
+  // Status and visual progress for Reconciled & ready automated P&L updates
   const [updatingReconStatus, setUpdatingReconStatus] = useState(false);
-  const [outgoingsSyncStatus, setOutgoingsSyncStatus] = useState(null);
+  const [outgoingsSyncProgress, setOutgoingsSyncProgress] = useState({
+    active: false,
+    percent: 0,
+    stage: "", // "saving", "syncing", "done", "error"
+    message: ""
+  });
+  const [salariesDrawerOpen, setSalariesDrawerOpen] = useState(false);
 
   const handleToggleReconciledComplete = async () => {
     const tabName = reconData?.reconTabName || reconData?.tabName;
     if (!currentClientInfo?.reconSheetId || !tabName || updatingReconStatus) return;
     const nextVal = !reconData?.isReconciledComplete;
     setUpdatingReconStatus(true);
+
+    // Initial state: show progress bar at 15%
+    setOutgoingsSyncProgress({
+      active: true,
+      percent: 15,
+      stage: "saving",
+      message: "Saving reconciliation status…"
+    });
+
+    let ticker = null;
+
     try {
       const resp = await fetch("/api/triage", {
         method: "POST",
@@ -118,55 +135,69 @@ export default function CashflowReconTab({
       if (!data.success) throw new Error(data.error || "Failed to update status");
 
       setReconData(prev => prev ? ({ ...prev, isReconciledComplete: nextVal }) : prev);
-      setUpdatingReconStatus(false);
 
-      // Show subtle inline progress beneath the checkbox while Outgoings actuals sync runs
-      setOutgoingsSyncStatus({
-        state: "syncing",
-        text: nextVal
+      // Advance to stage 2: pushing to Outgoings
+      setOutgoingsSyncProgress({
+        active: true,
+        percent: 32,
+        stage: "syncing",
+        message: nextVal
           ? "Pushing reconciled actuals to Outgoings…"
           : "Reverting month to forecast in Outgoings…"
       });
 
-      try {
-        const syncResp = await fetch("/api/triage", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: "sync_client_expense_breakdown",
-            clientName: selectedClient,
-            clientSheetId: currentClientInfo?.clientSheetId,
-            masterSheetId: currentClientInfo?.masterSheetId,
-            automationCommanderSheetId
-          })
+      // Smoothly advance progress bar from 32% to ~88% while backend automation runs
+      ticker = setInterval(() => {
+        setOutgoingsSyncProgress(prev => {
+          if (!prev.active || prev.stage !== "syncing") return prev;
+          if (prev.percent >= 88) return prev;
+          const step = Math.max(1, Math.floor((88 - prev.percent) / 5));
+          return { ...prev, percent: prev.percent + step };
         });
-        const syncData = await syncResp.json();
-        if (syncData?.success) {
-          setOutgoingsSyncStatus({
-            state: "done",
-            text: nextVal
-              ? "✓ Outgoings updated with actuals"
-              : "✓ Outgoings reverted to forecast"
-          });
-          setTimeout(() => {
-            setOutgoingsSyncStatus(prev => (prev?.state === "done" ? null : prev));
-          }, 8000);
-        } else {
-          throw new Error(syncData?.error || "Sync returned an error");
-        }
-      } catch (syncErr) {
-        console.warn("Failed to trigger P&L breakdown sync:", syncErr);
-        setOutgoingsSyncStatus({
-          state: "error",
-          text: "Could not push actuals to Outgoings — please try toggling again"
+      }, 1400);
+
+      const syncResp = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "sync_client_expense_breakdown",
+          clientName: selectedClient,
+          clientSheetId: currentClientInfo?.clientSheetId,
+          masterSheetId: currentClientInfo?.masterSheetId,
+          automationCommanderSheetId
+        })
+      });
+
+      if (ticker) clearInterval(ticker);
+
+      const syncData = await syncResp.json();
+      if (syncData?.success) {
+        setOutgoingsSyncProgress({
+          active: true,
+          percent: 100,
+          stage: "done",
+          message: nextVal
+            ? "✓ Outgoings updated with actuals"
+            : "✓ Outgoings reverted to forecast"
         });
         setTimeout(() => {
-          setOutgoingsSyncStatus(prev => (prev?.state === "error" ? null : prev));
+          setOutgoingsSyncProgress(prev => (prev.stage === "done" ? { active: false, percent: 0, stage: "", message: "" } : prev));
         }, 8000);
+      } else {
+        throw new Error(syncData?.error || "Sync returned an error");
       }
-    } catch (err) {
-      setError(`Failed to update reconciliation status: ${err.message}`);
-      setTimeout(() => setError(""), 4000);
+    } catch (syncErr) {
+      if (ticker) clearInterval(ticker);
+      console.warn("Failed to update reconciliation or sync outgoings:", syncErr);
+      setOutgoingsSyncProgress({
+        active: true,
+        percent: 100,
+        stage: "error",
+        message: "Could not push actuals — click to retry"
+      });
+      setTimeout(() => {
+        setOutgoingsSyncProgress(prev => (prev.stage === "error" ? { active: false, percent: 0, stage: "", message: "" } : prev));
+      }, 8000);
     } finally {
       setUpdatingReconStatus(false);
     }
@@ -1712,6 +1743,77 @@ export default function CashflowReconTab({
     return elements;
   }, [reconData, isCombinedTransferMode]);
 
+  // Salaries Breakdown Elements (Wages, PAYE/HMRC, Pension) for Option B expandable drawer
+  const salariesBreakdown = useMemo(() => {
+    const comps = reconData?.cashflowComparisons || [];
+
+    const wagesItem = comps.find(c => {
+      const l = (c.label || "").toLowerCase();
+      return l.includes("payroll") || (l.includes("salar") && !l.includes("total"));
+    });
+    const payeItem = comps.find(c => (c.label || "").toLowerCase().includes("paye"));
+    const pensionItem = comps.find(c => (c.label || "").toLowerCase().includes("pension"));
+
+    const parseOrZero = (str) => {
+      if (!str && str !== 0) return 0;
+      if (typeof str === "number") return isNaN(str) ? 0 : str;
+      const clean = String(str).replace(/[£,\s]/g, "");
+      const n = parseFloat(clean);
+      return isNaN(n) ? 0 : n;
+    };
+
+    const wagesPulse = parseOrZero(wagesItem?.cashflow);
+    const payePulse = parseOrZero(payeItem?.cashflow);
+    const pensionPulse = parseOrZero(pensionItem?.cashflow);
+
+    const wagesTx = Math.abs(parseOrZero(wagesItem?.bankRecon || wagesItem?.outAmount));
+    const payeTx = Math.abs(parseOrZero(payeItem?.bankRecon || payeItem?.outAmount));
+    const pensionTx = Math.abs(parseOrZero(pensionItem?.bankRecon || pensionItem?.outAmount));
+
+    const wagesDiff = wagesTx - wagesPulse;
+    const payeDiff = payeTx - payePulse;
+    const pensionDiff = pensionTx - pensionPulse;
+
+    const totalPulse = wagesPulse + payePulse + pensionPulse;
+    const totalTx = wagesTx + payeTx + pensionTx;
+    const totalDiff = totalTx - totalPulse;
+
+    return [
+      {
+        key: "wages",
+        label: "Wages / Net payroll",
+        subLabel: "Staff bank payments",
+        pulse: wagesPulse,
+        tx: wagesTx,
+        diff: wagesDiff
+      },
+      {
+        key: "paye",
+        label: "PAYE / HMRC",
+        subLabel: "PAYE & National Insurance (NICs)",
+        pulse: payePulse,
+        tx: payeTx,
+        diff: payeDiff
+      },
+      {
+        key: "pension",
+        label: "Pension",
+        subLabel: "Pension provider contributions",
+        pulse: pensionPulse,
+        tx: pensionTx,
+        diff: pensionDiff
+      },
+      {
+        key: "total",
+        label: "Total salaries",
+        isTotal: true,
+        pulse: totalPulse,
+        tx: totalTx,
+        diff: totalDiff
+      }
+    ];
+  }, [reconData?.cashflowComparisons]);
+
   // Dynamic grid column coordinates for modern card view
   const { gridTemplateColumns, colPositions, totalColPosition, txColPosition, spacerBeforeTarget, spacerAfterTarget } = useMemo(() => {
     if (!reconData?.selectedCols || reconData.selectedCols.length === 0) {
@@ -2007,22 +2109,65 @@ export default function CashflowReconTab({
                         </span>
                         {updatingReconStatus && <Spinner size={11} />}
                       </label>
-                      {outgoingsSyncStatus && (
+                      {/* Visual Progress Bar & Status for Outgoings P&L sync */}
+                      {outgoingsSyncProgress.active && (
                         <div style={{
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: "5px",
-                          paddingLeft: "4px",
-                          fontSize: "11px",
-                          fontWeight: "500",
-                          color: outgoingsSyncStatus.state === "error"
-                            ? "#dc2626"
-                            : outgoingsSyncStatus.state === "done"
-                              ? "#15803d"
-                              : "#64748b"
+                          width: "100%",
+                          minWidth: "240px",
+                          marginTop: "5px",
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: "4px",
+                          background: "#ffffff",
+                          border: "1px solid #e2e8f0",
+                          borderRadius: "6px",
+                          padding: "6px 8px",
+                          boxShadow: "0 1px 2px rgba(15, 23, 42, 0.05)"
                         }}>
-                          {outgoingsSyncStatus.state === "syncing" && <Spinner size={10} />}
-                          <span>{outgoingsSyncStatus.text}</span>
+                          {/* Track & Filling Bar */}
+                          <div style={{
+                            width: "100%",
+                            height: "6px",
+                            background: "#e2e8f0",
+                            borderRadius: "4px",
+                            overflow: "hidden"
+                          }}>
+                            <div style={{
+                              width: `${outgoingsSyncProgress.percent}%`,
+                              height: "100%",
+                              background: outgoingsSyncProgress.stage === "error"
+                                ? "#ef4444"
+                                : outgoingsSyncProgress.stage === "done"
+                                  ? "#16a34a"
+                                  : "linear-gradient(90deg, #0284c7 0%, #38bdf8 100%)",
+                              transition: "width 0.4s ease, background 0.3s ease",
+                              borderRadius: "4px"
+                            }} />
+                          </div>
+
+                          {/* Stage Message & Live Percentage */}
+                          <div style={{
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            fontSize: "11px",
+                            fontWeight: "500",
+                            color: outgoingsSyncProgress.stage === "error"
+                              ? "#dc2626"
+                              : outgoingsSyncProgress.stage === "done"
+                                ? "#15803d"
+                                : "#475569"
+                          }}>
+                            <span style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
+                              {(outgoingsSyncProgress.stage === "saving" || outgoingsSyncProgress.stage === "syncing") && <Spinner size={10} />}
+                              <span>{outgoingsSyncProgress.message}</span>
+                            </span>
+                            {outgoingsSyncProgress.stage !== "done" && outgoingsSyncProgress.stage !== "error" && (
+                              <span style={{ fontVariantNumeric: "tabular-nums", fontWeight: "700", fontSize: "10.5px", color: "#0284c7" }}>
+                                {outgoingsSyncProgress.percent}%
+                              </span>
+                            )}
+                          </div>
                         </div>
                       )}
                     </div>
@@ -3011,7 +3156,7 @@ export default function CashflowReconTab({
                                     style={{
                                       display: "grid",
                                       gridTemplateColumns: gridTemplateColumns,
-                                      gridTemplateRows: "auto auto",
+                                      gridTemplateRows: elem.mappedItemType === "salaries" && salariesDrawerOpen ? "auto auto auto" : "auto auto",
                                       background: "#ffffff",
                                       border: "1px solid #e2e8f0",
                                       borderRadius: "10px",
@@ -3039,10 +3184,36 @@ export default function CashflowReconTab({
                                         color: "#0f172a",
                                         borderBottom: "1px dashed #f1f5f9",
                                         display: "flex",
-                                        alignItems: "center"
+                                        alignItems: "center",
+                                        justifyContent: "space-between",
+                                        gap: "6px"
                                       }}
                                     >
                                       <span>{elem.title}</span>
+                                      {elem.mappedItemType === "salaries" && (
+                                        <button
+                                          type="button"
+                                          onClick={() => setSalariesDrawerOpen(prev => !prev)}
+                                          style={{
+                                            padding: "2px 7px",
+                                            background: salariesDrawerOpen ? "#eff6ff" : "#f1f5f9",
+                                            color: salariesDrawerOpen ? "#1d4ed8" : "#475569",
+                                            border: `1px solid ${salariesDrawerOpen ? "#93c5fd" : "#cbd5e1"}`,
+                                            borderRadius: "4px",
+                                            fontSize: "10.5px",
+                                            fontWeight: "600",
+                                            cursor: "pointer",
+                                            display: "inline-flex",
+                                            alignItems: "center",
+                                            gap: "4px",
+                                            transition: "all 0.15s ease"
+                                          }}
+                                          title={salariesDrawerOpen ? "Hide salaries element breakdown" : "Show salaries element breakdown (Wages, PAYE/HMRC, Pension)"}
+                                        >
+                                          <span>Breakdown</span>
+                                          <span style={{ fontSize: "9px" }}>{salariesDrawerOpen ? "▲" : "▼"}</span>
+                                        </button>
+                                      )}
                                     </div>
 
                                     {/* Spacers before/after Target Month */}
@@ -3399,6 +3570,124 @@ export default function CashflowReconTab({
                                         </div>
                                       );
                                     })}
+
+                                    {/* Expandable Salaries Breakdown Drawer (Option B) */}
+                                    {elem.mappedItemType === "salaries" && salariesDrawerOpen && salariesBreakdown && (
+                                      <div
+                                        style={{
+                                          gridColumn: "1 / -1",
+                                          gridRow: "3",
+                                          borderTop: "1px solid #e2e8f0",
+                                          background: "#f8fafc",
+                                          padding: "12px 18px"
+                                        }}
+                                      >
+                                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
+                                          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                            <span style={{ fontSize: "12px", fontWeight: "700", color: "#0f172a" }}>
+                                              Salaries element breakdown
+                                            </span>
+                                            <span style={{ fontSize: "11px", color: "#64748b" }}>
+                                              (Wages, PAYE/HMRC, Pension)
+                                            </span>
+                                          </div>
+                                          <button
+                                            type="button"
+                                            onClick={() => setSalariesDrawerOpen(false)}
+                                            style={{
+                                              border: "none",
+                                              background: "none",
+                                              fontSize: "11px",
+                                              color: "#64748b",
+                                              cursor: "pointer",
+                                              fontWeight: "600"
+                                            }}
+                                          >
+                                            Close ✕
+                                          </button>
+                                        </div>
+
+                                        <div style={{
+                                          background: "#ffffff",
+                                          borderRadius: "8px",
+                                          border: "1px solid #e2e8f0",
+                                          overflow: "hidden"
+                                        }}>
+                                          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "11.5px" }}>
+                                            <thead>
+                                              <tr style={{ background: "#f1f5f9", borderBottom: "1px solid #e2e8f0" }}>
+                                                <th style={{ textAlign: "left", padding: "6px 12px", fontWeight: "600", color: "#475569" }}>Element</th>
+                                                <th style={{ textAlign: "right", padding: "6px 12px", fontWeight: "600", color: "#475569" }}>Pulse forecast</th>
+                                                <th style={{ textAlign: "right", padding: "6px 12px", fontWeight: "600", color: "#475569" }}>Bank transaction</th>
+                                                <th style={{ textAlign: "right", padding: "6px 12px", fontWeight: "600", color: "#475569" }}>Difference</th>
+                                                <th style={{ textAlign: "center", padding: "6px 12px", fontWeight: "600", color: "#475569" }}>Status</th>
+                                              </tr>
+                                            </thead>
+                                            <tbody>
+                                              {salariesBreakdown.map((item) => {
+                                                const isMatch = Math.abs(item.diff) < 0.05;
+                                                const isZeroBoth = item.pulse === 0 && item.tx === 0;
+                                                return (
+                                                  <tr
+                                                    key={item.key}
+                                                    style={{
+                                                      borderBottom: item.isTotal ? "none" : "1px solid #f1f5f9",
+                                                      background: item.isTotal ? "#f8fafc" : "#ffffff",
+                                                      fontWeight: item.isTotal ? "700" : "400"
+                                                    }}
+                                                  >
+                                                    <td style={{ padding: "7px 12px", color: "#0f172a" }}>
+                                                      <div>{item.label}</div>
+                                                      {item.subLabel && <div style={{ fontSize: "10px", color: "#94a3b8" }}>{item.subLabel}</div>}
+                                                    </td>
+                                                    <td style={{ padding: "7px 12px", textAlign: "right", fontVariantNumeric: "tabular-nums", color: "#1e293b" }}>
+                                                      {formatGBP(item.pulse)}
+                                                    </td>
+                                                    <td style={{ padding: "7px 12px", textAlign: "right", fontVariantNumeric: "tabular-nums", color: "#1e293b" }}>
+                                                      {formatGBP(item.tx)}
+                                                    </td>
+                                                    <td style={{
+                                                      padding: "7px 12px",
+                                                      textAlign: "right",
+                                                      fontVariantNumeric: "tabular-nums",
+                                                      fontWeight: "600",
+                                                      color: isMatch || isZeroBoth ? "#16a34a" : (item.diff < 0 ? "#dc2626" : "#2563eb")
+                                                    }}>
+                                                      {formatGBP(item.diff)}
+                                                    </td>
+                                                    <td style={{ padding: "7px 12px", textAlign: "center" }}>
+                                                      {item.isTotal ? (
+                                                        <span style={{
+                                                          padding: "2px 8px",
+                                                          borderRadius: "10px",
+                                                          fontSize: "10.5px",
+                                                          fontWeight: "700",
+                                                          background: isMatch ? "#dcfce7" : "#fee2e2",
+                                                          color: isMatch ? "#166534" : "#991b1b"
+                                                        }}>
+                                                          {isMatch ? "Matched" : "Variance"}
+                                                        </span>
+                                                      ) : (
+                                                        <span style={{
+                                                          padding: "2px 8px",
+                                                          borderRadius: "10px",
+                                                          fontSize: "10px",
+                                                          fontWeight: "600",
+                                                          background: isMatch ? "#dcfce7" : (item.tx === 0 && item.pulse > 0 ? "#fef3c7" : "#fee2e2"),
+                                                          color: isMatch ? "#166534" : (item.tx === 0 && item.pulse > 0 ? "#92400e" : "#991b1b")
+                                                        }}>
+                                                          {isMatch ? "Matched" : (item.tx === 0 && item.pulse > 0 ? "Pending / unpaid" : "Mismatch")}
+                                                        </span>
+                                                      )}
+                                                    </td>
+                                                  </tr>
+                                                );
+                                              })}
+                                            </tbody>
+                                          </table>
+                                        </div>
+                                      </div>
+                                    )}
                                   </div>
                                 );
                               }

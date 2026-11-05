@@ -515,16 +515,18 @@ export default function OutgoingsView({
             rows: applyExpenseUpdatesToJobRows(j.rows, data.placed, placeholderUpdates, j.client, j.jobName)
           };
         }));
-        if (data.newRowsCreated) {
-          const clientToReload = effectiveClientObj || outgoingsClient;
-          if (clientToReload) {
-            await loadDirectCostsJobs(clientToReload, directCostsShowAll, true);
-          }
+        const clientToReload = effectiveClientObj || outgoingsClient;
+        if (clientToReload?.clientSheetId && typeof invalidateCachedClientData === "function") {
+          invalidateCachedClientData(clientToReload.clientSheetId, "direct_costs_jobs_active");
+          invalidateCachedClientData(clientToReload.clientSheetId, "direct_costs_jobs_all");
+        }
+        if (clientToReload) {
+          loadDirectCostsJobs(clientToReload, directCostsShowAll, true);
         }
       } else {
         const clientToReload = effectiveClientObj || outgoingsClient;
         if (clientToReload) {
-          await loadDirectCostsJobs(clientToReload, directCostsShowAll, true);
+          loadDirectCostsJobs(clientToReload, directCostsShowAll, true);
         }
       }
     } catch (e) {
@@ -726,11 +728,11 @@ export default function OutgoingsView({
         }
       } else {
         console.error("Failed to update Making up Cos:", data?.error);
-        await loadOutgoings(outgoingsClient, true);
+        loadOutgoings(outgoingsClient, true);
       }
     } catch (err) {
       console.error("Error updating Making up Cos zero:", err);
-      await loadOutgoings(outgoingsClient, true);
+      loadOutgoings(outgoingsClient, true);
     } finally {
       setSavingCosMonth(null);
     }
@@ -784,11 +786,11 @@ export default function OutgoingsView({
         }
       } else {
         console.error("Failed to save Making up CoS target:", data?.error);
-        await loadOutgoings(outgoingsClient, true);
+        loadOutgoings(outgoingsClient, true);
       }
     } catch (err) {
       console.error("Error saving Making up CoS target:", err);
-      await loadOutgoings(outgoingsClient, true);
+      loadOutgoings(outgoingsClient, true);
     } finally {
       setIsSavingTarget(false);
     }
@@ -989,7 +991,7 @@ export default function OutgoingsView({
               invalidateCachedClientData(clientToReload.clientSheetId, "outgoings_inbox");
             }
             if (clientToReload) {
-              await loadOutgoings(clientToReload, true);
+              loadOutgoings(clientToReload, true);
             }
           }}
         />
@@ -2703,11 +2705,19 @@ export default function OutgoingsView({
                                                   rows: applyExpenseUpdatesToJobRows(j.rows, data.placed, placeholderUpdates, j.client, j.jobName)
                                                 };
                                               }));
-                                              if (data.newRowsCreated) {
-                                                loadDirectCostsJobs(outgoingsClient, directCostsShowAll, true);
+                                              const clientToReload = effectiveClientObj || outgoingsClient;
+                                              if (clientToReload?.clientSheetId && typeof invalidateCachedClientData === "function") {
+                                                invalidateCachedClientData(clientToReload.clientSheetId, "direct_costs_jobs_active");
+                                                invalidateCachedClientData(clientToReload.clientSheetId, "direct_costs_jobs_all");
+                                              }
+                                              if (clientToReload) {
+                                                loadDirectCostsJobs(clientToReload, directCostsShowAll, true);
                                               }
                                             } else {
-                                              await loadDirectCostsJobs(outgoingsClient, directCostsShowAll, true);
+                                              const clientToReload = effectiveClientObj || outgoingsClient;
+                                              if (clientToReload) {
+                                                loadDirectCostsJobs(clientToReload, directCostsShowAll, true);
+                                              }
                                             }
                                           } catch (e) { console.error("assign_expense_to_job error:", e); }
                                           finally { setDirectCostsSavingCell(null); }
@@ -2778,7 +2788,7 @@ export default function OutgoingsView({
                                         });
                                         clearInboxSelection();
                                         try {
-                                          await fetch("/api/triage", {
+                                          const res = await fetch("/api/triage", {
                                             method: "POST", headers: { "Content-Type": "application/json" },
                                             body: JSON.stringify({
                                               action: "assign_expense_to_job",
@@ -2793,10 +2803,30 @@ export default function OutgoingsView({
                                               jobRows: job.rows
                                             }),
                                           });
+                                          const data = await res.json();
                                           if (outgoingsClient?.masterSheetId) {
                                             outgoingsPullPendingRef.current = { clientSheetId: outgoingsClient.clientSheetId, masterSheetId: outgoingsClient.masterSheetId };
                                           }
-                                          await loadDirectCostsJobs(outgoingsClient, directCostsShowAll, true);
+                                          if (data?.placed && Array.isArray(data.placed)) {
+                                            const placeholderUpdates = Array.isArray(data.placeholderAdjustment?.slotUpdates)
+                                              ? data.placeholderAdjustment.slotUpdates
+                                              : [];
+                                            setDirectCostsJobs(prev => prev && prev.map(j => {
+                                              if (j.client !== job.client || j.jobName !== job.jobName) return j;
+                                              return {
+                                                ...j,
+                                                rows: applyExpenseUpdatesToJobRows(j.rows, data.placed, placeholderUpdates, j.client, j.jobName)
+                                              };
+                                            }));
+                                          }
+                                          const clientToReload = effectiveClientObj || outgoingsClient;
+                                          if (clientToReload?.clientSheetId && typeof invalidateCachedClientData === "function") {
+                                            invalidateCachedClientData(clientToReload.clientSheetId, "direct_costs_jobs_active");
+                                            invalidateCachedClientData(clientToReload.clientSheetId, "direct_costs_jobs_all");
+                                          }
+                                          if (clientToReload) {
+                                            loadDirectCostsJobs(clientToReload, directCostsShowAll, true);
+                                          }
                                         } catch (e) { console.error("assign_expense_to_job (new row) error:", e); }
                                         finally { setDirectCostsSavingCell(null); }
                                       }}

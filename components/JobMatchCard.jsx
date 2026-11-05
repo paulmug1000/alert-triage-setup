@@ -6,7 +6,7 @@ import {
   getJobExpenseItems,
   getJobFinancialMetrics
 } from "./JobsView";
-import { isPlaceholderInvoice, isPlaceholderExpense, cleanUserFacingText } from "../utils/helpers";
+import { isPlaceholderInvoice, isPlaceholderExpense, cleanUserFacingText, getRetainerRowMonthLabel } from "../utils/helpers";
 
 const fmtGBP = (val) => {
   const num = typeof val === "number" ? val : (parseFloat(String(val || "0").replace(/[£$€,\s]/g, "")) || 0);
@@ -366,7 +366,20 @@ export default function JobMatchCard({
   // Clean target label (e.g. "Nov-26" or "Invoice 2")
   const getCleanTargetLabel = (item) => {
     if (!item) return mode === "invoice" ? "invoice" : "direct cost";
-    return item.label;
+    if (isRetainer) {
+      if (item.row) {
+        const rMonth = getRetainerRowMonthLabel(item.row, 0, normalizedJob);
+        if (rMonth) return rMonth;
+      }
+      if (item.label && !isPlaceholderInvoice(item.label) && !isPlaceholderExpense(item.label) && !String(item.label).toLowerCase().includes("placeholder")) {
+        return item.label;
+      }
+      return mode === "invoice" ? "retainer" : "direct cost";
+    }
+    if (item.label && !isPlaceholderInvoice(item.label) && !isPlaceholderExpense(item.label) && !String(item.label).toLowerCase().includes("placeholder")) {
+      return item.label;
+    }
+    return mode === "invoice" ? "invoice" : "direct cost";
   };
 
   const activeTargetLabel = getCleanTargetLabel(activeTarget);
@@ -652,8 +665,12 @@ export default function JobMatchCard({
             }}
           >
             {mode === "invoice"
-              ? (isRetainer ? `Place on ${activeTargetLabel}` : "Place invoice on job")
-              : (isRetainer ? `Allocate to ${activeTargetLabel}` : "Place expense on job")}
+              ? (isRetainer && activeTargetLabel && activeTargetLabel !== "invoice" && activeTargetLabel !== "retainer"
+                  ? `Place on ${activeTargetLabel}`
+                  : "Place invoice on job")
+              : (isRetainer && activeTargetLabel && activeTargetLabel !== "direct cost"
+                  ? `Allocate to ${activeTargetLabel}`
+                  : "Place expense on job")}
           </button>
         </div>
       )}

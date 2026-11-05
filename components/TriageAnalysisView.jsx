@@ -5,7 +5,7 @@ import { useTriage } from "../contexts/TriageContext";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useTasks } from "../contexts/TaskContext";
 import { useAuth } from "../hooks/useAuth";
-import { stripRowInfo, cleanUserFacingText, formatSeenTimestamp, isPlaceholderExpense } from "../utils/helpers";
+import { stripRowInfo, cleanUserFacingText, formatSeenTimestamp, isPlaceholderExpense, isPlaceholderInvoice } from "../utils/helpers";
 import JobMatchCard, { buildJobsFromRows } from "./JobMatchCard";
 import ExploreJobsModal from "./ExploreJobsModal";
 import OutgoingsContractorPickerModal from "./OutgoingsContractorPickerModal";
@@ -438,7 +438,9 @@ export default function TriageAnalysisView({
         setExploreJobsOpen(false);
         const invDesc = placementPrompt.createNewRow
           ? `Added new invoice entry for invoice #${placementPrompt.invoiceNo} on ${placementPrompt.jobName}`
-          : `Placed invoice #${placementPrompt.invoiceNo} on ${placementPrompt.jobName} (${placementPrompt.slotLabel || "Invoice"})`;
+          : (placementPrompt.isRetainer && placementPrompt.slotLabel && !isPlaceholderInvoice(placementPrompt.slotLabel) && !placementPrompt.slotLabel.toLowerCase().includes("invoice") && !placementPrompt.slotLabel.toLowerCase().includes("placeholder")
+              ? `Placed invoice #${placementPrompt.invoiceNo} on ${placementPrompt.jobName} (${placementPrompt.slotLabel})`
+              : `Placed invoice #${placementPrompt.invoiceNo} on ${placementPrompt.jobName}`);
         await handleResolveAlertAfterPlacement(alert, invDesc);
       } else if (placementPrompt.type === "expense_job") {
         const res = await fetch("/api/triage", {
@@ -473,7 +475,9 @@ export default function TriageAnalysisView({
         setExploreJobsOpen(false);
         const expDesc = placementPrompt.createNewRow
           ? `Added new direct cost entry for expense on ${placementPrompt.jobName}`
-          : `Placed expense of £${placementPrompt.amount} on ${placementPrompt.jobName} (${placementPrompt.slotLabel || "Direct Cost"})`;
+          : (placementPrompt.isRetainer && placementPrompt.slotLabel && !isPlaceholderExpense(placementPrompt.slotLabel) && !placementPrompt.slotLabel.toLowerCase().includes("cost") && !placementPrompt.slotLabel.toLowerCase().includes("placeholder")
+              ? `Placed expense of £${placementPrompt.amount} on ${placementPrompt.jobName} (${placementPrompt.slotLabel})`
+              : `Placed expense of £${placementPrompt.amount} on ${placementPrompt.jobName}`);
         await handleResolveAlertAfterPlacement(alert, expDesc);
       } else if (placementPrompt.type === "expense_contractor") {
         const newBlock = {
@@ -2342,9 +2346,13 @@ export default function TriageAnalysisView({
                   {placementPrompt.type === "invoice" ? "📄" : placementPrompt.type === "expense_contractor" ? "👷" : "📦"}
                 </span>
                 <div>
-                  <h3 style={{ ...styles.modalTitle, margin: 0 }}>Confirm Placement</h3>
+                  <h3 style={{ ...styles.modalTitle, margin: 0 }}>Confirm placement</h3>
                   <p style={{ ...styles.modalSubtitle, margin: 0 }}>
-                    Please confirm where this {placementPrompt.type === "invoice" ? "invoice" : "expense"} will be placed.
+                    {placementPrompt.type === "invoice"
+                      ? "Please confirm that you want to place this invoice on the job."
+                      : placementPrompt.type === "expense_job"
+                        ? "Please confirm that you want to place this expense on the job."
+                        : "Please confirm where this expense will be placed."}
                   </p>
                 </div>
               </div>
@@ -2354,19 +2362,23 @@ export default function TriageAnalysisView({
                 {placementPrompt.type === "invoice" && (
                   <div style={{ display: "flex", flexDirection: "column", gap: "8px", fontSize: "13px" }}>
                     <div>
-                      <span style={{ color: "#64748b" }}>Target Job: </span>
+                      <span style={{ color: "#64748b" }}>Target job: </span>
                       <strong style={{ color: "#0f172a" }}>{placementPrompt.jobName}</strong>
-                      <span style={{ color: "#64748b" }}> ({placementPrompt.jobClient})</span>
+                      {placementPrompt.jobClient && <span style={{ color: "#64748b" }}> ({placementPrompt.jobClient})</span>}
                     </div>
-                    <div>
-                      <span style={{ color: "#64748b" }}>Placement Target: </span>
-                      <span style={{ display: "inline-block", background: "#f0fdf4", border: "1px solid #86efac", padding: "2px 8px", borderRadius: "4px", fontWeight: "600", color: "#166534" }}>
-                        {placementPrompt.slotLabel || (placementPrompt.createNewRow ? "New Invoice Entry" : "Invoice Entry")}
-                      </span>
-                    </div>
-                    {placementPrompt.slot && (placementPrompt.slot.ref || (placementPrompt.slot.amount && parseFloat(placementPrompt.slot.amount) > 0)) && (
+                    {/* Retainer target month when a specific month is available */}
+                    {placementPrompt.isRetainer && placementPrompt.slotLabel && !isPlaceholderInvoice(placementPrompt.slotLabel) && !placementPrompt.slotLabel.toLowerCase().includes("invoice") && !placementPrompt.slotLabel.toLowerCase().includes("entry") && !placementPrompt.slotLabel.toLowerCase().includes("placeholder") && (
+                      <div>
+                        <span style={{ color: "#64748b" }}>Target month: </span>
+                        <span style={{ display: "inline-block", background: "#f0fdf4", border: "1px solid #86efac", padding: "2px 8px", borderRadius: "4px", fontWeight: "600", color: "#166534" }}>
+                          {placementPrompt.slotLabel}
+                        </span>
+                      </div>
+                    )}
+                    {/* Notice only if replacing an existing real invoice (never for placeholders) */}
+                    {placementPrompt.slot && (placementPrompt.slot.ref || (placementPrompt.slot.amount && parseFloat(placementPrompt.slot.amount) > 0)) && !isPlaceholderInvoice(placementPrompt.slot.ref, placementPrompt.slot.status) && (
                       <div style={{ padding: "6px 10px", background: "#fffbeb", border: "1px solid #fef3c7", borderRadius: "6px", fontSize: "12px", color: "#92400e" }}>
-                        ⚠️ <strong>Notice:</strong> This entry currently has Invoice #{placementPrompt.slot.ref || "(no number)"} (£{parseFloat(placementPrompt.slot.amount || 0).toLocaleString()}). Confirming will update this entry with the incoming invoice details.
+                        <strong>Notice:</strong> This entry currently has invoice #{placementPrompt.slot.ref || "(no number)"} (£{parseFloat(placementPrompt.slot.amount || 0).toLocaleString()}). Confirming will update this entry with the incoming invoice details.
                       </div>
                     )}
                     <div style={{ height: "1px", background: "#e2e8f0", margin: "4px 0" }} />
@@ -2380,7 +2392,7 @@ export default function TriageAnalysisView({
                         <div style={{ fontWeight: "700", color: "#16a34a" }}>£{parseFloat(placementPrompt.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
                       </div>
                       <div>
-                        <span style={{ color: "#64748b", fontSize: "12px" }}>Sent Date:</span>
+                        <span style={{ color: "#64748b", fontSize: "12px" }}>Sent date:</span>
                         <div style={{ fontWeight: "500", color: "#334155" }}>{placementPrompt.sentDate || "Not recorded"}</div>
                       </div>
                       <div>
@@ -2394,19 +2406,22 @@ export default function TriageAnalysisView({
                 {placementPrompt.type === "expense_job" && (
                   <div style={{ display: "flex", flexDirection: "column", gap: "8px", fontSize: "13px" }}>
                     <div>
-                      <span style={{ color: "#64748b" }}>Target Job: </span>
+                      <span style={{ color: "#64748b" }}>Target job: </span>
                       <strong style={{ color: "#0f172a" }}>{placementPrompt.jobName}</strong>
-                      <span style={{ color: "#64748b" }}> ({placementPrompt.jobClient})</span>
+                      {placementPrompt.jobClient && <span style={{ color: "#64748b" }}> ({placementPrompt.jobClient})</span>}
                     </div>
-                    <div>
-                      <span style={{ color: "#64748b" }}>Placement Target: </span>
-                      <span style={{ display: "inline-block", background: "#fffbeb", border: "1px solid #fcd34d", padding: "2px 8px", borderRadius: "4px", fontWeight: "600", color: "#92400e" }}>
-                        {placementPrompt.slotLabel || (placementPrompt.createNewRow ? "New Direct Cost" : "Direct Cost Entry")}
-                      </span>
-                    </div>
-                    {placementPrompt.slot && (placementPrompt.slot.description || (placementPrompt.slot.amount && parseFloat(placementPrompt.slot.amount) > 0)) && (
+                    {placementPrompt.isRetainer && placementPrompt.slotLabel && !isPlaceholderExpense(placementPrompt.slotLabel) && !placementPrompt.slotLabel.toLowerCase().includes("cost") && !placementPrompt.slotLabel.toLowerCase().includes("entry") && !placementPrompt.slotLabel.toLowerCase().includes("placeholder") && (
+                      <div>
+                        <span style={{ color: "#64748b" }}>Target month: </span>
+                        <span style={{ display: "inline-block", background: "#fffbeb", border: "1px solid #fcd34d", padding: "2px 8px", borderRadius: "4px", fontWeight: "600", color: "#92400e" }}>
+                          {placementPrompt.slotLabel}
+                        </span>
+                      </div>
+                    )}
+                    {/* Notice only if replacing an existing real expense (never for placeholders) */}
+                    {placementPrompt.slot && (placementPrompt.slot.description || (placementPrompt.slot.amount && parseFloat(placementPrompt.slot.amount) > 0)) && !isPlaceholderExpense(placementPrompt.slot?.transactionId || placementPrompt.slot?.appId, placementPrompt.slot?.description, placementPrompt.slot?.status) && (
                       <div style={{ padding: "6px 10px", background: "#fffbeb", border: "1px solid #fef3c7", borderRadius: "6px", fontSize: "12px", color: "#92400e" }}>
-                        ⚠️ <strong>Notice:</strong> This entry currently has {placementPrompt.slot.description || "an expense"} (£{parseFloat(placementPrompt.slot.amount || 0).toLocaleString()}). Confirming will update this entry with the incoming expense.
+                        <strong>Notice:</strong> This entry currently has {placementPrompt.slot.description || "an expense"} (£{parseFloat(placementPrompt.slot.amount || 0).toLocaleString()}). Confirming will update this entry with the incoming expense.
                       </div>
                     )}
                     <div style={{ height: "1px", background: "#e2e8f0", margin: "4px 0" }} />
@@ -2438,11 +2453,11 @@ export default function TriageAnalysisView({
                 {placementPrompt.type === "expense_contractor" && (
                   <div style={{ display: "flex", flexDirection: "column", gap: "8px", fontSize: "13px" }}>
                     <div>
-                      <span style={{ color: "#64748b" }}>Target Contractor: </span>
+                      <span style={{ color: "#64748b" }}>Target contractor: </span>
                       <strong style={{ color: "#0f172a" }}>{placementPrompt.contractorName}</strong>
                     </div>
                     <div>
-                      <span style={{ color: "#64748b" }}>Target Month: </span>
+                      <span style={{ color: "#64748b" }}>Target month: </span>
                       <span style={{ display: "inline-block", background: "#ecfdf5", border: "1px solid #a7f3d0", padding: "2px 8px", borderRadius: "4px", fontWeight: "600", color: "#065f46" }}>
                         {placementPrompt.monthLabel}
                       </span>
@@ -2506,7 +2521,7 @@ export default function TriageAnalysisView({
                       <span>Placing...</span>
                     </>
                   ) : (
-                    "✓ Confirm & Place"
+                    "Confirm and place"
                   )}
                 </button>
               </div>

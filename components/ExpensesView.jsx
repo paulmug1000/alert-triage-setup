@@ -249,8 +249,17 @@ export default function ExpensesView({
       });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || "Failed to update VAT");
+      setExpensesData((prev) => {
+        if (!prev?.expenses) return prev;
+        return {
+          ...prev,
+          expenses: prev.expenses.map((e) =>
+            e.sheetRow === exp.sheetRow ? { ...e, vat: newVat } : e
+          ),
+        };
+      });
       showSuccess(`Updated VAT for "${exp.category}" to ${newVat}.`);
-      await fetchExpenses(selectedClient, true, true);
+      fetchExpenses(selectedClient, true, true);
     } catch (err) {
       console.error("Update VAT error:", err);
       setError(err.message || "Failed to update VAT");
@@ -280,8 +289,23 @@ export default function ExpensesView({
       });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || "Failed to move expense");
+      setExpensesData((prev) => {
+        if (!prev?.expenses) return prev;
+        return {
+          ...prev,
+          expenses: prev.expenses.map((e) =>
+            e.sheetRow === exp.sheetRow
+              ? {
+                  ...e,
+                  deliveryPct: targetIsDelivery ? "100%" : "0%",
+                  isDelivery: targetIsDelivery,
+                }
+              : e
+          ),
+        };
+      });
       showSuccess(`Moved "${exp.category}" to ${targetIsDelivery ? "Delivery" : "Non-delivery"}.`);
-      await fetchExpenses(selectedClient, true, true);
+      fetchExpenses(selectedClient, true, true);
     } catch (err) {
       console.error("Move expense error:", err);
       setError(err.message || "Failed to move expense");
@@ -314,9 +338,20 @@ export default function ExpensesView({
       });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || "Failed to update category name");
+      setExpensesData((prev) => {
+        if (!prev?.expenses) return prev;
+        return {
+          ...prev,
+          expenses: prev.expenses.map((e) =>
+            e.sheetRow === editingCategory.sheetRow
+              ? { ...e, category: categoryNameInput.trim() }
+              : e
+          ),
+        };
+      });
       setEditingCategory(null);
       showSuccess(`Updated category to "${categoryNameInput}".`);
-      await fetchExpenses(selectedClient, true, true);
+      fetchExpenses(selectedClient, true, true);
     } catch (err) {
       console.error("Save category name error:", err);
       setError(err.message || "Failed to update category name");
@@ -349,9 +384,24 @@ export default function ExpensesView({
       });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || "Failed to update amount");
+      setExpensesData((prev) => {
+        if (!prev?.expenses) return prev;
+        return {
+          ...prev,
+          expenses: prev.expenses.map((e) => {
+            if (e.sheetRow !== editingCell.sheetRow) return e;
+            const updatedMonths = (e.months || []).map((m) =>
+              m.colLetter === editingCell.colLetter
+                ? { ...m, value: cellInputValue, note: cellNoteValue }
+                : m
+            );
+            return { ...e, months: updatedMonths };
+          }),
+        };
+      });
       setEditingCell(null);
       showSuccess(`Updated ${editingCell.label} amount for "${editingCell.category}".`);
-      await fetchExpenses(selectedClient, true, true);
+      fetchExpenses(selectedClient, true, true);
     } catch (err) {
       console.error("Save amount error:", err);
       setError(err.message || "Failed to update amount");

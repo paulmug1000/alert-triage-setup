@@ -1433,8 +1433,34 @@ export default function JobsView({
         return next;
       });
 
-      // 4. Reload jobs data
-      await loadJobsData(jobsClient, "All", true);
+      // 4. Optimistically update local jobsData to mark confirmed
+      setJobsData((prev) => {
+        if (!prev || !Array.isArray(prev)) return prev;
+        return prev.map((j) => {
+          if (getJobKey(j) !== jobKey) return j;
+          const confRowNum = resData.confirmedRow || resData.rowNumber || j.rows?.[0]?.rowNum;
+          return {
+            ...j,
+            status: "Confirmed",
+            tabName: "Confirmed",
+            type: "Confirmed",
+            likelihood: "100%",
+            copiedToConf: "Yes",
+            rows: (j.rows || []).map((r, idx) => ({
+              ...r,
+              status: "Confirmed",
+              tabName: "Confirmed",
+              type: "Confirmed",
+              likelihood: "100%",
+              copiedToConf: "Yes",
+              rowNum: idx === 0 && confRowNum ? confRowNum : r.rowNum,
+            })),
+          };
+        });
+      });
+
+      // 5. Reload jobs data in background without blocking UI
+      loadJobsData(jobsClient, "All", true);
       if (resData.backgroundProvisioning) {
         setTimeout(() => loadJobsData(jobsClient, "All", true, true), 4000);
         setTimeout(() => loadJobsData(jobsClient, "All", true, true), 8000);
@@ -1504,8 +1530,34 @@ export default function JobsView({
         return next;
       });
 
-      // Reload jobs data
-      await loadJobsData(jobsClient, "All", true, true);
+      // Optimistically update local jobsData to mark as unconfirmed/pipeline
+      setJobsData((prev) => {
+        if (!prev || !Array.isArray(prev)) return prev;
+        return prev.map((j) => {
+          if (getJobKey(j) !== jobKey) return j;
+          const pipeRowNum = resData.pipelineRow || resData.rowNumber || j.rows?.[0]?.rowNum;
+          return {
+            ...j,
+            status: "Pipeline",
+            tabName: "Pipeline",
+            type: "Pipeline",
+            likelihood: targetLikelihood || "50%",
+            copiedToConf: "No",
+            rows: (j.rows || []).map((r, idx) => ({
+              ...r,
+              status: "Pipeline",
+              tabName: "Pipeline",
+              type: "Pipeline",
+              likelihood: targetLikelihood || "50%",
+              copiedToConf: "No",
+              rowNum: idx === 0 && pipeRowNum ? pipeRowNum : r.rowNum,
+            })),
+          };
+        });
+      });
+
+      // Reload jobs data in background without blocking UI
+      loadJobsData(jobsClient, "All", true, true);
     } catch (err) {
       console.error("Unconfirm job error:", err);
       setActionError(`Failed to unconfirm ${job.jobName || "job"}: ${err.message}`);
@@ -1605,8 +1657,8 @@ export default function JobsView({
         });
       });
 
-      // Reload jobs data
-      await loadJobsData(jobsClient, "All", true, true);
+      // Reload jobs data in background without blocking UI
+      loadJobsData(jobsClient, "All", true, true);
     } catch (err) {
       console.error("Mark already confirmed error:", err);
       setActionError(`Failed to mark ${job.jobName || "job"} as already confirmed: ${err.message}`);
@@ -1704,8 +1756,8 @@ export default function JobsView({
         }
       }
 
-      // Reload jobs data from server to keep counts and surrounding data synchronized
-      await loadJobsData(jobsClient, "All", true, true);
+      // Reload jobs data from server in background without blocking UI
+      loadJobsData(jobsClient, "All", true, true);
     } catch (err) {
       console.error("Delete job error:", err);
       setActionError(`Failed to delete ${job.jobName || "job"}: ${err.message}`);

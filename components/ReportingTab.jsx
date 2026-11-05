@@ -1217,7 +1217,7 @@ export default function ReportingTab({
           masterSheetId: client.masterSheetId || client.masterSheetUrl || ""
         })
       });
-      const data = await resp.json();
+      const data = await parseJsonResponseSafely_(resp);
       if (!data.success) throw new Error(data.error || "Failed to load narrative workbench");
 
       setNarrativeWorkbench(data);
@@ -1262,6 +1262,64 @@ export default function ReportingTab({
     }
   };
 
+  /**
+   * Safely parses JSON response from API routes, providing clean error messages if HTML or non-JSON is returned (e.g. HTTP 413, 502, 504).
+   */
+  const parseJsonResponseSafely_ = async (resp) => {
+    const text = await resp.text();
+    try {
+      return JSON.parse(text);
+    } catch (_) {
+      const cleanSnippet = text.slice(0, 160).replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+      throw new Error(`Server returned HTTP ${resp.status} (${cleanSnippet || resp.statusText || "non-JSON"}).`);
+    }
+  };
+
+  /**
+   * Strips heavy binary data (base64 slide previews and chart images) from non-target slides
+   * before sending to /api/triage to prevent HTTP 413 (Request Entity Too Large).
+   * Only the target slide retains its preview image (or chart images).
+   */
+  const prepareSlidesForGenerationPayload_ = (allSlides, targetSlideNumber) => {
+    if (!Array.isArray(allSlides)) return [];
+    const targetNum = Number(targetSlideNumber);
+    return allSlides.map(s => {
+      const isTarget = Number(s.slideNumber) === targetNum;
+      if (isTarget) {
+        return {
+          slideNumber: s.slideNumber,
+          pageId: s.pageId || "",
+          slideTitle: s.slideTitle,
+          chartCode: s.chartCode,
+          hasFlag: Boolean(s.hasFlag),
+          isTakeawaysSlide: Boolean(s.isTakeawaysSlide),
+          isOverheadsSlide: Boolean(s.isOverheadsSlide),
+          tables: s.tables,
+          slideTransactions: s.slideTransactions,
+          previousNarratives: s.previousNarratives,
+          deckText: s.deckText,
+          draftText: s.draftText,
+          steerText: s.steerText,
+          // If slidePreviewBase64 exists, omit chartImages to avoid duplicate large base64 payload
+          slidePreviewBase64: s.slidePreviewBase64 || "",
+          chartImages: s.slidePreviewBase64 ? [] : (s.chartImages || []).slice(0, 2)
+        };
+      }
+      // Non-target slides: lightweight summary only for takeaways slide context
+      return {
+        slideNumber: s.slideNumber,
+        slideTitle: s.slideTitle,
+        chartCode: s.chartCode,
+        hasFlag: Boolean(s.hasFlag),
+        isTakeawaysSlide: Boolean(s.isTakeawaysSlide),
+        isOverheadsSlide: Boolean(s.isOverheadsSlide),
+        deckText: s.deckText,
+        draftText: s.draftText,
+        tables: (s.tables || []).slice(0, 1).map(tbl => (tbl || []).slice(0, 10))
+      };
+    });
+  };
+
   const handleToggleSlideFlag = (slideNumber, e) => {
     if (e && e.stopPropagation) e.stopPropagation();
     setNarrativeWorkbench(prev => {
@@ -1297,13 +1355,13 @@ export default function ReportingTab({
           presentationId: narrativeWorkbench.presentationId,
           slideNumber,
           steerText: targetSlide.steerText || "",
-          slides: narrativeWorkbench.slides,
+          slides: prepareSlidesForGenerationPayload_(narrativeWorkbench.slides, slideNumber),
           snapshotContext: narrativeWorkbench.snapshotContext,
           overheadMismatchWarning: narrativeWorkbench.overheadMismatchWarning,
           automationCommanderSheetId
         })
       });
-      const data = await resp.json();
+      const data = await parseJsonResponseSafely_(resp);
       if (!data.success) throw new Error(data.error || "Failed to generate slide narrative");
 
       setNarrativeWorkbench(prev => {
@@ -1381,13 +1439,13 @@ export default function ReportingTab({
             presentationId: narrativeWorkbench.presentationId,
             slideNumber: slide.slideNumber,
             steerText: slide.steerText || "",
-            slides: workingSlides,
+            slides: prepareSlidesForGenerationPayload_(workingSlides, slide.slideNumber),
             snapshotContext: narrativeWorkbench.snapshotContext,
             overheadMismatchWarning: narrativeWorkbench.overheadMismatchWarning,
             automationCommanderSheetId
           })
         });
-        const data = await resp.json();
+        const data = await parseJsonResponseSafely_(resp);
         if (!data.success) throw new Error(data.error || `Failed on slide ${slide.slideNumber}`);
 
         workingSlides = workingSlides.map(s =>
@@ -1469,7 +1527,7 @@ export default function ReportingTab({
           totalNarrativeSlides: (narrativeWorkbench.slides || []).length
         })
       });
-      const data = await resp.json();
+      const data = await parseJsonResponseSafely_(resp);
       if (!data.success) throw new Error(data.error || "Failed to save narrative drafts");
 
       const draftedCount = (narrativeWorkbench.slides || []).filter(s => Boolean(s.draftText && s.draftText.trim())).length;
@@ -1539,7 +1597,7 @@ export default function ReportingTab({
           }))
         })
       });
-      const data = await resp.json();
+      const data = await parseJsonResponseSafely_(resp);
       if (!data.success) throw new Error(data.error || "Failed to apply narrative to presentation");
 
       const updatedSlideNums = new Set(slidesToPush.map(s => s.slideNumber));
@@ -1549,13 +1607,13 @@ export default function ReportingTab({
         const nextSlides = (prev.slides || []).map(s =>
           updatedSlideNums.has(s.slideNumber)
             ? {
-                ...s,
-                deckText: s.draftText && s.draftText.trim() ? s.draftText : s.deckText,
-                deckHasFlag: Boolean(s.hasFlag),
-                status: s.draftText && s.draftText.trim() ? "applied" : s.status,
-                isUneditedClone: s.draftText && s.draftText.trim() ? false : s.isUneditedClone,
-                slidePreviewBase64: updatedPreviews[s.slideNumber] || s.slidePreviewBase64
-              }
+              ...s,
+              deckText: s.draftText && s.draftText.trim() ? s.draftText : s.deckText,
+              deckHasFlag: Boolean(s.hasFlag),
+              status: s.draftText && s.draftText.trim() ? "applied" : s.status,
+              isUneditedClone: s.draftText && s.draftText.trim() ? false : s.isUneditedClone,
+              slidePreviewBase64: updatedPreviews[s.slideNumber] || s.slidePreviewBase64
+            }
             : s
         );
         const appliedOrDraftedCount = nextSlides.filter(s => Boolean(s.draftText && s.draftText.trim())).length;
@@ -2245,11 +2303,11 @@ export default function ReportingTab({
                           const isFinalisedForMonth = Boolean(finalisedIso);
                           const formattedFinalisedTime = finalisedIso
                             ? new Date(finalisedIso).toLocaleString("en-GB", {
-                                day: "2-digit",
-                                month: "short",
-                                hour: "2-digit",
-                                minute: "2-digit"
-                              })
+                              day: "2-digit",
+                              month: "short",
+                              hour: "2-digit",
+                              minute: "2-digit"
+                            })
                             : "";
 
                           return (
@@ -2310,11 +2368,11 @@ export default function ReportingTab({
                           const canOpenNarrative = Boolean(activeReportUrl || client.folderUrl || client.hasDeckConfigured);
                           const formattedNarTime = narInfo?.updatedAt
                             ? new Date(narInfo.updatedAt).toLocaleString("en-GB", {
-                                day: "2-digit",
-                                month: "short",
-                                hour: "2-digit",
-                                minute: "2-digit"
-                              })
+                              day: "2-digit",
+                              month: "short",
+                              hour: "2-digit",
+                              minute: "2-digit"
+                            })
                             : "";
 
                           return (

@@ -1989,6 +1989,17 @@ export async function handleEomGenerateNarrative(req, res, sheets) {
           .join("\n\n");
       }
 
+      // Fallback: If slidePreviewBase64 was not provided and there are no chart images,
+      // fetch the slide preview directly on the server if presentationId and pageId are known.
+      if (!targetSlide.slidePreviewBase64 && (!targetSlide.chartImages || targetSlide.chartImages.length === 0) && presentationId && targetSlide.pageId) {
+        try {
+          const previewMap = await fetchSlidePreviewsMap_(presentationId, [targetSlide]);
+          if (previewMap.has(Number(targetSlide.slideNumber))) {
+            targetSlide.slidePreviewBase64 = previewMap.get(Number(targetSlide.slideNumber));
+          }
+        } catch (_) {}
+      }
+
       const generatedText = await generateSingleSlideWithClaude_({
         sheets,
         acId,

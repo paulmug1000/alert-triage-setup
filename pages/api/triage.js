@@ -1163,7 +1163,7 @@ export default async function handler(req, res) {
 
     } else if (action === "classify_pl_category") {
       try {
-        const { clientName, categoryName, classification, automationCommanderSheetId, masterSheetId, clientSheetId } = req.body;
+        const { clientName, categoryName, classification, automationCommanderSheetId, masterSheetId, clientSheetId, sessionId, alertKey, fingerprintHash } = req.body;
         if (!(await checkTriageClientAuth(sheets, sessionUser, clientName, [masterSheetId, clientSheetId]))) {
           return res.status(403).json({ success: false, error: "Access denied to this client" });
         }
@@ -1174,7 +1174,10 @@ export default async function handler(req, res) {
           automationCommanderSheetId,
           masterSheetId,
           clientSheetId,
-          userEmail: sessionUser?.email
+          userEmail: sessionUser?.email,
+          sessionId,
+          alertKey,
+          fingerprintHash
         });
         return res.status(200).json(result);
       } catch (err) {

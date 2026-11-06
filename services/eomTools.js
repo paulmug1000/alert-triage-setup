@@ -1,11 +1,11 @@
-import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "./sheetsClient";
-import { redisClient } from "./redisClient";
-import { memoryCache } from "./cacheService";
-import { logPmaActivity } from "./pmaLogger";
-import { getSessionUser } from "./authService";
-import { isUserAuthorizedForClient, sanitizeFormulaInput, getCanonicalAcSheetId, verifyUserAuthorizedForSheet } from "./userPermissions";
-import { getAllClients, DEFAULT_AC_SHEET_ID } from "./workspaces";
-import { matchesClientName, sanitizeSpreadsheetTerms } from "../utils/helpers";
+import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
+import { redisClient } from "./redisClient.js";
+import { memoryCache } from "./cacheService.js";
+import { logPmaActivity } from "./pmaLogger.js";
+import { getSessionUser } from "./authService.js";
+import { isUserAuthorizedForClient, sanitizeFormulaInput, getCanonicalAcSheetId, verifyUserAuthorizedForSheet } from "./userPermissions.js";
+import { getAllClients, DEFAULT_AC_SHEET_ID } from "./workspaces.js";
+import { matchesClientName, sanitizeSpreadsheetTerms } from "../utils/helpers.js";
 
 // Moved from triage.js local scope
 let eomTabsVerified = false;
@@ -4283,7 +4283,7 @@ async function extractRevenueItemsFromMasterSheet_(sheets, masterSheetId, monthK
   try {
     const rfaResp = await withRetry(() => sheets.spreadsheets.values.get({
       spreadsheetId: masterSheetId,
-      range: "RevFromApp!A2:F1000",
+      range: "RevFromApp!A2:H1000",
       valueRenderOption: "FORMATTED_VALUE"
     }));
     const rfaRows = rfaResp.data.values || [];
@@ -4294,13 +4294,20 @@ async function extractRevenueItemsFromMasterSheet_(sheets, masterSheetId, monthK
         return;
       }
       const amt = parseFloat(String(r[4] || "").replace(/[£,\s]/g, "")) || 0;
+      const rawStatus = String(r[6] || (amt > 0 ? "Authorised" : "")).trim();
+      const draftAmt = parseFloat(String(r[7] || "").replace(/[£,\s]/g, "")) || 0;
+      const isDraft = rawStatus.toLowerCase().includes("draft") || rawStatus.toLowerCase().includes("awaiting") || rawStatus.toLowerCase().includes("submitted") || (amt === 0 && draftAmt > 0);
+
       if (r[1] || r[2]) {
         accountingItems.push({
           id: String(r[0] || `acct-${idx}`),
           clientName: String(r[1] || "Unknown Client").trim(),
-          invoiceNumber: String(r[2] || "").trim(),
+          invoiceNumber: String(r[2] || "").trim() || (isDraft ? "[Draft]" : ""),
           description: String(r[3] || "").trim(),
-          amount: amt,
+          amount: isDraft ? 0 : amt, // Strictly 0 recognized revenue for drafts
+          draftAmount: isDraft ? (draftAmt || amt) : 0,
+          isDraft,
+          status: isDraft ? (rawStatus || "Draft") : "Authorised",
           date: dateStr
         });
       }
@@ -4796,5 +4803,5 @@ export {
   handleEomGenerateNarrative,
   handleEomSaveNarrativeDraft,
   handleEomApplyNarrativeToDeck
-} from "./eomNarrativeService";
+} from "./eomNarrativeService.js";
 

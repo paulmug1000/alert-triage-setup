@@ -259,8 +259,30 @@ export default function GoogleSheetLinkModal({
         builder.setAppId(tokenData.appId);
       }
 
+      // Compute responsive dimensions safely within Google Picker boundaries (min 566x350, max 1051x650)
+      const viewportW = typeof window !== "undefined" ? window.innerWidth : 1051;
+      const viewportH = typeof window !== "undefined" ? window.innerHeight : 650;
+      const pickerW = Math.min(1051, Math.max(566, Math.floor(viewportW * 0.85)));
+      const pickerH = Math.min(650, Math.max(350, Math.floor(viewportH * 0.82)));
+      builder.setSize(pickerW, pickerH);
+
       const picker = builder.build();
       picker.setVisible(true);
+
+      // Force .picker-dialog to remain safely fixed and centered within the viewport
+      if (typeof window !== "undefined") {
+        setTimeout(() => {
+          const dialog = document.querySelector(".picker-dialog");
+          if (dialog) {
+            dialog.style.position = "fixed";
+            dialog.style.top = "50%";
+            dialog.style.left = "50%";
+            dialog.style.transform = "translate(-50%, -50%)";
+            dialog.style.margin = "0";
+            dialog.style.zIndex = "100002";
+          }
+        }, 30);
+      }
     } catch (err) {
       setError(err.message || "Failed to open Google Drive picker.");
     } finally {
@@ -441,14 +463,30 @@ export default function GoogleSheetLinkModal({
         justifyContent: "center",
         zIndex: 9999,
         padding: "16px",
+        overflowY: "auto",
         fontFamily: "'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
       }}
       onClick={onClose}
     >
-      {/* Ensure Google Picker iframe dialog renders above modal overlay */}
+      {/* Ensure Google Picker iframe dialog renders centered above modal overlay */}
       <style>{`
-        .picker-dialog { z-index: 100002 !important; }
-        .picker-dialog-bg { z-index: 100001 !important; }
+        .picker-dialog {
+          position: fixed !important;
+          top: 50% !important;
+          left: 50% !important;
+          transform: translate(-50%, -50%) !important;
+          max-width: 95vw !important;
+          max-height: 90vh !important;
+          margin: 0 !important;
+          z-index: 100002 !important;
+        }
+        .picker-dialog-bg {
+          position: fixed !important;
+          inset: 0 !important;
+          width: 100vw !important;
+          height: 100vh !important;
+          z-index: 100001 !important;
+        }
       `}</style>
 
       <div
@@ -458,6 +496,7 @@ export default function GoogleSheetLinkModal({
           width: "100%",
           maxWidth: isClientView ? "520px" : "600px",
           maxHeight: "90vh",
+          margin: "auto",
           display: "flex",
           flexDirection: "column",
           boxShadow: "0 20px 35px -8px rgba(15, 23, 42, 0.22), 0 8px 14px -6px rgba(15, 23, 42, 0.1)",

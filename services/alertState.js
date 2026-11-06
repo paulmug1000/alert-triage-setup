@@ -3,7 +3,8 @@ import { getSheetsClient, extractSheetIdFromUrl, sanitizeFormulaInput } from "./
 import {
   readAlertMemory, updateAlertMemoryRow, updateAlertMemoryRowsBatch, appendAlertMemoryRow, appendAlertMemoryRowsBatch,
   ensureAlertMemoryTab, findMemoryRow, buildAlertFingerprint,
-  extractCrmComparisonSnapshot, deleteAlertMemoryRows, updateHandledAlertHash
+  extractCrmComparisonSnapshot, deleteAlertMemoryRows, updateHandledAlertHash,
+  readHandledAlertHashes
 } from "./alertMemory.js";
 import { createHash } from "crypto";
 import { logPmaActivity } from "./pmaLogger.js";
@@ -81,6 +82,33 @@ export async function handleGetAlerts(req, res) {
           redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsedSession), { EX: 86400 * 7 }).catch(() => {});
         }
       } catch (_) {}
+    }
+
+    // Reconcile proactive alerts in parsedSession against handledMap
+    try {
+      const acId = process.env.AUTOMATION_COMMANDER_SHEET_ID || "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
+      const handledMap = await readHandledAlertHashes(null, acId, false);
+      if (parsedSession.proactiveAlerts && parsedSession.proactiveAlerts.length > 0 && handledMap && Object.keys(handledMap).length > 0) {
+        const staleProactiveKeys = [];
+        for (const pa of parsedSession.proactiveAlerts) {
+          const hash = pa.fingerprintHash || createHash("sha256").update(pa.alertKey || "").digest("hex").substring(0, 16);
+          const legacyHash = pa.legacyAlertKey ? createHash("sha256").update(pa.legacyAlertKey).digest("hex").substring(0, 16) : null;
+          const status = handledMap[hash] || (legacyHash ? handledMap[legacyHash] : null);
+          if (status && status !== "cached" && status !== "pending_automation") {
+            if (pa.alertKey) staleProactiveKeys.push(pa.alertKey);
+            if (pa.fingerprintHash) staleProactiveKeys.push(pa.fingerprintHash);
+            if (hash) staleProactiveKeys.push(hash);
+            if (legacyHash) staleProactiveKeys.push(legacyHash);
+            if (pa.rowIndex != null) staleProactiveKeys.push(String(pa.rowIndex));
+          }
+        }
+        if (staleProactiveKeys.length > 0) {
+          applyAlertRemovalToTriageData(parsedSession, staleProactiveKeys);
+          redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsedSession), { EX: 86400 * 7 }).catch(() => {});
+        }
+      }
+    } catch (recErr) {
+      console.warn("Could not reconcile proactive alerts in handleGetAlerts:", recErr.message);
     }
 
     let { alerts, noActionAlerts, proactiveAlerts, clientsWithFlags, resolvedNoActionFlags } = parsedSession;

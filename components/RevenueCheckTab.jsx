@@ -16,6 +16,7 @@ const REASON_TAG_OPTIONS = [
   { value: "Commission", label: "Commission" },
   { value: "Currency / FX difference", label: "Currency / FX difference" },
   { value: "Missing invoice in accounting", label: "Missing invoice in accounting" },
+  { value: "Draft invoice in accounting", label: "Draft invoice in accounting" },
   { value: "Unbilled retainer", label: "Unbilled retainer" },
   { value: "Cancelled / removed job", label: "Cancelled / removed job" },
   { value: "Deposit / milestone timing", label: "Deposit / milestone timing" },
@@ -181,18 +182,27 @@ export default function RevenueCheckTab({
 
     setRunningSync(true);
     setError("");
-    setStatusMsg(null);
+    setStatusMsg({
+      type: "info",
+      text: `Connecting to accounting tool and matching revenue for ${c} (${targetMonthLabel})...`
+    });
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 90000); // 90-second timeout
 
     try {
       const resp = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({
           action: "eom_run_revenue_comparison",
           clientName: c,
           monthKey: selectedMonthKey
         })
       });
+      clearTimeout(timeoutId);
+
       const data = await resp.json();
       if (!data.success) {
         throw new Error(data.error || "Revenue comparison failed");
@@ -208,10 +218,14 @@ export default function RevenueCheckTab({
         onTaskMarkedDone(c, "revenue_check", selectedMonthKey);
       }
     } catch (err) {
+      clearTimeout(timeoutId);
       console.error("Error running revenue comparison:", err);
+      const isAbort = err.name === "AbortError";
       setStatusMsg({
         type: "error",
-        text: err.message || "Failed to run revenue comparison"
+        text: isAbort
+          ? "Revenue sync request timed out after 90 seconds. The accounting sync may still be finishing in the background — click 'Refresh' in a moment to check for updated data."
+          : (err.message || "Failed to run revenue comparison")
       });
     } finally {
       setRunningSync(false);
@@ -294,18 +308,23 @@ export default function RevenueCheckTab({
       const diff = v.difference != null ? Number(v.difference) : (pulseTot - acctTot);
       const isMatched = Math.abs(diff) <= 0.05;
 
+      const acctItems = v.accounting || [];
+      const hasDraftOnly = acctItems.length > 0 && acctItems.every(a => a.isDraft);
+      const defaultReason = (hasDraftOnly && !v.reasonTag) ? "Draft invoice in accounting" : (v.reasonTag || "");
+
       rows.push({
         id: itemKey,
         itemKey,
         type: "variance",
         clientName: v.clientName,
-        accountingItems: v.accounting || [],
+        accountingItems: acctItems,
         accountingTotal: acctTot,
         pulseItems: v.pulse || [],
         pulseTotal: pulseTot,
         difference: diff,
         isMatched,
-        reasonTag: localEdit.reasonTag !== undefined ? localEdit.reasonTag : (v.reasonTag || ""),
+        hasDraftOnly,
+        reasonTag: localEdit.reasonTag !== undefined ? localEdit.reasonTag : defaultReason,
         noteText: localEdit.noteText !== undefined ? localEdit.noteText : (v.noteText || "")
       });
     });
@@ -314,18 +333,22 @@ export default function RevenueCheckTab({
     (comparison?.comparisonData?.unmatchedAccounting || []).forEach((a) => {
       const itemKey = a.itemKey || `unrec-acct-${a.id}`;
       const localEdit = notesEdits[itemKey] || {};
+      const isDraft = Boolean(a.isDraft);
+      const recognizedAmt = isDraft ? 0 : (a.amount || 0);
+      const defaultReason = isDraft ? "Draft invoice in accounting" : (a.reasonTag || "");
       rows.push({
         id: itemKey,
         itemKey,
         type: "unmatched_accounting",
         clientName: a.clientName,
         accountingItems: [a],
-        accountingTotal: a.amount || 0,
+        accountingTotal: recognizedAmt,
         pulseItems: [],
         pulseTotal: 0,
-        difference: -(a.amount || 0), // Negative because in accounting but missing from Pulse
+        difference: -recognizedAmt, // Negative because in accounting but missing from Pulse
         isMatched: false,
-        reasonTag: localEdit.reasonTag !== undefined ? localEdit.reasonTag : (a.reasonTag || ""),
+        hasDraftOnly: isDraft,
+        reasonTag: localEdit.reasonTag !== undefined ? localEdit.reasonTag : defaultReason,
         noteText: localEdit.noteText !== undefined ? localEdit.noteText : (a.noteText || "")
       });
     });
@@ -600,9 +623,12 @@ export default function RevenueCheckTab({
             marginBottom: "16px",
             borderRadius: "6px",
             fontSize: "13px",
-            background: statusMsg.type === "success" ? "#f0fdf4" : "#fef2f2",
-            color: statusMsg.type === "success" ? "#166534" : "#991b1b",
-            border: `1px solid ${statusMsg.type === "success" ? "#bbf7d0" : "#fecaca"}`
+            background: statusMsg.type === "success" ? "#f0fdf4" : (statusMsg.type === "info" ? "#eff6ff" : "#fef2f2"),
+            color: statusMsg.type === "success" ? "#166534" : (statusMsg.type === "info" ? "#1e40af" : "#991b1b"),
+            border: `1px solid ${statusMsg.type === "success" ? "#bbf7d0" : (statusMsg.type === "info" ? "#bfdbfe" : "#fecaca")}`,
+            display: "flex",
+            alignItems: "center",
+            gap: "8px"
           }}
         >
           {statusMsg.text}
@@ -848,18 +874,51 @@ export default function RevenueCheckTab({
                                 </span>
                               </div>
                               <div style={{ marginTop: "2px" }}>
-                                {row.accountingItems.map((a, i) => (
-                                  <div key={i} style={{ fontSize: "11.5px", color: "#64748b", lineHeight: 1.35 }}>
-                                    <span style={{ fontWeight: 500, color: "#334155" }}>{a.invoiceNumber || "Invoice"}</span>
-                                    {a.date ? <span> • {a.date.split(" ")[0]}</span> : null}
-                                    {a.description ? <span> • {a.description}</span> : null}
-                                    {row.accountingItems.length > 1 && (
-                                      <span style={{ fontWeight: 600, color: "#0f172a", marginLeft: "4px" }}>
-                                        ({formatGBP(a.amount)})
+                                {row.accountingItems.map((a, i) => {
+                                  const isDraft = Boolean(a.isDraft);
+                                  const displayAmt = isDraft ? (a.draftAmount || a.amount) : a.amount;
+                                  return (
+                                    <div key={i} style={{ fontSize: "11.5px", color: "#64748b", lineHeight: 1.35, display: "flex", alignItems: "center", flexWrap: "wrap", gap: "4px" }}>
+                                      {isDraft && (
+                                        <span
+                                          style={{
+                                            display: "inline-block",
+                                            padding: "1px 5px",
+                                            borderRadius: "4px",
+                                            fontSize: "10px",
+                                            fontWeight: 700,
+                                            background: "#fef3c7",
+                                            color: "#92400e",
+                                            border: "1px solid #fde68a"
+                                          }}
+                                        >
+                                          {a.status || "Draft"}
+                                        </span>
+                                      )}
+                                      <span style={{ fontWeight: 500, color: "#334155" }}>
+                                        {a.invoiceNumber || (isDraft ? "Draft invoice" : "Invoice")}
                                       </span>
-                                    )}
+                                      {a.date ? <span>• {a.date.split(" ")[0]}</span> : null}
+                                      {a.description ? <span>• {a.description}</span> : null}
+                                      {isDraft ? (
+                                        <span style={{ fontWeight: 600, color: "#b45309" }}>
+                                          ({formatGBP(displayAmt)} unposted)
+                                        </span>
+                                      ) : (
+                                        row.accountingItems.length > 1 && (
+                                          <span style={{ fontWeight: 600, color: "#0f172a" }}>
+                                            ({formatGBP(a.amount)})
+                                          </span>
+                                        )
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                                {row.accountingTotal === 0 && row.accountingItems.every(a => a.isDraft) && (
+                                  <div style={{ fontSize: "11px", color: "#b45309", fontStyle: "italic", marginTop: "3px" }}>
+                                    Draft only — unposted in accounting (revenue: £0.00)
                                   </div>
-                                ))}
+                                )}
                               </div>
                             </div>
                           ) : (
@@ -925,8 +984,8 @@ export default function RevenueCheckTab({
                                   display: "inline-block",
                                   padding: "2px 8px",
                                   borderRadius: "10px",
-                                  background: "#fee2e2",
-                                  color: "#991b1b",
+                                  background: (row.hasDraftOnly && row.difference === 0) ? "#fef3c7" : "#fee2e2",
+                                  color: (row.hasDraftOnly && row.difference === 0) ? "#92400e" : "#991b1b",
                                   fontSize: "12px",
                                   fontWeight: 700,
                                   fontVariantNumeric: "tabular-nums"
@@ -935,7 +994,9 @@ export default function RevenueCheckTab({
                                 {row.difference > 0 ? "+" : ""}{formatGBP(row.difference)}
                               </span>
                               <span style={{ fontSize: "10px", color: "#64748b", marginTop: "2px" }}>
-                                {row.difference > 0 ? "Pulse higher" : "Accounting higher"}
+                                {row.hasDraftOnly && row.difference === 0
+                                  ? "Unposted draft"
+                                  : (row.difference > 0 ? "Pulse higher" : "Accounting higher")}
                               </span>
                             </div>
                           )}

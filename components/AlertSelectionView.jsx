@@ -280,7 +280,10 @@ export default function AlertSelectionView({
           classification,
           automationCommanderSheetId,
           masterSheetId: targetMasterSheetId,
-          clientSheetId: targetClientSheetId
+          clientSheetId: targetClientSheetId,
+          sessionId,
+          alertKey,
+          fingerprintHash: alert.fingerprintHash
         })
       });
       const data = await res.json();
@@ -288,8 +291,41 @@ export default function AlertSelectionView({
         throw new Error(data.error || "Failed to classify category");
       }
       setClassificationMsg(prev => ({ ...prev, [alertKey]: "✓ Applied and synced!" }));
+
+      if (sessionId && alertKey) {
+        fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "remove_alert", sessionId, alertId: alertKey }),
+        }).catch(() => { });
+      }
+
       setTimeout(() => {
-        setProactiveAlerts(prev => prev.filter(a => a.alertKey !== alertKey));
+        setProactiveAlerts(prev => {
+          const remaining = prev.filter(a => {
+            if (alert.rowIndex != null && a.rowIndex != null) {
+              return a.rowIndex !== alert.rowIndex;
+            }
+            return a.alertKey !== alertKey;
+          });
+          const counts = {};
+          remaining.forEach(a => {
+            const cName = a.clientName || a.metadata?.endClientName || a.metadata?.clientName;
+            if (cName) counts[cName] = (counts[cName] || 0) + 1;
+          });
+          setProactiveCountsByClient(counts);
+          try {
+            localStorage.setItem("pulse_cached_proactive_alerts", JSON.stringify(remaining));
+          } catch {}
+
+          const remainingClientProactive = remaining.filter(a => a.clientName === selectedClient?.clientName);
+          const remainingProactiveCount = remainingClientProactive.length;
+          const infoDone = clientNoActionAlerts.every(na => isNoActionResolved(na) || isStaleInvoiceSuppressedByRetainerAlert(na, remainingClientProactive));
+          if (selectedClient && clientAlerts.length === 0 && infoDone && remainingProactiveCount === 0) {
+            handlePostClear([], resolvedNoActionFlags);
+          }
+          return remaining;
+        });
       }, 1000);
     } catch (err) {
       setClassificationMsg(prev => ({ ...prev, [alertKey]: `Error: ${err.message}` }));
@@ -1463,6 +1499,8 @@ export default function AlertSelectionView({
         {!isAdmin ? (
           <NonAdminAlertListView
             styles={styles}
+            sessionId={sessionId}
+            automationCommanderSheetId={automationCommanderSheetId}
             groupedAlerts={groupedAlerts}
             groupedInfoAlerts={groupedInfoAlerts}
             groupedProactiveAlerts={groupedProactiveAlerts}

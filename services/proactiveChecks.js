@@ -3,7 +3,9 @@ import { isPlaceholderInvoice, isPlaceholderExpense, toSheetDateFormat, toInputD
 import { withRetry, colIndexToLetter, applySheetFontFormat, getSheetGid, sanitizeFormulaInput } from "./sheetsClient.js";
 import { getClientWebAppUrl, getAllClients } from "./workspaces.js";
 import { redisClient } from "./redisClient.js";
-import { ensureAlertMemoryTab, readAlertMemory, updateAlertMemoryRow, findMemoryRow } from "./alertMemory.js";
+import { ensureAlertMemoryTab, readAlertMemory, updateAlertMemoryRow, appendAlertMemoryRow, findMemoryRow, updateHandledAlertHash, invalidateAlertMemoryCache } from "./alertMemory.js";
+import { applyAlertRemovalToTriageData, PRECOMPUTED_KEY } from "./alertState.js";
+import { invalidatePrecomputedMemoryCache } from "./triageEngine.js";
 import { logPmaActivity } from "./pmaLogger.js";
 
 export function parseConfirmedDate_(val) {
@@ -2397,7 +2399,10 @@ export async function handleClassifyPLCategory(sheets, {
   automationCommanderSheetId,
   masterSheetId,
   clientSheetId,
-  userEmail
+  userEmail,
+  sessionId,
+  alertKey: providedAlertKey,
+  fingerprintHash: providedFp
 }) {
   if (!clientName || !categoryName || !classification) {
     throw new Error("Missing clientName, categoryName, or classification");
@@ -2620,45 +2625,131 @@ export async function handleClassifyPLCategory(sheets, {
     console.warn("⚠️ Could not write classification to AutoLog:", logErr.message);
   }
 
-  // 5. Auto-resolve the alert in redis cache & AlertMemory
-  const alertKey = `unmapped_pl_category|${clientName}|${categoryName}`;
-  if (redisClient?.isOpen) {
-    try {
-      const cacheKey = `pulse:triage_state:${clientName}`;
-      const cached = await redisClient.get(cacheKey);
-      if (cached) {
-        const state = JSON.parse(cached);
-        if (state.alerts) {
-          state.alerts = state.alerts.filter(a => a.alertKey !== alertKey && a.metadata?.cleanName !== cleanName);
-          await redisClient.set(cacheKey, JSON.stringify(state));
-        }
-      }
-    } catch (re) {
-      console.warn("Could not prune resolved alert from redis:", re.message);
-    }
-  }
+  // 5. Auto-resolve the alert in AlertMemory, Redis session(s), and precomputed cache
+  const alertKey = providedAlertKey || `unmapped_pl_category|${clientName}|${categoryName}`;
+  const legacyAlertKey = `unmapped_pl_category|${clientName}|${cleanName}`;
+  const fp = providedFp || createHash("sha256").update(alertKey).digest("hex").substring(0, 16);
+  const legacyFp = createHash("sha256").update(legacyAlertKey).digest("hex").substring(0, 16);
 
-  if (automationCommanderSheetId && sheets) {
+  const acId = (!automationCommanderSheetId || automationCommanderSheetId === "default")
+    ? (process.env.AUTOMATION_COMMANDER_SHEET_ID || "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M")
+    : automationCommanderSheetId;
+
+  let matchingRows = [];
+  if (acId && sheets) {
     try {
-      const fp = createHash("sha256").update(alertKey).digest("hex").substring(0, 16);
-      await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
-      const memoryRows = await readAlertMemory(sheets, automationCommanderSheetId);
-      const row = findMemoryRow(memoryRows, fp) || memoryRows.find(r =>
+      await ensureAlertMemoryTab(sheets, acId);
+      const memoryRows = await readAlertMemory(sheets, acId);
+      matchingRows = memoryRows.filter(r =>
         r.alertType === "unmapped_pl_category" &&
         r.clientName === clientName &&
-        (r.alertSummary.toLowerCase().includes(cleanName.toLowerCase()) || r.alertSummary.toLowerCase().includes(categoryName.toLowerCase()))
+        (r.fingerprintHash === fp ||
+         r.fingerprintHash === legacyFp ||
+         r.alertSummary.toLowerCase().includes(cleanName.toLowerCase()) ||
+         r.alertSummary.toLowerCase().includes(categoryName.toLowerCase()))
       );
-      if (row) {
-        await updateAlertMemoryRow(sheets, automationCommanderSheetId, row.rowIndex, {
-          ...row,
+
+      if (matchingRows.length > 0) {
+        for (const row of matchingRows) {
+          await updateAlertMemoryRow(sheets, acId, row.rowIndex, {
+            ...row,
+            status: "accepted",
+            lastRechecked: new Date().toISOString()
+          });
+        }
+      } else {
+        await appendAlertMemoryRow(sheets, acId, {
+          fingerprintHash: fp,
+          alertType: "unmapped_pl_category",
+          clientName,
+          alertSummary: `Unmapped P&L category: "${cleanName}"`,
+          cachedOptionsJSON: "",
           status: "accepted",
-          lastRechecked: new Date().toISOString()
+          category: "proactive",
+          dataSnapshot: JSON.stringify({
+            alertType: "unmapped_pl_category",
+            alertKey,
+            legacyAlertKey,
+            clientName,
+            categoryName: cleanName,
+            cleanName,
+            status: "accepted"
+          })
         });
       }
+
+      await updateHandledAlertHash(acId, fp, "accepted");
+      if (legacyFp && legacyFp !== fp) {
+        await updateHandledAlertHash(acId, legacyFp, "accepted");
+      }
+      for (const mr of matchingRows) {
+        if (mr.fingerprintHash) {
+          await updateHandledAlertHash(acId, mr.fingerprintHash, "accepted");
+        }
+      }
+      invalidateAlertMemoryCache(acId);
     } catch (amErr) {
       console.warn("Could not update AlertMemory row for classified category:", amErr.message);
     }
   }
+
+  // Prune from Redis: caller session, all active sessions, and precomputed cache
+  const targetIds = [alertKey, legacyAlertKey, fp, legacyFp].filter(Boolean);
+  if (matchingRows && matchingRows.length > 0) {
+    for (const mr of matchingRows) {
+      if (mr.fingerprintHash) targetIds.push(mr.fingerprintHash);
+      if (mr.rowIndex != null) targetIds.push(String(mr.rowIndex));
+    }
+  }
+
+  if (redisClient?.isOpen) {
+    // 1. Remove from caller's session if provided
+    if (sessionId) {
+      try {
+        const sessionData = await redisClient.get(`triage_alerts:${sessionId}`);
+        if (sessionData) {
+          const parsed = JSON.parse(sessionData);
+          applyAlertRemovalToTriageData(parsed, targetIds);
+          await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 86400 * 7 });
+        }
+      } catch (sErr) {
+        console.warn("Could not prune classified category from session:", sErr.message);
+      }
+    }
+
+    // 2. Remove across all active sessions in Redis
+    try {
+      const allSessionKeys = await redisClient.keys("triage_alerts:*");
+      for (const sk of allSessionKeys) {
+        if (sk === `triage_alerts:${sessionId}`) continue;
+        try {
+          const sData = await redisClient.get(sk);
+          if (sData) {
+            const parsed = JSON.parse(sData);
+            const { removedCount } = applyAlertRemovalToTriageData(parsed, targetIds);
+            if (removedCount > 0) {
+              await redisClient.set(sk, JSON.stringify(parsed), { EX: 86400 * 7 });
+            }
+          }
+        } catch (_) {}
+      }
+    } catch (keysErr) {
+      console.warn("Could not sweep active sessions for classified category:", keysErr.message);
+    }
+
+    // 3. Remove from PRECOMPUTED_KEY
+    try {
+      const preRaw = await redisClient.get(PRECOMPUTED_KEY);
+      if (preRaw) {
+        const pre = JSON.parse(preRaw);
+        applyAlertRemovalToTriageData(pre, targetIds);
+        await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
+      }
+    } catch (pErr) {
+      console.warn("Could not prune classified category from precomputed cache:", pErr.message);
+    }
+  }
+  invalidatePrecomputedMemoryCache();
 
   // 6. Trigger Master Sheet Full Sync via webAppUrl in background (non-blocking)
   // Fires push_outgoings (to execute pushOutgoingsToClientSheet) and sync_expense_breakdown
@@ -2916,7 +3007,10 @@ export async function handleUpdatePartPaidDate(sheets, {
   cellCoord,
   appId,
   newDate,
-  userEmail
+  userEmail,
+  sessionId,
+  alertKey: providedAlertKey,
+  fingerprintHash: providedFp
 }) {
   if (!clientSheetId || !newDate) {
     throw new Error("Missing clientSheetId or newDate");
@@ -2991,7 +3085,10 @@ export async function handleUpdatePartPaidDate(sheets, {
     }
 
     await logPmaActivity({
-      userEmail: userEmail || "system",
+      userEmail,
+  sessionId,
+  alertKey: providedAlertKey,
+  fingerprintHash: providedFp: userEmail || "system",
       action: "UPDATE_PART_PAID_INVOICE_DATE",
       clientName: clientName || "Unknown",
       details: `Updated part-paid invoice expected payment date to ${formattedNewDate} (${newDaysToPay} days to pay) on Confirmed row ${rowNumber} slot ${slot}.`
@@ -3088,7 +3185,10 @@ export async function handleUpdatePartPaidDate(sheets, {
     });
 
     await logPmaActivity({
-      userEmail: userEmail || "system",
+      userEmail,
+  sessionId,
+  alertKey: providedAlertKey,
+  fingerprintHash: providedFp: userEmail || "system",
       action: "UPDATE_PART_PAID_EXPENSE_DATE",
       clientName: clientName || "Unknown",
       details: `Updated part-paid expense expected payment date to ${formattedNewDate} on Outgoings cell ${cellCoord}.`

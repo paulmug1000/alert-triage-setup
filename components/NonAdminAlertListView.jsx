@@ -26,6 +26,8 @@ const KNOWN_PROACTIVE_TYPES = new Set([
 
 export default function NonAdminAlertListView({
   styles,
+  sessionId,
+  automationCommanderSheetId,
   groupedAlerts,
   groupedInfoAlerts,
   groupedProactiveAlerts,
@@ -114,8 +116,12 @@ export default function NonAdminAlertListView({
           clientName,
           categoryName,
           classification,
+          automationCommanderSheetId,
           masterSheetId: targetMasterSheetId,
-          clientSheetId: targetClientSheetId
+          clientSheetId: targetClientSheetId,
+          sessionId,
+          alertKey,
+          fingerprintHash: alert.fingerprintHash
         })
       });
       const data = await res.json();
@@ -123,6 +129,15 @@ export default function NonAdminAlertListView({
         throw new Error(data.error || "Failed to classify category");
       }
       setClassificationMsg(prev => ({ ...prev, [alertKey]: "✓ Applied and synced!" }));
+
+      if (sessionId && alertKey) {
+        fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "remove_alert", sessionId, alertId: alertKey }),
+        }).catch(() => { });
+      }
+
       setTimeout(() => {
         if (typeof acknowledgeProactiveAlert === "function") {
           acknowledgeProactiveAlert(alert.alertKey, alert.rowIndex);

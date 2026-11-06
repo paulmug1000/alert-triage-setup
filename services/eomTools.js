@@ -4496,7 +4496,11 @@ export async function autoCompleteRevenueCheckTask_(sheets, automationCommanderS
 }
 
 export async function handleEomGetRevenueCheck(req, res, sheets) {
-  const { clientName, monthKey, forceRefresh } = req.body;
+  let { clientName, monthKey, forceRefresh } = req.body;
+  if (typeof clientName === "object" && clientName !== null) {
+    clientName = clientName.clientName || clientName.name || "";
+  }
+  clientName = String(clientName || "").trim();
   const automationCommanderSheetId = getCanonicalAcSheetId();
   if (!clientName || !monthKey || !automationCommanderSheetId) {
     return res.status(400).json({ success: false, error: "Missing clientName or monthKey" });
@@ -4566,7 +4570,11 @@ export async function handleEomGetRevenueCheck(req, res, sheets) {
 }
 
 export async function handleEomRunRevenueComparison(req, res, sheets) {
-  const { clientName, monthKey } = req.body;
+  let { clientName, monthKey } = req.body;
+  if (typeof clientName === "object" && clientName !== null) {
+    clientName = clientName.clientName || clientName.name || "";
+  }
+  clientName = String(clientName || "").trim();
   const automationCommanderSheetId = getCanonicalAcSheetId();
   if (!clientName || !monthKey || !automationCommanderSheetId) {
     return res.status(400).json({ success: false, error: "Missing clientName or monthKey" });
@@ -4666,7 +4674,11 @@ export async function handleEomRunRevenueComparison(req, res, sheets) {
 }
 
 export async function handleEomSaveRevenueCheckNotes(req, res, sheets) {
-  const { clientName, monthKey, notes } = req.body;
+  let { clientName, monthKey, notes } = req.body;
+  if (typeof clientName === "object" && clientName !== null) {
+    clientName = clientName.clientName || clientName.name || "";
+  }
+  clientName = String(clientName || "").trim();
   const automationCommanderSheetId = getCanonicalAcSheetId();
   if (!clientName || !monthKey || !automationCommanderSheetId || !notes) {
     return res.status(400).json({ success: false, error: "Missing required fields" });

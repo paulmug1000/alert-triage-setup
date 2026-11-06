@@ -21,6 +21,12 @@ const REASON_TAG_OPTIONS = [
   { value: "Other", label: "Other" }
 ];
 
+function normalizeClientName(val) {
+  if (!val) return "";
+  if (typeof val === "string") return val.trim();
+  return (val.clientName || val.name || "").trim();
+}
+
 export default function RevenueCheckTab({
   allOutgoingsClients = [],
   eomMonthKey = "",
@@ -36,7 +42,9 @@ export default function RevenueCheckTab({
   const { user } = useAuth();
   const isAdmin = Boolean(!user?.isReadOnly && (user?.isAdmin || user?.role === "Admin"));
 
-  const [selectedClient, setSelectedClient] = useState(initialClient || managedClient?.clientName || "");
+  const [selectedClient, setSelectedClient] = useState(() =>
+    normalizeClientName(initialClient) || normalizeClientName(managedClient) || ""
+  );
   const [selectedMonthKey, setSelectedMonthKey] = useState(eomMonthKey || "");
   const [comparison, setComparison] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -54,13 +62,38 @@ export default function RevenueCheckTab({
 
   // Sync initialClient / managedClient prop if changed externally
   useEffect(() => {
-    if (managedClient?.clientName && managedClient.clientName !== selectedClient) {
-      setSelectedClient(managedClient.clientName);
-    } else if (initialClient && initialClient !== selectedClient) {
-      setSelectedClient(initialClient);
+    const managedName = normalizeClientName(managedClient);
+    const initName = normalizeClientName(initialClient);
+    if (managedName && managedName !== selectedClient) {
+      setSelectedClient(managedName);
+    } else if (initName && initName !== selectedClient) {
+      setSelectedClient(initName);
       if (onClearInitialClient) onClearInitialClient();
     }
   }, [initialClient, onClearInitialClient, managedClient, selectedClient]);
+
+  // Linked EoM task status
+  const linkedTask = useMemo(() => {
+    if (!selectedClient) return null;
+    return (eomAllTasks || []).find(t =>
+      t.clientName === selectedClient &&
+      (t.linkedFunction === "revenue_check" ||
+        (t.name && (t.name.toLowerCase().includes("compare dashboard month to xero month") || t.name.toLowerCase().includes("compare dashboard month"))))
+    );
+  }, [eomAllTasks, selectedClient]);
+
+  const isLinkedTaskDone = useMemo(() => {
+    if (!linkedTask) return false;
+    return linkedTask.status === "done";
+  }, [linkedTask]);
+
+  const handleSelectClient = (c) => {
+    const name = normalizeClientName(c);
+    setSelectedClient(name);
+    setComparison(null);
+    setError("");
+    setStatusMsg(null);
+  };
 
   // Sync eomMonthKey default if not set
   useEffect(() => {
@@ -272,132 +305,192 @@ export default function RevenueCheckTab({
   const totalDiscrepancies = clientVariances.length + unmatchedAccounting.length + unmatchedPulse.length;
   const isBalanced = Math.abs(comparison?.totalVariance || 0) <= 0.05;
 
+  // When no client is selected, render the standardized full-width client selector (identical to CashflowReconTab & SalariesView)
+  if (!selectedClient) {
+    return (
+      <div style={{ padding: "16px 0" }}>
+        <EditClientSelector
+          clients={allOutgoingsClients || []}
+          onSelectClient={handleSelectClient}
+          loading={loading}
+          title="Select a client to check revenue:"
+        />
+      </div>
+    );
+  }
+
   return (
-    <div style={{ padding: "20px 0" }}>
-      {/* Top Header Controls: Client Selector, Month Switcher, Action Button */}
+    <div style={{ padding: "16px 0" }}>
+      {/* Top Header Card */}
       <div
         style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          flexWrap: "wrap",
-          gap: "16px",
-          marginBottom: "20px",
-          paddingBottom: "16px",
-          borderBottom: "1px solid #e2e8f0"
+          background: "#ffffff",
+          borderRadius: "10px",
+          border: "1px solid #e2e8f0",
+          padding: "16px 20px",
+          marginBottom: "16px",
+          boxShadow: "0 1px 3px rgba(0,0,0,0.06)"
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
-          <div>
-            <label style={{ display: "block", fontSize: "11px", fontWeight: "600", color: "#64748b", marginBottom: "4px" }}>
-              Client
-            </label>
-            <div style={{ minWidth: "220px" }}>
-              <EditClientSelector
-                clients={allOutgoingsClients || []}
-                selectedClient={selectedClient}
-                onSelectClient={setSelectedClient}
-              />
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
+          {/* Left: Back button + Title + Client Name badge + Selector dropdown */}
+          <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+            {!managedClient && (allOutgoingsClients || []).length > 1 && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedClient("");
+                  setComparison(null);
+                  setError("");
+                  setStatusMsg(null);
+                  if (onClearInitialClient) onClearInitialClient();
+                }}
+                style={{
+                  background: "#ffffff",
+                  border: "1px solid #cbd5e1",
+                  borderRadius: "6px",
+                  cursor: "pointer",
+                  padding: "6px 12px",
+                  fontSize: "16px",
+                  color: "#475569",
+                  lineHeight: 1,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  transition: "all 0.15s ease",
+                  boxShadow: "0 1px 2px rgba(0,0,0,0.04)"
+                }}
+                title="Back to client list"
+              >
+                ←
+              </button>
+            )}
+            <div>
+              <h1 style={{ margin: 0, fontSize: "20px", fontWeight: 700, color: "#1e293b", display: "flex", alignItems: "center", gap: "8px" }}>
+                <span>Revenue check</span>
+              </h1>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "3px" }}>
+                <span style={{ fontSize: "14px", fontWeight: 600, color: "#0047AB" }}>
+                  {selectedClient}
+                </span>
+                {!managedClient && (allOutgoingsClients || []).length > 1 && (
+                  <select
+                    value={selectedClient}
+                    onChange={(e) => handleSelectClient(e.target.value)}
+                    style={{
+                      fontSize: "12px",
+                      padding: "2px 8px",
+                      borderRadius: "6px",
+                      border: "1px solid #cbd5e1",
+                      background: "#f8fafc",
+                      color: "#475569",
+                      cursor: "pointer"
+                    }}
+                    title="Switch client"
+                  >
+                    {allOutgoingsClients.map((c) => {
+                      const name = normalizeClientName(c);
+                      return <option key={name} value={name}>{name}</option>;
+                    })}
+                  </select>
+                )}
+              </div>
             </div>
           </div>
 
-          <div>
-            <label style={{ display: "block", fontSize: "11px", fontWeight: "600", color: "#64748b", marginBottom: "4px" }}>
-              Target month
-            </label>
-            <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+          {/* Right: Target Month stepper + Run revenue comparison + Refresh + EoM task button */}
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", justifyContent: "flex-end" }}>
+            {/* Target month stepper */}
+            <div style={{ display: "flex", alignItems: "center", background: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: "8px", padding: "2px 4px", gap: "2px" }}>
               <button
                 type="button"
                 onClick={() => shiftMonth(-1)}
-                style={{
-                  padding: "6px 10px",
-                  fontSize: "13px",
-                  background: "#fff",
-                  border: "1px solid #cbd5e1",
-                  borderRadius: "6px",
-                  cursor: "pointer",
-                  color: "#334155"
-                }}
+                style={{ padding: "4px 8px", background: "none", border: "none", cursor: "pointer", fontSize: "13px", color: "#475569" }}
                 title="Previous month"
               >
-                ‹
+                ◀
               </button>
-              <div
-                style={{
-                  padding: "6px 14px",
-                  fontSize: "13px",
-                  fontWeight: "600",
-                  background: "#f8fafc",
-                  border: "1px solid #cbd5e1",
-                  borderRadius: "6px",
-                  minWidth: "130px",
-                  textAlign: "center",
-                  color: "#0f172a"
-                }}
-              >
+              <span style={{ padding: "4px 8px", fontSize: "13px", fontWeight: "600", color: "#1e293b" }}>
                 {targetMonthLabel || selectedMonthKey}
-              </div>
+              </span>
               <button
                 type="button"
                 onClick={() => shiftMonth(1)}
-                style={{
-                  padding: "6px 10px",
-                  fontSize: "13px",
-                  background: "#fff",
-                  border: "1px solid #cbd5e1",
-                  borderRadius: "6px",
-                  cursor: "pointer",
-                  color: "#334155"
-                }}
+                style={{ padding: "4px 8px", background: "none", border: "none", cursor: "pointer", fontSize: "13px", color: "#475569" }}
                 title="Next month"
               >
-                ›
+                ▶
               </button>
             </div>
+
+            {/* Run comparison button */}
+            <button
+              type="button"
+              onClick={handleRunRevenueComparison}
+              disabled={runningSync || loading}
+              style={{
+                padding: "7px 14px",
+                fontSize: "13px",
+                fontWeight: "600",
+                color: "#ffffff",
+                background: runningSync ? "#94a3b8" : "#2563eb",
+                border: "none",
+                borderRadius: "6px",
+                cursor: runningSync ? "wait" : "pointer",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "6px",
+                boxShadow: "0 1px 2px rgba(37,99,235,0.2)"
+              }}
+            >
+              {runningSync ? <Spinner size={14} color="#fff" /> : null}
+              <span>{runningSync ? "Running comparison..." : "Run revenue comparison"}</span>
+            </button>
+
+            {/* Refresh */}
+            <button
+              type="button"
+              onClick={() => loadRevenueCheck(selectedClient, selectedMonthKey, true)}
+              disabled={loading || runningSync}
+              style={{
+                padding: "6px 12px",
+                background: "#ffffff",
+                border: "1px solid #cbd5e1",
+                borderRadius: "6px",
+                color: "#334155",
+                fontSize: "12px",
+                fontWeight: 600,
+                cursor: (loading || runningSync) ? "default" : "pointer",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "5px"
+              }}
+              title="Refresh revenue comparison data"
+            >
+              {loading && !runningSync ? <Spinner size={12} /> : null}
+              <span>Refresh</span>
+            </button>
+
+            {/* Linked EoM task button */}
+            {linkedTask && onTaskMarkedDone && (
+              <button
+                type="button"
+                onClick={() => onTaskMarkedDone(selectedClient, linkedTask.taskId)}
+                style={{
+                  padding: "6px 12px",
+                  background: isLinkedTaskDone ? "#f0fdf4" : "#f1f5f9",
+                  border: isLinkedTaskDone ? "1px solid #86efac" : "1px solid #cbd5e1",
+                  color: isLinkedTaskDone ? "#166534" : "#475569",
+                  borderRadius: "6px",
+                  fontSize: "12px",
+                  fontWeight: "600",
+                  cursor: "pointer"
+                }}
+              >
+                {isLinkedTaskDone ? "✓ EoM task marked complete" : "Mark EoM task complete"}
+              </button>
+            )}
           </div>
-        </div>
-
-        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-          <button
-            type="button"
-            onClick={handleRunRevenueComparison}
-            disabled={runningSync || !selectedClient}
-            style={{
-              padding: "8px 16px",
-              fontSize: "13px",
-              fontWeight: "600",
-              color: "#fff",
-              backgroundColor: runningSync ? "#94a3b8" : "#2563eb",
-              border: "none",
-              borderRadius: "6px",
-              cursor: runningSync || !selectedClient ? "default" : "pointer",
-              display: "flex",
-              alignItems: "center",
-              gap: "6px",
-              boxShadow: "0 1px 2px rgba(0,0,0,0.05)"
-            }}
-          >
-            {runningSync && <Spinner size={14} color="#fff" />}
-            {runningSync ? "Running comparison..." : "Run revenue comparison"}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => loadRevenueCheck(selectedClient, selectedMonthKey, true)}
-            disabled={loading || runningSync || !selectedClient}
-            style={{
-              padding: "8px 12px",
-              fontSize: "13px",
-              color: "#475569",
-              backgroundColor: "#fff",
-              border: "1px solid #cbd5e1",
-              borderRadius: "6px",
-              cursor: loading || runningSync ? "default" : "pointer"
-            }}
-            title="Refresh comparison from store"
-          >
-            Refresh
-          </button>
         </div>
       </div>
 
@@ -441,20 +534,6 @@ export default function RevenueCheckTab({
           <p style={{ marginTop: "12px", fontSize: "14px", color: "#64748b" }}>
             Loading revenue comparison...
           </p>
-        </div>
-      ) : !selectedClient ? (
-        <div
-          style={{
-            padding: "40px 20px",
-            textAlign: "center",
-            background: "#f8fafc",
-            borderRadius: "8px",
-            border: "1px dashed #cbd5e1",
-            color: "#64748b",
-            fontSize: "14px"
-          }}
-        >
-          Please select a client to view and reconcile recognised revenue.
         </div>
       ) : !comparison ? (
         <div

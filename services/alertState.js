@@ -9,7 +9,7 @@ import { createHash } from "crypto";
 import { logPmaActivity } from "./pmaLogger.js";
 import { getSessionUser } from "./authService.js";
 import { isUserAuthorizedForClient, canAccessPma, DEFAULT_AC_SHEET_ID } from "./userPermissions.js";
-import { matchesClientName, ADMIN_ONLY_ALERT_TYPES, toSheetDateFormat } from "../utils/helpers.js";
+import { matchesClientName, ADMIN_ONLY_ALERT_TYPES, toSheetDateFormat, KNOWN_PROACTIVE_ALERT_TYPES } from "../utils/helpers.js";
 import { getAllClients } from "./workspaces.js";
 import { invalidatePrecomputedMemoryCache } from "./triageEngine.js";
 
@@ -241,7 +241,7 @@ export function applyAlertRemovalToTriageData(data, targetIds, allowedClientChec
 
 export function restoreAlertToTriageData(data, alert, category) {
   if (!data || !alert) return;
-  const isProactive = category === "proactive" || alert.isProactive;
+  const isProactive = (category === "proactive" || alert.isProactive) && KNOWN_PROACTIVE_ALERT_TYPES.has(alert.alertType || alert.type);
   const isInfo = category === "informational" || alert.isNoAction;
 
   const resolveFlagKey = (a) => {
@@ -1317,7 +1317,7 @@ export async function handleGetProactiveAlerts(req, res, sheets) {
     ];
 
     let active = all
-      .filter(r => r.category === "proactive" && r.status === "cached")
+      .filter(r => r.category === "proactive" && r.status === "cached" && KNOWN_PROACTIVE_ALERT_TYPES.has(r.alertType))
       .map(r => {
         let alert = {};
         try { alert = JSON.parse(r.dataSnapshot || "{}"); } catch (e) { alert = {}; }

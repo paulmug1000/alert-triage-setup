@@ -420,6 +420,7 @@ export default function AlertSelectionView({
 
   const clientProactiveAlertsList = proactiveAlerts.filter(a =>
     a.clientName === selectedClient.clientName &&
+    KNOWN_PROACTIVE_TYPES.has(a.alertType) &&
     (isAdmin || !ADMIN_ONLY_ALERT_TYPES.has(a.alertType))
   );
 
@@ -1117,7 +1118,7 @@ export default function AlertSelectionView({
 
     const ignoreBanner = alert.previousIgnoreReason ? (
       <div style={{ backgroundColor: "#fef3c7", color: "#92400e", padding: "8px 10px", borderRadius: "6px", fontSize: "11px", marginTop: "8px", border: "1px solid #fde68a", pointerEvents: "auto" }}>
-        <strong>⚠ Previously Ignored:</strong> {alert.previousIgnoreReason.ignoreReason || "No reason provided"}
+        <strong>⚠ Previously ignored:</strong> {alert.previousIgnoreReason.ignoreReason || "No reason provided"}
         <div style={{ marginTop: "4px", color: "#b45309" }}>
           <em>Resurfaced: {alert.previousIgnoreReason.changeReason}</em>
         </div>
@@ -3128,67 +3129,67 @@ export default function AlertSelectionView({
 
       </div>
 
-        {/* Full AutoLog entry modal */}
-        {autoLogModalAlert && (
-          <div style={styles.modalOverlay} onClick={e => { if (e.target === e.currentTarget) setAutoLogModalAlert(null); }}>
-            <div style={{ ...styles.modalCard, maxWidth: "680px", width: "95%" }}>
-              <h3 style={styles.modalTitle}>AutoLog entry: Retroactive P&L outgoings update</h3>
-              <p style={{ ...styles.modalSubtitle, marginBottom: "8px" }}>
-                <strong>Client:</strong> {autoLogModalAlert.clientName}
-                {autoLogModalAlert.timestamp && <span style={{ marginLeft: "10px" }}>• <strong>Timestamp:</strong> {autoLogModalAlert.timestamp}</span>}
-              </p>
-              {autoLogModalAlert.heading && (
-                <div style={{ fontSize: "12px", fontWeight: "600", color: "#374151", marginBottom: "8px" }}>
-                  {autoLogModalAlert.heading}
-                </div>
-              )}
-              <div style={{
-                fontFamily: "monospace",
-                fontSize: "11px",
-                color: "#1e293b",
-                backgroundColor: "#f8fafc",
-                border: "1px solid #cbd5e1",
-                borderRadius: "6px",
-                padding: "10px 12px",
-                whiteSpace: "pre-wrap",
-                wordBreak: "break-word",
-                maxHeight: "380px",
-                overflowY: "auto"
-              }}>
-                {isAdmin
-                  ? (autoLogModalAlert.detail || autoLogModalAlert.detailsSnippet || autoLogModalAlert.metadata?.details || "")
-                  : String(autoLogModalAlert.detail || autoLogModalAlert.detailsSnippet || autoLogModalAlert.metadata?.details || "")
-                      .split(/\r?\n/)
-                      .map(l => (l.match(/^\s*/)?.[0] || "") + sanitizeSpreadsheetTerms(l.trim()))
-                      .join("\n")
-                }
+      {/* Full AutoLog entry modal */}
+      {autoLogModalAlert && (
+        <div style={styles.modalOverlay} onClick={e => { if (e.target === e.currentTarget) setAutoLogModalAlert(null); }}>
+          <div style={{ ...styles.modalCard, maxWidth: "680px", width: "95%" }}>
+            <h3 style={styles.modalTitle}>AutoLog entry: Retroactive P&L outgoings update</h3>
+            <p style={{ ...styles.modalSubtitle, marginBottom: "8px" }}>
+              <strong>Client:</strong> {autoLogModalAlert.clientName}
+              {autoLogModalAlert.timestamp && <span style={{ marginLeft: "10px" }}>• <strong>Timestamp:</strong> {autoLogModalAlert.timestamp}</span>}
+            </p>
+            {autoLogModalAlert.heading && (
+              <div style={{ fontSize: "12px", fontWeight: "600", color: "#374151", marginBottom: "8px" }}>
+                {autoLogModalAlert.heading}
               </div>
-              <div style={{ ...styles.modalButtons, marginTop: "16px", display: "flex", justifyContent: "flex-end", gap: "8px" }}>
-                <button
-                  type="button"
-                  className="triage-btn"
-                  onClick={() => {
-                    const txt = autoLogModalAlert.detail || autoLogModalAlert.detailsSnippet || autoLogModalAlert.metadata?.details || "";
-                    navigator.clipboard.writeText(txt);
-                    setCopiedAutoLog(true);
-                    setTimeout(() => setCopiedAutoLog(false), 2000);
-                  }}
-                  style={styles.buttonSecondary}
-                >
-                  {copiedAutoLog ? "Copied" : "Copy to clipboard"}
-                </button>
-                <button
-                  type="button"
-                  className="triage-btn"
-                  onClick={() => setAutoLogModalAlert(null)}
-                  style={{ ...styles.buttonSecondary, background: "#1f2937", color: "#fff", borderColor: "#1f2937" }}
-                >
-                  Close
-                </button>
-              </div>
+            )}
+            <div style={{
+              fontFamily: "monospace",
+              fontSize: "11px",
+              color: "#1e293b",
+              backgroundColor: "#f8fafc",
+              border: "1px solid #cbd5e1",
+              borderRadius: "6px",
+              padding: "10px 12px",
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+              maxHeight: "380px",
+              overflowY: "auto"
+            }}>
+              {isAdmin
+                ? (autoLogModalAlert.detail || autoLogModalAlert.detailsSnippet || autoLogModalAlert.metadata?.details || "")
+                : String(autoLogModalAlert.detail || autoLogModalAlert.detailsSnippet || autoLogModalAlert.metadata?.details || "")
+                  .split(/\r?\n/)
+                  .map(l => (l.match(/^\s*/)?.[0] || "") + sanitizeSpreadsheetTerms(l.trim()))
+                  .join("\n")
+              }
+            </div>
+            <div style={{ ...styles.modalButtons, marginTop: "16px", display: "flex", justifyContent: "flex-end", gap: "8px" }}>
+              <button
+                type="button"
+                className="triage-btn"
+                onClick={() => {
+                  const txt = autoLogModalAlert.detail || autoLogModalAlert.detailsSnippet || autoLogModalAlert.metadata?.details || "";
+                  navigator.clipboard.writeText(txt);
+                  setCopiedAutoLog(true);
+                  setTimeout(() => setCopiedAutoLog(false), 2000);
+                }}
+                style={styles.buttonSecondary}
+              >
+                {copiedAutoLog ? "Copied" : "Copy to clipboard"}
+              </button>
+              <button
+                type="button"
+                className="triage-btn"
+                onClick={() => setAutoLogModalAlert(null)}
+                style={{ ...styles.buttonSecondary, background: "#1f2937", color: "#fff", borderColor: "#1f2937" }}
+              >
+                Close
+              </button>
             </div>
           </div>
-        )}
+        </div>
+      )}
 
       {retainerAlertResolution && (
         <RetainerAlertResolutionModal

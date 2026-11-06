@@ -1669,6 +1669,16 @@ export async function handleStorePrecomputed(req, res, sheets) {
           }
           if (mappedFlagType === "crm") mappedFlagType = alertObj.flagType || alertObj.alertType || "crmPipeAppDiscr";
 
+          let resolvedPreviousIgnore = alertObj.previousIgnoreReason || null;
+          if (!resolvedPreviousIgnore && memoryRowsForMerge) {
+            resolvedPreviousIgnore = await findPreviousIgnoreReason(memoryRowsForMerge, {
+              ...alertObj,
+              clientName: row.clientName,
+              alertType: mappedFlagType,
+              fingerprintHash: row.fingerprintHash,
+            });
+          }
+
           newAlertsFromMemory.push({
             ...alertObj,
             flagType: mappedFlagType,
@@ -1678,6 +1688,7 @@ export async function handleStorePrecomputed(req, res, sheets) {
             clientId: liveMeta.clientSheetId || alertObj.clientId || alertObj.clientSheetId || "",
             masterSheetId: liveMeta.masterSheetId || alertObj.masterSheetId || "",
             options,
+            previousIgnoreReason: resolvedPreviousIgnore,
             firstSeen: row.firstSeen,
             lastSeen: row.lastSeen
           });
@@ -3003,6 +3014,8 @@ export async function handleRunFlagSweep(req, res, sheets) {
                 if (situationChanged) {
                   const clientMeta = clientMetaMap.get(item.clientName);
                   const newStatus = evaluateAutomationStatus_(item.alertType, item.category, clientMeta, new Date(detectedAtIso).getTime(), null);
+                  const prevIgnore = await findPreviousIgnoreReason(memoryRows, alert);
+                  alertForSnapshot.previousIgnoreReason = prevIgnore || (exRow.ignoreReason ? { ignoreReason: exRow.ignoreReason, changeReason: "underlying data updated" } : null);
                   await updateAlertMemoryRow(sheets, acIdSweep, exRow.rowIndex, {
                     ...exRow,
                     fingerprintHash: alert._fingerprint,
@@ -3078,6 +3091,11 @@ export async function handleRunFlagSweep(req, res, sheets) {
             // Case 5: Brand new alert!
             const clientMeta = clientMetaMap.get(item.clientName);
             const status = evaluateAutomationStatus_(item.alertType, item.category, clientMeta, new Date(detectedAtIso).getTime(), null);
+
+            const prevIgnore = await findPreviousIgnoreReason(memoryRows, alert);
+            if (prevIgnore) {
+              alertForSnapshot.previousIgnoreReason = prevIgnore;
+            }
 
             const newRow = {
               fingerprintHash: alert._fingerprint,

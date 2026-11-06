@@ -329,26 +329,49 @@ export function extractCrmComparisonSnapshot(alert) {
   return { clientName, jobName, fields };
 }
 
+export const DISCREPANCY_ALERT_TYPES = new Set([
+  "invoiceDashboardDiscr", "contractorsDashboardDiscr", "passThroughDashboardDiscr",
+  "crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr",
+  "invoiceStaleUnsentChanges", "expenseUnreconGaps", "invoice", "expense", "crm"
+]);
+
+export function normalizeCategoryForType(alertType, category) {
+  if (alertType && DISCREPANCY_ALERT_TYPES.has(alertType)) {
+    return "discrepancy";
+  }
+  return category || "discrepancy";
+}
+
 export async function findPreviousIgnoreReason(memoryRows, alert) {
   try {
-    const supersededRows = memoryRows
-      .filter(r => r.status === "superseded" && r.ignoreReason)
-      .sort((a, b) => new Date(b.lastSeen || 0) - new Date(a.lastSeen || 0));
-    if (supersededRows.length === 0) return null;
+    if (!Array.isArray(memoryRows) || memoryRows.length === 0 || !alert) return null;
+
+    const alertFp = alert.fingerprintHash || (alert._fingerprint ? alert._fingerprint : null);
+    const candidateRows = memoryRows
+      .filter(r => (r.status === "superseded" || r.status === "ignored") && r.ignoreReason && (!alertFp || r.fingerprintHash !== alertFp))
+      .sort((a, b) => new Date(b.lastSeen || b.firstSeen || 0) - new Date(a.lastSeen || a.firstSeen || 0));
+    if (candidateRows.length === 0) return null;
 
     const alertClient = (alert.clientName || "").toLowerCase().trim();
-    const alertType = (alert.type || alert.flagType || "").toLowerCase();
-    const alertInvNo = (alert.summary?.invoiceNo || "").trim();
-    const alertRef = (alert.summary?.reference || "").trim();
-
+    const alertType = (alert.type || alert.flagType || alert.alertType || "").toLowerCase();
+    const alertInvNo = String(alert.summary?.invoiceNo || alert.invoiceNo || "").trim();
+    const alertRef = String(alert.summary?.reference || alert.reference || "").trim();
     const alertFlagType = (alert.flagType || alert.alertType || "").trim();
-    const crmIdentity = alertType === "crm" ? extractCrmComparisonSnapshot(alert) : null;
+    const crmIdentity = alertType === "crm" || alertFlagType.startsWith("crm") ? extractCrmComparisonSnapshot(alert) : null;
 
-    for (const row of supersededRows) {
+    for (const row of candidateRows) {
       if ((row.clientName || "").toLowerCase().trim() !== alertClient) continue;
 
       const rowType = (row.alertType || "").toLowerCase().trim();
-      if (rowType !== alertType && rowType !== alertFlagType.toLowerCase()) continue;
+      if (rowType !== alertType && rowType !== alertFlagType.toLowerCase()) {
+        const isRowInv = rowType.includes("inv");
+        const isAlertInv = alertType.includes("inv") || alertFlagType.toLowerCase().includes("inv");
+        const isRowExp = rowType.includes("exp") || rowType.includes("dir") || rowType.includes("cost") || rowType.includes("contractor") || rowType.includes("passthrough");
+        const isAlertExp = alertType.includes("exp") || alertFlagType.toLowerCase().includes("exp") || alertFlagType.toLowerCase().includes("contractor") || alertFlagType.toLowerCase().includes("passthrough");
+        const isRowCrm = rowType.includes("crm");
+        const isAlertCrm = alertType.includes("crm") || alertFlagType.toLowerCase().includes("crm");
+        if (!(isRowInv && isAlertInv) && !(isRowExp && isAlertExp) && !(isRowCrm && isAlertCrm)) continue;
+      }
 
       let matched = false;
       let snap = null;
@@ -356,12 +379,13 @@ export async function findPreviousIgnoreReason(memoryRows, alert) {
       if (row.dataSnapshot) {
         try {
           snap = JSON.parse(row.dataSnapshot);
-          const snapInvNo = (snap.invoiceNo || "").trim();
-          const snapRef = (snap.reference || "").trim();
-          if (alertInvNo && snapInvNo && snapInvNo === alertInvNo) matched = true;
-          if (alertRef && snapRef && snapRef === alertRef) matched = true;
+          const snapData = snap.summary || snap;
+          const snapInvNo = String(snapData.invoiceNo || snapData.ref || "").trim();
+          const snapRef = String(snapData.reference || snapData.ref || "").trim();
+          if (alertInvNo && snapInvNo && snapInvNo.toLowerCase() === alertInvNo.toLowerCase()) matched = true;
+          if (alertRef && snapRef && snapRef.toLowerCase() === alertRef.toLowerCase()) matched = true;
 
-          if (!matched && alertType === "crm" && crmIdentity && crmIdentity.jobName) {
+          if (!matched && (alertType === "crm" || alertFlagType.startsWith("crm")) && crmIdentity && crmIdentity.jobName) {
             const snapFlagType = (snap.flagType || "").trim();
             const snapJobName = (snap.crmJobName || "").toLowerCase().trim();
             const snapEndClient = (snap.crmEndClient || "").toLowerCase().trim();
@@ -385,50 +409,51 @@ export async function findPreviousIgnoreReason(memoryRows, alert) {
       let changeReason = null;
       try {
         if (snap && Object.keys(snap).length > 0) {
+          const snapData = snap.summary || snap;
           const changes = [];
-          const snapAmt = parseFloat(String(snap.amount || "").replace(/[£$€,]/g, "")) || null;
-          const currentAmt = parseFloat(String(alert.summary?.amount || "").replace(/[£$€,]/g, "")) || null;
+          const snapAmt = parseFloat(String(snapData.amount || "").replace(/[£$€,]/g, "")) || null;
+          const currentAmt = parseFloat(String(alert.summary?.amount || alert.amount || "").replace(/[£$€,]/g, "")) || null;
           if (snapAmt !== null && currentAmt !== null && Math.abs(snapAmt - currentAmt) > 0.005) {
             changes.push(`amount changed from £${snapAmt.toFixed(2)} to £${currentAmt.toFixed(2)}`);
           }
 
-          const snapVAT = parseFloat(String(snap.vatIncluded || "").replace(/[£$€,]/g, "")) || null;
-          const currentVAT = parseFloat(String(alert.summary?.vatIncluded || "").replace(/[£$€,]/g, "")) || null;
+          const snapVAT = parseFloat(String(snapData.vatIncluded || snapData.vatAmount || "").replace(/[£$€,]/g, "")) || null;
+          const currentVAT = parseFloat(String(alert.summary?.vatIncluded || alert.summary?.vatAmount || alert.vatIncluded || "").replace(/[£$€,]/g, "")) || null;
           if (snapVAT !== null && currentVAT !== null && Math.abs(snapVAT - currentVAT) > 0.005) {
             changes.push(`VAT changed from £${snapVAT.toFixed(2)} to £${currentVAT.toFixed(2)}`);
           }
 
-          const snapStatus = (snap.status || "").trim();
-          const currentStatus = (alert.summary?.status || "").trim();
+          const snapStatus = (snapData.status || "").trim();
+          const currentStatus = (alert.summary?.status || alert.status || "").trim();
           if (snapStatus && currentStatus && snapStatus !== currentStatus) {
             changes.push(`status changed from "${snapStatus}" to "${currentStatus}"`);
           }
 
-          const snapSent = (snap.sentDate || "").trim();
-          const currentSent = (alert.summary?.sentDate || "").trim();
+          const snapSent = (snapData.sentDate || "").trim();
+          const currentSent = (alert.summary?.sentDate || alert.sentDate || "").trim();
           if (snapSent && currentSent && snapSent !== currentSent) {
             changes.push(`sent date changed from "${snapSent}" to "${currentSent}"`);
           }
 
-          const snapPaid = (snap.datePaid || "").trim();
-          const currentPaid = (alert.summary?.datePaid || "").trim();
-          if (snapPaid && currentPaid && snapPaid !== currentPaid) {
-            changes.push(`date paid changed from "${snapPaid}" to "${currentPaid}"`);
+          const snapPaid = (snapData.datePaid || "").trim();
+          const currentPaid = (alert.summary?.datePaid || alert.datePaid || "").trim();
+          if (snapPaid !== currentPaid) {
+            changes.push(`date paid changed from "${snapPaid || 'none'}" to "${currentPaid || 'none'}"`);
           }
 
-          const snapClient = (snap.client || "").trim();
-          const currentClient = (alert.summary?.client || "").trim();
+          const snapClient = (snapData.client || snapData.clientName || "").trim();
+          const currentClient = (alert.summary?.client || alert.summary?.contactName || alert.clientName || "").trim();
           if (snapClient && currentClient && snapClient !== currentClient) {
             changes.push(`client changed from "${snapClient}" to "${currentClient}"`);
           }
 
-          const snapJob = (snap.job || "").trim();
-          const currentJob = (alert.summary?.job || "").trim();
+          const snapJob = (snapData.job || snapData.jobName || "").trim();
+          const currentJob = (alert.summary?.job || alert.summary?.jobName || "").trim();
           if (snapJob && currentJob && snapJob !== currentJob) {
             changes.push(`job changed from "${snapJob}" to "${currentJob}"`);
           }
 
-          if (alertType === "crm" && snap.crmFields && crmIdentity && crmIdentity.fields) {
+          if ((alertType === "crm" || alertFlagType.startsWith("crm")) && snap.crmFields && crmIdentity && crmIdentity.fields) {
             const FIELD_LABELS = {
               revenue: "Revenue", directCosts: "Direct costs", startDate: "Start date",
               endDate: "End date", likelihood: "% Likelihood",
@@ -449,10 +474,10 @@ export async function findPreviousIgnoreReason(memoryRows, alert) {
           if (changes.length > 0) {
             changeReason = changes.join("; ");
           } else {
-            changeReason = "underlying data may have been updated (no specific field change detected)";
+            changeReason = "underlying data updated";
           }
         } else {
-          changeReason = "alert was re-raised (no previous snapshot to compare against)";
+          changeReason = "alert re-raised with updated data";
         }
       } catch (e) { }
 
@@ -540,7 +565,7 @@ export async function appendAlertMemoryRow(sheets, automationCommanderSheetId, p
   const firstSeen = payload.firstSeen || now;
   const lastSeen = payload.lastSeen || now;
   const lastRechecked = payload.lastRechecked || now;
-  const normalizedCategory = category || "discrepancy";
+  const normalizedCategory = normalizeCategoryForType(alertType, category);
 
   const response = await withRetry(() => sheets.spreadsheets.values.append({
     spreadsheetId: automationCommanderSheetId,
@@ -626,7 +651,7 @@ export async function appendAlertMemoryRowsBatch(sheets, automationCommanderShee
     const firstSeen = payload.firstSeen || now;
     const lastSeen = payload.lastSeen || now;
     const lastRechecked = payload.lastRechecked || now;
-    const normalizedCategory = category || "discrepancy";
+    const normalizedCategory = normalizeCategoryForType(alertType, category);
 
     return {
       rowValues: [
@@ -705,6 +730,7 @@ export async function updateAlertMemoryRow(sheets, automationCommanderSheetId, r
   const now = new Date().toISOString();
   const firstSeenVal = cleanUpdates.firstSeen || now;
   const lastRecheckedVal = cleanUpdates.lastRechecked || now;
+  const targetCategory = normalizeCategoryForType(cleanUpdates.alertType, cleanUpdates.category);
   const values = [
     cleanUpdates.fingerprintHash,
     cleanUpdates.alertType,
@@ -717,10 +743,11 @@ export async function updateAlertMemoryRow(sheets, automationCommanderSheetId, r
     now,
     lastRecheckedVal,
     cleanUpdates.dataSnapshot || "",
+    targetCategory,
   ];
   await withRetry(() => sheets.spreadsheets.values.update({
     spreadsheetId: automationCommanderSheetId,
-    range: `${ALERT_MEMORY_TAB}!A${rowIndex}:K${rowIndex}`,
+    range: `${ALERT_MEMORY_TAB}!A${rowIndex}:L${rowIndex}`,
     valueInputOption: "RAW",
     requestBody: { values: [values] },
   }));
@@ -741,6 +768,7 @@ export async function updateAlertMemoryRow(sheets, automationCommanderSheetId, r
         firstSeen: cleanUpdates.firstSeen || cache[idx].firstSeen || firstSeenVal,
         lastSeen: now,
         lastRechecked: lastRecheckedVal,
+        category: targetCategory || cache[idx].category || "discrepancy",
         rowIndex,
       };
     }
@@ -752,6 +780,7 @@ export async function updateAlertMemoryRowsBatch(sheets, automationCommanderShee
   const now = new Date().toISOString();
   const data = updateItems.map(({ rowIndex, updates }) => {
     const compressedOptions = compressOptionsJSON_(updates.cachedOptionsJSON);
+    const targetCategory = normalizeCategoryForType(updates.alertType, updates.category);
     const values = [
       updates.fingerprintHash,
       updates.alertType,
@@ -764,9 +793,10 @@ export async function updateAlertMemoryRowsBatch(sheets, automationCommanderShee
       now,
       updates.lastRechecked || now,
       updates.dataSnapshot || "",
+      targetCategory,
     ];
     return {
-      range: `${ALERT_MEMORY_TAB}!A${rowIndex}:K${rowIndex}`,
+      range: `${ALERT_MEMORY_TAB}!A${rowIndex}:L${rowIndex}`,
       values: [values],
     };
   });

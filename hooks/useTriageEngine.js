@@ -608,6 +608,9 @@ export function useTriageEngine({
         console.log(`✅ Using cached options instantly`);
         setFromCache(true);
         setClaudeAnalysis(JSON.stringify(alert.options, null, 2));
+        const pir = alert.previousIgnoreReason;
+        const formattedPir = pir && typeof pir === "object" ? pir : pir ? { ignoreReason: pir, changeReason: null } : null;
+        setPreviousIgnoreReason(formattedPir);
         setIsAnalyzing(false);
         checkExistingTask(alert);
         return;

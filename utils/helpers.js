@@ -627,6 +627,8 @@ export const PROACTIVE_TYPE_LABELS = {
   part_paid_balance: "Part-paid balance",
 };
 
+export const KNOWN_PROACTIVE_ALERT_TYPES = new Set(Object.keys(PROACTIVE_TYPE_LABELS));
+
 export const ADMIN_ONLY_FLAG_KEYS = new Set([
   "crmCopiedConfChecked",
   "crmCopiedConfUnchecked",

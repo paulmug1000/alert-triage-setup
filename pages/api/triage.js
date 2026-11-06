@@ -473,7 +473,11 @@ export default async function handler(req, res) {
       if (!sessionUser.isAdmin) {
         const b = req.body || {};
         const q = req.query || {};
-        const targetClientClaim = b.clientName || q.clientName || b.alert?.clientName || "";
+        const rawClientClaim = b.clientName || q.clientName || b.alert?.clientName || "";
+        // Aggregated activity feed queries pass clientName: "ALL" to fetch across all user's assigned clients.
+        // handleGetActivity explicitly restricts and sanitizes events to the non-admin's assigned clients.
+        const isActivityAll = action === "get_activity" && (!rawClientClaim || String(rawClientClaim).trim().toUpperCase() === "ALL");
+        const targetClientClaim = isActivityAll ? "" : rawClientClaim;
         const targetSheetIds = [
           b.clientSheetId, q.clientSheetId,
           b.masterSheetId, q.masterSheetId,
@@ -489,7 +493,12 @@ export default async function handler(req, res) {
         if (targetSheetIds.length > 0 || targetClientClaim) {
           const isTenantAllowed = await checkTriageClientAuth(sheets, sessionUser, targetClientClaim, targetSheetIds);
           if (!isTenantAllowed) {
-            return res.status(403).json({ success: false, error: "Forbidden: Access denied to this client or spreadsheet." });
+            return res.status(403).json({
+              success: false,
+              error: sessionUser.isAdmin
+                ? "Forbidden: Access denied to this client or spreadsheet."
+                : "Forbidden: Access denied to this client."
+            });
           }
         }
 

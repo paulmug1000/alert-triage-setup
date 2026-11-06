@@ -279,19 +279,32 @@ export default function RevenueCheckTab({
 
     // 1. Client Variances (Discrepancies)
     (comparison?.comparisonData?.clientVariances || []).forEach((v) => {
-      const itemKey = v.itemKey || `var-${v.clientName}`;
+      const itemKey = v.itemKey || v.id || `var-${v.clientName}`;
       const localEdit = notesEdits[itemKey] || {};
+      const acctTot = v.totalAccounting != null
+        ? Number(v.totalAccounting)
+        : (v.appTotal != null
+          ? Number(v.appTotal)
+          : (v.accounting || []).reduce((s, it) => s + (parseFloat(it.amount) || 0), 0));
+      const pulseTot = v.totalPulse != null
+        ? Number(v.totalPulse)
+        : (v.dashTotal != null
+          ? Number(v.dashTotal)
+          : (v.pulse || []).reduce((s, it) => s + (parseFloat(it.amount) || 0), 0));
+      const diff = v.difference != null ? Number(v.difference) : (pulseTot - acctTot);
+      const isMatched = Math.abs(diff) <= 0.05;
+
       rows.push({
         id: itemKey,
         itemKey,
         type: "variance",
         clientName: v.clientName,
         accountingItems: v.accounting || [],
-        accountingTotal: v.appTotal || 0,
+        accountingTotal: acctTot,
         pulseItems: v.pulse || [],
-        pulseTotal: v.dashTotal || 0,
-        difference: v.difference != null ? v.difference : (v.dashTotal - v.appTotal),
-        isMatched: false,
+        pulseTotal: pulseTot,
+        difference: diff,
+        isMatched,
         reasonTag: localEdit.reasonTag !== undefined ? localEdit.reasonTag : (v.reasonTag || ""),
         noteText: localEdit.noteText !== undefined ? localEdit.noteText : (v.noteText || "")
       });
@@ -339,10 +352,11 @@ export default function RevenueCheckTab({
 
     // 4. Matched Pairs
     (comparison?.comparisonData?.matchedPairs || []).forEach((m, idx) => {
-      const itemKey = m.itemKey || `matched-${m.clientName}-${idx}`;
+      const itemKey = m.itemKey || m.id || `matched-${m.clientName}-${idx}`;
       const localEdit = notesEdits[itemKey] || {};
-      const acctTot = m.totalAmount || (m.accounting || []).reduce((s, a) => s + (parseFloat(a.amount) || 0), 0);
-      const pulseTot = m.totalAmount || (m.pulse || []).reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+      const acctTot = (m.accounting || []).reduce((s, a) => s + (parseFloat(a.amount) || 0), 0) || (m.totalAmount != null ? Number(m.totalAmount) : 0);
+      const pulseTot = (m.pulse || []).reduce((s, p) => s + (parseFloat(p.amount) || 0), 0) || (m.totalAmount != null ? Number(m.totalAmount) : 0);
+      const diff = pulseTot - acctTot;
       rows.push({
         id: itemKey,
         itemKey,
@@ -352,7 +366,7 @@ export default function RevenueCheckTab({
         accountingTotal: acctTot,
         pulseItems: m.pulse || [],
         pulseTotal: pulseTot,
-        difference: 0,
+        difference: diff,
         isMatched: true,
         reasonTag: localEdit.reasonTag !== undefined ? localEdit.reasonTag : (m.reasonTag || ""),
         noteText: localEdit.noteText !== undefined ? localEdit.noteText : (m.noteText || "")

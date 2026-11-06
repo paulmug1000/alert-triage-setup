@@ -3973,11 +3973,18 @@ function revenueNamesMatch_(name1, name2) {
 
 function findRevenueSubsetSum_(items, targetAmount, tolerance = 0.05) {
   if (!items || items.length === 0) return null;
+  // If all items sum to target
+  const allSum = items.reduce((s, it) => s + (parseFloat(it.amount) || 0), 0);
+  if (Math.abs(allSum - targetAmount) <= tolerance) {
+    return items;
+  }
+  // 1 item
   for (let i = 0; i < items.length; i++) {
     if (Math.abs(items[i].amount - targetAmount) <= tolerance) {
       return [items[i]];
     }
   }
+  // 2 items
   for (let i = 0; i < items.length; i++) {
     for (let j = i + 1; j < items.length; j++) {
       if (Math.abs(items[i].amount + items[j].amount - targetAmount) <= tolerance) {
@@ -3985,11 +3992,24 @@ function findRevenueSubsetSum_(items, targetAmount, tolerance = 0.05) {
       }
     }
   }
+  // 3 items
   for (let i = 0; i < items.length; i++) {
     for (let j = i + 1; j < items.length; j++) {
       for (let k = j + 1; k < items.length; k++) {
         if (Math.abs(items[i].amount + items[j].amount + items[k].amount - targetAmount) <= tolerance) {
           return [items[i], items[j], items[k]];
+        }
+      }
+    }
+  }
+  // 4 items
+  for (let i = 0; i < items.length; i++) {
+    for (let j = i + 1; j < items.length; j++) {
+      for (let k = j + 1; k < items.length; k++) {
+        for (let l = k + 1; l < items.length; l++) {
+          if (Math.abs(items[i].amount + items[j].amount + items[k].amount + items[l].amount - targetAmount) <= tolerance) {
+            return [items[i], items[j], items[k], items[l]];
+          }
         }
       }
     }
@@ -4141,17 +4161,33 @@ export function buildRevenueComparison_(accountingItems = [], pulseItems = [], e
       const varianceKey = `var-${pNorm}`;
       const noteObj = existingNotes[varianceKey] || {};
 
-      clientVariances.push({
-        id: varianceKey,
-        clientName: pulseGroup.clientName || acctGroup.clientName,
-        totalPulse,
-        totalAccounting: totalAcct,
-        difference: diff,
-        accounting: acctGroup.items,
-        pulse: pulseGroup.items,
-        reasonTag: noteObj.reasonTag || "",
-        noteText: noteObj.noteText || ""
-      });
+      if (Math.abs(diff) <= 0.05) {
+        // Balanced aggregate match across all items for this client
+        matchedPairs.push({
+          id: `pair-${matchedPairs.length + 1}`,
+          type: "client_total_match",
+          matchType: "Client total match",
+          accounting: acctGroup.items,
+          pulse: pulseGroup.items,
+          clientName: pulseGroup.clientName || acctGroup.clientName,
+          totalAmount: totalPulse
+        });
+      } else {
+        clientVariances.push({
+          id: varianceKey,
+          itemKey: varianceKey,
+          clientName: pulseGroup.clientName || acctGroup.clientName,
+          totalPulse,
+          totalAccounting: totalAcct,
+          appTotal: totalAcct,
+          dashTotal: totalPulse,
+          difference: diff,
+          accounting: acctGroup.items,
+          pulse: pulseGroup.items,
+          reasonTag: noteObj.reasonTag || "",
+          noteText: noteObj.noteText || ""
+        });
+      }
 
       // Mark as used
       remainingAcctByClient.delete(matchedAcctNorm);
@@ -4720,9 +4756,11 @@ export async function handleEomSaveRevenueCheckNotes(req, res, sheets) {
     // Apply notes into clientVariances, unmatchedAccounting, and unmatchedPulse
     if (stored.comparisonData?.clientVariances) {
       stored.comparisonData.clientVariances.forEach(v => {
-        if (mergedNotes[v.id]) {
-          v.reasonTag = mergedNotes[v.id].reasonTag || v.reasonTag || "";
-          v.noteText = mergedNotes[v.id].noteText || v.noteText || "";
+        const k = v.itemKey || v.id;
+        if (mergedNotes[k] || mergedNotes[v.id]) {
+          const n = mergedNotes[k] || mergedNotes[v.id];
+          v.reasonTag = n.reasonTag || v.reasonTag || "";
+          v.noteText = n.noteText || v.noteText || "";
         }
       });
     }

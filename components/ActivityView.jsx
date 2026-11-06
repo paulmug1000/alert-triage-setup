@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import Spinner from "./Spinner";
 import Skeleton, { PmaActivitySkeleton } from "./Skeleton";
 import { useActivity } from "../hooks/useActivity";
+import { sanitizeSpreadsheetTerms } from "../utils/helpers";
 
 /**
  * CardScrollContainer:
@@ -322,7 +323,7 @@ export default function ActivityView({
             {(() => {
               const hiddenKeys = effectiveIsAdmin
                 ? ["raw", "pmaAction", "pmaUser", "pmaTimestamp", "changes"]
-                : ["raw", "pmaAction", "pmaUser", "pmaTimestamp", "changes", "sheetRow", "colLetter", "tabName", "clientSheetId", "masterSheetId", "cellCoord", "rowNum", "slotNum", "targetCol", "targetRow", "formula", "parentRowNum", "confirmedRow", "pipelineRow", "outgoingsRow"];
+                : ["raw", "pmaAction", "pmaUser", "pmaTimestamp", "changes", "sheetRow", "colLetter", "tabName", "clientSheetId", "masterSheetId", "cellCoord", "rowNum", "slotNum", "targetCol", "targetRow", "formula", "parentRowNum", "confirmedRow", "pipelineRow", "outgoingsRow", "sheet"];
               const entries = details ? Object.entries(details).filter(([k]) => !hiddenKeys.includes(k)) : [];
               if (entries.length === 0) return null;
               return (
@@ -397,15 +398,17 @@ export default function ActivityView({
                           {gap.slot} {gap.row ? `(Row ${gap.row})` : ""}
                         </span>
                       )}
-                      <span style={{
-                        padding: "1px 6px",
-                        borderRadius: "3px",
-                        background: "#fef3c7",
-                        color: "#92400e",
-                        fontSize: "10.5px"
-                      }}>
-                        {gap.sheet || "Pipeline"}
-                      </span>
+                      {effectiveIsAdmin && (
+                        <span style={{
+                          padding: "1px 6px",
+                          borderRadius: "3px",
+                          background: "#fef3c7",
+                          color: "#92400e",
+                          fontSize: "10.5px"
+                        }}>
+                          {gap.sheet || "Pipeline"}
+                        </span>
+                      )}
                       {gap.rawChanges && (
                         <span style={{ fontSize: "10.5px", color: "#64748b", fontStyle: "italic" }}>
                           {gap.rawChanges}
@@ -572,7 +575,7 @@ export default function ActivityView({
                             )}
                           </div>
                           <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "6px", marginTop: "5px" }}>
-                            {(inv.sheet || inv.slot) && (
+                            {effectiveIsAdmin && (inv.sheet || inv.slot) && (
                               <span style={{
                                 padding: "1px 6px",
                                 borderRadius: "3px",
@@ -581,7 +584,7 @@ export default function ActivityView({
                                 fontSize: "10.5px",
                                 fontWeight: "600"
                               }}>
-                                {inv.sheet || "Confirmed"}{effectiveIsAdmin && inv.slot ? ` • ${inv.slot}` : ""}{effectiveIsAdmin && inv.row ? ` (Row ${inv.row})` : ""}
+                                {inv.sheet || "Confirmed"}{inv.slot ? ` • ${inv.slot}` : ""}{inv.row ? ` (Row ${inv.row})` : ""}
                               </span>
                             )}
                             {inv.amount && inv.amount !== "-" && (
@@ -762,7 +765,7 @@ export default function ActivityView({
                         </td>
                         <td style={{ padding: "8px 10px", verticalAlign: "top" }}>
                           <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
-                            {exp.sheet && (
+                            {effectiveIsAdmin && (exp.sheet || exp.slot) && (
                               <span style={{
                                 padding: "1px 6px",
                                 borderRadius: "3px",
@@ -771,7 +774,7 @@ export default function ActivityView({
                                 fontSize: "10.5px",
                                 fontWeight: "600"
                               }}>
-                                {exp.sheet}{effectiveIsAdmin && exp.slot ? ` • ${exp.slot}` : ""}{effectiveIsAdmin && exp.row && !String(exp.row).includes("-") ? ` (Row ${exp.row})` : ""}
+                                {exp.sheet}{exp.slot ? ` • ${exp.slot}` : ""}{exp.row && !String(exp.row).includes("-") ? ` (Row ${exp.row})` : ""}
                               </span>
                             )}
                             {exp.amount && exp.amount !== "-" && (
@@ -846,16 +849,18 @@ export default function ActivityView({
                         </td>
                         <td style={{ padding: "8px 10px", verticalAlign: "top" }}>
                           <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
-                            <span style={{
-                              padding: "1px 6px",
-                              borderRadius: "3px",
-                              background: "#fef3c7",
-                              color: "#92400e",
-                              fontSize: "10.5px",
-                              fontWeight: "600"
-                            }}>
-                              {exp.sheet || "Outgoings"}{effectiveIsAdmin && exp.slot ? ` • ${exp.slot}` : ""}{effectiveIsAdmin && exp.row && !String(exp.row).includes("-") ? ` (Row ${exp.row})` : ""}
-                            </span>
+                            {effectiveIsAdmin && (exp.sheet || exp.slot) && (
+                              <span style={{
+                                padding: "1px 6px",
+                                borderRadius: "3px",
+                                background: "#fef3c7",
+                                color: "#92400e",
+                                fontSize: "10.5px",
+                                fontWeight: "600"
+                              }}>
+                                {exp.sheet || "Outgoings"}{exp.slot ? ` • ${exp.slot}` : ""}{exp.row && !String(exp.row).includes("-") ? ` (Row ${exp.row})` : ""}
+                              </span>
+                            )}
                             {exp.amount && exp.amount !== "-" && (
                               <span style={{
                                 padding: "2px 7px",
@@ -919,16 +924,18 @@ export default function ActivityView({
                     <strong style={{ color: "#0f172a", fontSize: "12px" }}>{cj.client}</strong>
                     <span style={{ color: "#64748b", marginLeft: "4px" }}>• {cj.jobName}</span>
                   </div>
-                  <span style={{
-                    padding: "1px 6px",
-                    borderRadius: "3px",
-                    background: "#dcfce7",
-                    color: "#166534",
-                    fontSize: "10.5px",
-                    fontWeight: "600"
-                  }}>
-                    Confirmed{effectiveIsAdmin && cj.row ? ` (Row ${cj.row})` : ""}
-                  </span>
+                  {effectiveIsAdmin && (
+                    <span style={{
+                      padding: "1px 6px",
+                      borderRadius: "3px",
+                      background: "#dcfce7",
+                      color: "#166534",
+                      fontSize: "10.5px",
+                      fontWeight: "600"
+                    }}>
+                      Confirmed{cj.row ? ` (Row ${cj.row})` : ""}
+                    </span>
+                  )}
                 </div>
               ))}
             </div>
@@ -1239,9 +1246,9 @@ export default function ActivityView({
                   outline: "none"
                 }}
               >
-                <option value="ALL">All Clients ({allOutgoingsClients.length})</option>
+                <option value="ALL">All clients ({allOutgoingsClients.length})</option>
                 {effectiveIsAdmin && (
-                  <option value="SYSTEM">🛡️ System & Security (Global)</option>
+                  <option value="SYSTEM">System & security (global)</option>
                 )}
                 {allOutgoingsClients.map(c => (
                   <option key={c.clientName} value={c.clientName}>{c.clientName}</option>
@@ -1305,7 +1312,7 @@ export default function ActivityView({
           marginBottom: "16px",
           fontSize: "13px"
         }}>
-          ⚠️ {error}
+          ⚠️ {effectiveIsAdmin ? error : sanitizeSpreadsheetTerms(error)}
         </div>
       )}
 
@@ -1336,7 +1343,7 @@ export default function ActivityView({
                 </span>
               )}
               <h3 style={{ margin: "4px 0 0 0", fontSize: "18px", color: "#0f172a" }}>
-                {selectedClient} Timeline
+                {selectedClient} timeline
               </h3>
             </div>
             <div style={{ fontSize: "12px", color: "#64748b" }}>

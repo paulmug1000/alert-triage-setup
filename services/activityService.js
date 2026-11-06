@@ -1360,7 +1360,7 @@ function sanitizeActivityStructuredObject(obj) {
   }
   const out = {};
   for (const [k, v] of Object.entries(obj)) {
-    if (["cellRef", "sheetRow", "colLetter", "tab", "tabName", "range", "row", "rowNum", "clearedRows"].includes(k)) {
+    if (["cellRef", "sheetRow", "colLetter", "tab", "tabName", "range", "row", "rowNum", "clearedRows", "sheet", "clientSheetId", "masterSheetId"].includes(k)) {
       continue;
     }
     if (typeof v === "string") {
@@ -1441,8 +1441,8 @@ export async function handleGetActivity(req, res, sheets) {
     }
 
     // 1. Single Client or System View
-    if (clientName && clientName !== "ALL") {
-      if (clientName === "SYSTEM") {
+    if (clientName && String(clientName).trim().toUpperCase() !== "ALL") {
+      if (String(clientName).trim().toUpperCase() === "SYSTEM") {
         if (!sessionUser.isAdmin) {
           return res.status(403).json({ success: false, error: "Access denied to system logs" });
         }

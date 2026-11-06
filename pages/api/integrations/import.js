@@ -92,8 +92,12 @@ export default async function handler(req, res) {
     if (providedClientSecret) {
       const providedHash = crypto.createHash("sha256").update(providedClientSecret).digest("hex");
       if (registeredHash) {
-        if (safeCompare(providedHash, registeredHash)) {
+        const isMatch = safeCompare(providedHash, registeredHash) || safeCompare(providedClientSecret, registeredHash);
+        if (isMatch) {
           isAuthorized = true;
+          if (registeredHash.startsWith("pcs_")) {
+            await redisClient.set(redisSecretKey, providedHash).catch(() => {});
+          }
         } else {
           return res.status(401).json({ success: false, error: "Unauthorized: Invalid client-specific secret." });
         }

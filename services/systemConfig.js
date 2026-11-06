@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import { waitUntil } from "@vercel/functions";
 import { redisClient } from "./redisClient.js";
 import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
@@ -110,7 +111,7 @@ export async function handleGetClaudeSettings(req, res, sheets) {
     for (const row of cfg) { if (row[0] && row[1] !== undefined) cfgMap[String(row[0]).trim()] = String(row[1]).trim(); }
 
     const hourlyLimit = parseInt(cfgMap["hourly_limit"] || "10");
-    const dailyLimit  = parseInt(cfgMap["daily_limit"]  || "30");
+    const dailyLimit = parseInt(cfgMap["daily_limit"] || "30");
     const anomalyThreshold = parseInt(cfgMap["anomaly_threshold"] || "15");
 
     const usageRows = (usageResp.data.values || []).filter(r => r[0]);
@@ -145,7 +146,7 @@ export async function handleGetClaudeSettings(req, res, sheets) {
       },
       recentRows: recentRows.slice(0, 50),
     });
-  } catch(err) {
+  } catch (err) {
     console.error("❌ get_claude_settings error:", err);
     return res.status(500).json({ success: false, error: err.message });
   }
@@ -164,7 +165,7 @@ export async function handleSaveClaudeSettings(req, res, sheets) {
       requestBody: { values: [[parseInt(hourlyLimit) || 10], [parseInt(dailyLimit) || 30], [parseInt(anomalyThreshold) || 15]] },
     });
     return res.status(200).json({ success: true });
-  } catch(err) {
+  } catch (err) {
     console.error("❌ save_claude_settings error:", err);
     return res.status(500).json({ success: false, error: err.message });
   }
@@ -182,7 +183,7 @@ export async function handleCheckClaudeBudget(req, res, sheets) {
     ]);
     const cfgVals = cfgResp.data.values || [];
     const hourlyLimit = parseInt(cfgVals[0]?.[0] || "10");
-    const dailyLimit  = parseInt(cfgVals[1]?.[0] || "30");
+    const dailyLimit = parseInt(cfgVals[1]?.[0] || "30");
 
     const now = new Date();
     const todayStr = now.toISOString().slice(0, 10);
@@ -198,10 +199,10 @@ export async function handleCheckClaudeBudget(req, res, sheets) {
       }
     }
 
-    if (dayCalls >= dailyLimit)  return res.status(200).json({ allowed: false, reason: `Daily limit reached (${dayCalls}/${dailyLimit})` });
+    if (dayCalls >= dailyLimit) return res.status(200).json({ allowed: false, reason: `Daily limit reached (${dayCalls}/${dailyLimit})` });
     if (hourCalls >= hourlyLimit) return res.status(200).json({ allowed: false, reason: `Hourly limit reached (${hourCalls}/${hourlyLimit})` });
     return res.status(200).json({ allowed: true, hourCalls, dayCalls, hourlyLimit, dailyLimit });
-  } catch(err) {
+  } catch (err) {
     console.error("❌ check_claude_budget error:", err);
     return res.status(200).json({ allowed: true });
   }
@@ -212,9 +213,9 @@ export async function handleLogClaudeUsage(req, res, sheets) {
   try {
     await logClaudeUsage_(sheets, automationCommanderSheetId, clientName, alertType, inputTokens, outputTokens, source);
     return res.status(200).json({ success: true });
-  } catch(err) {
+  } catch (err) {
     console.error("❌ log_claude_usage route error:", err);
-    return res.status(200).json({ success: false }); 
+    return res.status(200).json({ success: false });
   }
 }
 
@@ -372,20 +373,20 @@ export async function handleTriggerAgentRun(req, res, sheets) {
           const existing = raw ? JSON.parse(raw) : { entries: [], done: false };
           existing.entries.push({ stage: "error", message: errMsg, at: new Date().toISOString() });
           existing.done = true;
-          await redisClient.set(progressKey, JSON.stringify(existing), { EX: 1800 }).catch(() => {});
+          await redisClient.set(progressKey, JSON.stringify(existing), { EX: 1800 }).catch(() => { });
           await redisClient.set(`active_agent_run:${targetClientName}`, JSON.stringify({
             runId, clientName: targetClientName, status: "error", error: errMsg, completedAt: Date.now()
-          }), { EX: 600 }).catch(() => {});
+          }), { EX: 600 }).catch(() => { });
         } else if (gasData && gasData.success) {
           const raw = await redisClient.get(progressKey).catch(() => null);
           const existing = raw ? JSON.parse(raw) : { entries: [], done: false };
           if (!existing.done) {
             existing.entries.push({ stage: "done", message: "All requested sequences complete.", at: new Date().toISOString() });
             existing.done = true;
-            await redisClient.set(progressKey, JSON.stringify(existing), { EX: 1800 }).catch(() => {});
+            await redisClient.set(progressKey, JSON.stringify(existing), { EX: 1800 }).catch(() => { });
             await redisClient.set(`active_agent_run:${targetClientName}`, JSON.stringify({
               runId, clientName: targetClientName, status: "completed", done: true, completedAt: Date.now()
-            }), { EX: 600 }).catch(() => {});
+            }), { EX: 600 }).catch(() => { });
           }
         }
       } catch (fetchErr) {
@@ -404,15 +405,15 @@ export async function handleTriggerAgentRun(req, res, sheets) {
             message: "Automation sequence in progress (Google Apps Script executing in background)...",
             at: new Date().toISOString()
           });
-          await redisClient.set(progressKey, JSON.stringify(existing), { EX: 1800 }).catch(() => {});
+          await redisClient.set(progressKey, JSON.stringify(existing), { EX: 1800 }).catch(() => { });
         } else if (!existing.done) {
           // Immediate failure (< 5s), e.g. invalid URL or DNS error
           existing.entries.push({ stage: "error", message: `Failed to connect to client Web App: ${fetchErr.message}`, at: new Date().toISOString() });
           existing.done = true;
-          await redisClient.set(progressKey, JSON.stringify(existing), { EX: 1800 }).catch(() => {});
+          await redisClient.set(progressKey, JSON.stringify(existing), { EX: 1800 }).catch(() => { });
           await redisClient.set(`active_agent_run:${targetClientName}`, JSON.stringify({
             runId, clientName: targetClientName, status: "error", error: fetchErr.message, completedAt: Date.now()
-          }), { EX: 600 }).catch(() => {});
+          }), { EX: 600 }).catch(() => { });
         }
       }
     })();
@@ -449,7 +450,7 @@ export async function handleAgentProgress(req, res) {
       existing.done = true;
       await redisClient.set(`active_agent_run:${progressClientName}`, JSON.stringify({
         runId: progressRunId, clientName: progressClientName, status: "completed", done: true, completedAt: Date.now()
-      }), { EX: 600 }).catch(() => {});
+      }), { EX: 600 }).catch(() => { });
     }
     await redisClient.set(progressKey, JSON.stringify(existing), { EX: 1800 });
     return res.status(200).json({ success: true });
@@ -595,7 +596,7 @@ export async function handleSyncAllMasterScriptSecrets(req, res, sheets) {
 
         const rawText = await resp.text();
         let data = null;
-        try { data = JSON.parse(rawText); } catch {}
+        try { data = JSON.parse(rawText); } catch { }
 
         if (data && data.success) {
           let clientSecretStatus = "already_registered";
@@ -603,7 +604,9 @@ export async function handleSyncAllMasterScriptSecrets(req, res, sheets) {
             const redisKey = `pulse:client_secret:${t.masterSheetId}`;
             const existing = await redisClient.get(redisKey);
             if (!existing && data.pulseClientSecret) {
-              await redisClient.set(redisKey, String(data.pulseClientSecret).trim());
+              const rawSec = String(data.pulseClientSecret).trim();
+              const hash = crypto.createHash("sha256").update(rawSec).digest("hex");
+              await redisClient.set(redisKey, hash);
               clientSecretStatus = "newly_registered";
             } else if (!existing) {
               clientSecretStatus = "missing_from_gas_response";

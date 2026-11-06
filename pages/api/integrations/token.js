@@ -178,8 +178,13 @@ export default async function handler(req, res) {
 
     const providedHash = crypto.createHash("sha256").update(providedClientSecret).digest("hex");
     if (registeredHash) {
-      if (safeCompare(providedHash, registeredHash)) {
+      const isMatch = safeCompare(providedHash, registeredHash) || safeCompare(providedClientSecret, registeredHash);
+      if (isMatch) {
         isAuthorized = true;
+        // Auto-migrate raw plaintext pcs_ secret in Redis to sha256 hash
+        if (registeredHash.startsWith("pcs_")) {
+          await redisClient.set(redisSecretKey, providedHash).catch(() => {});
+        }
       } else {
         console.warn(`🚨 Token Broker: Invalid client-specific secret presented for ${canonicalSpreadsheetId}.`);
         return res.status(401).json({ success: false, error: "Unauthorized: Invalid client-specific secret." });

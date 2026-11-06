@@ -192,66 +192,27 @@ export default function ScenariosView({
 
   const [activePopover, setActivePopover] = useState(null);
 
-  const handleCellClick = (e, rowLabel, val, mIdx, periodLabel, rIdx) => {
-    const ddType = getDeepDiveType(rowLabel);
-    if (!ddType || !val || val === "—" || val === "" || Math.abs(parseMoney(val)) < 0.001) return;
-
-    const rect = e.currentTarget.getBoundingClientRect();
-    const isFY = mIdx === -1;
-    const targetDate = isFY
-      ? (headerMonths[0] ? parseHeaderMonthDate(headerMonths[0]) : new Date(2025, 3, 1))
-      : (headerMonths[mIdx] ? parseHeaderMonthDate(headerMonths[mIdx]) : null);
-
-    const isIncomeMode =
-      String(keyData?.outgoingsMeta?.mode || "").toLowerCase() === "income" ||
-      Boolean(activeYear?.rows?.some((r) => r.label && String(r.label).toLowerCase().includes("confirmed income")));
-
-    const isDataLoading = !keyData || isLoading;
-
-    const ddData = buildDeepDiveData({
-      ddType,
-      periodLabel,
-      monthIndex: mIdx,
-      cellValue: val,
-      yearIndex: activeYearIdx,
-      targetDate,
-      keyData,
-      isIncomeMode,
-      isScenarioView: true,
-      isRestricted: isSenior,
-      scenariosConfig: {
-        confirmedJobs: confirmedJobIds,
-        disabledJobs: disabledJobIds,
-        adjs,
-        jobs: pipelineJobs,
-        outgoingsMeta: keyData?.outgoingsMeta,
-        nbtofind: keyData?.nbtofind,
-        mode: performanceData?.mode || keyData?.outgoingsMeta?.mode,
-        directCostsMode:
-          performanceData?.directCostsMode ||
-          keyData?.outgoingsMeta?.directCostsMode ||
-          keyData?.nbtofind?.directCostsMode,
-        profitShareSwitch: keyData?.outgoingsMeta?.profitShareSwitch,
-        profitSharePct: keyData?.outgoingsMeta?.profitSharePct,
-        scenarioMeta: mutatedYearData?.scenarioMeta,
-      },
-    });
-
-    setActivePopover({
-      isOpen: true,
-      targetRect: rect,
-      title: ddData.title,
-      period: ddData.period,
-      total: ddData.total,
-      items: ddData.items || [],
-      sections: ddData.sections || null,
-      isLoading: isDataLoading,
-      _clickParams: { ddType, periodLabel, mIdx, val, rIdx, activeYearIdx, targetDate, isIncomeMode, rect },
-    });
-  };
-
   const currencySymbol = propCurrencySymbol || keyData?.currencySymbol || "£";
   const thousandsSeparator = propThousandsSeparator || keyData?.thousandsSeparator || ",";
+
+  const isIncomeMode = useMemo(() => {
+    return (
+      String(performanceData?.mode || keyData?.outgoingsMeta?.mode || "").toLowerCase() === "income" ||
+      Boolean(activeYear?.rows?.some((r) => r.label && (
+        String(r.label).toLowerCase().includes("confirmed income") ||
+        String(r.label).toLowerCase().includes("total income")
+      )))
+    );
+  }, [performanceData?.mode, keyData?.outgoingsMeta?.mode, activeYear?.rows]);
+
+  const directCostsMode = useMemo(() => {
+    return (
+      performanceData?.directCostsMode ||
+      keyData?.outgoingsMeta?.directCostsMode ||
+      keyData?.nbtofind?.directCostsMode ||
+      "Direct costs"
+    );
+  }, [performanceData?.directCostsMode, keyData?.outgoingsMeta?.directCostsMode, keyData?.nbtofind?.directCostsMode]);
 
   const parseNum = (val) => {
     if (typeof val === "number") return val;
@@ -261,8 +222,8 @@ export default function ScenariosView({
     return parseMoney(val);
   };
 
-  const formatMoney = (val) => {
-    return universalFormatMoney(val, 0, currencySymbol, thousandsSeparator);
+  const formatMoney = (val, decimals = 0) => {
+    return universalFormatMoney(val, decimals, currencySymbol, thousandsSeparator);
   };
 
   const formatPct = (val) => `${Math.round((val || 0) * 100)}%`;
@@ -364,19 +325,69 @@ export default function ScenariosView({
       outgoingsMeta: keyData?.outgoingsMeta,
       nbtofind: keyData?.nbtofind,
       mode: performanceData?.mode || keyData?.outgoingsMeta?.mode,
-      directCostsMode:
-        performanceData?.directCostsMode ||
-        keyData?.outgoingsMeta?.directCostsMode ||
-        keyData?.nbtofind?.directCostsMode,
+      directCostsMode,
       profitShareSwitch: keyData?.outgoingsMeta?.profitShareSwitch,
       profitSharePct: keyData?.outgoingsMeta?.profitSharePct,
       yearIndex: activeYearIdx,
       currencySymbol,
       thousandsSeparator,
     });
-  }, [activeYear, confirmedJobIds, disabledJobIds, adjs, pipelineJobs, performanceData?.mode, performanceData?.directCostsMode, keyData?.outgoingsMeta, keyData?.nbtofind, activeYearIdx, currencySymbol, thousandsSeparator]);
+  }, [activeYear, confirmedJobIds, disabledJobIds, adjs, pipelineJobs, performanceData?.mode, directCostsMode, keyData?.outgoingsMeta, keyData?.nbtofind, activeYearIdx, currencySymbol, thousandsSeparator]);
 
   const mutatedRows = mutatedYearData?.rows || activeYear?.rows || [];
+
+  const scenariosConfig = useMemo(() => ({
+    confirmedJobs: confirmedJobIds,
+    disabledJobs: disabledJobIds,
+    adjs,
+    jobs: pipelineJobs,
+    outgoingsMeta: keyData?.outgoingsMeta,
+    nbtofind: keyData?.nbtofind,
+    mode: performanceData?.mode || keyData?.outgoingsMeta?.mode,
+    directCostsMode,
+    profitShareSwitch: keyData?.outgoingsMeta?.profitShareSwitch,
+    profitSharePct: keyData?.outgoingsMeta?.profitSharePct,
+    scenarioMeta: mutatedYearData?.scenarioMeta,
+  }), [confirmedJobIds, disabledJobIds, adjs, pipelineJobs, keyData?.outgoingsMeta, keyData?.nbtofind, performanceData?.mode, directCostsMode, mutatedYearData?.scenarioMeta]);
+
+  const handleCellClick = (e, rowLabel, val, mIdx, periodLabel, rIdx) => {
+    const ddType = getDeepDiveType(rowLabel);
+    if (!ddType || !val || val === "—" || val === "" || Math.abs(parseMoney(val)) < 0.001) return;
+
+    const rect = e.currentTarget.getBoundingClientRect();
+    const isFY = mIdx === -1;
+    const targetDate = isFY
+      ? (headerMonths[0] ? parseHeaderMonthDate(headerMonths[0]) : new Date(2025, 3, 1))
+      : (headerMonths[mIdx] ? parseHeaderMonthDate(headerMonths[mIdx]) : null);
+
+    const isDataLoading = !keyData || isLoading;
+
+    const ddData = buildDeepDiveData({
+      ddType,
+      periodLabel,
+      monthIndex: mIdx,
+      cellValue: val,
+      yearIndex: activeYearIdx,
+      targetDate,
+      keyData,
+      isIncomeMode,
+      isScenarioView: true,
+      isRestricted: isSenior,
+      scenariosConfig,
+    });
+
+    setActivePopover({
+      isOpen: true,
+      targetRect: rect,
+      title: ddData.title,
+      period: ddData.period,
+      total: ddData.total,
+      items: ddData.items || [],
+      sections: ddData.sections || null,
+      isLoading: isDataLoading,
+      _clickParams: { ddType, periodLabel, mIdx, val, rIdx, activeYearIdx, targetDate, isIncomeMode, rect },
+    });
+  };
 
   useEffect(() => {
     if (activePopover?.isOpen && activePopover._clickParams && keyData) {
@@ -393,25 +404,10 @@ export default function ScenariosView({
         yearIndex: p.activeYearIdx,
         targetDate: p.targetDate,
         keyData,
-        isIncomeMode: p.isIncomeMode,
+        isIncomeMode: p.isIncomeMode !== undefined ? p.isIncomeMode : isIncomeMode,
         isScenarioView: true,
         isRestricted: isSenior,
-        scenariosConfig: {
-          confirmedJobs: confirmedJobIds,
-          disabledJobs: disabledJobIds,
-          adjs,
-          jobs: pipelineJobs,
-          outgoingsMeta: keyData?.outgoingsMeta,
-          nbtofind: keyData?.nbtofind,
-          mode: performanceData?.mode || keyData?.outgoingsMeta?.mode,
-          directCostsMode:
-            performanceData?.directCostsMode ||
-            keyData?.outgoingsMeta?.directCostsMode ||
-            keyData?.nbtofind?.directCostsMode,
-          profitShareSwitch: keyData?.outgoingsMeta?.profitShareSwitch,
-          profitSharePct: keyData?.outgoingsMeta?.profitSharePct,
-          scenarioMeta: mutatedYearData?.scenarioMeta,
-        },
+        scenariosConfig,
       });
       setActivePopover((prev) => prev ? {
         ...prev,
@@ -423,7 +419,7 @@ export default function ScenariosView({
         isLoading: false,
       } : null);
     }
-  }, [keyData, mutatedYearData, confirmedJobIds, disabledJobIds, adjs, isSenior]);
+  }, [keyData, mutatedYearData, scenariosConfig, isSenior, isIncomeMode, mutatedRows]);
 
   // Row styling matching PerformanceFYView and WebApp.html
   const getRowStyle = (label) => {

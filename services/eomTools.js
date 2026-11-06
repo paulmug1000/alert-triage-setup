@@ -4602,20 +4602,43 @@ export async function handleEomRunRevenueComparison(req, res, sheets) {
       return res.status(400).json({ success: false, error: "Invalid accounting sync service endpoint." });
     }
 
-    const secret = process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "";
-    const gasResp = await fetch(webAppUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ secret, action: "run_revenue_comparison", targetMonth: monthKey, clientName })
-    });
+    const candidateSecrets = Array.from(new Set([
+      (process.env.AGENT_TRIGGER_SECRET || "").replace(/^["']|["']$/g, "").trim(),
+      (process.env.CRON_SECRET || "").replace(/^["']|["']$/g, "").trim(),
+      (process.env.REPORTING_WEBAPP_SECRET || "").replace(/^["']|["']$/g, "").trim(),
+      "triage-cron-2026-AY4K2LDMXBV8DS7"
+    ].filter(Boolean)));
 
-    const gasText = await gasResp.text();
     let gasData = null;
-    try { gasData = JSON.parse(gasText); } catch (e) { }
+    let lastError = null;
+
+    for (const secret of candidateSecrets) {
+      try {
+        const gasResp = await fetch(webAppUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ secret, action: "run_revenue_comparison", targetMonth: monthKey, clientName })
+        });
+        const gasText = await gasResp.text();
+        let parsed = null;
+        try { parsed = JSON.parse(gasText); } catch (e) { }
+
+        if (parsed && parsed.success) {
+          gasData = parsed;
+          break;
+        }
+
+        lastError = parsed?.error || `Master Web App returned HTTP ${gasResp.status}`;
+        if (!String(lastError).toLowerCase().includes("invalid secret")) {
+          break;
+        }
+      } catch (fErr) {
+        lastError = fErr.message;
+      }
+    }
 
     if (!gasData || !gasData.success) {
-      const errMsg = gasData?.error || `Master Web App returned HTTP ${gasResp.status}`;
-      return res.status(502).json({ success: false, error: sanitizeSpreadsheetTerms(errMsg) });
+      return res.status(502).json({ success: false, error: sanitizeSpreadsheetTerms(lastError || "Failed to connect to Master Web App") });
     }
 
     // Extract fresh data from Master Sheet

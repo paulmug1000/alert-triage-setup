@@ -2337,14 +2337,14 @@ export async function handleEomGetReportingData(req, res, sheets) {
         try {
           const parsed = JSON.parse(String(r[7]));
           if (parsed && typeof parsed === "object") overheadFinalisedByMonth = parsed;
-        } catch (_) {}
+        } catch (_) { }
       }
       let narrativeStatusByMonth = {};
       if (r[8]) {
         try {
           const parsed = JSON.parse(String(r[8]));
           if (parsed && typeof parsed === "object") narrativeStatusByMonth = parsed;
-        } catch (_) {}
+        } catch (_) { }
       }
       configMap[cName] = {
         emailTo: r[1] || "",
@@ -3770,11 +3770,11 @@ export async function handleEomAddZeroBudgetCategory(req, res, sheets) {
       addedRowsInfo: isAdmin ? addedRowsInfo : addedRowsInfo.map(({ category: c, mode }) => ({ category: c, mode })),
       message: addedRowsInfo.length === 1
         ? (isAdmin
-            ? `Added "${addedRowsInfo[0].category}" to Budget row ${addedRowsInfo[0].sheetRow} with £0 across all 3 financial years.`
-            : `Added "${addedRowsInfo[0].category}" to budget with £0 across all 3 financial years.`)
+          ? `Added "${addedRowsInfo[0].category}" to Budget row ${addedRowsInfo[0].sheetRow} with £0 across all 3 financial years.`
+          : `Added "${addedRowsInfo[0].category}" to budget with £0 across all 3 financial years.`)
         : (isAdmin
-            ? `Added ${addedRowsInfo.length} £0 budget categories to the Budget tab (${addedRowsInfo.map(a => `${a.category} [row ${a.sheetRow}]`).join(", ")}).`
-            : `Added ${addedRowsInfo.length} £0 budget categories (${addedRowsInfo.map(a => a.category).join(", ")}).`),
+          ? `Added ${addedRowsInfo.length} £0 budget categories to the Budget tab (${addedRowsInfo.map(a => `${a.category} [row ${a.sheetRow}]`).join(", ")}).`
+          : `Added ${addedRowsInfo.length} £0 budget categories (${addedRowsInfo.map(a => a.category).join(", ")}).`),
       ...refreshed
     });
   } catch (err) {
@@ -3854,7 +3854,7 @@ export async function handleEomConfirmOverheadExpenses(req, res, sheets) {
           try {
             const parsed = JSON.parse(String(cfgRows[existingIdx][7]));
             if (parsed && typeof parsed === "object") overheadFinalisedByMonth = parsed;
-          } catch (_) {}
+          } catch (_) { }
         }
         overheadFinalisedByMonth[effectiveMonthKey] = finalisedAt;
         const jsonStr = JSON.stringify(overheadFinalisedByMonth);
@@ -4213,11 +4213,37 @@ export function buildRevenueComparison_(accountingItems = [], pulseItems = [], e
   };
 }
 
+function matchesRevenueMonthKey_(dateVal, monthKey) {
+  if (!dateVal || !monthKey) return false;
+  const str = String(dateVal).trim();
+  if (str.startsWith(monthKey)) return true;
+
+  const m = str.match(/^(\d{4})[-/](\d{1,2})/);
+  if (m) {
+    const y = m[1];
+    const mo = String(m[2]).padStart(2, "0");
+    if (`${y}-${mo}` === monthKey) return true;
+  }
+  const m2 = str.match(/(\d{1,2})[-/](\d{1,2})[-/](\d{4})/);
+  if (m2) {
+    const y = m2[3];
+    const mo = String(m2[2]).padStart(2, "0");
+    if (`${y}-${mo}` === monthKey) return true;
+  }
+  const d = new Date(str);
+  if (!isNaN(d.getTime())) {
+    const y = d.getFullYear();
+    const mo = String(d.getMonth() + 1).padStart(2, "0");
+    if (`${y}-${mo}` === monthKey) return true;
+  }
+  return false;
+}
+
 async function extractRevenueItemsFromMasterSheet_(sheets, masterSheetId, monthKey) {
   const accountingItems = [];
   const pulseItems = [];
 
-  // 1. Read RevFromApp
+  // 1. Read RevFromApp (strictly matching target monthKey)
   try {
     const rfaResp = await withRetry(() => sheets.spreadsheets.values.get({
       spreadsheetId: masterSheetId,
@@ -4226,6 +4252,11 @@ async function extractRevenueItemsFromMasterSheet_(sheets, masterSheetId, monthK
     }));
     const rfaRows = rfaResp.data.values || [];
     rfaRows.forEach((r, idx) => {
+      const dateStr = String(r[5] || "").trim();
+      // Exclude invoices not belonging to target monthKey
+      if (!matchesRevenueMonthKey_(dateStr, monthKey)) {
+        return;
+      }
       const amt = parseFloat(String(r[4] || "").replace(/[£,\s]/g, "")) || 0;
       if (r[1] || r[2]) {
         accountingItems.push({
@@ -4234,7 +4265,7 @@ async function extractRevenueItemsFromMasterSheet_(sheets, masterSheetId, monthK
           invoiceNumber: String(r[2] || "").trim(),
           description: String(r[3] || "").trim(),
           amount: amt,
-          date: String(r[5] || "").trim()
+          date: dateStr
         });
       }
     });
@@ -4461,8 +4492,8 @@ export async function autoCompleteRevenueCheckTask_(sheets, automationCommanderS
     const revTask = clientTasks.find(r =>
       r[0] && r[1] === clientName &&
       (String(r[3] || "").toLowerCase().includes("compare dashboard month to xero") ||
-       String(r[3] || "").toLowerCase().includes("revenue comparison") ||
-       String(r[3] || "").toLowerCase().includes("revcomp")) &&
+        String(r[3] || "").toLowerCase().includes("revenue comparison") ||
+        String(r[3] || "").toLowerCase().includes("revcomp")) &&
       (r[5] !== "FALSE" && r[5] !== false)
     );
     if (!revTask) return false;
@@ -4519,50 +4550,15 @@ export async function handleEomGetRevenueCheck(req, res, sheets) {
       }
     }
 
-    // If not in store or forceRefresh, read from Master Sheet
-    const clientResp = await withRetry(() => sheets.spreadsheets.values.get({
-      spreadsheetId: automationCommanderSheetId,
-      range: "AutoUpdates!A2:N500"
-    }));
-    const rows = clientResp.data.values || [];
-    const clientRow = rows.find(r => matchesClientName(r[0], clientName));
-    if (!clientRow) {
-      return res.status(404).json({ success: false, error: `Client "${clientName}" not found.` });
-    }
-    const masterSheetUrl = clientRow[12];
-    const masterSheetId = extractSheetIdFromUrl(masterSheetUrl);
-    if (!masterSheetId) {
-      return res.status(400).json({ success: false, error: `No master sheet found for "${clientName}".` });
-    }
-
-    const { accountingItems, pulseItems } = await extractRevenueItemsFromMasterSheet_(sheets, masterSheetId, monthKey);
-    if (accountingItems.length === 0 && pulseItems.length === 0) {
-      return res.status(200).json({
-        success: true,
-        notRunYet: true,
-        clientName,
-        monthKey
-      });
-    }
-
-    const [y, m] = monthKey.split("-").map(Number);
-    const targetMonthLabel = new Date(y, m - 1, 1).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
-
-    // Retrieve previous notes if any exist
-    const prevStored = await getRevenueCheckFromStore_(sheets, automationCommanderSheetId, clientName, monthKey);
-    const existingNotes = prevStored?.notes || {};
-
-    const freshComp = buildRevenueComparison_(accountingItems, pulseItems, existingNotes, targetMonthLabel);
-    const payloadToSave = {
+    // Do NOT automatically run comparison on client select.
+    // Return notRunYet: true so the user is prompted with the "Run revenue comparison" button.
+    return res.status(200).json({
+      success: true,
+      notRunYet: true,
+      comparison: null,
       clientName,
-      monthKey,
-      comparedAt: new Date().toISOString(),
-      ...freshComp,
-      updatedBy: sessionUser?.email || "System"
-    };
-
-    await saveRevenueCheckToStore_(sheets, automationCommanderSheetId, clientName, monthKey, payloadToSave, sessionUser?.email);
-    return res.status(200).json({ success: true, comparison: payloadToSave });
+      monthKey
+    });
   } catch (err) {
     console.error("❌ handleEomGetRevenueCheck error:", err);
     return res.status(500).json({ success: false, error: sanitizeSpreadsheetTerms(err.message) });

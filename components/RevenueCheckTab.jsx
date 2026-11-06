@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from "react";
 import Spinner from "./Spinner";
 import EditClientSelector from "./EditClientSelector";
 import { useAuth } from "../hooks/useAuth";
+import { eomWorkMonthToTargetMonth } from "../utils/helpers";
 
 function formatGBP(num) {
   if (num == null || isNaN(num)) return "£0.00";
@@ -18,6 +19,7 @@ const REASON_TAG_OPTIONS = [
   { value: "Unbilled retainer", label: "Unbilled retainer" },
   { value: "Cancelled / removed job", label: "Cancelled / removed job" },
   { value: "Deposit / milestone timing", label: "Deposit / milestone timing" },
+  { value: "Accrual", label: "Accrual" },
   { value: "Other", label: "Other" }
 ];
 
@@ -42,10 +44,15 @@ export default function RevenueCheckTab({
   const { user } = useAuth();
   const isAdmin = Boolean(!user?.isReadOnly && (user?.isAdmin || user?.role === "Admin"));
 
+  // Default monthKey should be the TARGET month (e.g. October 2026 when eomMonthKey is November 2026)
+  const defaultTargetMonth = useMemo(() => {
+    return eomWorkMonthToTargetMonth(eomMonthKey) || eomMonthKey || "";
+  }, [eomMonthKey]);
+
   const [selectedClient, setSelectedClient] = useState(() =>
     normalizeClientName(initialClient) || normalizeClientName(managedClient) || ""
   );
-  const [selectedMonthKey, setSelectedMonthKey] = useState(eomMonthKey || "");
+  const [selectedMonthKey, setSelectedMonthKey] = useState(defaultTargetMonth);
   const [comparison, setComparison] = useState(null);
   const [loading, setLoading] = useState(false);
   const [runningSync, setRunningSync] = useState(false);
@@ -53,9 +60,8 @@ export default function RevenueCheckTab({
   const [statusMsg, setStatusMsg] = useState(null); // { type: 'success'|'error', text: string }
 
   // Filter state
-  const [filterMode, setFilterMode] = useState("all"); // 'all' | 'matched' | 'discrepancies'
+  const [filterMode, setFilterMode] = useState("all"); // 'all' | 'discrepancies' | 'matched'
   const [searchQuery, setSearchQuery] = useState("");
-  const [matchedOpen, setMatchedOpen] = useState(true);
 
   // Local notes edits state: { [key]: { reasonTag, noteText, dirty, saving } }
   const [notesEdits, setNotesEdits] = useState({});
@@ -71,6 +77,13 @@ export default function RevenueCheckTab({
       if (onClearInitialClient) onClearInitialClient();
     }
   }, [initialClient, onClearInitialClient, managedClient, selectedClient]);
+
+  // Sync default target month if eomMonthKey changes
+  useEffect(() => {
+    if (!selectedMonthKey && eomMonthKey) {
+      setSelectedMonthKey(eomWorkMonthToTargetMonth(eomMonthKey) || eomMonthKey);
+    }
+  }, [eomMonthKey, selectedMonthKey]);
 
   // Linked EoM task status
   const linkedTask = useMemo(() => {
@@ -95,13 +108,6 @@ export default function RevenueCheckTab({
     setStatusMsg(null);
   };
 
-  // Sync eomMonthKey default if not set
-  useEffect(() => {
-    if (!selectedMonthKey && eomMonthKey) {
-      setSelectedMonthKey(eomMonthKey);
-    }
-  }, [eomMonthKey, selectedMonthKey]);
-
   // Target month display label
   const targetMonthLabel = useMemo(() => {
     if (!selectedMonthKey) return "";
@@ -117,11 +123,14 @@ export default function RevenueCheckTab({
     const d = new Date(y, m - 1 + delta, 1);
     const nextKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
     setSelectedMonthKey(nextKey);
+    setComparison(null);
+    setError("");
+    setStatusMsg(null);
   };
 
-  // Load Revenue Check data
+  // Load Revenue Check data from Store only (Does NOT auto-trigger sync)
   const loadRevenueCheck = useCallback(async (clientToLoad, monthToLoad, forceRefresh = false) => {
-    const c = clientToLoad || selectedClient;
+    const c = normalizeClientName(clientToLoad || selectedClient);
     const m = monthToLoad || selectedMonthKey;
     if (!c || !m) {
       setComparison(null);
@@ -167,7 +176,8 @@ export default function RevenueCheckTab({
 
   // Run Revenue Comparison (Triggers live accounting sync via GAS & PMA matching)
   const handleRunRevenueComparison = async () => {
-    if (!selectedClient || !selectedMonthKey || runningSync) return;
+    const c = normalizeClientName(selectedClient);
+    if (!c || !selectedMonthKey || runningSync) return;
 
     setRunningSync(true);
     setError("");
@@ -179,7 +189,7 @@ export default function RevenueCheckTab({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "eom_run_revenue_comparison",
-          clientName: selectedClient,
+          clientName: c,
           monthKey: selectedMonthKey
         })
       });
@@ -191,11 +201,11 @@ export default function RevenueCheckTab({
       setComparison(data.comparison || null);
       setStatusMsg({
         type: "success",
-        text: `Revenue comparison updated for ${selectedClient} (${targetMonthLabel}).`
+        text: `Revenue comparison updated for ${c} (${targetMonthLabel}).`
       });
 
       if (onTaskMarkedDone) {
-        onTaskMarkedDone(selectedClient, "revenue_check", selectedMonthKey);
+        onTaskMarkedDone(c, "revenue_check", selectedMonthKey);
       }
     } catch (err) {
       console.error("Error running revenue comparison:", err);
@@ -208,9 +218,22 @@ export default function RevenueCheckTab({
     }
   };
 
-  // Save note / reason changes
+  // Local note field changes
+  const handleEditField = (itemKey, field, value) => {
+    setNotesEdits(prev => ({
+      ...prev,
+      [itemKey]: {
+        ...(prev[itemKey] || {}),
+        [field]: value,
+        dirty: true
+      }
+    }));
+  };
+
+  // Save note / reason changes to store
   const handleSaveNote = async (itemKey, reasonTag, noteText) => {
-    if (!selectedClient || !selectedMonthKey) return;
+    const c = normalizeClientName(selectedClient);
+    if (!c || !selectedMonthKey) return;
 
     setNotesEdits(prev => ({
       ...prev,
@@ -223,7 +246,7 @@ export default function RevenueCheckTab({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "eom_save_revenue_check_notes",
-          clientName: selectedClient,
+          clientName: c,
           monthKey: selectedMonthKey,
           notes: {
             [itemKey]: { reasonTag, noteText }
@@ -249,63 +272,124 @@ export default function RevenueCheckTab({
     }
   };
 
-  // Filtered lists
-  const matchedPairs = useMemo(() => comparison?.comparisonData?.matchedPairs || [], [comparison]);
-  const clientVariances = useMemo(() => comparison?.comparisonData?.clientVariances || [], [comparison]);
-  const unmatchedAccounting = useMemo(() => comparison?.comparisonData?.unmatchedAccounting || [], [comparison]);
-  const unmatchedPulse = useMemo(() => comparison?.comparisonData?.unmatchedPulse || [], [comparison]);
+  // Unified 4-Column Table Rows
+  const tableRows = useMemo(() => {
+    if (!comparison) return [];
+    const rows = [];
 
+    // 1. Client Variances (Discrepancies)
+    (comparison?.comparisonData?.clientVariances || []).forEach((v) => {
+      const itemKey = v.itemKey || `var-${v.clientName}`;
+      const localEdit = notesEdits[itemKey] || {};
+      rows.push({
+        id: itemKey,
+        itemKey,
+        type: "variance",
+        clientName: v.clientName,
+        accountingItems: v.accounting || [],
+        accountingTotal: v.appTotal || 0,
+        pulseItems: v.pulse || [],
+        pulseTotal: v.dashTotal || 0,
+        difference: v.difference != null ? v.difference : (v.dashTotal - v.appTotal),
+        isMatched: false,
+        reasonTag: localEdit.reasonTag !== undefined ? localEdit.reasonTag : (v.reasonTag || ""),
+        noteText: localEdit.noteText !== undefined ? localEdit.noteText : (v.noteText || "")
+      });
+    });
+
+    // 2. Unmatched Accounting Invoices (In Accounting, missing from Pulse)
+    (comparison?.comparisonData?.unmatchedAccounting || []).forEach((a) => {
+      const itemKey = a.itemKey || `unrec-acct-${a.id}`;
+      const localEdit = notesEdits[itemKey] || {};
+      rows.push({
+        id: itemKey,
+        itemKey,
+        type: "unmatched_accounting",
+        clientName: a.clientName,
+        accountingItems: [a],
+        accountingTotal: a.amount || 0,
+        pulseItems: [],
+        pulseTotal: 0,
+        difference: -(a.amount || 0), // Negative because in accounting but missing from Pulse
+        isMatched: false,
+        reasonTag: localEdit.reasonTag !== undefined ? localEdit.reasonTag : (a.reasonTag || ""),
+        noteText: localEdit.noteText !== undefined ? localEdit.noteText : (a.noteText || "")
+      });
+    });
+
+    // 3. Unmatched Pulse Jobs (In Pulse, missing from Accounting)
+    (comparison?.comparisonData?.unmatchedPulse || []).forEach((p) => {
+      const itemKey = p.itemKey || `unrec-pulse-${p.id}`;
+      const localEdit = notesEdits[itemKey] || {};
+      rows.push({
+        id: itemKey,
+        itemKey,
+        type: "unmatched_pulse",
+        clientName: p.clientName,
+        accountingItems: [],
+        accountingTotal: 0,
+        pulseItems: [p],
+        pulseTotal: p.amount || 0,
+        difference: p.amount || 0, // Positive because in Pulse but missing from accounting
+        isMatched: false,
+        reasonTag: localEdit.reasonTag !== undefined ? localEdit.reasonTag : (p.reasonTag || ""),
+        noteText: localEdit.noteText !== undefined ? localEdit.noteText : (p.noteText || "")
+      });
+    });
+
+    // 4. Matched Pairs
+    (comparison?.comparisonData?.matchedPairs || []).forEach((m, idx) => {
+      const itemKey = m.itemKey || `matched-${m.clientName}-${idx}`;
+      const localEdit = notesEdits[itemKey] || {};
+      const acctTot = m.totalAmount || (m.accounting || []).reduce((s, a) => s + (parseFloat(a.amount) || 0), 0);
+      const pulseTot = m.totalAmount || (m.pulse || []).reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+      rows.push({
+        id: itemKey,
+        itemKey,
+        type: "matched",
+        clientName: m.clientName,
+        accountingItems: m.accounting || [],
+        accountingTotal: acctTot,
+        pulseItems: m.pulse || [],
+        pulseTotal: pulseTot,
+        difference: 0,
+        isMatched: true,
+        reasonTag: localEdit.reasonTag !== undefined ? localEdit.reasonTag : (m.reasonTag || ""),
+        noteText: localEdit.noteText !== undefined ? localEdit.noteText : (m.noteText || "")
+      });
+    });
+
+    return rows;
+  }, [comparison, notesEdits]);
+
+  // Search query filter
   const q = searchQuery.trim().toLowerCase();
 
-  const filteredMatchedPairs = useMemo(() => {
-    if (!q) return matchedPairs;
-    return matchedPairs.filter(p =>
-      String(p.clientName || "").toLowerCase().includes(q) ||
-      (p.accounting || []).some(a =>
+  const filteredRows = useMemo(() => {
+    return tableRows.filter(r => {
+      // 1. Mode filter
+      if (filterMode === "discrepancies" && r.isMatched) return false;
+      if (filterMode === "matched" && !r.isMatched) return false;
+
+      // 2. Query filter
+      if (!q) return true;
+      if (String(r.clientName || "").toLowerCase().includes(q)) return true;
+      if (r.accountingItems.some(a =>
         String(a.invoiceNumber || "").toLowerCase().includes(q) ||
         String(a.description || "").toLowerCase().includes(q)
-      ) ||
-      (p.pulse || []).some(job =>
-        String(job.jobName || "").toLowerCase().includes(q)
-      )
-    );
-  }, [matchedPairs, q]);
+      )) return true;
+      if (r.pulseItems.some(p =>
+        String(p.jobName || "").toLowerCase().includes(q)
+      )) return true;
+      return false;
+    });
+  }, [tableRows, filterMode, q]);
 
-  const filteredVariances = useMemo(() => {
-    if (!q) return clientVariances;
-    return clientVariances.filter(v =>
-      String(v.clientName || "").toLowerCase().includes(q) ||
-      (v.accounting || []).some(a =>
-        String(a.invoiceNumber || "").toLowerCase().includes(q) ||
-        String(a.description || "").toLowerCase().includes(q)
-      ) ||
-      (v.pulse || []).some(job =>
-        String(job.jobName || "").toLowerCase().includes(q)
-      )
-    );
-  }, [clientVariances, q]);
+  const discrepancyCount = useMemo(() => tableRows.filter(r => !r.isMatched).length, [tableRows]);
+  const matchedCount = useMemo(() => tableRows.filter(r => r.isMatched).length, [tableRows]);
+  const isNetBalanced = Math.abs(comparison?.totalVariance || 0) <= 0.05;
 
-  const filteredUnmatchedAccounting = useMemo(() => {
-    if (!q) return unmatchedAccounting;
-    return unmatchedAccounting.filter(a =>
-      String(a.clientName || "").toLowerCase().includes(q) ||
-      String(a.invoiceNumber || "").toLowerCase().includes(q) ||
-      String(a.description || "").toLowerCase().includes(q)
-    );
-  }, [unmatchedAccounting, q]);
-
-  const filteredUnmatchedPulse = useMemo(() => {
-    if (!q) return unmatchedPulse;
-    return unmatchedPulse.filter(p =>
-      String(p.clientName || "").toLowerCase().includes(q) ||
-      String(p.jobName || "").toLowerCase().includes(q)
-    );
-  }, [unmatchedPulse, q]);
-
-  const totalDiscrepancies = clientVariances.length + unmatchedAccounting.length + unmatchedPulse.length;
-  const isBalanced = Math.abs(comparison?.totalVariance || 0) <= 0.05;
-
-  // When no client is selected, render the standardized full-width client selector (identical to CashflowReconTab & SalariesView)
+  // When no client is selected, render the standardized full-width client selector
   if (!selectedClient) {
     return (
       <div style={{ padding: "16px 0" }}>
@@ -447,7 +531,7 @@ export default function RevenueCheckTab({
               <span>{runningSync ? "Running comparison..." : "Run revenue comparison"}</span>
             </button>
 
-            {/* Refresh */}
+            {/* Refresh from store */}
             <button
               type="button"
               onClick={() => loadRevenueCheck(selectedClient, selectedMonthKey, true)}
@@ -538,760 +622,375 @@ export default function RevenueCheckTab({
       ) : !comparison ? (
         <div
           style={{
+            background: "#ffffff",
+            borderRadius: "10px",
+            border: "1px solid #e2e8f0",
             padding: "48px 24px",
             textAlign: "center",
-            background: "#fff",
-            borderRadius: "8px",
-            border: "1px solid #e2e8f0"
+            boxShadow: "0 1px 3px rgba(0,0,0,0.04)"
           }}
         >
           <h3 style={{ margin: "0 0 8px 0", fontSize: "16px", fontWeight: "600", color: "#0f172a" }}>
             No revenue comparison found for {targetMonthLabel}
           </h3>
-          <p style={{ margin: "0 0 20px 0", fontSize: "13px", color: "#64748b" }}>
-            Click below to fetch the latest revenue transactions from your accounting tool and match them against Pulse.
+          <p style={{ margin: "0 auto 20px", fontSize: "13px", color: "#64748b", maxWidth: "480px" }}>
+            Click below to fetch the latest revenue transactions from your accounting tool and match them against Pulse recognised revenue for {targetMonthLabel}.
           </p>
           <button
             type="button"
             onClick={handleRunRevenueComparison}
             disabled={runningSync}
             style={{
-              padding: "10px 20px",
+              padding: "9px 20px",
               fontSize: "13px",
               fontWeight: "600",
-              color: "#fff",
+              color: "#ffffff",
               backgroundColor: "#2563eb",
               border: "none",
               borderRadius: "6px",
-              cursor: runningSync ? "default" : "pointer"
+              cursor: runningSync ? "wait" : "pointer",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "6px",
+              boxShadow: "0 1px 2px rgba(37,99,235,0.2)"
             }}
           >
-            {runningSync ? "Running comparison..." : "Run revenue comparison now"}
+            {runningSync ? <Spinner size={14} color="#fff" /> : null}
+            <span>{runningSync ? "Running comparison..." : "Run revenue comparison"}</span>
           </button>
         </div>
       ) : (
-        <div>
-          {/* KPI Summary Cards */}
+        <div style={{ background: "#ffffff", borderRadius: "10px", border: "1px solid #e2e8f0", boxShadow: "0 1px 3px rgba(0,0,0,0.04)", overflow: "hidden" }}>
+          {/* Compact Summary Strip & Filter Bar */}
           <div
             style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
-              gap: "12px",
-              marginBottom: "20px"
-            }}
-          >
-            <div style={{ padding: "14px 16px", background: "#fff", border: "1px solid #e2e8f0", borderRadius: "8px" }}>
-              <div style={{ fontSize: "11px", fontWeight: "600", color: "#64748b", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                Pulse revenue
-              </div>
-              <div style={{ fontSize: "20px", fontWeight: "700", color: "#0f172a", marginTop: "4px" }}>
-                {formatGBP(comparison.totalPulseRevenue)}
-              </div>
-              <div style={{ fontSize: "12px", color: "#64748b", marginTop: "2px" }}>
-                Recognised in {targetMonthLabel}
-              </div>
-            </div>
-
-            <div style={{ padding: "14px 16px", background: "#fff", border: "1px solid #e2e8f0", borderRadius: "8px" }}>
-              <div style={{ fontSize: "11px", fontWeight: "600", color: "#64748b", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                Accounting revenue
-              </div>
-              <div style={{ fontSize: "20px", fontWeight: "700", color: "#0f172a", marginTop: "4px" }}>
-                {formatGBP(comparison.totalAccountingRevenue)}
-              </div>
-              <div style={{ fontSize: "12px", color: "#64748b", marginTop: "2px" }}>
-                Invoiced in accounting
-              </div>
-            </div>
-
-            <div
-              style={{
-                padding: "14px 16px",
-                background: isBalanced ? "#f0fdf4" : "#fef2f2",
-                border: `1px solid ${isBalanced ? "#bbf7d0" : "#fecaca"}`,
-                borderRadius: "8px"
-              }}
-            >
-              <div
-                style={{
-                  fontSize: "11px",
-                  fontWeight: "600",
-                  color: isBalanced ? "#166534" : "#991b1b",
-                  textTransform: "uppercase",
-                  letterSpacing: "0.5px"
-                }}
-              >
-                Variance
-              </div>
-              <div
-                style={{
-                  fontSize: "20px",
-                  fontWeight: "700",
-                  color: isBalanced ? "#166534" : "#991b1b",
-                  marginTop: "4px"
-                }}
-              >
-                {formatGBP(comparison.totalVariance)}
-              </div>
-              <div style={{ fontSize: "12px", color: isBalanced ? "#166534" : "#991b1b", marginTop: "2px" }}>
-                {isBalanced ? "Pulse matches accounting" : "Discrepancy detected"}
-              </div>
-            </div>
-
-            <div style={{ padding: "14px 16px", background: "#fff", border: "1px solid #e2e8f0", borderRadius: "8px" }}>
-              <div style={{ fontSize: "11px", fontWeight: "600", color: "#64748b", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                Match status
-              </div>
-              <div style={{ fontSize: "20px", fontWeight: "700", color: "#0f172a", marginTop: "4px" }}>
-                {matchedPairs.length} matched
-              </div>
-              <div style={{ fontSize: "12px", color: totalDiscrepancies > 0 ? "#b45309" : "#166534", marginTop: "2px", fontWeight: "500" }}>
-                {totalDiscrepancies > 0 ? `${totalDiscrepancies} items to review` : "All items reconciled"}
-              </div>
-            </div>
-          </div>
-
-          {/* Filter Bar */}
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              flexWrap: "wrap",
-              gap: "12px",
-              marginBottom: "16px",
-              padding: "10px 14px",
+              padding: "12px 16px",
               background: "#f8fafc",
-              borderRadius: "8px",
-              border: "1px solid #e2e8f0"
+              borderBottom: "1px solid #e2e8f0",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              flexWrap: "wrap",
+              gap: "12px"
             }}
           >
-            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-              {[
-                ["all", `All items (${matchedPairs.length + totalDiscrepancies})`],
-                ["matched", `✓ Matched (${matchedPairs.length})`],
-                ["discrepancies", `⚠️ Discrepancies & unmatched (${totalDiscrepancies})`]
-              ].map(([key, label]) => (
-                <button
-                  key={key}
-                  type="button"
-                  onClick={() => setFilterMode(key)}
+            {/* KPI Totals */}
+            <div style={{ display: "flex", alignItems: "center", gap: "16px", flexWrap: "wrap" }}>
+              <div style={{ fontSize: "12.5px", color: "#475569" }}>
+                <span>Accounting total: </span>
+                <strong style={{ color: "#0f172a", fontVariantNumeric: "tabular-nums" }}>
+                  {formatGBP(comparison.totalAccountingRevenue)}
+                </strong>
+              </div>
+              <div style={{ fontSize: "12.5px", color: "#475569" }}>
+                <span>Pulse total: </span>
+                <strong style={{ color: "#0f172a", fontVariantNumeric: "tabular-nums" }}>
+                  {formatGBP(comparison.totalPulseRevenue)}
+                </strong>
+              </div>
+              <div style={{ fontSize: "12.5px", display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                <span style={{ color: "#475569" }}>Net variance: </span>
+                <span
                   style={{
-                    padding: "5px 12px",
+                    padding: "2px 8px",
+                    borderRadius: "10px",
                     fontSize: "12px",
-                    fontWeight: filterMode === key ? "600" : "400",
-                    color: filterMode === key ? "#2563eb" : "#475569",
-                    background: filterMode === key ? "#eff6ff" : "#fff",
-                    border: filterMode === key ? "1px solid #93c5fd" : "1px solid #cbd5e1",
-                    borderRadius: "20px",
-                    cursor: "pointer"
+                    fontWeight: 700,
+                    fontVariantNumeric: "tabular-nums",
+                    background: isNetBalanced ? "#dcfce7" : "#fee2e2",
+                    color: isNetBalanced ? "#166534" : "#991b1b"
                   }}
                 >
-                  {label}
-                </button>
-              ))}
+                  {isNetBalanced ? "✓ Balanced (£0.00)" : `${comparison.totalVariance > 0 ? "+" : ""}${formatGBP(comparison.totalVariance)}`}
+                </span>
+              </div>
             </div>
 
-            <div style={{ minWidth: "220px" }}>
+            {/* Filter Pills & Search */}
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+              <div style={{ display: "inline-flex", background: "#e2e8f0", padding: "2px", borderRadius: "6px" }}>
+                <button
+                  type="button"
+                  onClick={() => setFilterMode("all")}
+                  style={{
+                    padding: "3px 10px",
+                    fontSize: "11.5px",
+                    fontWeight: 600,
+                    border: "none",
+                    borderRadius: "4px",
+                    background: filterMode === "all" ? "#ffffff" : "transparent",
+                    color: filterMode === "all" ? "#0f172a" : "#64748b",
+                    cursor: "pointer",
+                    boxShadow: filterMode === "all" ? "0 1px 2px rgba(0,0,0,0.05)" : "none"
+                  }}
+                >
+                  All ({tableRows.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFilterMode("discrepancies")}
+                  style={{
+                    padding: "3px 10px",
+                    fontSize: "11.5px",
+                    fontWeight: 600,
+                    border: "none",
+                    borderRadius: "4px",
+                    background: filterMode === "discrepancies" ? "#ffffff" : "transparent",
+                    color: filterMode === "discrepancies" ? "#991b1b" : "#64748b",
+                    cursor: "pointer",
+                    boxShadow: filterMode === "discrepancies" ? "0 1px 2px rgba(0,0,0,0.05)" : "none"
+                  }}
+                >
+                  ⚠️ Discrepancies ({discrepancyCount})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFilterMode("matched")}
+                  style={{
+                    padding: "3px 10px",
+                    fontSize: "11.5px",
+                    fontWeight: 600,
+                    border: "none",
+                    borderRadius: "4px",
+                    background: filterMode === "matched" ? "#ffffff" : "transparent",
+                    color: filterMode === "matched" ? "#166534" : "#64748b",
+                    cursor: "pointer",
+                    boxShadow: filterMode === "matched" ? "0 1px 2px rgba(0,0,0,0.05)" : "none"
+                  }}
+                >
+                  ✓ Matched ({matchedCount})
+                </button>
+              </div>
+
               <input
                 type="text"
                 value={searchQuery}
-                onChange={e => setSearchQuery(e.target.value)}
-                placeholder="Filter by client or invoice..."
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search..."
                 style={{
-                  width: "100%",
-                  padding: "6px 12px",
                   fontSize: "12px",
-                  border: "1px solid #cbd5e1",
+                  padding: "4px 8px",
                   borderRadius: "6px",
-                  outline: "none"
+                  border: "1px solid #cbd5e1",
+                  width: "140px"
                 }}
               />
             </div>
           </div>
 
-          {/* Section: Side-by-Side Header */}
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "1fr 1fr",
-              gap: "16px",
-              padding: "8px 14px",
-              background: "#f1f5f9",
-              borderRadius: "6px",
-              marginBottom: "12px",
-              fontSize: "12px",
-              fontWeight: "700",
-              color: "#334155"
-            }}
-          >
-            <div>Accounting tool (Xero / QuickBooks)</div>
-            <div>Pulse (recognised jobs in month)</div>
-          </div>
+          {/* 4-Column Table */}
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px", tableLayout: "fixed" }}>
+              <thead>
+                <tr style={{ background: "#f8fafc", borderBottom: "1.5px solid #e2e8f0" }}>
+                  <th style={{ textAlign: "left", padding: "10px 14px", width: "32%", fontWeight: 600, color: "#475569", fontSize: "12px" }}>
+                    Accounting tool
+                  </th>
+                  <th style={{ textAlign: "left", padding: "10px 14px", width: "32%", fontWeight: 600, color: "#475569", fontSize: "12px" }}>
+                    Pulse
+                  </th>
+                  <th style={{ textAlign: "center", padding: "10px 14px", width: "14%", fontWeight: 600, color: "#475569", fontSize: "12px" }}>
+                    Difference
+                  </th>
+                  <th style={{ textAlign: "left", padding: "10px 14px", width: "22%", fontWeight: 600, color: "#475569", fontSize: "12px" }}>
+                    Notes
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredRows.length === 0 ? (
+                  <tr>
+                    <td colSpan={4} style={{ textAlign: "center", padding: "36px 14px", color: "#64748b", fontSize: "13px" }}>
+                      No items found matching the selected filter.
+                    </td>
+                  </tr>
+                ) : (
+                  filteredRows.map((row) => {
+                    const local = notesEdits[row.itemKey] || {};
+                    const currentReason = local.reasonTag !== undefined ? local.reasonTag : row.reasonTag;
+                    const currentNote = local.noteText !== undefined ? local.noteText : row.noteText;
+                    const isDirty = Boolean(local.dirty);
+                    const isSaving = Boolean(local.saving);
 
-          {/* SECTION 1: Client Variances / Discrepancies */}
-          {(filterMode === "all" || filterMode === "discrepancies") && filteredVariances.length > 0 && (
-            <div style={{ marginBottom: "24px" }}>
-              <div
-                style={{
-                  fontSize: "12px",
-                  fontWeight: "700",
-                  color: "#991b1b",
-                  marginBottom: "8px",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "6px"
-                }}
-              >
-                <span>⚠️ Client variances ({filteredVariances.length})</span>
-                <div style={{ flex: 1, height: "1px", background: "#fecaca" }} />
-              </div>
-
-              <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-                {filteredVariances.map(v => {
-                  const currentDraft = notesEdits[v.id] || {
-                    reasonTag: v.reasonTag || "",
-                    noteText: v.noteText || "",
-                    dirty: false,
-                    saving: false
-                  };
-
-                  return (
-                    <div
-                      key={v.id}
-                      style={{
-                        background: "#fff",
-                        border: "1px solid #fecaca",
-                        borderRadius: "8px",
-                        padding: "14px",
-                        boxShadow: "0 1px 2px rgba(0,0,0,0.03)"
-                      }}
-                    >
-                      {/* Client Header & Variance pill */}
-                      <div
+                    return (
+                      <tr
+                        key={row.id}
                         style={{
-                          display: "flex",
-                          justifyContent: "space-between",
-                          alignItems: "center",
-                          marginBottom: "12px",
-                          paddingBottom: "8px",
-                          borderBottom: "1px solid #f1f5f9"
+                          borderBottom: "1px solid #f1f5f9",
+                          backgroundColor: row.isMatched ? "#ffffff" : "#fffdfb",
+                          borderLeft: row.isMatched ? "3px solid #22c55e" : "3px solid #ef4444"
                         }}
                       >
-                        <div style={{ fontWeight: "700", fontSize: "14px", color: "#0f172a" }}>
-                          {v.clientName}
-                        </div>
-                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                          <span
-                            style={{
-                              padding: "4px 10px",
-                              borderRadius: "12px",
-                              fontSize: "12px",
-                              fontWeight: "700",
-                              background: v.difference > 0 ? "#eff6ff" : "#fef2f2",
-                              color: v.difference > 0 ? "#1e40af" : "#991b1b",
-                              border: `1px solid ${v.difference > 0 ? "#bfdbfe" : "#fecaca"}`
-                            }}
-                          >
-                            Difference: {formatGBP(v.difference)} ({v.difference > 0 ? "Pulse higher" : "Accounting higher"})
-                          </span>
-                        </div>
-                      </div>
-
-                      {/* Side-by-Side Breakdown for this client */}
-                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px", marginBottom: "12px" }}>
-                        {/* Left: Accounting Invoices */}
-                        <div style={{ background: "#f8fafc", padding: "10px", borderRadius: "6px", border: "1px solid #e2e8f0" }}>
-                          <div style={{ fontSize: "11px", fontWeight: "600", color: "#64748b", marginBottom: "6px" }}>
-                            Accounting invoices ({formatGBP(v.totalAccounting)} total)
-                          </div>
-                          {v.accounting.length === 0 ? (
-                            <div style={{ fontSize: "12px", color: "#94a3b8", fontStyle: "italic" }}>
-                              No invoices found in accounting for this month
-                            </div>
-                          ) : (
-                            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                              {v.accounting.map(a => (
-                                <div
-                                  key={a.id}
-                                  style={{
-                                    display: "flex",
-                                    justifyContent: "space-between",
-                                    fontSize: "12px",
-                                    padding: "4px 0",
-                                    borderBottom: "1px dashed #e2e8f0"
-                                  }}
-                                >
-                                  <div>
-                                    <span style={{ fontWeight: "600", color: "#1e40af", marginRight: "6px" }}>
-                                      {a.invoiceNumber || "Invoice"}
-                                    </span>
-                                    <span style={{ color: "#475569" }}>{a.description || "Revenue"}</span>
-                                    {a.date && <span style={{ color: "#94a3b8", marginLeft: "6px", fontSize: "11px" }}>({a.date})</span>}
-                                  </div>
-                                  <div style={{ fontWeight: "600", color: "#0f172a" }}>
-                                    {formatGBP(a.amount)}
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Right: Pulse Jobs */}
-                        <div style={{ background: "#f8fafc", padding: "10px", borderRadius: "6px", border: "1px solid #e2e8f0" }}>
-                          <div style={{ fontSize: "11px", fontWeight: "600", color: "#64748b", marginBottom: "6px" }}>
-                            Pulse recognised revenue ({formatGBP(v.totalPulse)} total)
-                          </div>
-                          {v.pulse.length === 0 ? (
-                            <div style={{ fontSize: "12px", color: "#94a3b8", fontStyle: "italic" }}>
-                              No jobs recognised in Pulse for this month
-                            </div>
-                          ) : (
-                            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                              {v.pulse.map(p => (
-                                <div
-                                  key={p.id}
-                                  style={{
-                                    display: "flex",
-                                    justifyContent: "space-between",
-                                    fontSize: "12px",
-                                    padding: "4px 0",
-                                    borderBottom: "1px dashed #e2e8f0"
-                                  }}
-                                >
-                                  <div>
-                                    <span style={{ fontWeight: "600", color: "#0f172a", marginRight: "6px" }}>
-                                      {p.jobName}
-                                    </span>
-                                    {p.type && (
-                                      <span
-                                        style={{
-                                          padding: "1px 6px",
-                                          background: "#e2e8f0",
-                                          color: "#475569",
-                                          borderRadius: "4px",
-                                          fontSize: "10px"
-                                        }}
-                                      >
-                                        {p.type}
+                        {/* Column 1: Accounting tool */}
+                        <td style={{ padding: "8px 14px", verticalAlign: "top" }}>
+                          {row.accountingItems.length > 0 ? (
+                            <div>
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "8px" }}>
+                                <span style={{ fontWeight: 600, color: "#0f172a", fontSize: "13px" }}>
+                                  {row.clientName}
+                                </span>
+                                <span style={{ fontWeight: 600, color: "#0f172a", fontSize: "13px", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+                                  {formatGBP(row.accountingTotal)}
+                                </span>
+                              </div>
+                              <div style={{ marginTop: "2px" }}>
+                                {row.accountingItems.map((a, i) => (
+                                  <div key={i} style={{ fontSize: "11.5px", color: "#64748b", lineHeight: 1.35 }}>
+                                    <span style={{ fontWeight: 500, color: "#334155" }}>{a.invoiceNumber || "Invoice"}</span>
+                                    {a.date ? <span> • {a.date.split(" ")[0]}</span> : null}
+                                    {a.description ? <span> • {a.description}</span> : null}
+                                    {row.accountingItems.length > 1 && (
+                                      <span style={{ fontWeight: 600, color: "#0f172a", marginLeft: "4px" }}>
+                                        ({formatGBP(a.amount)})
                                       </span>
                                     )}
                                   </div>
-                                  <div style={{ fontWeight: "600", color: "#0f172a" }}>
-                                    {formatGBP(p.amount)}
+                                ))}
+                              </div>
+                            </div>
+                          ) : (
+                            <div style={{ fontSize: "12px", color: "#94a3b8", fontStyle: "italic", paddingTop: "2px" }}>
+                              — No invoice in accounting —
+                            </div>
+                          )}
+                        </td>
+
+                        {/* Column 2: Pulse */}
+                        <td style={{ padding: "8px 14px", verticalAlign: "top" }}>
+                          {row.pulseItems.length > 0 ? (
+                            <div>
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "8px" }}>
+                                <span style={{ fontWeight: 600, color: "#0f172a", fontSize: "13px" }}>
+                                  {row.clientName}
+                                </span>
+                                <span style={{ fontWeight: 600, color: "#0f172a", fontSize: "13px", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+                                  {formatGBP(row.pulseTotal)}
+                                </span>
+                              </div>
+                              <div style={{ marginTop: "2px" }}>
+                                {row.pulseItems.map((p, i) => (
+                                  <div key={i} style={{ fontSize: "11.5px", color: "#64748b", lineHeight: 1.35 }}>
+                                    <span>{p.jobName || "Recognised revenue"}</span>
+                                    {row.pulseItems.length > 1 && (
+                                      <span style={{ fontWeight: 600, color: "#0f172a", marginLeft: "4px" }}>
+                                        ({formatGBP(p.amount)})
+                                      </span>
+                                    )}
                                   </div>
-                                </div>
-                              ))}
+                                ))}
+                              </div>
+                            </div>
+                          ) : (
+                            <div style={{ fontSize: "12px", color: "#94a3b8", fontStyle: "italic", paddingTop: "2px" }}>
+                              — No recognised job in Pulse —
                             </div>
                           )}
-                        </div>
-                      </div>
+                        </td>
 
-                      {/* Reason & Notes Row */}
-                      <div
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: "10px",
-                          paddingTop: "8px",
-                          borderTop: "1px solid #f1f5f9",
-                          flexWrap: "wrap"
-                        }}
-                      >
-                        <div style={{ minWidth: "180px" }}>
-                          <select
-                            value={currentDraft.reasonTag}
-                            onChange={e => {
-                              const newTag = e.target.value;
-                              setNotesEdits(prev => ({
-                                ...prev,
-                                [v.id]: { ...currentDraft, reasonTag: newTag, dirty: true }
-                              }));
-                              handleSaveNote(v.id, newTag, currentDraft.noteText);
-                            }}
-                            style={{
-                              width: "100%",
-                              padding: "6px 8px",
-                              fontSize: "12px",
-                              border: "1px solid #cbd5e1",
-                              borderRadius: "6px",
-                              background: "#fff"
-                            }}
-                          >
-                            {REASON_TAG_OPTIONS.map(opt => (
-                              <option key={opt.value} value={opt.value}>{opt.label}</option>
-                            ))}
-                          </select>
-                        </div>
-
-                        <div style={{ flex: 1, minWidth: "220px" }}>
-                          <input
-                            type="text"
-                            value={currentDraft.noteText}
-                            onChange={e => {
-                              const newText = e.target.value;
-                              setNotesEdits(prev => ({
-                                ...prev,
-                                [v.id]: { ...currentDraft, noteText: newText, dirty: true }
-                              }));
-                            }}
-                            onBlur={() => {
-                              if (currentDraft.dirty) {
-                                handleSaveNote(v.id, currentDraft.reasonTag, currentDraft.noteText);
-                              }
-                            }}
-                            placeholder="Add explanation note..."
-                            style={{
-                              width: "100%",
-                              padding: "6px 10px",
-                              fontSize: "12px",
-                              border: "1px solid #cbd5e1",
-                              borderRadius: "6px",
-                              outline: "none"
-                            }}
-                          />
-                        </div>
-
-                        {currentDraft.saving ? (
-                          <span style={{ fontSize: "11px", color: "#64748b" }}>Saving...</span>
-                        ) : currentDraft.dirty ? (
-                          <button
-                            type="button"
-                            onClick={() => handleSaveNote(v.id, currentDraft.reasonTag, currentDraft.noteText)}
-                            style={{
-                              padding: "5px 10px",
-                              fontSize: "12px",
-                              background: "#2563eb",
-                              color: "#fff",
-                              border: "none",
-                              borderRadius: "4px",
-                              cursor: "pointer"
-                            }}
-                          >
-                            Save
-                          </button>
-                        ) : currentDraft.reasonTag || currentDraft.noteText ? (
-                          <span style={{ fontSize: "11px", color: "#166534", fontWeight: "600" }}>✓ Saved</span>
-                        ) : null}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* SECTION 2: Unmatched Invoices in Accounting */}
-          {(filterMode === "all" || filterMode === "discrepancies") && filteredUnmatchedAccounting.length > 0 && (
-            <div style={{ marginBottom: "24px" }}>
-              <div
-                style={{
-                  fontSize: "12px",
-                  fontWeight: "700",
-                  color: "#c2410c",
-                  marginBottom: "8px",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "6px"
-                }}
-              >
-                <span>⚠️ Invoices in accounting with no Pulse match ({filteredUnmatchedAccounting.length})</span>
-                <div style={{ flex: 1, height: "1px", background: "#fed7aa" }} />
-              </div>
-
-              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                {filteredUnmatchedAccounting.map(a => {
-                  const currentDraft = notesEdits[a.itemKey] || {
-                    reasonTag: a.reasonTag || "",
-                    noteText: a.noteText || "",
-                    dirty: false,
-                    saving: false
-                  };
-
-                  return (
-                    <div
-                      key={a.itemKey}
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns: "1fr 1fr",
-                        gap: "16px",
-                        background: "#fff",
-                        border: "1px solid #fed7aa",
-                        borderRadius: "6px",
-                        padding: "10px 14px",
-                        alignItems: "center"
-                      }}
-                    >
-                      <div>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                          <div>
-                            <span style={{ fontWeight: "700", color: "#0f172a", marginRight: "6px" }}>
-                              {a.clientName}
-                            </span>
-                            <span style={{ fontWeight: "600", color: "#1e40af", marginRight: "6px" }}>
-                              {a.invoiceNumber}
-                            </span>
-                            <span style={{ color: "#475569", fontSize: "12px" }}>{a.description}</span>
-                          </div>
-                          <span style={{ fontWeight: "700", color: "#0f172a" }}>
-                            {formatGBP(a.amount)}
-                          </span>
-                        </div>
-                        {a.date && <div style={{ fontSize: "11px", color: "#94a3b8" }}>Date: {a.date}</div>}
-                      </div>
-
-                      {/* Reason tag & note input */}
-                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                        <select
-                          value={currentDraft.reasonTag}
-                          onChange={e => {
-                            const newTag = e.target.value;
-                            setNotesEdits(prev => ({ ...prev, [a.itemKey]: { ...currentDraft, reasonTag: newTag, dirty: true } }));
-                            handleSaveNote(a.itemKey, newTag, currentDraft.noteText);
-                          }}
-                          style={{
-                            padding: "4px 8px",
-                            fontSize: "11px",
-                            border: "1px solid #cbd5e1",
-                            borderRadius: "4px",
-                            background: "#fff"
-                          }}
-                        >
-                          {REASON_TAG_OPTIONS.map(opt => (
-                            <option key={opt.value} value={opt.value}>{opt.label}</option>
-                          ))}
-                        </select>
-                        <input
-                          type="text"
-                          value={currentDraft.noteText}
-                          onChange={e => setNotesEdits(prev => ({ ...prev, [a.itemKey]: { ...currentDraft, noteText: e.target.value, dirty: true } }))}
-                          onBlur={() => { if (currentDraft.dirty) handleSaveNote(a.itemKey, currentDraft.reasonTag, currentDraft.noteText); }}
-                          placeholder="Note..."
-                          style={{ flex: 1, padding: "4px 8px", fontSize: "11px", border: "1px solid #cbd5e1", borderRadius: "4px" }}
-                        />
-                        {currentDraft.dirty && (
-                          <button
-                            type="button"
-                            onClick={() => handleSaveNote(a.itemKey, currentDraft.reasonTag, currentDraft.noteText)}
-                            style={{ padding: "4px 8px", fontSize: "11px", background: "#2563eb", color: "#fff", border: "none", borderRadius: "4px" }}
-                          >
-                            Save
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* SECTION 3: Unmatched Jobs in Pulse */}
-          {(filterMode === "all" || filterMode === "discrepancies") && filteredUnmatchedPulse.length > 0 && (
-            <div style={{ marginBottom: "24px" }}>
-              <div
-                style={{
-                  fontSize: "12px",
-                  fontWeight: "700",
-                  color: "#a16207",
-                  marginBottom: "8px",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "6px"
-                }}
-              >
-                <span>⚠️ Jobs in Pulse with no accounting invoice ({filteredUnmatchedPulse.length})</span>
-                <div style={{ flex: 1, height: "1px", background: "#fef08a" }} />
-              </div>
-
-              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                {filteredUnmatchedPulse.map(p => {
-                  const currentDraft = notesEdits[p.itemKey] || {
-                    reasonTag: p.reasonTag || "",
-                    noteText: p.noteText || "",
-                    dirty: false,
-                    saving: false
-                  };
-
-                  return (
-                    <div
-                      key={p.itemKey}
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns: "1fr 1fr",
-                        gap: "16px",
-                        background: "#fff",
-                        border: "1px solid #fef08a",
-                        borderRadius: "6px",
-                        padding: "10px 14px",
-                        alignItems: "center"
-                      }}
-                    >
-                      <div style={{ color: "#94a3b8", fontSize: "12px", fontStyle: "italic" }}>
-                        (No corresponding invoice found in accounting)
-                      </div>
-
-                      <div>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
-                          <div>
-                            <span style={{ fontWeight: "700", color: "#0f172a", marginRight: "6px" }}>
-                              {p.clientName}
-                            </span>
-                            <span style={{ color: "#334155", fontSize: "12px" }}>{p.jobName}</span>
-                            {p.type && (
-                              <span style={{ marginLeft: "6px", padding: "1px 6px", background: "#e2e8f0", borderRadius: "4px", fontSize: "10px", color: "#475569" }}>
-                                {p.type}
-                              </span>
-                            )}
-                          </div>
-                          <span style={{ fontWeight: "700", color: "#0f172a" }}>
-                            {formatGBP(p.amount)}
-                          </span>
-                        </div>
-
-                        {/* Reason & note input */}
-                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                          <select
-                            value={currentDraft.reasonTag}
-                            onChange={e => {
-                              const newTag = e.target.value;
-                              setNotesEdits(prev => ({ ...prev, [p.itemKey]: { ...currentDraft, reasonTag: newTag, dirty: true } }));
-                              handleSaveNote(p.itemKey, newTag, currentDraft.noteText);
-                            }}
-                            style={{
-                              padding: "4px 8px",
-                              fontSize: "11px",
-                              border: "1px solid #cbd5e1",
-                              borderRadius: "4px",
-                              background: "#fff"
-                            }}
-                          >
-                            {REASON_TAG_OPTIONS.map(opt => (
-                              <option key={opt.value} value={opt.value}>{opt.label}</option>
-                            ))}
-                          </select>
-                          <input
-                            type="text"
-                            value={currentDraft.noteText}
-                            onChange={e => setNotesEdits(prev => ({ ...prev, [p.itemKey]: { ...currentDraft, noteText: e.target.value, dirty: true } }))}
-                            onBlur={() => { if (currentDraft.dirty) handleSaveNote(p.itemKey, currentDraft.reasonTag, currentDraft.noteText); }}
-                            placeholder="Note..."
-                            style={{ flex: 1, padding: "4px 8px", fontSize: "11px", border: "1px solid #cbd5e1", borderRadius: "4px" }}
-                          />
-                          {currentDraft.dirty && (
-                            <button
-                              type="button"
-                              onClick={() => handleSaveNote(p.itemKey, currentDraft.reasonTag, currentDraft.noteText)}
-                              style={{ padding: "4px 8px", fontSize: "11px", background: "#2563eb", color: "#fff", border: "none", borderRadius: "4px" }}
+                        {/* Column 3: Difference */}
+                        <td style={{ padding: "8px 14px", verticalAlign: "top", textAlign: "center" }}>
+                          {row.isMatched ? (
+                            <span
+                              style={{
+                                display: "inline-block",
+                                padding: "2px 8px",
+                                borderRadius: "10px",
+                                background: "#dcfce7",
+                                color: "#166534",
+                                fontSize: "11.5px",
+                                fontWeight: 600,
+                                fontVariantNumeric: "tabular-nums"
+                              }}
                             >
-                              Save
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* SECTION 4: Matched Pairs */}
-          {(filterMode === "all" || filterMode === "matched") && (
-            <div>
-              <div
-                style={{
-                  fontSize: "12px",
-                  fontWeight: "700",
-                  color: "#166534",
-                  marginBottom: "8px",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "6px",
-                  cursor: "pointer"
-                }}
-                onClick={() => setMatchedOpen(!matchedOpen)}
-              >
-                <span>{matchedOpen ? "▼" : "▶"} ✓ Matched pairs ({filteredMatchedPairs.length})</span>
-                <div style={{ flex: 1, height: "1px", background: "#bbf7d0" }} />
-              </div>
-
-              {matchedOpen && (
-                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                  {filteredMatchedPairs.length === 0 ? (
-                    <div style={{ padding: "16px", textAlign: "center", color: "#64748b", fontSize: "13px", background: "#f8fafc", borderRadius: "6px" }}>
-                      No matched pairs found for current search.
-                    </div>
-                  ) : (
-                    filteredMatchedPairs.map(pair => (
-                      <div
-                        key={pair.id}
-                        style={{
-                          display: "grid",
-                          gridTemplateColumns: "1fr 1fr",
-                          gap: "16px",
-                          background: "#fff",
-                          border: "1px solid #bbf7d0",
-                          borderRadius: "6px",
-                          padding: "10px 14px",
-                          alignItems: "center"
-                        }}
-                      >
-                        {/* Left: Accounting */}
-                        <div>
-                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                            <div>
-                              <span style={{ fontWeight: "700", color: "#0f172a", marginRight: "6px" }}>
-                                {pair.clientName}
-                              </span>
-                              {pair.accounting.map((a, i) => (
-                                <span key={i} style={{ color: "#475569", fontSize: "12px", marginRight: "6px" }}>
-                                  <strong style={{ color: "#1e40af" }}>{a.invoiceNumber}</strong> {a.description}
-                                </span>
-                              ))}
-                            </div>
-                            <span style={{ fontWeight: "700", color: "#166534" }}>
-                              {formatGBP(pair.totalAmount)}
+                              ✓ £0.00
                             </span>
-                          </div>
-                          {pair.accounting[0]?.date && (
-                            <div style={{ fontSize: "11px", color: "#94a3b8" }}>
-                              Date: {pair.accounting[0].date}
+                          ) : (
+                            <div style={{ display: "inline-flex", flexDirection: "column", alignItems: "center" }}>
+                              <span
+                                style={{
+                                  display: "inline-block",
+                                  padding: "2px 8px",
+                                  borderRadius: "10px",
+                                  background: "#fee2e2",
+                                  color: "#991b1b",
+                                  fontSize: "12px",
+                                  fontWeight: 700,
+                                  fontVariantNumeric: "tabular-nums"
+                                }}
+                              >
+                                {row.difference > 0 ? "+" : ""}{formatGBP(row.difference)}
+                              </span>
+                              <span style={{ fontSize: "10px", color: "#64748b", marginTop: "2px" }}>
+                                {row.difference > 0 ? "Pulse higher" : "Accounting higher"}
+                              </span>
                             </div>
                           )}
-                        </div>
+                        </td>
 
-                        {/* Right: Pulse */}
-                        <div>
-                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                            <div>
-                              <span style={{ fontWeight: "700", color: "#0f172a", marginRight: "6px" }}>
-                                {pair.clientName}
-                              </span>
-                              {pair.pulse.map((p, i) => (
-                                <span key={i} style={{ color: "#334155", fontSize: "12px", marginRight: "6px" }}>
-                                  {p.jobName}
-                                  {p.type && (
-                                    <span style={{ marginLeft: "4px", padding: "1px 5px", background: "#e2e8f0", borderRadius: "3px", fontSize: "10px" }}>
-                                      {p.type}
-                                    </span>
-                                  )}
-                                </span>
+                        {/* Column 4: Notes */}
+                        <td style={{ padding: "8px 14px", verticalAlign: "top" }}>
+                          <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                            <select
+                              value={currentReason}
+                              onChange={(e) => handleEditField(row.itemKey, "reasonTag", e.target.value)}
+                              style={{
+                                fontSize: "11.5px",
+                                padding: "2px 6px",
+                                borderRadius: "4px",
+                                border: "1px solid #cbd5e1",
+                                background: "#ffffff",
+                                color: currentReason ? "#0f172a" : "#64748b",
+                                width: "100%"
+                              }}
+                            >
+                              {REASON_TAG_OPTIONS.map(opt => (
+                                <option key={opt.value} value={opt.value}>{opt.label}</option>
                               ))}
+                            </select>
+                            <div style={{ display: "flex", gap: "4px" }}>
+                              <input
+                                type="text"
+                                value={currentNote}
+                                onChange={(e) => handleEditField(row.itemKey, "noteText", e.target.value)}
+                                placeholder="Add note..."
+                                style={{
+                                  fontSize: "11.5px",
+                                  padding: "2px 6px",
+                                  borderRadius: "4px",
+                                  border: "1px solid #cbd5e1",
+                                  flex: 1
+                                }}
+                              />
+                              {isDirty && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleSaveNote(row.itemKey, currentReason, currentNote)}
+                                  disabled={isSaving}
+                                  style={{
+                                    padding: "2px 8px",
+                                    fontSize: "11px",
+                                    fontWeight: 600,
+                                    background: "#2563eb",
+                                    color: "#ffffff",
+                                    border: "none",
+                                    borderRadius: "4px",
+                                    cursor: isSaving ? "wait" : "pointer",
+                                    whiteSpace: "nowrap"
+                                  }}
+                                >
+                                  {isSaving ? "..." : "Save"}
+                                </button>
+                              )}
                             </div>
-                            <span style={{ fontWeight: "700", color: "#166534" }}>
-                              {formatGBP(pair.totalAmount)}
-                            </span>
                           </div>
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-              )}
-            </div>
-          )}
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </div>

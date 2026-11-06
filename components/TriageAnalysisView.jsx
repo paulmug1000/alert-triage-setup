@@ -1418,6 +1418,27 @@ export default function TriageAnalysisView({
                         return true;
                       });
 
+                      if (candidateJobOptions.length === 0 && otherOptions.length === 0) {
+                        return (
+                          <div style={{
+                            padding: "14px 18px",
+                            backgroundColor: "#f8fafc",
+                            border: "1px solid #e2e8f0",
+                            borderRadius: "8px",
+                            color: "#64748b",
+                            fontSize: "13px",
+                            marginBottom: "16px",
+                            lineHeight: "1.5"
+                          }}>
+                            {isInvoiceType
+                              ? "No potential job matches found for this invoice."
+                              : isExpenseType
+                                ? "No potential job matches found for this expense."
+                                : "No potential matches found for this alert."}
+                          </div>
+                        );
+                      }
+
                       return (
                         <div>
                           {/* 1. Candidate Job Match Cards (CRM Style - Missing items only) */}

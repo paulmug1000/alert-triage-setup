@@ -604,7 +604,7 @@ export function useTriageEngine({
         return false;
       });
 
-      if (alert.options && alert.options.length > 0 && !hasStaleOrIncompleteCache) {
+      if (Array.isArray(alert.options) && !hasStaleOrIncompleteCache) {
         console.log(`✅ Using cached options instantly`);
         setFromCache(true);
         setClaudeAnalysis(JSON.stringify(alert.options, null, 2));

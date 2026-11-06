@@ -8,6 +8,7 @@ import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useTriage } from "../contexts/TriageContext";
 import PushOutgoingsTab from "./PushOutgoingsTab";
 import CashflowReconTab from "./CashflowReconTab";
+import RevenueCheckTab from "./RevenueCheckTab";
 import ReportingTab from "./ReportingTab";
 import { useAuth } from "../hooks/useAuth";
 
@@ -28,14 +29,15 @@ export default function ToolsView({
     if (typeof window !== "undefined") {
       const p = new URLSearchParams(window.location.search);
       const sub = p.get("subview");
-      if (sub && ["overview", "payroll", "time", "cash", "cashflow_recon", "push_outgoings", "reporting"].includes(sub)) {
+      if (sub && ["overview", "payroll", "time", "cash", "cashflow_recon", "push_outgoings", "revenue_check", "reporting"].includes(sub)) {
         return sub;
       }
     }
     return "overview";
-  }); // "overview" | "payroll" | "time" | "cash" | "cashflow_recon" | "push_outgoings" | "reporting"
+  }); // "overview" | "payroll" | "time" | "cash" | "cashflow_recon" | "push_outgoings" | "revenue_check" | "reporting"
   const [eomPushOutgoingsClient, setEomPushOutgoingsClient] = useState(managedClient?.clientName || "");
   const [eomCashflowReconClient, setEomCashflowReconClient] = useState(managedClient?.clientName || "");
+  const [eomRevenueCheckClient, setEomRevenueCheckClient] = useState(managedClient?.clientName || "");
 
   useEffect(() => {
     if (managedClient?.clientName) {
@@ -43,6 +45,7 @@ export default function ToolsView({
       setEomSubView("overview");
       setEomPushOutgoingsClient(managedClient.clientName);
       setEomCashflowReconClient(managedClient.clientName);
+      setEomRevenueCheckClient(managedClient.clientName);
     } else {
       setEomDetailClient(null);
     }
@@ -442,6 +445,23 @@ export default function ToolsView({
     const targetTaskId = typeof clientName === "object" ? clientName.taskId : taskId;
     if (!targetClient || !targetTaskId) return;
     handleEomStatusChange(targetTaskId, "done", targetClient);
+  };
+
+  const handleRevenueCheckTaskDone = (clientName, taskId) => {
+    const targetClient = typeof clientName === "object" ? clientName.clientName : clientName;
+    if (!targetClient) return;
+    const linkedTask = (eomAllTasks || []).find(t =>
+      t.clientName === targetClient &&
+      (t.linkedFunction === "revenue_check" ||
+       String(t.name || "").toLowerCase().includes("compare dashboard month to xero") ||
+       String(t.name || "").toLowerCase().includes("revenue comparison"))
+    );
+    const targetTaskId = linkedTask?.taskId || (typeof clientName === "object" ? clientName.taskId : taskId);
+    if (!targetTaskId) return;
+    setEomStatusOverrides(prev => {
+      const withoutThis = (prev || []).filter(s => !(s.clientName === targetClient && s.taskId === targetTaskId));
+      return [...withoutThis, { clientName: targetClient, taskId: targetTaskId, status: "done" }];
+    });
   };
 
   const handleEomMarkActual = (taskId, targetClientName = eomDetailClient) => {
@@ -1010,6 +1030,7 @@ export default function ToolsView({
             ["cash", "Cash balances"],
             ["cashflow_recon", "Cashflow recon"],
             ["push_outgoings", "Push outgoings"],
+            ["revenue_check", "Revenue check"],
             ...(isAdmin ? [["reporting", "Reporting"]] : [])
           ].map(([key, label]) => {
             const clientQuery = managedClient?.clientName ? `&client=${encodeURIComponent(managedClient.clientName)}` : "";
@@ -1363,6 +1384,13 @@ export default function ToolsView({
                                   Push Outgoings →
                                 </button>
                               )}
+                              {(t.linkedFunction === "revenue_check" || (!t.linkedFunction && t.name && (t.name.toLowerCase().includes("compare dashboard month to xero") || t.name.toLowerCase().includes("revenue comparison")))) && (
+                                <button onClick={() => { setEomRevenueCheckClient(c.clientName); setEomSubView("revenue_check"); }}
+                                  className="eom-task-action-btn"
+                                  style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px", color: "#0066cc", cursor: "pointer", fontSize: "10px", fontWeight: "600" }}>
+                                  Revenue check →
+                                </button>
+                              )}
                               {t.linkedFunction === "alert_check" && (
                                 <span style={{ marginLeft: "8px", fontSize: "10px", color: "#888" }}>
                                   ({(t.alertCategories || "").split(",").filter(Boolean).map(cat => (isAdmin ? { invoice: "InvComp", expense: "DirComp", crm: "CRMComp" }[cat] : { invoice: "Invoices", expense: "Expenses", crm: "CRM" }[cat])).join(", ") || "no categories set"})
@@ -1521,6 +1549,7 @@ export default function ToolsView({
                           <option value="alert_check">Alert Check (InvComp/DirComp/CRMComp)</option>
                           <option value="push_outgoings">Push Outgoings</option>
                           <option value="cashflow_recon">Cashflow Recon</option>
+                          <option value="revenue_check">Revenue Check</option>
                         </select>
                         <label style={{ fontSize: "12px", color: "#666", display: "flex", alignItems: "center", gap: "4px", marginLeft: "10px" }}>
                           <input type="checkbox" checked={eomTemplateDraft.active} onChange={e => setEomTemplateDraft(d => ({ ...d, active: e.target.checked }))} />
@@ -1564,7 +1593,7 @@ export default function ToolsView({
                           {!tpl.active && <span style={{ marginLeft: "6px", fontSize: "10px", color: "#b45309" }}>(inactive)</span>}
                           {tpl.linkedFunction && (
                             <span style={{ marginLeft: "6px", fontSize: "10px", color: "#0066cc" }}>
-                              (linked: {({ salaries: "salaries", cash_balance: "cash balance", mark_actual: "mark actual", mark_nb_exclude: "exclude new business to find", create_backup: "create backup", alert_check: "alert check", time_import: "time import", push_outgoings: "push outgoings", cashflow_recon: "cashflow recon" }[tpl.linkedFunction]) || tpl.linkedFunction})
+                              (linked: {({ salaries: "salaries", cash_balance: "cash balance", mark_actual: "mark actual", mark_nb_exclude: "exclude new business to find", create_backup: "create backup", alert_check: "alert check", time_import: "time import", push_outgoings: "push outgoings", cashflow_recon: "cashflow recon", revenue_check: "revenue check" }[tpl.linkedFunction]) || tpl.linkedFunction})
                             </span>
                           )}
                         </div>
@@ -1608,6 +1637,7 @@ export default function ToolsView({
                       <option value="alert_check">Alert Check (InvComp/DirComp/CRMComp)</option>
                       <option value="push_outgoings">Push Outgoings</option>
                       <option value="cashflow_recon">Cashflow Recon</option>
+                      <option value="revenue_check">Revenue Check</option>
                     </select>
                   </div>
                   {eomNewTplLinkedFunction === "alert_check" && (
@@ -2082,6 +2112,13 @@ export default function ToolsView({
                           className="eom-task-action-btn"
                           style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px", color: "#0066cc", cursor: "pointer", fontSize: "10px", fontWeight: "600" }}>
                           Push Outgoings →
+                        </button>
+                      )}
+                      {(t.linkedFunction === "revenue_check" || (!t.linkedFunction && t.name && (t.name.toLowerCase().includes("compare dashboard month to xero") || t.name.toLowerCase().includes("revenue comparison")))) && (
+                        <button onClick={() => { setEomRevenueCheckClient(eomDetailClient); setEomSubView("revenue_check"); }}
+                          className="eom-task-action-btn"
+                          style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px", color: "#0066cc", cursor: "pointer", fontSize: "10px", fontWeight: "600" }}>
+                          Revenue check →
                         </button>
                       )}
                       {t.linkedFunction === "alert_check" && (
@@ -2760,6 +2797,21 @@ export default function ToolsView({
           managedClient={managedClient}
           onClearManagedClient={onClearManagedClient}
           isAdmin={isAdmin}
+        />
+      )}
+
+      {eomSubView === "revenue_check" && (
+        <RevenueCheckTab
+          allOutgoingsClients={allOutgoingsClients}
+          eomMonthKey={eomMonthKey}
+          automationCommanderSheetId={automationCommanderSheetId}
+          initialClient={eomRevenueCheckClient}
+          onClearInitialClient={() => setEomRevenueCheckClient("")}
+          onTaskMarkedDone={handleRevenueCheckTaskDone}
+          eomAllTasks={eomAllTasks}
+          styles={styles}
+          managedClient={managedClient}
+          onClearManagedClient={onClearManagedClient}
         />
       )}
 

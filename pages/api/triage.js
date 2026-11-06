@@ -64,7 +64,8 @@ import {
   handleEomGetOverheadExpenses, handleEomPreviewOverheadExpenses,
   handleEomAddZeroBudgetCategory, handleEomConfirmOverheadExpenses,
   handleEomGetNarrativeWorkbench, handleEomGenerateNarrative,
-  handleEomSaveNarrativeDraft, handleEomApplyNarrativeToDeck
+  handleEomSaveNarrativeDraft, handleEomApplyNarrativeToDeck,
+  handleEomGetRevenueCheck, handleEomRunRevenueComparison, handleEomSaveRevenueCheckNotes
 } from "../../services/eomTools";
 import {
   handleUploadPayrollChunk, handleIdentifyPayrollClient, handleIdentifyTimeClient,
@@ -322,7 +323,8 @@ export default async function handler(req, res) {
       "get_cash_cells",
       "get_cash_inbox",
       "get_cash_adjustments",
-      "eom_get_reporting_data"
+      "eom_get_reporting_data",
+      "eom_get_revenue_check"
     ]);
 
     if (req.method === "GET" && !READ_ONLY_ACTIONS.has(action)) {
@@ -1456,6 +1458,12 @@ export default async function handler(req, res) {
       return await handleEomSaveNarrativeDraft(req, res, sheets);
     } else if (action === "eom_apply_narrative_to_deck") {
       return await handleEomApplyNarrativeToDeck(req, res, sheets);
+    } else if (action === "eom_get_revenue_check") {
+      return await handleEomGetRevenueCheck(req, res, sheets);
+    } else if (action === "eom_run_revenue_comparison") {
+      return await handleEomRunRevenueComparison(req, res, sheets);
+    } else if (action === "eom_save_revenue_check_notes") {
+      return await handleEomSaveRevenueCheckNotes(req, res, sheets);
 
     } else if (action === "get_flag_sweep_log") {
       const runs = await readFlagSweepLog(sheets, req.body.automationCommanderSheetId);

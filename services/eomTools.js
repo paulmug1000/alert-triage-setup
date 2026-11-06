@@ -1167,6 +1167,7 @@ export const EOM_SEED_DATA = {
     },
     {
       "name": "Compare dashboard month to Xero month and make changes as required",
+      "linkedFunction": "revenue_check",
       "clients": {
         "Get Better": "Compare dashboard month to Xero month and make changes as required (if revenue doesn't match, look for phasing differences. Also have the \"revenue comparison\" sheet available - download all revenue items from Xero, compile, then get Gemini to compare with revenue items from dashboard)",
         "Starlight": "Compare dashboard month to Xero month and make changes as required (if revenue doesn't match, look for phasing differences. Also have the \"revenue comparison\" sheet available - download all revenue items from Xero, compile, then get Gemini to compare with revenue items from dashboard)",
@@ -3905,6 +3906,819 @@ export async function handleEomConfirmOverheadExpenses(req, res, sheets) {
   } catch (err) {
     console.error("❌ handleEomConfirmOverheadExpenses error:", err);
     return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+// ============================================================================
+// REVENUE CHECK & RECONCILIATION
+// ============================================================================
+
+export async function ensureEomRevenueChecksTab_(sheets, spreadsheetId) {
+  try {
+    const meta = await sheets.spreadsheets.get({
+      spreadsheetId,
+      fields: "sheets.properties.title"
+    });
+    const exists = meta.data.sheets?.some(s => s.properties?.title === "EomRevenueChecks");
+    if (!exists) {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId,
+        requestBody: {
+          requests: [
+            {
+              addSheet: {
+                properties: {
+                  title: "EomRevenueChecks",
+                  gridProperties: { rowCount: 1000, columnCount: 12, frozenRowCount: 1 }
+                }
+              }
+            }
+          ]
+        }
+      });
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: "EomRevenueChecks!A1:L1",
+        valueInputOption: "RAW",
+        requestBody: {
+          values: [[
+            "ClientName", "MonthKey", "ComparedAt", "PulseRevenue", "AccountingRevenue",
+            "Variance", "MatchedCount", "DiscrepancyCount", "ComparisonDataJson",
+            "NotesJson", "UpdatedBy", "TargetMonthLabel"
+          ]]
+        }
+      });
+    }
+  } catch (err) {
+    console.warn("[ensureEomRevenueChecksTab_] Note:", err.message);
+  }
+}
+
+function cleanRevenueClientName_(str) {
+  return String(str || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "")
+    .replace(/(ltd|limited|inc|llc|corp|company|group)$/g, "")
+    .trim();
+}
+
+function revenueNamesMatch_(name1, name2) {
+  const c1 = cleanRevenueClientName_(name1);
+  const c2 = cleanRevenueClientName_(name2);
+  if (!c1 || !c2) return false;
+  if (c1 === c2) return true;
+  if (c1.length >= 4 && c2.length >= 4 && (c1.includes(c2) || c2.includes(c1))) return true;
+  return false;
+}
+
+function findRevenueSubsetSum_(items, targetAmount, tolerance = 0.05) {
+  if (!items || items.length === 0) return null;
+  for (let i = 0; i < items.length; i++) {
+    if (Math.abs(items[i].amount - targetAmount) <= tolerance) {
+      return [items[i]];
+    }
+  }
+  for (let i = 0; i < items.length; i++) {
+    for (let j = i + 1; j < items.length; j++) {
+      if (Math.abs(items[i].amount + items[j].amount - targetAmount) <= tolerance) {
+        return [items[i], items[j]];
+      }
+    }
+  }
+  for (let i = 0; i < items.length; i++) {
+    for (let j = i + 1; j < items.length; j++) {
+      for (let k = j + 1; k < items.length; k++) {
+        if (Math.abs(items[i].amount + items[j].amount + items[k].amount - targetAmount) <= tolerance) {
+          return [items[i], items[j], items[k]];
+        }
+      }
+    }
+  }
+  return null;
+}
+
+export function buildRevenueComparison_(accountingItems = [], pulseItems = [], existingNotes = {}, targetMonthLabel = "") {
+  const usedAcct = new Set();
+  const usedPulse = new Set();
+  const matchedPairs = [];
+
+  // 1. Exact invoice number match
+  accountingItems.forEach((a, aIdx) => {
+    if (usedAcct.has(aIdx) || !a.invoiceNumber) return;
+    const cleanInv = String(a.invoiceNumber).trim().toUpperCase();
+    const pIdx = pulseItems.findIndex((p, idx) => {
+      if (usedPulse.has(idx)) return false;
+      const refStr = `${p.jobName || ""} ${p.description || ""} ${p.code || ""}`.toUpperCase();
+      return refStr.includes(cleanInv) && Math.abs(a.amount - p.amount) <= 0.01;
+    });
+    if (pIdx !== -1) {
+      matchedPairs.push({
+        id: `pair-${matchedPairs.length + 1}`,
+        type: "exact_invoice",
+        matchType: "Invoice number match",
+        accounting: [a],
+        pulse: [pulseItems[pIdx]],
+        clientName: pulseItems[pIdx].clientName || a.clientName,
+        totalAmount: a.amount
+      });
+      usedAcct.add(aIdx);
+      usedPulse.add(pIdx);
+    }
+  });
+
+  // 2. Exact client name + exact amount match (1-to-1)
+  accountingItems.forEach((a, aIdx) => {
+    if (usedAcct.has(aIdx)) return;
+    const pIdx = pulseItems.findIndex((p, idx) => {
+      if (usedPulse.has(idx)) return false;
+      return revenueNamesMatch_(a.clientName, p.clientName) && Math.abs(a.amount - p.amount) <= 0.01;
+    });
+    if (pIdx !== -1) {
+      matchedPairs.push({
+        id: `pair-${matchedPairs.length + 1}`,
+        type: "exact_match",
+        matchType: "Exact client & amount match",
+        accounting: [a],
+        pulse: [pulseItems[pIdx]],
+        clientName: pulseItems[pIdx].clientName || a.clientName,
+        totalAmount: a.amount
+      });
+      usedAcct.add(aIdx);
+      usedPulse.add(pIdx);
+    }
+  });
+
+  // 3. 1 Accounting invoice matches sum of multiple Pulse jobs for same client
+  accountingItems.forEach((a, aIdx) => {
+    if (usedAcct.has(aIdx)) return;
+    const candidateIndices = [];
+    pulseItems.forEach((p, pIdx) => {
+      if (!usedPulse.has(pIdx) && revenueNamesMatch_(a.clientName, p.clientName)) {
+        candidateIndices.push(pIdx);
+      }
+    });
+    if (candidateIndices.length > 1) {
+      const candidates = candidateIndices.map(i => ({ idx: i, amount: pulseItems[i].amount }));
+      const subset = findRevenueSubsetSum_(candidates, a.amount);
+      if (subset && subset.length > 1) {
+        matchedPairs.push({
+          id: `pair-${matchedPairs.length + 1}`,
+          type: "multi_pulse",
+          matchType: `1 invoice matches ${subset.length} Pulse jobs`,
+          accounting: [a],
+          pulse: subset.map(s => pulseItems[s.idx]),
+          clientName: a.clientName,
+          totalAmount: a.amount
+        });
+        usedAcct.add(aIdx);
+        subset.forEach(s => usedPulse.add(s.idx));
+      }
+    }
+  });
+
+  // 4. Multiple Accounting invoices match 1 Pulse job for same client
+  pulseItems.forEach((p, pIdx) => {
+    if (usedPulse.has(pIdx)) return;
+    const candidateIndices = [];
+    accountingItems.forEach((a, aIdx) => {
+      if (!usedAcct.has(aIdx) && revenueNamesMatch_(a.clientName, p.clientName)) {
+        candidateIndices.push(aIdx);
+      }
+    });
+    if (candidateIndices.length > 1) {
+      const candidates = candidateIndices.map(i => ({ idx: i, amount: accountingItems[i].amount }));
+      const subset = findRevenueSubsetSum_(candidates, p.amount);
+      if (subset && subset.length > 1) {
+        matchedPairs.push({
+          id: `pair-${matchedPairs.length + 1}`,
+          type: "multi_accounting",
+          matchType: `${subset.length} invoices match 1 Pulse job`,
+          accounting: subset.map(s => accountingItems[s.idx]),
+          pulse: [p],
+          clientName: p.clientName,
+          totalAmount: p.amount
+        });
+        usedPulse.add(pIdx);
+        subset.forEach(s => usedAcct.add(s.idx));
+      }
+    }
+  });
+
+  // 5. Client variances (same client present on both sides but total amounts differ)
+  const remainingAcctByClient = new Map();
+  accountingItems.forEach((a, aIdx) => {
+    if (usedAcct.has(aIdx)) return;
+    const norm = cleanRevenueClientName_(a.clientName);
+    if (!remainingAcctByClient.has(norm)) remainingAcctByClient.set(norm, { clientName: a.clientName, items: [] });
+    remainingAcctByClient.get(norm).items.push(a);
+  });
+
+  const remainingPulseByClient = new Map();
+  pulseItems.forEach((p, pIdx) => {
+    if (usedPulse.has(pIdx)) return;
+    const norm = cleanRevenueClientName_(p.clientName);
+    if (!remainingPulseByClient.has(norm)) remainingPulseByClient.set(norm, { clientName: p.clientName, items: [] });
+    remainingPulseByClient.get(norm).items.push(p);
+  });
+
+  const clientVariances = [];
+  remainingPulseByClient.forEach((pulseGroup, pNorm) => {
+    // Look for matching accounting client
+    let matchedAcctNorm = null;
+    for (const aNorm of remainingAcctByClient.keys()) {
+      if (revenueNamesMatch_(pNorm, aNorm)) {
+        matchedAcctNorm = aNorm;
+        break;
+      }
+    }
+
+    if (matchedAcctNorm) {
+      const acctGroup = remainingAcctByClient.get(matchedAcctNorm);
+      const totalAcct = acctGroup.items.reduce((s, it) => s + (parseFloat(it.amount) || 0), 0);
+      const totalPulse = pulseGroup.items.reduce((s, it) => s + (parseFloat(it.amount) || 0), 0);
+      const diff = totalPulse - totalAcct;
+
+      const varianceKey = `var-${pNorm}`;
+      const noteObj = existingNotes[varianceKey] || {};
+
+      clientVariances.push({
+        id: varianceKey,
+        clientName: pulseGroup.clientName || acctGroup.clientName,
+        totalPulse,
+        totalAccounting: totalAcct,
+        difference: diff,
+        accounting: acctGroup.items,
+        pulse: pulseGroup.items,
+        reasonTag: noteObj.reasonTag || "",
+        noteText: noteObj.noteText || ""
+      });
+
+      // Mark as used
+      remainingAcctByClient.delete(matchedAcctNorm);
+      remainingPulseByClient.delete(pNorm);
+    }
+  });
+
+  // Sort variances descending by absolute difference
+  clientVariances.sort((a, b) => Math.abs(b.difference) - Math.abs(a.difference));
+
+  // 6. Remaining Unmatched Accounting Invoices
+  const unmatchedAccounting = [];
+  remainingAcctByClient.forEach(group => {
+    group.items.forEach(a => {
+      const itemKey = `unrec-acct-${a.id}`;
+      const noteObj = existingNotes[itemKey] || {};
+      unmatchedAccounting.push({
+        ...a,
+        itemKey,
+        reasonTag: noteObj.reasonTag || "",
+        noteText: noteObj.noteText || ""
+      });
+    });
+  });
+
+  // 7. Remaining Unmatched Pulse Jobs
+  const unmatchedPulse = [];
+  remainingPulseByClient.forEach(group => {
+    group.items.forEach(p => {
+      const itemKey = `unrec-pulse-${p.id}`;
+      const noteObj = existingNotes[itemKey] || {};
+      unmatchedPulse.push({
+        ...p,
+        itemKey,
+        reasonTag: noteObj.reasonTag || "",
+        noteText: noteObj.noteText || ""
+      });
+    });
+  });
+
+  const totalPulseRevenue = pulseItems.reduce((s, it) => s + (parseFloat(it.amount) || 0), 0);
+  const totalAccountingRevenue = accountingItems.reduce((s, it) => s + (parseFloat(it.amount) || 0), 0);
+  const totalVariance = totalPulseRevenue - totalAccountingRevenue;
+
+  return {
+    targetMonthLabel,
+    totalPulseRevenue,
+    totalAccountingRevenue,
+    totalVariance,
+    matchedCount: matchedPairs.length,
+    discrepancyCount: clientVariances.length + unmatchedAccounting.length + unmatchedPulse.length,
+    comparisonData: {
+      matchedPairs,
+      clientVariances,
+      unmatchedAccounting,
+      unmatchedPulse
+    },
+    notes: existingNotes
+  };
+}
+
+async function extractRevenueItemsFromMasterSheet_(sheets, masterSheetId, monthKey) {
+  const accountingItems = [];
+  const pulseItems = [];
+
+  // 1. Read RevFromApp
+  try {
+    const rfaResp = await withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: masterSheetId,
+      range: "RevFromApp!A2:F1000",
+      valueRenderOption: "FORMATTED_VALUE"
+    }));
+    const rfaRows = rfaResp.data.values || [];
+    rfaRows.forEach((r, idx) => {
+      const amt = parseFloat(String(r[4] || "").replace(/[£,\s]/g, "")) || 0;
+      if (r[1] || r[2]) {
+        accountingItems.push({
+          id: String(r[0] || `acct-${idx}`),
+          clientName: String(r[1] || "Unknown Client").trim(),
+          invoiceNumber: String(r[2] || "").trim(),
+          description: String(r[3] || "").trim(),
+          amount: amt,
+          date: String(r[5] || "").trim()
+        });
+      }
+    });
+  } catch (rfaErr) {
+    console.warn("Could not read RevFromApp:", rfaErr.message);
+  }
+
+  // 2. Read Monthly tab
+  const [yStr, mStr] = String(monthKey || "").split("-");
+  const targetYear = parseInt(yStr, 10);
+  const targetMonth = parseInt(mStr, 10) - 1; // 0-indexed
+
+  if (!isNaN(targetYear) && !isNaN(targetMonth)) {
+    try {
+      const monthlyResp = await withRetry(() => sheets.spreadsheets.values.get({
+        spreadsheetId: masterSheetId,
+        range: "Monthly!A1:H3000",
+        valueRenderOption: "UNFORMATTED_VALUE",
+        dateTimeRenderOption: "SERIAL_NUMBER"
+      }));
+      const monthlyRows = monthlyResp.data.values || [];
+
+      const isMatchDate = (val) => {
+        if (typeof val === "number" && val > 30000 && val < 60000) {
+          const d = new Date(Math.round((val - 25569) * 86400 * 1000));
+          return d.getUTCFullYear() === targetYear && d.getUTCMonth() === targetMonth;
+        }
+        return false;
+      };
+      const isAnyDate = (val) => (typeof val === "number" && val > 30000 && val < 60000);
+
+      let startRow = -1;
+      let endRow = monthlyRows.length;
+      for (let i = 0; i < monthlyRows.length; i++) {
+        if (isMatchDate(monthlyRows[i]?.[0])) {
+          startRow = i;
+          break;
+        }
+      }
+
+      if (startRow !== -1) {
+        for (let i = startRow + 1; i < monthlyRows.length; i++) {
+          if (isAnyDate(monthlyRows[i]?.[0])) {
+            endRow = i;
+            break;
+          }
+        }
+        for (let i = startRow + 4; i <= endRow - 3; i++) {
+          const row = monthlyRows[i];
+          if (!row) continue;
+          const client = row[2];
+          const job = row[3];
+          const type = row[4];
+          const sales = parseFloat(String(row[5] || "").replace(/[£,\s]/g, "")) || 0;
+          if (client && String(client).trim() !== "" && sales > 0) {
+            pulseItems.push({
+              id: `pulse-${i}`,
+              clientName: String(client).trim(),
+              jobName: String(job || "").trim(),
+              type: String(type || "").trim(),
+              amount: sales
+            });
+          }
+        }
+      }
+    } catch (mErr) {
+      console.warn("Could not read Monthly tab:", mErr.message);
+    }
+  }
+
+  // Fallback: If Monthly tab block yielded 0 items, check RevComp!A10:D
+  if (pulseItems.length === 0) {
+    try {
+      const rcResp = await withRetry(() => sheets.spreadsheets.values.get({
+        spreadsheetId: masterSheetId,
+        range: "RevComp!A10:D150",
+        valueRenderOption: "FORMATTED_VALUE"
+      }));
+      const rcRows = (rcResp.data.values || []).slice(1);
+      rcRows.forEach((r, idx) => {
+        const client = String(r[0] || "").trim();
+        const dashRev = parseFloat(String(r[1] || "").replace(/[£,\s]/g, "")) || 0;
+        if (client && dashRev > 0) {
+          pulseItems.push({
+            id: `revcomp-${idx}`,
+            clientName: client,
+            jobName: "Recognised revenue",
+            type: "Monthly",
+            amount: dashRev
+          });
+        }
+      });
+    } catch (rcErr) {
+      console.warn("Could not fallback read RevComp:", rcErr.message);
+    }
+  }
+
+  return { accountingItems, pulseItems };
+}
+
+async function saveRevenueCheckToStore_(sheets, automationCommanderSheetId, clientName, monthKey, resultPayload, userEmail) {
+  const cacheKey = `pulse:eom:revcheck:${clientName}:${monthKey}`;
+  if (redisClient?.isOpen) {
+    try {
+      await redisClient.set(cacheKey, JSON.stringify(resultPayload), { EX: 86400 * 60 });
+    } catch (e) {
+      console.warn("Redis revenue check set error:", e.message);
+    }
+  }
+
+  try {
+    await ensureEomRevenueChecksTab_(sheets, automationCommanderSheetId);
+    const resp = await withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: automationCommanderSheetId,
+      range: "EomRevenueChecks!A2:L2000"
+    }));
+    const rows = resp.data.values || [];
+    const existingIdx = rows.findIndex(r => r[0] === clientName && r[1] === monthKey);
+    const nowIso = new Date().toISOString();
+    const compDataJson = JSON.stringify(resultPayload.comparisonData || {});
+    const notesJson = JSON.stringify(resultPayload.notes || {});
+    const rowValues = [
+      clientName,
+      monthKey,
+      nowIso,
+      resultPayload.totalPulseRevenue || 0,
+      resultPayload.totalAccountingRevenue || 0,
+      resultPayload.totalVariance || 0,
+      resultPayload.matchedCount || 0,
+      resultPayload.discrepancyCount || 0,
+      compDataJson,
+      notesJson,
+      userEmail || "System",
+      resultPayload.targetMonthLabel || ""
+    ];
+
+    if (existingIdx === -1) {
+      await withRetry(() => sheets.spreadsheets.values.append({
+        spreadsheetId: automationCommanderSheetId,
+        range: "EomRevenueChecks!A:L",
+        valueInputOption: "RAW",
+        requestBody: { values: [rowValues] }
+      }));
+    } else {
+      const sheetRow = existingIdx + 2;
+      await withRetry(() => sheets.spreadsheets.values.update({
+        spreadsheetId: automationCommanderSheetId,
+        range: `EomRevenueChecks!A${sheetRow}:L${sheetRow}`,
+        valueInputOption: "RAW",
+        requestBody: { values: [rowValues] }
+      }));
+    }
+  } catch (err) {
+    console.error("Failed to persist revenue check to Automation Commander:", err.message);
+  }
+}
+
+async function getRevenueCheckFromStore_(sheets, automationCommanderSheetId, clientName, monthKey) {
+  const cacheKey = `pulse:eom:revcheck:${clientName}:${monthKey}`;
+  if (redisClient?.isOpen) {
+    try {
+      const cached = await redisClient.get(cacheKey);
+      if (cached) {
+        return JSON.parse(cached);
+      }
+    } catch (e) {
+      console.warn("Redis revenue check get error:", e.message);
+    }
+  }
+
+  try {
+    await ensureEomRevenueChecksTab_(sheets, automationCommanderSheetId);
+    const resp = await withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: automationCommanderSheetId,
+      range: "EomRevenueChecks!A2:L2000"
+    }));
+    const rows = resp.data.values || [];
+    const match = rows.find(r => r[0] === clientName && r[1] === monthKey);
+    if (!match) return null;
+
+    let comparisonData = {};
+    let notes = {};
+    try { comparisonData = JSON.parse(match[8] || "{}"); } catch (e) { }
+    try { notes = JSON.parse(match[9] || "{}"); } catch (e) { }
+
+    const result = {
+      clientName: match[0],
+      monthKey: match[1],
+      comparedAt: match[2],
+      totalPulseRevenue: parseFloat(match[3]) || 0,
+      totalAccountingRevenue: parseFloat(match[4]) || 0,
+      totalVariance: parseFloat(match[5]) || 0,
+      matchedCount: parseInt(match[6], 10) || 0,
+      discrepancyCount: parseInt(match[7], 10) || 0,
+      comparisonData,
+      notes,
+      updatedBy: match[10] || "",
+      targetMonthLabel: match[11] || ""
+    };
+
+    if (redisClient?.isOpen) {
+      redisClient.set(cacheKey, JSON.stringify(result), { EX: 86400 * 60 }).catch(() => { });
+    }
+    return result;
+  } catch (err) {
+    console.warn("Error reading from EomRevenueChecks:", err.message);
+    return null;
+  }
+}
+
+export async function autoCompleteRevenueCheckTask_(sheets, automationCommanderSheetId, clientName, workMonthKey) {
+  try {
+    // 1. Try explicit linkedFunction: "revenue_check"
+    const byFn = await autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, clientName, "revenue_check", workMonthKey);
+    if (byFn) return true;
+
+    // 2. Try task name matching "compare dashboard month to xero" or "revenue comparison"
+    if (!workMonthKey || !automationCommanderSheetId) return false;
+    const clientTasksR = await withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: automationCommanderSheetId,
+      range: "EomClientTasks!A2:H5000"
+    }));
+    const clientTasks = clientTasksR.data.values || [];
+    const revTask = clientTasks.find(r =>
+      r[0] && r[1] === clientName &&
+      (String(r[3] || "").toLowerCase().includes("compare dashboard month to xero") ||
+       String(r[3] || "").toLowerCase().includes("revenue comparison") ||
+       String(r[3] || "").toLowerCase().includes("revcomp")) &&
+      (r[5] !== "FALSE" && r[5] !== false)
+    );
+    if (!revTask) return false;
+
+    const taskId = revTask[0];
+    const statusResp = await withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: automationCommanderSheetId,
+      range: "EomMonthlyStatus!A2:E200000"
+    }));
+    const statusRows = statusResp.data.values || [];
+    const existingIdx = statusRows.findIndex(r => r[0] === clientName && r[1] === taskId && r[2] === workMonthKey);
+    if (existingIdx === -1) {
+      await withRetry(() => sheets.spreadsheets.values.append({
+        spreadsheetId: automationCommanderSheetId,
+        range: "EomMonthlyStatus!A:E",
+        valueInputOption: "RAW",
+        requestBody: { values: [[clientName, taskId, workMonthKey, "done", new Date().toISOString()]] }
+      }));
+    } else {
+      await withRetry(() => sheets.spreadsheets.values.update({
+        spreadsheetId: automationCommanderSheetId,
+        range: `EomMonthlyStatus!D${existingIdx + 2}:E${existingIdx + 2}`,
+        valueInputOption: "RAW",
+        requestBody: { values: [["done", new Date().toISOString()]] }
+      }));
+    }
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+export async function handleEomGetRevenueCheck(req, res, sheets) {
+  const { clientName, monthKey, forceRefresh } = req.body;
+  const automationCommanderSheetId = getCanonicalAcSheetId();
+  if (!clientName || !monthKey || !automationCommanderSheetId) {
+    return res.status(400).json({ success: false, error: "Missing clientName or monthKey" });
+  }
+
+  const sessionUser = getSessionUser(req);
+  if (!req.isSystemAuthorized && sessionUser && !sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, clientName)) {
+    return res.status(403).json({ success: false, error: "Unauthorized" });
+  }
+
+  try {
+    if (!forceRefresh) {
+      const stored = await getRevenueCheckFromStore_(sheets, automationCommanderSheetId, clientName, monthKey);
+      if (stored) {
+        return res.status(200).json({ success: true, comparison: stored });
+      }
+    }
+
+    // If not in store or forceRefresh, read from Master Sheet
+    const clientResp = await withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: automationCommanderSheetId,
+      range: "AutoUpdates!A2:N500"
+    }));
+    const rows = clientResp.data.values || [];
+    const clientRow = rows.find(r => matchesClientName(r[0], clientName));
+    if (!clientRow) {
+      return res.status(404).json({ success: false, error: `Client "${clientName}" not found.` });
+    }
+    const masterSheetUrl = clientRow[12];
+    const masterSheetId = extractSheetIdFromUrl(masterSheetUrl);
+    if (!masterSheetId) {
+      return res.status(400).json({ success: false, error: `No master sheet found for "${clientName}".` });
+    }
+
+    const { accountingItems, pulseItems } = await extractRevenueItemsFromMasterSheet_(sheets, masterSheetId, monthKey);
+    if (accountingItems.length === 0 && pulseItems.length === 0) {
+      return res.status(200).json({
+        success: true,
+        notRunYet: true,
+        clientName,
+        monthKey
+      });
+    }
+
+    const [y, m] = monthKey.split("-").map(Number);
+    const targetMonthLabel = new Date(y, m - 1, 1).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+
+    // Retrieve previous notes if any exist
+    const prevStored = await getRevenueCheckFromStore_(sheets, automationCommanderSheetId, clientName, monthKey);
+    const existingNotes = prevStored?.notes || {};
+
+    const freshComp = buildRevenueComparison_(accountingItems, pulseItems, existingNotes, targetMonthLabel);
+    const payloadToSave = {
+      clientName,
+      monthKey,
+      comparedAt: new Date().toISOString(),
+      ...freshComp,
+      updatedBy: sessionUser?.email || "System"
+    };
+
+    await saveRevenueCheckToStore_(sheets, automationCommanderSheetId, clientName, monthKey, payloadToSave, sessionUser?.email);
+    return res.status(200).json({ success: true, comparison: payloadToSave });
+  } catch (err) {
+    console.error("❌ handleEomGetRevenueCheck error:", err);
+    return res.status(500).json({ success: false, error: sanitizeSpreadsheetTerms(err.message) });
+  }
+}
+
+export async function handleEomRunRevenueComparison(req, res, sheets) {
+  const { clientName, monthKey } = req.body;
+  const automationCommanderSheetId = getCanonicalAcSheetId();
+  if (!clientName || !monthKey || !automationCommanderSheetId) {
+    return res.status(400).json({ success: false, error: "Missing clientName or monthKey" });
+  }
+
+  const sessionUser = getSessionUser(req);
+  if (!req.isSystemAuthorized && sessionUser && !sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, clientName)) {
+    return res.status(403).json({ success: false, error: "Unauthorized" });
+  }
+
+  try {
+    const clientResp = await withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: automationCommanderSheetId,
+      range: "AutoUpdates!A2:N500"
+    }));
+    const rows = clientResp.data.values || [];
+    const clientRow = rows.find(r => matchesClientName(r[0], clientName));
+    if (!clientRow) {
+      return res.status(404).json({ success: false, error: `Client "${clientName}" not found.` });
+    }
+    const masterSheetUrl = clientRow[12];
+    const masterSheetId = extractSheetIdFromUrl(masterSheetUrl);
+    const webAppUrl = String(clientRow[13] || "").trim();
+
+    if (!masterSheetId || !webAppUrl) {
+      return res.status(400).json({ success: false, error: `Accounting sync service is not configured for "${clientName}".` });
+    }
+    if (!isValidGoogleScriptUrl(webAppUrl)) {
+      return res.status(400).json({ success: false, error: "Invalid accounting sync service endpoint." });
+    }
+
+    const secret = process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "";
+    const gasResp = await fetch(webAppUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ secret, action: "run_revenue_comparison", targetMonth: monthKey, clientName })
+    });
+
+    const gasText = await gasResp.text();
+    let gasData = null;
+    try { gasData = JSON.parse(gasText); } catch (e) { }
+
+    if (!gasData || !gasData.success) {
+      const errMsg = gasData?.error || `Master Web App returned HTTP ${gasResp.status}`;
+      return res.status(502).json({ success: false, error: sanitizeSpreadsheetTerms(errMsg) });
+    }
+
+    // Extract fresh data from Master Sheet
+    const { accountingItems, pulseItems } = await extractRevenueItemsFromMasterSheet_(sheets, masterSheetId, monthKey);
+
+    const [y, m] = monthKey.split("-").map(Number);
+    const targetMonthLabel = new Date(y, m - 1, 1).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+
+    // Preserve existing notes
+    const prevStored = await getRevenueCheckFromStore_(sheets, automationCommanderSheetId, clientName, monthKey);
+    const existingNotes = prevStored?.notes || {};
+
+    const freshComp = buildRevenueComparison_(accountingItems, pulseItems, existingNotes, targetMonthLabel);
+    const payloadToSave = {
+      clientName,
+      monthKey,
+      comparedAt: new Date().toISOString(),
+      ...freshComp,
+      updatedBy: sessionUser?.email || "System"
+    };
+
+    await saveRevenueCheckToStore_(sheets, automationCommanderSheetId, clientName, monthKey, payloadToSave, sessionUser?.email);
+
+    // Auto-complete linked EoM task
+    await autoCompleteRevenueCheckTask_(sheets, automationCommanderSheetId, clientName, monthKey);
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId,
+      clientName,
+      category: "EOM",
+      action: "Revenue Comparison Run",
+      summary: `Completed revenue comparison for ${clientName} (${targetMonthLabel})`,
+      details: {
+        clientName,
+        monthKey,
+        pulseTotal: freshComp.totalPulseRevenue,
+        accountingTotal: freshComp.totalAccountingRevenue,
+        variance: freshComp.totalVariance,
+        matchedCount: freshComp.matchedCount
+      }
+    }).catch(e => console.error("PMA log failed:", e));
+
+    return res.status(200).json({
+      success: true,
+      message: "Revenue comparison completed successfully.",
+      comparison: payloadToSave
+    });
+  } catch (err) {
+    console.error("❌ handleEomRunRevenueComparison error:", err);
+    return res.status(500).json({ success: false, error: sanitizeSpreadsheetTerms(err.message) });
+  }
+}
+
+export async function handleEomSaveRevenueCheckNotes(req, res, sheets) {
+  const { clientName, monthKey, notes } = req.body;
+  const automationCommanderSheetId = getCanonicalAcSheetId();
+  if (!clientName || !monthKey || !automationCommanderSheetId || !notes) {
+    return res.status(400).json({ success: false, error: "Missing required fields" });
+  }
+
+  const sessionUser = getSessionUser(req);
+  if (!req.isSystemAuthorized && sessionUser && !sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, clientName)) {
+    return res.status(403).json({ success: false, error: "Unauthorized" });
+  }
+
+  try {
+    const stored = await getRevenueCheckFromStore_(sheets, automationCommanderSheetId, clientName, monthKey);
+    if (!stored) {
+      return res.status(404).json({ success: false, error: "Revenue comparison not found for this month." });
+    }
+
+    const mergedNotes = { ...(stored.notes || {}), ...notes };
+    stored.notes = mergedNotes;
+
+    // Apply notes into clientVariances, unmatchedAccounting, and unmatchedPulse
+    if (stored.comparisonData?.clientVariances) {
+      stored.comparisonData.clientVariances.forEach(v => {
+        if (mergedNotes[v.id]) {
+          v.reasonTag = mergedNotes[v.id].reasonTag || v.reasonTag || "";
+          v.noteText = mergedNotes[v.id].noteText || v.noteText || "";
+        }
+      });
+    }
+    if (stored.comparisonData?.unmatchedAccounting) {
+      stored.comparisonData.unmatchedAccounting.forEach(a => {
+        if (mergedNotes[a.itemKey]) {
+          a.reasonTag = mergedNotes[a.itemKey].reasonTag || a.reasonTag || "";
+          a.noteText = mergedNotes[a.itemKey].noteText || a.noteText || "";
+        }
+      });
+    }
+    if (stored.comparisonData?.unmatchedPulse) {
+      stored.comparisonData.unmatchedPulse.forEach(p => {
+        if (mergedNotes[p.itemKey]) {
+          p.reasonTag = mergedNotes[p.itemKey].reasonTag || p.reasonTag || "";
+          p.noteText = mergedNotes[p.itemKey].noteText || p.noteText || "";
+        }
+      });
+    }
+
+    stored.updatedBy = sessionUser?.email || "User";
+    await saveRevenueCheckToStore_(sheets, automationCommanderSheetId, clientName, monthKey, stored, sessionUser?.email);
+
+    return res.status(200).json({ success: true, comparison: stored });
+  } catch (err) {
+    console.error("❌ handleEomSaveRevenueCheckNotes error:", err);
+    return res.status(500).json({ success: false, error: sanitizeSpreadsheetTerms(err.message) });
   }
 }
 

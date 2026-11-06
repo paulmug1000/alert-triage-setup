@@ -3168,7 +3168,7 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
       if (!r.cachedOptionsJSON) return true;
       try {
         const parsed = JSON.parse(r.cachedOptionsJSON);
-        if (!Array.isArray(parsed) || parsed.length === 0) return true;
+        if (!Array.isArray(parsed)) return true;
         const isStale = parsed.some(opt => {
           const title = String(opt.title || "").toLowerCase();
           if (title.includes("no confident automatic match") || (title.includes("manual investigation") && (title.includes("no confident") || title.includes("automatic match")))) return true;
@@ -3830,7 +3830,8 @@ export async function handleAnalyzeAlert(req, res, sheets) {
           return false;
         });
 
-        if (validCachedOptions.length > 0 && !isCacheStale) {
+        const isLegitimatelyEmpty = Array.isArray(cachedOptions) && cachedOptions.length === 0;
+        if ((validCachedOptions.length > 0 && !isCacheStale) || isLegitimatelyEmpty) {
           // For crmPipeAppDiscr Pipeline alerts, re-fetch copiedToConf live
           // since it can change in the sheet independently of the cached options
           let liveCopiedToConf = null;

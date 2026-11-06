@@ -33,8 +33,9 @@ export default function SettingsView({
   // Navigation guard ref forwarded from ClientSettingsView
   const clientNavGuardRef = useRef(null);
 
-  // Top tab mode: "system" vs "client"
+  // Top tab mode: "system" vs "client" (for admin), or "client" vs "notifications" (for non-admin)
   const [settingsMode, setSettingsMode] = useState(() => {
+    if (!effectiveIsAdmin) return "client";
     if (managedClient || initialClientName) return "client";
     if (typeof window !== "undefined") {
       const p = new URLSearchParams(window.location.search);
@@ -273,49 +274,90 @@ export default function SettingsView({
           </div>
         </div>
 
-        {effectiveIsAdmin && (
-          <div style={{ display: "inline-flex", background: "#f1f5f9", padding: "3px", borderRadius: "8px", border: "1px solid #cbd5e1" }}>
-            <button
-              type="button"
-              onClick={() => handleSwitchMode("system")}
-              style={{
-                padding: "6px 14px",
-                borderRadius: "6px",
-                border: "none",
-                background: settingsMode === "system" ? "#ffffff" : "transparent",
-                color: settingsMode === "system" ? "#0047AB" : "#64748b",
-                fontWeight: settingsMode === "system" ? "700" : "500",
-                fontSize: "13px",
-                cursor: "pointer",
-                boxShadow: settingsMode === "system" ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
-                transition: "all 0.15s ease"
-              }}
-            >
-              PMA system settings
-            </button>
-            <button
-              type="button"
-              onClick={() => handleSwitchMode("client")}
-              style={{
-                padding: "6px 14px",
-                borderRadius: "6px",
-                border: "none",
-                background: settingsMode === "client" ? "#ffffff" : "transparent",
-                color: settingsMode === "client" ? "#0047AB" : "#64748b",
-                fontWeight: settingsMode === "client" ? "700" : "500",
-                fontSize: "13px",
-                cursor: "pointer",
-                boxShadow: settingsMode === "client" ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
-                transition: "all 0.15s ease"
-              }}
-            >
-              Client settings {managedClient ? `(${managedClient.clientName})` : ""}
-            </button>
-          </div>
-        )}
+        <div style={{ display: "inline-flex", background: "#f1f5f9", padding: "3px", borderRadius: "8px", border: "1px solid #cbd5e1" }}>
+          {effectiveIsAdmin ? (
+            <>
+              <button
+                type="button"
+                onClick={() => handleSwitchMode("system")}
+                style={{
+                  padding: "6px 14px",
+                  borderRadius: "6px",
+                  border: "none",
+                  background: settingsMode === "system" ? "#ffffff" : "transparent",
+                  color: settingsMode === "system" ? "#0047AB" : "#64748b",
+                  fontWeight: settingsMode === "system" ? "700" : "500",
+                  fontSize: "13px",
+                  cursor: "pointer",
+                  boxShadow: settingsMode === "system" ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
+                  transition: "all 0.15s ease"
+                }}
+              >
+                PMA system settings
+              </button>
+              <button
+                type="button"
+                onClick={() => handleSwitchMode("client")}
+                style={{
+                  padding: "6px 14px",
+                  borderRadius: "6px",
+                  border: "none",
+                  background: settingsMode === "client" ? "#ffffff" : "transparent",
+                  color: settingsMode === "client" ? "#0047AB" : "#64748b",
+                  fontWeight: settingsMode === "client" ? "700" : "500",
+                  fontSize: "13px",
+                  cursor: "pointer",
+                  boxShadow: settingsMode === "client" ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
+                  transition: "all 0.15s ease"
+                }}
+              >
+                Client settings {managedClient ? `(${managedClient.clientName})` : ""}
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={() => handleSwitchMode("client")}
+                style={{
+                  padding: "6px 14px",
+                  borderRadius: "6px",
+                  border: "none",
+                  background: settingsMode === "client" ? "#ffffff" : "transparent",
+                  color: settingsMode === "client" ? "#0047AB" : "#64748b",
+                  fontWeight: settingsMode === "client" ? "700" : "500",
+                  fontSize: "13px",
+                  cursor: "pointer",
+                  boxShadow: settingsMode === "client" ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
+                  transition: "all 0.15s ease"
+                }}
+              >
+                Client settings {managedClient ? `(${managedClient.clientName})` : ""}
+              </button>
+              <button
+                type="button"
+                onClick={() => handleSwitchMode("notifications")}
+                style={{
+                  padding: "6px 14px",
+                  borderRadius: "6px",
+                  border: "none",
+                  background: settingsMode === "notifications" ? "#ffffff" : "transparent",
+                  color: settingsMode === "notifications" ? "#0047AB" : "#64748b",
+                  fontWeight: settingsMode === "notifications" ? "700" : "500",
+                  fontSize: "13px",
+                  cursor: "pointer",
+                  boxShadow: settingsMode === "notifications" ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
+                  transition: "all 0.15s ease"
+                }}
+              >
+                Notifications
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
-      {effectiveIsAdmin && settingsMode === "client" ? (
+      {settingsMode === "client" ? (
         <ClientSettingsView
           allClients={allOutgoingsClients || []}
           managedClient={managedClient}

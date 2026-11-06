@@ -11,6 +11,11 @@
 
 import { getSessionUser } from "../../services/authService.js";
 import {
+  canAccessPma,
+  isUserAuthorizedForClient,
+  isReadOnlySession
+} from "../../services/userPermissions.js";
+import {
   getClientSettings,
   saveClientSettings,
   testCrmMappingsAndGetPreview,
@@ -28,12 +33,20 @@ export default async function handler(req, res) {
     return res.status(401).json({ success: false, error: "Active session required." });
   }
 
-  // 2. Strict Admin-only check (never allow read-only / OTP sessions)
-  const isAdmin = Boolean(sessionUser.isAdmin && !sessionUser.isReadOnly && sessionUser.authProvider !== "EmailOTP");
-  if (!isAdmin) {
+  // 2. Staff authorization check (Admin or ClientManager)
+  if (!canAccessPma(sessionUser)) {
     return res.status(403).json({
       success: false,
-      error: "Access denied: Client settings configuration is strictly restricted to Admins."
+      error: "Access denied: PMA configuration requires staff privileges."
+    });
+  }
+
+  // 3. Multi-tenant client authorization check
+  const targetClient = req.method === "GET" ? req.query.clientName : req.body?.clientName;
+  if (!sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, targetClient)) {
+    return res.status(403).json({
+      success: false,
+      error: "Forbidden: Access denied to this client."
     });
   }
 
@@ -65,6 +78,13 @@ export default async function handler(req, res) {
 
   // 4. POST: Save settings or test CRM mappings
   if (req.method === "POST") {
+    if (isReadOnlySession(sessionUser)) {
+      return res.status(403).json({
+        success: false,
+        error: "Forbidden: Read-only session cannot modify settings."
+      });
+    }
+
     const {
       clientName,
       masterSheetId,
@@ -74,11 +94,20 @@ export default async function handler(req, res) {
       action
     } = req.body;
 
-    if (!clientName || !masterSheetId || !settings) {
+    if (!clientName || !masterSheetId || (!settings && !action)) {
       return res.status(400).json({
         success: false,
         error: "Missing required clientName, masterSheetId, or settings payload."
       });
+    }
+
+    // Strip admin-only sections for non-admins to prevent unauthorized modifications
+    if (!sessionUser.isAdmin && settings) {
+      delete settings.main;
+      delete settings.automation;
+      if (settings.accounting) {
+        delete settings.accounting.expenseStatusMapping;
+      }
     }
 
     // Handle Option B: Test CRM mappings and refresh preview

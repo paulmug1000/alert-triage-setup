@@ -11,6 +11,10 @@
 
 import { getSessionUser } from "../../../services/authService.js";
 import {
+  canAccessPma,
+  isUserAuthorizedForClient
+} from "../../../services/userPermissions.js";
+import {
   getIntegrationTokens,
   updateRefreshedTokens,
   getSharedXeroGrant,
@@ -30,12 +34,11 @@ export default async function handler(req, res) {
     return res.status(401).json({ success: false, error: "Active session required." });
   }
 
-  // 2. Strict Admin-only check (never allow read-only / OTP sessions)
-  const isAdmin = Boolean(sessionUser.isAdmin && !sessionUser.isReadOnly && sessionUser.authProvider !== "EmailOTP");
-  if (!isAdmin) {
+  // 2. Staff authorization check (Admin or ClientManager)
+  if (!canAccessPma(sessionUser)) {
     return res.status(403).json({
       success: false,
-      error: "Access denied: Bank accounts configuration is strictly restricted to Admins."
+      error: "Access denied: PMA configuration requires staff privileges."
     });
   }
 
@@ -45,6 +48,14 @@ export default async function handler(req, res) {
     return res.status(400).json({
       success: false,
       error: "Missing required clientName parameter."
+    });
+  }
+
+  // 3. Multi-tenant client authorization check
+  if (!sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, clientName)) {
+    return res.status(403).json({
+      success: false,
+      error: "Forbidden: Access denied to this client."
     });
   }
 

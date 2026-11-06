@@ -868,14 +868,25 @@ export default function ClientSettingsView({
 
   // Active section in left sidebar
   const [activeSection, setActiveSection] = useState(() => {
-    if (initialSection) return initialSection;
+    if (initialSection) {
+      const match = SECTIONS.find(s => s.id === initialSection);
+      if (match && (effectiveIsAdmin || !match.adminOnly)) return initialSection;
+    }
     if (typeof window !== "undefined") {
       const p = new URLSearchParams(window.location.search);
       const s = p.get("section");
-      if (s) return s;
+      if (s) {
+        const match = SECTIONS.find(sec => sec.id === s);
+        if (match && (effectiveIsAdmin || !match.adminOnly)) return s;
+      }
     }
-    return "main";
+    return effectiveIsAdmin ? "main" : "customisation";
   });
+
+  // Available sections for current user role (non-admins cannot access adminOnly sections)
+  const visibleSections = useMemo(() => {
+    return SECTIONS.filter(s => effectiveIsAdmin || !s.adminOnly);
+  }, [effectiveIsAdmin]);
 
   // Data states
   const [loading, setLoading] = useState(false);
@@ -1070,10 +1081,23 @@ export default function ClientSettingsView({
     if (initialSection !== prevInitialSectionRef.current) {
       prevInitialSectionRef.current = initialSection;
       if (initialSection && initialSection !== activeSection) {
-        setActiveSection(initialSection);
+        const match = SECTIONS.find(s => s.id === initialSection);
+        if (match && (effectiveIsAdmin || !match.adminOnly)) {
+          setActiveSection(initialSection);
+        }
       }
     }
-  }, [initialSection, activeSection]);
+  }, [initialSection, activeSection, effectiveIsAdmin]);
+
+  // Ensure non-admins cannot remain on admin-only sections
+  useEffect(() => {
+    if (!effectiveIsAdmin) {
+      const match = SECTIONS.find(s => s.id === activeSection);
+      if (match?.adminOnly) {
+        setActiveSection("customisation");
+      }
+    }
+  }, [effectiveIsAdmin, activeSection]);
 
   // Track whether we've already scrolled to the requested subsection
   const scrolledSubsectionRef = useRef("");
@@ -1544,7 +1568,7 @@ export default function ClientSettingsView({
     if (!trimmed) return;
     const currentList = settings?.accounting?.bankAccounts || [];
     if (currentList.length >= 10) {
-      alert("Maximum 10 bank accounts allowed (KeyInfo!H12:I21).");
+      alert(`Maximum 10 bank accounts allowed${effectiveIsAdmin ? " (KeyInfo!H12:I21)" : ""}.`);
       return;
     }
     if (currentList.includes(trimmed)) {
@@ -1619,7 +1643,7 @@ export default function ClientSettingsView({
     if (!trimmed) return;
     const currentList = settings?.accounting?.nonCashBankAccounts || [];
     if (currentList.length >= 6) {
-      alert("Maximum 6 non-cash bank accounts allowed (KeyInfo!H23:I28).");
+      alert(`Maximum 6 non-cash bank accounts allowed${effectiveIsAdmin ? " (KeyInfo!H23:I28)" : ""}.`);
       return;
     }
     if (currentList.includes(trimmed)) {
@@ -2809,7 +2833,7 @@ export default function ClientSettingsView({
               padding: "8px",
               boxShadow: "0 1px 3px rgba(0,0,0,0.02)"
             }}>
-              {SECTIONS.map(s => {
+              {visibleSections.map(s => {
                 const active = activeSection === s.id;
                 return (
                   <button
@@ -3789,7 +3813,7 @@ export default function ClientSettingsView({
                             Cash bank accounts
                           </h5>
                           <p style={{ margin: 0, fontSize: "12px", color: "#64748B" }}>
-                            Select and prioritize the company bank accounts included in cash flow, management reporting, and end-of-month tools. Names in KeyInfo!H12:H21, Accounting Tool IDs in KeyInfo!I12:I21.
+                            Select and prioritize the company bank accounts included in cash flow, management reporting, and end-of-month tools.{effectiveIsAdmin ? " Names in KeyInfo!H12:H21, Accounting Tool IDs in KeyInfo!I12:I21." : ""}
                           </p>
                           {renderCellRef("KeyInfo!H12:I21")}
                         </div>

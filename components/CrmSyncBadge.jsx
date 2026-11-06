@@ -57,19 +57,10 @@ export default function CrmSyncBadge({
         background: "#f1f5f9",
         color: "#475569",
         border: "1px solid #cbd5e1",
-        cursor: "pointer",
+        cursor: "default",
         flexShrink: 0,
         verticalAlign: "middle",
-        transition: "all 0.15s ease",
         ...style,
-      }}
-      onMouseEnter={(e) => {
-        e.currentTarget.style.background = "#e2e8f0";
-        e.currentTarget.style.color = "#0f172a";
-      }}
-      onMouseLeave={(e) => {
-        e.currentTarget.style.background = "#f1f5f9";
-        e.currentTarget.style.color = "#475569";
       }}
     >
       <CrmSyncIcon size={iconSize} />

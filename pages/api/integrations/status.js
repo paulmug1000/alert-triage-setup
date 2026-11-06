@@ -385,21 +385,24 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "Missing clientKey, clientName, or masterSheetId parameter." });
   }
 
-  if (clientKey && clientName && !matchesClientName(clientKey, clientName)) {
-    return res.status(403).json({ error: "Forbidden: Mismatched clientKey and clientName." });
+  const isAdvisorKey = ["advisor", "advisor account", "central advisor", "central advisor account"].includes(String(clientKey || "").trim().toLowerCase());
+  const isAdvisorName = ["advisor", "advisor account", "central advisor", "central advisor account"].includes(String(clientName || "").trim().toLowerCase());
+  const isAdvisorLookup = isAdvisorKey || isAdvisorName;
+
+  if (clientKey && clientName) {
+    const isAdvisorMatch = isAdvisorKey && isAdvisorName;
+    if (!isAdvisorMatch && !matchesClientName(clientKey, clientName)) {
+      return res.status(403).json({ error: "Forbidden: Mismatched clientKey and clientName." });
+    }
   }
 
-  let targetClient = clientName || clientKey;
+  let targetClient = isAdvisorLookup ? "advisor" : (clientName || clientKey);
   if (!targetClient && masterSheetId) {
     try {
       const sheets = await getSheetsClient();
       targetClient = await resolveClientNameBySheetId(sheets, masterSheetId);
     } catch (_) { }
   }
-
-  const isAdvisorLookup =
-    String(clientKey || "").trim().toLowerCase() === "advisor" ||
-    String(clientName || "").trim().toLowerCase() === "advisor";
 
   if (!sessionUser.isAdmin) {
     if (isAdvisorLookup) {

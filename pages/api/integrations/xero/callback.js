@@ -105,8 +105,16 @@ export default async function handler(req, res) {
     const clientName = statePayload.clientName || clientKey;
     let masterSheetId = statePayload.masterSheetId;
 
+    // CRITICAL: The Central Advisor Shared Grant should ONLY ever be updated when the connection
+    // was initiated explicitly for the central advisor account (clientKey === "advisor" or mode === "advisor" with no specific client).
+    // Any per-client connection MUST ALWAYS be stored as an isolated dedicated connection to prevent corrupting practice tokens.
+    const isAdvisorKey = ["advisor", "advisor account", "central advisor", "central advisor account"].includes(String(statePayload?.clientKey || "").trim().toLowerCase());
+    const isAdvisorName = ["advisor", "advisor account", "central advisor", "central advisor account"].includes(String(statePayload?.clientName || "").trim().toLowerCase());
+    const isAdvisorConnection = (isAdvisorKey || isAdvisorName) && statePayload?.mode === "advisor";
+    const isDedicated = !isAdvisorConnection;
+
     // Fallback: If masterSheetId wasn't passed in statePayload, resolve it from AutoUpdates
-    if (!masterSheetId && clientName) {
+    if (!masterSheetId && clientName && !isAdvisorConnection) {
       try {
         const sheets = await getSheetsClient();
         const resp = await sheets.spreadsheets.values.get({
@@ -123,12 +131,6 @@ export default async function handler(req, res) {
         console.warn("⚠️ Xero Callback: Note resolving masterSheetId:", lookupErr.message);
       }
     }
-
-    // CRITICAL: The Central Advisor Shared Grant should ONLY ever be updated when the connection
-    // was initiated explicitly for the central advisor account (clientKey === "advisor" or mode === "advisor" with no specific client).
-    // Any per-client connection MUST ALWAYS be stored as an isolated dedicated connection to prevent corrupting practice tokens.
-    const isAdvisorConnection = (statePayload.clientKey === "advisor" || statePayload.clientName === "Advisor Account") && statePayload.mode === "advisor";
-    const isDedicated = !isAdvisorConnection;
 
     // Smart Tenant Selection for the initiating client:
     let matchedTenant = matchTenantToClient(clientName, tenants);
@@ -179,15 +181,17 @@ export default async function handler(req, res) {
         connectedBy: clientName
       });
 
-      // Link the initiating client
-      await linkClientToSharedXero({
-        clientKey,
-        clientName,
-        masterSheetId,
-        tenantId,
-        tenantName,
-        availableTenants: tenants
-      });
+      // Link the initiating client if this connection was initiated for a specific client
+      if (!isAdvisorKey && !isAdvisorName) {
+        await linkClientToSharedXero({
+          clientKey,
+          clientName,
+          masterSheetId,
+          tenantId,
+          tenantName,
+          availableTenants: tenants
+        });
+      }
 
       // Auto-link ALL other ecosystem clients matching the authorized Xero organisations
       try {

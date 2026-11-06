@@ -37,14 +37,18 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "Missing required clientKey, clientName, or masterSheetId parameter." });
   }
 
-  if (clientKey && clientName && !matchesClientName(clientKey, clientName)) {
-    return res.status(403).json({ error: "Access denied: Mismatched clientKey and clientName." });
+  const isAdvisorKey = ["advisor", "advisor account", "central advisor", "central advisor account"].includes(String(clientKey || "").trim().toLowerCase());
+  const isAdvisorName = ["advisor", "advisor account", "central advisor", "central advisor account"].includes(String(clientName || "").trim().toLowerCase());
+  const isAdvisorTarget = isAdvisorKey || isAdvisorName;
+
+  if (clientKey && clientName) {
+    const isAdvisorMatch = isAdvisorKey && isAdvisorName;
+    if (!isAdvisorMatch && !matchesClientName(clientKey, clientName)) {
+      return res.status(403).json({ error: "Access denied: Mismatched clientKey and clientName." });
+    }
   }
 
-  const targetClient = clientName || clientKey;
-  const isAdvisorTarget =
-    String(clientKey || "").trim().toLowerCase() === "advisor" ||
-    String(clientName || "").trim().toLowerCase() === "advisor";
+  const targetClient = isAdvisorTarget ? "advisor" : (clientName || clientKey);
 
   if (isAdvisorTarget && !sessionUser.isAdmin) {
     return res.status(403).json({ error: "Admin access required to disconnect advisor integration." });

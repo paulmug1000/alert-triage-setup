@@ -35,14 +35,18 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "Missing required clientKey, clientName, or masterSheetId parameter." });
   }
 
-  if (clientKey && clientName && !matchesClientName(clientKey, clientName)) {
-    return res.status(403).json({ error: "Access denied: Mismatched clientKey and clientName." });
+  const isAdvisorKey = ["advisor", "advisor account", "central advisor", "central advisor account"].includes(String(clientKey || "").trim().toLowerCase());
+  const isAdvisorName = ["advisor", "advisor account", "central advisor", "central advisor account"].includes(String(clientName || "").trim().toLowerCase());
+  const isAdvisorTarget = isAdvisorKey || isAdvisorName || (mode === "advisor" && (!clientKey || isAdvisorKey));
+
+  if (clientKey && clientName) {
+    const isAdvisorMatch = isAdvisorKey && isAdvisorName;
+    if (!isAdvisorMatch && !matchesClientName(clientKey, clientName)) {
+      return res.status(403).json({ error: "Access denied: Mismatched clientKey and clientName." });
+    }
   }
 
-  const targetName = clientName || clientKey;
-  const isAdvisorTarget =
-    String(clientKey || "").trim().toLowerCase() === "advisor" ||
-    String(clientName || "").trim().toLowerCase() === "advisor";
+  const targetName = isAdvisorTarget ? "advisor" : (clientName || clientKey);
 
   if (!sessionUser.isAdmin) {
     if (isAdvisorTarget) {
@@ -57,7 +61,7 @@ export default async function handler(req, res) {
   }
   if (!sessionUser.isAdmin && (masterSheetId || clientSheetId)) {
     const sheets = await getSheetsClient();
-    const claimName = targetName && targetName !== "advisor" ? targetName : "";
+    const claimName = targetName && !isAdvisorTarget ? targetName : "";
     if (masterSheetId) {
       const sheetAuth = await verifyUserAuthorizedForSheet(sheets, sessionUser, masterSheetId, claimName);
       if (!sheetAuth.authorized) return res.status(403).json({ error: "Access denied to this client." });
@@ -71,10 +75,10 @@ export default async function handler(req, res) {
   // Determine connection mode:
   // - "advisor": powers Central Advisor Shared Grant (accumulates orgs)
   // - "dedicated": isolated per-client dedicated grant (e.g. client self-service in setup)
-  const isExplicitAdvisor = mode === "advisor" || clientKey === "advisor";
+  const isExplicitAdvisor = mode === "advisor" || clientKey === "advisor" || isAdvisorTarget;
   const isClientPortal = !mode && (redirectBack?.startsWith("/pulse") || redirectBack?.startsWith("/portal"));
   const effectiveMode = isExplicitAdvisor ? "advisor" : (isClientPortal ? "dedicated" : (mode || "advisor"));
-  if ((effectiveMode === "advisor" || targetName === "advisor") && !sessionUser.isAdmin) {
+  if ((effectiveMode === "advisor" || isAdvisorTarget) && !sessionUser.isAdmin) {
     return res.status(403).json({ error: "Only administrators can connect or modify the central Xero advisor grant." });
   }
   const sanitizedRedirectBack = sanitizeRedirectUrl(redirectBack, isClientPortal ? "/pulse" : "/pma");
@@ -82,9 +86,8 @@ export default async function handler(req, res) {
   try {
     let resolvedMasterSheetId = masterSheetId || "";
     let resolvedClientSheetId = clientSheetId || "";
-    const targetName = clientName || clientKey;
 
-    if ((!resolvedMasterSheetId || !resolvedClientSheetId) && targetName && targetName !== "advisor") {
+    if ((!resolvedMasterSheetId || !resolvedClientSheetId) && targetName && !isAdvisorTarget) {
       try {
         const sheets = await getSheetsClient();
         const resp = await sheets.spreadsheets.values.get({
@@ -122,8 +125,8 @@ export default async function handler(req, res) {
     // State payload carrying client identification and return path
     const statePayload = {
       nonce,
-      clientKey: clientKey || clientName,
-      clientName: clientName || clientKey,
+      clientKey: isAdvisorTarget ? "advisor" : (clientKey || clientName),
+      clientName: isAdvisorTarget ? "Advisor Account" : (clientName || clientKey),
       masterSheetId: resolvedMasterSheetId,
       clientSheetId: resolvedClientSheetId,
       redirectBack: sanitizedRedirectBack,

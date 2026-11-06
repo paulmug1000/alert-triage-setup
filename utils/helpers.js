@@ -820,7 +820,10 @@ export function matchesClientName(assignedIdentifier, actualClientName) {
   const sa = String(assignedIdentifier).trim().toLowerCase();
   const sb = String(actualClientName).trim().toLowerCase();
   if (sa === "*") return true;
-  return sa === sb;
+  if (sa === sb) return true;
+  const advisorAliases = ["advisor", "advisor account", "advisor_account", "central advisor", "central advisor account"];
+  if (advisorAliases.includes(sa) && advisorAliases.includes(sb)) return true;
+  return false;
 }
 
 /**

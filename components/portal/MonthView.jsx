@@ -1837,20 +1837,26 @@ function computeGlanceMetrics({
 
         let gpMargin = 0;
         if (typeof gpMargRow?.monthlyMath?.[m] === "number") {
-          gpMargin = gpMargRow.monthlyMath[m] > 1 ? gpMargRow.monthlyMath[m] / 100 : gpMargRow.monthlyMath[m];
+          gpMargin =
+            String(gpMargRow?.monthlyValues?.[m] || "").includes("%") || Math.abs(gpMargRow.monthlyMath[m]) > 1
+              ? gpMargRow.monthlyMath[m] / 100
+              : gpMargRow.monthlyMath[m];
         } else if (gpMargRow?.monthlyValues?.[m]) {
           const p = parseNum(gpMargRow.monthlyValues[m]);
-          gpMargin = p > 1 || String(gpMargRow.monthlyValues[m]).includes("%") ? p / 100 : p;
+          gpMargin = String(gpMargRow.monthlyValues[m]).includes("%") || Math.abs(p) > 1 ? p / 100 : p;
         } else if (rev) {
           gpMargin = gp / rev;
         }
 
         let opMargin = 0;
         if (typeof opMargRow?.monthlyMath?.[m] === "number") {
-          opMargin = opMargRow.monthlyMath[m] > 1 ? opMargRow.monthlyMath[m] / 100 : opMargRow.monthlyMath[m];
+          opMargin =
+            String(opMargRow?.monthlyValues?.[m] || "").includes("%") || Math.abs(opMargRow.monthlyMath[m]) > 1
+              ? opMargRow.monthlyMath[m] / 100
+              : opMargRow.monthlyMath[m];
         } else if (opMargRow?.monthlyValues?.[m]) {
           const p = parseNum(opMargRow.monthlyValues[m]);
-          opMargin = p > 1 || String(opMargRow.monthlyValues[m]).includes("%") ? p / 100 : p;
+          opMargin = String(opMargRow.monthlyValues[m]).includes("%") || Math.abs(p) > 1 ? p / 100 : p;
         } else if (rev) {
           opMargin = op / rev;
         }

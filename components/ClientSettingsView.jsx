@@ -842,6 +842,7 @@ export default function ClientSettingsView({
   initialClientName = "",
   initialSection = "main",
   initialSubsection = "",
+  onClearSubsection,
   onSelectClient,
   onSelectSection,
   user,
@@ -1010,6 +1011,7 @@ export default function ClientSettingsView({
         setPlMsg("");
         setPlError("");
         setLastSyncedAt(null);
+        loadedClientRef.current = null;
         setSelectedClientName(nextClient);
         onSelectClient?.(nextClient);
       });
@@ -1033,6 +1035,7 @@ export default function ClientSettingsView({
     setPlMsg("");
     setPlError("");
     setLastSyncedAt(null);
+    loadedClientRef.current = null;
     setSelectedClientName(nextClient);
     onSelectClient?.(nextClient);
   }, [isDirty, selectedClientName, onSelectClient]);
@@ -1046,6 +1049,7 @@ export default function ClientSettingsView({
       setSaveSuccessMsg("");
       setErrorMsg("");
       setLastSyncedAt(null);
+      loadedClientRef.current = null;
       setSelectedClientName(managedClient.clientName);
     } else if (initialClientName !== prevInitialClientNameRef.current) {
       prevInitialClientNameRef.current = initialClientName;
@@ -1055,6 +1059,7 @@ export default function ClientSettingsView({
         setSaveSuccessMsg("");
         setErrorMsg("");
         setLastSyncedAt(null);
+        loadedClientRef.current = null;
         setSelectedClientName(initialClientName);
       }
     }
@@ -1070,6 +1075,10 @@ export default function ClientSettingsView({
     }
   }, [initialSection, activeSection]);
 
+  // Track whether we've already scrolled to the requested subsection
+  const scrolledSubsectionRef = useRef("");
+  const isSettingsLoaded = Boolean(settings);
+
   // Auto-scroll to requested subsection (e.g. #settings-integration-tools)
   useEffect(() => {
     let targetSub = initialSubsection;
@@ -1077,7 +1086,13 @@ export default function ClientSettingsView({
       const p = new URLSearchParams(window.location.search);
       targetSub = p.get("subsection") || "";
     }
-    if (targetSub === "integration-tools" && settings && activeSection === "main") {
+    if (
+      targetSub === "integration-tools" &&
+      isSettingsLoaded &&
+      activeSection === "main" &&
+      scrolledSubsectionRef.current !== targetSub
+    ) {
+      scrolledSubsectionRef.current = targetSub;
       const timer = setTimeout(() => {
         const el = document.getElementById("settings-integration-tools");
         if (el) {
@@ -1087,14 +1102,32 @@ export default function ClientSettingsView({
           el.style.borderRadius = "8px";
           el.style.padding = "16px";
           setTimeout(() => {
-            el.style.backgroundColor = "transparent";
-            el.style.padding = "20px 0 0 0";
+            if (el) {
+              el.style.backgroundColor = "transparent";
+              el.style.padding = "20px 0 0 0";
+            }
           }, 2400);
+        }
+
+        // Clean up subsection from URL and parent state so it doesn't remain sticky
+        onClearSubsection?.();
+        if (typeof window !== "undefined") {
+          const url = new URL(window.location.href);
+          if (url.searchParams.has("subsection")) {
+            url.searchParams.delete("subsection");
+            window.history.replaceState(window.history.state, "", url.pathname + url.search);
+          }
         }
       }, 200);
       return () => clearTimeout(timer);
     }
-  }, [initialSubsection, settings, activeSection]);
+  }, [initialSubsection, isSettingsLoaded, activeSection, onClearSubsection]);
+
+  useEffect(() => {
+    if (!initialSubsection) {
+      scrolledSubsectionRef.current = "";
+    }
+  }, [initialSubsection]);
 
   // Register navigation guard with parent views (e.g. NavShell tabs, PMA System settings tab)
   useEffect(() => {
@@ -1142,16 +1175,24 @@ export default function ClientSettingsView({
     return () => router.events.off("routeChangeStart", handleRouteChange);
   }, [isDirty, selectedClientName, router]);
 
+  const activeClientObjRef = useRef(activeClientObj);
+  useEffect(() => {
+    activeClientObjRef.current = activeClientObj;
+  }, [activeClientObj]);
+
+  const loadedClientRef = useRef(null);
+
   // Fetch settings from API
   const fetchSettings = useCallback(async (bypassCache = false) => {
-    if (!activeClientObj?.clientName || !activeClientObj?.masterSheetId) {
+    const client = activeClientObjRef.current;
+    if (!client?.clientName || !client?.masterSheetId) {
       setSettings(null);
       return;
     }
 
     setSettings(prev => {
       // Clear settings immediately if switching to a different client
-      if (prev && prev.clientName !== activeClientObj.clientName) {
+      if (prev && prev.clientName !== client.clientName) {
         return null;
       }
       return prev;
@@ -1163,9 +1204,9 @@ export default function ClientSettingsView({
 
     try {
       const q = new URLSearchParams({
-        clientName: activeClientObj.clientName,
-        masterSheetId: activeClientObj.masterSheetId,
-        clientSheetId: activeClientObj.clientSheetId || "",
+        clientName: client.clientName,
+        masterSheetId: client.masterSheetId,
+        clientSheetId: client.clientSheetId || "",
         bypassCache: bypassCache ? "true" : "false"
       });
 
@@ -1186,17 +1227,27 @@ export default function ClientSettingsView({
     } finally {
       setLoading(false);
     }
-  }, [activeClientObj]);
+  }, []);
 
-  // Initial load on client change - only load when client is actively selected
+  // Initial load on client change - only load when client is actively selected and not yet loaded
   useEffect(() => {
-    if (selectedClientName) {
-      fetchSettings(false);
-    } else {
+    if (!selectedClientName) {
+      loadedClientRef.current = null;
       setSettings(null);
       setLoading(false);
+      return;
     }
-  }, [selectedClientName, fetchSettings]);
+
+    const client = activeClientObjRef.current;
+    if (!client?.masterSheetId) {
+      return; // Wait until client metadata with masterSheetId is ready
+    }
+
+    if (loadedClientRef.current !== selectedClientName) {
+      loadedClientRef.current = selectedClientName;
+      fetchSettings(false);
+    }
+  }, [selectedClientName, activeClientObj?.masterSheetId, fetchSettings]);
 
   // Dirty check
   const updateSettingsField = useCallback((updaterFn) => {
@@ -1237,7 +1288,6 @@ export default function ClientSettingsView({
         setIsDirty(false);
         setInitialSettingsSnapshot(JSON.stringify(settings));
         setLastSyncedAt(data.savedAt || new Date().toISOString());
-        onClientsChanged?.();
         setTimeout(() => setSaveSuccessMsg(""), 4000);
         return true;
       } else {

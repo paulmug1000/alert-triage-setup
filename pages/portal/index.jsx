@@ -158,10 +158,18 @@ export default function PortalPage({
       setLoadingPayload(true);
       setPayloadError(null);
     }
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
     try {
       const url = `/api/portal/payload?clientSheetId=${encodeURIComponent(client.clientSheetId)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? `&bypassCache=true&_t=${Date.now()}` : ""}`;
-      const res = await fetch(url);
-      const data = await res.json();
+      const res = await fetch(url, { signal: controller.signal });
+      let data = null;
+      try {
+        data = await res.json();
+      } catch (jsonErr) {
+        if (!res.ok) throw new Error(`Server returned error (${res.status})`);
+        throw jsonErr;
+      }
       if (client.clientSheetId !== activeClientSheetIdRef.current) return;
       if (data.success && data.payload) {
         setPayload(data.payload);
@@ -172,10 +180,11 @@ export default function PortalPage({
       if (client.clientSheetId !== activeClientSheetIdRef.current) return;
       console.error("Payload fetch error:", err);
       if (!isSilent) {
-        setPayloadError(err.message || "Failed to load dashboard data");
+        setPayloadError(err.name === "AbortError" ? "Request timed out" : (err.message || "Failed to load dashboard data"));
       }
     } finally {
-      if (client.clientSheetId === activeClientSheetIdRef.current && !isSilent) {
+      clearTimeout(timeoutId);
+      if (!isSilent) {
         setLoadingPayload(false);
       }
     }
@@ -228,10 +237,18 @@ export default function PortalPage({
       setLoadingPerformance(true);
       setPerfError(null);
     }
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
     try {
       const url = `/api/portal/performance?clientSheetId=${encodeURIComponent(client.clientSheetId)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? `&bypassCache=true&_t=${Date.now()}` : ""}`;
-      const res = await fetch(url);
-      const data = await res.json();
+      const res = await fetch(url, { signal: controller.signal });
+      let data = null;
+      try {
+        data = await res.json();
+      } catch (jsonErr) {
+        if (!res.ok) throw new Error(`Server returned error (${res.status})`);
+        throw jsonErr;
+      }
       if (client.clientSheetId !== activeClientSheetIdRef.current) return;
       if (data.success && data.data) {
         setPerformanceData({ ...data.data, clientSheetId: client.clientSheetId });
@@ -242,10 +259,11 @@ export default function PortalPage({
       if (client.clientSheetId !== activeClientSheetIdRef.current) return;
       console.error("Performance fetch error:", err);
       if (!isSilent) {
-        setPerfError(err.message || "Failed to load performance data");
+        setPerfError(err.name === "AbortError" ? "Request timed out" : (err.message || "Failed to load performance data"));
       }
     } finally {
-      if (client.clientSheetId === activeClientSheetIdRef.current && !isSilent) {
+      clearTimeout(timeoutId);
+      if (!isSilent) {
         setLoadingPerformance(false);
       }
     }
@@ -267,10 +285,18 @@ export default function PortalPage({
       setLoadingCashflow(true);
       setCashError(null);
     }
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
     try {
       const url = `/api/portal/cash?clientSheetId=${encodeURIComponent(client.clientSheetId)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? `&bypassCache=true&_t=${Date.now()}` : ""}`;
-      const res = await fetch(url);
-      const data = await res.json();
+      const res = await fetch(url, { signal: controller.signal });
+      let data = null;
+      try {
+        data = await res.json();
+      } catch (jsonErr) {
+        if (!res.ok) throw new Error(`Server returned error (${res.status})`);
+        throw jsonErr;
+      }
       if (client.clientSheetId !== activeClientSheetIdRef.current) return;
       if (data.success && data.data) {
         setCashflowData(data.data);
@@ -281,10 +307,11 @@ export default function PortalPage({
       if (client.clientSheetId !== activeClientSheetIdRef.current) return;
       console.error("Cashflow fetch error:", err);
       if (!isSilent) {
-        setCashError(err.message || "Failed to load cashflow data");
+        setCashError(err.name === "AbortError" ? "Request timed out" : (err.message || "Failed to load cashflow data"));
       }
     } finally {
-      if (client.clientSheetId === activeClientSheetIdRef.current && !isSilent) {
+      clearTimeout(timeoutId);
+      if (!isSilent) {
         setLoadingCashflow(false);
       }
     }
@@ -306,10 +333,18 @@ export default function PortalPage({
       setLoadingKeyData(true);
       setKeyDataError(null);
     }
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 20000);
     try {
       const url = `/api/portal/key-data?clientSheetId=${encodeURIComponent(client.clientSheetId)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? `&bypassCache=true&_t=${Date.now()}` : ""}`;
-      const res = await fetch(url);
-      const data = await res.json();
+      const res = await fetch(url, { signal: controller.signal });
+      let data = null;
+      try {
+        data = await res.json();
+      } catch (jsonErr) {
+        if (!res.ok) throw new Error(`Server returned error (${res.status})`);
+        throw jsonErr;
+      }
       if (client.clientSheetId !== activeClientSheetIdRef.current) return;
       if (data.success && data.data) {
         setKeyData(data.data);
@@ -320,10 +355,11 @@ export default function PortalPage({
       if (client.clientSheetId !== activeClientSheetIdRef.current) return;
       console.error("Key data fetch error:", err);
       if (!isSilent) {
-        setKeyDataError(err.message || "Failed to load key data");
+        setKeyDataError(err.name === "AbortError" ? "Request timed out" : (err.message || "Failed to load key data"));
       }
     } finally {
-      if (client.clientSheetId === activeClientSheetIdRef.current && !isSilent) {
+      clearTimeout(timeoutId);
+      if (!isSilent) {
         setLoadingKeyData(false);
       }
     }
@@ -345,22 +381,18 @@ export default function PortalPage({
     if (selectedClient) {
       fetchPayload(selectedClient, true);
       fetchPerformance(selectedClient, true);
-      fetchCashflow(selectedClient, true);
-      fetchKeyData(selectedClient, true);
     }
   };
 
   const handleRefreshPerformance = () => {
     if (selectedClient) {
       fetchPerformance(selectedClient, true);
-      fetchKeyData(selectedClient, true);
     }
   };
 
   const handleRefreshCashflow = () => {
     if (selectedClient) {
       fetchCashflow(selectedClient, true);
-      fetchKeyData(selectedClient, true);
     }
   };
 
@@ -377,10 +409,18 @@ export default function PortalPage({
       setLoadingBudget(true);
       setBudgetError(null);
     }
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
     try {
       const url = `/api/portal/budget?clientSheetId=${encodeURIComponent(client.clientSheetId)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? `&bypassCache=true&_t=${Date.now()}` : ""}`;
-      const res = await fetch(url);
-      const data = await res.json();
+      const res = await fetch(url, { signal: controller.signal });
+      let data = null;
+      try {
+        data = await res.json();
+      } catch (jsonErr) {
+        if (!res.ok) throw new Error(`Server returned error (${res.status})`);
+        throw jsonErr;
+      }
       if (client.clientSheetId !== activeClientSheetIdRef.current) return;
       if (data.success && data.data) {
         setBudgetData(data.data);
@@ -391,10 +431,11 @@ export default function PortalPage({
       if (client.clientSheetId !== activeClientSheetIdRef.current) return;
       console.error("Budget fetch error:", err);
       if (!isSilent) {
-        setBudgetError(err.message || "Failed to load budget data");
+        setBudgetError(err.name === "AbortError" ? "Request timed out" : (err.message || "Failed to load budget data"));
       }
     } finally {
-      if (client.clientSheetId === activeClientSheetIdRef.current && !isSilent) {
+      clearTimeout(timeoutId);
+      if (!isSilent) {
         setLoadingBudget(false);
       }
     }
@@ -478,16 +519,16 @@ export default function PortalPage({
 
     const intervalId = setInterval(() => {
       // Silently refresh current payload and active view data in background with bypassCache=true
-      // so latest numbers from sheets/integrations are kept up to date
+      // scoped strictly to the active view to avoid quota exhaustion
       fetchPayload(selectedClient, true, true);
 
-      if (["month", "dashboard", "ytd", "perfBreakdown", "scenarios"].includes(activeView)) {
+      if (["dashboard", "ytd", "perfBreakdown", "scenarios"].includes(activeView)) {
         fetchPerformance(selectedClient, true, true);
       }
       if (["cash", "cashBreakdown"].includes(activeView)) {
         fetchCashflow(selectedClient, true, true);
       }
-      if (["month", "dashboard", "ytd", "cash", "jobs", "contractors", "expenses", "salaries", "dividends", "nbtofind", "cashBreakdown", "scenarios", "perfBreakdown"].includes(activeView)) {
+      if (["jobs", "contractors", "expenses", "salaries", "dividends", "nbtofind", "cashBreakdown", "scenarios", "perfBreakdown"].includes(activeView)) {
         fetchKeyData(selectedClient, true, true);
       }
       if (["viewBudget", "budgetVariance"].includes(activeView)) {
@@ -1379,7 +1420,7 @@ export async function getServerSideProps(context) {
           };
         }
       }
-    } catch (_) {}
+    } catch (_) { }
   }
 
   return {

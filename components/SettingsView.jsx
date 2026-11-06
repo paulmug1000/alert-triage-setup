@@ -20,6 +20,7 @@ export default function SettingsView({
   initialClientName = "",
   initialSection = "",
   initialSubsection = "",
+  onClearSubsection,
   onSelectClient,
   onSelectSection,
   onRegisterNavGuard,
@@ -321,6 +322,7 @@ export default function SettingsView({
           initialClientName={managedClient?.clientName || initialClientName}
           initialSection={initialSection}
           initialSubsection={initialSubsection}
+          onClearSubsection={onClearSubsection}
           onSelectClient={onSelectClient}
           onSelectSection={onSelectSection}
           user={user}

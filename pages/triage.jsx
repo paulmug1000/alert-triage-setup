@@ -198,6 +198,8 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
     }
     if (query.subsection && typeof query.subsection === "string") {
       setSettingsSubsection(query.subsection);
+    } else if (asPath && !asPath.includes("subsection=")) {
+      setSettingsSubsection("");
     }
   }, [router?.isReady, router?.asPath]);
   const [invoicesInitialClient, setInvoicesInitialClient] = useState(null);
@@ -812,16 +814,17 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
     }
     if (typeof section === "string" && section.trim()) {
       setSettingsSection(section.trim());
+    } else {
+      setSettingsSection("main");
     }
-    if (typeof subsection === "string") {
-      setSettingsSubsection(subsection.trim());
-    }
+    setSettingsSubsection(typeof subsection === "string" ? subsection.trim() : "");
     setActiveNav("settings");
     loadClients();
   });
-  const handleNavIntegrations = () => navigateWithGuard(() => { fireOutgoingsPullIfPending(); setActiveNav("integrations"); loadClients(); });
+  const handleNavIntegrations = () => navigateWithGuard(() => { fireOutgoingsPullIfPending(); setSettingsSubsection(""); setActiveNav("integrations"); loadClients(true); });
   const handleNavSetup = (clientName = "") => navigateWithGuard(() => {
     fireOutgoingsPullIfPending();
+    setSettingsSubsection("");
     if (typeof clientName === "string" && clientName.trim()) {
       setSetupClientName(clientName.trim());
     } else if (managedClient?.clientName) {
@@ -901,7 +904,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
           const sectionParam = p.get("section");
           if (sectionParam) setSettingsSection(sectionParam);
           const subParam = p.get("subsection");
-          if (subParam) setSettingsSubsection(subParam);
+          setSettingsSubsection(subParam || "");
         }
       } else if (typeof window !== "undefined") {
         const path = window.location.pathname.toLowerCase();
@@ -1416,7 +1419,11 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
           initialClientName={managedClient ? managedClient.clientName : settingsClientName}
           initialSection={settingsSection}
           initialSubsection={settingsSubsection}
-          onSelectClient={(cName) => setSettingsClientName(cName || "")}
+          onClearSubsection={() => setSettingsSubsection("")}
+          onSelectClient={(cName) => {
+            setSettingsClientName(cName || "");
+            setSettingsSubsection("");
+          }}
           onSelectSection={(sec) => {
             setSettingsSection(sec || "main");
             setSettingsSubsection("");

@@ -238,7 +238,7 @@ export async function readAlertMemory(sheets, automationCommanderSheetId) {
     lastSeen: row[8] || "",
     lastRechecked: row[9] || "",
     dataSnapshot: row[10] || "",
-    category: row[11] || "discrepancy",
+    category: normalizeCategoryForType(row[1] || "", row[11] || "discrepancy"),
   }));
 
   try {
@@ -865,7 +865,7 @@ export async function compactAlertMemory(sheets, automationCommanderSheetId, opt
     lastSeen: row[8] || "",
     lastRechecked: row[9] || "",
     dataSnapshot: row[10] || "",
-    category: row[11] || "discrepancy",
+    category: normalizeCategoryForType(row[1] || "", row[11] || "discrepancy"),
   }));
 
   const now = Date.now();
@@ -1005,7 +1005,7 @@ export async function compactAlertMemory(sheets, automationCommanderSheetId, opt
     r.lastSeen || "",
     r.lastRechecked || "",
     r.dataSnapshot || "",
-    r.category || "discrepancy",
+    normalizeCategoryForType(r.alertType || "", r.category || "discrepancy"),
   ]);
 
   const targetRange = `${ALERT_MEMORY_TAB}!A2:L${kept.length + 1}`;

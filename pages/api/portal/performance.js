@@ -1,11 +1,11 @@
 import { getSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
 import { verifyUserAuthorizedForSheet } from "../../../services/userPermissions.js";
-import { redisClient } from "../../../services/redisClient.js";
-import { memoryCache } from "../../../services/cacheService.js";
+import { resolvePortalCache } from "../../../services/cacheService.js";
 import { formatCurrencyString, parseMoney } from "../../../services/deepDiveHelper.js";
 
-const PERF_CACHE_TTL_SECS = 60; // 60 seconds cache
+const PERF_CACHE_TTL_SECS = 60; // 60s L1 fresh window
+const PERF_REDIS_TTL_SECS = 900; // 15m Redis SWR retention
 
 // Fast month string parser (e.g. "Apr 26" -> Date)
 function parseMonthYear(str) {
@@ -37,6 +37,7 @@ export default async function handler(req, res) {
   const clientSheetId = String(req.query.clientSheetId || req.body?.clientSheetId || "").trim();
   const clientName = String(req.query.clientName || req.body?.clientName || "").trim();
   const bypassCache = req.query.bypassCache === "true" || req.body?.bypassCache === true;
+  const isAutoRefresh = req.query.autoRefresh === "true" || req.body?.autoRefresh === true;
 
   if (!clientSheetId) {
     return res.status(400).json({ success: false, error: "clientSheetId is required" });
@@ -54,47 +55,16 @@ export default async function handler(req, res) {
 
   const cacheKey = `pulse:portal:performance:${clientSheetId}`;
 
-  // Purge existing cache on explicit refresh
-  if (bypassCache) {
-    memoryCache.del(cacheKey);
-    redisClient.del(cacheKey).catch(() => {});
-  }
-
-  // 1. Check L1 Memory Cache
-  if (!bypassCache) {
-    const memCached = memoryCache.get(cacheKey);
-    if (memCached) {
-      return res.status(200).json({
-        success: true,
-        fromCache: true,
-        fromMemory: true,
-        data: memCached,
-        cachedAt: memCached._cachedAt || null,
-      });
-    }
-
-    // 2. Check Redis cache
-    try {
-      const cached = await redisClient.get(cacheKey);
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        memoryCache.set(cacheKey, parsed, PERF_CACHE_TTL_SECS);
-        return res.status(200).json({
-          success: true,
-          fromCache: true,
-          fromRedis: true,
-          data: parsed,
-          cachedAt: parsed._cachedAt || null,
-        });
-      }
-    } catch (cacheErr) {
-      console.warn("⚠️ Performance Redis read warning:", cacheErr.message);
-    }
-  }
-
-  // 2. Fetch fresh data from Google Sheets API
   try {
-    const formattedResp = await withRetry(() =>
+    const result = await resolvePortalCache({
+      cacheKey,
+      bypassCache,
+      isAutoRefresh,
+      isReadOnly: Boolean(sessionUser.isReadOnly),
+      l1TtlSecs: PERF_CACHE_TTL_SECS,
+      redisTtlSecs: PERF_REDIS_TTL_SECS,
+      fetchFreshFn: async () => {
+        const formattedResp = await withRetry(() =>
       sheets.spreadsheets.values.batchGet({
         spreadsheetId: clientSheetId,
         ranges: [
@@ -275,16 +245,18 @@ export default async function handler(req, res) {
       years,
     };
 
-    // Cache in L1 memory and Redis
-    memoryCache.set(cacheKey, performanceData, PERF_CACHE_TTL_SECS);
-    redisClient
-      .set(cacheKey, JSON.stringify(performanceData), { EX: PERF_CACHE_TTL_SECS })
-      .catch((err) => console.warn("⚠️ Failed to write performance data to Redis:", err.message));
+    return performanceData;
+  },
+});
 
     return res.status(200).json({
       success: true,
-      fromCache: false,
-      data: performanceData,
+      fromCache: result.fromCache,
+      fromMemory: result.fromMemory,
+      fromRedis: result.fromRedis,
+      staleRevalidating: result.staleRevalidating,
+      data: result.data,
+      cachedAt: result.cachedAt,
     });
   } catch (err) {
     console.error("❌ /api/portal/performance error:", err);

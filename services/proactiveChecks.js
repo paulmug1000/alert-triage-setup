@@ -3085,10 +3085,10 @@ export async function handleUpdatePartPaidDate(sheets, {
     }
 
     await logPmaActivity({
-      userEmail,
-  sessionId,
-  alertKey: providedAlertKey,
-  fingerprintHash: providedFp: userEmail || "system",
+      userEmail: userEmail || "system",
+      sessionId,
+      alertKey: providedAlertKey,
+      fingerprintHash: providedFp,
       action: "UPDATE_PART_PAID_INVOICE_DATE",
       clientName: clientName || "Unknown",
       details: `Updated part-paid invoice expected payment date to ${formattedNewDate} (${newDaysToPay} days to pay) on Confirmed row ${rowNumber} slot ${slot}.`
@@ -3185,10 +3185,10 @@ export async function handleUpdatePartPaidDate(sheets, {
     });
 
     await logPmaActivity({
-      userEmail,
-  sessionId,
-  alertKey: providedAlertKey,
-  fingerprintHash: providedFp: userEmail || "system",
+      userEmail: userEmail || "system",
+      sessionId,
+      alertKey: providedAlertKey,
+      fingerprintHash: providedFp,
       action: "UPDATE_PART_PAID_EXPENSE_DATE",
       clientName: clientName || "Unknown",
       details: `Updated part-paid expense expected payment date to ${formattedNewDate} on Outgoings cell ${cellCoord}.`

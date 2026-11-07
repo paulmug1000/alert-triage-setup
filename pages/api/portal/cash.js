@@ -1,10 +1,10 @@
 import { getSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
 import { verifyUserAuthorizedForSheet } from "../../../services/userPermissions.js";
-import { redisClient } from "../../../services/redisClient.js";
-import { memoryCache } from "../../../services/cacheService.js";
+import { resolvePortalCache } from "../../../services/cacheService.js";
 
-const CASH_CACHE_TTL_SECS = 60; // 60 seconds cache
+const CASH_CACHE_TTL_SECS = 60; // 60s L1 fresh window
+const CASH_REDIS_TTL_SECS = 900; // 15m Redis SWR retention
 
 // Fast month string parser (e.g. "Oct 26" -> Date)
 function parseMonthYear(str) {
@@ -36,6 +36,7 @@ export default async function handler(req, res) {
   const clientSheetId = String(req.query.clientSheetId || req.body?.clientSheetId || "").trim();
   const clientName = String(req.query.clientName || req.body?.clientName || "").trim();
   const bypassCache = req.query.bypassCache === "true" || req.body?.bypassCache === true;
+  const isAutoRefresh = req.query.autoRefresh === "true" || req.body?.autoRefresh === true;
 
   if (!clientSheetId) {
     return res.status(400).json({ success: false, error: "clientSheetId is required" });
@@ -84,66 +85,35 @@ export default async function handler(req, res) {
 
   const cacheKey = `pulse:portal:cash:${clientSheetId}`;
 
-  // Purge existing cache on explicit refresh
-  if (bypassCache) {
-    memoryCache.del(cacheKey);
-    redisClient.del(cacheKey).catch(() => {});
-  }
-
-  // 1. Try L1 Memory Cache
-  if (!bypassCache) {
-    const memCached = memoryCache.get(cacheKey);
-    if (memCached) {
-      return res.status(200).json({
-        success: true,
-        fromCache: true,
-        fromMemory: true,
-        data: sanitizeCashForUser(memCached),
-        cachedAt: memCached._cachedAt || null,
-      });
-    }
-
-    // 2. Try Redis cache
-    try {
-      const cached = await redisClient.get(cacheKey);
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        memoryCache.set(cacheKey, parsed, CASH_CACHE_TTL_SECS);
-        return res.status(200).json({
-          success: true,
-          fromCache: true,
-          fromRedis: true,
-          data: sanitizeCashForUser(parsed),
-          cachedAt: parsed._cachedAt || null,
-        });
-      }
-    } catch (cacheErr) {
-      console.warn("⚠️ Cash Redis read warning:", cacheErr.message);
-    }
-  }
-
-  // 2. Fetch fresh data from Google Sheets API
   try {
-    const resp = await withRetry(() =>
-      sheets.spreadsheets.get({
-        spreadsheetId: clientSheetId,
-        ranges: ["Cash!A1:AZ80", "AppData!G59", "KeyInfo!B10"],
-        fields: "sheets(properties.title,data.rowData.values(formattedValue,note))",
-      })
-    );
+    const result = await resolvePortalCache({
+      cacheKey,
+      bypassCache,
+      isAutoRefresh,
+      isReadOnly: Boolean(sessionUser.isReadOnly),
+      l1TtlSecs: CASH_CACHE_TTL_SECS,
+      redisTtlSecs: CASH_REDIS_TTL_SECS,
+      fetchFreshFn: async () => {
+        const resp = await withRetry(() =>
+          sheets.spreadsheets.get({
+            spreadsheetId: clientSheetId,
+            ranges: ["Cash!A1:AZ80", "AppData!G59", "KeyInfo!B10"],
+            fields: "sheets(properties.title,data.rowData.values(formattedValue,note))",
+          })
+        );
 
-    const cashSheet = resp.data?.sheets?.find((s) => s.properties?.title === "Cash");
-    const appDataSheet = resp.data?.sheets?.find((s) => s.properties?.title === "AppData");
-    const keyInfoSheet = resp.data?.sheets?.find((s) => s.properties?.title === "KeyInfo");
-    const rawRows = cashSheet?.data?.[0]?.rowData || [];
-    const g59Val = String(appDataSheet?.data?.[0]?.rowData?.[0]?.values?.[0]?.formattedValue || "").trim().toLowerCase();
-    const b10Val = String(keyInfoSheet?.data?.[0]?.rowData?.[0]?.values?.[0]?.formattedValue || "").trim().toLowerCase();
-    const showChart = g59Val === "yes";
-    const isTransfersMode = b10Val.includes("transfer");
+        const cashSheet = resp.data?.sheets?.find((s) => s.properties?.title === "Cash");
+        const appDataSheet = resp.data?.sheets?.find((s) => s.properties?.title === "AppData");
+        const keyInfoSheet = resp.data?.sheets?.find((s) => s.properties?.title === "KeyInfo");
+        const rawRows = cashSheet?.data?.[0]?.rowData || [];
+        const g59Val = String(appDataSheet?.data?.[0]?.rowData?.[0]?.values?.[0]?.formattedValue || "").trim().toLowerCase();
+        const b10Val = String(keyInfoSheet?.data?.[0]?.rowData?.[0]?.values?.[0]?.formattedValue || "").trim().toLowerCase();
+        const showChart = g59Val === "yes";
+        const isTransfersMode = b10Val.includes("transfer");
 
-    if (!rawRows.length) {
-      return res.status(404).json({ success: false, error: "Cash sheet is empty or not found" });
-    }
+        if (!rawRows.length) {
+          return { _skipCache: true, _notFound: true };
+        }
 
     const headerRow = rawRows[0]?.values || [];
     const monthCols = [];
@@ -242,16 +212,22 @@ export default async function handler(req, res) {
       isTransfersMode,
     };
 
-    // Cache in L1 memory and Redis
-    memoryCache.set(cacheKey, cashPayload, CASH_CACHE_TTL_SECS);
-    redisClient
-      .set(cacheKey, JSON.stringify(cashPayload), { EX: CASH_CACHE_TTL_SECS })
-      .catch((err) => console.warn("⚠️ Failed to write cash payload to Redis:", err.message));
+    return cashPayload;
+  },
+});
+
+    if (result.data?._notFound) {
+      return res.status(404).json({ success: false, error: "Cash sheet is empty or not found" });
+    }
 
     return res.status(200).json({
       success: true,
-      fromCache: false,
-      data: sanitizeCashForUser(cashPayload),
+      fromCache: result.fromCache,
+      fromMemory: result.fromMemory,
+      fromRedis: result.fromRedis,
+      staleRevalidating: result.staleRevalidating,
+      data: sanitizeCashForUser(result.data),
+      cachedAt: result.cachedAt,
     });
   } catch (err) {
     console.error("❌ /api/portal/cash error:", err);

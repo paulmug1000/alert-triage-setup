@@ -1,11 +1,11 @@
 import { getSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
 import { verifyUserAuthorizedForSheet } from "../../../services/userPermissions.js";
-import { redisClient } from "../../../services/redisClient.js";
-import { memoryCache } from "../../../services/cacheService.js";
+import { resolvePortalCache } from "../../../services/cacheService.js";
 import { formatCurrencyString } from "../../../services/deepDiveHelper.js";
 
-const PAYLOAD_CACHE_TTL_SECS = 60; // 60 seconds cache
+const PAYLOAD_CACHE_TTL_SECS = 60; // 60s L1 fresh window
+const PAYLOAD_REDIS_TTL_SECS = 900; // 15m Redis SWR retention
 
 export default async function handler(req, res) {
   if (req.method !== "GET" && req.method !== "POST") {
@@ -20,6 +20,7 @@ export default async function handler(req, res) {
   const clientSheetId = String(req.query.clientSheetId || req.body?.clientSheetId || "").trim();
   const clientName = String(req.query.clientName || req.body?.clientName || "").trim();
   const bypassCache = req.query.bypassCache === "true" || req.body?.bypassCache === true;
+  const isAutoRefresh = req.query.autoRefresh === "true" || req.body?.autoRefresh === true;
 
   if (!clientSheetId) {
     return res.status(400).json({ success: false, error: "clientSheetId is required" });
@@ -37,50 +38,18 @@ export default async function handler(req, res) {
 
   const cacheKey = `pulse:portal:payload:${clientSheetId}`;
 
-  // Purge existing cache on explicit refresh
-  if (bypassCache) {
-    memoryCache.del(cacheKey);
-    redisClient.del(cacheKey).catch(() => {});
-  }
-
-  // 1. Try L1 Memory Cache first (sub-millisecond)
-  if (!bypassCache) {
-    const memCached = memoryCache.get(cacheKey);
-    if (memCached && (memCached.hasBudget !== undefined || memCached.clientInfo?.hasBudget !== undefined)) {
-      return res.status(200).json({
-        success: true,
-        fromCache: true,
-        fromMemory: true,
-        payload: memCached,
-        cachedAt: memCached._cachedAt || null,
-      });
-    }
-
-    // 2. Try Redis cache (distributed L2)
-    try {
-      const cached = await redisClient.get(cacheKey);
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        if (parsed.hasBudget !== undefined || parsed.clientInfo?.hasBudget !== undefined) {
-          memoryCache.set(cacheKey, parsed, PAYLOAD_CACHE_TTL_SECS);
-          return res.status(200).json({
-            success: true,
-            fromCache: true,
-            fromRedis: true,
-            payload: parsed,
-            cachedAt: parsed._cachedAt || null,
-          });
-        }
-      }
-    } catch (cacheErr) {
-      console.warn("⚠️ Portal payload Redis read error:", cacheErr.message);
-    }
-  }
-
-  // 2. Fetch fresh data from Google Sheets API via Service Account
   try {
-    // Perform batch reads in parallel for maximum speed
-    const [formattedResp, unformattedChartResp] = await Promise.all([
+    const result = await resolvePortalCache({
+      cacheKey,
+      bypassCache,
+      isAutoRefresh,
+      isReadOnly: Boolean(sessionUser.isReadOnly),
+      l1TtlSecs: PAYLOAD_CACHE_TTL_SECS,
+      redisTtlSecs: PAYLOAD_REDIS_TTL_SECS,
+      isValidPayload: (p) => p && (p.hasBudget !== undefined || p.clientInfo?.hasBudget !== undefined),
+      fetchFreshFn: async () => {
+        // Perform batch reads in parallel for maximum speed
+        const [formattedResp, unformattedChartResp] = await Promise.all([
       withRetry(() =>
         sheets.spreadsheets.values.batchGet({
           spreadsheetId: clientSheetId,
@@ -302,17 +271,18 @@ export default async function handler(req, res) {
         next: { ...nextMonthData, thresholds },
       },
     };
-
-    // Cache in L1 memory and Redis
-    memoryCache.set(cacheKey, payload, PAYLOAD_CACHE_TTL_SECS);
-    redisClient
-      .set(cacheKey, JSON.stringify(payload), { EX: PAYLOAD_CACHE_TTL_SECS })
-      .catch((err) => console.warn("⚠️ Failed to write portal payload to Redis:", err.message));
+    return payload;
+  },
+});
 
     return res.status(200).json({
       success: true,
-      fromCache: false,
-      payload,
+      fromCache: result.fromCache,
+      fromMemory: result.fromMemory,
+      fromRedis: result.fromRedis,
+      staleRevalidating: result.staleRevalidating,
+      payload: result.data,
+      cachedAt: result.cachedAt,
     });
   } catch (err) {
     console.error("❌ /api/portal/payload error:", err);

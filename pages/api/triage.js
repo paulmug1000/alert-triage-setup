@@ -334,7 +334,20 @@ export default async function handler(req, res) {
       });
     }
 
-    const sheets = await getSheetsClient();
+    const BACKGROUND_POOL_ACTIONS = new Set([
+      "run_flag_sweep",
+      "build_cached_alert_options",
+      "store_precomputed",
+      "trigger_proactive_checks",
+      "cleanup_alert_memory",
+      "rehash_alert_memory",
+      "rehash_ignored_alerts",
+      "send_daily_alerts_summary",
+    ]);
+
+    const sheets = await getSheetsClient({
+      pool: BACKGROUND_POOL_ACTIONS.has(action) ? "background" : "interactive",
+    });
 
     console.log(`\n📍 API Request: method=${req.method}, action=${action}, bodyKeys=${Object.keys(req.body || {}).join(",")}, bodySize=${JSON.stringify(req.body || {}).length}`);
 

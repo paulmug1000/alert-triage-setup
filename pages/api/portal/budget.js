@@ -1,10 +1,10 @@
 import { getSessionUser } from "../../../services/authService.js";
-import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
+import { getSheetsClient, withRetry, getSheetTitles } from "../../../services/sheetsClient.js";
 import { verifyUserAuthorizedForSheet } from "../../../services/userPermissions.js";
-import { redisClient } from "../../../services/redisClient.js";
-import { memoryCache } from "../../../services/cacheService.js";
+import { resolvePortalCache } from "../../../services/cacheService.js";
 
-const BUDGET_CACHE_TTL_SECS = 60; // 60 seconds cache
+const BUDGET_CACHE_TTL_SECS = 60; // 60s L1 fresh window
+const BUDGET_REDIS_TTL_SECS = 900; // 15m Redis SWR retention
 
 function parseMonthYear(str) {
   if (!str) return null;
@@ -35,6 +35,7 @@ export default async function handler(req, res) {
   const clientSheetId = String(req.query.clientSheetId || req.body?.clientSheetId || "").trim();
   const clientName = String(req.query.clientName || req.body?.clientName || "").trim();
   const bypassCache = req.query.bypassCache === "true" || req.body?.bypassCache === true;
+  const isAutoRefresh = req.query.autoRefresh === "true" || req.body?.autoRefresh === true;
 
   if (!clientSheetId) {
     return res.status(400).json({ success: false, error: "clientSheetId is required" });
@@ -52,113 +53,62 @@ export default async function handler(req, res) {
 
   const cacheKey = `pulse:portal:budget:${clientSheetId}`;
 
-  // Purge existing cache on explicit refresh
-  if (bypassCache) {
-    memoryCache.del(cacheKey);
-    redisClient.del(cacheKey).catch(() => {});
-  }
-
-  // 1. Check L1 Memory Cache
-  if (!bypassCache) {
-    const memCached = memoryCache.get(cacheKey);
-    if (memCached) {
-      return res.status(200).json({
-        success: true,
-        fromCache: true,
-        fromMemory: true,
-        data: memCached,
-        cachedAt: memCached._cachedAt || null,
-      });
-    }
-
-    // 2. Check Redis cache
-    try {
-      const cached = await redisClient.get(cacheKey);
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        memoryCache.set(cacheKey, parsed, BUDGET_CACHE_TTL_SECS);
-        return res.status(200).json({
-          success: true,
-          fromCache: true,
-          fromRedis: true,
-          data: parsed,
-          cachedAt: parsed._cachedAt || null,
-        });
-      }
-    } catch (cacheErr) {
-      console.warn("⚠️ Budget Redis read warning:", cacheErr.message);
-    }
-  }
-
-  // 2. Fetch fresh data from Google Sheets API
   try {
-    // Check if Budget sheet exists
-    const metaResp = await withRetry(() =>
-      sheets.spreadsheets.get({
-        spreadsheetId: clientSheetId,
-        fields: "sheets.properties.title",
-      })
-    );
-    const existingTitles = new Set((metaResp.data?.sheets || []).map((s) => s.properties?.title));
+    const result = await resolvePortalCache({
+      cacheKey,
+      bypassCache,
+      isAutoRefresh,
+      isReadOnly: Boolean(sessionUser.isReadOnly),
+      l1TtlSecs: BUDGET_CACHE_TTL_SECS,
+      redisTtlSecs: BUDGET_REDIS_TTL_SECS,
+      fetchFreshFn: async () => {
+        // Check if Budget sheet exists using 15-minute cached tab metadata
+        const existingTitles = await getSheetTitles(sheets, clientSheetId);
 
-    if (!existingTitles.has("Budget")) {
-      return res.status(200).json({
-        success: true,
-        hasBudget: false,
-        message: "No Budget tab found for this client sheet",
-      });
-    }
+        if (!existingTitles.has("Budget")) {
+          return {
+            _skipCache: true,
+            _noBudgetTab: true,
+            message: "No Budget tab found for this client sheet",
+          };
+        }
 
-    const [budgetResp, appDataResp, mathResp, keyInfoResp] = await Promise.all([
-      withRetry(() =>
-        sheets.spreadsheets.values.get({
-          spreadsheetId: clientSheetId,
-          range: "Budget!A1:AX47",
-          valueRenderOption: "FORMATTED_VALUE",
-        })
-      ),
-      withRetry(() =>
-        sheets.spreadsheets.values.get({
-          spreadsheetId: clientSheetId,
-          range: "AppData!A1:AX47",
-          valueRenderOption: "FORMATTED_VALUE",
-        })
-      ),
-      withRetry(() =>
-        sheets.spreadsheets.values.get({
-          spreadsheetId: clientSheetId,
-          range: "Budget!A1:AX47",
-          valueRenderOption: "UNFORMATTED_VALUE",
-        })
-      ),
-      withRetry(() =>
-        sheets.spreadsheets.values.batchGet({
-          spreadsheetId: clientSheetId,
-          ranges: ["KeyInfo!B15", "KeyInfo!D8"],
-          valueRenderOption: "FORMATTED_VALUE",
-        })
-      ),
-    ]);
+        const [formattedBatchResp, mathResp] = await Promise.all([
+          withRetry(() =>
+            sheets.spreadsheets.values.batchGet({
+              spreadsheetId: clientSheetId,
+              ranges: ["Budget!A1:AX47", "AppData!A1:AX47", "KeyInfo!B15", "KeyInfo!D8"],
+              valueRenderOption: "FORMATTED_VALUE",
+            })
+          ),
+          withRetry(() =>
+            sheets.spreadsheets.values.get({
+              spreadsheetId: clientSheetId,
+              range: "Budget!A1:AX47",
+              valueRenderOption: "UNFORMATTED_VALUE",
+            })
+          ),
+        ]);
 
-    const budgetDisp = budgetResp.data?.values || [];
-    const appDataDisp = appDataResp.data?.values || [];
-    const budgetMath = mathResp.data?.values || [];
-    const mode = String(keyInfoResp.data?.valueRanges?.[0]?.values?.[0]?.[0] || "Revenue").trim();
-    const rawDirectCostsMode = String(keyInfoResp.data?.valueRanges?.[1]?.values?.[0]?.[0] || "Contractors").trim();
-    const directCostsMode =
-      mode.toLowerCase() === "income"
-        ? "Pass-through"
-        : rawDirectCostsMode === "Pass-through"
-        ? "Pass-through"
-        : "Contractors";
+        const budgetDisp = formattedBatchResp.data?.valueRanges?.[0]?.values || [];
+        const appDataDisp = formattedBatchResp.data?.valueRanges?.[1]?.values || [];
+        const budgetMath = mathResp.data?.values || [];
+        const mode = String(formattedBatchResp.data?.valueRanges?.[2]?.values?.[0]?.[0] || "Revenue").trim();
+        const rawDirectCostsMode = String(formattedBatchResp.data?.valueRanges?.[3]?.values?.[0]?.[0] || "Contractors").trim();
+        const directCostsMode =
+          mode.toLowerCase() === "income"
+            ? "Pass-through"
+            : rawDirectCostsMode === "Pass-through"
+            ? "Pass-through"
+            : "Contractors";
 
-    if (budgetDisp.length === 0) {
-      return res.status(200).json({
-        success: true,
-        hasBudget: false,
-        message: "Budget tab is empty",
-      });
-    }
+        if (budgetDisp.length === 0) {
+          return {
+            _skipCache: true,
+            _noBudgetTab: true,
+            message: "Budget tab is empty",
+          };
+        }
 
     // 3 Year blocks (Year 1: G:T = start 6, Year 2: V:AI = start 21, Year 3: AK:AX = start 36)
     const yearBlocks = [
@@ -263,16 +213,26 @@ export default async function handler(req, res) {
       mathVals: budgetMath,
     };
 
-    // Cache in L1 memory and Redis
-    memoryCache.set(cacheKey, budgetPayload, BUDGET_CACHE_TTL_SECS);
-    redisClient
-      .set(cacheKey, JSON.stringify(budgetPayload), { EX: BUDGET_CACHE_TTL_SECS })
-      .catch((err) => console.warn("⚠️ Failed to write budget to Redis:", err.message));
+    return budgetPayload;
+  },
+});
+
+    if (result.data?._noBudgetTab) {
+      return res.status(200).json({
+        success: true,
+        hasBudget: false,
+        message: result.data.message || "No Budget tab found for this client sheet",
+      });
+    }
 
     return res.status(200).json({
       success: true,
-      fromCache: false,
-      data: budgetPayload,
+      fromCache: result.fromCache,
+      fromMemory: result.fromMemory,
+      fromRedis: result.fromRedis,
+      staleRevalidating: result.staleRevalidating,
+      data: result.data,
+      cachedAt: result.cachedAt,
     });
   } catch (err) {
     console.error("❌ /api/portal/budget error:", err);

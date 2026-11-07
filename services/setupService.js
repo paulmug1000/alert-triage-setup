@@ -16,7 +16,7 @@
 
 import { redisClient } from "./redisClient.js";
 import { getIntegrationStatus } from "./vaultService.js";
-import { getSheetsClient, getDriveClient, withRetry, extractSheetIdFromUrl, sanitizeFormulaInput } from "./sheetsClient.js";
+import { getSheetsClient, getDriveClient, withRetry, extractSheetIdFromUrl, sanitizeFormulaInput, getServiceAccountPoolEmails } from "./sheetsClient.js";
 import { logPmaActivity, DEFAULT_AC_SHEET_ID } from "./pmaLogger.js";
 import { isUserAuthorizedForClient, resolveMasterSheetIdByClientName } from "./userPermissions.js";
 import { clearAllClientsMemoryCache } from "./workspaces.js";
@@ -1768,17 +1768,23 @@ export async function provisionNewClientSystem({
   const reconUrl = reconCopy.data.webViewLink || `https://docs.google.com/spreadsheets/d/${reconCopy.data.id}/edit`;
   const backupUrl = backupCopy.data.webViewLink || `https://docs.google.com/spreadsheets/d/${backupCopy.data.id}/edit`;
 
-  // 4. Grant Editor Permissions
+  // 4. Grant Editor Permissions (including all Service Accounts in the multi-project pool / group)
   const emailsToShare = [
-    "pulse@pulsedashboard.co.uk",
-    "alert-triage-backend@automation-commander.iam.gserviceaccount.com"
+    ...new Set([
+      "pulse@pulsedashboard.co.uk",
+      "alert-triage-backend@automation-commander.iam.gserviceaccount.com",
+      ...getServiceAccountPoolEmails(),
+    ]),
   ];
+  const groupEmail = (process.env.GOOGLE_SERVICE_ACCOUNT_GROUP_EMAIL || "").trim().toLowerCase();
   for (const fileId of [clientCopy.data.id, masterCopy.data.id, reconCopy.data.id, backupCopy.data.id]) {
     for (const email of emailsToShare) {
+      const isGroup = groupEmail && email.toLowerCase() === groupEmail;
       drive.permissions.create({
         fileId,
-        requestBody: { role: "writer", type: "user", emailAddress: email },
-        sendNotificationEmail: false
+        requestBody: { role: "writer", type: isGroup ? "group" : "user", emailAddress: email },
+        sendNotificationEmail: false,
+        supportsAllDrives: true,
       }).catch(err => console.warn(`Share note for ${email}:`, err.message));
     }
   }

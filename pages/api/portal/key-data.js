@@ -1,13 +1,13 @@
 import { getSessionUser } from "../../../services/authService.js";
-import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "../../../services/sheetsClient.js";
+import { getSheetsClient, withRetry, extractSheetIdFromUrl, getSheetTitles } from "../../../services/sheetsClient.js";
 import { verifyUserAuthorizedForSheet, resolveMasterSheetIdByClientName } from "../../../services/userPermissions.js";
-import { redisClient } from "../../../services/redisClient.js";
-import { memoryCache } from "../../../services/cacheService.js";
+import { resolvePortalCache } from "../../../services/cacheService.js";
 import { parseMoney, formatMoney } from "../../../services/deepDiveHelper.js";
 import { canonicalizeInvoiceStatus, canonicalizeExpenseStatus, isPlaceholderExpense } from "../../../utils/helpers.js";
 import { getClients } from "../../../services/workspaces.js";
 
-const KEYDATA_CACHE_TTL_SECS = 60; // 60s cache
+const KEYDATA_CACHE_TTL_SECS = 60; // 60s L1 fresh window
+const KEYDATA_REDIS_TTL_SECS = 900; // 15m Redis SWR retention
 
 function parseMonthYear(str) {
   if (!str) return null;
@@ -50,6 +50,7 @@ export default async function handler(req, res) {
   const clientName = String(req.query.clientName || req.body?.clientName || "").trim();
   const type = String(req.query.type || req.body?.type || "all").toLowerCase().trim();
   const bypassCache = (req.query.bypassCache === "true" || req.body?.bypassCache === true) && !sessionUser.isReadOnly;
+  const isAutoRefresh = req.query.autoRefresh === "true" || req.body?.autoRefresh === true;
 
   if (!clientSheetId) {
     return res.status(400).json({ success: false, error: "clientSheetId is required" });
@@ -175,56 +176,17 @@ export default async function handler(req, res) {
 
   const cacheKey = `pulse:portal:keydata:${clientSheetId}:${type}`;
 
-  // Purge existing cache on explicit refresh
-  if (bypassCache) {
-    memoryCache.del(cacheKey);
-    redisClient.del(cacheKey).catch(() => { });
-  }
-
-  // 1. Check L1 Memory Cache
-  if (!bypassCache) {
-    const memCached = memoryCache.get(cacheKey);
-    if (memCached) {
-      return res.status(200).json({
-        success: true,
-        fromCache: true,
-        fromMemory: true,
-        data: sanitizeForUser(memCached),
-        cachedAt: memCached._cachedAt || null,
-      });
-    }
-
-    // 2. Check Redis cache
-    try {
-      const cached = await redisClient.get(cacheKey);
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        memoryCache.set(cacheKey, parsed, KEYDATA_CACHE_TTL_SECS);
-        return res.status(200).json({
-          success: true,
-          fromCache: true,
-          fromRedis: true,
-          data: sanitizeForUser(parsed),
-          cachedAt: parsed._cachedAt || null,
-        });
-      }
-    } catch (cacheErr) {
-      console.warn("⚠️ KeyData Redis read warning:", cacheErr.message);
-    }
-  }
-
-  // 2. Fetch fresh data from Google Sheets API
   try {
-    // Check what sheets exist in the spreadsheet
-    const metaResp = await withRetry(() =>
-      sheets.spreadsheets.get({
-        spreadsheetId: clientSheetId,
-        fields: "sheets.properties.title",
-      })
-    );
-    const existingSheetTitles = new Set(
-      (metaResp.data?.sheets || []).map((s) => s.properties?.title)
-    );
+    const result = await resolvePortalCache({
+      cacheKey,
+      bypassCache,
+      isAutoRefresh,
+      isReadOnly: Boolean(sessionUser.isReadOnly),
+      l1TtlSecs: KEYDATA_CACHE_TTL_SECS,
+      redisTtlSecs: KEYDATA_REDIS_TTL_SECS,
+      fetchFreshFn: async () => {
+        // Check what sheets exist in the spreadsheet using 15m cached tab metadata
+        const existingSheetTitles = await getSheetTitles(sheets, clientSheetId);
 
     const hasConfirmed = existingSheetTitles.has("Confirmed") || existingSheetTitles.has("ConfCalcs");
     const confirmedTitle = existingSheetTitles.has("ConfCalcs") ? "ConfCalcs" : "Confirmed";
@@ -1556,16 +1518,18 @@ export default async function handler(req, res) {
       },
     };
 
-    // Cache in L1 memory and Redis
-    memoryCache.set(cacheKey, keyDataPayload, KEYDATA_CACHE_TTL_SECS);
-    redisClient
-      .set(cacheKey, JSON.stringify(keyDataPayload), { EX: KEYDATA_CACHE_TTL_SECS })
-      .catch((err) => console.warn("⚠️ Failed to write key-data to Redis:", err.message));
+    return keyDataPayload;
+  },
+});
 
     return res.status(200).json({
       success: true,
-      fromCache: false,
-      data: sanitizeForUser(keyDataPayload),
+      fromCache: result.fromCache,
+      fromMemory: result.fromMemory,
+      fromRedis: result.fromRedis,
+      staleRevalidating: result.staleRevalidating,
+      data: sanitizeForUser(result.data),
+      cachedAt: result.cachedAt,
     });
   } catch (err) {
     console.error("❌ /api/portal/key-data error:", err);

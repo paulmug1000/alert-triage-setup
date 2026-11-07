@@ -161,7 +161,7 @@ export default function PortalPage({
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 15000);
     try {
-      const url = `/api/portal/payload?clientSheetId=${encodeURIComponent(client.clientSheetId)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? `&bypassCache=true&_t=${Date.now()}` : ""}`;
+      const url = `/api/portal/payload?clientSheetId=${encodeURIComponent(client.clientSheetId)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? `&bypassCache=true${isSilent ? "&autoRefresh=true" : ""}&_t=${Date.now()}` : ""}`;
       const res = await fetch(url, { signal: controller.signal });
       let data = null;
       try {
@@ -240,7 +240,7 @@ export default function PortalPage({
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 15000);
     try {
-      const url = `/api/portal/performance?clientSheetId=${encodeURIComponent(client.clientSheetId)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? `&bypassCache=true&_t=${Date.now()}` : ""}`;
+      const url = `/api/portal/performance?clientSheetId=${encodeURIComponent(client.clientSheetId)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? `&bypassCache=true${isSilent ? "&autoRefresh=true" : ""}&_t=${Date.now()}` : ""}`;
       const res = await fetch(url, { signal: controller.signal });
       let data = null;
       try {
@@ -288,7 +288,7 @@ export default function PortalPage({
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 15000);
     try {
-      const url = `/api/portal/cash?clientSheetId=${encodeURIComponent(client.clientSheetId)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? `&bypassCache=true&_t=${Date.now()}` : ""}`;
+      const url = `/api/portal/cash?clientSheetId=${encodeURIComponent(client.clientSheetId)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? `&bypassCache=true${isSilent ? "&autoRefresh=true" : ""}&_t=${Date.now()}` : ""}`;
       const res = await fetch(url, { signal: controller.signal });
       let data = null;
       try {
@@ -336,7 +336,7 @@ export default function PortalPage({
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 20000);
     try {
-      const url = `/api/portal/key-data?clientSheetId=${encodeURIComponent(client.clientSheetId)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? `&bypassCache=true&_t=${Date.now()}` : ""}`;
+      const url = `/api/portal/key-data?clientSheetId=${encodeURIComponent(client.clientSheetId)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? `&bypassCache=true${isSilent ? "&autoRefresh=true" : ""}&_t=${Date.now()}` : ""}`;
       const res = await fetch(url, { signal: controller.signal });
       let data = null;
       try {
@@ -412,7 +412,7 @@ export default function PortalPage({
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 15000);
     try {
-      const url = `/api/portal/budget?clientSheetId=${encodeURIComponent(client.clientSheetId)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? `&bypassCache=true&_t=${Date.now()}` : ""}`;
+      const url = `/api/portal/budget?clientSheetId=${encodeURIComponent(client.clientSheetId)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? `&bypassCache=true${isSilent ? "&autoRefresh=true" : ""}&_t=${Date.now()}` : ""}`;
       const res = await fetch(url, { signal: controller.signal });
       let data = null;
       try {
@@ -514,12 +514,14 @@ export default function PortalPage({
   };
 
   // 60-Second Background Auto-Refresh (matching original GAS WebApp REFRESH_INTERVAL = 60000)
+  // Pauses background polling when browser tab is hidden/minimized and refreshes immediately on refocus
+  const lastAutoRefreshAtRef = useRef(Date.now());
   useEffect(() => {
     if (!selectedClient?.clientSheetId) return;
+    lastAutoRefreshAtRef.current = Date.now();
 
-    const intervalId = setInterval(() => {
-      // Silently refresh current payload and active view data in background with bypassCache=true
-      // scoped strictly to the active view to avoid quota exhaustion
+    const triggerSilentRefresh = () => {
+      lastAutoRefreshAtRef.current = Date.now();
       fetchPayload(selectedClient, true, true);
 
       if (["dashboard", "ytd", "perfBreakdown", "scenarios"].includes(activeView)) {
@@ -534,9 +536,35 @@ export default function PortalPage({
       if (["viewBudget", "budgetVariance"].includes(activeView)) {
         fetchBudget(selectedClient, true, true);
       }
+    };
+
+    const intervalId = setInterval(() => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        return;
+      }
+      triggerSilentRefresh();
     }, 60000);
 
-    return () => clearInterval(intervalId);
+    const handleVisibilityChange = () => {
+      if (
+        typeof document !== "undefined" &&
+        document.visibilityState === "visible" &&
+        Date.now() - lastAutoRefreshAtRef.current >= 60000
+      ) {
+        triggerSilentRefresh();
+      }
+    };
+
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", handleVisibilityChange);
+    }
+
+    return () => {
+      clearInterval(intervalId);
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", handleVisibilityChange);
+      }
+    };
   }, [selectedClient, activeView, fetchPayload, fetchPerformance, fetchCashflow, fetchKeyData, fetchBudget]);
 
   // Fast client restore on mount from localStorage to eliminate waterfall delay

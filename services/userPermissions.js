@@ -1,5 +1,6 @@
 import { withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
 import { redisClient } from "./redisClient.js";
+import { getSupabaseAdmin, isSupabaseConfigured, isSupabaseControlPlaneActive } from "./supabaseClient.js";
 import {
   wrapSheetId,
   unwrapSheetId,
@@ -111,6 +112,49 @@ export async function getAllUsers(sheets, _ignoredAcId = DEFAULT_AC_SHEET_ID, by
     }
   }
 
+  // Try Supabase users table when active
+  if (await isSupabaseControlPlaneActive()) {
+    try {
+      const sb = getSupabaseAdmin();
+      const { data: rows, error } = await sb
+        .from("users")
+        .select("*")
+        .order("sheet_row_index", { ascending: true });
+      if (!error && Array.isArray(rows) && rows.length > 0) {
+        const users = rows.map((r, idx) => {
+          const email = String(r.email || "").toLowerCase().trim();
+          const role = r.role || "ClientUser";
+          const assignedArr = Array.isArray(r.assigned_clients) ? r.assigned_clients : [];
+          const assignedClients = (role === "Admin" && assignedArr.includes("*"))
+            ? "*"
+            : assignedArr.filter(c => c && c !== "*");
+          return {
+            rowIndex: r.sheet_row_index || idx + 2,
+            email,
+            name: r.full_name || email.split("@")[0],
+            role,
+            isAdmin: role === "Admin",
+            isSenior: role === "Senior (Restricted)",
+            isClientUser: role === "ClientUser",
+            assignedClients,
+            status: r.status === "Suspended" ? "Suspended" : "Active",
+            createdAt: r.created_at || "",
+            lastLoginAt: r.last_login_at || "",
+            dailyAlertsEmail: r.daily_alerts_email === "No" ? "No" : "Yes",
+          };
+        });
+        _usersMemoryCache = users;
+        _usersCachedAt = now;
+        try {
+          await redisClient.set(REDIS_USERS_KEY, JSON.stringify(users), { EX: REDIS_USERS_TTL_SECS });
+        } catch (_) {}
+        return users;
+      }
+    } catch (sbErr) {
+      console.warn("⚠️ Supabase getAllUsers fallback to sheet:", sbErr.message);
+    }
+  }
+
   await ensureUsersTab(sheets);
 
   try {
@@ -191,21 +235,45 @@ export async function getUserByEmail(email, sheets, _ignoredAcId = DEFAULT_AC_SH
  */
 export async function updateUserLastLogin(email, sheets, _ignoredAcId = DEFAULT_AC_SHEET_ID) {
   try {
+    const normalizedEmail = String(email || "").toLowerCase().trim();
+    if (!normalizedEmail) return;
+    const nowIso = new Date().toISOString();
+
+    if (isSupabaseConfigured()) {
+      try {
+        const sb = getSupabaseAdmin();
+        if (sb) {
+          await sb
+            .from("users")
+            .update({ last_login_at: nowIso })
+            .eq("email", normalizedEmail);
+        }
+      } catch (sbErr) {
+        console.warn("⚠️ Supabase updateUserLastLogin warning:", sbErr.message);
+      }
+    }
+
     const acId = getCanonicalAcSheetId();
     const user = await getUserByEmail(email, sheets, acId, true);
-    if (!user || !user.rowIndex) return;
-
-    const nowIso = new Date().toISOString();
-    await withRetry(() => sheets.spreadsheets.values.update({
-      spreadsheetId: acId,
-      range: `${USERS_TAB}!G${user.rowIndex}`,
-      valueInputOption: "RAW",
-      requestBody: {
-        values: [[nowIso]]
+    if (user && user.rowIndex) {
+      const updateSheet = () =>
+        withRetry(() => sheets.spreadsheets.values.update({
+          spreadsheetId: acId,
+          range: `${USERS_TAB}!G${user.rowIndex}`,
+          valueInputOption: "RAW",
+          requestBody: {
+            values: [[nowIso]]
+          }
+        }));
+      if (await isSupabaseControlPlaneActive()) {
+        updateSheet().catch(() => {});
+      } else {
+        await updateSheet();
       }
-    }));
+    }
 
-    // Invalidate Redis cache
+    // Invalidate caches
+    _usersMemoryCache = null;
     try {
       await redisClient.del(REDIS_USERS_KEY);
     } catch (e) { }
@@ -226,14 +294,31 @@ export async function updateUserDailyAlertsEmail(email, dailyAlertsEmail, sheets
     }
 
     const val = String(dailyAlertsEmail).trim().toLowerCase() === "no" ? "No" : "Yes";
-    await withRetry(() => sheets.spreadsheets.values.update({
-      spreadsheetId: acId,
-      range: `${USERS_TAB}!H${user.rowIndex}`,
-      valueInputOption: "RAW",
-      requestBody: {
-        values: [[val]]
+    if (isSupabaseConfigured()) {
+      try {
+        const sb = getSupabaseAdmin();
+        if (sb) {
+          await sb
+            .from("users")
+            .update({ daily_alerts_email: val })
+            .eq("email", String(email || "").toLowerCase().trim());
+        }
+      } catch (sbErr) {
+        console.warn("⚠️ Supabase updateUserDailyAlertsEmail warning:", sbErr.message);
       }
-    }));
+    }
+    if (user.rowIndex) {
+      await withRetry(() => sheets.spreadsheets.values.update({
+        spreadsheetId: acId,
+        range: `${USERS_TAB}!H${user.rowIndex}`,
+        valueInputOption: "RAW",
+        requestBody: {
+          values: [[val]]
+        }
+      }));
+    }
+
+    _usersMemoryCache = null;
 
     // Invalidate Redis cache so subsequent reads see the updated preference
     try {
@@ -274,6 +359,35 @@ function normalizeClientKeyForLookup(str) {
 }
 
 async function refreshAutoUpdatesSheetMappings(sheets) {
+  if (await isSupabaseControlPlaneActive()) {
+    try {
+      const sb = getSupabaseAdmin();
+      const { data: clients, error } = await sb
+        .from("clients")
+        .select("client_name, client_sheet_id, master_sheet_id, recon_sheet_id");
+      if (!error && Array.isArray(clients) && clients.length > 0) {
+        for (const c of clients) {
+          const cName = String(c.client_name || "").trim();
+          const rId = String(c.recon_sheet_id || "").trim();
+          const cId = String(c.client_sheet_id || "").trim();
+          const mId = String(c.master_sheet_id || "").trim();
+          if (rId && cName) clientSheetIdToNameCache.set(rId, cName);
+          if (cId && cName) {
+            clientSheetIdToNameCache.set(cId, cName);
+            clientNameToClientIdCache.set(cName.toLowerCase(), cId);
+            clientNameToClientIdCache.set(normalizeClientKeyForLookup(cName), cId);
+          }
+          if (mId && cName) {
+            clientSheetIdToNameCache.set(mId, cName);
+            clientNameToMasterIdCache.set(cName.toLowerCase(), mId);
+            clientNameToMasterIdCache.set(normalizeClientKeyForLookup(cName), mId);
+          }
+        }
+        return;
+      }
+    } catch (_) {}
+  }
+
   const acId = getCanonicalAcSheetId();
   const resp = await withRetry(() =>
     sheets.spreadsheets.values.get({

@@ -27,6 +27,18 @@ function isQuotaError_(error) {
   );
 }
 
+function isPermissionError_(error) {
+  if (!error) return false;
+  return (
+    error.code === 403 ||
+    error.code === "403" ||
+    error.status === 403 ||
+    error.response?.status === 403 ||
+    (typeof error.message === "string" &&
+      error.message.includes("The caller does not have permission"))
+  );
+}
+
 function hashSpreadsheetId_(str) {
   const s = String(str || "");
   let h = 2166136261;
@@ -263,6 +275,11 @@ function createPooledSheetsClient_(poolType = "interactive") {
         if (isQuotaError_(err)) {
           entry.cooldownUntil = Date.now() + COOLDOWN_DURATION_MS;
           err._throttledPoolEntryId = entry.id;
+        } else if (isPermissionError_(err) && entry.id !== getPoolEntries_()[0]?.id) {
+          // If a secondary pool account lacks permission on a specific sheet, fall back to primary/other account
+          entry.cooldownUntil = Date.now() + COOLDOWN_DURATION_MS;
+          err._throttledPoolEntryId = entry.id;
+          err._isPoolPermissionFallback = true;
         }
         throw err;
       }
@@ -357,12 +374,16 @@ export async function getSheetsClient(options = {}) {
 }
 
 export async function getDriveClient(options = {}) {
-  const entry = selectPoolEntry_(options?.fileId || "", options?.pool || "interactive");
+  const entries = getPoolEntries_();
+  if (!options?.pool) return entries[0].rawDrive;
+  const entry = selectPoolEntry_(options?.fileId || "", options.pool);
   return entry.rawDrive;
 }
 
 export async function getSlidesClient(options = {}) {
-  const entry = selectPoolEntry_(options?.presentationId || "", options?.pool || "interactive");
+  const entries = getPoolEntries_();
+  if (!options?.pool) return entries[0].rawSlides;
+  const entry = selectPoolEntry_(options?.presentationId || "", options.pool);
   return entry.rawSlides;
 }
 
@@ -371,11 +392,11 @@ export async function withRetry(operation, maxRetries = 5) {
     try {
       return await operation();
     } catch (error) {
-      if (isQuotaError_(error) && i < maxRetries - 1) {
+      if ((isQuotaError_(error) || error?._isPoolPermissionFallback) && i < maxRetries - 1) {
         const throttledId = error._throttledPoolEntryId;
         if (throttledId && hasHealthyAlternative_(throttledId)) {
           console.log(
-            `  ⚡ 429 on credentialshard (${throttledId.split(":")[0]}) — failing over immediately to healthy pool credential (attempt ${i + 1}/${maxRetries})`
+            `  ⚡ Failover from credential (${throttledId.split(":")[0]}) — retrying immediately on healthy pool credential (attempt ${i + 1}/${maxRetries})`
           );
           continue;
         }

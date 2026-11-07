@@ -18,6 +18,26 @@ import crypto from "crypto";
 import { redisClient } from "./redisClient.js";
 import { getSheetsClient } from "./sheetsClient.js";
 import { resolveClientNameBySheetId } from "./userPermissions.js";
+import { getSupabaseAdmin, isSupabaseConfigured } from "./supabaseClient.js";
+
+async function syncVaultRecordToSupabase(clientKey, tool, record) {
+  if (!isSupabaseConfigured()) return;
+  try {
+    const sb = getSupabaseAdmin();
+    if (!sb) return;
+    await sb.from("tenant_integrations").upsert({
+      client_key: clientKey,
+      tool,
+      master_sheet_id: record.masterSheetId || "",
+      encrypted_payload: JSON.stringify(record),
+      tenant_org_id: record.tenantId || record.realmId || "",
+      tenant_org_name: record.tenantName || record.companyName || "",
+      status: record.status || "connected",
+    }, { onConflict: "client_key,tool" });
+  } catch (err) {
+    console.warn("⚠️ Vault Supabase dual-write warning:", err.message);
+  }
+}
 
 const ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 12; // 96 bits recommended for GCM
@@ -235,6 +255,7 @@ export async function saveSharedXeroGrant({ tokens, availableTenants = [], conne
   };
 
   await redisClient.set(SHARED_XERO_KEY, JSON.stringify(record));
+  await syncVaultRecordToSupabase("__shared_xero__", "xero", record);
   await invalidateIntegrationsCache();
   console.log(`🔒 Vault: Successfully stored central shared Xero grant with ${verifiedTenants.length} organisations.`);
   return record;
@@ -294,6 +315,7 @@ export async function updateSharedXeroGrantTokens(tokens) {
   record.reconnectRequired = false;
 
   await redisClient.set(SHARED_XERO_KEY, JSON.stringify(record));
+  await syncVaultRecordToSupabase("__shared_xero__", "xero", record);
   if (!wasConnected) {
     await invalidateIntegrationsCache();
   }
@@ -339,6 +361,7 @@ export async function linkClientToSharedXero({
   };
 
   await redisClient.set(redisKey, JSON.stringify(record));
+  await syncVaultRecordToSupabase(cleanClient, "xero", record);
 
   if (masterSheetId) {
     const sheetKey = getSheetIndexRedisKey(masterSheetId, "xero");
@@ -429,6 +452,7 @@ export async function saveIntegrationTokens({
 
   const redisKey = getVaultRedisKey(cleanClient, cleanTool);
   await redisClient.set(redisKey, JSON.stringify(record));
+  await syncVaultRecordToSupabase(cleanClient, cleanTool, record);
 
   // If masterSheetId is provided, maintain secondary lookup index for GAS Token Broker
   if (masterSheetId) {
@@ -682,6 +706,7 @@ export async function updateRefreshedTokens({ clientKey, tool, tokens, newTenant
   }
 
   await redisClient.set(redisKey, JSON.stringify(record));
+  await syncVaultRecordToSupabase(cleanClient, cleanTool, record);
   if (!wasConnected) {
     await invalidateIntegrationsCache();
   }
@@ -895,6 +920,7 @@ export async function markIntegrationReconnectRequired({ clientKey, masterSheetI
         record.lastError = String(error || "");
         record.updatedAt = new Date().toISOString();
         await redisClient.set(redisKey, JSON.stringify(record));
+        await syncVaultRecordToSupabase(record.clientKey, cleanTool, record);
         console.log(`⚠️ Vault: Marked ${record.clientKey} [${cleanTool}] as reconnect_required.`);
       } catch (err) {
         console.error(`Failed to mark reconnect_required for ${redisKey}:`, err);

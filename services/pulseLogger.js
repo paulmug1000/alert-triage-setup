@@ -1,6 +1,7 @@
 import { withRetry } from "./sheetsClient.js";
 import { redisClient } from "./redisClient.js";
 import { parseLogDate, formatRelativeTime, isWithin30Days, appendLiveActivityToCache } from "./activityService.js";
+import { getSupabaseAdmin, isSupabaseConfigured, isSupabaseControlPlaneActive } from "./supabaseClient.js";
 
 export const DEFAULT_AC_SHEET_ID = "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
 export const PULSE_ACTIVITY_LOG_TAB = "PulseActivityLog";
@@ -77,18 +78,47 @@ export async function logPulseActivity(sheets, {
     const cleanSummary = String(summary || "").trim();
     const cleanUser = String(user || "System").trim();
     const detailsStr = typeof details === "string" ? details : JSON.stringify(details || {});
+    const detailsObj = typeof details === "object" && details !== null ? details : { raw: detailsStr };
 
-    // 1. Append row to Automation Commander
-    await withRetry(() =>
-      sheets.spreadsheets.values.append({
-        spreadsheetId: acId,
-        range: `${PULSE_ACTIVITY_LOG_TAB}!A:G`,
-        valueInputOption: "RAW",
-        requestBody: {
-          values: [[nowISO, cleanClient, cleanCategory, cleanAction, cleanSummary, detailsStr, cleanUser]]
+    // 0. Dual-write to Supabase activity_logs if configured
+    if (isSupabaseConfigured()) {
+      try {
+        const sb = getSupabaseAdmin();
+        if (sb) {
+          await sb.from("activity_logs").insert({
+            logged_at: nowISO,
+            source: "PULSE",
+            client_name: cleanClient,
+            category: cleanCategory,
+            action: cleanAction,
+            summary: cleanSummary,
+            details: detailsObj,
+            user_email: cleanUser,
+          });
         }
-      })
-    );
+      } catch (sbErr) {
+        console.warn("⚠️ Supabase activity_logs insert warning in logPulseActivity:", sbErr.message);
+      }
+    }
+
+    // 1. Append row to Automation Commander (background mirror if Supabase is active)
+    const appendToSheet = () =>
+      withRetry(() =>
+        sheets.spreadsheets.values.append({
+          spreadsheetId: acId,
+          range: `${PULSE_ACTIVITY_LOG_TAB}!A:G`,
+          valueInputOption: "RAW",
+          requestBody: {
+            values: [[nowISO, cleanClient, cleanCategory, cleanAction, cleanSummary, detailsStr, cleanUser]]
+          }
+        })
+      );
+
+    if (await isSupabaseControlPlaneActive()) {
+      appendToSheet().catch(e => console.warn("⚠️ Background PulseActivityLog mirror warning:", e.message));
+    } else {
+      await appendToSheet();
+    }
 
     console.log(`📝 [Pulse Log] ${cleanCategory} (${cleanClient}): ${cleanAction} - ${cleanSummary}`);
 
@@ -177,6 +207,70 @@ async function prunePulseActivityLogIfNeeded(sheets, acId) {
  * Fetch and parse Pulse Activity logs from Automation Commander
  */
 export async function fetchPulseActivity(sheets, automationCommanderSheetId = DEFAULT_AC_SHEET_ID, targetClientName = null) {
+  if (await isSupabaseControlPlaneActive()) {
+    try {
+      const sb = getSupabaseAdmin();
+      const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000).toISOString();
+      const { data: rows, error } = await sb
+        .from("activity_logs")
+        .select("*")
+        .eq("source", "PULSE")
+        .gte("logged_at", thirtyDaysAgo)
+        .order("logged_at", { ascending: false })
+        .limit(1500);
+      if (!error && Array.isArray(rows)) {
+        const events = [];
+        rows.forEach((r, idx) => {
+          const client = String(r.client_name || "").trim();
+          const category = String(r.category || "PULSE").trim().toUpperCase();
+          const action = String(r.action || "").trim();
+          const summary = String(r.summary || "").trim();
+          const user = String(r.user_email || "System").trim();
+          const structuredDetails = typeof r.details === "object" && r.details !== null ? { ...r.details } : {};
+          const rawDetails = JSON.stringify(structuredDetails);
+
+          if (targetClientName && targetClientName !== "ALL") {
+            if (targetClientName === "SYSTEM") {
+              const isSystem = client === "System" || client === "Multi-Client" || client === "Unregistered" || category === "AUTH";
+              if (!isSystem) return;
+            } else {
+              let matches = client && client.toLowerCase() === targetClientName.toLowerCase();
+              if (!matches && Array.isArray(structuredDetails.assignedClients)) {
+                matches = structuredDetails.assignedClients.some(ac => String(ac).toLowerCase() === targetClientName.toLowerCase());
+              }
+              if (!matches) return;
+            }
+          }
+
+          const date = new Date(r.logged_at);
+          structuredDetails.pulseAction = action;
+          structuredDetails.pulseUser = user;
+          structuredDetails.pulseTimestamp = r.logged_at;
+
+          events.push({
+            id: `pulse_${date.getTime()}_${client.replace(/\s+/g, "_")}_${r.id || idx}`,
+            timestamp: r.logged_at,
+            timestampMs: date.getTime(),
+            relativeTime: formatRelativeTime(date),
+            clientName: client,
+            category,
+            source: "user",
+            action,
+            summary,
+            structuredDetails,
+            userEmail: user,
+            author: user,
+            isRoutine: false,
+            rawDetails: `${summary}\n\nDetails: ${rawDetails}`,
+          });
+        });
+        return events;
+      }
+    } catch (sbErr) {
+      console.warn("⚠️ Supabase fetchPulseActivity fallback to sheet:", sbErr.message);
+    }
+  }
+
   const acId = automationCommanderSheetId || DEFAULT_AC_SHEET_ID;
   await ensurePulseActivityLogTab(sheets, acId);
 
@@ -274,6 +368,44 @@ export async function fetchPulseActivity(sheets, automationCommanderSheetId = DE
  * Fetch dedicated Security and Auth audit log entries for Admin Settings table
  */
 export async function fetchSecurityAuditLogs(sheets, automationCommanderSheetId = DEFAULT_AC_SHEET_ID, limit = 100) {
+  if (await isSupabaseControlPlaneActive()) {
+    try {
+      const sb = getSupabaseAdmin();
+      const { data: rows, error } = await sb
+        .from("activity_logs")
+        .select("*")
+        .eq("source", "PULSE")
+        .order("logged_at", { ascending: false })
+        .limit(500);
+      if (!error && Array.isArray(rows)) {
+        const authLogs = [];
+        for (const r of rows) {
+          const category = String(r.category || "").trim().toUpperCase();
+          const action = String(r.action || "").trim();
+          const isAuthEvent = category === "AUTH" || action.includes("LOGIN") || action.includes("AUTH") || action.includes("PORTAL");
+          if (!isAuthEvent) continue;
+          const structuredDetails = typeof r.details === "object" && r.details !== null ? r.details : {};
+          authLogs.push({
+            id: `sec_${r.id}_${r.logged_at}`,
+            timestamp: r.logged_at,
+            client: String(r.client_name || "").trim(),
+            category,
+            action,
+            summary: String(r.summary || "").trim(),
+            user: String(r.user_email || "").trim(),
+            ip: structuredDetails.ip || "-",
+            provider: structuredDetails.provider || "-",
+            details: structuredDetails,
+          });
+          if (authLogs.length >= limit) break;
+        }
+        return authLogs;
+      }
+    } catch (sbErr) {
+      console.warn("⚠️ Supabase fetchSecurityAuditLogs fallback to sheet:", sbErr.message);
+    }
+  }
+
   const acId = automationCommanderSheetId || DEFAULT_AC_SHEET_ID;
   await ensurePulseActivityLogTab(sheets, acId);
 

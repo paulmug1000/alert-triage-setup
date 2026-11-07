@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import Spinner from "./Spinner";
 import Skeleton from "./Skeleton";
 import ClientSettingsView from "./ClientSettingsView";
+import SupabaseControlPlaneCard from "./SupabaseControlPlaneCard";
 import { useSettings } from "../hooks/useSettings";
 import { useTriage } from "../contexts/TriageContext";
 
@@ -422,6 +423,8 @@ export default function SettingsView({
           {/* Admin Only Sections */}
           {effectiveIsAdmin && (
             <>
+              <SupabaseControlPlaneCard automationCommanderSheetId={automationCommanderSheetId} />
+
               {settingsLoading && <div style={{ color: "#999", padding: "20px" }}>Loading admin settings...</div>}
 
               {!settingsLoading && (

@@ -1,6 +1,7 @@
 import { withRetry } from "./sheetsClient.js";
 import { redisClient } from "./redisClient.js";
 import { parseLogDate, formatRelativeTime, isWithin30Days, appendLiveActivityToCache } from "./activityService.js";
+import { getSupabaseAdmin, isSupabaseConfigured, isSupabaseControlPlaneActive } from "./supabaseClient.js";
 
 export const DEFAULT_AC_SHEET_ID = "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
 export const PMA_ACTIVITY_LOG_TAB = "PmaActivityLog";
@@ -83,23 +84,54 @@ export async function logPmaActivity(sheetsOrOptions, maybeOptions = {}) {
     const cleanSummary = String(summary || "").trim();
     const cleanUser = String(userEmail || actor || user || "PMA Admin").trim();
     const detailsStr = typeof details === "string" ? details : JSON.stringify(details || {});
+    const detailsObj = typeof details === "object" && details !== null ? details : { raw: detailsStr };
 
-    if (!sheets) {
-      const { getSheetsClient } = await import("./sheetsClient.js");
-      sheets = await getSheetsClient();
+    // 0. Dual-write to Supabase activity_logs if configured
+    if (isSupabaseConfigured()) {
+      try {
+        const sb = getSupabaseAdmin();
+        if (sb) {
+          await sb.from("activity_logs").insert({
+            logged_at: nowISO,
+            source: "PMA",
+            client_name: cleanClient,
+            category: cleanCategory,
+            action: cleanAction,
+            summary: cleanSummary,
+            details: detailsObj,
+            user_email: cleanUser,
+            fingerprint_hash: String(options?.fingerprintHash || ""),
+            alert_key: String(options?.alertKey || ""),
+          });
+        }
+      } catch (sbErr) {
+        console.warn("⚠️ Supabase activity_logs insert warning in logPmaActivity:", sbErr.message);
+      }
     }
 
-    // 1. Append row to Automation Commander
-    await withRetry(() =>
-      sheets.spreadsheets.values.append({
-        spreadsheetId: acId,
-        range: `${PMA_ACTIVITY_LOG_TAB}!A:G`,
-        valueInputOption: "RAW",
-        requestBody: {
-          values: [[nowISO, cleanClient, cleanCategory, cleanAction, cleanSummary, detailsStr, cleanUser]],
-        },
-      })
-    );
+    const appendToSheet = async () => {
+      if (!sheets) {
+        const { getSheetsClient } = await import("./sheetsClient.js");
+        sheets = await getSheetsClient();
+      }
+      await withRetry(() =>
+        sheets.spreadsheets.values.append({
+          spreadsheetId: acId,
+          range: `${PMA_ACTIVITY_LOG_TAB}!A:G`,
+          valueInputOption: "RAW",
+          requestBody: {
+            values: [[nowISO, cleanClient, cleanCategory, cleanAction, cleanSummary, detailsStr, cleanUser]],
+          },
+        })
+      );
+    };
+
+    // 1. Append row to Automation Commander (non-blocking mirror if Supabase is active)
+    if (await isSupabaseControlPlaneActive()) {
+      appendToSheet().catch(e => console.warn("⚠️ Background PmaActivityLog mirror warning:", e.message));
+    } else {
+      await appendToSheet();
+    }
 
     console.log(`📝 [PMA Log] ${cleanCategory} (${cleanClient || "All"}): ${cleanAction} - ${cleanSummary}`);
 
@@ -137,6 +169,57 @@ export async function logPmaActivity(sheetsOrOptions, maybeOptions = {}) {
  * Fetch and parse PMA Activity logs from Automation Commander
  */
 export async function fetchPmaActivity(sheets, automationCommanderSheetId = DEFAULT_AC_SHEET_ID, targetClientName = null) {
+  if (await isSupabaseControlPlaneActive()) {
+    try {
+      const sb = getSupabaseAdmin();
+      const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000).toISOString();
+      let query = sb
+        .from("activity_logs")
+        .select("*")
+        .eq("source", "PMA")
+        .gte("logged_at", thirtyDaysAgo)
+        .order("logged_at", { ascending: false })
+        .limit(1000);
+      if (targetClientName && targetClientName !== "ALL") {
+        query = query.ilike("client_name", targetClientName);
+      }
+      const { data: rows, error } = await query;
+      if (!error && Array.isArray(rows)) {
+        return rows.map((r, idx) => {
+          const date = new Date(r.logged_at);
+          const client = String(r.client_name || "").trim();
+          const category = String(r.category || "PMA").trim().toUpperCase();
+          const action = String(r.action || "").trim();
+          const summary = String(r.summary || "").trim();
+          const user = String(r.user_email || "PMA Admin").trim();
+          const structuredDetails = typeof r.details === "object" && r.details !== null ? { ...r.details } : {};
+          structuredDetails.pmaAction = action;
+          structuredDetails.pmaUser = user;
+          structuredDetails.pmaTimestamp = r.logged_at;
+          const rawDetails = JSON.stringify(structuredDetails);
+          return {
+            id: `pma_${date.getTime()}_${client.replace(/\s+/g, "_")}_${r.id || idx}`,
+            timestamp: r.logged_at,
+            timestampMs: date.getTime(),
+            relativeTime: formatRelativeTime(date),
+            clientName: client,
+            category,
+            source: "PMA",
+            action,
+            summary,
+            structuredDetails,
+            userEmail: user,
+            author: user,
+            isRoutine: false,
+            rawDetails: `${summary}\n\nDetails: ${rawDetails}`,
+          };
+        });
+      }
+    } catch (sbErr) {
+      console.warn("⚠️ Supabase fetchPmaActivity fallback to sheet:", sbErr.message);
+    }
+  }
+
   const acId = automationCommanderSheetId || DEFAULT_AC_SHEET_ID;
   try {
     const resp = await withRetry(() =>

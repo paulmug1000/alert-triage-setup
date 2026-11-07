@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.16.0",
+    "@supabase/supabase-js": "^2.119.0",
     "@vercel/blob": "^2.6.1",
     "@vercel/functions": "^3.10.2",
     "cookie": "^2.0.1",

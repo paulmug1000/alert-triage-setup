@@ -5,41 +5,7 @@ import React from "react";
  * Works seamlessly on any system, even with hardware acceleration disabled.
  */
 export function SkeletonGlobalStyles() {
-  return (
-    <style jsx global>{`
-      @keyframes pulse-calm-breathe {
-        0%, 100% {
-          opacity: 1;
-        }
-        50% {
-          opacity: 0.35;
-        }
-      }
-      .pulse-skeleton {
-        position: relative;
-        background-color: #e2e8f0 !important;
-        animation: pulse-calm-breathe 1.8s ease-in-out infinite !important;
-      }
-      .pulse-skeleton.pulse-skeleton-blue {
-        background-color: #dbeafe !important;
-      }
-      .pulse-skeleton.pulse-skeleton-dark {
-        background-color: rgba(255, 255, 255, 0.35) !important;
-      }
-      @keyframes pulseContentFadeIn {
-        from {
-          opacity: 0;
-        }
-        to {
-          opacity: 1;
-        }
-      }
-      .portal-main-content-wrapper > *:not([data-pulse-skeleton="true"]),
-      .pma-main-content-wrapper > *:not([data-pulse-skeleton="true"]) {
-        animation: pulseContentFadeIn 0.22s ease-out;
-      }
-    `}</style>
-  );
+  return null;
 }
 
 /**
@@ -62,12 +28,7 @@ export default function Skeleton({
     ...style,
   };
 
-  return (
-    <>
-      <SkeletonGlobalStyles />
-      <div className={`pulse-skeleton ${className}`} style={inlineStyles} />
-    </>
-  );
+  return <div className={`pulse-skeleton ${className}`} style={inlineStyles} />;
 }
 
 /**

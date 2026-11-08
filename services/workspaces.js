@@ -23,6 +23,8 @@ import { getSessionUser } from "./authService.js";
 import { getSettingsRedisKey } from "./clientSettingsService.js";
 import { redisClient } from "./redisClient.js";
 import { getSupabaseAdmin, isSupabaseControlPlaneActive } from "./supabaseClient.js";
+import { resolveSupabaseSheetContext } from "./masterEngineService.js";
+import { recomputeClientComparisonsInSupabase } from "./masterSyncEngine.js";
 import { memoryCache, get2TierCache, set2TierCache, invalidatePmaClientCache } from "./cacheService.js";
 import { resolveAssignedAlertsInMemoryAndCache } from "./alertState.js";
 import {
@@ -145,7 +147,7 @@ export async function getAllClients(sheets, sessionUser = { isAdmin: true }, byp
             const reconSheetId = String(c.recon_sheet_id || "").trim();
             const scriptId = String(c.client_script_id || "").trim();
             const webAppUrl = String(c.master_gas_webapp_url || "").trim();
-            const hasWebAppUrl = Boolean(webAppUrl);
+            const hasWebAppUrl = Boolean(webAppUrl) || c.master_mode === "supabase";
             const splitEnabled = Boolean(c.split_enabled);
             const hasClientManager = cmMap.hasManager(clientName);
             const accountingTool = c.accounting_tool || "None";
@@ -172,6 +174,7 @@ export async function getAllClients(sheets, sessionUser = { isAdmin: true }, byp
               directCostsMode,
               hasAccountingIntegration,
               clientMode: c.client_mode || "sheets",
+              masterMode: c.master_mode || "sheets",
             };
             clientsArray.push(item);
             clientsObj[clientName] = { ...item };
@@ -5870,15 +5873,22 @@ export async function handleUpdateOutgoingNote(req, res, sheets) {
         }
       }).catch(e => console.warn("Failed to write to Master OutgNotes:", e.message));
 
-      // Trigger GAS refreshOutgoings asynchronously without blocking response
-      const cronSecret = process.env.CRON_SECRET || process.env.AGENT_TRIGGER_SECRET || "";
-      if (cronSecret) {
-        fetch("https://script.google.com/macros/s/AKfycbzVvLSDtqWj3aHcn0UV9VPCybNm82sBNWynMo1-bMpvs3NzerPZXWkrpPJvVHaqDwwy/exec", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "refreshOutgoings", clientSheetId: sheetIdClean, masterSheetId: targetMasterId, secret: cronSecret }),
-        }).catch(e => console.warn("Background refreshOutgoings GAS call failed:", e.message));
-      }
+      // Trigger GAS refreshOutgoings or native Supabase comparison recompute asynchronously without blocking response
+      resolveSupabaseSheetContext({ clientName, spreadsheetId: targetMasterId })
+        .then((supaCtx) => {
+          if (supaCtx && supaCtx.masterMode === "supabase") {
+            return recomputeClientComparisonsInSupabase(sheets, supaCtx.clientName || clientName);
+          }
+          const cronSecret = process.env.CRON_SECRET || process.env.AGENT_TRIGGER_SECRET || "";
+          if (cronSecret) {
+            return fetch("https://script.google.com/macros/s/AKfycbzVvLSDtqWj3aHcn0UV9VPCybNm82sBNWynMo1-bMpvs3NzerPZXWkrpPJvVHaqDwwy/exec", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ action: "refreshOutgoings", clientSheetId: sheetIdClean, masterSheetId: targetMasterId, secret: cronSecret }),
+            });
+          }
+        })
+        .catch((e) => console.warn("Background refreshOutgoings call failed:", e.message));
     }
 
     let contractor = req.body.contractorName || "";
@@ -6200,6 +6210,12 @@ export async function handleFireOutgoingsPull(req, res, sheets) {
       if (!masterAuth.authorized) {
         return res.status(masterAuth.status || 403).json({ success: false, error: masterAuth.error || "Access denied to this master sheet." });
       }
+    }
+
+    const supaCtx = await resolveSupabaseSheetContext({ clientName, spreadsheetId: pullMasterIdClean });
+    if (supaCtx && supaCtx.masterMode === "supabase") {
+      await recomputeClientComparisonsInSupabase(sheets, supaCtx.clientName || clientName);
+      return res.status(200).json({ success: true, engine: "supabase" });
     }
 
     const cronSecret = process.env.CRON_SECRET || process.env.AGENT_TRIGGER_SECRET || "";

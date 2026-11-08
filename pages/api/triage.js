@@ -116,6 +116,8 @@ import {
   checkClientBankReconciliationStatus
 } from "../../services/bankTransactionsService";
 import { handleClassifyPLCategory, handleUpdatePartPaidDate } from "../../services/proactiveChecks";
+import { resolveSupabaseSheetContext } from "../../services/masterEngineService";
+import { syncExpenseBreakdownToClientSheetNative } from "../../services/masterSyncEngine";
 import { getSessionUser, safeCompareSecret, sendOtp, verifyOtp, clearSessionCookie } from "../../services/authService";
 import {
   isUserAuthorizedForClient,
@@ -1145,6 +1147,18 @@ export default async function handler(req, res) {
         const { clientName, automationCommanderSheetId, clientSheetId, masterSheetId } = req.body;
         if (!(await checkTriageClientAuth(sheets, sessionUser, clientName, [clientSheetId, masterSheetId].filter(Boolean)))) {
           return res.status(403).json({ success: false, error: "Access denied to this client" });
+        }
+        const supaCtx = await resolveSupabaseSheetContext({ clientName, spreadsheetId: masterSheetId || clientSheetId });
+        if (supaCtx && supaCtx.masterMode === "supabase") {
+          const nativeRes = await syncExpenseBreakdownToClientSheetNative(sheets, supaCtx.clientName || clientName);
+          await invalidatePmaClientCache(clientSheetId, masterSheetId, ["outgoings", "expenses", "cash", "views"]).catch(() => { });
+          if (clientSheetId && redisClient?.isOpen) {
+            await Promise.all([
+              redisClient.del(`pulse:portal:keydata:${clientSheetId}`).catch(() => { }),
+              redisClient.del(`pulse:portal:cash:${clientSheetId}`).catch(() => { })
+            ]);
+          }
+          return res.status(200).json({ success: true, engine: "supabase", result: nativeRes });
         }
         const webAppUrl = await getClientWebAppUrl(sheets, clientName, automationCommanderSheetId);
 

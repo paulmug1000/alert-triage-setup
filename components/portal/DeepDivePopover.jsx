@@ -163,8 +163,8 @@ export default function DeepDivePopover({
             left: 0 !important;
             right: 0 !important;
             bottom: 0 !important;
-            width: 100vw !important;
-            height: 100vh !important;
+            width: 100% !important;
+            height: 100% !important;
             z-index: 9998 !important;
             background: transparent !important;
             pointer-events: auto !important;

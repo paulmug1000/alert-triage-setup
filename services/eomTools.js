@@ -7,6 +7,13 @@ import { getSessionUser } from "./authService.js";
 import { isUserAuthorizedForClient, sanitizeFormulaInput, getCanonicalAcSheetId, verifyUserAuthorizedForSheet } from "./userPermissions.js";
 import { getAllClients, DEFAULT_AC_SHEET_ID } from "./workspaces.js";
 import { matchesClientName, sanitizeSpreadsheetTerms } from "../utils/helpers.js";
+import { resolveSupabaseSheetContext } from "./masterEngineService.js";
+import {
+  pullLivePLToSupabaseNative,
+  pushOutgoingsToClientSheetNative,
+  runNativeRevenueComparison,
+  syncVirtualMgmtRepGridNative,
+} from "./masterSyncEngine.js";
 
 // Moved from triage.js local scope
 let eomTabsVerified = false;
@@ -1728,6 +1735,20 @@ export async function handleEomPullFreshPl(req, res, sheets) {
   const isAdmin = Boolean(getSessionUser(req)?.isAdmin);
 
   try {
+    const supaCtx = await resolveSupabaseSheetContext({ clientName });
+    if (supaCtx && supaCtx.masterMode === "supabase") {
+      await pullLivePLToSupabaseNative(sheets, supaCtx.clientName || clientName);
+      logPmaActivity(sheets, {
+        automationCommanderSheetId,
+        clientName,
+        category: "EOM",
+        action: "Pulled Fresh P&L",
+        summary: `Pulled fresh P&L data for ${clientName} (Supabase engine)`,
+        details: { clientName, engine: "supabase" },
+      }).catch((e) => console.error("PMA log failed:", e));
+      return res.status(200).json({ success: true, message: "Fresh P&L pulled successfully" });
+    }
+
     const clientResp = await withRetry(() => sheets.spreadsheets.values.get({
       spreadsheetId: automationCommanderSheetId,
       range: "AutoUpdates!A2:N500"
@@ -1821,13 +1842,16 @@ export async function handleEomPushOutgoings(req, res, sheets) {
     const masterSheetUrl = clientRow[12];
     const masterSheetId = extractSheetIdFromUrl(masterSheetUrl);
     const webAppUrl = String(clientRow[13] || "").trim();
-    if (!masterSheetId || !webAppUrl) {
+    const supaCtx = await resolveSupabaseSheetContext({ clientName, spreadsheetId: masterSheetId });
+    const isSupabaseMaster = Boolean(supaCtx && supaCtx.masterMode === "supabase");
+
+    if (!masterSheetId || (!webAppUrl && !isSupabaseMaster)) {
       return res.status(400).json({
         success: false,
         error: isAdmin ? `Missing master sheet ID or Web App URL for "${clientName}"` : `Accounting sync service is not configured for "${clientName}".`
       });
     }
-    if (!isValidGoogleScriptUrl(webAppUrl)) {
+    if (!isSupabaseMaster && !isValidGoogleScriptUrl(webAppUrl)) {
       return res.status(400).json({
         success: false,
         error: isAdmin ? "Invalid Master Web App URL: Target must be a Google Apps Script Web App ending with /exec." : "Invalid accounting sync service endpoint."
@@ -1850,36 +1874,41 @@ export async function handleEomPushOutgoings(req, res, sheets) {
       requestBody: { values: [checkboxRow] }
     }));
 
-    // 2. Call Master Web App to run pushOutgoingsWithPLAddsToClientSheet (if including unreconciled)
-    // or pushOutgoingsToClientSheet (if not including unreconciled)
-    const secret = process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "";
-    const action = isInclUnrec ? "push_outgoings_with_pl_adds" : "push_outgoings";
-    const functionName = isInclUnrec ? "pushOutgoingsWithPLAddsToClientSheet" : "pushOutgoingsToClientSheet";
-
-    const gasResp = await fetch(webAppUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        secret,
-        action,
-        functionName,
+    // 2. Execute pushOutgoings natively when in Supabase engine mode, or via Master Web App otherwise
+    if (isSupabaseMaster) {
+      await pushOutgoingsToClientSheetNative(sheets, supaCtx.clientName || clientName, {
         includeUnreconciled: isInclUnrec,
-        clientName
-      }),
-    });
-
-    const gasText = await gasResp.text();
-    let gasData = null;
-    try { gasData = JSON.parse(gasText); } catch (e) { }
-    if (!gasData) {
-      console.error(`❌ Master Web App ${action} failed (HTTP ${gasResp.status}):`, gasText.slice(0, 300));
-      return res.status(502).json({
-        success: false,
-        error: `Client Master Web App returned HTTP ${gasResp.status} (${gasText.slice(0, 120).replace(/<[^>]*>/g, '').trim() || 'non-JSON'}). Please verify deployment permissions.`
       });
-    }
-    if (!gasData.success) {
-      return res.status(200).json({ success: false, error: gasData.error || "Push outgoings failed" });
+    } else {
+      const secret = process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "";
+      const action = isInclUnrec ? "push_outgoings_with_pl_adds" : "push_outgoings";
+      const functionName = isInclUnrec ? "pushOutgoingsWithPLAddsToClientSheet" : "pushOutgoingsToClientSheet";
+
+      const gasResp = await fetch(webAppUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          secret,
+          action,
+          functionName,
+          includeUnreconciled: isInclUnrec,
+          clientName
+        }),
+      });
+
+      const gasText = await gasResp.text();
+      let gasData = null;
+      try { gasData = JSON.parse(gasText); } catch (e) { }
+      if (!gasData) {
+        console.error(`❌ Master Web App ${action} failed (HTTP ${gasResp.status}):`, gasText.slice(0, 300));
+        return res.status(502).json({
+          success: false,
+          error: `Client Master Web App returned HTTP ${gasResp.status} (${gasText.slice(0, 120).replace(/<[^>]*>/g, '').trim() || 'non-JSON'}). Please verify deployment permissions.`
+        });
+      }
+      if (!gasData.success) {
+        return res.status(200).json({ success: false, error: gasData.error || "Push outgoings failed" });
+      }
     }
 
     // 3. Check if the relevant EoM month was pushed
@@ -3350,6 +3379,12 @@ async function ensureOverheadAlignmentAndMonth_(sheets, masterSheetId, reportMon
       }
     }
 
+    const supaCtx = await resolveSupabaseSheetContext({ spreadsheetId: masterSheetId });
+    if (supaCtx && supaCtx.masterMode === "supabase") {
+      await syncVirtualMgmtRepGridNative(sheets, supaCtx.clientName, reportMonthKey, isoDateToWrite);
+      return;
+    }
+
     const [checkRes, currentB1Resp] = await Promise.all([
       withRetry(() => sheets.spreadsheets.values.batchGet({
         spreadsheetId: masterSheetId,
@@ -3857,6 +3892,10 @@ export async function handleEomAddZeroBudgetCategory(req, res, sheets) {
     }
 
     // Re-read MgmtRep!A371:F493 so VLOOKUP in Col C picks up the new £0 budget categories
+    const supaCtx = await resolveSupabaseSheetContext({ clientName, spreadsheetId: mId });
+    if (supaCtx && supaCtx.masterMode === "supabase") {
+      await syncVirtualMgmtRepGridNative(sheets, supaCtx.clientName, null, null);
+    }
     const refreshed = await readAndParseOverheadExpenses_(sheets, mId, checkboxOverrides || null);
 
     logPmaActivity(sheets, {
@@ -3936,6 +3975,11 @@ export async function handleEomConfirmOverheadExpenses(req, res, sheets) {
       valueInputOption: "RAW",
       requestBody: { values: colFValues }
     }));
+
+    const supaCtx = await resolveSupabaseSheetContext({ clientName, spreadsheetId: mId });
+    if (supaCtx && supaCtx.masterMode === "supabase") {
+      await syncVirtualMgmtRepGridNative(sheets, supaCtx.clientName, reportMonthKey, null);
+    }
 
     const refreshed = await readAndParseOverheadExpenses_(sheets, mId, null);
     const effectiveMonthKey = reportMonthKey || monthStrToEomKey_(refreshed.currentMonthFormatted) || "";
@@ -4764,51 +4808,57 @@ export async function handleEomRunRevenueComparison(req, res, sheets) {
     const masterSheetUrl = clientRow[12];
     const masterSheetId = extractSheetIdFromUrl(masterSheetUrl);
     const webAppUrl = String(clientRow[13] || "").trim();
+    const supaCtx = await resolveSupabaseSheetContext({ clientName, spreadsheetId: masterSheetId });
+    const isSupabaseMaster = Boolean(supaCtx && supaCtx.masterMode === "supabase");
 
-    if (!masterSheetId || !webAppUrl) {
+    if (!masterSheetId || (!webAppUrl && !isSupabaseMaster)) {
       return res.status(400).json({ success: false, error: `Accounting sync service is not configured for "${clientName}".` });
     }
-    if (!isValidGoogleScriptUrl(webAppUrl)) {
+    if (!isSupabaseMaster && !isValidGoogleScriptUrl(webAppUrl)) {
       return res.status(400).json({ success: false, error: "Invalid accounting sync service endpoint." });
     }
-
-    const candidateSecrets = Array.from(new Set([
-      (process.env.AGENT_TRIGGER_SECRET || "").replace(/^["']|["']$/g, "").trim(),
-      (process.env.CRON_SECRET || "").replace(/^["']|["']$/g, "").trim(),
-      (process.env.REPORTING_WEBAPP_SECRET || "").replace(/^["']|["']$/g, "").trim(),
-      "triage-cron-2026-AY4K2LDMXBV8DS7"
-    ].filter(Boolean)));
 
     let gasData = null;
     let lastError = null;
 
-    for (const secret of candidateSecrets) {
-      try {
-        const gasResp = await fetch(webAppUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ secret, action: "run_revenue_comparison", targetMonth: monthKey, clientName })
-        });
-        const gasText = await gasResp.text();
-        let parsed = null;
-        try { parsed = JSON.parse(gasText); } catch (e) { }
+    if (isSupabaseMaster) {
+      gasData = await runNativeRevenueComparison(sheets, supaCtx.clientName || clientName, monthKey);
+    } else {
+      const candidateSecrets = Array.from(new Set([
+        (process.env.AGENT_TRIGGER_SECRET || "").replace(/^["']|["']$/g, "").trim(),
+        (process.env.CRON_SECRET || "").replace(/^["']|["']$/g, "").trim(),
+        (process.env.REPORTING_WEBAPP_SECRET || "").replace(/^["']|["']$/g, "").trim(),
+        "triage-cron-2026-AY4K2LDMXBV8DS7"
+      ].filter(Boolean)));
 
-        if (parsed && parsed.success) {
-          gasData = parsed;
-          break;
-        }
+      for (const secret of candidateSecrets) {
+        try {
+          const gasResp = await fetch(webAppUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ secret, action: "run_revenue_comparison", targetMonth: monthKey, clientName })
+          });
+          const gasText = await gasResp.text();
+          let parsed = null;
+          try { parsed = JSON.parse(gasText); } catch (e) { }
 
-        lastError = parsed?.error || `Master Web App returned HTTP ${gasResp.status}`;
-        if (!String(lastError).toLowerCase().includes("invalid secret")) {
-          break;
+          if (parsed && parsed.success) {
+            gasData = parsed;
+            break;
+          }
+
+          lastError = parsed?.error || `Master Web App returned HTTP ${gasResp.status}`;
+          if (!String(lastError).toLowerCase().includes("invalid secret")) {
+            break;
+          }
+        } catch (fErr) {
+          lastError = fErr.message;
         }
-      } catch (fErr) {
-        lastError = fErr.message;
       }
     }
 
     if (!gasData || !gasData.success) {
-      return res.status(502).json({ success: false, error: sanitizeSpreadsheetTerms(lastError || "Failed to connect to Master Web App") });
+      return res.status(502).json({ success: false, error: sanitizeSpreadsheetTerms(lastError || "Failed to run revenue comparison") });
     }
 
     // Extract fresh data from Client Sheet (Monthly) & Master Sheet (RevFromApp)

@@ -33,6 +33,8 @@ import { logPrecomputeRun, logFlagSweepRun, logBuildOptionsRun } from "./systemL
 import { isPlaceholderInvoice, isPlaceholderExpense, parseYearMonth, parseStaleExpenseDetail, isPipelineJobSuppressed, toSheetDateFormat, hasActiveCrmIntegration, ADMIN_ONLY_ALERT_TYPES, isNoEndDateSentinel } from "../utils/helpers.js";
 import { getSessionUser } from "./authService.js";
 import { matchesClientName, getClientManagerClientMap, isUserAuthorizedForClient, verifyUserAuthorizedForSheet, getCanonicalAcSheetId } from "./userPermissions.js";
+import { resolveSupabaseSheetContext } from "./masterEngineService.js";
+import { runNativeMasterSync } from "./masterSyncEngine.js";
 
 const ALERT_MEMORY_TAB = "AlertMemory";
 
@@ -2263,6 +2265,27 @@ export async function handleRunFlagSweep(req, res, sheets) {
         const hasInvoice = isValidFrequency(freqRow[0]);
         let hasCRM = isValidFrequency(freqRow[1]);
         const hasExpense = isValidFrequency(freqRow[2]);
+
+        // If client is on the Supabase engine (Stage 2), run native Master sync during actionable sweeps
+        if (actionableDue && (hasInvoice || hasExpense || hasCRM)) {
+          try {
+            const supaCtx = await resolveSupabaseSheetContext({
+              clientName: client.clientName,
+              spreadsheetId: client.masterSheetId,
+            });
+            if (supaCtx && supaCtx.masterMode === "supabase") {
+              console.log(`  ⚡ Running native Supabase sync for ${client.clientName}...`);
+              await runNativeMasterSync({
+                sheets,
+                clientName: client.clientName,
+                syncType: "all",
+                userEmail: "System (Scheduled Sweep)",
+              });
+            }
+          } catch (syncErr) {
+            console.warn(`  ⚠️ Native Supabase sync warning for ${client.clientName}: ${syncErr.message}`);
+          }
+        }
 
         console.log(`  📦 Batch fetching static data for ${client.clientName}...`);
         let batchData = {};

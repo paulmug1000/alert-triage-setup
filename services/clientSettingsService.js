@@ -20,6 +20,11 @@ import { redisClient } from "./redisClient.js";
 import { sanitizeFormulaInput } from "./userPermissions.js";
 import { clearAllClientsMemoryCache } from "./workspaces.js";
 import { clearSsrClientsMemoryCache } from "./ssrSession.js";
+import { resolveSupabaseSheetContext } from "./masterEngineService.js";
+import {
+  refreshNativeChartOfAccounts,
+  pullLivePLToSupabaseNative,
+} from "./masterSyncEngine.js";
 
 const REDIS_SETTINGS_PREFIX = "pulse:client_settings:";
 const REDIS_SETTINGS_TTL = 1800; // 30 minutes cache
@@ -595,7 +600,7 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
         try {
           const rawSetup = await redisClient.get(setupKey);
           if (rawSetup) existingSetup = JSON.parse(rawSetup);
-        } catch {}
+        } catch { }
         const revFocus = String(settings.customisation.revenueFocus || "Revenue").trim();
         const dcMode = revFocus === "Income"
           ? "Pass-through"
@@ -1064,7 +1069,7 @@ export async function saveClientSettings({
         try {
           const rawSetup = await redisClient.get(setupKey);
           if (rawSetup) existingSetup = JSON.parse(rawSetup);
-        } catch {}
+        } catch { }
         const revFocus = String(settings.customisation.revenueFocus || "Revenue").trim();
         const dcMode = revFocus === "Income"
           ? "Pass-through"
@@ -1265,25 +1270,30 @@ export async function refreshChartOfAccountsService({ clientName, masterSheetId 
 
   let gasResult = null;
   try {
-    const autoUpdatesResp = await withRetry(() => sheets.spreadsheets.values.get({
-      spreadsheetId: "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M",
-      range: "AutoUpdates!A2:N50"
-    }));
-    const rows = autoUpdatesResp.data.values || [];
-    const clientRow = rows.find(r => String(r[0] || "").trim() === clientName);
-    const webAppUrl = String(clientRow?.[13] || "").trim();
+    const supaCtx = await resolveSupabaseSheetContext({ clientName, spreadsheetId: masterSheetId });
+    if (supaCtx && supaCtx.masterMode === "supabase") {
+      gasResult = await refreshNativeChartOfAccounts(sheets, supaCtx.clientName || clientName);
+    } else {
+      const autoUpdatesResp = await withRetry(() => sheets.spreadsheets.values.get({
+        spreadsheetId: "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M",
+        range: "AutoUpdates!A2:N50"
+      }));
+      const rows = autoUpdatesResp.data.values || [];
+      const clientRow = rows.find(r => String(r[0] || "").trim() === clientName);
+      const webAppUrl = String(clientRow?.[13] || "").trim();
 
-    if (webAppUrl) {
-      const secret = (process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "").trim();
-      const resp = await fetch(webAppUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ secret, action: "refresh_chart_of_accounts", clientName })
-      });
-      gasResult = await resp.json().catch(() => null);
+      if (webAppUrl) {
+        const secret = (process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "").trim();
+        const resp = await fetch(webAppUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ secret, action: "refresh_chart_of_accounts", clientName })
+        });
+        gasResult = await resp.json().catch(() => null);
+      }
     }
   } catch (err) {
-    console.warn("Could not call Master WebApp for refresh_chart_of_accounts:", err.message);
+    console.warn("Could not refresh chart of accounts:", err.message);
   }
 
   const coaResp = await withRetry(() => sheets.spreadsheets.values.get({
@@ -1316,25 +1326,30 @@ export async function pullFreshPlCategoriesService({ clientName, masterSheetId }
 
   let gasResult = null;
   try {
-    const autoUpdatesResp = await withRetry(() => sheets.spreadsheets.values.get({
-      spreadsheetId: "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M",
-      range: "AutoUpdates!A2:N50"
-    }));
-    const rows = autoUpdatesResp.data.values || [];
-    const clientRow = rows.find(r => String(r[0] || "").trim() === clientName);
-    const webAppUrl = String(clientRow?.[13] || "").trim();
+    const supaCtx = await resolveSupabaseSheetContext({ clientName, spreadsheetId: masterSheetId });
+    if (supaCtx && supaCtx.masterMode === "supabase") {
+      gasResult = await pullLivePLToSupabaseNative(sheets, supaCtx.clientName || clientName);
+    } else {
+      const autoUpdatesResp = await withRetry(() => sheets.spreadsheets.values.get({
+        spreadsheetId: "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M",
+        range: "AutoUpdates!A2:N50"
+      }));
+      const rows = autoUpdatesResp.data.values || [];
+      const clientRow = rows.find(r => String(r[0] || "").trim() === clientName);
+      const webAppUrl = String(clientRow?.[13] || "").trim();
 
-    if (webAppUrl) {
-      const secret = (process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "").trim();
-      const resp = await fetch(webAppUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ secret, action: "pull_pl", clientName })
-      });
-      gasResult = await resp.json().catch(() => null);
+      if (webAppUrl) {
+        const secret = (process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "").trim();
+        const resp = await fetch(webAppUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ secret, action: "pull_pl", clientName })
+        });
+        gasResult = await resp.json().catch(() => null);
+      }
     }
   } catch (err) {
-    console.warn("Could not call Master WebApp for pull_pl:", err.message);
+    console.warn("Could not pull fresh P&L categories:", err.message);
   }
 
   const plResp = await withRetry(() => sheets.spreadsheets.values.batchGet({

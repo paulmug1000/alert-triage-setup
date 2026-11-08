@@ -7,6 +7,11 @@ import { ensureAlertMemoryTab, readAlertMemory, updateAlertMemoryRow, appendAler
 import { applyAlertRemovalToTriageData, PRECOMPUTED_KEY } from "./alertState.js";
 import { invalidatePrecomputedMemoryCache } from "./triageEngine.js";
 import { logPmaActivity } from "./pmaLogger.js";
+import { resolveSupabaseSheetContext } from "./masterEngineService.js";
+import {
+  pushOutgoingsToClientSheetNative,
+  syncExpenseBreakdownToClientSheetNative,
+} from "./masterSyncEngine.js";
 
 export function parseConfirmedDate_(val) {
   if (!val) return null;
@@ -2788,28 +2793,36 @@ export async function handleClassifyPLCategory(sheets, {
   }
   invalidatePrecomputedMemoryCache();
 
-  // 6. Trigger Master Sheet Full Sync via webAppUrl in background (non-blocking)
-  // Fires push_outgoings (to execute pushOutgoingsToClientSheet) and sync_expense_breakdown
-  // (to execute syncExpenseTransactionBreakdownToClientSheet_ for row 300 / rows 304-305).
-  const webAppUrl = await getClientWebAppUrl(sheets, clientName, automationCommanderSheetId);
-  if (webAppUrl) {
-    const secret = (process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "").trim();
-    if (secret) {
-      fetch(webAppUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ secret, action: "push_outgoings", clientName })
-      }).catch(err => {
-        console.warn("⚠️ Master WebApp push_outgoings error:", err.message);
-      });
+  // 6. Trigger Master Sheet Full Sync natively (when in Supabase engine mode) or via webAppUrl in background
+  const supaCtx = await resolveSupabaseSheetContext({ clientName, spreadsheetId: masterSheetId });
+  if (supaCtx && supaCtx.masterMode === "supabase") {
+    pushOutgoingsToClientSheetNative(sheets, supaCtx.clientName || clientName).catch((err) => {
+      console.warn("⚠️ Native pushOutgoings error:", err.message);
+    });
+    syncExpenseBreakdownToClientSheetNative(sheets, supaCtx.clientName || clientName).catch((err) => {
+      console.warn("⚠️ Native syncExpenseBreakdown error:", err.message);
+    });
+  } else {
+    const webAppUrl = await getClientWebAppUrl(sheets, clientName, automationCommanderSheetId);
+    if (webAppUrl) {
+      const secret = (process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "").trim();
+      if (secret) {
+        fetch(webAppUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ secret, action: "push_outgoings", clientName })
+        }).catch(err => {
+          console.warn("⚠️ Master WebApp push_outgoings error:", err.message);
+        });
 
-      fetch(webAppUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ secret, action: "sync_expense_breakdown", clientName })
-      }).catch(syncErr => {
-        console.warn("⚠️ Master WebApp sync_expense_breakdown error:", syncErr.message);
-      });
+        fetch(webAppUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ secret, action: "sync_expense_breakdown", clientName })
+        }).catch(syncErr => {
+          console.warn("⚠️ Master WebApp sync_expense_breakdown error:", syncErr.message);
+        });
+      }
     }
   }
 

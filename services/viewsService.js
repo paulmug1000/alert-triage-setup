@@ -69,7 +69,7 @@ export function parseCell(cell) {
   const tf = fmt.textFormat || {};
   const fg = colorToCss(tf.foregroundColor);
   const align = fmt.horizontalAlignment ? fmt.horizontalAlignment.toLowerCase() : null;
-  
+
   const borders = fmt.borders || {};
   const bt = borderToCss(borders.top);
   const bb = borderToCss(borders.bottom);
@@ -182,14 +182,14 @@ export async function getClientViewData({ clientSheetId, masterSheetId, tab, byp
             return sanitizeViewDataForUser(parsed, sessionUser);
           }
         }
-      } catch (e) {}
+      } catch (e) { }
     }
   }
 
   const saveAndReturn = (result) => {
     memoryCache.set(cacheKey, result, 120);
     if (redisClient?.isOpen) {
-      redisClient.set(cacheKey, JSON.stringify(result), { EX: 120 }).catch(() => {});
+      redisClient.set(cacheKey, JSON.stringify(result), { EX: 120 }).catch(() => { });
     }
     return sanitizeViewDataForUser(result, sessionUser);
   };
@@ -223,8 +223,8 @@ export async function getClientViewData({ clientSheetId, masterSheetId, tab, byp
     const directCostsMode = isIncomeMode
       ? "Pass-through"
       : rawDirectCostsMode === "Pass-through"
-      ? "Pass-through"
-      : "Contractors";
+        ? "Pass-through"
+        : "Contractors";
 
     const fyConfigs = [
       { label: row0[19] || "FY1", totalCol: 19, monthCols: Array.from({ length: 12 }, (_, i) => 6 + i) },
@@ -412,8 +412,8 @@ export async function getClientViewData({ clientSheetId, masterSheetId, tab, byp
     const directCostsMode = isIncomeMode
       ? "Pass-through"
       : rawDirectCostsMode === "Pass-through"
-      ? "Pass-through"
-      : "Contractors";
+        ? "Pass-through"
+        : "Contractors";
 
     return saveAndReturn({
       success: true,
@@ -565,7 +565,7 @@ export async function handleUpdateViewCell(req, res, sheets) {
         }));
         const c1Val = c1Res.data.values?.[0]?.[0];
         if (c1Val) targetSpreadsheetId = extractSheetIdFromUrl(c1Val) || String(c1Val).trim();
-      } catch (e) {}
+      } catch (e) { }
     }
 
     const sheetIdClean = extractSheetIdFromUrl(targetSpreadsheetId) || targetSpreadsheetId;
@@ -627,7 +627,7 @@ export async function handleUpdateViewCell(req, res, sheets) {
               valueRenderOption: "FORMATTED_VALUE"
             });
             headerForLog = hRes.data?.values?.[0]?.[0] || "";
-          } catch (_) {}
+          } catch (_) { }
         }
         const resolvedMonthText = colIndex >= 6 ? getFullMonthYear(headerForLog) : "";
         const ident = contractorName || rowDescription || `Row ${rowNum}`;
@@ -726,13 +726,13 @@ export async function handleUpdateViewCell(req, res, sheets) {
     memoryCache.del(`pulse:view_data:${cleanId}:*`);
     memoryCache.del(`pulse:view_data:${cleanId}:${screenTab}`);
     if (redisClient?.isOpen) {
-      redisClient.del(`pulse:view_data:${cleanId}:${screenTab}`).catch(() => {});
+      redisClient.del(`pulse:view_data:${cleanId}:${screenTab}`).catch(() => { });
     }
     invalidatePmaClientCache(
       extractSheetIdFromUrl(clientSheetId) || cleanId,
       extractSheetIdFromUrl(masterSheetId) || null,
       screenTab === "budget" ? ["views"] : ["outgoings", "views", "cash"]
-    ).catch(() => {});
+    ).catch(() => { });
 
     return res.status(200).json({
       success: true,
@@ -818,7 +818,7 @@ export async function handleSpreadViewRow(req, res, sheets) {
         }));
         const c1Val = c1Res.data.values?.[0]?.[0];
         if (c1Val) targetSpreadsheetId = extractSheetIdFromUrl(c1Val) || String(c1Val).trim();
-      } catch (e) {}
+      } catch (e) { }
     }
 
     const sheetIdClean = extractSheetIdFromUrl(targetSpreadsheetId) || targetSpreadsheetId;
@@ -884,13 +884,13 @@ export async function handleSpreadViewRow(req, res, sheets) {
     memoryCache.del(`pulse:view_data:${cleanId}:*`);
     memoryCache.del(`pulse:view_data:${cleanId}:budget`);
     if (redisClient?.isOpen) {
-      redisClient.del(`pulse:view_data:${cleanId}:budget`).catch(() => {});
+      redisClient.del(`pulse:view_data:${cleanId}:budget`).catch(() => { });
     }
     invalidatePmaClientCache(
       extractSheetIdFromUrl(clientSheetId) || cleanId,
       extractSheetIdFromUrl(masterSheetId) || null,
       ["views"]
-    ).catch(() => {});
+    ).catch(() => { });
 
     return res.status(200).json({
       success: true,
@@ -953,10 +953,10 @@ export async function handleUpdateCellNote(req, res, sheets) {
 
   if (targetTabNormalized.includes("budget")) {
     targetTab = "Budget";
-    targetSpreadsheetId = masterSheetId || clientSheetId;
+    targetSpreadsheetId = clientSheetId || masterSheetId;
   } else if (targetTabNormalized.includes("outgnotes")) {
     targetTab = "OutgNotes";
-    targetSpreadsheetId = masterSheetId || clientSheetId;
+    targetSpreadsheetId = clientSheetId || masterSheetId;
   } else if (targetTabNormalized.includes("outgoings")) {
     targetTab = "Outgoings";
     targetSpreadsheetId = clientSheetId;
@@ -965,7 +965,7 @@ export async function handleUpdateCellNote(req, res, sheets) {
     targetSpreadsheetId = clientSheetId;
   } else if (targetTabNormalized.includes("salaries")) {
     targetTab = "Salaries";
-    targetSpreadsheetId = masterSheetId || clientSheetId;
+    targetSpreadsheetId = clientSheetId || masterSheetId;
   } else if (targetTabNormalized.includes("confirmed")) {
     targetTab = "Confirmed";
     targetSpreadsheetId = clientSheetId;
@@ -1018,11 +1018,36 @@ export async function handleUpdateCellNote(req, res, sheets) {
       })
     );
 
+    if (targetTab === "Outgoings" && rowNum >= 1 && rowNum <= 111 && colIndex < 48) {
+      const safeOutgNote = /^[\s'’]*[=+\-@]/.test(cleanNote)
+        ? "'" + cleanNote.replace(/^[\s'’]+/, "")
+        : cleanNote;
+      const outgCellRange = `OutgNotes!${finalColLetter}${rowNum}`;
+      const cIdClean = clientSheetId ? (extractSheetIdFromUrl(clientSheetId) || clientSheetId) : null;
+      const mIdClean = masterSheetId ? (extractSheetIdFromUrl(masterSheetId) || masterSheetId) : null;
+      if (cIdClean) {
+        sheets.spreadsheets.values.update({
+          spreadsheetId: cIdClean,
+          range: outgCellRange,
+          valueInputOption: "RAW",
+          requestBody: { values: [[safeOutgNote]] }
+        }).catch(() => { });
+      }
+      if (mIdClean) {
+        sheets.spreadsheets.values.update({
+          spreadsheetId: mIdClean,
+          range: outgCellRange,
+          valueInputOption: "RAW",
+          requestBody: { values: [[safeOutgNote]] }
+        }).catch(() => { });
+      }
+    }
+
     // Invalidate caches
     const cleanId = extractSheetIdFromUrl(sheetIdClean) || sheetIdClean;
     memoryCache.del(`pulse:view_data:${cleanId}:*`);
     if (redisClient?.isOpen) {
-      redisClient.del(`pulse:view_data:${cleanId}:*`).catch(() => {});
+      redisClient.del(`pulse:view_data:${cleanId}:*`).catch(() => { });
     }
 
     let resolvedClient = clientName || "";

@@ -5838,18 +5838,35 @@ export async function handleUpdateOutgoingNote(req, res, sheets) {
       }
     }
 
-    if (targetMasterId) {
-      const masterData = [
-        { range: `OutgNotes!${colLetter}${sheetRow}`, values: [[noteStr]] }
-      ];
-      if (newCosNote !== null) {
-        masterData.push({ range: `OutgNotes!${colLetter}111`, values: [[newCosNote]] });
+    const safeNoteVal = typeof noteStr === "string" && /^[\s'’]*[=+\-@]/.test(noteStr)
+      ? "'" + noteStr.replace(/^[\s'’]+/, "")
+      : String(noteStr || "");
+    const safeCosVal = newCosNote !== null && typeof newCosNote === "string" && /^[\s'’]*[=+\-@]/.test(newCosNote)
+      ? "'" + newCosNote.replace(/^[\s'’]+/, "")
+      : String(newCosNote || "");
+
+    const outgNotesData = [
+      { range: `OutgNotes!${colLetter}${sheetRow}`, values: [[safeNoteVal]] }
+    ];
+    if (newCosNote !== null) {
+      outgNotesData.push({ range: `OutgNotes!${colLetter}111`, values: [[safeCosVal]] });
+    }
+
+    // Write to Client Sheet's local OutgNotes tab if present
+    sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId: sheetIdClean,
+      requestBody: {
+        valueInputOption: "RAW",
+        data: outgNotesData
       }
+    }).catch(() => {});
+
+    if (targetMasterId) {
       sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: targetMasterId,
         requestBody: {
           valueInputOption: "RAW",
-          data: masterData
+          data: outgNotesData
         }
       }).catch(e => console.warn("Failed to write to Master OutgNotes:", e.message));
 

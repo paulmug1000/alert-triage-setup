@@ -849,21 +849,37 @@ export default async function handler(req, res) {
       3: parseYearRow(row305, 36, 48, formatMoneyVal),
     };
 
-    // In Notes metadata mode, fetch and parse transactions from Master Sheet's OutgNotes tab
+    // In Notes metadata mode, fetch and parse transactions from Client Sheet's OutgNotes tab (falling back to Master Sheet)
     let contractorTransactions = [];
     const contractorLockedMap = {};
     const contractorBlocksMap = {};
 
-    if (isNotesMode && masterSheetId) {
+    if (isNotesMode && (sheetId || masterSheetId)) {
       try {
-        const notesResp = await withRetry(() =>
-          sheets.spreadsheets.values.get({
-            spreadsheetId: masterSheetId,
-            range: "OutgNotes!A1:AV112",
-            valueRenderOption: "FORMATTED_VALUE",
-          })
-        );
-        const notesRows = notesResp.data.values || [];
+        let notesResp = null;
+        if (sheetId) {
+          try {
+            notesResp = await withRetry(() =>
+              sheets.spreadsheets.values.get({
+                spreadsheetId: sheetId,
+                range: "OutgNotes!A1:AV112",
+                valueRenderOption: "FORMATTED_VALUE",
+              })
+            );
+          } catch {
+            notesResp = null;
+          }
+        }
+        if (!notesResp && masterSheetId) {
+          notesResp = await withRetry(() =>
+            sheets.spreadsheets.values.get({
+              spreadsheetId: masterSheetId,
+              range: "OutgNotes!A1:AV112",
+              valueRenderOption: "FORMATTED_VALUE",
+            })
+          );
+        }
+        const notesRows = notesResp?.data?.values || [];
 
         const yearColRanges = [
           { yr: 1, start: 6, count: 12 },  // Year 1: cols G-R (indices 6-17)

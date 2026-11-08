@@ -888,15 +888,6 @@ export default function ClientSettingsView({
     return SECTIONS.filter(s => effectiveIsAdmin || !s.adminOnly);
   }, [effectiveIsAdmin]);
 
-  // Ref for active section tab to auto-scroll into view on mobile screens
-  const activeNavBtnRef = useRef(null);
-
-  useEffect(() => {
-    if (activeNavBtnRef.current && typeof window !== "undefined" && window.innerWidth <= 768) {
-      activeNavBtnRef.current.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
-    }
-  }, [activeSection]);
-
   // Data states
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -2407,12 +2398,24 @@ export default function ClientSettingsView({
   };
 
   return (
-    <div className="client-settings-root" style={{ marginTop: "10px", width: "100%", maxWidth: "100%", boxSizing: "border-box", minWidth: 0, paddingBottom: isDirty ? "70px" : "0px" }}>
+    <div style={{ marginTop: "10px", width: "100%", maxWidth: "100%", boxSizing: "border-box", minWidth: 0 }}>
       {/* ── TOP CONTROL BAR (shown when a client is selected) ──────────────── */}
       {(selectedClientName || managedClient) && (
-        <div className="client-settings-topbar">
+        <div style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          flexWrap: "wrap",
+          gap: "12px",
+          background: "#FFFFFF",
+          border: "1px solid #E2E8F0",
+          borderRadius: "10px",
+          padding: "12px 18px",
+          marginBottom: "16px",
+          boxShadow: "0 1px 2px rgba(0,0,0,0.03)"
+        }}>
           {/* Left: Back button + Active Client Name */}
-          <div className="client-settings-topbar-left">
+          <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
             {!managedClient && (allClients || []).length > 1 && (
               <button
                 type="button"
@@ -2431,8 +2434,7 @@ export default function ClientSettingsView({
                   alignItems: "center",
                   justifyContent: "center",
                   transition: "all 0.15s ease",
-                  boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
-                  flexShrink: 0
+                  boxShadow: "0 1px 2px rgba(0,0,0,0.04)"
                 }}
                 onMouseEnter={(e) => {
                   if (!loading && !saving) {
@@ -2453,19 +2455,19 @@ export default function ClientSettingsView({
                 ←
               </button>
             )}
-            <div style={{ display: "inline-flex", alignItems: "center", gap: "8px", minWidth: 0, overflow: "hidden" }}>
-              <span style={{ fontSize: "15px", fontWeight: "700", color: "#0047AB", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            <div style={{ display: "inline-flex", alignItems: "center", gap: "8px" }}>
+              <span style={{ fontSize: "15px", fontWeight: "700", color: "#0047AB" }}>
                 {managedClient ? managedClient.clientName : selectedClientName}
               </span>
               {managedClient && (
-                <span style={{ fontSize: "11px", color: "#64748B", fontStyle: "italic", flexShrink: 0 }}>
+                <span style={{ fontSize: "11px", color: "#64748B", fontStyle: "italic" }}>
                   (managed client mode)
                 </span>
               )}
             </div>
 
             {settings && lastSyncedAt && !loading && (
-              <span className="client-settings-sync-status" style={{ fontSize: "11px", color: "#64748B", marginLeft: "6px" }}>
+              <span style={{ fontSize: "11px", color: "#64748B", marginLeft: "6px" }}>
                 {fromCache ? "Loaded from cache" : "Loaded from database"}
                 {" · "}
                 {new Date(lastSyncedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
@@ -2479,7 +2481,7 @@ export default function ClientSettingsView({
           </div>
 
           {/* Right: Actions */}
-          <div className="client-settings-topbar-right">
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
             {effectiveIsAdmin && (
               <label style={{ display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#64748B", cursor: "pointer", userSelect: "none" }}>
                 <input
@@ -2492,7 +2494,7 @@ export default function ClientSettingsView({
             )}
 
             {isDirty && (
-              <span className="client-settings-unsaved-badge" style={{ fontSize: "12px", color: "#B45309", background: "#FEF3F2", padding: "4px 10px", borderRadius: "12px", fontWeight: "600", display: "inline-flex", alignItems: "center", gap: "4px" }}>
+              <span style={{ fontSize: "12px", color: "#B45309", background: "#FEF3F2", padding: "4px 10px", borderRadius: "12px", fontWeight: "600", display: "inline-flex", alignItems: "center", gap: "4px" }}>
                 ● Unsaved changes
               </span>
             )}
@@ -2823,28 +2825,55 @@ export default function ClientSettingsView({
             </div>
           )}
 
-          <div className="client-settings-main-grid">
-            {/* Left Navigation Sidebar / Mobile Pill Nav */}
-            <div className="client-settings-nav">
+          <div style={{ display: "grid", gridTemplateColumns: "240px minmax(0, 1fr)", gap: "20px", alignItems: "start" }}>
+            {/* Left Navigation Sidebar */}
+            <div style={{
+              background: "#FFFFFF",
+              borderRadius: "10px",
+              border: "1px solid #E2E8F0",
+              padding: "8px",
+              boxShadow: "0 1px 3px rgba(0,0,0,0.02)"
+            }}>
               {visibleSections.map(s => {
                 const active = activeSection === s.id;
                 return (
                   <button
                     key={s.id}
-                    ref={active ? activeNavBtnRef : null}
                     type="button"
                     onClick={() => {
                       setActiveSection(s.id);
                       onSelectSection?.(s.id);
                     }}
-                    className={`client-settings-nav-btn ${active ? "active" : ""}`}
+                    style={{
+                      width: "100%",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      padding: "9px 12px",
+                      borderRadius: "6px",
+                      border: "none",
+                      background: active ? "#EFF6FF" : "transparent",
+                      color: active ? "#0066CC" : "#334155",
+                      fontSize: "13px",
+                      fontWeight: active ? 700 : 500,
+                      cursor: "pointer",
+                      textAlign: "left",
+                      marginBottom: "2px",
+                      transition: "all 0.1s ease"
+                    }}
+                    onMouseEnter={(e) => {
+                      if (!active) e.currentTarget.style.background = "#F8FAFC";
+                    }}
+                    onMouseLeave={(e) => {
+                      if (!active) e.currentTarget.style.background = "transparent";
+                    }}
                   >
-                    <span className="client-settings-nav-label">
+                    <span style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                       <span>{s.icon}</span>
                       <span>{s.label}</span>
                     </span>
                     {s.adminOnly && (
-                      <span className="client-settings-nav-admin-badge">
+                      <span style={{ fontSize: "10px", fontWeight: "700", color: "#64748B", background: "#F1F5F9", padding: "1px 5px", borderRadius: "4px" }}>
                         Admin
                       </span>
                     )}
@@ -2854,7 +2883,17 @@ export default function ClientSettingsView({
             </div>
 
             {/* Right Content Panel */}
-            <div className="client-settings-content-panel">
+            <div style={{
+              background: "#FFFFFF",
+              borderRadius: "12px",
+              border: "1px solid #E2E8F0",
+              padding: "24px",
+              boxShadow: "0 1px 3px rgba(0,0,0,0.03)",
+              minHeight: "500px",
+              minWidth: 0,
+              maxWidth: "100%",
+              boxSizing: "border-box"
+            }}>
 
               {/* ── 1. MAIN (ADMIN ONLY) ────────────────────────────────────── */}
               {activeSection === "main" && (
@@ -6657,65 +6696,8 @@ export default function ClientSettingsView({
         </div>
       )}
 
-      {/* ── STICKY BOTTOM ACTION BAR ON MOBILE WHEN DIRTY ─────────────────── */}
-      {isDirty && (selectedClientName || managedClient) && (
-        <div className="client-settings-mobile-action-bar">
-          <div className="mobile-action-bar-info">
-            <span className="mobile-action-bar-dot" />
-            <span>Unsaved changes</span>
-          </div>
-          <div className="mobile-action-bar-buttons">
-            <button
-              type="button"
-              onClick={handleDiscard}
-              disabled={isSaving}
-              className="mobile-action-discard-btn"
-            >
-              Discard
-            </button>
-            <button
-              type="button"
-              onClick={() => handleSave()}
-              disabled={isSaving}
-              className="mobile-action-save-btn"
-            >
-              {isSaving ? "Saving..." : "Save changes"}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* ── RESPONSIVE MOBILE STYLES ────────────────────────────────────────── */}
+      {/* ── RESPONSIVE STYLES ──────────────────────────────────────────────── */}
       <style jsx>{`
-        .client-settings-main-grid {
-          display: grid;
-          grid-template-columns: 240px minmax(0, 1fr);
-          gap: 24px;
-          align-items: start;
-        }
-        .client-settings-nav {
-          position: sticky;
-          top: 16px;
-          display: flex;
-          flex-direction: column;
-          gap: 6px;
-        }
-        .client-settings-content-panel {
-          background: #FFFFFF;
-          border-radius: 12px;
-          border: 1px solid #E2E8F0;
-          padding: 24px;
-        }
-        .client-settings-topbar {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-        }
-        .client-settings-topbar-actions {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-        }
         .client-settings-bank-row,
         .client-settings-mapping-row {
           display: flex;
@@ -6724,9 +6706,6 @@ export default function ClientSettingsView({
           margin-bottom: 8px;
         }
         .mobile-table-scroll-hint {
-          display: none;
-        }
-        .client-settings-mobile-action-bar {
           display: none;
         }
         .client-settings-modal-overlay {
@@ -6756,37 +6735,6 @@ export default function ClientSettingsView({
         }
 
         @media (max-width: 768px) {
-          .client-settings-main-grid {
-            grid-template-columns: 1fr;
-            gap: 14px;
-          }
-          .client-settings-nav {
-            position: sticky;
-            top: 0;
-            z-index: 25;
-            background: #FFFFFF;
-            border: 1px solid #E2E8F0;
-            border-radius: 10px;
-            padding: 6px 8px;
-            margin-bottom: 12px;
-            display: flex;
-            flex-direction: row;
-            overflow-x: auto;
-            -webkit-overflow-scrolling: touch;
-            gap: 6px;
-            white-space: nowrap;
-            scrollbar-width: none;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.04);
-          }
-          .client-settings-nav::-webkit-scrollbar {
-            display: none;
-          }
-          .client-settings-nav-btn {
-            padding: 7px 12px !important;
-            border-radius: 8px !important;
-            font-size: 12px !important;
-            flex-shrink: 0;
-          }
           .mobile-table-scroll-hint {
             display: flex;
             align-items: center;
@@ -6796,91 +6744,9 @@ export default function ClientSettingsView({
             margin-bottom: 6px;
             font-weight: 500;
           }
-          .client-settings-mobile-action-bar {
-            display: flex;
-            position: fixed;
-            bottom: 0;
-            left: 0;
-            right: 0;
-            background: #FFFFFF;
-            border-top: 1px solid #E2E8F0;
-            padding: 10px 14px calc(10px + env(safe-area-inset-bottom, 0px));
-            box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.08);
-            z-index: 100;
-            align-items: center;
-            justify-content: space-between;
-            gap: 10px;
-          }
-          .mobile-action-bar-info {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            font-size: 12px;
-            font-weight: 600;
-            color: #B45309;
-            min-width: 0;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-          }
-          .mobile-action-bar-dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: #F59E0B;
-            flex-shrink: 0;
-          }
-          .mobile-action-bar-buttons {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            flex-shrink: 0;
-          }
-          .mobile-action-discard-btn {
-            padding: 8px 12px;
-            border-radius: 6px;
-            border: 1px solid #CBD5E1;
-            background: #FFFFFF;
-            color: #475569;
-            font-size: 12px;
-            font-weight: 600;
-            cursor: pointer;
-          }
-          .mobile-action-save-btn {
-            padding: 8px 16px;
-            border-radius: 6px;
-            border: none;
-            background: #0066CC;
-            color: #FFFFFF;
-            font-size: 12px;
-            font-weight: 600;
-            cursor: pointer;
-          }
-          .client-settings-content-panel {
-            padding-bottom: 64px;
-          }
         }
 
         @media (max-width: 640px) {
-          .client-settings-content-panel {
-            padding: 14px 12px 64px 12px;
-            border-radius: 10px;
-          }
-          .client-settings-topbar {
-            flex-direction: column;
-            align-items: stretch;
-            gap: 12px;
-          }
-          .client-settings-topbar-actions {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px;
-            width: 100%;
-          }
-          .client-settings-topbar-actions button {
-            flex: 1;
-            justify-content: center;
-          }
           .client-settings-bank-row,
           .client-settings-mapping-row {
             flex-direction: column;

@@ -6,6 +6,26 @@ import { logPmaActivity } from "../../../services/pmaLogger.js";
 import { getAllUsers, createOrUpdateUser, deleteUserByEmail, getCanonicalAcSheetId } from "../../../services/userPermissions.js";
 import { getAllClients } from "../../../services/workspaces.js";
 import { flushAllAlertMemoryCaches, searchAlertMemoryEntries, deleteAlertMemoryEntryByHash } from "../../../services/alertMemory.js";
+import { invalidatePrecomputedMemoryCache, handleStorePrecomputed } from "../../../services/triageEngine.js";
+
+async function refreshPrecomputedAlerts_(sheets, acId) {
+  invalidatePrecomputedMemoryCache();
+  try {
+    const mockReq = {
+      body: {
+        secret: (process.env.CRON_SECRET || "").trim(),
+        automationCommanderSheetId: acId,
+      },
+      headers: {},
+    };
+    const mockRes = {
+      status: () => ({ json: () => {} }),
+    };
+    await handleStorePrecomputed(mockReq, mockRes, sheets);
+  } catch (err) {
+    console.warn("⚠️ refreshPrecomputedAlerts_ warning:", err.message);
+  }
+}
 
 export const config = {
   maxDuration: 120,
@@ -46,6 +66,7 @@ export default async function handler(req, res) {
         userEmail: sessionUser.email || "Admin",
       });
       await flushAllAlertMemoryCaches(acId);
+      await refreshPrecomputedAlerts_(sheets, acId);
       const status = await getControlPlaneStatus();
       return res.status(200).json({
         ...result,
@@ -60,6 +81,7 @@ export default async function handler(req, res) {
       const acId = automationCommanderSheetId || getCanonicalAcSheetId();
       const newMode = await setControlPlaneSource(mode, sessionUser.email || "Admin");
       await flushAllAlertMemoryCaches(acId);
+      invalidatePrecomputedMemoryCache();
       await logPmaActivity({
         automationCommanderSheetId: acId,
         category: "SYSTEM",
@@ -97,6 +119,7 @@ export default async function handler(req, res) {
       const acId = automationCommanderSheetId || getCanonicalAcSheetId();
       const sheets = await getSheetsClient();
       const result = await deleteAlertMemoryEntryByHash(sheets, acId, fingerprintHash);
+      await refreshPrecomputedAlerts_(sheets, acId);
       await logPmaActivity(sheets, {
         automationCommanderSheetId: acId,
         clientName: result.clientName || "System",
@@ -112,7 +135,9 @@ export default async function handler(req, res) {
 
     if (action === "flush_alert_memory_cache") {
       const acId = automationCommanderSheetId || getCanonicalAcSheetId();
+      const sheets = await getSheetsClient();
       await flushAllAlertMemoryCaches(acId);
+      await refreshPrecomputedAlerts_(sheets, acId);
       return res.status(200).json({ success: true });
     }
 

@@ -166,6 +166,20 @@ export async function flushAllAlertMemoryCaches(automationCommanderSheetId) {
   }
 }
 
+async function fetchAllSupabaseRows_(buildQueryFn, pageSize = 1000) {
+  const allRows = [];
+  let offset = 0;
+  while (true) {
+    const { data, error } = await buildQueryFn().range(offset, offset + pageSize - 1);
+    if (error) throw error;
+    if (!Array.isArray(data) || data.length === 0) break;
+    allRows.push(...data);
+    if (data.length < pageSize) break;
+    offset += pageSize;
+  }
+  return allRows;
+}
+
 /**
  * Returns a compact map { [fingerprintHash]: status } for handled (non-cached) alerts.
  * When Supabase Control Plane is active, queries indexed PostgreSQL directly (with a 5s memory buffer)
@@ -182,15 +196,18 @@ export async function readHandledAlertHashes(sheets, automationCommanderSheetId,
 
   const cacheKey = `pulse:alert_memory_handled:${automationCommanderSheetId}`;
 
-  // If Supabase Control Plane is active, query indexed handled hashes directly (~8ms)
+  // If Supabase Control Plane is active, query indexed handled hashes directly (paginated beyond 1000 rows)
   if (supabaseActive) {
     try {
       const sb = getSupabaseAdmin();
-      const { data: rows, error } = await sb
-        .from("alert_memory")
-        .select("fingerprint_hash, status")
-        .not("status", "in", '("cached","pending_automation")');
-      if (!error && Array.isArray(rows)) {
+      const rows = await fetchAllSupabaseRows_(() =>
+        sb
+          .from("alert_memory")
+          .select("fingerprint_hash, status")
+          .not("status", "in", '("cached","pending_automation")')
+          .order("sheet_row_index", { ascending: true })
+      );
+      if (Array.isArray(rows)) {
         const handledMap = {};
         for (const r of rows) {
           if (r.fingerprint_hash && r.status) {
@@ -200,7 +217,7 @@ export async function readHandledAlertHashes(sheets, automationCommanderSheetId,
         _handledHashesMemoryCache = handledMap;
         _handledHashesCachedAt = now;
         if (redisClient?.isOpen && automationCommanderSheetId) {
-          redisClient.set(cacheKey, JSON.stringify(handledMap), { EX: 86400 * 7 }).catch(() => {});
+          redisClient.set(cacheKey, JSON.stringify(handledMap), { EX: 86400 * 7 }).catch(() => { });
         }
         return handledMap;
       }
@@ -261,15 +278,17 @@ export async function readAlertMemory(sheets, automationCommanderSheetId) {
 
   const cacheKey = `pulse:alert_memory:${automationCommanderSheetId}`;
 
-  // If Supabase Control Plane is active, read directly from Supabase alert_memory
+  // If Supabase Control Plane is active, read directly from Supabase alert_memory (paginated beyond 1000 rows)
   if (supabaseActive) {
     try {
       const sb = getSupabaseAdmin();
-      const { data: dbRows, error } = await sb
-        .from("alert_memory")
-        .select("*")
-        .order("sheet_row_index", { ascending: true });
-      if (!error && Array.isArray(dbRows)) {
+      const dbRows = await fetchAllSupabaseRows_(() =>
+        sb
+          .from("alert_memory")
+          .select("*")
+          .order("sheet_row_index", { ascending: true })
+      );
+      if (Array.isArray(dbRows)) {
         const parsed = dbRows.map((r, i) => ({
           rowIndex: r.sheet_row_index || i + 2,
           fingerprintHash: r.fingerprint_hash || "",
@@ -288,7 +307,7 @@ export async function readAlertMemory(sheets, automationCommanderSheetId) {
         _alertMemoryMemoryCache = parsed;
         _alertMemoryCachedAt = now;
         if (redisClient?.isOpen && automationCommanderSheetId) {
-          redisClient.set(cacheKey, JSON.stringify(parsed), { EX: 86400 * 7 }).catch(() => {});
+          redisClient.set(cacheKey, JSON.stringify(parsed), { EX: 86400 * 7 }).catch(() => { });
         }
         return [...parsed];
       }
@@ -658,7 +677,7 @@ async function syncPmaTaskRowsToSupabase_(sb, sbRows) {
         let parsedSnap = {};
         try {
           if (r.data_snapshot) parsedSnap = JSON.parse(r.data_snapshot);
-        } catch (_) {}
+        } catch (_) { }
         tasksToUpsert.push({
           fingerprint_hash: fp,
           task_key: parsedSnap.taskKey || `${r.client_name || ""}||${r.alert_type || ""}||${fp}`,

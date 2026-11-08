@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import Spinner from "../Spinner";
 import { MonthViewSkeleton } from "../Skeleton";
 import DeepDivePopover from "./DeepDivePopover";
@@ -1031,10 +1031,13 @@ export default function MonthView({
       gap: 20px;
     }
     :global(.home-chart-axis-label) {
-      font-size: 15.3px;
+      font-size: 11.5px;
+      font-family: 'Kumbh Sans', sans-serif;
+      fill: #64748b;
+      user-select: none;
     }
     :global(.home-chart-legend) {
-      font-size: 11.4px;
+      font-size: 11.5px;
     }
 
     @media (max-width: 1080px) {
@@ -1089,13 +1092,10 @@ export default function MonthView({
 
     @media (max-width: 768px) {
       :global(.home-chart-legend) {
-        font-size: 9.5px !important;
+        font-size: 10px !important;
       }
-    }
-
-    @media (max-width: 768px) and (orientation: portrait) {
       :global(.home-chart-axis-label) {
-        font-size: 21.6px !important;
+        font-size: 10.5px !important;
       }
     }
 
@@ -1270,14 +1270,43 @@ function HomeLineChart({
   const grossProfit = rawGrossProfit.slice(startIdx);
   const operatingProfit = rawOperatingProfit.slice(startIdx);
 
+  const containerRef = useRef(null);
+  const [dimensions, setDimensions] = useState({ width: 850, height: 260 });
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const updateDimensions = () => {
+      if (containerRef.current) {
+        const { clientWidth, clientHeight } = containerRef.current;
+        if (clientWidth > 0 && clientHeight > 0) {
+          setDimensions((prev) => {
+            const nextW = Math.round(clientWidth);
+            const nextH = Math.round(clientHeight);
+            if (prev.width === nextW && prev.height === nextH) return prev;
+            return { width: nextW, height: nextH };
+          });
+        }
+      }
+    };
+    updateDimensions();
+
+    if (typeof ResizeObserver !== "undefined") {
+      const ro = new ResizeObserver(updateDimensions);
+      ro.observe(containerRef.current);
+      return () => ro.disconnect();
+    } else {
+      window.addEventListener("resize", updateDimensions);
+      return () => window.removeEventListener("resize", updateDimensions);
+    }
+  }, []);
+
   const [hoveredPoint, setHoveredPoint] = useState(null);
 
-  const width = 850;
-  const height = 380;
-  const padding = { top: 20, right: 30, bottom: 35, left: 75 };
+  const { width, height } = dimensions;
+  const padding = { top: 20, right: 28, bottom: 35, left: 68 };
 
-  const chartW = width - padding.left - padding.right;
-  const chartH = height - padding.top - padding.bottom;
+  const chartW = Math.max(width - padding.left - padding.right, 10);
+  const chartH = Math.max(height - padding.top - padding.bottom, 10);
 
   // Calculate linear regression trendlines mirroring original Pulse WebApp
   const calculateTrendline = (data) => {
@@ -1402,6 +1431,7 @@ function HomeLineChart({
   return (
     <div style={{ width: "100%", flex: "1 1 auto", minHeight: "260px", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
       <div
+        ref={containerRef}
         className="home-chart-svg-wrap"
         style={{
           position: "relative",
@@ -1417,7 +1447,6 @@ function HomeLineChart({
       >
         <svg
           viewBox={`0 0 ${width} ${height}`}
-          preserveAspectRatio="none"
           style={{
             position: "absolute",
             inset: 0,
@@ -1459,9 +1488,10 @@ function HomeLineChart({
                 <text
                   className="home-chart-axis-label"
                   x={padding.left - 8}
-                  y={y + 6}
+                  y={y}
                   textAnchor="end"
-                  fontSize="15.3"
+                  dominantBaseline="central"
+                  fontSize="11.5"
                   fill="#64748b"
                   fontFamily="'Kumbh Sans', sans-serif"
                 >
@@ -1487,7 +1517,8 @@ function HomeLineChart({
                 x={x}
                 y={height - 10}
                 textAnchor="middle"
-                fontSize="15.3"
+                dominantBaseline="auto"
+                fontSize="11.5"
                 fill="#64748b"
                 fontFamily="'Kumbh Sans', sans-serif"
               >
@@ -1507,7 +1538,7 @@ function HomeLineChart({
                   y2={getY(revTrend[months.length - 1])}
                   stroke="#9900ff"
                   strokeWidth="1.5"
-                  strokeDasharray="5 5"
+                  strokeDasharray="4 4"
                   strokeLinecap="round"
                   opacity="0.85"
                 >
@@ -1522,7 +1553,7 @@ function HomeLineChart({
                   y2={getY(gpTrend[months.length - 1])}
                   stroke="#e69138"
                   strokeWidth="1.5"
-                  strokeDasharray="5 5"
+                  strokeDasharray="4 4"
                   strokeLinecap="round"
                   opacity="0.85"
                 >
@@ -1537,7 +1568,7 @@ function HomeLineChart({
                   y2={getY(opTrend[months.length - 1])}
                   stroke="#1155cc"
                   strokeWidth="1.5"
-                  strokeDasharray="5 5"
+                  strokeDasharray="4 4"
                   strokeLinecap="round"
                   opacity="0.85"
                 >
@@ -1636,7 +1667,7 @@ function HomeLineChart({
                 <circle
                   cx={cx}
                   cy={cyRev}
-                  r={isHovered ? "5" : "3"}
+                  r={isHovered ? "4.5" : "3"}
                   fill="#9900ff"
                   stroke="#ffffff"
                   strokeWidth={isHovered ? "2" : "1.5"}
@@ -1648,7 +1679,7 @@ function HomeLineChart({
                 <circle
                   cx={cx}
                   cy={cyGp}
-                  r={isHovered ? "5" : "3"}
+                  r={isHovered ? "4.5" : "3"}
                   fill="#e69138"
                   stroke="#ffffff"
                   strokeWidth={isHovered ? "2" : "1.5"}
@@ -1660,7 +1691,7 @@ function HomeLineChart({
                 <circle
                   cx={cx}
                   cy={cyOp}
-                  r={isHovered ? "5" : "3"}
+                  r={isHovered ? "4.5" : "3"}
                   fill="#1155cc"
                   stroke="#ffffff"
                   strokeWidth={isHovered ? "2" : "1.5"}
@@ -1769,19 +1800,20 @@ function HomeLineChart({
 
       <style jsx>{`
         :global(.home-chart-axis-label) {
-          font-size: 15.3px;
+          font-size: 11.5px;
+          font-family: 'Kumbh Sans', sans-serif;
+          fill: #64748b;
+          user-select: none;
         }
         :global(.home-chart-legend) {
-          font-size: 11.4px;
+          font-size: 11.5px;
         }
         @media (max-width: 768px) {
           :global(.home-chart-legend) {
-            font-size: 9.5px !important;
+            font-size: 10px !important;
           }
-        }
-        @media (max-width: 768px) and (orientation: portrait) {
           :global(.home-chart-axis-label) {
-            font-size: 21.6px !important;
+            font-size: 10.5px !important;
           }
         }
       `}</style>

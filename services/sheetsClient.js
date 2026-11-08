@@ -35,7 +35,9 @@ function isPermissionError_(error) {
     error.status === 403 ||
     error.response?.status === 403 ||
     (typeof error.message === "string" &&
-      error.message.includes("The caller does not have permission"))
+      (error.message.includes("The caller does not have permission") ||
+        error.message.includes("protected cell or object") ||
+        error.message.includes("protected range")))
   );
 }
 
@@ -263,7 +265,13 @@ function createPooledSheetsClient_(poolType = "interactive") {
     }
 
     const runAgainstPool = async () => {
-      const entry = selectPoolEntry_(resolvedSheetId, poolType);
+      // All write operations (update, append, batchUpdate, clear, batchClear) ALWAYS execute
+      // through the primary Service Account (alert-triage-backend), which is an authorized
+      // editor on all Protected Ranges across every Client, Master, and Recon sheet.
+      // Read operations (get, batchGet) shard across the multi-project Service Account pool.
+      const entry = isReadOnly
+        ? selectPoolEntry_(resolvedSheetId, poolType)
+        : getPoolEntries_()[0];
       const targetObj =
         namespace === "values"
           ? entry.rawSheets.spreadsheets.values
@@ -361,7 +369,9 @@ function createPooledSheetsClient_(poolType = "interactive") {
 const _pooledClientsByType = new Map();
 
 export function getGoogleAuth(options = {}) {
-  const entry = selectPoolEntry_(options?.spreadsheetId || "", options?.pool || "interactive");
+  const entries = getPoolEntries_();
+  if (!options?.pool) return entries[0].auth;
+  const entry = selectPoolEntry_(options?.spreadsheetId || "", options.pool);
   return entry.auth;
 }
 

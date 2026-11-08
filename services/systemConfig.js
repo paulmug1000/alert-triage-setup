@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import { waitUntil } from "@vercel/functions";
 import { redisClient } from "./redisClient.js";
+import { getSupabaseAdmin, isSupabaseConfigured, isSupabaseControlPlaneActive } from "./supabaseClient.js";
 import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
 import { isValidGoogleScriptUrl } from "./eomTools.js";
 import { getSessionUser, safeCompareSecret } from "./authService.js";
@@ -22,6 +23,35 @@ export async function ensureSweepScheduleTab(sheets, automationCommanderSheetId)
 }
 
 export async function readSweepSchedule_(sheets, automationCommanderSheetId) {
+  if (await isSupabaseControlPlaneActive()) {
+    try {
+      const sb = getSupabaseAdmin();
+      const { data: cfgRow, error } = await sb
+        .from("system_config")
+        .select("value")
+        .eq("key", "sweep_schedule")
+        .maybeSingle();
+      if (!error && cfgRow?.value && typeof cfgRow.value === "object") {
+        const schedule = {};
+        for (const [cat, val] of Object.entries(cfgRow.value)) {
+          const category = String(cat || "").trim().toLowerCase();
+          if (!category) continue;
+          schedule[category] = {
+            rowIndex: val?.rowIndex || null,
+            frequencyMinutes: parseInt(val?.frequencyMinutes, 10) || SWEEP_SCHEDULE_DEFAULTS[category] || 30,
+            lastCheckedAt: val?.lastCheckedAt || "",
+          };
+        }
+        for (const category of Object.keys(SWEEP_SCHEDULE_DEFAULTS)) {
+          if (!schedule[category]) {
+            schedule[category] = { rowIndex: null, frequencyMinutes: SWEEP_SCHEDULE_DEFAULTS[category], lastCheckedAt: "" };
+          }
+        }
+        return schedule;
+      }
+    } catch (_) {}
+  }
+
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: automationCommanderSheetId,
     range: `${SWEEP_SCHEDULE_TAB}!A2:C10`,
@@ -56,20 +86,48 @@ export function isCategoryDue_(categoryEntry) {
 export async function markCategoryChecked_(sheets, automationCommanderSheetId, category, schedule) {
   const nowISO = new Date().toISOString();
   const entry = schedule[category];
-  if (entry && entry.rowIndex) {
-    await withRetry(() => sheets.spreadsheets.values.update({
-      spreadsheetId: automationCommanderSheetId,
-      range: `${SWEEP_SCHEDULE_TAB}!C${entry.rowIndex}`,
-      valueInputOption: "RAW",
-      requestBody: { values: [[nowISO]] },
-    }));
+  if (isSupabaseConfigured()) {
+    try {
+      const sb = getSupabaseAdmin();
+      if (sb) {
+        const updatedSchedule = {
+          ...schedule,
+          [category]: {
+            ...(entry || {}),
+            frequencyMinutes: (entry && entry.frequencyMinutes) || SWEEP_SCHEDULE_DEFAULTS[category] || 30,
+            lastCheckedAt: nowISO,
+          },
+        };
+        await sb.from("system_config").upsert({
+          key: "sweep_schedule",
+          value: updatedSchedule,
+          description: "Background alert sweep frequencies and last checked timestamps",
+        });
+      }
+    } catch (_) {}
+  }
+
+  const updateSheet = async () => {
+    if (entry && entry.rowIndex) {
+      await withRetry(() => sheets.spreadsheets.values.update({
+        spreadsheetId: automationCommanderSheetId,
+        range: `${SWEEP_SCHEDULE_TAB}!C${entry.rowIndex}`,
+        valueInputOption: "RAW",
+        requestBody: { values: [[nowISO]] },
+      }));
+    } else {
+      await withRetry(() => sheets.spreadsheets.values.append({
+        spreadsheetId: automationCommanderSheetId,
+        range: `${SWEEP_SCHEDULE_TAB}!A:C`,
+        valueInputOption: "RAW",
+        requestBody: { values: [[category, (entry && entry.frequencyMinutes) || SWEEP_SCHEDULE_DEFAULTS[category] || 30, nowISO]] },
+      }));
+    }
+  };
+  if (await isSupabaseControlPlaneActive()) {
+    updateSheet().catch(() => {});
   } else {
-    await withRetry(() => sheets.spreadsheets.values.append({
-      spreadsheetId: automationCommanderSheetId,
-      range: `${SWEEP_SCHEDULE_TAB}!A:C`,
-      valueInputOption: "RAW",
-      requestBody: { values: [[category, (entry && entry.frequencyMinutes) || SWEEP_SCHEDULE_DEFAULTS[category] || 30, nowISO]] },
-    }));
+    await updateSheet();
   }
 }
 
@@ -284,20 +342,48 @@ export async function handleSaveSweepFrequency(req, res, sheets) {
     await ensureSweepScheduleTab(sheets, acIdSaveFreq);
     const schedule = await readSweepSchedule_(sheets, acIdSaveFreq);
     const entry = schedule[normalisedCategory];
-    if (entry && entry.rowIndex) {
-      await sheets.spreadsheets.values.update({
-        spreadsheetId: acIdSaveFreq,
-        range: `${SWEEP_SCHEDULE_TAB}!B${entry.rowIndex}`,
-        valueInputOption: "RAW",
-        requestBody: { values: [[freqNum]] },
-      });
+    if (isSupabaseConfigured()) {
+      try {
+        const sb = getSupabaseAdmin();
+        if (sb) {
+          const updatedSchedule = {
+            ...schedule,
+            [normalisedCategory]: {
+              ...(entry || {}),
+              frequencyMinutes: freqNum,
+              lastCheckedAt: entry?.lastCheckedAt || "",
+            },
+          };
+          await sb.from("system_config").upsert({
+            key: "sweep_schedule",
+            value: updatedSchedule,
+            description: "Background alert sweep frequencies and last checked timestamps",
+          });
+        }
+      } catch (_) {}
+    }
+
+    const updateSheet = async () => {
+      if (entry && entry.rowIndex) {
+        await sheets.spreadsheets.values.update({
+          spreadsheetId: acIdSaveFreq,
+          range: `${SWEEP_SCHEDULE_TAB}!B${entry.rowIndex}`,
+          valueInputOption: "RAW",
+          requestBody: { values: [[freqNum]] },
+        });
+      } else {
+        await sheets.spreadsheets.values.append({
+          spreadsheetId: acIdSaveFreq,
+          range: `${SWEEP_SCHEDULE_TAB}!A:C`,
+          valueInputOption: "RAW",
+          requestBody: { values: [[normalisedCategory, freqNum, ""]] },
+        });
+      }
+    };
+    if (await isSupabaseControlPlaneActive()) {
+      updateSheet().catch(() => {});
     } else {
-      await sheets.spreadsheets.values.append({
-        spreadsheetId: acIdSaveFreq,
-        range: `${SWEEP_SCHEDULE_TAB}!A:C`,
-        valueInputOption: "RAW",
-        requestBody: { values: [[normalisedCategory, freqNum, ""]] },
-      });
+      await updateSheet();
     }
     console.log(`✅ save_sweep_frequency: ${normalisedCategory} → ${freqNum} min`);
     return res.status(200).json({ success: true });

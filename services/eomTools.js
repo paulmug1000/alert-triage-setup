@@ -1,5 +1,6 @@
 import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
 import { redisClient } from "./redisClient.js";
+import { getSupabaseAdmin, isSupabaseConfigured } from "./supabaseClient.js";
 import { memoryCache } from "./cacheService.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { getSessionUser } from "./authService.js";
@@ -74,6 +75,39 @@ export function eomTargetMonthToWorkMonth_(targetMonthKey) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
+async function syncEomTaskStatusToSupabase_(clientName, monthKey, taskId, status, completedAt = "") {
+  if (!isSupabaseConfigured() || !clientName || !monthKey || !taskId) return;
+  try {
+    const sb = getSupabaseAdmin();
+    if (!sb) return;
+    const { data: existing } = await sb
+      .from("eom_cycles_and_tasks")
+      .select("tasks_payload")
+      .eq("work_month_key", monthKey)
+      .eq("client_name", clientName)
+      .eq("record_type", "client_tasks")
+      .maybeSingle();
+    const payload = (existing?.tasks_payload && typeof existing.tasks_payload === "object")
+      ? { ...existing.tasks_payload }
+      : {};
+    const statuses = (payload.statuses && typeof payload.statuses === "object")
+      ? { ...payload.statuses }
+      : {};
+    statuses[taskId] = {
+      ...(statuses[taskId] || {}),
+      status,
+      completedAt,
+    };
+    payload.statuses = statuses;
+    await sb.from("eom_cycles_and_tasks").upsert({
+      work_month_key: monthKey,
+      client_name: clientName,
+      record_type: "client_tasks",
+      tasks_payload: payload,
+    }, { onConflict: "work_month_key,client_name,record_type" });
+  } catch (_) {}
+}
+
 export async function autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, clientName, linkedFunctionValue, workMonthKey) {
   try {
     if (!workMonthKey || !automationCommanderSheetId) return false;
@@ -90,15 +124,17 @@ export async function autoCompleteLinkedEomTask_(sheets, automationCommanderShee
     const statusResp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A2:E200000" }));
     const statusRows = statusResp.data.values || [];
     const existingIdx = statusRows.findIndex(r => r[0] === clientName && r[1] === linkedTask[0] && r[2] === workMonthKey);
+    const nowDoneIso = new Date().toISOString();
+    await syncEomTaskStatusToSupabase_(clientName, workMonthKey, linkedTask[0], "done", nowDoneIso);
     if (existingIdx === -1) {
       await withRetry(() => sheets.spreadsheets.values.append({
         spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A:E", valueInputOption: "RAW",
-        requestBody: { values: [[clientName, linkedTask[0], workMonthKey, "done", new Date().toISOString()]] },
+        requestBody: { values: [[clientName, linkedTask[0], workMonthKey, "done", nowDoneIso]] },
       }));
     } else {
       await withRetry(() => sheets.spreadsheets.values.update({
         spreadsheetId: automationCommanderSheetId, range: `EomMonthlyStatus!D${existingIdx + 2}:E${existingIdx + 2}`,
-        valueInputOption: "RAW", requestBody: { values: [["done", new Date().toISOString()]] },
+        valueInputOption: "RAW", requestBody: { values: [["done", nowDoneIso]] },
       }));
     }
     return linkedTask[0] || true;
@@ -254,9 +290,11 @@ export async function handleEomGetClientTasks(req, res, sheets) {
   if (!automationCommanderSheetId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
   try {
     await ensureEomTabs_(sheets, automationCommanderSheetId);
-    const [tasksResp, templatesResp] = await Promise.all([
+    await ensureEomDefaultTasksTab_(sheets, automationCommanderSheetId);
+    const [tasksResp, templatesResp, defaultsResp] = await Promise.all([
       withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:H5000" })),
       withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:G1000" })),
+      withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomDefaultTasks!A2:I1000" })),
     ]);
     const templateNameById = {};
     const templateLinkedFunctionById = {};
@@ -266,10 +304,27 @@ export async function handleEomGetClientTasks(req, res, sheets) {
     });
 
     const sessionUser = getSessionUser(req);
+    const isSysAdmin = req.isSystemAuthorized || !sessionUser || sessionUser.isAdmin || sessionUser.role === "Admin";
+
+    const defaultRows = (defaultsResp.data.values || []).filter(r => r[0] && (r[4] !== "FALSE" && r[4] !== false));
+    const defaultTemplateIds = new Set(defaultRows.filter(r => r[1]).map(r => r[1]));
+    const defaultTaskNames = new Set(defaultRows.map(r => {
+      const tpl = r[1] ? templateNameById[r[1]] : null;
+      return (r[2] || (tpl ? tpl : "")).trim().toLowerCase();
+    }).filter(Boolean));
+
     const rows = (tasksResp.data.values || []).filter(r => r[0]);
     const tasks = rows
       .filter(r => !filterClient || r[1] === filterClient)
       .filter(r => req.isSystemAuthorized || !sessionUser || sessionUser.isAdmin || isUserAuthorizedForClient(sessionUser, r[1]))
+      .filter(r => {
+        if (isSysAdmin) return true;
+        const tplId = r[2] || "";
+        const taskName = (r[2] ? (templateNameById[r[2]] || "") : (r[3] || "")).trim().toLowerCase();
+        if (tplId && defaultTemplateIds.has(tplId)) return true;
+        if (taskName && defaultTaskNames.has(taskName)) return true;
+        return false;
+      })
       .map((r, i) => ({
         taskId: r[0], clientName: r[1], templateId: r[2] || "",
         name: r[2] ? (templateNameById[r[2]] || "(template deleted)") : (r[3] || ""),
@@ -330,19 +385,35 @@ export async function handleEomSaveClientTask(req, res, sheets) {
   if (!automationCommanderSheetId || !taskClientName || (!taskTemplateId && !taskName)) return res.status(400).json({ success: false, error: "Missing required fields" });
   try {
     await ensureEomTabs_(sheets, automationCommanderSheetId);
+    await ensureEomDefaultTasksTab_(sheets, automationCommanderSheetId);
     const resp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:H5000" }));
     const rows = resp.data.values || [];
+
+    const sessionUser = getSessionUser(req);
+    const isSysAdmin = req.isSystemAuthorized || !sessionUser || sessionUser.isAdmin || sessionUser.role === "Admin";
 
     if (taskId) {
       const rowIdx = rows.findIndex(r => r[0] === taskId);
       if (rowIdx === -1) return res.status(404).json({ success: false, error: "Task assignment not found" });
       const existingOwner = String(rows[rowIdx][1] || "").trim();
-      const sessionUser = getSessionUser(req);
       if (existingOwner && !matchesClientName(existingOwner, taskClientName)) {
         return res.status(403).json({ success: false, error: "Forbidden: Task belongs to a different client." });
       }
       if (!req.isSystemAuthorized && sessionUser && !sessionUser.isAdmin && existingOwner && !isUserAuthorizedForClient(sessionUser, existingOwner)) {
         return res.status(403).json({ success: false, error: "Forbidden: Not authorized for this client's task." });
+      }
+      if (!isSysAdmin) {
+        const existingTplId = rows[rowIdx][2] || "";
+        const existingName = (rows[rowIdx][3] || "").trim().toLowerCase();
+        const defResp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomDefaultTasks!A2:I1000" }));
+        const defRows = (defResp.data.values || []).filter(r => r[0] && (r[4] !== "FALSE" && r[4] !== false));
+        const defTplIds = new Set(defRows.filter(r => r[1]).map(r => r[1]));
+        const defNames = new Set(defRows.map(r => (r[2] || "").trim().toLowerCase()).filter(Boolean));
+        const isDef = (existingTplId && defTplIds.has(existingTplId)) ||
+                      (existingName && defNames.has(existingName));
+        if (!isDef) {
+          return res.status(403).json({ success: false, error: "Forbidden: Only administrators can modify non-default tasks." });
+        }
       }
       const sheetRow = rowIdx + 2;
       await withRetry(() => sheets.spreadsheets.values.update({
@@ -350,6 +421,18 @@ export async function handleEomSaveClientTask(req, res, sheets) {
         valueInputOption: "RAW", requestBody: { values: [[taskClientName, taskTemplateId || "", taskName || "", clientNotes || "", taskActive !== false]] },
       }));
       return res.status(200).json({ success: true, taskId });
+    }
+
+    if (!isSysAdmin) {
+      const defResp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomDefaultTasks!A2:I1000" }));
+      const defRows = (defResp.data.values || []).filter(r => r[0] && (r[4] !== "FALSE" && r[4] !== false));
+      const defTplIds = new Set(defRows.filter(r => r[1]).map(r => r[1]));
+      const defNames = new Set(defRows.map(r => (r[2] || "").trim().toLowerCase()).filter(Boolean));
+      const isDef = (taskTemplateId && defTplIds.has(taskTemplateId)) ||
+                    (taskName && defNames.has(taskName.trim().toLowerCase()));
+      if (!isDef) {
+        return res.status(403).json({ success: false, error: "Forbidden: Only administrators can assign non-default tasks." });
+      }
     }
 
     const newId = `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -412,6 +495,7 @@ export async function handleEomUpdateTaskStatus(req, res, sheets) {
     const rows = resp.data.values || [];
     const rowIdx = rows.findIndex(r => r[0] === uClientName && r[1] === uTaskId && r[2] === uMonthKey);
     const completedAt = uStatus === "done" ? new Date().toISOString() : "";
+    await syncEomTaskStatusToSupabase_(uClientName, uMonthKey, uTaskId, uStatus, completedAt);
 
     if (rowIdx === -1) {
       await withRetry(() => sheets.spreadsheets.values.append({
@@ -466,6 +550,7 @@ export async function handleEomUpdateTaskStatusBatch(req, res, sheets) {
     for (const u of updates) {
       const rowIdx = rows.findIndex(r => r[0] === u.clientName && r[1] === u.taskId && r[2] === u.monthKey);
       const completedAt = u.status === "done" ? nowIso : "";
+      await syncEomTaskStatusToSupabase_(u.clientName, u.monthKey, u.taskId, u.status, completedAt);
 
       if (rowIdx === -1) {
         rows.push([u.clientName, u.taskId, u.monthKey, u.status, completedAt, ""]);

@@ -316,7 +316,7 @@ export default function AlertSelectionView({
           setProactiveCountsByClient(counts);
           try {
             localStorage.setItem("pulse_cached_proactive_alerts", JSON.stringify(remaining));
-          } catch {}
+          } catch { }
 
           const remainingClientProactive = remaining.filter(a => a.clientName === selectedClient?.clientName);
           const remainingProactiveCount = remainingClientProactive.length;
@@ -2579,7 +2579,7 @@ export default function AlertSelectionView({
                                                 opacity: isApplying ? 0.7 : 1
                                               }}
                                             >
-                                              {isApplying ? <><Spinner size={12} /> Confirming &amp; Syncing...</> : "Confirm & Apply"}
+                                              {isApplying ? <><Spinner size={12} /> Confirming &amp; Syncing...</> : "Confirm & apply"}
                                             </button>
 
                                             {msg && (

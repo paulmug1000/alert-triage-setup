@@ -604,6 +604,14 @@ export default async function handler(req, res) {
       try {
         const { dailyAlertsEmail } = req.body;
         const result = await updateUserDailyAlertsEmail(sessionUser.email, dailyAlertsEmail, sheets, automationCommanderSheetId);
+        await logPmaActivity(sheets, {
+          automationCommanderSheetId,
+          category: "SETTINGS",
+          action: "UPDATE_DAILY_ALERTS_PREF",
+          summary: `Updated daily alerts digest email preference to "${result.dailyAlertsEmail}"`,
+          details: { dailyAlertsEmail: result.dailyAlertsEmail },
+          userEmail: sessionUser.email,
+        });
         return res.status(200).json(result);
       } catch (err) {
         console.error("❌ update_user_preference error:", err);
@@ -1188,6 +1196,7 @@ export default async function handler(req, res) {
           masterSheetId,
           clientSheetId,
           userEmail: sessionUser?.email,
+          isAdmin: Boolean(sessionUser?.isAdmin),
           sessionId,
           alertKey,
           fingerprintHash

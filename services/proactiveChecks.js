@@ -2400,6 +2400,7 @@ export async function handleClassifyPLCategory(sheets, {
   masterSheetId,
   clientSheetId,
   userEmail,
+  isAdmin = false,
   sessionId,
   alertKey: providedAlertKey,
   fingerprintHash: providedFp
@@ -2463,6 +2464,20 @@ export async function handleClassifyPLCategory(sheets, {
 
   const classificationLabel = CLASSIFICATION_LABELS[classification] || classification;
 
+  const throwProtectedKeyInfoError_ = (err) => {
+    const isProtected = err && typeof err.message === "string" && (
+      err.message.includes("protected cell or object") ||
+      err.message.includes("protected range") ||
+      err.message.includes("PERMISSION_DENIED")
+    );
+    if (!isProtected) throw err;
+    if (!isAdmin) {
+      throw new Error("Unable to apply category mapping because configuration permissions are restricted for this workspace. Please contact your system administrator.");
+    }
+    const primarySa = process.env.SERVICE_ACCOUNT_EMAIL || "alert-triage-backend@automation-commander.iam.gserviceaccount.com";
+    throw new Error(`Master sheet configuration is protected: KeyInfo restricts editing. Please ensure '${primarySa}' has editor access to the KeyInfo sheet protection on the Master Sheet for '${clientName}' (or run 'Sync Protection Editors' in Bulk Updater).`);
+  };
+
   // 2. Apply mapping based on classification
   if (classification === "contractor") {
     // Read KeyInfo!AW2:AW161 to find full nominal code prefix (e.g. "318 - Contractor")
@@ -2497,12 +2512,16 @@ export async function handleClassifyPLCategory(sheets, {
       throw new Error("No empty slots available in KeyInfo!AT4:AT22 for Contractors.");
     }
 
-    await withRetry(() => sheets.spreadsheets.values.update({
-      spreadsheetId: masterSheetId,
-      range: `KeyInfo!AT${targetAtRow}`,
-      valueInputOption: "USER_ENTERED",
-      requestBody: { values: [[sanitizeFormulaInput(String(contractorEntry || ""))]] }
-    }));
+    try {
+      await withRetry(() => sheets.spreadsheets.values.update({
+        spreadsheetId: masterSheetId,
+        range: `KeyInfo!AT${targetAtRow}`,
+        valueInputOption: "USER_ENTERED",
+        requestBody: { values: [[sanitizeFormulaInput(String(contractorEntry || ""))]] }
+      }));
+    } catch (writeErr) {
+      throwProtectedKeyInfoError_(writeErr);
+    }
 
   } else if (classification === "non_delivery_expense") {
     // Non-delivery expense: Auto-provision as Overhead on Client Sheet Outgoings tab
@@ -2572,12 +2591,16 @@ export async function handleClassifyPLCategory(sheets, {
     }
 
     // Write cleanName (without code prefix) to KeyInfo!BA
-    await withRetry(() => sheets.spreadsheets.values.update({
-      spreadsheetId: masterSheetId,
-      range: `KeyInfo!BA${targetBaRow}`,
-      valueInputOption: "USER_ENTERED",
-      requestBody: { values: [[sanitizeFormulaInput(String(cleanName || ""))]] }
-    }));
+    try {
+      await withRetry(() => sheets.spreadsheets.values.update({
+        spreadsheetId: masterSheetId,
+        range: `KeyInfo!BA${targetBaRow}`,
+        valueInputOption: "USER_ENTERED",
+        requestBody: { values: [[sanitizeFormulaInput(String(cleanName || ""))]] }
+      }));
+    } catch (writeErr) {
+      throwProtectedKeyInfoError_(writeErr);
+    }
 
     // If classified as Delivery expense (Other costs of sale), auto-provision onto Outgoings tab as CoS
     if (classification === "delivery_expense" && targetClientSheetId) {
@@ -3008,6 +3031,7 @@ export async function handleUpdatePartPaidDate(sheets, {
   appId,
   newDate,
   userEmail,
+  isAdmin = false,
   sessionId,
   alertKey: providedAlertKey,
   fingerprintHash: providedFp

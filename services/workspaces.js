@@ -22,6 +22,7 @@ import { logPmaActivity } from "./pmaLogger.js";
 import { getSessionUser } from "./authService.js";
 import { getSettingsRedisKey } from "./clientSettingsService.js";
 import { redisClient } from "./redisClient.js";
+import { getSupabaseAdmin, isSupabaseControlPlaneActive } from "./supabaseClient.js";
 import { memoryCache, get2TierCache, set2TierCache, invalidatePmaClientCache } from "./cacheService.js";
 import { resolveAssignedAlertsInMemoryAndCache } from "./alertState.js";
 import {
@@ -67,6 +68,19 @@ export async function getClientWebAppUrl(sheets, clientName, acId = DEFAULT_AC_S
       }
     } catch (e) { }
   }
+  if (await isSupabaseControlPlaneActive()) {
+    try {
+      const sb = getSupabaseAdmin();
+      const { data: row, error } = await sb
+        .from("clients")
+        .select("master_gas_webapp_url")
+        .eq("client_name", clientName)
+        .maybeSingle();
+      if (!error && row?.master_gas_webapp_url) {
+        return String(row.master_gas_webapp_url).trim();
+      }
+    } catch (_) {}
+  }
   try {
     const resp = await withRetry(() =>
       sheets.spreadsheets.values.get({
@@ -108,6 +122,69 @@ export async function getAllClients(sheets, sessionUser = { isAdmin: true }, byp
       }
     } catch (e) {
       console.warn("⚠️ Redis get all clients cache error:", e.message);
+    }
+  }
+
+  if (!clientsArray || !clientsObj) {
+    if (await isSupabaseControlPlaneActive()) {
+      try {
+        const sb = getSupabaseAdmin();
+        const [{ data: sbClients, error: sbErr }, cmMap] = await Promise.all([
+          sb.from("clients").select("*").order("client_name", { ascending: true }),
+          getClientManagerClientMap(sheets, acId),
+        ]);
+        if (!sbErr && Array.isArray(sbClients) && sbClients.length > 0) {
+          clientsArray = [];
+          clientsObj = {};
+          for (const c of sbClients) {
+            const clientName = String(c.client_name || "").trim();
+            const clientSheetId = String(c.client_sheet_id || "").trim();
+            const masterSheetId = String(c.master_sheet_id || "").trim();
+            if (!clientName || !clientSheetId) continue;
+            const reconSheetUrl = String(c.recon_sheet_url || "").trim();
+            const reconSheetId = String(c.recon_sheet_id || "").trim();
+            const scriptId = String(c.client_script_id || "").trim();
+            const webAppUrl = String(c.master_gas_webapp_url || "").trim();
+            const hasWebAppUrl = Boolean(webAppUrl);
+            const splitEnabled = Boolean(c.split_enabled);
+            const hasClientManager = cmMap.hasManager(clientName);
+            const accountingTool = c.accounting_tool || "None";
+            const crmTool = c.crm_tool || "None";
+            const crmDrives = c.crm_drives || "NA";
+            const revFocus = String(c.revenue_focus || "Revenue").trim();
+            const rawDcMode = String(c.direct_costs_mode || "Contractors").trim();
+            const directCostsMode = revFocus.toLowerCase() === "income" ? "Pass-through" : (rawDcMode === "Pass-through" ? "Pass-through" : "Contractors");
+            const hasAccountingIntegration = ["xero", "quickbooks", "qb"].some(t => String(accountingTool).toLowerCase().includes(t));
+            const item = {
+              clientName,
+              clientSheetId,
+              masterSheetId,
+              scriptId,
+              webAppUrl,
+              hasWebAppUrl,
+              splitEnabled,
+              reconSheetUrl,
+              reconSheetId,
+              hasClientManager,
+              accountingTool,
+              crmTool,
+              crmDrives,
+              directCostsMode,
+              hasAccountingIntegration,
+              clientMode: c.client_mode || "sheets",
+            };
+            clientsArray.push(item);
+            clientsObj[clientName] = { ...item };
+          }
+          if (redisClient?.isOpen) {
+            await redisClient.set(cacheKey, JSON.stringify({ clientsArray, clientsObj }), { EX: 86400 * 7 }).catch(() => {});
+          }
+          _allClientsMemoryCache = { clientsArray, clientsObj };
+          _allClientsCachedAt = now;
+        }
+      } catch (sbErr) {
+        console.warn("⚠️ Supabase getAllClients fallback to sheet:", sbErr.message);
+      }
     }
   }
 

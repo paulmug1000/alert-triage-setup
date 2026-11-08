@@ -4,6 +4,7 @@ import KeyInfoSettingsForm from "./KeyInfoSettingsForm";
 import AccountingSettingsSuggestionModal from "./setup/AccountingSettingsSuggestionModal";
 import CategoryMappingSuggestionModal from "./setup/CategoryMappingSuggestionModal";
 import CrmMappingSuggestionModal from "./setup/CrmMappingSuggestionModal";
+import UserManagementCard from "./UserManagementCard";
 
 export default function OnboardingChecklistView({
   clientName,
@@ -109,7 +110,7 @@ export default function OnboardingChecklistView({
   const hasTaskAttachment = useCallback(
     (task) => {
       if (!task) return false;
-      if (isUserAdmin && ["p1_importrange_auth", "p1_gas_deployment", "p1_script_ids"].includes(task.id)) {
+      if (isUserAdmin && ["p1_importrange_auth", "p1_gas_deployment", "p1_script_ids", "p5_add_users"].includes(task.id)) {
         return true;
       }
       if (["p2_keyinfo_settings", "p3_pull_pl", "p3_other_expenses", "p4_crm_list_tab", "p4_eom_jobs"].includes(task.id)) {
@@ -748,6 +749,19 @@ export default function OnboardingChecklistView({
                 Manage in EoM section →
               </button>
             </div>
+          </div>
+        )}
+
+        {/* Step 4: Add client users */}
+        {task.id === "p5_add_users" && isUserAdmin && (
+          <div style={{ marginTop: "6px" }}>
+            <UserManagementCard
+              currentUserEmail={user?.email || ""}
+              defaultClientFilter={clientName}
+              onUsersUpdated={() => {
+                handleAutoCompleteTask("p5_add_users");
+              }}
+            />
           </div>
         )}
       </div>

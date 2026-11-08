@@ -308,14 +308,20 @@ export async function updateUserDailyAlertsEmail(email, dailyAlertsEmail, sheets
       }
     }
     if (user.rowIndex) {
-      await withRetry(() => sheets.spreadsheets.values.update({
-        spreadsheetId: acId,
-        range: `${USERS_TAB}!H${user.rowIndex}`,
-        valueInputOption: "RAW",
-        requestBody: {
-          values: [[val]]
-        }
-      }));
+      const updateSheet = () =>
+        withRetry(() => sheets.spreadsheets.values.update({
+          spreadsheetId: acId,
+          range: `${USERS_TAB}!H${user.rowIndex}`,
+          valueInputOption: "RAW",
+          requestBody: {
+            values: [[val]]
+          }
+        }));
+      if (await isSupabaseControlPlaneActive()) {
+        updateSheet().catch(() => {});
+      } else {
+        await updateSheet();
+      }
     }
 
     _usersMemoryCache = null;
@@ -661,4 +667,207 @@ export async function getClientManagerClientMap(sheets, _ignoredAcId = DEFAULT_A
     };
   }
 }
+
+export async function invalidateUsersCache() {
+  _usersMemoryCache = null;
+  _usersCachedAt = 0;
+  try {
+    await redisClient.del(REDIS_USERS_KEY);
+  } catch (_) {}
+}
+
+/**
+ * Create a new user or update an existing user in Supabase public.users
+ * and mirror to Automation Commander!Users.
+ */
+export async function createOrUpdateUser(sheets, {
+  email,
+  name,
+  role = "ClientUser",
+  assignedClients = [],
+  status = "Active",
+  dailyAlertsEmail = "Yes",
+}) {
+  const normalizedEmail = String(email || "").toLowerCase().trim();
+  if (!normalizedEmail || !normalizedEmail.includes("@")) {
+    throw new Error("A valid email address is required.");
+  }
+
+  const validRoles = ["Admin", "Senior (Restricted)", "ClientManager", "ClientUser"];
+  const normalizedRole = validRoles.includes(role) ? role : "ClientUser";
+  const normalizedStatus = String(status || "Active").trim() === "Suspended" ? "Suspended" : "Active";
+  const normalizedDailyEmail = String(dailyAlertsEmail || "Yes").trim().toLowerCase() === "no" ? "No" : "Yes";
+  const cleanName = sanitizeFormulaInput(String(name || normalizedEmail.split("@")[0]).trim());
+
+  let clientList = [];
+  if (normalizedRole === "Admin") {
+    clientList = ["*"];
+  } else if (Array.isArray(assignedClients)) {
+    clientList = assignedClients.map(c => String(c || "").trim()).filter(c => c && c !== "*");
+  } else if (typeof assignedClients === "string") {
+    clientList = assignedClients.split(",").map(c => c.trim()).filter(c => c && c !== "*");
+  }
+
+  const sheetAssignedStr = normalizedRole === "Admin" ? "*" : clientList.join(", ");
+  const acId = getCanonicalAcSheetId();
+  const existingUsers = await getAllUsers(sheets, acId, true);
+  const existingUser = existingUsers.find(u => u.email === normalizedEmail);
+  const nowIso = new Date().toISOString();
+  const createdAt = existingUser?.createdAt || nowIso;
+  const lastLoginAt = existingUser?.lastLoginAt || null;
+  const targetRowIndex = existingUser?.rowIndex || (existingUsers.reduce((m, u) => Math.max(m, u.rowIndex || 2), 1) + 1);
+
+  if (isSupabaseConfigured()) {
+    const sb = getSupabaseAdmin();
+    if (sb) {
+      const { error: sbErr } = await sb
+        .from("users")
+        .upsert({
+          email: normalizedEmail,
+          full_name: cleanName,
+          role: normalizedRole,
+          assigned_clients: clientList,
+          status: normalizedStatus,
+          created_at: createdAt,
+          last_login_at: lastLoginAt || null,
+          daily_alerts_email: normalizedDailyEmail,
+          sheet_row_index: targetRowIndex,
+        }, { onConflict: "email" });
+      if (sbErr) {
+        throw new Error(`Supabase user save failed: ${sbErr.message}`);
+      }
+    }
+  }
+
+  const mirrorToSheet = async () => {
+    try {
+      await ensureUsersTab(sheets);
+      const resp = await withRetry(() =>
+        sheets.spreadsheets.values.get({
+          spreadsheetId: acId,
+          range: `${USERS_TAB}!A2:H500`,
+        })
+      );
+      const rows = resp.data.values || [];
+      const rowIdx = rows.findIndex(r => String(r[0] || "").toLowerCase().trim() === normalizedEmail);
+      const rowValues = [
+        normalizedEmail,
+        cleanName,
+        normalizedRole,
+        sanitizeFormulaInput(sheetAssignedStr),
+        normalizedStatus,
+        createdAt,
+        lastLoginAt || "",
+        normalizedDailyEmail,
+      ];
+      if (rowIdx !== -1) {
+        const sheetRow = rowIdx + 2;
+        await withRetry(() =>
+          sheets.spreadsheets.values.update({
+            spreadsheetId: acId,
+            range: `${USERS_TAB}!A${sheetRow}:H${sheetRow}`,
+            valueInputOption: "RAW",
+            requestBody: { values: [rowValues] },
+          })
+        );
+      } else {
+        await withRetry(() =>
+          sheets.spreadsheets.values.append({
+            spreadsheetId: acId,
+            range: `${USERS_TAB}!A:H`,
+            valueInputOption: "RAW",
+            requestBody: { values: [rowValues] },
+          })
+        );
+      }
+    } catch (sheetErr) {
+      console.warn("⚠️ Users tab background mirror warning:", sheetErr.message);
+    }
+  };
+
+  if (await isSupabaseControlPlaneActive()) {
+    mirrorToSheet().catch(() => {});
+  } else {
+    await mirrorToSheet();
+  }
+
+  await invalidateUsersCache();
+  const updatedList = await getAllUsers(sheets, acId, true);
+  return {
+    success: true,
+    isNew: !existingUser,
+    user: updatedList.find(u => u.email === normalizedEmail) || null,
+    users: updatedList,
+  };
+}
+
+/**
+ * Delete a user from Supabase public.users and clear their row in Automation Commander!Users.
+ */
+export async function deleteUserByEmail(sheets, { email, actorEmail }) {
+  const normalizedEmail = String(email || "").toLowerCase().trim();
+  const normalizedActor = String(actorEmail || "").toLowerCase().trim();
+  if (!normalizedEmail) throw new Error("Email is required");
+  if (normalizedEmail === normalizedActor) {
+    throw new Error("You cannot delete your own active admin account.");
+  }
+
+  const acId = getCanonicalAcSheetId();
+  const existingUsers = await getAllUsers(sheets, acId, true);
+  const target = existingUsers.find(u => u.email === normalizedEmail);
+  if (!target) throw new Error(`User not found: ${normalizedEmail}`);
+
+  if (target.role === "Admin") {
+    const activeAdmins = existingUsers.filter(u => u.role === "Admin" && u.status === "Active");
+    if (activeAdmins.length <= 1) {
+      throw new Error("Cannot delete the last active Admin user.");
+    }
+  }
+
+  if (isSupabaseConfigured()) {
+    const sb = getSupabaseAdmin();
+    if (sb) {
+      const { error: sbErr } = await sb
+        .from("users")
+        .delete()
+        .eq("email", normalizedEmail);
+      if (sbErr) throw new Error(`Supabase user delete failed: ${sbErr.message}`);
+    }
+  }
+
+  const mirrorDeleteToSheet = async () => {
+    try {
+      const resp = await withRetry(() =>
+        sheets.spreadsheets.values.get({
+          spreadsheetId: acId,
+          range: `${USERS_TAB}!A2:H500`,
+        })
+      );
+      const rows = resp.data.values || [];
+      const rowIdx = rows.findIndex(r => String(r[0] || "").toLowerCase().trim() === normalizedEmail);
+      if (rowIdx !== -1) {
+        const sheetRow = rowIdx + 2;
+        await withRetry(() =>
+          sheets.spreadsheets.values.clear({
+            spreadsheetId: acId,
+            range: `${USERS_TAB}!A${sheetRow}:H${sheetRow}`,
+          })
+        );
+      }
+    } catch (sheetErr) {
+      console.warn("⚠️ Users tab background delete warning:", sheetErr.message);
+    }
+  };
+
+  if (await isSupabaseControlPlaneActive()) {
+    mirrorDeleteToSheet().catch(() => {});
+  } else {
+    await mirrorDeleteToSheet();
+  }
+
+  await invalidateUsersCache();
+  const updatedList = await getAllUsers(sheets, acId, true);
+  return { success: true, users: updatedList };
+}
+
 

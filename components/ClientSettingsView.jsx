@@ -888,6 +888,15 @@ export default function ClientSettingsView({
     return SECTIONS.filter(s => effectiveIsAdmin || !s.adminOnly);
   }, [effectiveIsAdmin]);
 
+  // Ref for active section tab to auto-scroll into view on mobile screens
+  const activeNavBtnRef = useRef(null);
+
+  useEffect(() => {
+    if (activeNavBtnRef.current && typeof window !== "undefined" && window.innerWidth <= 768) {
+      activeNavBtnRef.current.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+    }
+  }, [activeSection]);
+
   // Data states
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -1398,8 +1407,8 @@ export default function ClientSettingsView({
 
   // Switch helper
   const renderToggle = (label, checked, onChange, subtitle = null, cell = null) => (
-    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 0", borderBottom: "1px solid #F1F5F9" }}>
-      <div>
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 0", borderBottom: "1px solid #F1F5F9", gap: "12px" }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: "13px", fontWeight: "600", color: "#1E293B" }}>{label}</div>
         {subtitle && <div style={{ fontSize: "12px", color: "#64748B", marginTop: "2px" }}>{subtitle}</div>}
         {renderCellRef(cell)}
@@ -1418,7 +1427,8 @@ export default function ClientSettingsView({
           cursor: "pointer",
           position: "relative",
           transition: "background 0.2s ease",
-          padding: 0
+          padding: 0,
+          flexShrink: 0
         }}
       >
         <span
@@ -2397,24 +2407,12 @@ export default function ClientSettingsView({
   };
 
   return (
-    <div style={{ marginTop: "10px", width: "100%", maxWidth: "100%", boxSizing: "border-box", minWidth: 0 }}>
+    <div className="client-settings-root" style={{ marginTop: "10px", width: "100%", maxWidth: "100%", boxSizing: "border-box", minWidth: 0, paddingBottom: isDirty ? "70px" : "0px" }}>
       {/* ── TOP CONTROL BAR (shown when a client is selected) ──────────────── */}
       {(selectedClientName || managedClient) && (
-        <div style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          flexWrap: "wrap",
-          gap: "12px",
-          background: "#FFFFFF",
-          border: "1px solid #E2E8F0",
-          borderRadius: "10px",
-          padding: "12px 18px",
-          marginBottom: "16px",
-          boxShadow: "0 1px 2px rgba(0,0,0,0.03)"
-        }}>
+        <div className="client-settings-topbar">
           {/* Left: Back button + Active Client Name */}
-          <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+          <div className="client-settings-topbar-left">
             {!managedClient && (allClients || []).length > 1 && (
               <button
                 type="button"
@@ -2434,6 +2432,7 @@ export default function ClientSettingsView({
                   justifyContent: "center",
                   transition: "all 0.15s ease",
                   boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+                  flexShrink: 0
                 }}
                 onMouseEnter={(e) => {
                   if (!loading && !saving) {
@@ -2454,19 +2453,19 @@ export default function ClientSettingsView({
                 ←
               </button>
             )}
-            <div style={{ display: "inline-flex", alignItems: "center", gap: "8px" }}>
-              <span style={{ fontSize: "15px", fontWeight: "700", color: "#0047AB" }}>
+            <div style={{ display: "inline-flex", alignItems: "center", gap: "8px", minWidth: 0, overflow: "hidden" }}>
+              <span style={{ fontSize: "15px", fontWeight: "700", color: "#0047AB", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                 {managedClient ? managedClient.clientName : selectedClientName}
               </span>
               {managedClient && (
-                <span style={{ fontSize: "11px", color: "#64748B", fontStyle: "italic" }}>
+                <span style={{ fontSize: "11px", color: "#64748B", fontStyle: "italic", flexShrink: 0 }}>
                   (managed client mode)
                 </span>
               )}
             </div>
 
             {settings && lastSyncedAt && !loading && (
-              <span style={{ fontSize: "11px", color: "#64748B", marginLeft: "6px" }}>
+              <span className="client-settings-sync-status" style={{ fontSize: "11px", color: "#64748B", marginLeft: "6px" }}>
                 {fromCache ? "Loaded from cache" : "Loaded from database"}
                 {" · "}
                 {new Date(lastSyncedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
@@ -2480,7 +2479,7 @@ export default function ClientSettingsView({
           </div>
 
           {/* Right: Actions */}
-          <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+          <div className="client-settings-topbar-right">
             {effectiveIsAdmin && (
               <label style={{ display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#64748B", cursor: "pointer", userSelect: "none" }}>
                 <input
@@ -2493,7 +2492,7 @@ export default function ClientSettingsView({
             )}
 
             {isDirty && (
-              <span style={{ fontSize: "12px", color: "#B45309", background: "#FEF3F2", padding: "4px 10px", borderRadius: "12px", fontWeight: "600", display: "inline-flex", alignItems: "center", gap: "4px" }}>
+              <span className="client-settings-unsaved-badge" style={{ fontSize: "12px", color: "#B45309", background: "#FEF3F2", padding: "4px 10px", borderRadius: "12px", fontWeight: "600", display: "inline-flex", alignItems: "center", gap: "4px" }}>
                 ● Unsaved changes
               </span>
             )}
@@ -2587,7 +2586,7 @@ export default function ClientSettingsView({
 
       {/* ── UNSAVED CHANGES MODAL ────────────────────────────────────────── */}
       {showUnsavedModal && (
-        <div style={{
+        <div className="client-settings-modal-overlay" style={{
           position: "fixed",
           top: 0,
           left: 0,
@@ -2601,7 +2600,7 @@ export default function ClientSettingsView({
           justifyContent: "center",
           padding: "20px"
         }}>
-          <div style={{
+          <div className="client-settings-modal-card" style={{
             background: "#FFFFFF",
             borderRadius: "14px",
             border: "1px solid #E2E8F0",
@@ -2642,7 +2641,7 @@ export default function ClientSettingsView({
               </div>
             )}
 
-            <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: "10px", marginTop: "22px", flexWrap: "wrap" }}>
+            <div className="client-settings-modal-actions" style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: "10px", marginTop: "22px", flexWrap: "wrap" }}>
               <button
                 type="button"
                 onClick={handleModalCancel}
@@ -2824,55 +2823,28 @@ export default function ClientSettingsView({
             </div>
           )}
 
-          <div style={{ display: "grid", gridTemplateColumns: "240px minmax(0, 1fr)", gap: "20px", alignItems: "start" }}>
-            {/* Left Navigation Sidebar */}
-            <div style={{
-              background: "#FFFFFF",
-              borderRadius: "10px",
-              border: "1px solid #E2E8F0",
-              padding: "8px",
-              boxShadow: "0 1px 3px rgba(0,0,0,0.02)"
-            }}>
+          <div className="client-settings-main-grid">
+            {/* Left Navigation Sidebar / Mobile Pill Nav */}
+            <div className="client-settings-nav">
               {visibleSections.map(s => {
                 const active = activeSection === s.id;
                 return (
                   <button
                     key={s.id}
+                    ref={active ? activeNavBtnRef : null}
                     type="button"
                     onClick={() => {
                       setActiveSection(s.id);
                       onSelectSection?.(s.id);
                     }}
-                    style={{
-                      width: "100%",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                      padding: "9px 12px",
-                      borderRadius: "6px",
-                      border: "none",
-                      background: active ? "#EFF6FF" : "transparent",
-                      color: active ? "#0066CC" : "#334155",
-                      fontSize: "13px",
-                      fontWeight: active ? 700 : 500,
-                      cursor: "pointer",
-                      textAlign: "left",
-                      marginBottom: "2px",
-                      transition: "all 0.1s ease"
-                    }}
-                    onMouseEnter={(e) => {
-                      if (!active) e.currentTarget.style.background = "#F8FAFC";
-                    }}
-                    onMouseLeave={(e) => {
-                      if (!active) e.currentTarget.style.background = "transparent";
-                    }}
+                    className={`client-settings-nav-btn ${active ? "active" : ""}`}
                   >
-                    <span style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <span className="client-settings-nav-label">
                       <span>{s.icon}</span>
                       <span>{s.label}</span>
                     </span>
                     {s.adminOnly && (
-                      <span style={{ fontSize: "10px", fontWeight: "700", color: "#64748B", background: "#F1F5F9", padding: "1px 5px", borderRadius: "4px" }}>
+                      <span className="client-settings-nav-admin-badge">
                         Admin
                       </span>
                     )}
@@ -2882,17 +2854,7 @@ export default function ClientSettingsView({
             </div>
 
             {/* Right Content Panel */}
-            <div style={{
-              background: "#FFFFFF",
-              borderRadius: "12px",
-              border: "1px solid #E2E8F0",
-              padding: "24px",
-              boxShadow: "0 1px 3px rgba(0,0,0,0.03)",
-              minHeight: "500px",
-              minWidth: 0,
-              maxWidth: "100%",
-              boxSizing: "border-box"
-            }}>
+            <div className="client-settings-content-panel">
 
               {/* ── 1. MAIN (ADMIN ONLY) ────────────────────────────────────── */}
               {activeSection === "main" && (
@@ -2907,7 +2869,7 @@ export default function ClientSettingsView({
                   {/* Sub-group A: Core financial settings */}
                   <div style={{ marginBottom: "24px" }}>
                     <h4 style={{ margin: "0 0 12px", fontSize: "14px", fontWeight: "700", color: "#0F172A" }}>Core financial settings</h4>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "16px" }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 240px), 1fr))", gap: "16px" }}>
                       <div>
                         <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "4px" }}>
                           Pulse start date
@@ -3033,7 +2995,7 @@ export default function ClientSettingsView({
                   {/* Sub-group B: Reporting & customisation (Admin only) */}
                   <div style={{ marginTop: "24px", paddingTop: "20px", borderTop: "1px solid #F1F5F9", marginBottom: "24px" }}>
                     <h4 style={{ margin: "0 0 12px", fontSize: "14px", fontWeight: "700", color: "#0F172A" }}>Reporting & customisation</h4>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "16px" }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 240px), 1fr))", gap: "16px" }}>
                       <div>
                         <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "4px" }}>
                           Revenue or income focus
@@ -3207,7 +3169,7 @@ export default function ClientSettingsView({
                   {/* Sub-group C: Integration tools (Admin only) */}
                   <div id="settings-integration-tools" style={{ marginTop: "24px", paddingTop: "20px", borderTop: "1px solid #F1F5F9", marginBottom: "24px" }}>
                     <h4 style={{ margin: "0 0 12px", fontSize: "14px", fontWeight: "700", color: "#0F172A" }}>Integration tools</h4>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "16px", marginBottom: "16px" }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: "16px", marginBottom: "16px" }}>
                       <div>
                         <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "4px" }}>
                           Accounting tool in use
@@ -3266,7 +3228,7 @@ export default function ClientSettingsView({
 
                         {/* Google Sheet CRM */}
                         {settings.crm.toolInUse === "Google Sheet" && (
-                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px" }}>
+                          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: "14px" }}>
                             <div>
                               <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "4px" }}>
                                 Google Sheet CRM URL
@@ -3324,7 +3286,7 @@ export default function ClientSettingsView({
 
                         {/* ClickUp */}
                         {settings.crm.toolInUse === "ClickUp" && (
-                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px" }}>
+                          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: "14px" }}>
                             <div>
                               <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "4px" }}>
                                 ClickUp list ID
@@ -3365,7 +3327,7 @@ export default function ClientSettingsView({
                               value={settings.crm.mondayBoardId || ""}
                               onChange={(e) => updateSettingsField(prev => ({ ...prev, crm: { ...prev.crm, mondayBoardId: e.target.value } }))}
                               placeholder="e.g. 1234567890"
-                              style={{ width: "320px", padding: "8px 12px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "13px", boxSizing: "border-box" }}
+                              style={{ width: "100%", maxWidth: "320px", padding: "8px 12px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "13px", boxSizing: "border-box" }}
                             />
                             {renderCellRef("KeyInfo!X24")}
                           </div>
@@ -3373,7 +3335,7 @@ export default function ClientSettingsView({
 
                         {/* Excel / Azure */}
                         {settings.crm.toolInUse === "Excel" && (
-                          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "12px" }}>
+                          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: "12px" }}>
                             {[
                               { key: "azureTenantId", label: "Azure tenant ID", cell: "KeyInfo!X33" },
                               { key: "azureClientId", label: "Azure client ID", cell: "KeyInfo!X34" },
@@ -3457,7 +3419,7 @@ export default function ClientSettingsView({
                   {/* Sub-group D: Automation frequencies (Admin only) */}
                   <div style={{ marginTop: "24px", paddingTop: "20px", borderTop: "1px solid #F1F5F9" }}>
                     <h4 style={{ margin: "0 0 12px", fontSize: "14px", fontWeight: "700", color: "#0F172A" }}>Automation frequencies</h4>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "16px" }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: "16px" }}>
                       {[
                         { key: "invoices", label: "Invoices frequency", cell: "DataChgAlert!Y2" },
                         { key: "crm", label: "CRM frequency", cell: "DataChgAlert!Y3" },
@@ -3571,7 +3533,7 @@ export default function ClientSettingsView({
                       </div>
                     </div>
 
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "14px" }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 200px), 1fr))", gap: "14px" }}>
                       {/* Gross Profit */}
                       <div style={{ background: "#FFFFFF", padding: "12px", borderRadius: "8px", border: "1px solid #E2E8F0" }}>
                         <div style={{ fontSize: "13px", fontWeight: "700", color: "#1E293B", marginBottom: "8px" }}>Gross profit</div>
@@ -3870,38 +3832,16 @@ export default function ClientSettingsView({
                             return (
                               <div
                                 key={idx}
-                                style={{
-                                  display: "flex",
-                                  alignItems: "center",
-                                  gap: "10px",
-                                  background: "#F8FAFC",
-                                  padding: "7px 12px",
-                                  borderRadius: "6px",
-                                  border: "1px solid #E2E8F0"
-                                }}
+                                className="client-settings-bank-row"
                               >
-                                <span style={{ fontSize: "11px", fontWeight: "700", color: "#64748B", width: "52px", flexShrink: 0, fontFamily: "monospace" }}>
-                                  #{idx + 1} <span style={{ fontSize: "10px", color: "#94A3B8" }}>(H{cellRow})</span>
-                                </span>
+                                <div className="client-settings-bank-row-header">
+                                  <span style={{ fontSize: "11px", fontWeight: "700", color: "#64748B", fontFamily: "monospace", minWidth: "52px" }}>
+                                    #{idx + 1} <span style={{ fontSize: "10px", color: "#94A3B8" }}>(H{cellRow})</span>
+                                  </span>
 
-                                <div style={{ flex: 1, display: "flex", alignItems: "center", gap: "8px" }}>
-                                  <input
-                                    type="text"
-                                    value={accountName}
-                                    onChange={(e) => handleUpdateBankAccountName(idx, e.target.value)}
-                                    placeholder="Bank account name"
-                                    style={{
-                                      flex: 1,
-                                      padding: "6px 10px",
-                                      borderRadius: "5px",
-                                      border: "1px solid #CBD5E1",
-                                      fontSize: "13px",
-                                      background: "#FFFFFF",
-                                      boxSizing: "border-box"
-                                    }}
-                                  />
                                   {matchDetail?.id && (
                                     <span
+                                      className="client-settings-bank-id-badge"
                                       style={{
                                         fontSize: "10px",
                                         fontFamily: "monospace",
@@ -3917,65 +3857,83 @@ export default function ClientSettingsView({
                                       ID: {matchDetail.id}
                                     </span>
                                   )}
+
+                                  <div className="client-settings-bank-row-actions" style={{ display: "flex", gap: "3px", alignItems: "center" }}>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleMoveBankAccount(idx, idx - 1)}
+                                      disabled={idx === 0}
+                                      title="Move up"
+                                      style={{
+                                        padding: "4px 8px",
+                                        borderRadius: "4px",
+                                        border: "1px solid #CBD5E1",
+                                        background: idx === 0 ? "#F1F5F9" : "#FFFFFF",
+                                        color: idx === 0 ? "#CBD5E1" : "#475569",
+                                        cursor: idx === 0 ? "not-allowed" : "pointer",
+                                        fontSize: "11px",
+                                        minHeight: "28px"
+                                      }}
+                                    >
+                                      ▲
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleMoveBankAccount(idx, idx + 1)}
+                                      disabled={idx === (settings.accounting?.bankAccounts || []).length - 1}
+                                      title="Move down"
+                                      style={{
+                                        padding: "4px 8px",
+                                        borderRadius: "4px",
+                                        border: "1px solid #CBD5E1",
+                                        background: idx === (settings.accounting?.bankAccounts || []).length - 1 ? "#F1F5F9" : "#FFFFFF",
+                                        color: idx === (settings.accounting?.bankAccounts || []).length - 1 ? "#CBD5E1" : "#475569",
+                                        cursor: idx === (settings.accounting?.bankAccounts || []).length - 1 ? "not-allowed" : "pointer",
+                                        fontSize: "11px",
+                                        minHeight: "28px"
+                                      }}
+                                    >
+                                      ▼
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRemoveBankAccount(idx)}
+                                      title="Remove account"
+                                      style={{
+                                        padding: "4px 8px",
+                                        borderRadius: "4px",
+                                        border: "1px solid #FCA5A5",
+                                        background: "#FEF2F2",
+                                        color: "#DC2626",
+                                        cursor: "pointer",
+                                        fontSize: "12px",
+                                        fontWeight: "600",
+                                        minHeight: "28px",
+                                        marginLeft: "4px"
+                                      }}
+                                    >
+                                      ✕
+                                    </button>
+                                  </div>
                                 </div>
 
-                                {/* Reorder Buttons */}
-                                <div style={{ display: "flex", gap: "2px", flexShrink: 0 }}>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleMoveBankAccount(idx, idx - 1)}
-                                    disabled={idx === 0}
-                                    title="Move up"
+                                <div className="client-settings-bank-row-input-group" style={{ flex: 1, minWidth: 0, width: "100%" }}>
+                                  <input
+                                    type="text"
+                                    value={accountName}
+                                    onChange={(e) => handleUpdateBankAccountName(idx, e.target.value)}
+                                    placeholder="Bank account name"
                                     style={{
-                                      padding: "4px 7px",
-                                      borderRadius: "4px",
+                                      width: "100%",
+                                      padding: "7px 10px",
+                                      borderRadius: "5px",
                                       border: "1px solid #CBD5E1",
-                                      background: idx === 0 ? "#F1F5F9" : "#FFFFFF",
-                                      color: idx === 0 ? "#CBD5E1" : "#475569",
-                                      cursor: idx === 0 ? "not-allowed" : "pointer",
-                                      fontSize: "10px"
+                                      fontSize: "13px",
+                                      background: "#FFFFFF",
+                                      boxSizing: "border-box"
                                     }}
-                                  >
-                                    ▲
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleMoveBankAccount(idx, idx + 1)}
-                                    disabled={idx === (settings.accounting?.bankAccounts || []).length - 1}
-                                    title="Move down"
-                                    style={{
-                                      padding: "4px 7px",
-                                      borderRadius: "4px",
-                                      border: "1px solid #CBD5E1",
-                                      background: idx === (settings.accounting?.bankAccounts || []).length - 1 ? "#F1F5F9" : "#FFFFFF",
-                                      color: idx === (settings.accounting?.bankAccounts || []).length - 1 ? "#CBD5E1" : "#475569",
-                                      cursor: idx === (settings.accounting?.bankAccounts || []).length - 1 ? "not-allowed" : "pointer",
-                                      fontSize: "10px"
-                                    }}
-                                  >
-                                    ▼
-                                  </button>
+                                  />
                                 </div>
-
-                                {/* Delete Button */}
-                                <button
-                                  type="button"
-                                  onClick={() => handleRemoveBankAccount(idx)}
-                                  title="Remove account"
-                                  style={{
-                                    padding: "4px 8px",
-                                    borderRadius: "4px",
-                                    border: "1px solid #FCA5A5",
-                                    background: "#FEF2F2",
-                                    color: "#DC2626",
-                                    cursor: "pointer",
-                                    fontSize: "12px",
-                                    fontWeight: "600",
-                                    flexShrink: 0
-                                  }}
-                                >
-                                  ✕
-                                </button>
                               </div>
                             );
                           })
@@ -3984,7 +3942,7 @@ export default function ClientSettingsView({
 
                       {/* Manual add input row (if under 10) */}
                       {(settings.accounting?.bankAccounts || []).length < 10 && (
-                        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                        <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
                           <input
                             type="text"
                             value={newManualAccountName}
@@ -3997,7 +3955,8 @@ export default function ClientSettingsView({
                             }}
                             placeholder="Enter bank account name to add manually..."
                             style={{
-                              flex: 1,
+                              flex: "1 1 200px",
+                              minWidth: 0,
                               padding: "7px 10px",
                               borderRadius: "6px",
                               border: "1px solid #CBD5E1",
@@ -4095,94 +4054,97 @@ export default function ClientSettingsView({
                             return (
                               <div
                                 key={idx}
-                                style={{
-                                  display: "flex",
-                                  alignItems: "center",
-                                  gap: "10px",
-                                  padding: "8px 12px",
-                                  background: "#F8FAFC",
-                                  borderRadius: "6px",
-                                  border: "1px solid #E2E8F0"
-                                }}
+                                className="client-settings-bank-row"
                               >
-                                <span style={{ fontSize: "11px", fontWeight: "700", color: "#6B7280", minWidth: "55px" }}>
-                                  H{cellRow}:
-                                </span>
-                                <span style={{ fontSize: "14px" }}>💳</span>
-                                <input
-                                  type="text"
-                                  value={accountName}
-                                  onChange={(e) => handleUpdateNonCashBankAccountName(idx, e.target.value)}
-                                  style={{
-                                    flex: 1,
-                                    padding: "5px 8px",
-                                    borderRadius: "4px",
-                                    border: "1px solid #CBD5E1",
-                                    fontSize: "12px",
-                                    fontWeight: "600",
-                                    color: "#0F172A",
-                                    background: "#FFFFFF"
-                                  }}
-                                />
-                                {matchDetail?.id && (
-                                  <span style={{ fontSize: "10px", color: "#64748B", background: "#E2E8F0", padding: "2px 6px", borderRadius: "4px", maxWidth: "160px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={`Tool ID: ${matchDetail.id}`}>
-                                    ID: {matchDetail.id}
+                                <div className="client-settings-bank-row-header">
+                                  <span style={{ fontSize: "11px", fontWeight: "700", color: "#6B7280", minWidth: "55px" }}>
+                                    H{cellRow}:
                                   </span>
-                                )}
-                                <div style={{ display: "flex", gap: "2px" }}>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleMoveNonCashBankAccount(idx, idx - 1)}
-                                    disabled={idx === 0}
-                                    title="Move up"
-                                    style={{
-                                      padding: "4px 7px",
-                                      borderRadius: "4px",
-                                      border: "1px solid #CBD5E1",
-                                      background: idx === 0 ? "#F1F5F9" : "#FFFFFF",
-                                      color: idx === 0 ? "#CBD5E1" : "#475569",
-                                      cursor: idx === 0 ? "not-allowed" : "pointer",
-                                      fontSize: "10px"
-                                    }}
-                                  >
-                                    ▲
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleMoveNonCashBankAccount(idx, idx + 1)}
-                                    disabled={idx === (settings.accounting?.nonCashBankAccounts || []).length - 1}
-                                    title="Move down"
-                                    style={{
-                                      padding: "4px 7px",
-                                      borderRadius: "4px",
-                                      border: "1px solid #CBD5E1",
-                                      background: idx === (settings.accounting?.nonCashBankAccounts || []).length - 1 ? "#F1F5F9" : "#FFFFFF",
-                                      color: idx === (settings.accounting?.nonCashBankAccounts || []).length - 1 ? "#CBD5E1" : "#475569",
-                                      cursor: idx === (settings.accounting?.nonCashBankAccounts || []).length - 1 ? "not-allowed" : "pointer",
-                                      fontSize: "10px"
-                                    }}
-                                  >
-                                    ▼
-                                  </button>
+                                  <span style={{ fontSize: "14px" }}>💳</span>
+                                  {matchDetail?.id && (
+                                    <span style={{ fontSize: "10px", color: "#64748B", background: "#E2E8F0", padding: "2px 6px", borderRadius: "4px", maxWidth: "160px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={`Tool ID: ${matchDetail.id}`}>
+                                      ID: {matchDetail.id}
+                                    </span>
+                                  )}
+
+                                  <div className="client-settings-bank-row-actions" style={{ display: "flex", gap: "3px", alignItems: "center" }}>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleMoveNonCashBankAccount(idx, idx - 1)}
+                                      disabled={idx === 0}
+                                      title="Move up"
+                                      style={{
+                                        padding: "4px 8px",
+                                        borderRadius: "4px",
+                                        border: "1px solid #CBD5E1",
+                                        background: idx === 0 ? "#F1F5F9" : "#FFFFFF",
+                                        color: idx === 0 ? "#CBD5E1" : "#475569",
+                                        cursor: idx === 0 ? "not-allowed" : "pointer",
+                                        fontSize: "11px",
+                                        minHeight: "28px"
+                                      }}
+                                    >
+                                      ▲
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleMoveNonCashBankAccount(idx, idx + 1)}
+                                      disabled={idx === (settings.accounting?.nonCashBankAccounts || []).length - 1}
+                                      title="Move down"
+                                      style={{
+                                        padding: "4px 8px",
+                                        borderRadius: "4px",
+                                        border: "1px solid #CBD5E1",
+                                        background: idx === (settings.accounting?.nonCashBankAccounts || []).length - 1 ? "#F1F5F9" : "#FFFFFF",
+                                        color: idx === (settings.accounting?.nonCashBankAccounts || []).length - 1 ? "#CBD5E1" : "#475569",
+                                        cursor: idx === (settings.accounting?.nonCashBankAccounts || []).length - 1 ? "not-allowed" : "pointer",
+                                        fontSize: "11px",
+                                        minHeight: "28px"
+                                      }}
+                                    >
+                                      ▼
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRemoveNonCashBankAccount(idx)}
+                                      title="Remove non-cash account"
+                                      style={{
+                                        padding: "4px 8px",
+                                        borderRadius: "4px",
+                                        border: "1px solid #FCA5A5",
+                                        background: "#FEF2F2",
+                                        color: "#DC2626",
+                                        cursor: "pointer",
+                                        fontSize: "12px",
+                                        fontWeight: "600",
+                                        minHeight: "28px",
+                                        marginLeft: "4px"
+                                      }}
+                                    >
+                                      ✕
+                                    </button>
+                                  </div>
                                 </div>
-                                <button
-                                  type="button"
-                                  onClick={() => handleRemoveNonCashBankAccount(idx)}
-                                  title="Remove non-cash account"
-                                  style={{
-                                    padding: "4px 8px",
-                                    borderRadius: "4px",
-                                    border: "1px solid #FCA5A5",
-                                    background: "#FEF2F2",
-                                    color: "#DC2626",
-                                    cursor: "pointer",
-                                    fontSize: "12px",
-                                    fontWeight: "600",
-                                    flexShrink: 0
-                                  }}
-                                >
-                                  ✕
-                                </button>
+
+                                <div className="client-settings-bank-row-input-group" style={{ flex: 1, minWidth: 0, width: "100%" }}>
+                                  <input
+                                    type="text"
+                                    value={accountName}
+                                    onChange={(e) => handleUpdateNonCashBankAccountName(idx, e.target.value)}
+                                    placeholder="Enter non-cash account name..."
+                                    style={{
+                                      width: "100%",
+                                      padding: "6px 8px",
+                                      borderRadius: "4px",
+                                      border: "1px solid #CBD5E1",
+                                      fontSize: "12px",
+                                      fontWeight: "600",
+                                      color: "#0F172A",
+                                      background: "#FFFFFF",
+                                      boxSizing: "border-box"
+                                    }}
+                                  />
+                                </div>
                               </div>
                             );
                           })
@@ -4191,7 +4153,7 @@ export default function ClientSettingsView({
 
                       {/* Manual add input row (if under 6) */}
                       {(settings.accounting?.nonCashBankAccounts || []).length < 6 && (
-                        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                        <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
                           <input
                             type="text"
                             value={newManualNonCashAccountName}
@@ -4204,7 +4166,8 @@ export default function ClientSettingsView({
                             }}
                             placeholder="Enter non-cash bank account name to add (e.g. Capital on Tap)..."
                             style={{
-                              flex: 1,
+                              flex: "1 1 200px",
+                              minWidth: 0,
                               padding: "7px 10px",
                               borderRadius: "6px",
                               border: "1px solid #CBD5E1",
@@ -4247,7 +4210,7 @@ export default function ClientSettingsView({
                       {renderCellRef("InvAppList!F1")}
                     </div>
 
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "24px", alignItems: "start" }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: "24px", alignItems: "start" }}>
                       <div>
                         <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "6px" }}>
                           Formatting rule
@@ -4445,7 +4408,7 @@ export default function ClientSettingsView({
                       </button>
                     </div>
 
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "20px", width: "100%", minWidth: 0, boxSizing: "border-box" }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: "20px", width: "100%", minWidth: 0, boxSizing: "border-box" }}>
                       <div style={{ background: "#FFFFFF", padding: "14px", borderRadius: "8px", border: "1px solid #E2E8F0", minWidth: 0, width: "100%", boxSizing: "border-box" }}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px", minWidth: 0, gap: "6px" }}>
                           <label style={{ fontSize: "12px", fontWeight: "700", color: "#1E293B", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -4538,7 +4501,7 @@ export default function ClientSettingsView({
                       </button>
                     </div>
 
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "14px", width: "100%", minWidth: 0, boxSizing: "border-box" }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 240px), 1fr))", gap: "14px", width: "100%", minWidth: 0, boxSizing: "border-box" }}>
                       {[
                         { key: "revenue", label: "Revenue", max: 16, cell: "KeyInfo!BA2:BA17" },
                         { key: "cosStaffCosts", label: "COS staff costs", max: 10, cell: "KeyInfo!BA19:BA28" },
@@ -4694,6 +4657,10 @@ export default function ClientSettingsView({
                     </div>
 
                     {/* Unified Horizontal Mapping Header + Live Data Table */}
+                    <div className="mobile-table-scroll-hint">
+                      <span>⇄</span>
+                      <span>Swipe horizontally to view and configure all 13 fields</span>
+                    </div>
                     <div style={{
                       border: "1px solid #CBD5E1",
                       borderRadius: "8px",
@@ -4917,7 +4884,7 @@ export default function ClientSettingsView({
                     </div>
 
                     {/* Definition Cards Grid */}
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: "20px", marginBottom: "22px" }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))", gap: "20px", marginBottom: "22px" }}>
                       {/* Card A: Confirmed Definition */}
                       <div style={{ background: "#F0FDF4", border: "1px solid #BBF7D0", borderRadius: "8px", padding: "16px" }}>
                         <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "12px" }}>
@@ -5123,6 +5090,10 @@ export default function ClientSettingsView({
                         </div>
                       </div>
 
+                      <div className="mobile-table-scroll-hint">
+                        <span>⇄</span>
+                        <span>Swipe horizontally to view preview columns</span>
+                      </div>
                       <div style={{ border: "1px solid #E2E8F0", borderRadius: "8px", overflowX: "auto", WebkitOverflowScrolling: "touch", maxHeight: "420px" }}>
                         <table style={{ width: "100%", minWidth: "850px", borderCollapse: "collapse", fontSize: "11px", textAlign: "left", whiteSpace: "nowrap" }}>
                           <thead>
@@ -5285,7 +5256,12 @@ export default function ClientSettingsView({
                       No CRM statuses mapped yet. Click &quot;Check CRM data for statuses&quot; to populate from opportunities, or click &quot;+ Add status&quot; to add one.
                     </div>
                   ) : (
-                    <div style={{ border: "1px solid #E2E8F0", borderRadius: "8px", overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+                    <>
+                      <div className="mobile-table-scroll-hint">
+                        <span>⇄</span>
+                        <span>Swipe horizontally to view all status mapping columns</span>
+                      </div>
+                      <div style={{ border: "1px solid #E2E8F0", borderRadius: "8px", overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
                       <table style={{ width: "100%", minWidth: "560px", borderCollapse: "collapse", fontSize: "12px", textAlign: "left" }}>
                         <thead>
                           <tr style={{ background: "#F8FAFC", borderBottom: "1px solid #E2E8F0" }}>
@@ -5396,7 +5372,8 @@ export default function ClientSettingsView({
                         </tbody>
                       </table>
                     </div>
-                  )}
+                  </>
+                )}
                 </div>
               )}
 
@@ -5413,7 +5390,7 @@ export default function ClientSettingsView({
                   {/* Sub-section 1: Date adjustments */}
                   <div style={{ marginBottom: "28px" }}>
                     <h4 style={{ margin: "0 0 12px", fontSize: "14px", fontWeight: "700", color: "#0F172A" }}>Date adjustments</h4>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "16px" }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 240px), 1fr))", gap: "16px" }}>
                       <div>
                         <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "4px" }}>
                           Project start date
@@ -5637,7 +5614,7 @@ export default function ClientSettingsView({
                             );
                             const currentVal = matchingOpt ? matchingOpt.code : (m.mappedTo || "");
                             return (
-                              <div key={idx} style={{ display: "flex", gap: "10px", alignItems: "center", marginBottom: "8px" }}>
+                              <div key={idx} className="client-settings-mapping-row">
                                 <input
                                   type="text"
                                   value={m.crmProductLine || ""}
@@ -5658,51 +5635,55 @@ export default function ClientSettingsView({
                                     fontSize: "12px",
                                     background: isCrmPl ? "#F1F5F9" : "#FFFFFF",
                                     color: isCrmPl ? "#475569" : "#0F172A",
-                                    cursor: isCrmPl ? "not-allowed" : "text"
+                                    cursor: isCrmPl ? "not-allowed" : "text",
+                                    boxSizing: "border-box"
                                   }}
                                 />
-                                <span style={{ color: "#94A3B8" }}>→</span>
-                                <select
-                                  value={currentVal}
-                                  onChange={(e) => {
-                                    const next = [...settings.jobs.productLineMappings];
-                                    next[idx] = { ...next[idx], mappedTo: e.target.value };
-                                    updateSettingsField(prev => ({ ...prev, jobs: { ...prev.jobs, productLineMappings: next } }));
-                                  }}
-                                  style={{
-                                    flex: 1,
-                                    padding: "6px 8px",
-                                    borderRadius: "4px",
-                                    border: "1px solid #CBD5E1",
-                                    fontSize: "12px",
-                                    background: "#FFFFFF",
-                                    color: currentVal ? "#0F172A" : "#64748B"
-                                  }}
-                                >
-                                  <option value="">-- Select product line --</option>
-                                  {availableProductLines.map(p => (
-                                    <option key={p.code} value={p.code}>{p.code}</option>
-                                  ))}
-                                  {currentVal && !availableProductLines.some(p => p.code === currentVal) && (
-                                    <option value={currentVal}>{currentVal}</option>
-                                  )}
-                                </select>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    updateSettingsField(prev => ({
-                                      ...prev,
-                                      jobs: {
-                                        ...prev.jobs,
-                                        productLineMappings: prev.jobs.productLineMappings.filter((_, i) => i !== idx)
-                                      }
-                                    }));
-                                  }}
-                                  style={{ background: "none", border: "none", color: "#DC2626", cursor: "pointer", fontSize: "14px" }}
-                                  title="Delete mapping"
-                                >
-                                  ✕
-                                </button>
+                                <span className="client-settings-mapping-row-arrow" style={{ color: "#94A3B8" }}>→</span>
+                                <div className="client-settings-mapping-row-select-wrap">
+                                  <select
+                                    value={currentVal}
+                                    onChange={(e) => {
+                                      const next = [...settings.jobs.productLineMappings];
+                                      next[idx] = { ...next[idx], mappedTo: e.target.value };
+                                      updateSettingsField(prev => ({ ...prev, jobs: { ...prev.jobs, productLineMappings: next } }));
+                                    }}
+                                    style={{
+                                      flex: 1,
+                                      padding: "6px 8px",
+                                      borderRadius: "4px",
+                                      border: "1px solid #CBD5E1",
+                                      fontSize: "12px",
+                                      background: "#FFFFFF",
+                                      color: currentVal ? "#0F172A" : "#64748B",
+                                      boxSizing: "border-box"
+                                    }}
+                                  >
+                                    <option value="">-- Select product line --</option>
+                                    {availableProductLines.map(p => (
+                                      <option key={p.code} value={p.code}>{p.code}</option>
+                                    ))}
+                                    {currentVal && !availableProductLines.some(p => p.code === currentVal) && (
+                                      <option value={currentVal}>{currentVal}</option>
+                                    )}
+                                  </select>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      updateSettingsField(prev => ({
+                                        ...prev,
+                                        jobs: {
+                                          ...prev.jobs,
+                                          productLineMappings: prev.jobs.productLineMappings.filter((_, i) => i !== idx)
+                                        }
+                                      }));
+                                    }}
+                                    style={{ background: "none", border: "none", color: "#DC2626", cursor: "pointer", fontSize: "14px", padding: "4px 6px" }}
+                                    title="Delete mapping"
+                                  >
+                                    ✕
+                                  </button>
+                                </div>
                               </div>
                             );
                           })
@@ -5811,7 +5792,7 @@ export default function ClientSettingsView({
                           (settings.jobs?.leadSourceMappings || []).map((m, idx) => {
                             const isCrmLs = m.fromCrm === true || (!m.isManual && knownCrmLeadSources.has(String(m.crmSource || "").trim().toLowerCase()));
                             return (
-                              <div key={idx} style={{ display: "flex", gap: "10px", alignItems: "center", marginBottom: "8px" }}>
+                              <div key={idx} className="client-settings-mapping-row">
                                 <input
                                   type="text"
                                   value={m.crmSource || ""}
@@ -5832,48 +5813,52 @@ export default function ClientSettingsView({
                                     fontSize: "12px",
                                     background: isCrmLs ? "#F1F5F9" : "#FFFFFF",
                                     color: isCrmLs ? "#475569" : "#0F172A",
-                                    cursor: isCrmLs ? "not-allowed" : "text"
+                                    cursor: isCrmLs ? "not-allowed" : "text",
+                                    boxSizing: "border-box"
                                   }}
                                 />
-                                <span style={{ color: "#94A3B8" }}>→</span>
-                                <select
-                                  value={m.mappedTo || ""}
-                                  onChange={(e) => {
-                                    const next = [...settings.jobs.leadSourceMappings];
-                                    next[idx] = { ...next[idx], mappedTo: e.target.value };
-                                    updateSettingsField(prev => ({ ...prev, jobs: { ...prev.jobs, leadSourceMappings: next } }));
-                                  }}
-                                  style={{
-                                    flex: 1,
-                                    padding: "6px 8px",
-                                    borderRadius: "4px",
-                                    border: "1px solid #CBD5E1",
-                                    fontSize: "12px",
-                                    background: "#FFFFFF",
-                                    color: m.mappedTo ? "#0F172A" : "#64748B"
-                                  }}
-                                >
-                                  <option value="">-- Select lead source --</option>
-                                  {allAvailableLeadSources.map(src => (
-                                    <option key={src} value={src}>{src}</option>
-                                  ))}
-                                </select>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    updateSettingsField(prev => ({
-                                      ...prev,
-                                      jobs: {
-                                        ...prev.jobs,
-                                        leadSourceMappings: prev.jobs.leadSourceMappings.filter((_, i) => i !== idx)
-                                      }
-                                    }));
-                                  }}
-                                  style={{ background: "none", border: "none", color: "#DC2626", cursor: "pointer", fontSize: "14px" }}
-                                  title="Delete mapping"
-                                >
-                                  ✕
-                                </button>
+                                <span className="client-settings-mapping-row-arrow" style={{ color: "#94A3B8" }}>→</span>
+                                <div className="client-settings-mapping-row-select-wrap">
+                                  <select
+                                    value={m.mappedTo || ""}
+                                    onChange={(e) => {
+                                      const next = [...settings.jobs.leadSourceMappings];
+                                      next[idx] = { ...next[idx], mappedTo: e.target.value };
+                                      updateSettingsField(prev => ({ ...prev, jobs: { ...prev.jobs, leadSourceMappings: next } }));
+                                    }}
+                                    style={{
+                                      flex: 1,
+                                      padding: "6px 8px",
+                                      borderRadius: "4px",
+                                      border: "1px solid #CBD5E1",
+                                      fontSize: "12px",
+                                      background: "#FFFFFF",
+                                      color: m.mappedTo ? "#0F172A" : "#64748B",
+                                      boxSizing: "border-box"
+                                    }}
+                                  >
+                                    <option value="">-- Select lead source --</option>
+                                    {allAvailableLeadSources.map(src => (
+                                      <option key={src} value={src}>{src}</option>
+                                    ))}
+                                  </select>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      updateSettingsField(prev => ({
+                                        ...prev,
+                                        jobs: {
+                                          ...prev.jobs,
+                                          leadSourceMappings: prev.jobs.leadSourceMappings.filter((_, i) => i !== idx)
+                                        }
+                                      }));
+                                    }}
+                                    style={{ background: "none", border: "none", color: "#DC2626", cursor: "pointer", fontSize: "14px", padding: "4px 6px" }}
+                                    title="Delete mapping"
+                                  >
+                                    ✕
+                                  </button>
+                                </div>
                               </div>
                             );
                           })
@@ -5898,7 +5883,7 @@ export default function ClientSettingsView({
                   {/* Sub-section 1: Invoices */}
                   <div style={{ marginBottom: "28px" }}>
                     <h4 style={{ margin: "0 0 12px", fontSize: "14px", fontWeight: "700", color: "#0F172A" }}>Invoices</h4>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "14px", marginBottom: "20px" }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: "14px", marginBottom: "20px" }}>
                       <div>
                         <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "3px" }}>Months to compare</label>
                         <select
@@ -6027,7 +6012,7 @@ export default function ClientSettingsView({
                       <div style={{ fontSize: "13px", fontWeight: "700", color: "#0F172A", marginBottom: "12px" }}>
                         Invoice discrepancy rules (dashboard compare)
                       </div>
-                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "10px" }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 200px), 1fr))", gap: "10px" }}>
                         {[
                           { key: "missingInvoice", label: "Missing invoice?", cell: "DataChgAlert!B39" },
                           { key: "clientMismatch", label: "Client mismatch", cell: "DataChgAlert!B40" },
@@ -6072,7 +6057,7 @@ export default function ClientSettingsView({
                   {/* Sub-section 2: Expenses */}
                   <div style={{ marginBottom: "28px", paddingTop: "20px", borderTop: "1px solid #F1F5F9" }}>
                     <h4 style={{ margin: "0 0 12px", fontSize: "14px", fontWeight: "700", color: "#0F172A" }}>Expenses</h4>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "14px", marginBottom: "20px" }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: "14px", marginBottom: "20px" }}>
                       <div>
                         <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "3px" }}>Months to compare</label>
                         <select
@@ -6152,7 +6137,7 @@ export default function ClientSettingsView({
                       <div style={{ fontSize: "13px", fontWeight: "700", color: "#0F172A", marginBottom: "12px" }}>
                         Expense discrepancy rules (dashboard compare)
                       </div>
-                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "10px" }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 200px), 1fr))", gap: "10px" }}>
                         {[
                           { key: "missingCost", label: "Missing cost?", cell: "DataChgAlert!B111" },
                           { key: "duplicateAppId", label: "Duplicate app ID?", cell: "DataChgAlert!B112" },
@@ -6198,7 +6183,7 @@ export default function ClientSettingsView({
                   {/* Sub-section 3: CRM Discrepancy Rules */}
                   <div style={{ paddingTop: "20px", borderTop: "1px solid #F1F5F9" }}>
                     <h4 style={{ margin: "0 0 12px", fontSize: "14px", fontWeight: "700", color: "#0F172A" }}>CRM discrepancy rules</h4>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px", marginBottom: "18px" }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: "14px", marginBottom: "18px" }}>
                       <div>
                         <label style={{ fontSize: "12px", fontWeight: "600", color: "#334155", display: "block", marginBottom: "3px" }}>CRM months to compare</label>
                         <select
@@ -6243,8 +6228,12 @@ export default function ClientSettingsView({
                             </div>
                             {renderCellRef(table.cell)}
                           </div>
-                          <div style={{ border: "1px solid #E2E8F0", borderRadius: "6px", overflow: "hidden", background: "#FFFFFF" }}>
-                            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
+                          <div className="mobile-table-scroll-hint" style={{ marginBottom: "6px" }}>
+                            <span>⇄</span>
+                            <span>Swipe horizontally to view rules</span>
+                          </div>
+                          <div style={{ border: "1px solid #E2E8F0", borderRadius: "6px", overflowX: "auto", WebkitOverflowScrolling: "touch", background: "#FFFFFF" }}>
+                            <table style={{ width: "100%", minWidth: "420px", borderCollapse: "collapse", fontSize: "12px" }}>
                               <thead>
                                 <tr style={{ background: "#F1F5F9", borderBottom: "1px solid #E2E8F0", textAlign: "left" }}>
                                   <th style={{ padding: "6px 10px", fontWeight: "600", color: "#475569" }}>Discrepancy rule</th>
@@ -6391,32 +6380,41 @@ export default function ClientSettingsView({
 
       {/* ── MODAL: PULL & SELECT BANK ACCOUNTS FROM ACCOUNTING TOOL ─────────── */}
       {showBankModal && (
-        <div style={{
-          position: "fixed",
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          background: "rgba(15, 23, 42, 0.6)",
-          zIndex: 9999,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          padding: "20px"
-        }}>
-          <div style={{
-            background: "#FFFFFF",
-            borderRadius: "12px",
-            width: "100%",
-            maxWidth: "580px",
-            maxHeight: "85vh",
+        <div
+          className="client-settings-modal-overlay bank-modal-overlay"
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: "rgba(15, 23, 42, 0.6)",
+            zIndex: 9999,
             display: "flex",
-            flexDirection: "column",
-            boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.2), 0 10px 10px -5px rgba(0, 0, 0, 0.04)",
-            overflow: "hidden"
-          }}>
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "20px"
+          }}
+        >
+          <div
+            className="client-settings-modal-card bank-modal-card"
+            style={{
+              background: "#FFFFFF",
+              borderRadius: "12px",
+              width: "100%",
+              maxWidth: "580px",
+              maxHeight: "85vh",
+              display: "flex",
+              flexDirection: "column",
+              boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.2), 0 10px 10px -5px rgba(0, 0, 0, 0.04)",
+              overflow: "hidden"
+            }}
+          >
             {/* Modal Header */}
-            <div style={{ padding: "16px 20px", borderBottom: "1px solid #E2E8F0", display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+            <div
+              className="bank-modal-header"
+              style={{ padding: "16px 20px", borderBottom: "1px solid #E2E8F0", display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}
+            >
               <div>
                 <h3 style={{ margin: "0 0 4px", fontSize: "16px", fontWeight: "700", color: "#0F172A" }}>
                   {bankModalTarget === "non-cash"
@@ -6440,7 +6438,10 @@ export default function ClientSettingsView({
             </div>
 
             {/* Modal Filter & Selection Toolbar */}
-            <div style={{ padding: "12px 20px", background: "#F8FAFC", borderBottom: "1px solid #E2E8F0", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
+            <div
+              className="bank-modal-toolbar"
+              style={{ padding: "12px 20px", background: "#F8FAFC", borderBottom: "1px solid #E2E8F0", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}
+            >
               <input
                 type="text"
                 value={bankSearchQuery}
@@ -6500,7 +6501,10 @@ export default function ClientSettingsView({
             </div>
 
             {/* Accounts Checklist Content */}
-            <div style={{ padding: "12px 20px", overflowY: "auto", flex: 1, display: "flex", flexDirection: "column", gap: "6px" }}>
+            <div
+              className="bank-modal-body"
+              style={{ padding: "12px 20px", overflowY: "auto", flex: 1, display: "flex", flexDirection: "column", gap: "6px" }}
+            >
               {filteredModalAccounts.length === 0 ? (
                 <div style={{ padding: "30px", textAlign: "center", color: "#64748B", fontSize: "13px" }}>
                   No accounts found matching &quot;{bankSearchQuery}&quot;.
@@ -6603,7 +6607,10 @@ export default function ClientSettingsView({
             </div>
 
             {/* Modal Footer */}
-            <div style={{ padding: "14px 20px", borderTop: "1px solid #E2E8F0", background: "#F8FAFC", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div
+              className="client-settings-modal-actions bank-modal-footer"
+              style={{ padding: "14px 20px", borderTop: "1px solid #E2E8F0", background: "#F8FAFC", display: "flex", justifyContent: "space-between", alignItems: "center" }}
+            >
               <button
                 type="button"
                 onClick={() => setShowBankModal(false)}
@@ -6649,6 +6656,284 @@ export default function ClientSettingsView({
           </div>
         </div>
       )}
+
+      {/* ── STICKY BOTTOM ACTION BAR ON MOBILE WHEN DIRTY ─────────────────── */}
+      {isDirty && (selectedClientName || managedClient) && (
+        <div className="client-settings-mobile-action-bar">
+          <div className="mobile-action-bar-info">
+            <span className="mobile-action-bar-dot" />
+            <span>Unsaved changes</span>
+          </div>
+          <div className="mobile-action-bar-buttons">
+            <button
+              type="button"
+              onClick={handleDiscard}
+              disabled={isSaving}
+              className="mobile-action-discard-btn"
+            >
+              Discard
+            </button>
+            <button
+              type="button"
+              onClick={() => handleSave()}
+              disabled={isSaving}
+              className="mobile-action-save-btn"
+            >
+              {isSaving ? "Saving..." : "Save changes"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── RESPONSIVE MOBILE STYLES ────────────────────────────────────────── */}
+      <style jsx>{`
+        .client-settings-main-grid {
+          display: grid;
+          grid-template-columns: 240px minmax(0, 1fr);
+          gap: 24px;
+          align-items: start;
+        }
+        .client-settings-nav {
+          position: sticky;
+          top: 16px;
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
+        .client-settings-content-panel {
+          background: #FFFFFF;
+          border-radius: 12px;
+          border: 1px solid #E2E8F0;
+          padding: 24px;
+        }
+        .client-settings-topbar {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+        }
+        .client-settings-topbar-actions {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+        }
+        .client-settings-bank-row,
+        .client-settings-mapping-row {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin-bottom: 8px;
+        }
+        .mobile-table-scroll-hint {
+          display: none;
+        }
+        .client-settings-mobile-action-bar {
+          display: none;
+        }
+        .client-settings-modal-overlay {
+          position: fixed;
+          top: 0;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          background: rgba(15, 23, 42, 0.6);
+          z-index: 9999;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 16px;
+        }
+        .client-settings-modal-card {
+          background: #FFFFFF;
+          border-radius: 12px;
+          width: 100%;
+          max-width: 480px;
+          box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2);
+          overflow: hidden;
+        }
+        .client-settings-modal-actions {
+          display: flex;
+          gap: 8px;
+        }
+
+        @media (max-width: 768px) {
+          .client-settings-main-grid {
+            grid-template-columns: 1fr;
+            gap: 14px;
+          }
+          .client-settings-nav {
+            position: sticky;
+            top: 0;
+            z-index: 25;
+            background: #FFFFFF;
+            border: 1px solid #E2E8F0;
+            border-radius: 10px;
+            padding: 6px 8px;
+            margin-bottom: 12px;
+            display: flex;
+            flex-direction: row;
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+            gap: 6px;
+            white-space: nowrap;
+            scrollbar-width: none;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.04);
+          }
+          .client-settings-nav::-webkit-scrollbar {
+            display: none;
+          }
+          .client-settings-nav-btn {
+            padding: 7px 12px !important;
+            border-radius: 8px !important;
+            font-size: 12px !important;
+            flex-shrink: 0;
+          }
+          .mobile-table-scroll-hint {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 11px;
+            color: #64748B;
+            margin-bottom: 6px;
+            font-weight: 500;
+          }
+          .client-settings-mobile-action-bar {
+            display: flex;
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: #FFFFFF;
+            border-top: 1px solid #E2E8F0;
+            padding: 10px 14px calc(10px + env(safe-area-inset-bottom, 0px));
+            box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.08);
+            z-index: 100;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+          }
+          .mobile-action-bar-info {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            font-weight: 600;
+            color: #B45309;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+          }
+          .mobile-action-bar-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #F59E0B;
+            flex-shrink: 0;
+          }
+          .mobile-action-bar-buttons {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-shrink: 0;
+          }
+          .mobile-action-discard-btn {
+            padding: 8px 12px;
+            border-radius: 6px;
+            border: 1px solid #CBD5E1;
+            background: #FFFFFF;
+            color: #475569;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+          }
+          .mobile-action-save-btn {
+            padding: 8px 16px;
+            border-radius: 6px;
+            border: none;
+            background: #0066CC;
+            color: #FFFFFF;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+          }
+          .client-settings-content-panel {
+            padding-bottom: 64px;
+          }
+        }
+
+        @media (max-width: 640px) {
+          .client-settings-content-panel {
+            padding: 14px 12px 64px 12px;
+            border-radius: 10px;
+          }
+          .client-settings-topbar {
+            flex-direction: column;
+            align-items: stretch;
+            gap: 12px;
+          }
+          .client-settings-topbar-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            width: 100%;
+          }
+          .client-settings-topbar-actions button {
+            flex: 1;
+            justify-content: center;
+          }
+          .client-settings-bank-row,
+          .client-settings-mapping-row {
+            flex-direction: column;
+            align-items: stretch;
+            gap: 8px;
+            padding: 10px;
+            background: #FFFFFF;
+            border: 1px solid #E2E8F0;
+            border-radius: 8px;
+            margin-bottom: 10px;
+          }
+          .bank-row-actions,
+          .mapping-row-actions {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+            justify-content: flex-end;
+          }
+          .bank-modal-card {
+            max-height: 92vh !important;
+            border-radius: 10px !important;
+          }
+          .bank-modal-header {
+            padding: 14px 14px 10px !important;
+          }
+          .bank-modal-toolbar {
+            padding: 10px 14px !important;
+            flex-direction: column !important;
+            align-items: stretch !important;
+            gap: 8px !important;
+          }
+          .bank-modal-body {
+            padding: 10px 14px !important;
+          }
+          .bank-modal-footer {
+            padding: 12px 14px !important;
+            flex-direction: column-reverse !important;
+            gap: 8px !important;
+          }
+          .bank-modal-footer button {
+            width: 100% !important;
+            padding: 9px 14px !important;
+            text-align: center;
+          }
+          .client-settings-modal-actions {
+            flex-direction: column-reverse !important;
+            gap: 8px !important;
+          }
+          .client-settings-modal-actions button {
+            width: 100% !important;
+          }
+        }
+      `}</style>
     </div>
   );
 }

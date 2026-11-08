@@ -51,7 +51,7 @@ export function getStage1MigrationSql() {
     if (fs.existsSync(sqlPath)) {
       return fs.readFileSync(sqlPath, "utf8");
     }
-  } catch (_) {}
+  } catch (_) { }
   return "";
 }
 
@@ -77,13 +77,19 @@ export async function getControlPlaneStatus() {
   const tableStatuses = await Promise.all(
     STAGE_1_TABLES.map(async (tbl) => {
       try {
-        const { count, error } = await sb
+        const { count, error, status } = await sb
           .from(tbl.name)
-          .select("*", { count: "exact", head: true });
-        if (error) {
-          return { ...tbl, exists: false, rowCount: 0, error: error.message };
+          .select("*", { count: "exact" })
+          .limit(1);
+        if (error || (status && status >= 400) || count === null || count === undefined) {
+          return {
+            ...tbl,
+            exists: false,
+            rowCount: 0,
+            error: error?.message || `HTTP ${status || 404}: Table not created yet`,
+          };
         }
-        return { ...tbl, exists: true, rowCount: count ?? 0 };
+        return { ...tbl, exists: true, rowCount: count };
       } catch (err) {
         return { ...tbl, exists: false, rowCount: 0, error: err.message };
       }
@@ -108,7 +114,7 @@ export async function getControlPlaneStatus() {
           updatedBy: data.updated_by,
         };
       }
-    } catch (_) {}
+    } catch (_) { }
   }
 
   return {
@@ -119,7 +125,7 @@ export async function getControlPlaneStatus() {
     dualWriteMirroring: true,
     lastSyncMeta,
     tables: tableStatuses,
-    migrationSql: schemaReady ? "" : getStage1MigrationSql(),
+    migrationSql: getStage1MigrationSql(),
   };
 }
 
@@ -325,7 +331,7 @@ export async function syncControlPlaneToSupabase({ sheets, automationCommanderSh
 
       if (sharedXero) {
         let parsedShared = null;
-        try { parsedShared = JSON.parse(sharedXero); } catch (_) {}
+        try { parsedShared = JSON.parse(sharedXero); } catch (_) { }
         if (parsedShared || String(sharedXero).startsWith("enc:v1:")) {
           vaultRows.push({
             client_key: "__shared_xero__",
@@ -345,7 +351,7 @@ export async function syncControlPlaneToSupabase({ sheets, automationCommanderSh
           const val = await redisClient.get(k);
           if (val) {
             let parsed = null;
-            try { parsed = JSON.parse(val); } catch (_) {}
+            try { parsed = JSON.parse(val); } catch (_) { }
             if (parsed || String(val).startsWith("enc:v1:")) {
               vaultRows.push({
                 client_id: clientIdByNormKey.get(clientKey) || null,
@@ -434,7 +440,7 @@ export async function syncControlPlaneToSupabase({ sheets, automationCommanderSh
       let parsedSnap = {};
       try {
         if (dataSnapshot) parsedSnap = JSON.parse(dataSnapshot);
-      } catch (_) {}
+      } catch (_) { }
       tasksByHash.set(fp, {
         fingerprint_hash: fp,
         task_key: parsedSnap.taskKey || `${clientName}||${alertType}||${fp}`,
@@ -552,15 +558,19 @@ export async function syncControlPlaneToSupabase({ sheets, automationCommanderSh
   const tasksByClientKey = new Map();
   (setupTasksResp.data?.values || []).forEach(r => {
     const cName = String(r[0] || "").trim();
-    const taskId = String(r[1] || "").trim();
+    const phaseId = String(r[1] || "").trim();
+    const taskId = String(r[2] || "").trim();
     if (!cName || !taskId) return;
     const norm = normalizeKey(cName);
     if (!tasksByClientKey.has(norm)) tasksByClientKey.set(norm, {});
+    const isCompleted = String(r[4] || "").toUpperCase() === "TRUE";
     tasksByClientKey.get(norm)[taskId] = {
-      status: String(r[2] || "pending").trim(),
-      completedBy: String(r[3] || "").trim(),
-      completedAt: String(r[4] || "").trim(),
-      notes: String(r[5] || "").trim(),
+      phaseId,
+      isCompleted,
+      status: isCompleted ? "completed" : "pending",
+      completedAt: String(r[5] || "").trim(),
+      completedBy: String(r[6] || "").trim(),
+      metadata: String(r[7] || "").trim(),
     };
   });
 
@@ -589,6 +599,104 @@ export async function syncControlPlaneToSupabase({ sheets, automationCommanderSh
     if (setupErr) throw new Error(`client_setup_state upsert failed: ${setupErr.message}`);
   }
   summary.client_setup_state = setupStatesToUpsert.length;
+
+  // ── 6b. EOM TEMPLATES, CLIENT TASKS & MONTHLY STATUS ───────────────────────
+  try {
+    const [eomTmplResp, eomClientTasksResp, eomStatusResp, eomExclResp] = await Promise.all([
+      withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: acId, range: "EomTemplates!A2:H1000" })).catch(() => ({ data: { values: [] } })),
+      withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: acId, range: "EomClientTasks!A2:H5000" })).catch(() => ({ data: { values: [] } })),
+      withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: acId, range: "EomMonthlyStatus!A2:E50000" })).catch(() => ({ data: { values: [] } })),
+      withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: acId, range: "EomExcludedClients!A2:C1000" })).catch(() => ({ data: { values: [] } })),
+    ]);
+
+    const eomRowsToUpsert = [];
+    const eomTemplates = (eomTmplResp.data?.values || []).filter(r => r[0]).map((r, i) => ({
+      templateId: r[0],
+      name: r[1] || "",
+      defaultNotes: r[2] || "",
+      linkedFunction: r[3] || "",
+      active: r[4] !== "FALSE" && r[4] !== false,
+      createdAt: r[5] || "",
+      alertCategories: r[6] || "",
+      sortOrder: r[7] !== undefined && r[7] !== "" ? Number(r[7]) : 1000000 + i,
+    }));
+
+    const eomExcluded = (eomExclResp.data?.values || []).filter(r => r[0]).map(r => ({
+      clientName: r[0],
+      excluded: r[1] === "TRUE" || r[1] === true,
+      sortOrder: r[2] !== undefined && r[2] !== "" ? Number(r[2]) : null,
+    }));
+
+    eomRowsToUpsert.push({
+      work_month_key: "__global__",
+      client_name: "__system__",
+      record_type: "template",
+      tasks_payload: { templates: eomTemplates, excludedClients: eomExcluded },
+      updated_by: userEmail,
+    });
+
+    const clientTasksMap = new Map();
+    (eomClientTasksResp.data?.values || []).forEach(r => {
+      if (!r[0] || !r[1]) return;
+      const cName = String(r[1]).trim();
+      if (!clientTasksMap.has(cName)) clientTasksMap.set(cName, []);
+      clientTasksMap.get(cName).push({
+        taskId: r[0],
+        clientName: cName,
+        templateId: r[2] || "",
+        name: r[3] || "",
+        notes: r[4] || "",
+        active: r[5] !== "FALSE" && r[5] !== false,
+        sortOrder: r[6] !== undefined && r[6] !== "" ? Number(r[6]) : 0,
+        linkedFunction: r[7] || "",
+      });
+    });
+
+    for (const [cName, tasks] of clientTasksMap.entries()) {
+      eomRowsToUpsert.push({
+        work_month_key: "__definitions__",
+        client_name: cName,
+        record_type: "client_tasks",
+        tasks_payload: { tasks },
+        updated_by: userEmail,
+      });
+    }
+
+    const monthlyStatusByClientMonth = new Map();
+    (eomStatusResp.data?.values || []).forEach(r => {
+      const cName = String(r[0] || "").trim();
+      const taskId = String(r[1] || "").trim();
+      const monthKey = String(r[2] || "").trim();
+      if (!cName || !taskId || !monthKey) return;
+      const mapKey = `${monthKey}||${cName}`;
+      if (!monthlyStatusByClientMonth.has(mapKey)) {
+        monthlyStatusByClientMonth.set(mapKey, { monthKey, clientName: cName, statuses: {} });
+      }
+      monthlyStatusByClientMonth.get(mapKey).statuses[taskId] = {
+        status: r[3] || "pending",
+        completedAt: r[4] || "",
+      };
+    });
+
+    for (const { monthKey, clientName: cName, statuses } of monthlyStatusByClientMonth.values()) {
+      eomRowsToUpsert.push({
+        work_month_key: monthKey,
+        client_name: cName,
+        record_type: "client_tasks",
+        tasks_payload: { statuses },
+        updated_by: userEmail,
+      });
+    }
+
+    if (eomRowsToUpsert.length > 0) {
+      await sb
+        .from("eom_cycles_and_tasks")
+        .upsert(eomRowsToUpsert, { onConflict: "work_month_key,client_name,record_type" });
+      summary.eom_cycles_and_tasks = eomRowsToUpsert.length;
+    }
+  } catch (eomErr) {
+    console.warn("⚠️ EoM migration sync warning:", eomErr.message);
+  }
 
   // ── 7. SYSTEM CONFIG (SweepSchedule & Stage 1 Sync Metadata) ───────────────
   const sweepResp = await withRetry(() =>

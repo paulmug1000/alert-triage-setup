@@ -30,6 +30,9 @@ export default function ToolsView({
       const p = new URLSearchParams(window.location.search);
       const sub = p.get("subview");
       if (sub && ["overview", "payroll", "time", "cash", "cashflow_recon", "push_outgoings", "revenue_check", "reporting"].includes(sub)) {
+        if ((sub === "reporting" || sub === "time") && !isAdmin) {
+          return "overview";
+        }
         return sub;
       }
     }
@@ -52,7 +55,7 @@ export default function ToolsView({
   }, [managedClient]);
 
   useEffect(() => {
-    if (eomSubView === "reporting" && !isAdmin) {
+    if ((eomSubView === "reporting" || eomSubView === "time") && !isAdmin) {
       setEomSubView("overview");
     }
   }, [eomSubView, isAdmin]);
@@ -124,6 +127,19 @@ export default function ToolsView({
     return { files, stillResolving, readyToStart, completeCount, errorCount };
   };
 
+  const isTaskInDefaultList = useCallback((task, defaults) => {
+    if (!defaults || !Array.isArray(defaults) || defaults.length === 0) return false;
+    const taskTplId = task?.templateId || "";
+    const taskNameNorm = (task?.name || task?.taskName || "").trim().toLowerCase();
+    return defaults.some(dt => {
+      if (dt.active === false) return false;
+      if (taskTplId && dt.templateId && taskTplId === dt.templateId) return true;
+      const dtNameNorm = (dt.name || dt.taskName || "").trim().toLowerCase();
+      if (taskNameNorm && dtNameNorm && taskNameNorm === dtNameNorm) return true;
+      return false;
+    });
+  }, []);
+
   // --- EOM DATA LOADING & EFFECTS ---
 
   useEffect(() => {
@@ -138,16 +154,21 @@ export default function ToolsView({
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "eom_get_month_status", monthKey: eomMonthKey, automationCommanderSheetId })
       }).then(r => r.json()),
+      fetch("/api/triage", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "eom_get_default_tasks", automationCommanderSheetId })
+      }).then(r => r.json()),
     ])
-      .then(([tasksD, statusD]) => {
+      .then(([tasksD, statusD, defaultD]) => {
         if (tasksD.success) setEomAllTasks(tasksD.tasks || []);
         else setEomStatusError(tasksD.error || "Failed to load tasks");
         if (statusD.success) setEomStatusOverrides(statusD.statusOverrides || []);
         else setEomStatusError(statusD.error || "Failed to load status");
+        if (defaultD && defaultD.success) setEomDefaultTasks(defaultD.defaultTasks || []);
       })
       .catch(e => setEomStatusError(e.message))
       .finally(() => setEomStatusLoading(false));
-  }, [automationCommanderSheetId, eomMonthKey, setEomAllTasks, setEomStatusError, setEomStatusLoading, setEomStatusOverrides]);
+  }, [automationCommanderSheetId, eomMonthKey, setEomAllTasks, setEomDefaultTasks, setEomStatusError, setEomStatusLoading, setEomStatusOverrides]);
 
   useEffect(() => {
     if (eomClientSettings !== null) return;
@@ -245,14 +266,22 @@ export default function ToolsView({
   const reloadEomClientTasks = () => {
     setEomClientTasksLoading(true);
     setEomClientTasksError("");
-    return fetch("/api/triage", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "eom_get_client_tasks", automationCommanderSheetId })
-    })
-      .then(r => r.json())
-      .then(d => {
-        if (d.success) setEomAllTasks(d.tasks || []);
-        else setEomClientTasksError(d.error || "Failed to load tasks");
+    return Promise.all([
+      fetch("/api/triage", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "eom_get_client_tasks", automationCommanderSheetId })
+      }).then(r => r.json()),
+      eomDefaultTasks === null
+        ? fetch("/api/triage", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "eom_get_default_tasks", automationCommanderSheetId })
+          }).then(r => r.json())
+        : Promise.resolve(null)
+    ])
+      .then(([tasksD, defaultD]) => {
+        if (tasksD.success) setEomAllTasks(tasksD.tasks || []);
+        else setEomClientTasksError(tasksD.error || "Failed to load tasks");
+        if (defaultD && defaultD.success) setEomDefaultTasks(defaultD.defaultTasks || []);
       })
       .catch(e => setEomClientTasksError(e.message))
       .finally(() => setEomClientTasksLoading(false));
@@ -572,13 +601,23 @@ export default function ToolsView({
     if (eomAddTaskMode === "custom" && !eomNewTaskName.trim()) return;
     setEomAddTaskSaving(true);
 
+    let templateIdToSave = eomNewTaskTemplateId;
+    let customNameToSave = eomAddTaskMode === "custom" ? eomNewTaskName.trim() : undefined;
+
+    if (eomAddTaskMode === "template" && eomNewTaskTemplateId.startsWith("custom_def:")) {
+      const defId = eomNewTaskTemplateId.replace("custom_def:", "");
+      const defTask = (eomDefaultTasks || []).find(t => t.defaultTaskId === defId);
+      templateIdToSave = undefined;
+      customNameToSave = defTask?.taskName || defTask?.name || "";
+    }
+
     const finishAdd = (templateId) => {
       fetch("/api/triage", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "eom_save_client_task", clientName: eomDetailClient,
-          templateId: eomAddTaskMode === "template" ? templateId : undefined,
-          taskName: eomAddTaskMode === "custom" ? eomNewTaskName.trim() : undefined,
+          templateId: eomAddTaskMode === "template" && !customNameToSave ? templateId : undefined,
+          taskName: customNameToSave,
           clientNotes: eomNewTaskNotes.trim(), automationCommanderSheetId
         })
       })
@@ -607,7 +646,7 @@ export default function ToolsView({
         .then(d => { if (d.success) finishAdd(d.templateId); else setEomAddTaskSaving(false); })
         .catch(e => { console.error("eom_save_template error:", e); setEomAddTaskSaving(false); });
     } else {
-      finishAdd(eomNewTaskTemplateId);
+      finishAdd(templateIdToSave);
     }
   };
 
@@ -1026,7 +1065,7 @@ export default function ToolsView({
           {[
             ["overview", "Overview"],
             ["payroll", "Payroll import"],
-            ["time", "Time import"],
+            ...(isAdmin ? [["time", "Time import"]] : []),
             ["cash", "Cash balances"],
             ["cashflow_recon", "Cashflow recon"],
             ["push_outgoings", "Push outgoings"],
@@ -1067,7 +1106,7 @@ export default function ToolsView({
         </div>
       )}
 
-      {eomSubView === "overview" && !eomDetailClient && !eomShowTemplateManager && !eomShowExcludedManager && !eomShowDefaultTasksManager && (() => {
+      {eomSubView === "overview" && !eomDetailClient && (!isAdmin || (!eomShowTemplateManager && !eomShowExcludedManager && !eomShowDefaultTasksManager)) && (() => {
         const [y, m] = eomMonthKey.split("-").map(Number);
         const monthLabel = new Date(y, m - 1, 1).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
         const shiftMonth = (delta) => {
@@ -1078,6 +1117,7 @@ export default function ToolsView({
         (eomStatusOverrides || []).forEach(s => { overrideByKey[`${s.clientName}|||${s.taskId}`] = s.status; });
         const byClient = {};
         (eomAllTasks || []).filter(t => t.active).forEach(t => {
+          if (!isAdmin && !isTaskInDefaultList(t, eomDefaultTasks)) return;
           if (!byClient[t.clientName]) {
             byClient[t.clientName] = { total: 0, done: 0, pendingAlertChecks: [] };
           }
@@ -1202,24 +1242,30 @@ export default function ToolsView({
               )}
             </div>
 
-            <div style={{ marginTop: "16px", display: "flex", gap: "10px" }}>
-              <button onClick={() => setEomShowTemplateManager(true)}
-                style={{ padding: "6px 14px", background: "#fff", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "12px", color: "#666" }}>
-                Manage Templates
-              </button>
-              <button onClick={() => { setEomShowDefaultTasksManager(true); loadDefaultTasks(); }}
-                style={{ padding: "6px 14px", background: "#fff", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "12px", color: "#666" }}>
-                Default EoM Tasks
-              </button>
-              <button onClick={() => setEomShowExcludedManager(true)}
-                style={{ padding: "6px 14px", background: "#fff", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "12px", color: "#666" }}>
-                Manage Clients
-              </button>
-            </div>
+            {isAdmin && (
+              <div style={{ marginTop: "16px", display: "flex", gap: "10px" }}>
+                <button onClick={() => setEomShowTemplateManager(true)}
+                  style={{ padding: "6px 14px", background: "#fff", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "12px", color: "#666" }}>
+                  Manage Templates
+                </button>
+                <button onClick={() => { setEomShowDefaultTasksManager(true); loadDefaultTasks(); }}
+                  style={{ padding: "6px 14px", background: "#fff", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "12px", color: "#666" }}>
+                  Default EoM Tasks
+                </button>
+                <button onClick={() => setEomShowExcludedManager(true)}
+                  style={{ padding: "6px 14px", background: "#fff", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "12px", color: "#666" }}>
+                  Manage Clients
+                </button>
+              </div>
+            )}
 
             <div style={{ marginTop: "32px" }}>
               {clientRows.map((c) => {
-                const cTasks = (eomAllTasks || []).filter(t => t.clientName === c.clientName && t.active).sort((a, b) => a.sortOrder - b.sortOrder);
+                const cTasks = (eomAllTasks || []).filter(t => {
+                  if (t.clientName !== c.clientName || !t.active) return false;
+                  if (!isAdmin && !isTaskInDefaultList(t, eomDefaultTasks)) return false;
+                  return true;
+                }).sort((a, b) => a.sortOrder - b.sortOrder);
                 if (cTasks.length === 0) return null;
 
                 const statusByTaskId = {};
@@ -1305,7 +1351,7 @@ export default function ToolsView({
                                 </div>
                               ) : (
                                 <span onClick={t.templateId ? undefined : () => { setEomEditingNameFor(t.taskId); setEomNameDraft(t.name); }}
-                                  title={t.templateId ? "Shared template - edit via Manage Templates" : "Click to rename"}
+                                  title={t.templateId ? (isAdmin ? "Shared template - edit via Manage Templates" : "Shared task") : "Click to rename"}
                                   style={{ cursor: t.templateId ? "default" : "pointer" }}>
                                   {isAdmin ? t.name : sanitizeSpreadsheetTerms(t.name)}
                                 </span>
@@ -1318,7 +1364,7 @@ export default function ToolsView({
                                   Import Payroll →
                                 </button>
                               )}
-                              {t.linkedFunction === "time_import" && (
+                              {t.linkedFunction === "time_import" && isAdmin && (
                                 <button onClick={() => setEomSubView("time")}
                                   className="eom-task-action-btn"
                                   style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px", color: "#0066cc", cursor: "pointer", fontSize: "10px", fontWeight: "600" }}>
@@ -1439,7 +1485,7 @@ export default function ToolsView({
         );
       })()}
 
-      {eomSubView === "overview" && eomShowExcludedManager && (() => {
+      {eomSubView === "overview" && isAdmin && eomShowExcludedManager && (() => {
         const settingsByClient = {};
         (eomClientSettings || []).forEach(c => { settingsByClient[c.clientName] = c; });
         const alphabeticalNames = (allOutgoingsClients || []).map(c => c.clientName).slice().sort((a, b) => a.localeCompare(b));
@@ -1493,7 +1539,7 @@ export default function ToolsView({
         );
       })()}
 
-      {eomSubView === "overview" && eomShowTemplateManager && !eomShowExcludedManager && (() => {
+      {eomSubView === "overview" && isAdmin && eomShowTemplateManager && !eomShowExcludedManager && (() => {
         const usageCount = {};
         (eomManagerClientTasks || []).forEach(t => {
           if (t.templateId && t.active) usageCount[t.templateId] = (usageCount[t.templateId] || 0) + 1;
@@ -1674,7 +1720,7 @@ export default function ToolsView({
         );
       })()}
 
-      {eomSubView === "overview" && eomShowDefaultTasksManager && !eomShowTemplateManager && !eomShowExcludedManager && (() => {
+      {eomSubView === "overview" && isAdmin && eomShowDefaultTasksManager && !eomShowTemplateManager && !eomShowExcludedManager && (() => {
         const startEditingDefaultTask = (task) => {
           setEomEditingDefaultTaskId(task.defaultTaskId);
           setEomDefaultTaskDraft({
@@ -1928,8 +1974,12 @@ export default function ToolsView({
         const statusByTaskId = {};
         const noteletByTaskId = {};
         (eomStatusOverrides || []).forEach(s => { if (s.clientName === eomDetailClient) { statusByTaskId[s.taskId] = s.status; noteletByTaskId[s.taskId] = s.notelet; } });
-        const activeTasks = (eomClientTasks || []).filter(t => t.active).sort((a, b) => a.sortOrder - b.sortOrder);
-        const inactiveTasks = (eomClientTasks || []).filter(t => !t.active);
+        const visibleTasks = (eomClientTasks || []).filter(t => {
+          if (!isAdmin && !isTaskInDefaultList(t, eomDefaultTasks)) return false;
+          return true;
+        });
+        const activeTasks = visibleTasks.filter(t => t.active).sort((a, b) => a.sortOrder - b.sortOrder);
+        const inactiveTasks = visibleTasks.filter(t => !t.active);
         const statePill = (taskId, current, noteletText) => {
           const options = [["pending", "Pending", "#f59e0b"], ["done", "Done", "#16a34a"], ["not_applicable", "N/A", "#999"]];
           const hasNotelet = !!noteletText;
@@ -2035,7 +2085,7 @@ export default function ToolsView({
                         </div>
                       ) : (
                         <span onClick={t.templateId ? undefined : () => { setEomEditingNameFor(t.taskId); setEomNameDraft(t.name); }}
-                          title={t.templateId ? "Shared template - edit via Manage Templates" : "Click to rename"}
+                          title={t.templateId ? (isAdmin ? "Shared template - edit via Manage Templates" : "Shared task") : "Click to rename"}
                           style={{ cursor: t.templateId ? "default" : "pointer" }}>
                           {t.name}
                         </span>
@@ -2048,7 +2098,7 @@ export default function ToolsView({
                           Import Payroll →
                         </button>
                       )}
-                      {t.linkedFunction === "time_import" && (
+                      {t.linkedFunction === "time_import" && isAdmin && (
                         <button onClick={() => setEomSubView("time")}
                           className="eom-task-action-btn"
                           style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px", color: "#0066cc", cursor: "pointer", fontSize: "10px", fontWeight: "600" }}>
@@ -2194,13 +2244,19 @@ export default function ToolsView({
             <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "14px 18px" }}>
               {!eomAddTaskMode ? (
                 <div style={{ display: "flex", gap: "8px" }}>
-                  <button onClick={() => setEomAddTaskMode("template")} style={{ padding: "6px 12px", background: "#fff", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "12px" }}>+ Add from template library</button>
-                  <button onClick={() => setEomAddTaskMode("custom")} style={{ padding: "6px 12px", background: "#fff", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "12px" }}>+ Add custom task</button>
+                  <button onClick={() => setEomAddTaskMode("template")} style={{ padding: "6px 12px", background: "#fff", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "12px" }}>
+                    {isAdmin ? "+ Add from template library" : "+ Add from default tasks"}
+                  </button>
+                  {isAdmin && (
+                    <button onClick={() => setEomAddTaskMode("custom")} style={{ padding: "6px 12px", background: "#fff", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "12px" }}>
+                      + Add custom task
+                    </button>
+                  )}
                 </div>
               ) : (
                 <div>
                   {eomAddTaskMode === "template" ? (
-                    eomCreatingNewTemplate ? (
+                    eomCreatingNewTemplate && isAdmin ? (
                       <div style={{ display: "flex", gap: "8px", marginBottom: "8px" }}>
                         <input value={eomNewTemplateName} onChange={e => setEomNewTemplateName(e.target.value)} placeholder="New template name"
                           style={{ flex: 1, padding: "7px 10px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "13px", boxSizing: "border-box" }} />
@@ -2212,26 +2268,50 @@ export default function ToolsView({
                     ) : (
                       <div style={{ marginBottom: "8px" }}>
                         <select value={eomNewTaskTemplateId} onChange={e => {
-                          if (e.target.value === "__new__") { setEomCreatingNewTemplate(true); setEomNewTaskTemplateId(""); }
-                          else setEomNewTaskTemplateId(e.target.value);
+                          const val = e.target.value;
+                          if (val === "__new__" && isAdmin) {
+                            setEomCreatingNewTemplate(true);
+                            setEomNewTaskTemplateId("");
+                          } else {
+                            setEomNewTaskTemplateId(val);
+                            if (!isAdmin) {
+                              const defTask = (eomDefaultTasks || []).find(t => (t.templateId && t.templateId === val) || (`custom_def:${t.defaultTaskId}` === val));
+                              if (defTask?.defaultNotes) {
+                                setEomNewTaskNotes(defTask.defaultNotes);
+                              }
+                            }
+                          }
                         }}
                           style={{ width: "100%", padding: "7px 10px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "13px" }}>
-                          <option value="">{eomTemplates === null ? "Loading templates..." : "Select a template..."}</option>
-                          {(eomTemplates || []).filter(t => t.active).map(t => (
-                            <option key={t.templateId} value={t.templateId}>{t.name}</option>
-                          ))}
-                          <option value="__new__">+ Create new template...</option>
+                          <option value="">{isAdmin ? (eomTemplates === null ? "Loading templates..." : "Select a template...") : (eomDefaultTasks === null ? "Loading default tasks..." : "Select a default task...")}</option>
+                          {isAdmin ? (
+                            (eomTemplates || []).filter(t => t.active).map(t => (
+                              <option key={t.templateId} value={t.templateId}>{t.name}</option>
+                            ))
+                          ) : (
+                            (eomDefaultTasks || []).filter(t => t.active).map(t => (
+                              <option key={t.defaultTaskId} value={t.templateId || `custom_def:${t.defaultTaskId}`}>{t.name}</option>
+                            ))
+                          )}
+                          {isAdmin && <option value="__new__">+ Create new template...</option>}
                         </select>
-                        {eomTemplatesError && (
+                        {isAdmin && eomTemplatesError && (
                           <div style={{ fontSize: "11px", color: "#dc2626", marginTop: "4px" }}>
                             {eomTemplatesError} - <button onClick={reloadEomTemplatesForPicker} style={{ background: "none", border: "none", color: "#0066cc", cursor: "pointer", fontSize: "11px", padding: 0, textDecoration: "underline" }}>retry</button>
+                          </div>
+                        )}
+                        {!isAdmin && eomDefaultTasksError && (
+                          <div style={{ fontSize: "11px", color: "#dc2626", marginTop: "4px" }}>
+                            {eomDefaultTasksError} - <button onClick={loadDefaultTasks} style={{ background: "none", border: "none", color: "#0066cc", cursor: "pointer", fontSize: "11px", padding: 0, textDecoration: "underline" }}>retry</button>
                           </div>
                         )}
                       </div>
                     )
                   ) : (
-                    <input value={eomNewTaskName} onChange={e => setEomNewTaskName(e.target.value)} placeholder="Task name"
-                      style={{ width: "100%", padding: "7px 10px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "13px", marginBottom: "8px", boxSizing: "border-box" }} />
+                    isAdmin && (
+                      <input value={eomNewTaskName} onChange={e => setEomNewTaskName(e.target.value)} placeholder="Task name"
+                        style={{ width: "100%", padding: "7px 10px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "13px", marginBottom: "8px", boxSizing: "border-box" }} />
+                    )
                   )}
                   <input value={eomNewTaskNotes} onChange={e => setEomNewTaskNotes(e.target.value)} placeholder="Notes (optional)"
                     style={{ width: "100%", padding: "7px 10px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "13px", marginBottom: "10px", boxSizing: "border-box" }} />
@@ -2499,7 +2579,7 @@ export default function ToolsView({
         </>);
       })()}
 
-      {eomSubView === "time" && (() => {
+      {eomSubView === "time" && isAdmin && (() => {
         const { files: timeFiles, stillResolving, readyToStart, completeCount, errorCount } = toolsFileStats("time");
         return (<>
           <p style={{ margin: "0 0 20px", fontSize: "13px", color: "#666" }}>

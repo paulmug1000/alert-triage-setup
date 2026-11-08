@@ -140,18 +140,75 @@ export async function invalidateAlertMemoryCache(automationCommanderSheetId) {
   }
 }
 
+export async function flushAllAlertMemoryCaches(automationCommanderSheetId) {
+  _handledHashesMemoryCache = null;
+  _handledHashesCachedAt = 0;
+  _alertMemoryMemoryCache = null;
+  _alertMemoryCachedAt = 0;
+  try {
+    if (redisClient?.isOpen) {
+      const keysToDel = ["triage_tasks_cache"];
+      if (automationCommanderSheetId) {
+        keysToDel.push(
+          `pulse:alert_memory:${automationCommanderSheetId}`,
+          `pulse:alert_memory_handled:${automationCommanderSheetId}`
+        );
+      }
+      const wildcardKeys = await redisClient.keys("pulse:alert_memory*").catch(() => []);
+      const precompKeys = await redisClient.keys("pulse:triage_precomputed:*").catch(() => []);
+      const allKeys = [...new Set([...keysToDel, ...wildcardKeys, ...precompKeys])];
+      if (allKeys.length > 0) {
+        await redisClient.del(allKeys);
+      }
+    }
+  } catch (err) {
+    console.warn("⚠️ flushAllAlertMemoryCaches error:", err.message);
+  }
+}
+
 /**
  * Returns a compact map { [fingerprintHash]: status } for handled (non-cached) alerts.
- * Uses 60s in-memory cache and 7d Redis cache to avoid transferring the massive 8.5MB AlertMemory table.
- * If allowFallback is false (e.g. interactive app loads), never blocks on 9MB sheet downloads.
+ * When Supabase Control Plane is active, queries indexed PostgreSQL directly (with a 5s memory buffer)
+ * so edits/deletes in Supabase are reflected within seconds without being masked by the 7d Redis sheet cache.
  */
 export async function readHandledAlertHashes(sheets, automationCommanderSheetId, allowFallback = true) {
   const now = Date.now();
-  if (_handledHashesMemoryCache && (now - _handledHashesCachedAt < 60000)) {
+  const supabaseActive = await isSupabaseControlPlaneActive();
+  const memoryTtlMs = supabaseActive ? 5000 : 60000;
+
+  if (_handledHashesMemoryCache && (now - _handledHashesCachedAt < memoryTtlMs)) {
     return _handledHashesMemoryCache;
   }
 
   const cacheKey = `pulse:alert_memory_handled:${automationCommanderSheetId}`;
+
+  // If Supabase Control Plane is active, query indexed handled hashes directly (~8ms)
+  if (supabaseActive) {
+    try {
+      const sb = getSupabaseAdmin();
+      const { data: rows, error } = await sb
+        .from("alert_memory")
+        .select("fingerprint_hash, status")
+        .not("status", "in", '("cached","pending_automation")');
+      if (!error && Array.isArray(rows)) {
+        const handledMap = {};
+        for (const r of rows) {
+          if (r.fingerprint_hash && r.status) {
+            handledMap[r.fingerprint_hash] = r.status;
+          }
+        }
+        _handledHashesMemoryCache = handledMap;
+        _handledHashesCachedAt = now;
+        if (redisClient?.isOpen && automationCommanderSheetId) {
+          redisClient.set(cacheKey, JSON.stringify(handledMap), { EX: 86400 * 7 }).catch(() => {});
+        }
+        return handledMap;
+      }
+    } catch (sbErr) {
+      console.warn("⚠️ Supabase readHandledAlertHashes fallback:", sbErr.message);
+    }
+  }
+
   try {
     if (redisClient?.isOpen && automationCommanderSheetId) {
       const cached = await redisClient.get(cacheKey);
@@ -164,33 +221,6 @@ export async function readHandledAlertHashes(sheets, automationCommanderSheetId,
     }
   } catch (err) {
     console.warn("⚠️ Redis read error in readHandledAlertHashes:", err.message);
-  }
-
-  // If Supabase Control Plane is active, query indexed handled hashes in milliseconds (~8ms)
-  if (await isSupabaseControlPlaneActive()) {
-    try {
-      const sb = getSupabaseAdmin();
-      const { data: rows, error } = await sb
-        .from("alert_memory")
-        .select("fingerprint_hash, status")
-        .not("status", "in", '("cached","pending_automation")');
-      if (!error && Array.isArray(rows) && rows.length > 0) {
-        const handledMap = {};
-        for (const r of rows) {
-          if (r.fingerprint_hash && r.status) {
-            handledMap[r.fingerprint_hash] = r.status;
-          }
-        }
-        _handledHashesMemoryCache = handledMap;
-        _handledHashesCachedAt = now;
-        if (redisClient?.isOpen && automationCommanderSheetId) {
-          await redisClient.set(cacheKey, JSON.stringify(handledMap), { EX: 86400 * 7 }).catch(() => {});
-        }
-        return handledMap;
-      }
-    } catch (sbErr) {
-      console.warn("⚠️ Supabase readHandledAlertHashes fallback:", sbErr.message);
-    }
   }
 
   // During interactive loads, if Redis has not yet populated, return empty map rather than blocking 45s for 9MB
@@ -222,39 +252,24 @@ export async function readHandledAlertHashes(sheets, automationCommanderSheetId,
 
 export async function readAlertMemory(sheets, automationCommanderSheetId) {
   const now = Date.now();
-  if (_alertMemoryMemoryCache && (now - _alertMemoryCachedAt < 60000)) {
+  const supabaseActive = await isSupabaseControlPlaneActive();
+  const memoryTtlMs = supabaseActive ? 5000 : 60000;
+
+  if (_alertMemoryMemoryCache && (now - _alertMemoryCachedAt < memoryTtlMs)) {
     return [..._alertMemoryMemoryCache];
   }
 
   const cacheKey = `pulse:alert_memory:${automationCommanderSheetId}`;
-  try {
-    if (redisClient?.isOpen && automationCommanderSheetId) {
-      const cached = await redisClient.get(cacheKey);
-      if (cached) {
-        console.log(`[AlertMemory Cache HIT] read ${cached.length} chars from Redis key ${cacheKey}`);
-        const parsed = JSON.parse(cached);
-        _alertMemoryMemoryCache = parsed;
-        _alertMemoryCachedAt = now;
-        return [...parsed];
-      } else {
-        console.log(`[AlertMemory Cache MISS] Redis key ${cacheKey} is null/empty`);
-      }
-    } else {
-      console.log(`[AlertMemory Cache SKIP] redisClient.isOpen=${redisClient?.isOpen}, acId=${automationCommanderSheetId}`);
-    }
-  } catch (err) {
-    console.warn("⚠️ Redis read error in readAlertMemory:", err.message);
-  }
 
-  // If Supabase Control Plane is active, read from Supabase alert_memory
-  if (await isSupabaseControlPlaneActive()) {
+  // If Supabase Control Plane is active, read directly from Supabase alert_memory
+  if (supabaseActive) {
     try {
       const sb = getSupabaseAdmin();
       const { data: dbRows, error } = await sb
         .from("alert_memory")
         .select("*")
         .order("sheet_row_index", { ascending: true });
-      if (!error && Array.isArray(dbRows) && dbRows.length > 0) {
+      if (!error && Array.isArray(dbRows)) {
         const parsed = dbRows.map((r, i) => ({
           rowIndex: r.sheet_row_index || i + 2,
           fingerprintHash: r.fingerprint_hash || "",
@@ -273,13 +288,32 @@ export async function readAlertMemory(sheets, automationCommanderSheetId) {
         _alertMemoryMemoryCache = parsed;
         _alertMemoryCachedAt = now;
         if (redisClient?.isOpen && automationCommanderSheetId) {
-          await redisClient.set(cacheKey, JSON.stringify(parsed), { EX: 86400 * 7 }).catch(() => {});
+          redisClient.set(cacheKey, JSON.stringify(parsed), { EX: 86400 * 7 }).catch(() => {});
         }
         return [...parsed];
       }
     } catch (sbErr) {
       console.warn("⚠️ Supabase readAlertMemory fallback to sheet:", sbErr.message);
     }
+  }
+
+  try {
+    if (redisClient?.isOpen && automationCommanderSheetId) {
+      const cached = await redisClient.get(cacheKey);
+      if (cached) {
+        console.log(`[AlertMemory Cache HIT] read ${cached.length} chars from Redis key ${cacheKey}`);
+        const parsed = JSON.parse(cached);
+        _alertMemoryMemoryCache = parsed;
+        _alertMemoryCachedAt = now;
+        return [...parsed];
+      } else {
+        console.log(`[AlertMemory Cache MISS] Redis key ${cacheKey} is null/empty`);
+      }
+    } else {
+      console.log(`[AlertMemory Cache SKIP] redisClient.isOpen=${redisClient?.isOpen}, acId=${automationCommanderSheetId}`);
+    }
+  } catch (err) {
+    console.warn("⚠️ Redis read error in readAlertMemory:", err.message);
   }
 
   const response = await withRetry(() => sheets.spreadsheets.values.get({
@@ -612,6 +646,48 @@ function parseAppendedStartRow_(updatedRange, cache) {
   return 2;
 }
 
+async function syncPmaTaskRowsToSupabase_(sb, sbRows) {
+  if (!sb || !Array.isArray(sbRows) || sbRows.length === 0) return;
+  try {
+    const tasksToUpsert = [];
+    const hashesToRemoveFromTasks = [];
+    for (const r of sbRows) {
+      const fp = r.fingerprint_hash;
+      if (!fp) continue;
+      if (r.status === "task") {
+        let parsedSnap = {};
+        try {
+          if (r.data_snapshot) parsedSnap = JSON.parse(r.data_snapshot);
+        } catch (_) {}
+        tasksToUpsert.push({
+          fingerprint_hash: fp,
+          task_key: parsedSnap.taskKey || `${r.client_name || ""}||${r.alert_type || ""}||${fp}`,
+          client_name: r.client_name || "",
+          alert_type: r.alert_type || "",
+          alert_summary: r.alert_summary || "",
+          task_note: parsedSnap.taskNote || r.ignore_reason || "",
+          status: "task",
+          snoozed_until: parsedSnap.snoozedUntil || "",
+          created_by_email: parsedSnap.createdByEmail || "",
+          created_by_name: parsedSnap.createdByName || "",
+          is_admin_only: Boolean(parsedSnap.isAdminOnly),
+          data_snapshot: parsedSnap,
+        });
+      } else {
+        hashesToRemoveFromTasks.push(fp);
+      }
+    }
+    if (tasksToUpsert.length > 0) {
+      await sb.from("pma_tasks").upsert(tasksToUpsert, { onConflict: "fingerprint_hash" });
+    }
+    if (hashesToRemoveFromTasks.length > 0) {
+      await sb.from("pma_tasks").delete().in("fingerprint_hash", hashesToRemoveFromTasks);
+    }
+  } catch (err) {
+    console.warn("⚠️ syncPmaTaskRowsToSupabase_ warning:", err.message);
+  }
+}
+
 export async function appendAlertMemoryRow(sheets, automationCommanderSheetId, payload) {
   let {
     fingerprintHash, alertType, clientName, alertSummary,
@@ -635,7 +711,7 @@ export async function appendAlertMemoryRow(sheets, automationCommanderSheetId, p
     try {
       const sb = getSupabaseAdmin();
       if (sb) {
-        await sb.from("alert_memory").upsert({
+        const sbRow = {
           fingerprint_hash: fingerprintHash,
           alert_type: alertType || "",
           client_name: clientName || "",
@@ -648,7 +724,9 @@ export async function appendAlertMemoryRow(sheets, automationCommanderSheetId, p
           last_rechecked: lastRechecked,
           data_snapshot: dataSnapshot || "",
           category: normalizedCategory,
-        }, { onConflict: "fingerprint_hash" });
+        };
+        await sb.from("alert_memory").upsert(sbRow, { onConflict: "fingerprint_hash" });
+        await syncPmaTaskRowsToSupabase_(sb, [sbRow]);
       }
     } catch (sbErr) {
       console.warn("⚠️ Supabase appendAlertMemoryRow upsert warning:", sbErr.message);
@@ -789,6 +867,7 @@ export async function appendAlertMemoryRowsBatch(sheets, automationCommanderShee
           }));
         if (sbRows.length > 0) {
           await sb.from("alert_memory").upsert(sbRows, { onConflict: "fingerprint_hash" });
+          await syncPmaTaskRowsToSupabase_(sb, sbRows);
         }
       }
     } catch (sbErr) {
@@ -866,7 +945,7 @@ export async function updateAlertMemoryRow(sheets, automationCommanderSheetId, r
     try {
       const sb = getSupabaseAdmin();
       if (sb) {
-        await sb.from("alert_memory").upsert({
+        const sbRow = {
           fingerprint_hash: cleanUpdates.fingerprintHash,
           alert_type: cleanUpdates.alertType || "",
           client_name: cleanUpdates.clientName || "",
@@ -880,7 +959,9 @@ export async function updateAlertMemoryRow(sheets, automationCommanderSheetId, r
           data_snapshot: cleanUpdates.dataSnapshot || "",
           category: targetCategory,
           sheet_row_index: rowIndex,
-        }, { onConflict: "fingerprint_hash" });
+        };
+        await sb.from("alert_memory").upsert(sbRow, { onConflict: "fingerprint_hash" });
+        await syncPmaTaskRowsToSupabase_(sb, [sbRow]);
       }
     } catch (sbErr) {
       console.warn("⚠️ Supabase updateAlertMemoryRow warning:", sbErr.message);
@@ -966,6 +1047,7 @@ export async function updateAlertMemoryRowsBatch(sheets, automationCommanderShee
           }));
         if (sbRows.length > 0) {
           await sb.from("alert_memory").upsert(sbRows, { onConflict: "fingerprint_hash" });
+          await syncPmaTaskRowsToSupabase_(sb, sbRows);
         }
       }
     } catch (sbErr) {
@@ -1323,3 +1405,161 @@ export async function purgeOldAlertMemoryRows(sheets, automationCommanderSheetId
   // Delegates to the safe, high-speed atomic compactAlertMemory
   return compactAlertMemory(sheets, automationCommanderSheetId);
 }
+
+/**
+ * Search AlertMemory entries by query, clientName, or status.
+ */
+export async function searchAlertMemoryEntries(sheets, automationCommanderSheetId, {
+  query = "",
+  clientName = "",
+  status = "all",
+  limit = 50,
+} = {}) {
+  const q = String(query || "").trim().toLowerCase();
+  const cFilter = String(clientName || "").trim().toLowerCase();
+  const sFilter = String(status || "all").trim().toLowerCase();
+
+  if (isSupabaseConfigured()) {
+    try {
+      const sb = getSupabaseAdmin();
+      if (sb) {
+        let builder = sb
+          .from("alert_memory")
+          .select("fingerprint_hash, alert_type, client_name, alert_summary, status, ignore_reason, first_seen, last_seen, category, sheet_row_index")
+          .order("updated_at", { ascending: false })
+          .limit(Math.min(Number(limit) || 50, 200));
+
+        if (cFilter && cFilter !== "all") {
+          builder = builder.ilike("client_name", cFilter);
+        }
+        if (sFilter && sFilter !== "all") {
+          if (sFilter === "handled_only") {
+            builder = builder.not("status", "in", '("cached","pending_automation")');
+          } else {
+            builder = builder.eq("status", sFilter);
+          }
+        }
+        if (q) {
+          const safeQ = q.replace(/[%_,()]/g, "");
+          if (safeQ) {
+            builder = builder.or(
+              `fingerprint_hash.ilike.%${safeQ}%,alert_summary.ilike.%${safeQ}%,client_name.ilike.%${safeQ}%,alert_type.ilike.%${safeQ}%,ignore_reason.ilike.%${safeQ}%`
+            );
+          }
+        }
+
+        const { data: rows, error } = await builder;
+        if (!error && Array.isArray(rows)) {
+          return rows.map(r => ({
+            fingerprintHash: r.fingerprint_hash || "",
+            alertType: r.alert_type || "",
+            clientName: r.client_name || "",
+            alertSummary: r.alert_summary || "",
+            status: r.status || "cached",
+            ignoreReason: r.ignore_reason || "",
+            firstSeen: r.first_seen || "",
+            lastSeen: r.last_seen || "",
+            category: r.category || "discrepancy",
+            rowIndex: r.sheet_row_index || null,
+          }));
+        }
+      }
+    } catch (sbErr) {
+      console.warn("⚠️ searchAlertMemoryEntries Supabase fallback:", sbErr.message);
+    }
+  }
+
+  const allRows = await readAlertMemory(sheets, automationCommanderSheetId);
+  return allRows
+    .filter(r => {
+      if (cFilter && cFilter !== "all" && String(r.clientName || "").toLowerCase() !== cFilter) return false;
+      if (sFilter && sFilter !== "all") {
+        if (sFilter === "handled_only") {
+          if (r.status === "cached" || r.status === "pending_automation") return false;
+        } else if (String(r.status || "").toLowerCase() !== sFilter) {
+          return false;
+        }
+      }
+      if (!q) return true;
+      return (
+        String(r.fingerprintHash || "").toLowerCase().includes(q) ||
+        String(r.alertSummary || "").toLowerCase().includes(q) ||
+        String(r.clientName || "").toLowerCase().includes(q) ||
+        String(r.alertType || "").toLowerCase().includes(q) ||
+        String(r.ignoreReason || "").toLowerCase().includes(q)
+      );
+    })
+    .slice(0, Math.min(Number(limit) || 50, 200));
+}
+
+/**
+ * Delete an AlertMemory entry by fingerprintHash across:
+ * 1. Supabase (public.alert_memory & public.pma_tasks)
+ * 2. Google Sheet (Automation Commander!AlertMemory)
+ * 3. Upstash Redis & in-memory caches
+ */
+export async function deleteAlertMemoryEntryByHash(sheets, automationCommanderSheetId, fingerprintHash) {
+  const cleanHash = String(fingerprintHash || "").trim();
+  if (!cleanHash) throw new Error("fingerprintHash is required");
+
+  let deletedClientName = "";
+
+  // 1. Delete from Supabase
+  if (isSupabaseConfigured()) {
+    try {
+      const sb = getSupabaseAdmin();
+      if (sb) {
+        const { data: existing } = await sb
+          .from("alert_memory")
+          .select("client_name")
+          .eq("fingerprint_hash", cleanHash)
+          .maybeSingle();
+        if (existing?.client_name) {
+          deletedClientName = existing.client_name;
+        }
+        await sb.from("alert_memory").delete().eq("fingerprint_hash", cleanHash);
+        await sb.from("pma_tasks").delete().eq("fingerprint_hash", cleanHash);
+      }
+    } catch (sbErr) {
+      console.warn("⚠️ Supabase deleteAlertMemoryEntryByHash warning:", sbErr.message);
+    }
+  }
+
+  // 2. Delete matching rows from Automation Commander!AlertMemory sheet (lightweight Column A:C read)
+  let deletedSheetRows = 0;
+  if (sheets && automationCommanderSheetId) {
+    try {
+      const colAResp = await withRetry(() =>
+        sheets.spreadsheets.values.get({
+          spreadsheetId: automationCommanderSheetId,
+          range: `${ALERT_MEMORY_TAB}!A2:C50000`,
+        })
+      );
+      const colRows = colAResp.data?.values || [];
+      const matchingIndices = [];
+      colRows.forEach((r, idx) => {
+        if (String(r[0] || "").trim() === cleanHash) {
+          matchingIndices.push(idx + 2);
+          if (!deletedClientName && r[2]) deletedClientName = String(r[2]).trim();
+        }
+      });
+      if (matchingIndices.length > 0) {
+        await deleteAlertMemoryRows(sheets, automationCommanderSheetId, matchingIndices);
+        deletedSheetRows = matchingIndices.length;
+      }
+    } catch (sheetErr) {
+      console.warn("⚠️ Sheet deleteAlertMemoryEntryByHash warning:", sheetErr.message);
+    }
+  }
+
+  // 3. Flush in-memory and Redis caches so the deleted entry takes effect immediately
+  await flushAllAlertMemoryCaches(automationCommanderSheetId);
+
+  return {
+    success: true,
+    fingerprintHash: cleanHash,
+    clientName: deletedClientName,
+    deletedSheetRows,
+  };
+}
+

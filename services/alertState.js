@@ -14,7 +14,7 @@ import { matchesClientName, ADMIN_ONLY_ALERT_TYPES, toSheetDateFormat, KNOWN_PRO
 import { getAllClients } from "./workspaces.js";
 import { invalidatePrecomputedMemoryCache } from "./triageEngine.js";
 
-const PRECOMPUTED_KEY = "triage_precomputed";
+export const PRECOMPUTED_KEY = "triage_precomputed";
 
 export async function handleBustCache(req, res, sheets) {
   const { fingerprintHash, rowNumber, sheetName, automationCommanderSheetId: acId } = req.body;

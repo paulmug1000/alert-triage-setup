@@ -36,15 +36,7 @@ export default function EditClientSelector({
   }, [sortedClients, search]);
 
   return (
-    <div
-      style={{
-        background: "#ffffff",
-        borderRadius: "12px",
-        border: "1px solid #e2e8f0",
-        padding: "24px",
-        boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)",
-      }}
-    >
+    <div className="edit-client-selector-card">
       {loading && sortedClients.length === 0 ? (
         <EditClientSelectorSkeleton />
       ) : (
@@ -114,7 +106,7 @@ export default function EditClientSelector({
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
+              gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 240px), 1fr))",
               gap: "10px",
             }}
           >
@@ -184,6 +176,22 @@ export default function EditClientSelector({
           </div>
         </>
       )}
+
+      <style jsx>{`
+        .edit-client-selector-card {
+          background: #ffffff;
+          border-radius: 12px;
+          border: 1px solid #e2e8f0;
+          padding: 24px;
+          box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+        }
+        @media (max-width: 640px) {
+          .edit-client-selector-card {
+            padding: 14px 12px !important;
+            border-radius: 10px !important;
+          }
+        }
+      `}</style>
     </div>
   );
 }

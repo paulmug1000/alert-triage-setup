@@ -3,6 +3,7 @@ import Spinner from "./Spinner";
 import Skeleton from "./Skeleton";
 import ClientSettingsView from "./ClientSettingsView";
 import SupabaseControlPlaneCard from "./SupabaseControlPlaneCard";
+import UserManagementCard from "./UserManagementCard";
 import { useSettings } from "../hooks/useSettings";
 import { useTriage } from "../contexts/TriageContext";
 
@@ -254,6 +255,7 @@ export default function SettingsView({
   return (
     <div className="pma-page-container" style={{ padding: "20px 32px 60px", width: "100%", maxWidth: "100%", margin: "0 auto", boxSizing: "border-box" }}>
       <div
+        className="pma-settings-header"
         style={{
           display: "flex",
           justifyContent: "space-between",
@@ -275,7 +277,7 @@ export default function SettingsView({
           </div>
         </div>
 
-        <div style={{ display: "inline-flex", background: "#f1f5f9", padding: "3px", borderRadius: "8px", border: "1px solid #cbd5e1" }}>
+        <div className="pma-settings-mode-container" style={{ display: "inline-flex", background: "#f1f5f9", padding: "3px", borderRadius: "8px", border: "1px solid #cbd5e1" }}>
           {effectiveIsAdmin ? (
             <>
               <button
@@ -312,7 +314,12 @@ export default function SettingsView({
                   transition: "all 0.15s ease"
                 }}
               >
-                Client settings {managedClient ? `(${managedClient.clientName})` : ""}
+                <span className="pma-settings-mode-label-full">
+                  Client settings {managedClient ? `(${managedClient.clientName})` : ""}
+                </span>
+                <span className="pma-settings-mode-label-short">
+                  Client settings
+                </span>
               </button>
             </>
           ) : (
@@ -333,7 +340,12 @@ export default function SettingsView({
                   transition: "all 0.15s ease"
                 }}
               >
-                Client settings {managedClient ? `(${managedClient.clientName})` : ""}
+                <span className="pma-settings-mode-label-full">
+                  Client settings {managedClient ? `(${managedClient.clientName})` : ""}
+                </span>
+                <span className="pma-settings-mode-label-short">
+                  Client settings
+                </span>
               </button>
               <button
                 type="button"
@@ -424,6 +436,10 @@ export default function SettingsView({
           {effectiveIsAdmin && (
             <>
               <SupabaseControlPlaneCard automationCommanderSheetId={automationCommanderSheetId} />
+              <UserManagementCard
+                automationCommanderSheetId={automationCommanderSheetId}
+                currentUserEmail={user?.email || ""}
+              />
 
               {settingsLoading && <div style={{ color: "#999", padding: "20px" }}>Loading admin settings...</div>}
 
@@ -1309,6 +1325,37 @@ export default function SettingsView({
           )}
         </>
       )}
+
+      <style jsx>{`
+        .pma-settings-mode-label-short {
+          display: none;
+        }
+        @media (max-width: 640px) {
+          .pma-settings-header {
+            padding: 12px 14px !important;
+            margin-bottom: 14px !important;
+            gap: 10px !important;
+          }
+          .pma-settings-mode-container {
+            width: 100% !important;
+            display: flex !important;
+            box-sizing: border-box !important;
+          }
+          .pma-settings-mode-container button {
+            flex: 1 1 0 !important;
+            text-align: center !important;
+            padding: 7px 8px !important;
+            font-size: 12px !important;
+            justify-content: center !important;
+          }
+          .pma-settings-mode-label-full {
+            display: none !important;
+          }
+          .pma-settings-mode-label-short {
+            display: inline !important;
+          }
+        }
+      `}</style>
     </div>
   );
 }

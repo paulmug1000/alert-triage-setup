@@ -15,6 +15,7 @@
  */
 
 import { redisClient } from "./redisClient.js";
+import { getSupabaseAdmin, isSupabaseConfigured, isSupabaseControlPlaneActive } from "./supabaseClient.js";
 import { getIntegrationStatus } from "./vaultService.js";
 import { getSheetsClient, getDriveClient, withRetry, extractSheetIdFromUrl, sanitizeFormulaInput, getServiceAccountPoolEmails } from "./sheetsClient.js";
 import { logPmaActivity, DEFAULT_AC_SHEET_ID } from "./pmaLogger.js";
@@ -112,7 +113,7 @@ export const SETUP_TASKS_CATALOG = [
   { id: "p4_eom_jobs", phaseId: "phase_4", title: "Add client details and monthly jobs to EoM section of PMA" },
 
   // Phase 5: Client Users & Go-Live
-  { id: "p5_add_users", phaseId: "phase_5", title: "Add users to Users tab in Automation Commander sheet" },
+  { id: "p5_add_users", phaseId: "phase_5", title: "Add client users in user management" },
   { id: "p5_email_client", phaseId: "phase_5", title: "Email client with login details and launch live access" }
 ];
 
@@ -1147,6 +1148,36 @@ export async function getClientChecklistState(sheets, clientName, masterSheetId)
     console.warn("Redis checklist cache read error:", err.message);
   }
 
+  // If not cached, try Supabase client_setup_state when active
+  if (taskStatusMap.size === 0 && (await isSupabaseControlPlaneActive())) {
+    try {
+      const sb = getSupabaseAdmin();
+      const norm = normalizeKey(clientName);
+      const { data: row, error } = await sb
+        .from("client_setup_state")
+        .select("tasks_map")
+        .eq("normalized_key", norm)
+        .maybeSingle();
+      if (!error && row?.tasks_map && typeof row.tasks_map === "object") {
+        for (const [tId, tVal] of Object.entries(row.tasks_map)) {
+          if (tId && tVal && typeof tVal === "object") {
+            const isComp = tVal.isCompleted !== undefined
+              ? Boolean(tVal.isCompleted)
+              : String(tVal.status || "").toUpperCase() === "TRUE" || String(tVal.status || "").toLowerCase() === "completed";
+            taskStatusMap.set(tId, {
+              taskId: tId,
+              phaseId: tVal.phaseId || "",
+              isCompleted: isComp,
+              completedAt: tVal.completedAt || "",
+              completedBy: tVal.completedBy || "",
+              metadata: tVal.metadata || tVal.notes || "",
+            });
+          }
+        }
+      }
+    } catch (_) { }
+  }
+
   // If not cached, query ClientSetupTasks tab on AC
   if (taskStatusMap.size === 0) {
     try {
@@ -1317,6 +1348,37 @@ export async function updateClientChecklistTask(sheets, { clientName, taskId, is
     );
   }
 
+  // 1b. Dual-write to Supabase client_setup_state
+  if (isSupabaseConfigured()) {
+    try {
+      const sb = getSupabaseAdmin();
+      const norm = normalizeKey(clientName);
+      const { data: existingState } = await sb
+        .from("client_setup_state")
+        .select("tasks_map")
+        .eq("normalized_key", norm)
+        .maybeSingle();
+      const tasksMap = (existingState?.tasks_map && typeof existingState.tasks_map === "object")
+        ? { ...existingState.tasks_map }
+        : {};
+      tasksMap[taskId] = {
+        phaseId: phaseId || "",
+        isCompleted: Boolean(isCompleted),
+        status: isCompleted ? "completed" : "pending",
+        completedAt: isCompleted ? now : "",
+        completedBy: String(userEmail || "Admin"),
+        metadata: String(metadata || ""),
+      };
+      await sb.from("client_setup_state").upsert({
+        client_name: clientName,
+        normalized_key: norm,
+        tasks_map: tasksMap,
+      }, { onConflict: "normalized_key" });
+    } catch (sbErr) {
+      console.warn("⚠️ Supabase updateClientChecklistTask warning:", sbErr.message);
+    }
+  }
+
   // 2. Invalidate checklist cache
   await redisClient.del(getChecklistRedisKey(clientName)).catch(() => { });
 
@@ -1348,6 +1410,36 @@ export async function updateClientChecklistTask(sheets, { clientName, taskId, is
  */
 export async function updateClientSetupOverviewRow(sheets, { clientName, status, progressPercent, completedTasks, completedAt }) {
   if (!clientName) return;
+  if (isSupabaseConfigured()) {
+    try {
+      const sb = getSupabaseAdmin();
+      const norm = normalizeKey(clientName);
+      const { data: existingState } = await sb
+        .from("client_setup_state")
+        .select("overview_data")
+        .eq("normalized_key", norm)
+        .maybeSingle();
+      const overviewData = (existingState?.overview_data && typeof existingState.overview_data === "object")
+        ? { ...existingState.overview_data }
+        : {};
+      if (progressPercent !== undefined) overviewData.progressPercent = progressPercent;
+      if (completedTasks !== undefined) overviewData.completedTasks = completedTasks;
+      if (completedAt !== undefined) overviewData.completedAt = completedAt;
+      const upsertPayload = {
+        client_name: clientName,
+        normalized_key: norm,
+        overview_data: overviewData,
+      };
+      if (status !== undefined) {
+        upsertPayload.setup_status = status;
+        await sb
+          .from("clients")
+          .update({ setup_mode: status === "IN_PROGRESS" })
+          .eq("normalized_key", norm);
+      }
+      await sb.from("client_setup_state").upsert(upsertPayload, { onConflict: "normalized_key" });
+    } catch (_) { }
+  }
   await ensureClientSetupTabs(sheets);
   const acId = DEFAULT_AC_SHEET_ID;
   try {
@@ -1451,6 +1543,17 @@ export async function saveMasterKeyInfoSettings(sheets, { masterSheetId, clientN
 
   // Auto-mark task p2_keyinfo_settings as completed
   if (clientName) {
+    if (isSupabaseConfigured() && (settings.directCostsMode !== undefined || settings.revenueFocus !== undefined)) {
+      try {
+        const sb = getSupabaseAdmin();
+        const rf = settings.revenueFocus || "Revenue";
+        const dcm = rf === "Income" ? "Pass-through" : (settings.directCostsMode === "Pass-through" ? "Pass-through" : "Contractors");
+        await sb
+          .from("clients")
+          .update({ revenue_focus: rf, direct_costs_mode: dcm })
+          .eq("normalized_key", normalizeKey(clientName));
+      } catch (_) { }
+    }
     await updateClientChecklistTask(sheets, {
       clientName,
       taskId: "p2_keyinfo_settings",
@@ -1528,6 +1631,20 @@ export async function saveScriptIdsToTracker(sheets, { clientName, clientScriptI
     })
   );
 
+  if (isSupabaseConfigured()) {
+    try {
+      const sb = getSupabaseAdmin();
+      await sb
+        .from("clients")
+        .update({
+          client_script_id: String(clientScriptId || ""),
+          master_script_id: String(masterScriptId || ""),
+          recon_script_id: String(reconScriptId || ""),
+        })
+        .eq("normalized_key", normalizeKey(clientName));
+    } catch (_) { }
+  }
+
   // Auto-mark task p1_script_ids as complete
   await updateClientChecklistTask(sheets, {
     clientName,
@@ -1590,6 +1707,16 @@ export async function saveDeploymentUrl(sheets, { clientName, masterSheetId, dep
         requestBody: { values: [[trimmedUrl]] }
       })
     );
+  }
+
+  if (isSupabaseConfigured()) {
+    try {
+      const sb = getSupabaseAdmin();
+      await sb
+        .from("clients")
+        .update({ master_gas_webapp_url: trimmedUrl })
+        .eq("normalized_key", normalizeKey(clientName));
+    } catch (_) { }
   }
 
   // 3. Mark task p1_gas_deployment as complete
@@ -1975,7 +2102,7 @@ export async function provisionNewClientSystem({
     console.warn("Setup tabs seed note:", seedErr.message);
   }
 
-  // 10. Persist to Redis
+  // 10. Persist to Redis & Supabase
   const setupConfigRecord = {
     clientName: cleanClientName,
     masterSheetId: masterCopy.data.id,
@@ -1995,6 +2122,57 @@ export async function provisionNewClientSystem({
   };
   await redisClient.set(getSetupRedisKey(cleanClientName), JSON.stringify(setupConfigRecord)).catch(() => { });
   await redisClient.del(getChecklistRedisKey(cleanClientName)).catch(() => { });
+
+  if (isSupabaseConfigured()) {
+    try {
+      const sb = getSupabaseAdmin();
+      const norm = normalizeKey(cleanClientName);
+      const { data: insertedClient } = await sb
+        .from("clients")
+        .upsert({
+          client_name: cleanClientName,
+          normalized_key: norm,
+          client_mode: "sheets",
+          client_sheet_id: clientCopy.data.id,
+          client_sheet_url: clientUrl,
+          master_sheet_id: masterCopy.data.id,
+          master_sheet_url: masterUrl,
+          recon_sheet_id: reconCopy.data.id,
+          recon_sheet_url: reconUrl,
+          backup_sheet_id: backupCopy.data.id,
+          backup_sheet_url: backupUrl,
+          drive_folder_id: folderId,
+          drive_folder_url: folderUrl,
+          accounting_tool: accountingTool || "None",
+          crm_tool: crmTool || "None",
+          crm_drives: crmDrives || "NA",
+          setup_mode: true,
+          is_active: true,
+        }, { onConflict: "normalized_key" })
+        .select("id")
+        .maybeSingle();
+
+      await sb.from("client_setup_state").upsert({
+        client_id: insertedClient?.id || null,
+        client_name: cleanClientName,
+        normalized_key: norm,
+        setup_status: "IN_PROGRESS",
+        accounting_tool: accountingTool || "None",
+        crm_tool: crmTool || "None",
+        crm_drives: crmDrives || "NA",
+        overview_data: {
+          folderUrl,
+          clientUrl,
+          masterUrl,
+          reconUrl,
+          backupUrl,
+          startedAt: now,
+        },
+      }, { onConflict: "normalized_key" });
+    } catch (sbErr) {
+      console.warn("⚠️ Supabase provisionNewClientSystem warning:", sbErr.message);
+    }
+  }
 
   logPmaActivity({
     action: "client_provisioned",

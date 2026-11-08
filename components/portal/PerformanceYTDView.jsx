@@ -50,6 +50,21 @@ export default function PerformanceYTDView({
   const activeYearIdx = selectedYearIdx !== null ? selectedYearIdx : (data?.currentYearIdx !== undefined ? data.currentYearIdx : (years.length > 1 ? 1 : 0));
   const activeYear = years[activeYearIdx];
 
+  const isYear0 = Boolean(
+    activeYear?.id === "hist" ||
+    activeYear?.id === "year0" ||
+    activeYear?.yearIndex === 0 ||
+    String(activeYear?.name || "").toLowerCase().includes("historical") ||
+    String(activeYear?.name || "").toLowerCase().includes("year 0") ||
+    String(activeYear?.fyLabel || "").toLowerCase().includes("year 0") ||
+    (activeYearIdx === 0 && (!activeYear?.yearIndex || activeYear.yearIndex === 0) && activeYear?.id !== "year1")
+  );
+
+  // Close active popover whenever switching financial years
+  useEffect(() => {
+    setActivePopover(null);
+  }, [activeYearIdx]);
+
   const tableScrollRef = useRef(null);
   const chartScrollRef = useRef(null);
   const isSyncingScrollRef = useRef(false);
@@ -344,6 +359,7 @@ export default function PerformanceYTDView({
   const fyProgressPct = Math.min(100, Math.round((ytdRevTotal / fyRevTarget) * 100));
 
   const handleCellClick = (e, rowLabel, val, mIdx, periodLabel) => {
+    if (isYear0) return;
     const ddType = getDeepDiveType(rowLabel);
     if (!ddType || !val || val === "—" || val === "" || Math.abs(parseMoney(val)) < 0.001) return;
 
@@ -841,7 +857,7 @@ export default function PerformanceYTDView({
                   {row.monthVals.map((val, mIdx) => {
                     const mBadge = isPercentageRow ? getMarginBadgeStyle(label, val) : null;
                     const ddType = !isPercentageRow && !rowStyle.isHeader ? getDeepDiveType(label) : null;
-                    const isClickable = Boolean(ddType && val && val !== "—" && val !== "" && Math.abs(parseMoney(val)) >= 0.001);
+                    const isClickable = !isYear0 && Boolean(ddType && val && val !== "—" && val !== "" && Math.abs(parseMoney(val)) >= 0.001);
                     const monthLabel = activeYear.headerMonths?.[mIdx] || `Month ${mIdx + 1}`;
                     const displayVal = val === "—" ? "" : formatCurrencyString(val, null, currencySymbol, thousandsSeparator);
                     const st = String((activeYear.statusValues || activeYear.monthStatuses || [])[mIdx] || "").trim().toLowerCase();
@@ -941,7 +957,7 @@ export default function PerformanceYTDView({
                   {/* YTD Total Column (Continuous unbroken Total column shading) */}
                   {(() => {
                     const ddType = !isPercentageRow && !rowStyle.isHeader ? getDeepDiveType(label) : null;
-                    const isClickable = Boolean(ddType && ytdDisplay && ytdDisplay !== "—" && ytdDisplay !== "" && Math.abs(parseMoney(ytdDisplay)) >= 0.001);
+                    const isClickable = !isYear0 && Boolean(ddType && ytdDisplay && ytdDisplay !== "—" && ytdDisplay !== "" && Math.abs(parseMoney(ytdDisplay)) >= 0.001);
                     const ytdBadge = isPercentageRow ? getMarginBadgeStyle(label, ytdDisplay) : null;
                     const displayTotal = ytdDisplay === "—" ? "" : ytdDisplay || "";
                     const totalColBg = "rgba(0, 71, 171, 0.04)";

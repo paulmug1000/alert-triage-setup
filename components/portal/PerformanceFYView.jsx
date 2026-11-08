@@ -51,6 +51,21 @@ export default function PerformanceFYView({
   const activeYearIdx = selectedYearIdx !== null ? Math.min(Math.max(0, selectedYearIdx), Math.max(0, years.length - 1)) : defaultYearIdx;
   const activeYear = years[activeYearIdx];
 
+  const isYear0 = Boolean(
+    activeYear?.id === "hist" ||
+    activeYear?.id === "year0" ||
+    activeYear?.yearIndex === 0 ||
+    String(activeYear?.name || "").toLowerCase().includes("historical") ||
+    String(activeYear?.name || "").toLowerCase().includes("year 0") ||
+    String(activeYear?.fyLabel || "").toLowerCase().includes("year 0") ||
+    (activeYearIdx === 0 && (!activeYear?.yearIndex || activeYear.yearIndex === 0) && activeYear?.id !== "year1")
+  );
+
+  // Close active popover whenever switching financial years
+  useEffect(() => {
+    setActivePopover(null);
+  }, [activeYearIdx]);
+
   const tableScrollRef = useRef(null);
   const chartScrollRef = useRef(null);
   const isSyncingScrollRef = useRef(false);
@@ -307,6 +322,7 @@ export default function PerformanceFYView({
   };
 
   const handleCellClick = (e, rowLabel, val, mIdx, periodLabel) => {
+    if (isYear0) return;
     const ddType = getDeepDiveType(rowLabel);
     if (!ddType || !val || val === "—" || val === "" || Math.abs(parseMoney(val)) < 0.001) return;
 
@@ -784,7 +800,7 @@ export default function PerformanceFYView({
                     {row.monthlyValues?.map((val, mIdx) => {
                       const mBadge = isPercentageRow ? getMarginBadgeStyle(label, val) : null;
                       const ddType = !isPercentageRow && !rowStyle.isHeader ? getDeepDiveType(label) : null;
-                      const isClickable = Boolean(ddType && val && val !== "—" && val !== "" && Math.abs(parseMoney(val)) >= 0.001);
+                      const isClickable = !isYear0 && Boolean(ddType && val && val !== "—" && val !== "" && Math.abs(parseMoney(val)) >= 0.001);
                       const monthLabel = activeYear.headerMonths?.[mIdx] || `Month ${mIdx + 1}`;
                       const displayVal = val === "—" ? "" : formatCurrencyString(val, null, currencySymbol, thousandsSeparator);
                       const st = String((activeYear.statusValues || activeYear.monthStatuses || [])[mIdx] || "").trim().toLowerCase();
@@ -884,7 +900,7 @@ export default function PerformanceFYView({
                     {/* FY Total Column (Continuous unbroken Total column shading) */}
                     {(() => {
                       const ddType = !isPercentageRow && !rowStyle.isHeader ? getDeepDiveType(label) : null;
-                      const isClickable = Boolean(ddType && totalVal && totalVal !== "—" && totalVal !== "" && Math.abs(parseMoney(totalVal)) >= 0.001);
+                      const isClickable = !isYear0 && Boolean(ddType && totalVal && totalVal !== "—" && totalVal !== "" && Math.abs(parseMoney(totalVal)) >= 0.001);
                       const displayTotal = totalVal === "—" ? "" : formatCurrencyString(totalVal, null, currencySymbol, thousandsSeparator);
                       const totalColBg = "rgba(0, 71, 171, 0.04)";
 

@@ -38,6 +38,7 @@ const CORE_MASTER_TABS = [
   "RevComp",
   "RevFromApp",
   "Outgoings",
+  "MthlyClient",
   "Welcome",
 ];
 
@@ -385,9 +386,12 @@ async function saveVirtualTabGrid_(ctx, sheetRole, tabName, valuesGrid, formulas
 
   _gridMemoryCache.set(cacheKey, { record: payload, expiresAt: Date.now() + GRID_CACHE_TTL_MS });
 
-  await supabase.from("master_sheet_grids").upsert(payload, {
+  const { error: upsertErr } = await supabase.from("master_sheet_grids").upsert(payload, {
     onConflict: "client_name,sheet_role,tab_name",
   });
+  if (upsertErr) {
+    throw new Error(`Supabase master_sheet_grids upsert failed (${tabName}): ${upsertErr.message}`);
+  }
 
   // Keep structured relational tables synchronized when KeyInfo or Recon tabs change
   if (sheetRole === "master" && tabName === "KeyInfo") {
@@ -1707,8 +1711,9 @@ export async function getStage2Status(targetClientName = "APPTEST") {
       try {
         const { count, error } = await supabase
           .from(t.name)
-          .select("*", { count: "exact", head: true })
-          .eq("client_name", targetClientName);
+          .select("client_name", { count: "exact" })
+          .eq("client_name", targetClientName)
+          .limit(1);
         if (error) {
           return { ...t, exists: false, count: 0, error: error.message };
         }

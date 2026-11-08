@@ -854,14 +854,14 @@ export default async function handler(req, res) {
     const contractorLockedMap = {};
     const contractorBlocksMap = {};
 
-    if (isNotesMode && (sheetId || masterSheetId)) {
+    if (isNotesMode && (clientSheetId || masterSheetId)) {
       try {
         let notesResp = null;
-        if (sheetId) {
+        if (clientSheetId) {
           try {
             notesResp = await withRetry(() =>
               sheets.spreadsheets.values.get({
-                spreadsheetId: sheetId,
+                spreadsheetId: clientSheetId,
                 range: "OutgNotes!A1:AV112",
                 valueRenderOption: "FORMATTED_VALUE",
               })

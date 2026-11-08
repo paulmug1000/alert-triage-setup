@@ -1571,7 +1571,7 @@ export function buildDeepDiveData({
   cellNote = "",
   flatBreakdown = null,
 }) {
-  if (!keyData) {
+  if (!keyData || yearIndex === 0) {
     return {
       title: "Breakdown",
       period: periodLabel,

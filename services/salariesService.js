@@ -90,16 +90,62 @@ export async function getSalariesData({ clientName, masterSheetId, clientSheetId
 
   const sheets = await getSheetsClient();
 
-  // 1. Batch get from Master Sheet and fetch metadata notes:
-  // - Salaries!A1:JC3 (Headers)
-  // - Salaries!A4:I53 (Employees metadata)
-  // - Salaries!L4:JC53 (Effective amounts)
-  // - Salaries!L54:JC58 (Totals: row 55 all, 57 delivery, 58 non-delivery)
-  // - Salaries!L60:JC77 (Summary rows 60 to 77)
-  // - Salaries!L154:JC203 (Forecast amounts)
-  // - Salaries!L304:JC353 (Actuals / Hardcoded adjustments)
-  const [masterBatchResp, employeesGetResp, clientBatchResp] = await Promise.all([
+  // 1. Fetch Salaries & Dividends directly from Client Sheet first.
+  // Once a Client Sheet has self-contained Salaries formulas (L60:JC77 populated),
+  // we do not even need to read the Master Sheet. For any legacy unmigrated sheet,
+  // we fall back to reading the Master Sheet.
+  const [clientBatchResp, employeesGetResp] = await Promise.all([
     withRetry(() =>
+      sheets.spreadsheets.values.batchGet({
+        spreadsheetId: clientSheetId || masterSheetId,
+        ranges: [
+          "Outgoings!A1:BA1",
+          "Outgoings!A118:BA121",
+          "Salaries!A1:JC3",      // Headers
+          "Salaries!A4:I53",      // Employees metadata
+          "Salaries!L4:JC53",     // Client Sheet: Manual overrides / Actuals
+          "Salaries!L60:JC77",    // Client Sheet: Summary, EA, HMRC, Bank outflows
+          "Salaries!L154:JC203",  // Client Sheet: Forecast amounts
+          "Salaries!L304:JC353",  // Client Sheet: Effective amounts (override if present, else forecast)
+          "Salaries!L354:JC358",  // Client Sheet: Effective totals (row 355 all, 357 delivery, 358 non-delivery)
+        ],
+        valueRenderOption: "FORMATTED_VALUE",
+      })
+    ),
+    withRetry(() =>
+      sheets.spreadsheets.get({
+        spreadsheetId: clientSheetId || masterSheetId,
+        ranges: ["Salaries!A4:I53"],
+        fields: "sheets.data.rowData.values(formattedValue,note)",
+      })
+    ),
+  ]);
+
+  const clientRanges = clientBatchResp.data.valueRanges || [];
+  const outgoingsHeaders = clientRanges[0]?.values?.[0] || [];
+  const outgoingsDividendsRaw = clientRanges[1]?.values || [];
+  const clientHeaders = clientRanges[2]?.values || [];
+  const clientEmployeesRaw = clientRanges[3]?.values || [];
+  const clientActualAmountsRaw = clientRanges[4]?.values || [];
+  const clientSummaryRaw = clientRanges[5]?.values || [];
+  const clientForecastAmountsRaw = clientRanges[6]?.values || [];
+  const clientEffectiveAmountsRaw = clientRanges[7]?.values || [];
+  const clientEffectiveTotalsRaw = clientRanges[8]?.values || [];
+
+  const isClientSelfContained =
+    Boolean(clientSheetId) &&
+    clientSummaryRaw.some((r) => Array.isArray(r) && r.some((cell) => String(cell || "").trim() !== ""));
+
+  let masterHeaders = clientHeaders;
+  let masterEmployeesRaw = clientEmployeesRaw;
+  let effectiveAmountsRaw = clientEffectiveAmountsRaw;
+  let totalsRaw = clientEffectiveTotalsRaw;
+  let summaryRaw = clientSummaryRaw;
+  let forecastAmountsRaw = clientForecastAmountsRaw;
+  let masterActualAmountsRaw = clientActualAmountsRaw;
+
+  if (!isClientSelfContained && masterSheetId) {
+    const masterBatchResp = await withRetry(() =>
       sheets.spreadsheets.values.batchGet({
         spreadsheetId: masterSheetId,
         ranges: [
@@ -113,57 +159,31 @@ export async function getSalariesData({ clientName, masterSheetId, clientSheetId
         ],
         valueRenderOption: "FORMATTED_VALUE",
       })
-    ),
-    withRetry(() =>
-      sheets.spreadsheets.get({
-        spreadsheetId: clientSheetId || masterSheetId,
-        ranges: ["Salaries!A4:I53"],
-        fields: "sheets.data.rowData.values(formattedValue,note)",
-      })
-    ),
-    withRetry(() =>
-      sheets.spreadsheets.values.batchGet({
-        spreadsheetId: clientSheetId,
-        ranges: [
-          "Outgoings!A1:BA1",
-          "Outgoings!A118:BA121",
-          "Salaries!A4:I53",
-          "Salaries!L4:JC53",
-        ],
-        valueRenderOption: "FORMATTED_VALUE",
-      })
-    ),
-  ]);
+    );
+    const masterRanges = masterBatchResp.data.valueRanges || [];
+    masterHeaders = masterRanges[0]?.values || clientHeaders;
+    masterEmployeesRaw = masterRanges[1]?.values || [];
+    effectiveAmountsRaw = masterRanges[2]?.values || [];
+    totalsRaw = masterRanges[3]?.values || [];
+    summaryRaw = masterRanges[4]?.values || [];
+    forecastAmountsRaw = masterRanges[5]?.values || [];
+    masterActualAmountsRaw = masterRanges[6]?.values || [];
 
-  const masterRanges = masterBatchResp.data.valueRanges || [];
-  const masterHeaders = masterRanges[0]?.values || [];
-  const masterEmployeesRaw = masterRanges[1]?.values || [];
-  const effectiveAmountsRaw = masterRanges[2]?.values || [];
-  const totalsRaw = masterRanges[3]?.values || [];
-  const summaryRaw = masterRanges[4]?.values || [];
-  const forecastAmountsRaw = masterRanges[5]?.values || [];
-  const masterActualAmountsRaw = masterRanges[6]?.values || [];
+    // Auto-heal Master Sheet Salaries!A3 IMPORTRANGE if static values in A4:J54 caused a #REF! error
+    const cellA3Val = String(masterHeaders[2]?.[0] || "").trim();
+    if (cellA3Val.startsWith("#REF!") && masterSheetId && clientSheetId && masterSheetId !== clientSheetId) {
+      withRetry(() =>
+        sheets.spreadsheets.values.clear({
+          spreadsheetId: masterSheetId,
+          range: "Salaries!A4:J54",
+        })
+      ).catch((err) => {
+        console.warn("Failed to auto-clear blocking cells in Master Salaries!A4:J54:", err?.message);
+      });
+    }
+  }
 
   const employeeRowData = employeesGetResp.data?.sheets?.[0]?.data?.[0]?.rowData || [];
-
-  const clientRanges = clientBatchResp.data.valueRanges || [];
-  const outgoingsHeaders = clientRanges[0]?.values?.[0] || [];
-  const outgoingsDividendsRaw = clientRanges[1]?.values || [];
-  const clientEmployeesRaw = clientRanges[2]?.values || [];
-  const clientActualAmountsRaw = clientRanges[3]?.values || [];
-
-  // Auto-heal Master Sheet Salaries!A3 IMPORTRANGE if static values in A4:J54 caused a #REF! error
-  const cellA3Val = String(masterHeaders[2]?.[0] || "").trim();
-  if (cellA3Val.startsWith("#REF!") && masterSheetId && clientSheetId && masterSheetId !== clientSheetId) {
-    withRetry(() =>
-      sheets.spreadsheets.values.clear({
-        spreadsheetId: masterSheetId,
-        range: "Salaries!A4:J54",
-      })
-    ).catch((err) => {
-      console.warn("Failed to auto-clear blocking cells in Master Salaries!A4:J54:", err?.message);
-    });
-  }
 
   const employeesRaw = clientEmployeesRaw.length > 0 ? clientEmployeesRaw : masterEmployeesRaw;
   const actualAmountsRaw = clientActualAmountsRaw.length > 0 ? clientActualAmountsRaw : masterActualAmountsRaw;

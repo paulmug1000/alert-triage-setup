@@ -713,6 +713,20 @@ export async function appendAlertMemoryRow(sheets, automationCommanderSheetId, p
     cachedOptionsJSON, status, ignoreReason, dataSnapshot, category,
   } = payload;
 
+  const targetStatus = status || "cached";
+  if ((targetStatus === "cached" || targetStatus === "pending_automation") && fingerprintHash) {
+    const handledMap = await readHandledAlertHashes(sheets, automationCommanderSheetId, false);
+    const existingHandled = handledMap[fingerprintHash];
+    if (existingHandled === "accepted" || existingHandled === "ignored" || existingHandled === "task") {
+      console.log(`  🛡️ [appendAlertMemoryRow] Skipping append for ${fingerprintHash} — already handled with status "${existingHandled}"`);
+      return {
+        ...payload,
+        fingerprintHash,
+        status: existingHandled,
+      };
+    }
+  }
+
   cachedOptionsJSON = compressOptionsJSON_(cachedOptionsJSON);
 
   if (alertType === "expense" || alertType === "expenseDashboardDiscr") {
@@ -730,13 +744,32 @@ export async function appendAlertMemoryRow(sheets, automationCommanderSheetId, p
     try {
       const sb = getSupabaseAdmin();
       if (sb) {
+        if (targetStatus === "cached" || targetStatus === "pending_automation") {
+          const { data: existingRow } = await sb
+            .from("alert_memory")
+            .select("status, ignore_reason, first_seen, sheet_row_index")
+            .eq("fingerprint_hash", fingerprintHash)
+            .maybeSingle();
+          if (existingRow && ["accepted", "ignored", "task"].includes(existingRow.status)) {
+            console.log(`  🛡️ [appendAlertMemoryRow] Supabase guard: preserving handled status "${existingRow.status}" for ${fingerprintHash}`);
+            await updateHandledAlertHash(automationCommanderSheetId, fingerprintHash, existingRow.status);
+            return {
+              ...payload,
+              rowIndex: existingRow.sheet_row_index,
+              fingerprintHash,
+              status: existingRow.status,
+              ignoreReason: existingRow.ignore_reason || ignoreReason || "",
+              firstSeen: existingRow.first_seen || firstSeen,
+            };
+          }
+        }
         const sbRow = {
           fingerprint_hash: fingerprintHash,
           alert_type: alertType || "",
           client_name: clientName || "",
           alert_summary: alertSummary || "",
           cached_options_json: cachedOptionsJSON || "",
-          status: status || "cached",
+          status: targetStatus,
           ignore_reason: ignoreReason || "",
           first_seen: firstSeen,
           last_seen: lastSeen,
@@ -759,7 +792,7 @@ export async function appendAlertMemoryRow(sheets, automationCommanderSheetId, p
     requestBody: {
       values: [[
         fingerprintHash, alertType, clientName, alertSummary,
-        cachedOptionsJSON, status, ignoreReason || "", firstSeen, lastSeen,
+        cachedOptionsJSON, targetStatus, ignoreReason || "", firstSeen, lastSeen,
         lastRechecked,
         dataSnapshot || "",
         normalizedCategory,
@@ -767,8 +800,8 @@ export async function appendAlertMemoryRow(sheets, automationCommanderSheetId, p
     },
   }));
   const updatedRange = response.data?.updates?.updatedRange || "";
-  console.log(`  📝 DEBUG: Appended alert ${fingerprintHash} to ${updatedRange || ALERT_MEMORY_TAB} with status "${status}"`);
-  await updateHandledAlertHash(automationCommanderSheetId, fingerprintHash, status);
+  console.log(`  📝 DEBUG: Appended alert ${fingerprintHash} to ${updatedRange || ALERT_MEMORY_TAB} with status "${targetStatus}"`);
+  await updateHandledAlertHash(automationCommanderSheetId, fingerprintHash, targetStatus);
   let constructedRow = null;
   await updateAlertMemoryCacheInPlace(automationCommanderSheetId, (cache) => {
     const actualRowIndex = parseAppendedStartRow_(updatedRange, cache);
@@ -780,7 +813,7 @@ export async function appendAlertMemoryRow(sheets, automationCommanderSheetId, p
       clientName: clientName || "",
       alertSummary: alertSummary || "",
       cachedOptionsJSON: cachedOptionsJSON || "",
-      status: status || "cached",
+      status: targetStatus,
       ignoreReason: ignoreReason || "",
       firstSeen,
       lastSeen,
@@ -805,7 +838,7 @@ export async function appendAlertMemoryRow(sheets, automationCommanderSheetId, p
       clientName: clientName || "",
       alertSummary: alertSummary || "",
       cachedOptionsJSON: cachedOptionsJSON || "",
-      status: status || "cached",
+      status: targetStatus,
       ignoreReason: ignoreReason || "",
       firstSeen,
       lastSeen,
@@ -819,8 +852,53 @@ export async function appendAlertMemoryRow(sheets, automationCommanderSheetId, p
 
 export async function appendAlertMemoryRowsBatch(sheets, automationCommanderSheetId, items) {
   if (!items || items.length === 0) return [];
+  const handledMap = await readHandledAlertHashes(sheets, automationCommanderSheetId, false);
+  let filteredInputItems = items.filter(item => {
+    const st = item.status || "cached";
+    if ((st === "cached" || st === "pending_automation") && item.fingerprintHash) {
+      const existingHandled = handledMap[item.fingerprintHash];
+      if (existingHandled === "accepted" || existingHandled === "ignored" || existingHandled === "task") {
+        console.log(`  🛡️ [appendAlertMemoryRowsBatch] Skipping append for ${item.fingerprintHash} — already handled with status "${existingHandled}"`);
+        return false;
+      }
+    }
+    return true;
+  });
+
+  if (isSupabaseConfigured() && filteredInputItems.length > 0) {
+    try {
+      const sb = getSupabaseAdmin();
+      if (sb) {
+        const candidateHashes = filteredInputItems
+          .filter(x => (!x.status || x.status === "cached" || x.status === "pending_automation") && x.fingerprintHash)
+          .map(x => x.fingerprintHash);
+        if (candidateHashes.length > 0) {
+          const { data: existingRows } = await sb
+            .from("alert_memory")
+            .select("fingerprint_hash, status")
+            .in("fingerprint_hash", candidateHashes)
+            .in("status", ["accepted", "ignored", "task"]);
+          if (Array.isArray(existingRows) && existingRows.length > 0) {
+            const sbHandledSet = new Set(existingRows.map(r => r.fingerprint_hash));
+            filteredInputItems = filteredInputItems.filter(item => {
+              if (sbHandledSet.has(item.fingerprintHash)) {
+                console.log(`  🛡️ [appendAlertMemoryRowsBatch] Supabase guard: skipping append for handled hash ${item.fingerprintHash}`);
+                return false;
+              }
+              return true;
+            });
+          }
+        }
+      }
+    } catch (sbGuardErr) {
+      console.warn("⚠️ Supabase appendAlertMemoryRowsBatch guard warning:", sbGuardErr.message);
+    }
+  }
+
+  if (filteredInputItems.length === 0) return [];
+
   const now = new Date().toISOString();
-  const normalizedItems = items.map(payload => {
+  const normalizedItems = filteredInputItems.map(payload => {
     let {
       fingerprintHash, alertType, clientName, alertSummary,
       cachedOptionsJSON, status, ignoreReason, dataSnapshot, category,
@@ -903,10 +981,10 @@ export async function appendAlertMemoryRowsBatch(sheets, automationCommanderShee
     },
   }));
   const updatedRange = response.data?.updates?.updatedRange || "";
-  console.log(`  📝 DEBUG: Batch appended ${items.length} alerts to ${updatedRange || ALERT_MEMORY_TAB}`);
+  console.log(`  📝 DEBUG: Batch appended ${filteredInputItems.length} alerts to ${updatedRange || ALERT_MEMORY_TAB}`);
 
   const statusByHash = {};
-  for (const item of items) {
+  for (const item of filteredInputItems) {
     if (item.fingerprintHash) {
       statusByHash[item.fingerprintHash] = item.status;
     }
@@ -1019,8 +1097,27 @@ export async function updateAlertMemoryRow(sheets, automationCommanderSheetId, r
 
 export async function updateAlertMemoryRowsBatch(sheets, automationCommanderSheetId, updateItems) {
   if (!updateItems || updateItems.length === 0) return;
+  const handledMap = await readHandledAlertHashes(sheets, automationCommanderSheetId, false);
   const now = new Date().toISOString();
-  const data = updateItems.map(({ rowIndex, updates }) => {
+  const normalizedUpdateItems = updateItems.map(({ rowIndex, updates }) => {
+    const { preserveHandledStatus, ...cleanUpdates } = updates || {};
+    let effectiveStatus = cleanUpdates.status;
+    if ((preserveHandledStatus || effectiveStatus === "cached" || effectiveStatus === "pending_automation") && cleanUpdates.fingerprintHash) {
+      const existingHandled = handledMap[cleanUpdates.fingerprintHash];
+      if ((effectiveStatus === "cached" || effectiveStatus === "pending_automation") && (existingHandled === "accepted" || existingHandled === "ignored" || existingHandled === "task")) {
+        console.log(`  🛡️ [updateAlertMemoryRowsBatch] Preserving handled status "${existingHandled}" for ${cleanUpdates.fingerprintHash} (row ${rowIndex}) instead of overwriting to "${effectiveStatus}"`);
+        effectiveStatus = existingHandled;
+      }
+    }
+    return {
+      rowIndex,
+      updates: {
+        ...cleanUpdates,
+        status: effectiveStatus,
+      },
+    };
+  });
+  const data = normalizedUpdateItems.map(({ rowIndex, updates }) => {
     const compressedOptions = compressOptionsJSON_(updates.cachedOptionsJSON);
     const targetCategory = normalizeCategoryForType(updates.alertType, updates.category);
     const values = [
@@ -1047,7 +1144,7 @@ export async function updateAlertMemoryRowsBatch(sheets, automationCommanderShee
     try {
       const sb = getSupabaseAdmin();
       if (sb) {
-        const sbRows = updateItems
+        const sbRows = normalizedUpdateItems
           .filter(x => x.updates?.fingerprintHash)
           .map(({ rowIndex, updates }) => ({
             fingerprint_hash: updates.fingerprintHash,
@@ -1082,14 +1179,14 @@ export async function updateAlertMemoryRowsBatch(sheets, automationCommanderShee
     },
   }));
   const statusByHash = {};
-  for (const item of updateItems) {
+  for (const item of normalizedUpdateItems) {
     if (item.updates?.fingerprintHash) {
       statusByHash[item.updates.fingerprintHash] = item.updates.status;
     }
   }
   await updateHandledAlertHashesBatch(automationCommanderSheetId, statusByHash);
   await updateAlertMemoryCacheInPlace(automationCommanderSheetId, (cache) => {
-    for (const item of updateItems) {
+    for (const item of normalizedUpdateItems) {
       let idx = cache.findIndex(r => r.rowIndex === item.rowIndex);
       if (idx === -1 && item.updates?.fingerprintHash) {
         idx = cache.findIndex(r => r.fingerprintHash === item.updates.fingerprintHash);

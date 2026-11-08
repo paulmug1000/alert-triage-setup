@@ -1942,9 +1942,9 @@ export async function provisionNewClientSystem({
     withRetry(() =>
       sheets.spreadsheets.values.update({
         spreadsheetId: reconCopy.data.id,
-        range: "KeyInfo!D1",
+        range: "KeyInfo!C1:D1",
         valueInputOption: "USER_ENTERED",
-        requestBody: { values: [[masterUrl]] }
+        requestBody: { values: [[clientUrl, masterUrl]] }
       })
     ).catch(e => console.warn("Recon KeyInfo update note:", e.message)),
 

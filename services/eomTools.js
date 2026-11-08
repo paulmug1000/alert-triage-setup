@@ -3729,11 +3729,25 @@ export async function handleEomPreviewOverheadExpenses(req, res) {
  */
 export async function handleEomAddZeroBudgetCategory(req, res, sheets) {
   try {
-    const { masterSheetId, clientName, category, categories, checkboxOverrides, automationCommanderSheetId } = req.body || {};
+    const { masterSheetId, clientSheetId, clientName, category, categories, checkboxOverrides, automationCommanderSheetId } = req.body || {};
     const mId = extractSheetIdFromUrl(masterSheetId) || masterSheetId;
     if (!mId) {
       return res.status(400).json({ success: false, error: "Master Sheet ID is required." });
     }
+
+    let targetBudgetSheetId = extractSheetIdFromUrl(clientSheetId) || clientSheetId || "";
+    if (!targetBudgetSheetId) {
+      try {
+        const c1Resp = await withRetry(() => sheets.spreadsheets.values.get({
+          spreadsheetId: mId,
+          range: "KeyInfo!C1",
+          valueRenderOption: "FORMATTED_VALUE"
+        }));
+        const c1Url = c1Resp.data.values?.[0]?.[0] || "";
+        targetBudgetSheetId = extractSheetIdFromUrl(c1Url) || "";
+      } catch (_) {}
+    }
+    if (!targetBudgetSheetId) targetBudgetSheetId = mId;
 
     const catsToAdd = Array.isArray(categories)
       ? categories.map(c => String(c || "").trim()).filter(Boolean)
@@ -3743,9 +3757,9 @@ export async function handleEomAddZeroBudgetCategory(req, res, sheets) {
       return res.status(400).json({ success: false, error: "At least one category name is required." });
     }
 
-    // Read Budget!A150:AV250 with FORMULA render option so existing formulas are preserved
+    // Read Budget!A150:AV250 from Client Sheet with FORMULA render option so existing formulas are preserved
     const budgetResp = await withRetry(() => sheets.spreadsheets.values.get({
-      spreadsheetId: mId,
+      spreadsheetId: targetBudgetSheetId,
       range: "Budget!A150:AV250",
       valueRenderOption: "FORMULA"
     }));
@@ -3830,7 +3844,7 @@ export async function handleEomAddZeroBudgetCategory(req, res, sheets) {
 
     if (batchData.length > 0) {
       await withRetry(() => sheets.spreadsheets.values.batchUpdate({
-        spreadsheetId: mId,
+        spreadsheetId: targetBudgetSheetId,
         requestBody: {
           valueInputOption: "USER_ENTERED",
           data: batchData

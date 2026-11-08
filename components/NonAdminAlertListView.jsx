@@ -1054,7 +1054,7 @@ export default function NonAdminAlertListView({
                                     whiteSpace: "nowrap"
                                   }}
                                 >
-                                  {isApplying ? <><Spinner size={12} /> Confirming &amp; Syncing...</> : "Confirm & apply"}
+                                  {isApplying ? <><Spinner size={12} /> Confirming &amp; syncing...</> : "Confirm & apply"}
                                 </button>
 
                                 {msg && (

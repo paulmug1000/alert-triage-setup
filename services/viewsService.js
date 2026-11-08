@@ -352,32 +352,33 @@ export async function getClientViewData({ clientSheetId, masterSheetId, tab, byp
   }
 
   if (tab === "budget") {
-    let targetMasterId = cleanMasterId;
-    if (!targetMasterId && cleanClientId) {
+    let targetBudgetSheetId = cleanClientId;
+    if (!targetBudgetSheetId && cleanMasterId) {
       try {
-        const d1Res = await withRetry(() => sheets.spreadsheets.values.get({
-          spreadsheetId: cleanClientId,
-          range: "KeyInfo!D1",
+        const c1Res = await withRetry(() => sheets.spreadsheets.values.get({
+          spreadsheetId: cleanMasterId,
+          range: "KeyInfo!C1",
         }));
-        const d1Val = d1Res.data.values?.[0]?.[0];
-        if (d1Val) targetMasterId = extractSheetIdFromUrl(d1Val) || String(d1Val).trim();
+        const c1Val = c1Res.data.values?.[0]?.[0];
+        if (c1Val) targetBudgetSheetId = extractSheetIdFromUrl(c1Val) || String(c1Val).trim();
       } catch (e) {
-        console.warn("Could not read KeyInfo!D1 for masterSheetId fallback:", e);
+        console.warn("Could not read KeyInfo!C1 for clientSheetId fallback:", e);
       }
+      if (!targetBudgetSheetId) targetBudgetSheetId = cleanMasterId;
     }
 
-    if (!targetMasterId) {
-      throw new Error("Missing masterSheetId for Budget view");
+    if (!targetBudgetSheetId) {
+      throw new Error("Missing clientSheetId for Budget view");
     }
 
     const [budgetRes, keyInfoRes] = await Promise.all([
       withRetry(() => sheets.spreadsheets.get({
-        spreadsheetId: targetMasterId,
+        spreadsheetId: targetBudgetSheetId,
         ranges: ["Budget!A1:AX253"],
         fields: FIELDS,
       })),
       withRetry(() => sheets.spreadsheets.values.batchGet({
-        spreadsheetId: targetMasterId,
+        spreadsheetId: targetBudgetSheetId,
         ranges: ["KeyInfo!B15", "KeyInfo!D8"],
         valueRenderOption: "FORMATTED_VALUE",
       })).catch(() => ({ data: { valueRanges: [] } }))
@@ -555,19 +556,16 @@ export async function handleUpdateViewCell(req, res, sheets) {
   }
 
   try {
-    let targetSpreadsheetId = clientSheetId;
-    if (screenTab === "budget") {
-      targetSpreadsheetId = masterSheetId || clientSheetId;
-      if (clientSheetId && (!masterSheetId || masterSheetId === clientSheetId)) {
-        try {
-          const d1Res = await withRetry(() => sheets.spreadsheets.values.get({
-            spreadsheetId: extractSheetIdFromUrl(clientSheetId) || clientSheetId,
-            range: "KeyInfo!D1",
-          }));
-          const d1Val = d1Res.data.values?.[0]?.[0];
-          if (d1Val) targetSpreadsheetId = extractSheetIdFromUrl(d1Val) || String(d1Val).trim();
-        } catch (e) {}
-      }
+    let targetSpreadsheetId = clientSheetId || masterSheetId;
+    if (!clientSheetId && masterSheetId && screenTab === "budget") {
+      try {
+        const c1Res = await withRetry(() => sheets.spreadsheets.values.get({
+          spreadsheetId: extractSheetIdFromUrl(masterSheetId) || masterSheetId,
+          range: "KeyInfo!C1",
+        }));
+        const c1Val = c1Res.data.values?.[0]?.[0];
+        if (c1Val) targetSpreadsheetId = extractSheetIdFromUrl(c1Val) || String(c1Val).trim();
+      } catch (e) {}
     }
 
     const sheetIdClean = extractSheetIdFromUrl(targetSpreadsheetId) || targetSpreadsheetId;
@@ -811,15 +809,15 @@ export async function handleSpreadViewRow(req, res, sheets) {
   }
 
   try {
-    let targetSpreadsheetId = masterSheetId || clientSheetId;
-    if (clientSheetId && (!masterSheetId || masterSheetId === clientSheetId)) {
+    let targetSpreadsheetId = clientSheetId || masterSheetId;
+    if (!clientSheetId && masterSheetId) {
       try {
-        const d1Res = await withRetry(() => sheets.spreadsheets.values.get({
-          spreadsheetId: extractSheetIdFromUrl(clientSheetId) || clientSheetId,
-          range: "KeyInfo!D1",
+        const c1Res = await withRetry(() => sheets.spreadsheets.values.get({
+          spreadsheetId: extractSheetIdFromUrl(masterSheetId) || masterSheetId,
+          range: "KeyInfo!C1",
         }));
-        const d1Val = d1Res.data.values?.[0]?.[0];
-        if (d1Val) targetSpreadsheetId = extractSheetIdFromUrl(d1Val) || String(d1Val).trim();
+        const c1Val = c1Res.data.values?.[0]?.[0];
+        if (c1Val) targetSpreadsheetId = extractSheetIdFromUrl(c1Val) || String(c1Val).trim();
       } catch (e) {}
     }
 

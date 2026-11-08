@@ -969,16 +969,25 @@ async function buildStaffPayrollBreakdown_({
     const SHORT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     const targetLabel = `${SHORT_MONTHS[targetMonthInfo.month]} ${String(targetMonthInfo.year).slice(-2)}`;
 
-    const salRes = await withRetry(() => sheets.spreadsheets.values.get({
+    const salRes = await withRetry(() => sheets.spreadsheets.values.batchGet({
       spreadsheetId: clientSheetId,
-      range: "Salaries!A1:ZZ60",
+      ranges: [
+        "Salaries!A1:JC3",
+        "Salaries!A304:JC353",
+        "Salaries!A4:JC53",
+      ],
       valueRenderOption: "FORMATTED_VALUE"
     }));
 
-    const rows = salRes.data?.values || [];
-    if (rows.length < 4) return { staff: [], unmatchedBank: [], generatedNote: "" };
+    const salRanges = salRes.data?.valueRanges || [];
+    const headerRows = salRanges[0]?.values || [];
+    const effectiveRows = salRanges[1]?.values || [];
+    const overrideRows = salRanges[2]?.values || [];
+    const hasEffective = effectiveRows.some(r => Array.isArray(r) && r.slice(11).some(c => String(c || "").trim() !== ""));
+    const employeeRows = hasEffective ? effectiveRows : overrideRows;
+    if (headerRows.length < 1 || employeeRows.length === 0) return { staff: [], unmatchedBank: [], generatedNote: "" };
 
-    const header = rows[0] || [];
+    const header = headerRows[0] || [];
     let octCol = -1;
     for (let c = 0; c < header.length; c++) {
       if (String(header[c] || "").trim().toLowerCase() === targetLabel.toLowerCase()) {
@@ -995,9 +1004,10 @@ async function buildStaffPayrollBreakdown_({
     };
 
     const staff = [];
-    for (let r = 3; r < rows.length; r++) {
-      const row = rows[r] || [];
-      const name = String(row[0] || "").trim();
+    for (let r = 0; r < employeeRows.length; r++) {
+      const row = employeeRows[r] || [];
+      const fallbackRow = overrideRows[r] || [];
+      const name = String(row[0] || fallbackRow[0] || "").trim();
       if (!name || name.toLowerCase().includes("total") || name.toLowerCase().includes("likel") || name.toLowerCase().includes("allowance")) continue;
       const gross = cleanNum(row[octCol]);
       const eeNics = cleanNum(row[octCol + 1]);

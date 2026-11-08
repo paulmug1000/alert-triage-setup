@@ -132,56 +132,13 @@ export async function getSalariesData({ clientName, masterSheetId, clientSheetId
   const clientEffectiveAmountsRaw = clientRanges[7]?.values || [];
   const clientEffectiveTotalsRaw = clientRanges[8]?.values || [];
 
-  const isClientSelfContained =
-    Boolean(clientSheetId) &&
-    clientSummaryRaw.some((r) => Array.isArray(r) && r.some((cell) => String(cell || "").trim() !== ""));
-
-  let masterHeaders = clientHeaders;
-  let masterEmployeesRaw = clientEmployeesRaw;
-  let effectiveAmountsRaw = clientEffectiveAmountsRaw;
-  let totalsRaw = clientEffectiveTotalsRaw;
-  let summaryRaw = clientSummaryRaw;
-  let forecastAmountsRaw = clientForecastAmountsRaw;
-  let masterActualAmountsRaw = clientActualAmountsRaw;
-
-  if (!isClientSelfContained && masterSheetId) {
-    const masterBatchResp = await withRetry(() =>
-      sheets.spreadsheets.values.batchGet({
-        spreadsheetId: masterSheetId,
-        ranges: [
-          "Salaries!A1:JC3",
-          "Salaries!A4:I53",
-          "Salaries!L4:JC53",
-          "Salaries!L54:JC58",
-          "Salaries!L60:JC77",
-          "Salaries!L154:JC203",
-          "Salaries!L304:JC353",
-        ],
-        valueRenderOption: "FORMATTED_VALUE",
-      })
-    );
-    const masterRanges = masterBatchResp.data.valueRanges || [];
-    masterHeaders = masterRanges[0]?.values || clientHeaders;
-    masterEmployeesRaw = masterRanges[1]?.values || [];
-    effectiveAmountsRaw = masterRanges[2]?.values || [];
-    totalsRaw = masterRanges[3]?.values || [];
-    summaryRaw = masterRanges[4]?.values || [];
-    forecastAmountsRaw = masterRanges[5]?.values || [];
-    masterActualAmountsRaw = masterRanges[6]?.values || [];
-
-    // Auto-heal Master Sheet Salaries!A3 IMPORTRANGE if static values in A4:J54 caused a #REF! error
-    const cellA3Val = String(masterHeaders[2]?.[0] || "").trim();
-    if (cellA3Val.startsWith("#REF!") && masterSheetId && clientSheetId && masterSheetId !== clientSheetId) {
-      withRetry(() =>
-        sheets.spreadsheets.values.clear({
-          spreadsheetId: masterSheetId,
-          range: "Salaries!A4:J54",
-        })
-      ).catch((err) => {
-        console.warn("Failed to auto-clear blocking cells in Master Salaries!A4:J54:", err?.message);
-      });
-    }
-  }
+  const masterHeaders = clientHeaders;
+  const masterEmployeesRaw = clientEmployeesRaw;
+  const effectiveAmountsRaw = clientEffectiveAmountsRaw;
+  const totalsRaw = clientEffectiveTotalsRaw;
+  const summaryRaw = clientSummaryRaw;
+  const forecastAmountsRaw = clientForecastAmountsRaw;
+  const masterActualAmountsRaw = clientActualAmountsRaw;
 
   const employeeRowData = employeesGetResp.data?.sheets?.[0]?.data?.[0]?.rowData || [];
 

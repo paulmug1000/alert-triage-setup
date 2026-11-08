@@ -33,6 +33,7 @@ import { logPrecomputeRun, logFlagSweepRun, logBuildOptionsRun } from "./systemL
 import { isPlaceholderInvoice, isPlaceholderExpense, parseYearMonth, parseStaleExpenseDetail, isPipelineJobSuppressed, toSheetDateFormat, hasActiveCrmIntegration, ADMIN_ONLY_ALERT_TYPES, isNoEndDateSentinel } from "../utils/helpers.js";
 import { getSessionUser } from "./authService.js";
 import { matchesClientName, getClientManagerClientMap, isUserAuthorizedForClient, verifyUserAuthorizedForSheet, getCanonicalAcSheetId } from "./userPermissions.js";
+import { getSupabaseAdmin } from "./supabaseClient.js";
 import { resolveSupabaseSheetContext } from "./masterEngineService.js";
 import { runNativeMasterSync } from "./masterSyncEngine.js";
 
@@ -120,9 +121,18 @@ export async function runBackgroundTriageRefresh({
   cronSecret,
   automationCommanderSheetId,
   forceProactive = true,
+  forceAll = true,
+  bypassToken = "",
 }) {
   const startTime = Date.now();
-  console.log(`\n🔄 [Background Refresh] Starting triage pipeline (baseUrl: ${baseUrl})...`);
+  const effectiveBypass = String(
+    bypassToken || process.env.VERCEL_BYPASS_TOKEN || process.env.VERCEL_AUTOMATION_BYPASS_SECRET || ""
+  ).trim();
+  const internalHeaders = {
+    "Content-Type": "application/json",
+    ...(effectiveBypass ? { "x-vercel-protection-bypass": effectiveBypass } : {}),
+  };
+  console.log(`\n🔄 [Background Refresh] Starting triage pipeline (baseUrl: ${baseUrl}, forceProactive: ${forceProactive}, forceAll: ${forceAll})...`);
 
   try {
     await setTriageRefreshStatus({
@@ -149,14 +159,14 @@ export async function runBackgroundTriageRefresh({
       console.log(`  [Background Refresh] Sweep batch ${batchNum} from index ${sweepIdx}...`);
       const sweepResp = await fetch(`${baseUrl}/api/triage`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: internalHeaders,
         body: JSON.stringify({
           action: "run_flag_sweep",
           secret: cronSecret,
           automationCommanderSheetId,
           startIdx: sweepIdx,
           forceProactive,
-          forceAll: true,
+          forceAll,
         }),
       });
       const sweepData = await sweepResp.json();
@@ -182,7 +192,7 @@ export async function runBackgroundTriageRefresh({
       console.log(`  [Background Refresh] Build batch ${buildCount}...`);
       const buildResp = await fetch(`${baseUrl}/api/triage`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: internalHeaders,
         body: JSON.stringify({
           action: "build_cached_alert_options",
           baseUrl,
@@ -218,7 +228,7 @@ export async function runBackgroundTriageRefresh({
 
     const storeResp = await fetch(`${baseUrl}/api/triage`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: internalHeaders,
       body: JSON.stringify({
         action: "store_precomputed",
         secret: cronSecret,
@@ -2262,29 +2272,78 @@ export async function handleRunFlagSweep(req, res, sheets) {
     for (const client of clientChunk) {
       try {
         const freqRow = freqRows[client.rowIndex] || [];
-        const hasInvoice = isValidFrequency(freqRow[0]);
+        let hasInvoice = isValidFrequency(freqRow[0]);
         let hasCRM = isValidFrequency(freqRow[1]);
-        const hasExpense = isValidFrequency(freqRow[2]);
+        let hasExpense = isValidFrequency(freqRow[2]);
 
-        // If client is on the Supabase engine (Stage 2), run native Master sync during actionable sweeps
-        if (actionableDue && (hasInvoice || hasExpense || hasCRM)) {
-          try {
-            const supaCtx = await resolveSupabaseSheetContext({
-              clientName: client.clientName,
-              spreadsheetId: client.masterSheetId,
-            });
-            if (supaCtx && supaCtx.masterMode === "supabase") {
-              console.log(`  ⚡ Running native Supabase sync for ${client.clientName}...`);
+        // If client is on the Supabase engine (Stage 2), evaluate sync_schedules and run due native sequences
+        try {
+          const supaCtx = await resolveSupabaseSheetContext({
+            clientName: client.clientName,
+            spreadsheetId: client.masterSheetId,
+          });
+          if (supaCtx && supaCtx.masterMode === "supabase") {
+            const sb = getSupabaseAdmin();
+            const { data: sched } = sb
+              ? await sb.from("sync_schedules").select("*").eq("client_name", supaCtx.clientName).maybeSingle()
+              : { data: null };
+
+            const parseFreqMs = (freqStr) => {
+              const s = String(freqStr || "").trim().toLowerCase();
+              const num = parseFloat(s) || 0;
+              if (!num) return 0;
+              if (s.includes("min")) return num * 60 * 1000;
+              if (s.includes("hr")) return num * 3600 * 1000;
+              if (s.includes("day") || s.includes("24")) return 24 * 3600 * 1000;
+              if (s.includes("week")) return 7 * 24 * 3600 * 1000;
+              return 0;
+            };
+
+            const isSeqDue = (freqStr, lastIso) => {
+              const reqMs = parseFreqMs(freqStr);
+              if (!reqMs) return false;
+              if (isForced) return true;
+              if (!lastIso) return true;
+              const lastMs = new Date(lastIso).getTime();
+              return isNaN(lastMs) || Date.now() - lastMs >= reqMs;
+            };
+
+            if (sched) {
+              if (isValidFrequency(sched.inv_freq)) hasInvoice = true;
+              if (isValidFrequency(sched.crm_freq)) hasCRM = true;
+              if (isValidFrequency(sched.exp_freq)) hasExpense = true;
+            }
+
+            const invDue = isSeqDue(sched?.inv_freq || freqRow[0], sched?.last_inv_run);
+            const crmDue = isSeqDue(sched?.crm_freq || freqRow[1], sched?.last_crm_run);
+            const expDue = isSeqDue(sched?.exp_freq || freqRow[2], sched?.last_exp_run);
+
+            const dueTypes = [
+              invDue ? "invoice" : null,
+              crmDue ? "crm" : null,
+              expDue ? "expense" : null,
+            ].filter(Boolean);
+
+            for (const seqType of dueTypes) {
+              console.log(`  ⚡ Running native Supabase ${seqType} sync for ${client.clientName}...`);
               await runNativeMasterSync({
                 sheets,
                 clientName: client.clientName,
-                syncType: "all",
+                syncType: seqType,
                 userEmail: "System (Scheduled Sweep)",
               });
             }
-          } catch (syncErr) {
-            console.warn(`  ⚠️ Native Supabase sync warning for ${client.clientName}: ${syncErr.message}`);
+
+            const nowMs = Date.now();
+            if (invDue) client.invAutoLastRunMs = nowMs;
+            else if (sched?.last_inv_run) client.invAutoLastRunMs = new Date(sched.last_inv_run).getTime();
+            if (crmDue) client.crmAutoLastRunMs = nowMs;
+            else if (sched?.last_crm_run) client.crmAutoLastRunMs = new Date(sched.last_crm_run).getTime();
+            if (expDue) client.expAutoLastRunMs = nowMs;
+            else if (sched?.last_exp_run) client.expAutoLastRunMs = new Date(sched.last_exp_run).getTime();
           }
+        } catch (syncErr) {
+          console.warn(`  ⚠️ Native Supabase sync warning for ${client.clientName}: ${syncErr.message}`);
         }
 
         console.log(`  📦 Batch fetching static data for ${client.clientName}...`);

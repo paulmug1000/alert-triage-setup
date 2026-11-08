@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import { getSupabaseAdmin } from "./supabaseClient.js";
 import {
   resolveSupabaseSheetContext,
@@ -11,6 +12,7 @@ import {
 } from "./vaultService.js";
 import { refreshXeroTokens, parseXeroDate } from "./xeroService.js";
 import { refreshQBTokens } from "./quickbooksService.js";
+import { refreshGoogleSheetTokens } from "./googleSheetService.js";
 import { logPmaActivity } from "./pmaLogger.js";
 
 function parseNumeric_(val) {
@@ -2378,7 +2380,8 @@ export async function syncExpenseBreakdownToClientSheetNative(sheets, clientName
 }
 
 /**
- * 3. Pull Live CRM Deals into Supabase (DataFromCRM & CRMComp)
+ * 3A. Pull Live CRM Deals into Supabase (DataFromCRM & CRMGoogleBridge)
+ * Supports Google Sheet CRM via OAuth token in Vault (or Service Account fallback).
  */
 export async function pullLiveCrmDealsToSupabaseNative(sheets, ctx) {
   const supabase = getSupabaseAdmin();
@@ -2398,68 +2401,184 @@ export async function pullLiveCrmDealsToSupabaseNative(sheets, ctx) {
     return { dealsPulled: 0, crmTool: "None" };
   }
 
-  // Support Google Sheet external CRM source (KeyInfo!X11:X14 + CRMGoogleBridge)
-  if (crmTool.toLowerCase() === "google sheet" && sheets) {
-    const sourceUrl = String(kiGrid[10]?.[23] || "").trim(); // X11
-    const sourceTab = String(kiGrid[11]?.[23] || "").trim(); // X12
-    const headerRowNum = parseInt(kiGrid[12]?.[23], 10) || 1; // X13
+  // Support Google Sheet external CRM source (KeyInfo!X11:X14)
+  if (crmTool.toLowerCase() === "google sheet") {
+    const sourceUrl = String(kiGrid[10]?.[23] || kiGrid[13]?.[23] || "").trim(); // X11 (or legacy X14)
+    const sourceTab = String(kiGrid[11]?.[23] || kiGrid[14]?.[23] || "Sheet1").trim(); // X12
+    const matchColsStr = String(kiGrid[12]?.[23] || "").trim(); // X13
+    const headerRowNum = parseInt(kiGrid[13]?.[23], 10) || 1; // X14
     const mMatch = sourceUrl.match(/\/d\/([a-zA-Z0-9-_]+)/);
     const sourceSheetId = mMatch ? mMatch[1] : sourceUrl;
 
     if (sourceSheetId && sourceTab) {
-      const [{ data: bridgeRow }, extResp] = await Promise.all([
-        supabase
+      let extRows = null;
+
+      // 1. Try Pulse Vault OAuth token for 'googlesheet' first
+      const gsRec = await getIntegrationTokens({
+        clientKey: ctx.clientName,
+        masterSheetId: ctx.masterSheetId,
+        tool: "googlesheet",
+      });
+
+      if (gsRec && (gsRec.tokens?.accessToken || gsRec.tokens?.refreshToken)) {
+        let accessToken = gsRec.tokens?.accessToken;
+        const fetchWithToken = async (tok) => {
+          const apiUrl = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+            sourceSheetId
+          )}/values/${encodeURIComponent(sourceTab)}?valueRenderOption=FORMATTED_VALUE`;
+          return fetch(apiUrl, {
+            headers: { Authorization: `Bearer ${tok}`, Accept: "application/json" },
+          });
+        };
+
+        let resp = accessToken ? await fetchWithToken(accessToken) : null;
+        if ((!resp || resp.status === 401 || resp.status === 403) && gsRec.tokens?.refreshToken) {
+          const refreshed = await refreshGoogleSheetTokens(gsRec.tokens.refreshToken);
+          accessToken = refreshed.accessToken;
+          const updatedTokens = {
+            ...gsRec.tokens,
+            accessToken: refreshed.accessToken,
+            expiresAt: Date.now() + (refreshed.expiresIn || 3600) * 1000,
+          };
+          await updateRefreshedTokens({
+            clientKey: ctx.clientName,
+            masterSheetId: ctx.masterSheetId,
+            tool: "googlesheet",
+            tokens: updatedTokens,
+          });
+          resp = await fetchWithToken(accessToken);
+        }
+
+        if (resp && resp.ok) {
+          const json = await resp.json();
+          extRows = json.values || [];
+        }
+      }
+
+      // 2. Fallback to Google Cloud Service Account if shared directly
+      if (!extRows && sheets) {
+        const extResp = await sheets.spreadsheets.values.get({
+          spreadsheetId: sourceSheetId,
+          range: `${sourceTab}!A1:AZ2000`,
+          valueRenderOption: "FORMATTED_VALUE",
+        });
+        extRows = extResp.data.values || [];
+      }
+
+      if (Array.isArray(extRows) && extRows.length >= headerRowNum) {
+        const headerIdx = Math.max(0, headerRowNum - 1);
+        const rawHeaders = [...(extRows[headerIdx] || [])].map((h) => String(h || "").trim());
+        const dataRows = extRows
+          .slice(headerIdx + 1)
+          .filter((r) => Array.isArray(r) && r.some((c) => String(c || "").trim() !== ""));
+
+        // Load existing DataFromCRM to preserve persistent Project code / System ID UUIDs across syncs
+        const { data: oldDfcRow } = await supabase
           .from("master_sheet_grids")
           .select("values_grid")
           .eq("client_name", ctx.clientName)
           .eq("sheet_role", "master")
-          .eq("tab_name", "CRMGoogleBridge")
-          .maybeSingle(),
-        sheets.spreadsheets.values.get({
-          spreadsheetId: sourceSheetId,
-          range: `${sourceTab}!A1:AZ2000`,
-          valueRenderOption: "UNFORMATTED_VALUE",
-        }),
-      ]);
+          .eq("tab_name", "DataFromCRM")
+          .maybeSingle();
 
-      const extRows = extResp.data.values || [];
-      const bridgeGrid = bridgeRow?.values_grid || [];
-      if (extRows.length >= headerRowNum && bridgeGrid.length >= 5) {
-        const headers = (extRows[headerRowNum - 1] || []).map((h) => String(h || "").trim().toLowerCase());
-        const findColIdx = (colName) => {
-          const clean = String(colName || "").trim().toLowerCase();
-          return clean ? headers.indexOf(clean) : -1;
-        };
+        const oldDfcGrid = oldDfcRow?.values_grid || [];
+        const oldHeaders = (oldDfcGrid[0] || []).map((h) => String(h || "").trim());
+        const normHead = (h) => String(h || "").toLowerCase().replace(/[^a-z0-9]/g, "");
 
-        // Bridge rows 5..20 (0-indexed 4..19): Col C (index 2) = external column header name
-        const mapCols = [];
-        for (let i = 4; i < Math.min(20, bridgeGrid.length); i++) {
-          mapCols.push(findColIdx(bridgeGrid[i]?.[2]));
+        let uuidColIdx = rawHeaders.findIndex(
+          (h) => normHead(h) === "projectcode" || normHead(h) === "systemiddonotedit"
+        );
+        const oldUuidColIdx = oldHeaders.findIndex(
+          (h) => normHead(h) === "projectcode" || normHead(h) === "systemiddonotedit"
+        );
+
+        let idxClient = rawHeaders.findIndex((h) => /^(?:client|lead|org|company|customer)/i.test(normHead(h)));
+        let idxJob = rawHeaders.findIndex((h, i) => i !== idxClient && /^(?:job|deal|opportunity|task|title|name|nature)/i.test(normHead(h)));
+        let idxRev = rawHeaders.findIndex((h) => /^(?:value|amount|revenue|total|deal|fee)/i.test(normHead(h)));
+        let idxStart = rawHeaders.findIndex((h) => /^(?:start|month|target|live|date)/i.test(normHead(h)));
+
+        if (matchColsStr) {
+          const parts = matchColsStr.split(",").map((s) => normHead(s));
+          if (parts[0]) {
+            const f = rawHeaders.findIndex((h) => normHead(h) === parts[0]);
+            if (f !== -1) idxClient = f;
+          }
+          if (parts[1]) {
+            const f = rawHeaders.findIndex((h) => normHead(h) === parts[1]);
+            if (f !== -1) idxJob = f;
+          }
+          if (parts[2]) {
+            const f = rawHeaders.findIndex((h) => normHead(h) === parts[2]);
+            if (f !== -1) idxRev = f;
+          }
+        }
+        if (idxClient === -1) idxClient = 0;
+        if (idxJob === -1) idxJob = Math.min(1, rawHeaders.length - 1);
+
+        if (uuidColIdx === -1) {
+          uuidColIdx = rawHeaders.length;
+          rawHeaders.push("System ID (Do Not Edit)");
         }
 
-        const crmGrid = [["Deal Name", "Client", "Code", "Stage", "Revenue", "Direct Costs", "Close Date", "Start Date", "End Date", "Likelihood", "Deal ID", "Product Line", "Lead Source"]];
-        for (let r = headerRowNum; r < extRows.length; r++) {
-          const row = extRows[r] || [];
-          const outRow = mapCols.map((cIdx) => (cIdx >= 0 ? row[cIdx] ?? "" : ""));
-          if (outRow.some((v) => String(v).trim() !== "")) {
-            crmGrid.push(outRow);
+        // Build lookup of existing UUIDs by (clientLower + jobLower) from oldDfcGrid
+        const existingUuidsByKey = new Map();
+        if (oldUuidColIdx !== -1 && oldDfcGrid.length > 1) {
+          const oldClientIdx = oldHeaders.findIndex((h) => /^(?:client|lead|org|company|customer)/i.test(normHead(h)));
+          const oldJobIdx = oldHeaders.findIndex((h, i) => i !== oldClientIdx && /^(?:job|deal|opportunity|task|title|name|nature)/i.test(normHead(h)));
+          for (let r = 1; r < oldDfcGrid.length; r++) {
+            const oRow = oldDfcGrid[r] || [];
+            const u = String(oRow[oldUuidColIdx] || "").trim();
+            if (!u) continue;
+            const c = String(oRow[oldClientIdx !== -1 ? oldClientIdx : 0] || "").trim().toLowerCase();
+            const j = String(oRow[oldJobIdx !== -1 ? oldJobIdx : 1] || "").trim().toLowerCase();
+            if (c || j) existingUuidsByKey.set(`${c}|||${j}`, u);
           }
         }
 
-        await supabase.from("master_sheet_grids").upsert(
-          {
-            client_id: ctx.clientId,
-            client_name: ctx.clientName,
-            sheet_role: "master",
-            tab_name: "DataFromCRM",
-            values_grid: crmGrid,
-            formulas_grid: crmGrid,
-            row_count: crmGrid.length,
-            col_count: Math.max(16, ...crmGrid.map((r) => r.length)),
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: "client_name,sheet_role,tab_name" }
-        );
+        const crmGrid = [rawHeaders];
+        for (const r of dataRows) {
+          const row = [...r];
+          while (row.length <= uuidColIdx) row.push("");
+          if (!String(row[uuidColIdx] || "").trim()) {
+            const c = String(row[idxClient] || "").trim().toLowerCase();
+            const j = String(row[idxJob] || "").trim().toLowerCase();
+            const preserved = existingUuidsByKey.get(`${c}|||${j}`);
+            row[uuidColIdx] = preserved || randomUUID();
+          }
+          crmGrid.push(row);
+        }
+
+        await Promise.all([
+          supabase.from("master_sheet_grids").upsert(
+            {
+              client_id: ctx.clientId,
+              client_name: ctx.clientName,
+              sheet_role: "master",
+              tab_name: "DataFromCRM",
+              values_grid: crmGrid,
+              formulas_grid: crmGrid,
+              row_count: crmGrid.length,
+              col_count: rawHeaders.length,
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: "client_name,sheet_role,tab_name" }
+          ),
+          supabase.from("master_sheet_grids").upsert(
+            {
+              client_id: ctx.clientId,
+              client_name: ctx.clientName,
+              sheet_role: "master",
+              tab_name: "CRMGoogleBridge",
+              values_grid: crmGrid,
+              formulas_grid: crmGrid,
+              row_count: crmGrid.length,
+              col_count: rawHeaders.length,
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: "client_name,sheet_role,tab_name" }
+          ),
+        ]);
+
         invalidateMasterEngineCache(ctx.clientName);
         return { dealsPulled: crmGrid.length - 1, crmTool };
       }
@@ -2467,6 +2586,397 @@ export async function pullLiveCrmDealsToSupabaseNative(sheets, ctx) {
   }
 
   return { dealsPulled: 0, crmTool };
+}
+
+/**
+ * 3B. Recompute CRMComp in Supabase master_sheet_grids for the requested mode ("Pipeline" or "Confirmed")
+ * Compares DataFromCRM deals against the Client Sheet's Pipeline or Confirmed tab and populates:
+ * - CRMComp!B2 (mode)
+ * - CRMComp!X6:BF1000 (CRM deals vs Sheet jobs + 8 discrepancy flags)
+ * - CRMComp!DM6:DU1000 (Sheet jobs list for mode)
+ * - CRMComp!EF6:FL1000 (Sheet jobs vs CRM deals + 8 reverse discrepancy flags)
+ */
+export async function recomputeCrmComparisonInSupabase(sheets, clientName, requestedMode = null) {
+  const supabase = getSupabaseAdmin();
+  if (!supabase || !sheets) return { success: false };
+
+  const ctx = await resolveSupabaseSheetContext({ clientName });
+  if (!ctx?.clientSheetId) return { success: false };
+
+  const [{ data: dfcRow }, { data: crmCompRow }, clientTabsResp] = await Promise.all([
+    supabase
+      .from("master_sheet_grids")
+      .select("values_grid")
+      .eq("client_name", ctx.clientName)
+      .eq("sheet_role", "master")
+      .eq("tab_name", "DataFromCRM")
+      .maybeSingle(),
+    supabase
+      .from("master_sheet_grids")
+      .select("values_grid")
+      .eq("client_name", ctx.clientName)
+      .eq("sheet_role", "master")
+      .eq("tab_name", "CRMComp")
+      .maybeSingle(),
+    sheets.spreadsheets.values.batchGet({
+      spreadsheetId: ctx.clientSheetId,
+      ranges: ["Pipeline!A1:DD500", "Confirmed!A1:AN1000"],
+      valueRenderOption: "FORMATTED_VALUE",
+    }),
+  ]);
+
+  const dfcGrid = dfcRow?.values_grid || [];
+  const crmCompGrid = Array.isArray(crmCompRow?.values_grid)
+    ? crmCompRow.values_grid.map((r) => (Array.isArray(r) ? [...r] : []))
+    : [];
+  while (crmCompGrid.length < 300) crmCompGrid.push([]);
+  if (!crmCompGrid[1]) crmCompGrid[1] = [];
+
+  const mode = requestedMode || String(crmCompGrid[1]?.[1] || "Pipeline").trim() || "Pipeline";
+  crmCompGrid[1][1] = mode; // CRMComp!B2
+  crmCompGrid[1][4] = true; // CRMComp!E2 = TRUE
+
+  const cutoffDate = parseCellDate_(crmCompGrid[1]?.[2]); // CRMComp!C2
+
+  // Parse DataFromCRM rows (row 0 = headers)
+  const dfcHeaders = (dfcGrid[0] || []).map((h) => String(h || "").trim().toLowerCase());
+  const findDfcCol = (regex, fallbackIdx) => {
+    const idx = dfcHeaders.findIndex((h) => regex.test(h));
+    return idx !== -1 ? idx : fallbackIdx;
+  };
+  const cIdxClient = findDfcCol(/^(?:client|company|customer|account)/i, 0);
+  const cIdxJob = findDfcCol(/^(?:job|deal|opportunity|project\s*name|title)/i, 1);
+  const cIdxCode = findDfcCol(/^(?:project\s*code|system\s*id|code|uuid|id)/i, 2);
+  const cIdxRev = findDfcCol(/^(?:revenue|value|amount|fee)/i, 3);
+  const cIdxDc = findDfcCol(/^(?:direct\s*costs|cost)/i, 4);
+  const cIdxStart = findDfcCol(/^(?:start\s*date|start)/i, 5);
+  const cIdxEnd = findDfcCol(/^(?:end\s*date|end|close)/i, 6);
+  const cIdxLike = findDfcCol(/^(?:likelihood|prob|%)/i, 7);
+  const cIdxStatus = findDfcCol(/^(?:status|stage)/i, 8);
+  const cIdxType = findDfcCol(/^(?:project\s*\/\s*retainer|type)/i, 9);
+  const cIdxLead = findDfcCol(/^(?:lead\s*source|source)/i, 10);
+  const cIdxAdded = findDfcCol(/^(?:date\s*added|created)/i, 11);
+  const cIdxProd = findDfcCol(/^(?:product\s*line|product)/i, 12);
+
+  const crmDeals = [];
+  const crmByCode = new Map();
+  const crmByName = new Map();
+
+  for (let r = 1; r < dfcGrid.length; r++) {
+    const row = dfcGrid[r] || [];
+    const client = String(row[cIdxClient] || "").trim();
+    const job = String(row[cIdxJob] || "").trim();
+    if (!client && !job) continue;
+    const code = String(row[cIdxCode] || "").trim();
+    const rev = String(row[cIdxRev] || "0").trim();
+    const dc = String(row[cIdxDc] || "0.00").trim();
+    const startDate = String(row[cIdxStart] || "").trim();
+    const endDate = String(row[cIdxEnd] || "").trim();
+    const likely = String(row[cIdxLike] || "").trim();
+    const status = String(row[cIdxStatus] || "").trim();
+    const projType = String(row[cIdxType] || "Project").trim();
+    const leadSrc = String(row[cIdxLead] || "").trim();
+    const dateAdded = String(row[cIdxAdded] || "").trim();
+    const prodLine = String(row[cIdxProd] || "").trim();
+
+    const deal = {
+      client,
+      job,
+      code,
+      rev,
+      revNum: parseNumeric_(rev),
+      dc,
+      dcNum: parseNumeric_(dc),
+      startDate,
+      startObj: parseCellDate_(startDate),
+      endDate,
+      endObj: parseCellDate_(endDate),
+      likely,
+      likelyNum: parseNumeric_(String(likely).replace("%", "")),
+      status,
+      projType,
+      leadSrc,
+      dateAdded,
+      prodLine,
+    };
+
+    crmDeals.push(deal);
+    if (code) crmByCode.set(code.toLowerCase(), deal);
+    crmByName.set(`${client.toLowerCase()}|||${job.toLowerCase()}`, deal);
+  }
+
+  // Parse Client Sheet jobs from Pipeline (mode === "Pipeline") or Confirmed (mode === "Confirmed")
+  const rawSheetRows =
+    mode === "Confirmed"
+      ? clientTabsResp.data.valueRanges?.[1]?.values || []
+      : clientTabsResp.data.valueRanges?.[0]?.values || [];
+
+  const sheetJobs = [];
+  const sheetByCode = new Map();
+  const sheetByName = new Map();
+
+  for (let r = 1; r < rawSheetRows.length; r++) {
+    const row = rawSheetRows[r] || [];
+    const client = String(row[0] || "").trim();
+    const job = String(row[1] || "").trim();
+    if (!client && !job) continue;
+    const code = String(row[2] || "").trim();
+    const dateAdded = String(row[3] || "").trim();
+    const leadSrc = String(row[4] || "").trim();
+    const rev = String(row[32] || "0").trim(); // AG
+    const dc = String(row[33] || "0").trim();  // AH
+    const vat = String(row[34] || "Yes").trim(); // AI
+    const projType = String(row[35] || "Project").trim(); // AJ
+    const prodLine = String(row[36] || "").trim(); // AK
+    const startDate = String(row[37] || "").trim(); // AL
+    const endDate = String(row[38] || "").trim();   // AM
+    const likely = mode === "Confirmed" ? "100%" : String(row[39] || "").trim(); // AN
+    const copiedToConf = mode === "Confirmed" ? "Yes" : String(row[107] || "").trim(); // DD
+
+    const sj = {
+      client,
+      job,
+      code,
+      dateAdded,
+      leadSrc,
+      rev,
+      revNum: parseNumeric_(rev),
+      dc,
+      dcNum: parseNumeric_(dc),
+      vat,
+      projType,
+      prodLine,
+      startDate,
+      startObj: parseCellDate_(startDate),
+      endDate,
+      endObj: parseCellDate_(endDate),
+      likely,
+      likelyNum: parseNumeric_(String(likely).replace("%", "")),
+      copiedToConf,
+    };
+    sheetJobs.push(sj);
+    if (code) sheetByCode.set(code.toLowerCase(), sj);
+    sheetByName.set(`${client.toLowerCase()}|||${job.toLowerCase()}`, sj);
+  }
+
+  // Filter CRM deals for X6:BF (startDate >= cutoffDate if cutoffDate exists)
+  const filteredCrmDeals = crmDeals.filter((d) => {
+    if (cutoffDate && d.startObj && d.startObj < cutoffDate) return false;
+    if (mode === "Confirmed") {
+      return d.likelyNum >= 100 || /won|confirmed|closed\s*won/i.test(d.status);
+    }
+    return d.likelyNum > 0;
+  });
+
+  // Filter Sheet jobs for EF6:FL (startDate >= cutoffDate if cutoffDate exists)
+  const filteredSheetJobs = sheetJobs.filter((sj) => {
+    if (cutoffDate && sj.startObj && sj.startObj < cutoffDate) return false;
+    return true;
+  });
+
+  const sameDate = (d1, d2, s1, s2) => {
+    if (d1 && d2) {
+      return (
+        d1.getFullYear() === d2.getFullYear() &&
+        d1.getMonth() === d2.getMonth() &&
+        d1.getDate() === d2.getDate()
+      );
+    }
+    return String(s1 || "").trim().toLowerCase() === String(s2 || "").trim().toLowerCase();
+  };
+
+  const maxRows = Math.max(crmDeals.length, filteredCrmDeals.length, sheetJobs.length, filteredSheetJobs.length, 100);
+  while (crmCompGrid.length < maxRows + 6) crmCompGrid.push([]);
+
+  let dashDiscrCount = 0;
+  let appDiscrCount = 0;
+
+  for (let i = 0; i < crmCompGrid.length - 5; i++) {
+    const rIdx = 5 + i; // Row 6+ (0-indexed 5+)
+    const row = crmCompGrid[rIdx] || [];
+    while (row.length < 170) row.push("");
+
+    // 1. Cols A..M (0..12): All CRM deals
+    const rawDeal = crmDeals[i];
+    if (rawDeal) {
+      const vals = [
+        rawDeal.client,
+        rawDeal.job,
+        rawDeal.code,
+        rawDeal.rev,
+        rawDeal.dc,
+        rawDeal.startDate,
+        rawDeal.endDate,
+        rawDeal.likely,
+        rawDeal.status,
+        rawDeal.projType,
+        rawDeal.leadSrc,
+        rawDeal.dateAdded,
+        rawDeal.prodLine,
+      ];
+      for (let c = 0; c < 13; c++) row[c] = vals[c];
+    } else {
+      for (let c = 0; c < 13; c++) row[c] = "";
+    }
+
+    // 2. Cols X..BF (23..57): Filtered CRM deals vs Sheet jobs
+    const fDeal = filteredCrmDeals[i];
+    if (fDeal) {
+      const vals = [
+        fDeal.client,
+        fDeal.job,
+        fDeal.code,
+        fDeal.rev,
+        fDeal.dc,
+        fDeal.startDate,
+        fDeal.endDate,
+        fDeal.likely,
+        fDeal.status,
+        fDeal.projType,
+        fDeal.leadSrc,
+        fDeal.dateAdded,
+        fDeal.prodLine,
+      ];
+      for (let c = 0; c < 13; c++) row[23 + c] = vals[c];
+
+      const matchedSj =
+        (fDeal.code ? sheetByCode.get(fDeal.code.toLowerCase()) : null) ||
+        sheetByName.get(`${fDeal.client.toLowerCase()}|||${fDeal.job.toLowerCase()}`) ||
+        null;
+
+      if (matchedSj) {
+        row[40] = matchedSj.code || fDeal.code;
+        row[41] = matchedSj.client;
+        row[42] = matchedSj.job;
+        row[43] = matchedSj.rev;
+        row[44] = matchedSj.dc;
+        row[45] = matchedSj.startDate;
+        row[46] = matchedSj.endDate;
+        row[47] = matchedSj.likely;
+        row[48] = matchedSj.projType;
+        row[49] = matchedSj.vat;
+
+        row[50] = ""; // missing_job
+        row[51] = matchedSj.client.toLowerCase() !== fDeal.client.toLowerCase() ? "1" : "";
+        row[52] = matchedSj.job.toLowerCase() !== fDeal.job.toLowerCase() ? "1" : "";
+        row[53] = Math.abs(matchedSj.revNum - fDeal.revNum) > 0.5 ? "1" : "";
+        row[54] = Math.abs(matchedSj.dcNum - fDeal.dcNum) > 0.5 ? "1" : "";
+        row[55] = !sameDate(matchedSj.startObj, fDeal.startObj, matchedSj.startDate, fDeal.startDate) ? "1" : "";
+        row[56] = !sameDate(matchedSj.endObj, fDeal.endObj, matchedSj.endDate, fDeal.endDate) ? "1" : "";
+        row[57] = mode !== "Confirmed" && Math.abs(matchedSj.likelyNum - fDeal.likelyNum) > 0.5 ? "1" : "";
+      } else {
+        for (let c = 40; c <= 49; c++) row[c] = "";
+        row[50] = "1"; // missing_job
+        for (let c = 51; c <= 57; c++) row[c] = "";
+      }
+      if ([50, 51, 52, 53, 54, 55, 56, 57].some((c) => row[c] === "1")) {
+        dashDiscrCount++;
+      }
+    } else {
+      for (let c = 23; c <= 57; c++) row[c] = "";
+    }
+
+    // 3. Cols DM..DY (116..128): All Sheet jobs for mode
+    const sjAll = sheetJobs[i];
+    if (sjAll) {
+      row[116] = sjAll.client;
+      row[117] = sjAll.job;
+      row[118] = sjAll.code;
+      row[119] = sjAll.rev;
+      row[120] = sjAll.dc;
+      row[121] = sjAll.startDate;
+      row[122] = sjAll.endDate;
+      row[123] = sjAll.likely;
+      row[124] = sjAll.copiedToConf;
+      row[125] = sjAll.dateAdded;
+      row[126] = sjAll.leadSrc;
+      row[127] = sjAll.projType;
+      row[128] = sjAll.vat;
+    } else {
+      for (let c = 116; c <= 128; c++) row[c] = "";
+    }
+
+    // 4. Cols EF..FL (135..167): Filtered Sheet jobs vs CRM deals
+    const fSj = filteredSheetJobs[i];
+    if (fSj) {
+      row[135] = fSj.client;
+      row[136] = fSj.job;
+      row[137] = fSj.code;
+      row[138] = fSj.rev;
+      row[139] = fSj.dc;
+      row[140] = fSj.startDate;
+      row[141] = fSj.endDate;
+      row[142] = fSj.likely;
+      row[143] = fSj.copiedToConf;
+      row[144] = fSj.dateAdded;
+      row[145] = fSj.leadSrc;
+      row[146] = fSj.prodLine;
+      row[147] = fSj.vat;
+
+      const matchedDeal =
+        (fSj.code ? crmByCode.get(fSj.code.toLowerCase()) : null) ||
+        crmByName.get(`${fSj.client.toLowerCase()}|||${fSj.job.toLowerCase()}`) ||
+        null;
+
+      if (matchedDeal) {
+        row[150] = matchedDeal.code || fSj.code;
+        row[151] = matchedDeal.client;
+        row[152] = matchedDeal.job;
+        row[153] = matchedDeal.rev;
+        row[154] = matchedDeal.dc;
+        row[155] = matchedDeal.startDate;
+        row[156] = matchedDeal.endDate;
+        row[157] = matchedDeal.likely;
+        row[158] = matchedDeal.status;
+        row[159] = matchedDeal.projType;
+
+        row[160] = ""; // missing in CRM
+        row[161] = fSj.client.toLowerCase() !== matchedDeal.client.toLowerCase() ? "1" : "";
+        row[162] = fSj.job.toLowerCase() !== matchedDeal.job.toLowerCase() ? "1" : "";
+        row[163] = Math.abs(fSj.revNum - matchedDeal.revNum) > 0.5 ? "1" : "";
+        row[164] = Math.abs(fSj.dcNum - matchedDeal.dcNum) > 0.5 ? "1" : "";
+        row[165] = !sameDate(fSj.startObj, matchedDeal.startObj, fSj.startDate, matchedDeal.startDate) ? "1" : "";
+        row[166] = !sameDate(fSj.endObj, matchedDeal.endObj, fSj.endDate, matchedDeal.endDate) ? "1" : "";
+        row[167] = mode !== "Confirmed" && Math.abs(fSj.likelyNum - matchedDeal.likelyNum) > 0.5 ? "1" : "";
+      } else {
+        for (let c = 150; c <= 159; c++) row[c] = "";
+        row[160] = "1"; // missing in CRM
+        for (let c = 161; c <= 167; c++) row[c] = "";
+      }
+      if ([160, 161, 162, 163, 164, 165, 166, 167].some((c) => row[c] === "1")) {
+        appDiscrCount++;
+      }
+    } else {
+      for (let c = 135; c <= 167; c++) row[c] = "";
+    }
+
+    crmCompGrid[rIdx] = row;
+  }
+
+  await supabase.from("master_sheet_grids").upsert(
+    {
+      client_id: ctx.clientId,
+      client_name: ctx.clientName,
+      sheet_role: "master",
+      tab_name: "CRMComp",
+      values_grid: crmCompGrid,
+      formulas_grid: crmCompGrid,
+      row_count: crmCompGrid.length,
+      col_count: Math.max(170, ...crmCompGrid.map((r) => r.length)),
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "client_name,sheet_role,tab_name" }
+  );
+
+  invalidateMasterEngineCache(ctx.clientName);
+  return {
+    success: true,
+    mode,
+    crmDealsCount: crmDeals.length,
+    sheetJobsCount: sheetJobs.length,
+    dashDiscrCount,
+    appDiscrCount,
+  };
 }
 
 /**
@@ -2954,6 +3464,9 @@ export async function runNativeMasterSync({
   if (syncType === "crm" || syncType === "all") {
     const crmRes = await pullLiveCrmDealsToSupabaseNative(sheets, ctx).catch((e) => ({ dealsPulled: 0, error: e.message }));
     results.crmDealsPulled = crmRes.dealsPulled || 0;
+    if (sheets) {
+      results.crmComparison = await recomputeCrmComparisonInSupabase(sheets, ctx.clientName).catch((e) => ({ error: e.message }));
+    }
     await supabase
       .from("sync_schedules")
       .update({

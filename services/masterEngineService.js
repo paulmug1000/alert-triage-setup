@@ -1763,6 +1763,18 @@ export async function getStage2Status(targetClientName = "APPTEST") {
     // ignore
   }
 
+  let clockMigrationSql = "";
+  try {
+    const clockSqlPath = path.join(process.cwd(), "supabase", "migrations", "0003_supabase_30m_cron_clock.sql");
+    if (fs.existsSync(clockSqlPath)) {
+      clockMigrationSql = fs.readFileSync(clockSqlPath, "utf8");
+    }
+  } catch {
+    // ignore
+  }
+
+  const clockStatus = await getSupabaseClockStatusAndSyncConfig().catch(() => null);
+
   return {
     configured: true,
     schemaReady,
@@ -1772,7 +1784,135 @@ export async function getStage2Status(targetClientName = "APPTEST") {
     availableTabs,
     clients: clientsData || [],
     migrationSql,
+    clockMigrationSql,
+    clockStatus,
   };
+}
+
+/**
+ * Ensures the Supabase 30-minute clock config row exists in public.system_config
+ * and queries pg_cron status via public.get_pulse_30m_clock_status().
+ */
+export async function getSupabaseClockStatusAndSyncConfig(updatedBy = "System") {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return null;
+
+  const cronSecret = String(process.env.CRON_SECRET || "").trim();
+  const bypassToken = String(
+    process.env.VERCEL_BYPASS_TOKEN || process.env.VERCEL_AUTOMATION_BYPASS_SECRET || ""
+  ).trim();
+  const defaultUrl = "https://app.pulsedashboard.co.uk/api/cron";
+
+  const { data: cfgRow } = await supabase
+    .from("system_config")
+    .select("*")
+    .eq("key", "supabase_cron_clock")
+    .maybeSingle();
+
+  let cfgVal = cfgRow?.value && typeof cfgRow.value === "object" ? { ...cfgRow.value } : null;
+
+  const needsSeedOrRefresh =
+    !cfgVal ||
+    (cronSecret && cfgVal.cronSecret !== cronSecret) ||
+    (bypassToken && cfgVal.bypassToken !== bypassToken) ||
+    !cfgVal.targetUrl;
+
+  if (needsSeedOrRefresh) {
+    cfgVal = {
+      ...(cfgVal || {}),
+      enabled: cfgVal?.enabled !== undefined ? Boolean(cfgVal.enabled) : true,
+      targetUrl: cfgVal?.targetUrl || defaultUrl,
+      cronSecret,
+      bypassToken,
+      updatedAt: new Date().toISOString(),
+    };
+    await supabase.from("system_config").upsert({
+      key: "supabase_cron_clock",
+      value: cfgVal,
+      description: "Supabase pg_cron 30-minute wake-up clock configuration and telemetry",
+      updated_by: updatedBy,
+    });
+  }
+
+  let rpcStatus = null;
+  try {
+    const { data: rpcData, error: rpcErr } = await supabase.rpc("get_pulse_30m_clock_status");
+    if (!rpcErr && rpcData) {
+      rpcStatus = rpcData;
+    }
+  } catch {
+    // RPC not installed yet until 0003_supabase_30m_cron_clock.sql is run
+  }
+
+  const rpcReady = Boolean(rpcStatus && rpcStatus.pgCronInstalled && rpcStatus.pgNetInstalled);
+  const jobActive = Boolean(rpcStatus?.jobActive);
+  const enabled = cfgVal?.enabled !== false;
+
+  return {
+    rpcReady,
+    pgCronInstalled: Boolean(rpcStatus?.pgCronInstalled),
+    pgNetInstalled: Boolean(rpcStatus?.pgNetInstalled),
+    jobScheduled: Boolean(rpcStatus?.jobScheduled),
+    jobActive,
+    schedule: rpcStatus?.schedule || "*/30 * * * *",
+    enabled,
+    activeAndRunning: Boolean(rpcReady && jobActive && enabled),
+    targetUrl: cfgVal?.targetUrl || defaultUrl,
+    hasSecretConfigured: Boolean(cfgVal?.cronSecret),
+    lastTriggeredAt: cfgVal?.lastTriggeredAt || null,
+    lastTriggerSource: cfgVal?.lastTriggerSource || null,
+    lastWebhookReceivedAt: cfgVal?.lastWebhookReceivedAt || null,
+    lastWebhookSource: cfgVal?.lastWebhookSource || null,
+  };
+}
+
+/**
+ * Enables or pauses the Supabase 30-minute clock in public.system_config.
+ */
+export async function setSupabaseClockEnabled(enabled, updatedBy = "Admin") {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) throw new Error("Supabase is not configured.");
+
+  await getSupabaseClockStatusAndSyncConfig(updatedBy);
+  const { data: cfgRow } = await supabase
+    .from("system_config")
+    .select("*")
+    .eq("key", "supabase_cron_clock")
+    .maybeSingle();
+
+  const nextVal = {
+    ...(cfgRow?.value || {}),
+    enabled: Boolean(enabled),
+    updatedAt: new Date().toISOString(),
+  };
+
+  await supabase.from("system_config").upsert({
+    key: "supabase_cron_clock",
+    value: nextVal,
+    description: "Supabase pg_cron 30-minute wake-up clock configuration and telemetry",
+    updated_by: updatedBy,
+  });
+
+  return getSupabaseClockStatusAndSyncConfig(updatedBy);
+}
+
+/**
+ * Manually triggers public.run_pulse_30m_clock(true) inside Supabase via RPC.
+ */
+export async function triggerSupabaseClockNow(updatedBy = "Admin") {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) throw new Error("Supabase is not configured.");
+
+  await getSupabaseClockStatusAndSyncConfig(updatedBy);
+  const { data, error } = await supabase.rpc("run_pulse_30m_clock", { p_force: true });
+  if (error) {
+    throw new Error(
+      error.message.includes("run_pulse_30m_clock")
+        ? "Supabase function public.run_pulse_30m_clock() is not installed yet. Copy and run the 0003_supabase_30m_cron_clock.sql script in the Supabase SQL Editor first."
+        : error.message
+    );
+  }
+  return data;
 }
 
 /**

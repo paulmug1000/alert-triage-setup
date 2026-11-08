@@ -11,6 +11,9 @@ import {
   restoreClientSheetImportranges,
   getVirtualTabForInspector,
   updateVirtualTabCellFromInspector,
+  getSupabaseClockStatusAndSyncConfig,
+  setSupabaseClockEnabled,
+  triggerSupabaseClockNow,
 } from "../../../services/masterEngineService.js";
 import { runNativeMasterSync } from "../../../services/masterSyncEngine.js";
 
@@ -196,6 +199,25 @@ export default async function handler(req, res) {
         userEmail: sessionUser.email || "Admin",
       }).catch(() => {});
       return res.status(200).json(updateRes);
+    }
+
+    if (action === "sync_clock_config") {
+      await getSupabaseClockStatusAndSyncConfig(sessionUser.email || "Admin");
+      const status = await getStage2Status(cleanClient);
+      return res.status(200).json({ success: true, status });
+    }
+
+    if (action === "set_clock_enabled") {
+      const enabled = Boolean(req.body?.enabled);
+      await setSupabaseClockEnabled(enabled, sessionUser.email || "Admin");
+      const status = await getStage2Status(cleanClient);
+      return res.status(200).json({ success: true, status });
+    }
+
+    if (action === "trigger_clock_now") {
+      const triggerResult = await triggerSupabaseClockNow(sessionUser.email || "Admin");
+      const status = await getStage2Status(cleanClient);
+      return res.status(200).json({ success: true, triggerResult, status });
     }
 
     return res.status(400).json({ success: false, error: `Unknown action: ${action}` });

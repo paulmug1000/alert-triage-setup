@@ -116,7 +116,8 @@ import {
   checkClientBankReconciliationStatus
 } from "../../services/bankTransactionsService";
 import { handleClassifyPLCategory, handleUpdatePartPaidDate } from "../../services/proactiveChecks";
-import { resolveSupabaseSheetContext } from "../../services/masterEngineService";
+import { resolveSupabaseSheetContext, getSupabaseClockStatusAndSyncConfig } from "../../services/masterEngineService";
+import { getSupabaseAdmin } from "../../services/supabaseClient";
 import { syncExpenseBreakdownToClientSheetNative } from "../../services/masterSyncEngine";
 import { getSessionUser, safeCompareSecret, sendOtp, verifyOtp, clearSessionCookie } from "../../services/authService";
 import {
@@ -401,7 +402,8 @@ export default async function handler(req, res) {
         action === "send_daily_alerts_summary" ||
         action === "get_activity" ||
         action === "auto_provision_recon_tabs" ||
-        action === "auto_reconcile_bank_feeds"
+        action === "auto_reconcile_bank_feeds" ||
+        action === "get_supabase_mode_clients"
       )) ||
       (isAgentAuthorized && action === "agent_progress") ||
       (isInternalAuthorized && (action === "auto_reconcile_bank_feeds" || action === "fetch_api_bank_transactions"));
@@ -1268,6 +1270,46 @@ export default async function handler(req, res) {
         return res.status(500).json({ success: false, error: err.message });
       }
 
+    } else if (action === "get_supabase_mode_clients") {
+      try {
+        if (!isCronAuthorized && (!sessionUser || !sessionUser.isAdmin)) {
+          return res.status(403).json({ success: false, error: "Forbidden" });
+        }
+        const sb = getSupabaseAdmin();
+        if (!sb) {
+          return res.status(200).json({
+            success: true,
+            clients: [],
+            normalizedKeys: [],
+            masterSheetIds: [],
+            clientSheetIds: [],
+            supabaseClockActive: false,
+          });
+        }
+        const [{ data: supaClients }, clockStatus] = await Promise.all([
+          sb
+            .from("clients")
+            .select("client_name, normalized_key, master_mode, client_sheet_id, master_sheet_id")
+            .eq("master_mode", "supabase"),
+          getSupabaseClockStatusAndSyncConfig().catch(() => null),
+        ]);
+        const list = Array.isArray(supaClients) ? supaClients : [];
+        return res.status(200).json({
+          success: true,
+          clients: list.map((r) => String(r.client_name || "").trim()).filter(Boolean),
+          normalizedKeys: list.map((r) => String(r.normalized_key || "").trim()).filter(Boolean),
+          masterSheetIds: list
+            .map((r) => extractSheetIdFromUrl(r.master_sheet_id) || String(r.master_sheet_id || "").trim())
+            .filter(Boolean),
+          clientSheetIds: list
+            .map((r) => extractSheetIdFromUrl(r.client_sheet_id) || String(r.client_sheet_id || "").trim())
+            .filter(Boolean),
+          supabaseClockActive: Boolean(clockStatus?.activeAndRunning),
+          clockStatus: clockStatus || null,
+        });
+      } catch (err) {
+        return res.status(500).json({ success: false, error: err.message });
+      }
 
     } else if (action === "fire_outgoings_pull") {
       return await handleFireOutgoingsPull(req, res, sheets);

@@ -30,6 +30,9 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
   const [stage2SyncingType, setStage2SyncingType] = useState("");
   const [showStage2Sql, setShowStage2Sql] = useState(false);
   const [copiedStage2Sql, setCopiedStage2Sql] = useState(false);
+  const [showClockSql, setShowClockSql] = useState(false);
+  const [copiedClockSql, setCopiedClockSql] = useState(false);
+  const [clockWorking, setClockWorking] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(false);
 
   const loadStage2Status = useCallback(async (targetClient = "APPTEST") => {
@@ -209,6 +212,81 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
       setCopiedStage2Sql(true);
       setTimeout(() => setCopiedStage2Sql(false), 2500);
     } catch (_) { }
+  };
+
+  const handleCopyClockSql = async () => {
+    if (!stage2Data?.clockMigrationSql) return;
+    try {
+      await navigator.clipboard.writeText(stage2Data.clockMigrationSql);
+      setCopiedClockSql(true);
+      setTimeout(() => setCopiedClockSql(false), 2500);
+    } catch (_) { }
+  };
+
+  const handleSetClockEnabled = async (enabled) => {
+    setClockWorking(true);
+    setFeedbackMsg(null);
+    try {
+      const res = await fetch("/api/pma/master-engine", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "set_clock_enabled",
+          enabled,
+          automationCommanderSheetId,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        if (data.status) setStage2Data(data.status);
+        setFeedbackMsg({
+          type: "success",
+          text: enabled
+            ? "Supabase 30-minute wake-up clock enabled."
+            : "Supabase 30-minute wake-up clock paused.",
+        });
+      } else {
+        setFeedbackMsg({ type: "error", text: data.error || "Could not update clock status." });
+      }
+    } catch (err) {
+      setFeedbackMsg({ type: "error", text: err.message });
+    } finally {
+      setClockWorking(false);
+    }
+  };
+
+  const handleTriggerClockNow = async () => {
+    setClockWorking(true);
+    setFeedbackMsg(null);
+    try {
+      const res = await fetch("/api/pma/master-engine", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "trigger_clock_now",
+          automationCommanderSheetId,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        if (data.status) setStage2Data(data.status);
+        const tr = data.triggerResult || {};
+        if (tr.success === false) {
+          setFeedbackMsg({ type: "error", text: tr.error || "Clock trigger returned an error." });
+        } else {
+          setFeedbackMsg({
+            type: "success",
+            text: `Triggered Supabase 30-minute wake-up clock (pg_net request #${tr.requestId ?? "ok"} -> ${tr.targetUrl || "/api/cron"}).`,
+          });
+        }
+      } else {
+        setFeedbackMsg({ type: "error", text: data.error || "Could not trigger clock." });
+      }
+    } catch (err) {
+      setFeedbackMsg({ type: "error", text: err.message });
+    } finally {
+      setClockWorking(false);
+    }
   };
 
   const handleSyncToSupabase = async () => {
@@ -1180,6 +1258,7 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
                       { type: "recompute", label: "Recompute InvComp & DirComp" },
                       { type: "invoice", label: "Sync invoices (Xero/QBO)" },
                       { type: "expense", label: "Sync direct costs (Xero/QBO)" },
+                      { type: "crm", label: "Sync CRM deals & CRMComp" },
                       { type: "all", label: "Run full native sync" },
                     ].map((btn) => (
                       <button
@@ -1247,6 +1326,202 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
                   ))}
                 </div>
               )}
+
+              {/* Supabase 30-minute wake-up clock (pg_cron + pg_net) */}
+              {(() => {
+                const cs = stage2Data?.clockStatus || null;
+                const rpcReady = Boolean(cs?.rpcReady && cs?.jobScheduled);
+                const clockEnabled = cs?.enabled !== false;
+                const activeAndRunning = Boolean(cs?.activeAndRunning);
+
+                return (
+                  <div
+                    style={{
+                      background: "#f8fafc",
+                      border: "1px solid #e2e8f0",
+                      borderRadius: "8px",
+                      padding: "12px 14px",
+                      marginTop: "10px",
+                      marginBottom: "10px",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        gap: "12px",
+                        flexWrap: "wrap",
+                      }}
+                    >
+                      <div>
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                          <span style={{ fontSize: "12px", fontWeight: "700", color: "#1e293b" }}>
+                            Supabase 30-minute wake-up clock (<code>pg_cron</code> + <code>pg_net</code>)
+                          </span>
+                          <span
+                            style={{
+                              fontSize: "10px",
+                              fontWeight: "600",
+                              padding: "2px 7px",
+                              borderRadius: "999px",
+                              background: activeAndRunning
+                                ? "#dcfce7"
+                                : rpcReady
+                                ? "#fef3c7"
+                                : "#dbeafe",
+                              color: activeAndRunning
+                                ? "#166534"
+                                : rpcReady
+                                ? "#92400e"
+                                : "#1e40af",
+                            }}
+                          >
+                            {activeAndRunning
+                              ? "Active (every 30 mins)"
+                              : rpcReady
+                              ? "Paused"
+                              : "Run 30-min clock SQL"}
+                          </span>
+                        </div>
+                        <div style={{ fontSize: "11px", color: "#64748b", marginTop: "3px" }}>
+                          {rpcReady
+                            ? `Runs ${cs?.schedule || "*/30 * * * *"} inside Supabase and wakes up ${cs?.targetUrl || "/api/cron"} on Vercel Pro. Legacy GAS clock triggers automatically stand down when active.`
+                            : "Copy and run 0003_supabase_30m_cron_clock.sql in the Supabase SQL Editor to move the 30-minute wake-up clock into Supabase."}
+                        </div>
+                        {(cs?.lastTriggeredAt || cs?.lastWebhookReceivedAt) && (
+                          <div style={{ fontSize: "11px", color: "#475569", marginTop: "4px" }}>
+                            {cs?.lastTriggeredAt && (
+                              <span>
+                                Last fired by Supabase: <b>{new Date(cs.lastTriggeredAt).toLocaleString("en-GB")}</b>
+                              </span>
+                            )}
+                            {cs?.lastWebhookReceivedAt && (
+                              <span style={{ marginLeft: cs?.lastTriggeredAt ? "12px" : 0 }}>
+                                Last received by Vercel: <b>{new Date(cs.lastWebhookReceivedAt).toLocaleString("en-GB")}</b>
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                        <button
+                          type="button"
+                          disabled={!rpcReady || clockWorking}
+                          onClick={handleTriggerClockNow}
+                          style={{
+                            padding: "5px 11px",
+                            fontSize: "11px",
+                            fontWeight: "600",
+                            borderRadius: "6px",
+                            border: "1px solid #cbd5e1",
+                            background: "#ffffff",
+                            color: !rpcReady ? "#9ca3af" : "#1e293b",
+                            cursor: !rpcReady || clockWorking ? "not-allowed" : "pointer",
+                          }}
+                        >
+                          {clockWorking ? "Working..." : "Test-fire clock now"}
+                        </button>
+
+                        <div style={{ display: "inline-flex", background: "#e2e8f0", borderRadius: "6px", padding: "3px", gap: "3px" }}>
+                          <button
+                            type="button"
+                            disabled={clockWorking}
+                            onClick={() => handleSetClockEnabled(false)}
+                            style={{
+                              padding: "4px 9px",
+                              fontSize: "11px",
+                              fontWeight: "600",
+                              borderRadius: "5px",
+                              border: "none",
+                              cursor: clockWorking ? "default" : "pointer",
+                              background: !clockEnabled ? "#fff" : "transparent",
+                              color: !clockEnabled ? "#0f172a" : "#475569",
+                            }}
+                          >
+                            Paused
+                          </button>
+                          <button
+                            type="button"
+                            disabled={clockWorking}
+                            onClick={() => handleSetClockEnabled(true)}
+                            style={{
+                              padding: "4px 9px",
+                              fontSize: "11px",
+                              fontWeight: "600",
+                              borderRadius: "5px",
+                              border: "none",
+                              cursor: clockWorking ? "default" : "pointer",
+                              background: clockEnabled ? "#166534" : "transparent",
+                              color: clockEnabled ? "#fff" : "#475569",
+                            }}
+                          >
+                            Enabled
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    {stage2Data?.clockMigrationSql && (
+                      <div style={{ marginTop: "8px" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                          <button
+                            type="button"
+                            onClick={() => setShowClockSql(!showClockSql)}
+                            style={{
+                              background: "none",
+                              border: "none",
+                              padding: 0,
+                              fontSize: "12px",
+                              fontWeight: "600",
+                              color: "#1a56db",
+                              cursor: "pointer",
+                            }}
+                          >
+                            {showClockSql
+                              ? "Hide 30-min clock SQL script"
+                              : "View 30-min clock SQL script (0003_supabase_30m_cron_clock.sql)"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleCopyClockSql}
+                            style={{
+                              padding: "3px 8px",
+                              fontSize: "11px",
+                              fontWeight: "600",
+                              color: "#374151",
+                              background: "#f3f4f6",
+                              border: "1px solid #d1d5db",
+                              borderRadius: "4px",
+                              cursor: "pointer",
+                            }}
+                          >
+                            {copiedClockSql ? "Copied to clipboard" : "Copy 30-min clock SQL"}
+                          </button>
+                        </div>
+                        {showClockSql && (
+                          <pre
+                            style={{
+                              marginTop: "8px",
+                              padding: "12px",
+                              background: "#0f172a",
+                              color: "#e2e8f0",
+                              borderRadius: "6px",
+                              fontSize: "11px",
+                              maxHeight: "260px",
+                              overflowY: "auto",
+                              whiteSpace: "pre-wrap",
+                            }}
+                          >
+                            {stage2Data.clockMigrationSql}
+                          </pre>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
 
               {/* Stage 2 SQL script viewer */}
               {stage2Data?.migrationSql && (

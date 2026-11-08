@@ -1546,6 +1546,8 @@ export async function handleEomGetPlCompData(req, res, sheets) {
         error: isAdmin ? `Client "${clientName}" not found in AutoUpdates` : `Client "${clientName}" configuration not found.`
       });
     }
+    const clientSheetUrl = clientRow[11];
+    const clientSheetId = extractSheetIdFromUrl(clientSheetUrl);
     const masterSheetUrl = clientRow[12];
     const masterSheetId = extractSheetIdFromUrl(masterSheetUrl);
     if (!masterSheetId) {
@@ -1814,6 +1816,8 @@ export async function handleEomPushOutgoings(req, res, sheets) {
         error: isAdmin ? `Client "${clientName}" not found in AutoUpdates` : `Client "${clientName}" configuration not found.`
       });
     }
+    const clientSheetUrl = clientRow[11];
+    const clientSheetId = extractSheetIdFromUrl(clientSheetUrl);
     const masterSheetUrl = clientRow[12];
     const masterSheetId = extractSheetIdFromUrl(masterSheetUrl);
     const webAppUrl = String(clientRow[13] || "").trim();
@@ -4374,7 +4378,7 @@ function matchesRevenueMonthKey_(dateVal, monthKey) {
   return false;
 }
 
-async function extractRevenueItemsFromMasterSheet_(sheets, masterSheetId, monthKey) {
+async function extractRevenueItemsFromMasterSheet_(sheets, masterSheetId, monthKey, clientSheetId = null) {
   const accountingItems = [];
   const pulseItems = [];
 
@@ -4415,20 +4419,42 @@ async function extractRevenueItemsFromMasterSheet_(sheets, masterSheetId, monthK
     console.warn("Could not read RevFromApp:", rfaErr.message);
   }
 
-  // 2. Read Monthly tab
+  // 2. Read Monthly tab directly from Client Sheet (falling back to MthlyClient on Master Sheet)
   const [yStr, mStr] = String(monthKey || "").split("-");
   const targetYear = parseInt(yStr, 10);
   const targetMonth = parseInt(mStr, 10) - 1; // 0-indexed
 
   if (!isNaN(targetYear) && !isNaN(targetMonth)) {
     try {
-      const monthlyResp = await withRetry(() => sheets.spreadsheets.values.get({
-        spreadsheetId: masterSheetId,
-        range: "Monthly!A1:H3000",
-        valueRenderOption: "UNFORMATTED_VALUE",
-        dateTimeRenderOption: "SERIAL_NUMBER"
-      }));
-      const monthlyRows = monthlyResp.data.values || [];
+      let targetClientSheetId = clientSheetId;
+      if (!targetClientSheetId && masterSheetId) {
+        try {
+          const c1Resp = await withRetry(() => sheets.spreadsheets.values.get({
+            spreadsheetId: masterSheetId,
+            range: "KeyInfo!C1",
+            valueRenderOption: "FORMATTED_VALUE"
+          }));
+          targetClientSheetId = extractSheetIdFromUrl(c1Resp.data.values?.[0]?.[0] || "");
+        } catch (_) {}
+      }
+
+      let monthlyResp = null;
+      if (targetClientSheetId) {
+        monthlyResp = await withRetry(() => sheets.spreadsheets.values.get({
+          spreadsheetId: targetClientSheetId,
+          range: "Monthly!A1:H2850",
+          valueRenderOption: "UNFORMATTED_VALUE",
+          dateTimeRenderOption: "SERIAL_NUMBER"
+        }));
+      } else {
+        monthlyResp = await withRetry(() => sheets.spreadsheets.values.get({
+          spreadsheetId: masterSheetId,
+          range: "MthlyClient!A1:H2850",
+          valueRenderOption: "UNFORMATTED_VALUE",
+          dateTimeRenderOption: "SERIAL_NUMBER"
+        }));
+      }
+      const monthlyRows = monthlyResp?.data?.values || [];
 
       const isMatchDate = (val) => {
         if (typeof val === "number" && val > 30000 && val < 60000) {
@@ -4733,6 +4759,8 @@ export async function handleEomRunRevenueComparison(req, res, sheets) {
     if (!clientRow) {
       return res.status(404).json({ success: false, error: `Client "${clientName}" not found.` });
     }
+    const clientSheetUrl = clientRow[11];
+    const clientSheetId = extractSheetIdFromUrl(clientSheetUrl);
     const masterSheetUrl = clientRow[12];
     const masterSheetId = extractSheetIdFromUrl(masterSheetUrl);
     const webAppUrl = String(clientRow[13] || "").trim();
@@ -4783,8 +4811,8 @@ export async function handleEomRunRevenueComparison(req, res, sheets) {
       return res.status(502).json({ success: false, error: sanitizeSpreadsheetTerms(lastError || "Failed to connect to Master Web App") });
     }
 
-    // Extract fresh data from Master Sheet
-    const { accountingItems, pulseItems } = await extractRevenueItemsFromMasterSheet_(sheets, masterSheetId, monthKey);
+    // Extract fresh data from Client Sheet (Monthly) & Master Sheet (RevFromApp)
+    const { accountingItems, pulseItems } = await extractRevenueItemsFromMasterSheet_(sheets, masterSheetId, monthKey, clientSheetId);
 
     const [y, m] = monthKey.split("-").map(Number);
     const targetMonthLabel = new Date(y, m - 1, 1).toLocaleDateString("en-GB", { month: "long", year: "numeric" });

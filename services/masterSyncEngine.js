@@ -720,6 +720,24 @@ export async function recomputeClientComparisonsInSupabase(sheets, clientName = 
       },
       { onConflict: "client_name,sheet_role,tab_name" }
     );
+
+    if (ctx.clientSheetId) {
+      const safeOutgNotesGrid = outgNotesGrid.slice(0, 111).map((row) =>
+        Array.from({ length: 48 }, (_, c) => {
+          const v = String(row?.[c] || "");
+          return /^[\s'’]*[=+\-@]/.test(v) ? "'" + v.replace(/^[\s'’]+/, "") : v;
+        })
+      );
+      await sheets.spreadsheets.values
+        .update({
+          spreadsheetId: ctx.clientSheetId,
+          range: `OutgNotes!A1:AV${safeOutgNotesGrid.length}`,
+          valueInputOption: "RAW",
+          requestBody: { values: safeOutgNotesGrid },
+          _bypassSupabaseVirtualSheet: true,
+        })
+        .catch(() => {});
+    }
   }
 
   // 2. Fetch existing InvComp and DirComp grids from Supabase so we preserve rows 1..5 (headers & metadata)

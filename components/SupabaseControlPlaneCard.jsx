@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import Spinner from "./Spinner";
+import AdminWorkbookInspectorModal from "./AdminWorkbookInspectorModal";
 
 export default function SupabaseControlPlaneCard({ automationCommanderSheetId }) {
   const [loading, setLoading] = useState(true);
@@ -19,6 +20,35 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
   const [amDeletingHash, setAmDeletingHash] = useState("");
   const [amManualHash, setAmManualHash] = useState("");
   const [amFlushing, setAmFlushing] = useState(false);
+
+  // Stage 2: Master & Recon engine state (APPTEST)
+  const [stage2Data, setStage2Data] = useState(null);
+  const [stage2Loading, setStage2Loading] = useState(false);
+  const [stage2Migrating, setStage2Migrating] = useState(false);
+  const [stage2Materializing, setStage2Materializing] = useState(false);
+  const [stage2SwitchingMode, setStage2SwitchingMode] = useState(false);
+  const [stage2SyncingType, setStage2SyncingType] = useState("");
+  const [showStage2Sql, setShowStage2Sql] = useState(false);
+  const [copiedStage2Sql, setCopiedStage2Sql] = useState(false);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
+
+  const loadStage2Status = useCallback(async (targetClient = "APPTEST") => {
+    setStage2Loading(true);
+    try {
+      const res = await fetch("/api/pma/master-engine", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "status", clientName: targetClient, automationCommanderSheetId }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setStage2Data(data);
+      }
+    } catch (_) {
+    } finally {
+      setStage2Loading(false);
+    }
+  }, [automationCommanderSheetId]);
 
   const loadStatus = useCallback(async () => {
     setLoading(true);
@@ -43,7 +73,143 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
 
   useEffect(() => {
     loadStatus();
-  }, [loadStatus]);
+    loadStage2Status("APPTEST");
+  }, [loadStatus, loadStage2Status]);
+
+  const handleStage2MigrateClient = async () => {
+    setStage2Migrating(true);
+    setFeedbackMsg(null);
+    try {
+      const res = await fetch("/api/pma/master-engine", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "migrate_client",
+          clientName: "APPTEST",
+          automationCommanderSheetId,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        if (data.status) setStage2Data(data.status);
+        const s = data.summary || {};
+        setFeedbackMsg({
+          type: "success",
+          text: `Migrated APPTEST Master (${s.masterTabsSynced || 0} tabs, ${s.invoicesCount || 0} invoices, ${s.directCostsCount || 0} direct costs) & Recon (${s.reconTabsSynced || 0} tabs, ${s.reconItemsCount || 0} items) to Supabase.`,
+        });
+      } else {
+        setFeedbackMsg({ type: "error", text: data.error || "Stage 2 migration failed." });
+      }
+    } catch (err) {
+      setFeedbackMsg({ type: "error", text: err.message });
+    } finally {
+      setStage2Migrating(false);
+    }
+  };
+
+  const handleStage2SetMasterMode = async (targetMode) => {
+    setStage2SwitchingMode(true);
+    setFeedbackMsg(null);
+    try {
+      const res = await fetch("/api/pma/master-engine", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "set_master_mode",
+          clientName: "APPTEST",
+          masterMode: targetMode,
+          automationCommanderSheetId,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        if (data.status) setStage2Data(data.status);
+        setFeedbackMsg({
+          type: "success",
+          text: `Switched APPTEST master & recon engine to ${targetMode === "supabase" ? "Supabase PostgreSQL" : "Google Sheets (legacy)"}.`,
+        });
+      } else {
+        setFeedbackMsg({ type: "error", text: data.error || "Could not switch master mode." });
+      }
+    } catch (err) {
+      setFeedbackMsg({ type: "error", text: err.message });
+    } finally {
+      setStage2SwitchingMode(false);
+    }
+  };
+
+  const handleStage2Materialize = async (restore = false) => {
+    setStage2Materializing(true);
+    setFeedbackMsg(null);
+    try {
+      const res = await fetch("/api/pma/master-engine", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: restore ? "restore_client_importranges" : "materialize_client_sheet",
+          clientName: "APPTEST",
+          automationCommanderSheetId,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        if (data.status) setStage2Data(data.status);
+        setFeedbackMsg({
+          type: "success",
+          text: restore
+            ? `Restored ${data.restoredRangesCount || 0} original IMPORTRANGE formulas on APPTEST Client Sheet.`
+            : `Materialized ${data.materializedRangesCount || 0} IMPORTRANGE ranges on APPTEST Client Sheet (original formulas backed up in Supabase).`,
+        });
+      } else {
+        setFeedbackMsg({ type: "error", text: data.error || "Operation failed." });
+      }
+    } catch (err) {
+      setFeedbackMsg({ type: "error", text: err.message });
+    } finally {
+      setStage2Materializing(false);
+    }
+  };
+
+  const handleStage2NativeSync = async (syncType) => {
+    setStage2SyncingType(syncType);
+    setFeedbackMsg(null);
+    try {
+      const res = await fetch("/api/pma/master-engine", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "run_native_sync",
+          clientName: "APPTEST",
+          syncType,
+          automationCommanderSheetId,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        if (data.status) setStage2Data(data.status);
+        const comp = data.syncResult?.comparisons || {};
+        setFeedbackMsg({
+          type: "success",
+          text: `Completed native Supabase sync (${syncType}) on APPTEST: ${comp.invDiscrepancyCount ?? 0} invoice flags, ${comp.dirDiscrepancyCount ?? 0} direct cost flags.`,
+        });
+      } else {
+        setFeedbackMsg({ type: "error", text: data.error || "Native sync failed." });
+      }
+    } catch (err) {
+      setFeedbackMsg({ type: "error", text: err.message });
+    } finally {
+      setStage2SyncingType("");
+    }
+  };
+
+  const handleCopyStage2Sql = async () => {
+    if (!stage2Data?.migrationSql) return;
+    try {
+      await navigator.clipboard.writeText(stage2Data.migrationSql);
+      setCopiedStage2Sql(true);
+      setTimeout(() => setCopiedStage2Sql(false), 2500);
+    } catch (_) { }
+  };
 
   const handleSyncToSupabase = async () => {
     setSyncing(true);
@@ -112,7 +278,7 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
       await navigator.clipboard.writeText(statusData.migrationSql);
       setCopiedSql(true);
       setTimeout(() => setCopiedSql(false), 2500);
-    } catch (_) {}
+    } catch (_) { }
   };
 
   const handleSearchAlertMemory = useCallback(async (overrideQuery, overrideStatus) => {
@@ -738,6 +904,418 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
           )}
         </div>
       )}
+
+      {/* ====================================================================
+          STAGE 2: MASTER & RECON ENGINE REPLACEMENT (APPTEST)
+          ==================================================================== */}
+      <div style={{ marginTop: "20px", paddingTop: "18px", borderTop: "2px solid #e2e8f0" }}>
+        {(() => {
+          const s2Ready = Boolean(stage2Data?.schemaReady);
+          const apptestClient = (stage2Data?.clients || []).find(
+            (c) => String(c.client_name || "").toUpperCase() === "APPTEST"
+          );
+          const apptestMode = apptestClient?.master_mode || "sheet";
+          const isMaterialized = Boolean(stage2Data?.keyInfoMeta?.client_materialized_at);
+          const hasVirtualTabs =
+            (stage2Data?.availableTabs?.master?.length || 0) + (stage2Data?.availableTabs?.recon?.length || 0) > 0;
+
+          return (
+            <>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "flex-start",
+                  gap: "16px",
+                  flexWrap: "wrap",
+                  marginBottom: "14px",
+                }}
+              >
+                <div>
+                  <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "4px" }}>
+                    <h3 style={{ margin: 0, fontSize: "15px", fontWeight: "700", color: "#111827" }}>
+                      Master & recon engine replacement on APPTEST (stage 2)
+                    </h3>
+                    <span
+                      style={{
+                        fontSize: "11px",
+                        fontWeight: "600",
+                        padding: "2px 8px",
+                        borderRadius: "999px",
+                        background: s2Ready ? "#dcfce7" : "#dbeafe",
+                        color: s2Ready ? "#166534" : "#1e40af",
+                      }}
+                    >
+                      {s2Ready ? "Stage 2 schema ready" : "Run stage 2 SQL migration"}
+                    </span>
+                  </div>
+                  <p style={{ margin: 0, fontSize: "12px", color: "#6b7280", lineHeight: "1.5" }}>
+                    Replaces APPTEST&apos;s Master Sheet and Recon Sheet with Supabase PostgreSQL and native Next.js comparison engines (<code>InvComp</code>, <code>DirComp</code>, <code>PLComp</code>, <code>BankRecon</code>), while keeping APPTEST&apos;s Client Sheet active with zero <code>IMPORTRANGE</code> links.
+                  </p>
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    onClick={() => loadStage2Status("APPTEST")}
+                    disabled={stage2Loading}
+                    style={{
+                      padding: "7px 12px",
+                      fontSize: "12px",
+                      fontWeight: "600",
+                      color: "#374151",
+                      background: "#f9fafb",
+                      border: "1px solid #d1d5db",
+                      borderRadius: "6px",
+                      cursor: stage2Loading ? "default" : "pointer",
+                    }}
+                  >
+                    {stage2Loading ? "Refreshing..." : "Refresh stage 2"}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setInspectorOpen(true)}
+                    disabled={!s2Ready || !hasVirtualTabs}
+                    style={{
+                      padding: "7px 12px",
+                      fontSize: "12px",
+                      fontWeight: "600",
+                      color: !s2Ready || !hasVirtualTabs ? "#9ca3af" : "#1e40af",
+                      background: !s2Ready || !hasVirtualTabs ? "#f3f4f6" : "#eff6ff",
+                      border: `1px solid ${!s2Ready || !hasVirtualTabs ? "#e5e7eb" : "#93c5fd"}`,
+                      borderRadius: "6px",
+                      cursor: !s2Ready || !hasVirtualTabs ? "not-allowed" : "pointer",
+                    }}
+                  >
+                    Open admin workbook inspector
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleStage2MigrateClient}
+                    disabled={!s2Ready || stage2Migrating}
+                    style={{
+                      padding: "7px 14px",
+                      fontSize: "12px",
+                      fontWeight: "600",
+                      color: "#fff",
+                      background: !s2Ready || stage2Migrating ? "#9ca3af" : "#1a56db",
+                      border: "none",
+                      borderRadius: "6px",
+                      cursor: !s2Ready || stage2Migrating ? "not-allowed" : "pointer",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "6px",
+                    }}
+                  >
+                    {stage2Migrating ? (
+                      <>
+                        <Spinner size={12} color="#fff" /> Migrating APPTEST...
+                      </>
+                    ) : (
+                      "Sync APPTEST master & recon to Supabase"
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              {/* APPTEST Master Engine Switcher & IMPORTRANGE Materializer */}
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+                  gap: "12px",
+                  marginBottom: "14px",
+                }}
+              >
+                <div
+                  style={{
+                    background: "#f8fafc",
+                    border: "1px solid #e2e8f0",
+                    borderRadius: "8px",
+                    padding: "12px 14px",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    gap: "12px",
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <div>
+                    <div style={{ fontSize: "12px", fontWeight: "700", color: "#1e293b" }}>
+                      APPTEST master & recon engine mode
+                    </div>
+                    <div style={{ fontSize: "11px", color: "#64748b", marginTop: "2px" }}>
+                      {apptestMode === "supabase"
+                        ? "Active: all APPTEST Master & Recon reads, writes, comparisons, and bank recon run on Supabase."
+                        : "Legacy: APPTEST is currently reading from its Google Master & Recon sheets."}
+                    </div>
+                  </div>
+
+                  <div style={{ display: "inline-flex", background: "#e2e8f0", borderRadius: "6px", padding: "3px", gap: "3px" }}>
+                    <button
+                      type="button"
+                      disabled={stage2SwitchingMode}
+                      onClick={() => handleStage2SetMasterMode("sheet")}
+                      style={{
+                        padding: "5px 10px",
+                        fontSize: "12px",
+                        fontWeight: "600",
+                        borderRadius: "5px",
+                        border: "none",
+                        cursor: stage2SwitchingMode ? "default" : "pointer",
+                        background: apptestMode === "sheet" ? "#fff" : "transparent",
+                        color: apptestMode === "sheet" ? "#0f172a" : "#475569",
+                      }}
+                    >
+                      Google Sheets
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!s2Ready || !hasVirtualTabs || stage2SwitchingMode}
+                      onClick={() => handleStage2SetMasterMode("supabase")}
+                      style={{
+                        padding: "5px 10px",
+                        fontSize: "12px",
+                        fontWeight: "600",
+                        borderRadius: "5px",
+                        border: "none",
+                        cursor: !s2Ready || !hasVirtualTabs || stage2SwitchingMode ? "not-allowed" : "pointer",
+                        background: apptestMode === "supabase" ? "#166534" : "transparent",
+                        color: apptestMode === "supabase" ? "#fff" : "#475569",
+                      }}
+                    >
+                      Supabase engine
+                    </button>
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    background: "#f8fafc",
+                    border: "1px solid #e2e8f0",
+                    borderRadius: "8px",
+                    padding: "12px 14px",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    gap: "12px",
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <div>
+                    <div style={{ fontSize: "12px", fontWeight: "700", color: "#1e293b" }}>
+                      APPTEST Client Sheet IMPORTRANGE links
+                    </div>
+                    <div style={{ fontSize: "11px", color: "#64748b", marginTop: "2px" }}>
+                      {isMaterialized
+                        ? "Materialized: all Master Sheet IMPORTRANGE formulas replaced with direct local values & formulas."
+                        : "Replaces Master Sheet IMPORTRANGE wrappers on APPTEST Client Sheet (with 1-click rollback backup)."}
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", gap: "6px" }}>
+                    <button
+                      type="button"
+                      disabled={!s2Ready || stage2Materializing}
+                      onClick={() => handleStage2Materialize(false)}
+                      style={{
+                        padding: "6px 11px",
+                        fontSize: "11px",
+                        fontWeight: "600",
+                        borderRadius: "6px",
+                        border: "1px solid #cbd5e1",
+                        background: isMaterialized ? "#dcfce7" : "#ffffff",
+                        color: isMaterialized ? "#166534" : "#1e293b",
+                        cursor: !s2Ready || stage2Materializing ? "not-allowed" : "pointer",
+                      }}
+                    >
+                      {stage2Materializing ? "Working..." : isMaterialized ? "Re-materialize Client Sheet" : "Remove IMPORTRANGEs on APPTEST"}
+                    </button>
+                    {isMaterialized && (
+                      <button
+                        type="button"
+                        disabled={stage2Materializing}
+                        onClick={() => handleStage2Materialize(true)}
+                        style={{
+                          padding: "6px 10px",
+                          fontSize: "11px",
+                          fontWeight: "600",
+                          borderRadius: "6px",
+                          border: "1px solid #cbd5e1",
+                          background: "#ffffff",
+                          color: "#475569",
+                          cursor: stage2Materializing ? "not-allowed" : "pointer",
+                        }}
+                      >
+                        Restore IMPORTRANGEs
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Native Next.js comparison & sync triggers for APPTEST */}
+              {s2Ready && hasVirtualTabs && (
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    flexWrap: "wrap",
+                    gap: "10px",
+                    background: "#f8fafc",
+                    border: "1px solid #e2e8f0",
+                    borderRadius: "8px",
+                    padding: "10px 14px",
+                    marginBottom: "12px",
+                  }}
+                >
+                  <div style={{ fontSize: "12px", fontWeight: "600", color: "#334155" }}>
+                    Run native Next.js sync & comparison engine on APPTEST:
+                  </div>
+                  <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                    {[
+                      { type: "recompute", label: "Recompute InvComp & DirComp" },
+                      { type: "invoice", label: "Sync invoices (Xero/QBO)" },
+                      { type: "expense", label: "Sync direct costs (Xero/QBO)" },
+                      { type: "all", label: "Run full native sync" },
+                    ].map((btn) => (
+                      <button
+                        key={btn.type}
+                        type="button"
+                        disabled={Boolean(stage2SyncingType)}
+                        onClick={() => handleStage2NativeSync(btn.type)}
+                        style={{
+                          padding: "5px 11px",
+                          fontSize: "11px",
+                          fontWeight: "600",
+                          borderRadius: "6px",
+                          border: "1px solid #cbd5e1",
+                          background: stage2SyncingType === btn.type ? "#eff6ff" : "#ffffff",
+                          color: "#1e293b",
+                          cursor: stage2SyncingType ? "wait" : "pointer",
+                        }}
+                      >
+                        {stage2SyncingType === btn.type ? "Running..." : btn.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Stage 2 tables grid */}
+              {stage2Data?.tables && (
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fill, minmax(210px, 1fr))",
+                    gap: "8px",
+                    marginBottom: "10px",
+                  }}
+                >
+                  {stage2Data.tables.map((t) => (
+                    <div
+                      key={t.name}
+                      style={{
+                        background: "#f9fafb",
+                        border: `1px solid ${t.exists ? "#d1fae5" : "#e5e7eb"}`,
+                        borderRadius: "7px",
+                        padding: "9px 11px",
+                      }}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "2px" }}>
+                        <span style={{ fontSize: "12px", fontWeight: "700", color: "#111827", fontFamily: "monospace" }}>
+                          {t.name}
+                        </span>
+                        <span
+                          style={{
+                            fontSize: "10px",
+                            fontWeight: "600",
+                            padding: "1px 6px",
+                            borderRadius: "4px",
+                            background: t.exists ? "#dcfce7" : "#f3f4f6",
+                            color: t.exists ? "#166534" : "#6b7280",
+                          }}
+                        >
+                          {t.exists ? `${(t.count ?? 0).toLocaleString()} rows` : "Not created"}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: "11px", color: "#6b7280" }}>{t.label}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Stage 2 SQL script viewer */}
+              {stage2Data?.migrationSql && (
+                <div style={{ marginTop: "8px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                    <button
+                      type="button"
+                      onClick={() => setShowStage2Sql(!showStage2Sql)}
+                      style={{
+                        background: "none",
+                        border: "none",
+                        padding: 0,
+                        fontSize: "12px",
+                        fontWeight: "600",
+                        color: "#1a56db",
+                        cursor: "pointer",
+                      }}
+                    >
+                      {showStage2Sql
+                        ? "Hide stage 2 SQL migration script"
+                        : "View stage 2 SQL migration script (0002_stage2_master_and_recon.sql)"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleCopyStage2Sql}
+                      style={{
+                        padding: "3px 8px",
+                        fontSize: "11px",
+                        fontWeight: "600",
+                        color: "#374151",
+                        background: "#f3f4f6",
+                        border: "1px solid #d1d5db",
+                        borderRadius: "4px",
+                        cursor: "pointer",
+                      }}
+                    >
+                      {copiedStage2Sql ? "Copied to clipboard" : "Copy stage 2 SQL"}
+                    </button>
+                  </div>
+                  {showStage2Sql && (
+                    <pre
+                      style={{
+                        marginTop: "8px",
+                        padding: "12px",
+                        background: "#0f172a",
+                        color: "#e2e8f0",
+                        borderRadius: "6px",
+                        fontSize: "11px",
+                        maxHeight: "260px",
+                        overflowY: "auto",
+                        whiteSpace: "pre-wrap",
+                      }}
+                    >
+                      {stage2Data.migrationSql}
+                    </pre>
+                  )}
+                </div>
+              )}
+
+              <AdminWorkbookInspectorModal
+                isOpen={inspectorOpen}
+                onClose={() => setInspectorOpen(false)}
+                clientName="APPTEST"
+                availableTabs={stage2Data?.availableTabs || { master: [], recon: [] }}
+              />
+            </>
+          );
+        })()}
+      </div>
     </div>
   );
 }

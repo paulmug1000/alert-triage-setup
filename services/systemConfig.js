@@ -3,6 +3,8 @@ import { waitUntil } from "@vercel/functions";
 import { redisClient } from "./redisClient.js";
 import { getSupabaseAdmin, isSupabaseConfigured, isSupabaseControlPlaneActive } from "./supabaseClient.js";
 import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
+import { resolveSupabaseSheetContext } from "./masterEngineService.js";
+import { runNativeMasterSync } from "./masterSyncEngine.js";
 import { isValidGoogleScriptUrl } from "./eomTools.js";
 import { getSessionUser, safeCompareSecret } from "./authService.js";
 import { isUserAuthorizedForClient, getCanonicalAcSheetId } from "./userPermissions.js";
@@ -409,6 +411,89 @@ export async function handleTriggerAgentRun(req, res, sheets) {
     return res.status(500).json({ success: false, error: "AGENT_TRIGGER_SECRET is not configured on server" });
   }
   try {
+    const supaCtx = await resolveSupabaseSheetContext({ clientName: targetClientName });
+    if (supaCtx && supaCtx.masterMode === "supabase") {
+      const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const activeRunObj = { runId, clientName: targetClientName, types, startedAt: Date.now(), status: "running" };
+      await redisClient.set(`active_agent_run:${targetClientName}`, JSON.stringify(activeRunObj), { EX: 1800 });
+      await redisClient.set("active_agent_run:latest", JSON.stringify(activeRunObj), { EX: 1800 });
+
+      const progressKey = `agent_run:${targetClientName}:${runId}`;
+      await redisClient.set(
+        progressKey,
+        JSON.stringify({
+          entries: [
+            {
+              stage: "init",
+              message: `Starting native Supabase sync (${types.join(", ")}) for ${targetClientName}...`,
+              at: new Date().toISOString(),
+            },
+          ],
+          done: false,
+        }),
+        { EX: 1800 }
+      );
+
+      const nativeTask = (async () => {
+        try {
+          const syncType = types.length === 1 ? types[0] : "all";
+          const syncRes = await runNativeMasterSync({
+            sheets,
+            clientName: targetClientName,
+            syncType,
+            userEmail: sessionUser?.email || "System",
+          });
+          const entries = [
+            {
+              stage: "init",
+              message: `Starting native Supabase sync (${types.join(", ")}) for ${targetClientName}...`,
+              at: new Date().toISOString(),
+            },
+            {
+              stage: "done",
+              message: `Native Supabase sync complete (${syncRes.comparisons?.invDiscrepancyCount ?? 0} invoice flags, ${syncRes.comparisons?.dirDiscrepancyCount ?? 0} expense flags).`,
+              at: new Date().toISOString(),
+            },
+          ];
+          await redisClient.set(progressKey, JSON.stringify({ entries, done: true }), { EX: 1800 });
+          await redisClient.set(
+            `active_agent_run:${targetClientName}`,
+            JSON.stringify({
+              runId,
+              clientName: targetClientName,
+              status: "completed",
+              done: true,
+              completedAt: Date.now(),
+            }),
+            { EX: 600 }
+          );
+        } catch (err) {
+          await redisClient.set(
+            progressKey,
+            JSON.stringify({
+              entries: [{ stage: "error", message: err.message, at: new Date().toISOString() }],
+              done: true,
+            }),
+            { EX: 1800 }
+          );
+          await redisClient.set(
+            `active_agent_run:${targetClientName}`,
+            JSON.stringify({
+              runId,
+              clientName: targetClientName,
+              status: "error",
+              error: err.message,
+              completedAt: Date.now(),
+            }),
+            { EX: 600 }
+          );
+        }
+      })();
+
+      waitUntil(nativeTask);
+      return res.status(200).json({ success: true, triggered: types, runId, engine: "supabase" });
+    }
+
     const resp = await sheets.spreadsheets.values.get({
       spreadsheetId: acSheetId,
       range: "AutoUpdates!A2:N1000",

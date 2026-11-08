@@ -18,6 +18,7 @@ export default function JobsNewJobModal({
   productLines = [],
   leadSources = [],
   existingClients = [],
+  initialJobData = null,
   onClose,
   onSuccess
 }) {
@@ -31,21 +32,21 @@ export default function JobsNewJobModal({
     return `${d.getFullYear()}-${mm}-${dd}`;
   }, []);
 
-  const [client, setClient] = useState("");
-  const [jobName, setJobName] = useState("");
-  const [projectCode, setProjectCode] = useState("");
-  const [projectRetainer, setProjectRetainer] = useState("Project");
-  const [status, setStatus] = useState(initialTab === "Pipeline" ? "Pipeline" : "Confirmed");
-  const [likelihood, setLikelihood] = useState(initialTab === "Pipeline" ? "50" : "100");
-  const [revenue, setRevenue] = useState("");
-  const [directCosts, setDirectCosts] = useState("0");
-  const [vat, setVat] = useState("Yes");
-  const [dateConfirmed, setDateConfirmed] = useState(todayISO);
-  const [startDate, setStartDate] = useState("");
-  const [endDate, setEndDate] = useState("");
-  const [noEndDate, setNoEndDate] = useState(false);
-  const [productLine, setProductLine] = useState("");
-  const [leadSource, setLeadSource] = useState("");
+  const [client, setClient] = useState(initialJobData?.client || "");
+  const [jobName, setJobName] = useState(initialJobData?.jobName || "");
+  const [projectCode, setProjectCode] = useState(initialJobData?.projectCode || "");
+  const [projectRetainer, setProjectRetainer] = useState(initialJobData?.projectRetainer || "Project");
+  const [status, setStatus] = useState(initialJobData?.status || (initialTab === "Pipeline" ? "Pipeline" : "Confirmed"));
+  const [likelihood, setLikelihood] = useState(initialJobData?.likelihood !== undefined ? String(initialJobData.likelihood) : (initialTab === "Pipeline" ? "50" : "100"));
+  const [revenue, setRevenue] = useState(initialJobData?.revenue !== undefined ? String(initialJobData.revenue) : "");
+  const [directCosts, setDirectCosts] = useState(initialJobData?.directCosts !== undefined ? String(initialJobData.directCosts) : "0");
+  const [vat, setVat] = useState(initialJobData?.vat || "Yes");
+  const [dateConfirmed, setDateConfirmed] = useState(initialJobData?.dateConfirmed || todayISO);
+  const [startDate, setStartDate] = useState(initialJobData?.startDate || "");
+  const [endDate, setEndDate] = useState(initialJobData?.endDate || "");
+  const [noEndDate, setNoEndDate] = useState(Boolean(initialJobData?.noEndDate));
+  const [productLine, setProductLine] = useState(initialJobData?.productLine || "");
+  const [leadSource, setLeadSource] = useState(initialJobData?.leadSource || "");
 
   const [clientDefaultDays, setClientDefaultDays] = useState(30);
 
@@ -459,7 +460,7 @@ export default function JobsNewJobModal({
                 +
               </span>
               <h2 style={{ margin: 0, fontSize: "17px", fontWeight: "700", color: "#0f172a" }}>
-                Add new job
+                {initialJobData?.modalTitle || "Add new job"}
               </h2>
             </div>
             <div style={{ fontSize: "12px", color: "#64748b", marginTop: "3px" }}>

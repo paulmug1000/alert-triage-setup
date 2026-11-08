@@ -1,5 +1,6 @@
 import { google } from "googleapis";
 import { unwrapSheetId } from "./sheetTokenService.js";
+import { resolveSupabaseSheetContext, handleVirtualSheetsCall } from "./masterEngineService.js";
 export { sanitizeFormulaInput } from "../utils/helpers.js";
 
 const SCOPES = [
@@ -257,11 +258,30 @@ function buildSingleflightKey_(namespace, method, params) {
 
 function createPooledSheetsClient_(poolType = "interactive") {
   const executeCall = async (namespace, method, isReadOnly, params, rest) => {
+    const bypassVirtual = Boolean(params && params._bypassSupabaseVirtualSheet);
     let resolvedParams = params;
     let resolvedSheetId = "";
-    if (params && typeof params.spreadsheetId === "string") {
-      resolvedSheetId = unwrapSheetId(params.spreadsheetId);
-      resolvedParams = { ...params, spreadsheetId: resolvedSheetId };
+    if (params && typeof params === "object") {
+      const { _bypassSupabaseVirtualSheet, ...cleanParams } = params;
+      resolvedParams = cleanParams;
+      if (typeof cleanParams.spreadsheetId === "string") {
+        resolvedSheetId = unwrapSheetId(cleanParams.spreadsheetId);
+        resolvedParams = { ...cleanParams, spreadsheetId: resolvedSheetId };
+      }
+    }
+
+    if (!bypassVirtual && resolvedSheetId) {
+      const ctx = await resolveSupabaseSheetContext({ spreadsheetId: resolvedSheetId });
+      if (ctx && ctx.masterMode === "supabase" && (ctx.sheetRole === "master" || ctx.sheetRole === "recon")) {
+        const primaryRawSheets = getPoolEntries_()[0]?.rawSheets || null;
+        return handleVirtualSheetsCall({
+          namespace,
+          method,
+          params: resolvedParams,
+          ctx,
+          rawSheetsApi: primaryRawSheets,
+        });
+      }
     }
 
     const runAgainstPool = async () => {
@@ -275,6 +295,8 @@ function createPooledSheetsClient_(poolType = "interactive") {
       const targetObj =
         namespace === "values"
           ? entry.rawSheets.spreadsheets.values
+          : namespace === "sheets"
+          ? entry.rawSheets.spreadsheets.sheets
           : entry.rawSheets.spreadsheets;
       const fn = targetObj[method].bind(targetObj);
       try {
@@ -330,6 +352,22 @@ function createPooledSheetsClient_(poolType = "interactive") {
     configurable: true,
     enumerable: true,
   });
+
+  if (primarySheets.spreadsheets.sheets) {
+    const sheetsSubProxy = Object.create(primarySheets.spreadsheets.sheets);
+    Object.defineProperty(sheetsSubProxy, "copyTo", {
+      value: (params, ...rest) => executeCall("sheets", "copyTo", false, params, rest),
+      writable: true,
+      configurable: true,
+      enumerable: true,
+    });
+    Object.defineProperty(spProxy, "sheets", {
+      value: sheetsSubProxy,
+      writable: true,
+      configurable: true,
+      enumerable: true,
+    });
+  }
 
   const valuesProxy = Object.create(primarySheets.spreadsheets.values);
   for (const method of ["get", "batchGet"]) {

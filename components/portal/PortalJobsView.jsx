@@ -22,7 +22,10 @@ import {
   toSheetDateFormat,
   toInputDateFormat,
   NO_END_DATE_SHEET_VALUE,
-  isNoEndDateSentinel
+  isNoEndDateSentinel,
+  generateDuplicateJobName,
+  generateRenewalJobName,
+  calculateRenewalDates
 } from "../../utils/helpers";
 import { parseSplitString, formatSplitString } from "../../services/splitHelper";
 import InvoicesNewJobModal from "../InvoicesNewJobModal";
@@ -65,6 +68,8 @@ export default function PortalJobsView({
   const [newJobFromInvoice, setNewJobFromInvoice] = useState(null); // { idx, inv }
   const [moveJobSearch, setMoveJobSearch] = useState("");
   const [isMovingInvoice, setIsMovingInvoice] = useState(false);
+  const [crmWarningPrompt, setCrmWarningPrompt] = useState(null); // { type: "duplicate" | "renewal", job }
+  const [customModalHeading, setCustomModalHeading] = useState(null);
 
   const hasAccounting = useMemo(() => {
     if (data?.hasAccountingIntegration !== undefined) return Boolean(data.hasAccountingIntegration);
@@ -429,9 +434,18 @@ export default function PortalJobsView({
     return formatMoney(val, 0, currencySymbol, thousandsSeparator);
   };
 
+  const normalizeAmount = (val) => {
+    if (!val && val !== 0) return "";
+    const s = String(val).trim();
+    if (!s || s === "—" || s === "-") return "";
+    const num = parseMoney(s, thousandsSeparator);
+    return formatMoney(num, 0, currencySymbol, thousandsSeparator);
+  };
+
   const handleOpenAddJob = () => {
     if (isReadOnly) return;
     setSaveError(null);
+    setCustomModalHeading(null);
     setEnableSplit(false);
     setLockedMonths({});
     lockedMonthsRef.current = {};
@@ -462,6 +476,7 @@ export default function PortalJobsView({
   const handleOpenEditJob = (job, e) => {
     if (e) e.stopPropagation();
     setSaveError(null);
+    setCustomModalHeading(null);
 
     const splitStr = String(job?.splitStr || "").trim();
     if (splitStr.toLowerCase().startsWith("[split]")) {
@@ -475,14 +490,6 @@ export default function PortalJobsView({
       setLockedMonths({});
       lockedMonthsRef.current = {};
     }
-
-    const normalizeAmount = (val) => {
-      if (!val && val !== 0) return "";
-      const s = String(val).trim();
-      if (!s || s === "—" || s === "-") return "";
-      const num = parseMoney(s, thousandsSeparator);
-      return formatMoney(num, 0, currencySymbol, thousandsSeparator);
-    };
 
     const hasNoEndDate = isNoEndDateSentinel(job?.endDate);
     setEditingJob({
@@ -508,6 +515,99 @@ export default function PortalJobsView({
           status: exp.status || "",
         }))
         : [{ num: 1, desc: "", amount: "", vat: "Yes", recDate: "", days: "30", status: "" }],
+    });
+  };
+
+  const handleDuplicateJobClick = (job) => {
+    if (isCrmDeal(job, crmTool, crmDrives)) {
+      setCrmWarningPrompt({ type: "duplicate", job });
+      return;
+    }
+    applyDuplicateJob(job);
+  };
+
+  const handleRenewalJobClick = (job) => {
+    if (isCrmDeal(job, crmTool, crmDrives)) {
+      setCrmWarningPrompt({ type: "renewal", job });
+      return;
+    }
+    applyRenewalJob(job);
+  };
+
+  const applyDuplicateJob = (job) => {
+    if (!job) return;
+    setSaveError(null);
+    setEnableSplit(false);
+    setLockedMonths({});
+    lockedMonthsRef.current = {};
+
+    const newJobName = generateDuplicateJobName(job.jobName);
+    const hasNoEndDate = Boolean(job.noEndDate || isNoEndDateSentinel(job.endDate));
+
+    setCustomModalHeading("Add new job (duplicated)");
+    setEditingJob({
+      id: "new",
+      rowNumber: null,
+      parentId: undefined,
+      childRowNumbers: [],
+      type: "Confirmed",
+      likelihood: "100%",
+      client: job.client || "",
+      jobName: newJobName,
+      projectRetainer: job.projectRetainer || "Project",
+      revenue: normalizeAmount(job.revenue),
+      directCosts: normalizeAmount(job.directCosts),
+      startDate: toInputDateFormat(job.startDate),
+      endDate: hasNoEndDate ? "" : toInputDateFormat(job.endDate),
+      noEndDate: hasNoEndDate,
+      productLine: job.productLine || "",
+      leadSource: job.leadSource || "",
+      vat: job.vat || "Yes",
+      projectCode: "",
+      dateConfirmed: new Date().toISOString().split("T")[0],
+      invoices: [{ num: 1, amount: "", ref: "", sendDate: "", days: "30", status: "" }],
+      directExpenses: [{ num: 1, desc: "", amount: "", vat: "Yes", recDate: "", days: "30", status: "" }],
+    });
+  };
+
+  const applyRenewalJob = (job) => {
+    if (!job) return;
+    setSaveError(null);
+    setEnableSplit(false);
+    setLockedMonths({});
+    lockedMonthsRef.current = {};
+
+    const dates = calculateRenewalDates(job.startDate, job.endDate);
+    if (!dates) {
+      setSaveError("Cannot create a renewal for a retainer job without an end date.");
+      return;
+    }
+
+    const renewalJobName = generateRenewalJobName(job.jobName, dates.renewalStartDate);
+
+    setCustomModalHeading("Add renewal in pipeline");
+    setEditingJob({
+      id: "new",
+      rowNumber: null,
+      parentId: undefined,
+      childRowNumbers: [],
+      type: "Pipeline",
+      likelihood: "50%",
+      client: job.client || "",
+      jobName: renewalJobName,
+      projectRetainer: "Retainer",
+      revenue: normalizeAmount(job.revenue),
+      directCosts: normalizeAmount(job.directCosts),
+      startDate: dates.startDateISO,
+      endDate: dates.endDateISO,
+      noEndDate: false,
+      productLine: job.productLine || "",
+      leadSource: job.leadSource || "",
+      vat: job.vat || "Yes",
+      projectCode: "",
+      dateConfirmed: "",
+      invoices: [{ num: 1, amount: "", ref: "", sendDate: "", days: "30", status: "" }],
+      directExpenses: [{ num: 1, desc: "", amount: "", vat: "Yes", recDate: "", days: "30", status: "" }],
     });
   };
 
@@ -1472,7 +1572,7 @@ export default function PortalJobsView({
             >
               <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
                 <h3 style={{ margin: 0, fontSize: "1.25rem", fontWeight: 700, color: "#0047AB" }}>
-                  {isReadOnly ? "View job" : (editingJob.rowNumber ? "Edit job" : "Add new job")}
+                  {customModalHeading || (isReadOnly ? "View job" : (editingJob.rowNumber ? "Edit job" : "Add new job"))}
                 </h3>
                 {isReadOnly && (
                   <span
@@ -1492,7 +1592,10 @@ export default function PortalJobsView({
               </div>
               <button
                 type="button"
-                onClick={() => setEditingJob(null)}
+                onClick={() => {
+                  setEditingJob(null);
+                  setCustomModalHeading(null);
+                }}
                 disabled={isSaving || isConfirming}
                 style={{
                   background: "transparent",
@@ -3363,13 +3466,84 @@ export default function PortalJobsView({
                     </div>
                   );
                 })()}
+
+                {/* Duplicate job & Add renewal in pipeline buttons */}
+                {!isReadOnly && editingJob.rowNumber && (
+                  <div style={{ display: "inline-flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                    <button
+                      type="button"
+                      onClick={() => handleDuplicateJobClick(editingJob)}
+                      disabled={isSaving || isConfirming}
+                      style={{
+                        background: "#ffffff",
+                        border: "1px solid #cbd5e1",
+                        color: "#334155",
+                        padding: "7px 14px",
+                        borderRadius: "6px",
+                        fontSize: "13px",
+                        fontWeight: 600,
+                        cursor: isSaving || isConfirming ? "not-allowed" : "pointer",
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "6px",
+                        transition: "all 0.15s ease",
+                      }}
+                      onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "#f8fafc"; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "#ffffff"; }}
+                      title="Create a new job pre-populated with details from this job"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                      </svg>
+                      <span>Duplicate job</span>
+                    </button>
+
+                    {String(editingJob.projectRetainer || "").toLowerCase() === "retainer" && (() => {
+                      const hasNoEndDate = Boolean(editingJob.noEndDate || isNoEndDateSentinel(editingJob.endDate));
+                      return (
+                        <button
+                          type="button"
+                          onClick={hasNoEndDate ? undefined : () => handleRenewalJobClick(editingJob)}
+                          disabled={isSaving || isConfirming || hasNoEndDate}
+                          style={{
+                            background: hasNoEndDate ? "#f8fafc" : "#ffffff",
+                            border: `1px solid ${hasNoEndDate ? "#e2e8f0" : "#cbd5e1"}`,
+                            color: hasNoEndDate ? "#94a3b8" : "#334155",
+                            padding: "7px 14px",
+                            borderRadius: "6px",
+                            fontSize: "13px",
+                            fontWeight: 600,
+                            cursor: hasNoEndDate ? "not-allowed" : (isSaving || isConfirming ? "not-allowed" : "pointer"),
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "6px",
+                            opacity: hasNoEndDate ? 0.7 : 1,
+                            transition: "all 0.15s ease",
+                          }}
+                          onMouseEnter={(e) => { if (!hasNoEndDate) e.currentTarget.style.backgroundColor = "#f8fafc"; }}
+                          onMouseLeave={(e) => { if (!hasNoEndDate) e.currentTarget.style.backgroundColor = "#ffffff"; }}
+                          title={hasNoEndDate ? "Pipeline renewals can only be created for jobs that have an end date" : "Create a new pipeline job for a potential contract renewal"}
+                        >
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" />
+                          </svg>
+                          <span>Add renewal in pipeline</span>
+                        </button>
+                      );
+                    })()}
+                  </div>
+                )}
               </div>
 
               {/* Right side: Cancel & Save buttons */}
               <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
                 <button
                   type="button"
-                  onClick={() => setEditingJob(null)}
+                  onClick={() => {
+                    setEditingJob(null);
+                    setCustomModalHeading(null);
+                  }}
                   disabled={isSaving || isConfirming}
                   style={{
                     background: "#ffffff",
@@ -3508,6 +3682,109 @@ export default function PortalJobsView({
                 }}
               >
                 Proceed
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* CRM sync warning confirmation modal */}
+      {crmWarningPrompt && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            backgroundColor: "rgba(15, 23, 42, 0.45)",
+            backdropFilter: "blur(2px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 10002,
+            padding: "1rem",
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setCrmWarningPrompt(null);
+          }}
+        >
+          <div
+            style={{
+              background: "#ffffff",
+              borderRadius: "12px",
+              padding: "1.5rem",
+              maxWidth: "480px",
+              width: "100%",
+              boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)",
+              border: "1px solid #e2e8f0",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "flex-start", gap: "12px", marginBottom: "1rem" }}>
+              <div
+                style={{
+                  width: "36px",
+                  height: "36px",
+                  borderRadius: "50%",
+                  backgroundColor: "#fef3c7",
+                  color: "#d97706",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  flexShrink: 0,
+                }}
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                  <line x1="12" y1="9" x2="12" y2="13" />
+                  <line x1="12" y1="17" x2="12.01" y2="17" />
+                </svg>
+              </div>
+              <div style={{ flex: 1 }}>
+                <h4 style={{ margin: "0 0 6px 0", fontSize: "16px", fontWeight: "700", color: "#0f172a" }}>CRM sync confirmation</h4>
+                <p style={{ margin: 0, fontSize: "13.5px", color: "#475569", lineHeight: "1.5" }}>
+                  The original job was syncing with your CRM, but the new job won&apos;t be. Please confirm.
+                </p>
+              </div>
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", marginTop: "1.25rem" }}>
+              <button
+                type="button"
+                onClick={() => setCrmWarningPrompt(null)}
+                style={{
+                  background: "#ffffff",
+                  border: "1px solid #cbd5e1",
+                  color: "#475569",
+                  padding: "7px 15px",
+                  borderRadius: "6px",
+                  fontSize: "13px",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const { type, job } = crmWarningPrompt;
+                  setCrmWarningPrompt(null);
+                  if (type === "duplicate") {
+                    applyDuplicateJob(job);
+                  } else if (type === "renewal") {
+                    applyRenewalJob(job);
+                  }
+                }}
+                style={{
+                  background: "#0047AB",
+                  border: "none",
+                  color: "#ffffff",
+                  padding: "7px 16px",
+                  borderRadius: "6px",
+                  fontSize: "13px",
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  boxShadow: "0 1px 2px rgba(0, 71, 171, 0.2)",
+                }}
+              >
+                Confirm and continue
               </button>
             </div>
           </div>

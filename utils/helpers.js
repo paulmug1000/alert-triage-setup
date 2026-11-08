@@ -1744,6 +1744,110 @@ export function calculatePaymentDate(baseDateStr, daysToPay) {
 }
 
 /**
+ * Generates an incremented job name for duplicated jobs.
+ * E.g.:
+ * - "Website Redesign" -> "Website Redesign 2"
+ * - "Website Redesign 2" -> "Website Redesign 3"
+ * - "Website Redesign (2)" -> "Website Redesign 3"
+ */
+export function generateDuplicateJobName(jobName) {
+  const trimmed = (jobName || "").trim();
+  if (!trimmed) return "New job 2";
+
+  // Check if ends with a space and a number: e.g. "Acme Project 2" -> "Acme Project 3"
+  const spaceNumMatch = trimmed.match(/^(.*?)\s+(\d+)$/);
+  if (spaceNumMatch) {
+    const prefix = spaceNumMatch[1];
+    const num = parseInt(spaceNumMatch[2], 10);
+    return `${prefix} ${num + 1}`;
+  }
+
+  // Check if ends with "(number)": e.g. "Acme Project (2)" -> "Acme Project 3"
+  const parenNumMatch = trimmed.match(/^(.*?)\s*\((\d+)\)$/);
+  if (parenNumMatch) {
+    const prefix = parenNumMatch[1];
+    const num = parseInt(parenNumMatch[2], 10);
+    return `${prefix} ${num + 1}`;
+  }
+
+  return `${trimmed} 2`;
+}
+
+/**
+ * Generates a renewal job name with "(Mmm yyyy-)" appended or replacing an existing date appendage.
+ * E.g.:
+ * - "SEO Retainer (Jan 2025-)" -> "SEO Retainer (Jan 2026-)"
+ * - "SEO Retainer (Jan 25-)" -> "SEO Retainer (Jan 2026-)"
+ * - "SEO Retainer (Jan 25-Dec 25)" -> "SEO Retainer (Jan 2026-)"
+ * - "SEO Retainer" -> "SEO Retainer (Jan 2026-)"
+ */
+export function generateRenewalJobName(jobName, renewalStartDate) {
+  const baseName = (jobName || "").trim() || "Retainer";
+  const d = renewalStartDate instanceof Date ? renewalStartDate : parseSheetDate(renewalStartDate);
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const mmm = d && !isNaN(d.getTime()) ? months[d.getMonth()] : months[new Date().getMonth()];
+  const yyyy = d && !isNaN(d.getTime()) ? d.getFullYear() : new Date().getFullYear();
+  const renewalTag = `(${mmm} ${yyyy}-)`;
+
+  // Match existing date appendages:
+  // e.g. (Jan 2025-), (Jan 25-), (Jan 25 - Dec 25), (Jan 25-Dec 25), (Jan 2025 - Dec 2025), (January 2025-), (Jan 2025 to Dec 2025)
+  const dateAppendageRegex = /\s*\((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[-/\s]*\d{2,4}(?:[-/\s]*(?:to|-|–)?[-/\s]*(?:(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[-/\s]*\d{2,4})?)?[-/\s]*\)\s*$/i;
+
+  if (dateAppendageRegex.test(baseName)) {
+    return baseName.replace(dateAppendageRegex, ` ${renewalTag}`);
+  }
+  return `${baseName} ${renewalTag}`;
+}
+
+/**
+ * Calculates start and end dates for a pipeline contract renewal.
+ * - Start date: The day after the origin job ends.
+ * - End date: Based on the duration of the origin job.
+ * Returns null if origin has no end date or is a sentinel value.
+ */
+export function calculateRenewalDates(startDateStr, endDateStr) {
+  if (!endDateStr || isNoEndDateSentinel(endDateStr)) {
+    return null;
+  }
+  const dEnd = parseSheetDate(endDateStr);
+  if (!dEnd || isNaN(dEnd.getTime())) return null;
+
+  // Start date of renewal is the day after the origin job ends
+  const renewalStartDate = new Date(dEnd.getFullYear(), dEnd.getMonth(), dEnd.getDate() + 1);
+
+  // Calculate duration of the origin job
+  let durationMonths = 12;
+  const dStart = parseSheetDate(startDateStr);
+  if (dStart && !isNaN(dStart.getTime()) && dEnd >= dStart) {
+    const yearDiff = dEnd.getFullYear() - dStart.getFullYear();
+    const monthDiff = dEnd.getMonth() - dStart.getMonth();
+    const dayDiff = dEnd.getDate() - dStart.getDate();
+    const rawMonths = yearDiff * 12 + monthDiff + (dayDiff >= 20 ? 1 : 0);
+    if (rawMonths > 0) {
+      durationMonths = rawMonths;
+    }
+  }
+
+  // End date is renewalStartDate + durationMonths - 1 day
+  const targetMonth = renewalStartDate.getMonth() + durationMonths;
+  const targetYear = renewalStartDate.getFullYear() + Math.floor(targetMonth / 12);
+  const normalizedMonth = ((targetMonth % 12) + 12) % 12;
+  const maxDays = new Date(targetYear, normalizedMonth + 1, 0).getDate();
+  const nextStart = new Date(targetYear, normalizedMonth, Math.min(renewalStartDate.getDate(), maxDays));
+  const renewalEndDate = new Date(nextStart.getFullYear(), nextStart.getMonth(), nextStart.getDate() - 1);
+
+  return {
+    startDateISO: toInputDateFormat(renewalStartDate),
+    endDateISO: toInputDateFormat(renewalEndDate),
+    startDateSheet: toSheetDateFormat(renewalStartDate),
+    endDateSheet: toSheetDateFormat(renewalEndDate),
+    durationMonths,
+    renewalStartDate,
+    renewalEndDate,
+  };
+}
+
+/**
  * Extracts target job or outgoings expense information for supported alert types:
  * - expenseUnreconGaps
  * - invoiceStaleUnsentChanges

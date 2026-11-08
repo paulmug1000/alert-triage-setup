@@ -1114,32 +1114,44 @@ export async function compactAlertMemory(sheets, automationCommanderSheetId, opt
   const { dryRun = false, force = false } = options;
   console.log(`[compactAlertMemory] Starting compaction for Automation Commander ${automationCommanderSheetId} (dryRun=${dryRun})...`);
 
-  // Read all existing rows from sheet directly to be 100% authoritative
-  const response = await withRetry(() => sheets.spreadsheets.values.get({
-    spreadsheetId: automationCommanderSheetId,
-    range: ALERT_MEMORY_RANGE,
-  }));
-  const rawRows = response.data.values || [];
-  if (rawRows.length < 2) {
-    console.log(`[compactAlertMemory] AlertMemory is empty or header only. Nothing to compact.`);
-    return { originalRows: 0, keptRows: 0, prunedRows: 0 };
+  const supabaseActive = await isSupabaseControlPlaneActive();
+  let existingRows = [];
+
+  if (supabaseActive) {
+    existingRows = await readAlertMemory(sheets, automationCommanderSheetId);
+  } else {
+    // Read all existing rows from sheet directly to be 100% authoritative
+    const response = await withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: automationCommanderSheetId,
+      range: ALERT_MEMORY_RANGE,
+    }));
+    const rawRows = response.data.values || [];
+    if (rawRows.length < 2) {
+      console.log(`[compactAlertMemory] AlertMemory is empty or header only. Nothing to compact.`);
+      return { originalRows: 0, keptRows: 0, prunedRows: 0 };
+    }
+
+    existingRows = rawRows.slice(1).map((row, i) => ({
+      rowIndex: i + 2,
+      fingerprintHash: row[0] || "",
+      alertType: row[1] || "",
+      clientName: row[2] || "",
+      alertSummary: row[3] || "",
+      cachedOptionsJSON: row[4] || "",
+      status: row[5] || "cached",
+      ignoreReason: row[6] || "",
+      firstSeen: row[7] || "",
+      lastSeen: row[8] || "",
+      lastRechecked: row[9] || "",
+      dataSnapshot: row[10] || "",
+      category: normalizeCategoryForType(row[1] || "", row[11] || "discrepancy"),
+    }));
   }
 
-  const existingRows = rawRows.slice(1).map((row, i) => ({
-    rowIndex: i + 2,
-    fingerprintHash: row[0] || "",
-    alertType: row[1] || "",
-    clientName: row[2] || "",
-    alertSummary: row[3] || "",
-    cachedOptionsJSON: row[4] || "",
-    status: row[5] || "cached",
-    ignoreReason: row[6] || "",
-    firstSeen: row[7] || "",
-    lastSeen: row[8] || "",
-    lastRechecked: row[9] || "",
-    dataSnapshot: row[10] || "",
-    category: normalizeCategoryForType(row[1] || "", row[11] || "discrepancy"),
-  }));
+  if (existingRows.length === 0) {
+    console.log(`[compactAlertMemory] AlertMemory is empty. Nothing to compact.`);
+    return { originalRows: 0, keptRows: 0, prunedRows: 0 };
+  }
 
   const now = Date.now();
   const DAY_MS = 24 * 60 * 60 * 1000;
@@ -1341,6 +1353,46 @@ export async function compactAlertMemory(sheets, automationCommanderSheetId, opt
     }
   } catch (truncateErr) {
     console.warn(`[compactAlertMemory] Warning truncating grid height:`, truncateErr.message);
+  }
+
+  // Synchronize Supabase alert_memory table if configured
+  if (isSupabaseConfigured()) {
+    try {
+      const sb = getSupabaseAdmin();
+      if (sb) {
+        const keptHashSet = new Set(kept.map(r => r.fingerprintHash).filter(Boolean));
+        const prunedHashes = existingRows
+          .map(r => r.fingerprintHash)
+          .filter(h => h && !keptHashSet.has(h));
+        if (prunedHashes.length > 0) {
+          for (let i = 0; i < prunedHashes.length; i += 200) {
+            await sb.from("alert_memory").delete().in("fingerprint_hash", prunedHashes.slice(i, i + 200));
+          }
+        }
+        const sbRows = kept
+          .filter(r => r.fingerprintHash)
+          .map(r => ({
+            fingerprint_hash: r.fingerprintHash,
+            alert_type: r.alertType || "",
+            client_name: r.clientName || "",
+            alert_summary: r.alertSummary || "",
+            cached_options_json: r.cachedOptionsJSON || "",
+            status: r.status || "cached",
+            ignore_reason: r.ignoreReason || "",
+            first_seen: r.firstSeen || "",
+            last_seen: r.lastSeen || "",
+            last_rechecked: r.lastRechecked || "",
+            data_snapshot: r.dataSnapshot || "",
+            category: normalizeCategoryForType(r.alertType || "", r.category || "discrepancy"),
+            sheet_row_index: r.rowIndex,
+          }));
+        for (let i = 0; i < sbRows.length; i += 500) {
+          await sb.from("alert_memory").upsert(sbRows.slice(i, i + 500), { onConflict: "fingerprint_hash" });
+        }
+      }
+    } catch (sbErr) {
+      console.warn(`[compactAlertMemory] Supabase sync warning:`, sbErr.message);
+    }
   }
 
   // Synchronize in-memory and Redis caches immediately

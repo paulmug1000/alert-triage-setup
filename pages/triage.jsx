@@ -497,6 +497,18 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
     return () => clearInterval(interval);
   }, [isAuthenticated, authChecking, isPulseOnly, reloadFromCache, refreshTaskCount]);
 
+  // Refresh cached alerts in background when navigating back to the Alerts view
+  const prevActiveNavRef = useRef(activeNav);
+  useEffect(() => {
+    if (!isAuthenticated || authChecking || isPulseOnly) return;
+    if (prevActiveNavRef.current !== activeNav) {
+      prevActiveNavRef.current = activeNav;
+      if (activeNav === "alerts" && sessionId && !isLoading) {
+        reloadFromCache?.(true);
+      }
+    }
+  }, [activeNav, isAuthenticated, authChecking, isPulseOnly, sessionId, isLoading, reloadFromCache]);
+
   const { overviewData, setOverviewData, overviewLoading, setOverviewLoading, loadOverview } = useOverview(automationCommanderSheetId);
 
   const [allOutgoingsClients, setAllOutgoingsClients] = useState(() => {

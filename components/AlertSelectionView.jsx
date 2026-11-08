@@ -2489,20 +2489,30 @@ export default function AlertSelectionView({
 
                                     {alert.alertType === "unmapped_pl_category" && (() => {
                                       const catName = alert.metadata?.categoryName || alert.metadata?.cleanName || alert.heading;
+                                      const cleanCatName = String(catName || "")
+                                        .replace(/^["“]+|["”]+$/g, "")
+                                        .replace(/^unmapped\s+p&l\s+(?:category|account):\s*["“]?/i, "")
+                                        .replace(/^["“]+|["”]+$/g, "")
+                                        .replace(/^\d+\s*[-–]\s*/, "")
+                                        .toLowerCase()
+                                        .trim();
+                                      const isOtherExpenses = /^other\s+expenses?$/i.test(cleanCatName);
                                       const plSectionType = alert.metadata?.plSectionType || alert.plSectionType;
                                       const plSection = alert.metadata?.plSection || alert.plSection;
-                                      const suggestedChoice = alert.metadata?.suggestedClassification || alert.suggestedClassification || "delivery_expense";
+                                      const suggestedChoice = isOtherExpenses
+                                        ? "non_delivery_expense"
+                                        : (alert.metadata?.suggestedClassification || alert.suggestedClassification || "delivery_expense");
                                       const currentChoice = selectedClassifications[alert.alertKey] || suggestedChoice;
                                       const isApplying = !!applyingClassification[alert.alertKey];
                                       const msg = classificationMsg[alert.alertKey];
 
                                       const OPTIONS = [
-                                        { value: "delivery_expense", label: "Delivery expense (Other costs of sale)" },
-                                        { value: "non_delivery_expense", label: "Non-delivery expense (Overheads)" },
+                                        { value: "delivery_expense", label: "Delivery expense (other costs of sale)" },
+                                        { value: "non_delivery_expense", label: "Non-delivery expense (overheads)" },
                                         { value: "revenue", label: "Revenue" },
                                         { value: "cos_staff", label: "CoS staff cost" },
                                         { value: "non_cos_staff", label: "Non-CoS staff cost" },
-                                        { value: "contractor", label: "Track as a Contractor" },
+                                        { value: "contractor", label: "Track as a contractor" },
                                         { value: "corporation_tax", label: "Corporation tax" },
                                         { value: "depreciation", label: "Depreciation" },
                                         { value: "non_operating_income", label: "Non-operating income" },

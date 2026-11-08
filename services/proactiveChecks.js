@@ -1875,6 +1875,7 @@ export function detectPLSectionForAccount(plRows, targetName) {
     .toLowerCase()
     .trim();
   const rawTarget = String(targetName).toLowerCase().trim();
+  const isTargetOtherExpenses = /^other\s+expenses?$/i.test(cleanTarget);
 
   let currentRawSection = "";
   let currentSectionType = "";
@@ -1924,10 +1925,18 @@ export function detectPLSectionForAccount(plRows, targetName) {
         return {
           rawSection: currentRawSection,
           sectionType: currentSectionType,
-          suggestedClassification: currentSuggestedChoice
+          suggestedClassification: isTargetOtherExpenses ? "non_delivery_expense" : currentSuggestedChoice
         };
       }
     }
+  }
+
+  if (isTargetOtherExpenses) {
+    return {
+      rawSection: currentRawSection || "Operating expenses",
+      sectionType: currentSectionType || "Operating expenses (Overheads)",
+      suggestedClassification: "non_delivery_expense"
+    };
   }
 
   return currentRawSection ? {
@@ -2002,10 +2011,15 @@ export async function checkQuarantinedPLCategories_(clientName, masterSheetId, s
 
     for (const q of quarantinedCats) {
       const catName = q.name;
+      const cleanCat = String(catName || "").replace(/^\d+\s*[-–]\s*/, "").toLowerCase().trim();
+      const isOtherExpenses = /^other\s+expenses?$/i.test(cleanCat);
       const logInfo = logDetailsMap.get(catName.toLowerCase());
       const tsStr = logInfo?.timestamp || new Date().toISOString();
       const alertKey = `unmapped_pl_category|${clientName}|${catName}`;
       const sectionInfo = detectPLSectionForAccount(plFromAppRows, catName);
+      const suggestedChoice = isOtherExpenses
+        ? "non_delivery_expense"
+        : (sectionInfo?.suggestedClassification || "delivery_expense");
 
       alerts.push({
         alertType: "unmapped_pl_category",
@@ -2020,7 +2034,7 @@ export async function checkQuarantinedPLCategories_(clientName, masterSheetId, s
         quarantineRow: q.rowNum,
         plSection: sectionInfo?.rawSection || null,
         plSectionType: sectionInfo?.sectionType || null,
-        suggestedClassification: sectionInfo?.suggestedClassification || "delivery_expense",
+        suggestedClassification: suggestedChoice,
         detail: `The nominal account "${catName}" was detected in the P&L report${sectionInfo?.sectionType ? ` under ${sectionInfo.sectionType}` : ""} but has not yet been classified. It has been temporarily quarantined in PLComp!B${q.rowNum} to protect Outgoings from unverified expenses. Please choose how this account should be classified.`,
         clientName,
         timestamp: tsStr,
@@ -2034,7 +2048,7 @@ export async function checkQuarantinedPLCategories_(clientName, masterSheetId, s
           logDetails: logInfo?.details || "",
           plSection: sectionInfo?.rawSection || null,
           plSectionType: sectionInfo?.sectionType || null,
-          suggestedClassification: sectionInfo?.suggestedClassification || "delivery_expense"
+          suggestedClassification: suggestedChoice
         }
       });
     }

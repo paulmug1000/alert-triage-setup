@@ -80,28 +80,51 @@ export function toSerialOrNull(val) {
   if (/^-?\d+(\.\d+)?$/.test(cleanedNum)) {
     return Number(cleanedNum);
   }
-  // Check D-MMM-YY or DD-MMM-YYYY (e.g. "5-Aug-25", "11-Sep-25", "1-Nov-26")
-  const dmyMatch = str.match(/^(\d{1,2})[-/\s]([A-Za-z]{3})[-/\s](\d{2,4})$/);
+  // Check D-MMM-YY or DD-MMM-YYYY (e.g. "5-Aug-25", "11-Sep-25", "09-Nov-26 07:15")
+  const dmyMatch = str.match(/^(\d{1,2})[-/\s]([A-Za-z]{3})[-/\s](\d{2,4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
   if (dmyMatch) {
     const d = Number(dmyMatch[1]);
     const mIdx = MONTHS_SHORT.findIndex((m) => m.toLowerCase() === dmyMatch[2].toLowerCase());
     let y = Number(dmyMatch[3]);
     if (y < 100) y += y >= 70 ? 1900 : 2000;
-    if (mIdx >= 0) return ymdToSerial(y, mIdx + 1, d);
+    if (mIdx >= 0) {
+      const baseSerial = ymdToSerial(y, mIdx + 1, d);
+      if (dmyMatch[4] !== undefined) {
+        const hh = Number(dmyMatch[4]) || 0;
+        const mm = Number(dmyMatch[5]) || 0;
+        const ss = Number(dmyMatch[6]) || 0;
+        return baseSerial + (hh * 3600 + mm * 60 + ss) / 86400;
+      }
+      return baseSerial;
+    }
   }
   // Check DD/MM/YYYY (UK format)
-  const ukSlash = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  const ukSlash = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
   if (ukSlash) {
     const d = Number(ukSlash[1]);
     const m = Number(ukSlash[2]);
     let y = Number(ukSlash[3]);
     if (y < 100) y += y >= 70 ? 1900 : 2000;
-    return ymdToSerial(y, m, d);
+    const baseSerial = ymdToSerial(y, m, d);
+    if (ukSlash[4] !== undefined) {
+      const hh = Number(ukSlash[4]) || 0;
+      const mm = Number(ukSlash[5]) || 0;
+      const ss = Number(ukSlash[6]) || 0;
+      return baseSerial + (hh * 3600 + mm * 60 + ss) / 86400;
+    }
+    return baseSerial;
   }
-  // Check YYYY-MM-DD
-  const isoMatch = str.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  // Check YYYY-MM-DD (with optional time)
+  const isoMatch = str.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T\s](\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
   if (isoMatch) {
-    return ymdToSerial(Number(isoMatch[1]), Number(isoMatch[2]), Number(isoMatch[3]));
+    const baseSerial = ymdToSerial(Number(isoMatch[1]), Number(isoMatch[2]), Number(isoMatch[3]));
+    if (isoMatch[4] !== undefined) {
+      const hh = Number(isoMatch[4]) || 0;
+      const mm = Number(isoMatch[5]) || 0;
+      const ss = Number(isoMatch[6]) || 0;
+      return baseSerial + (hh * 3600 + mm * 60 + ss) / 86400;
+    }
+    return baseSerial;
   }
   const parsed = Date.parse(str);
   if (!Number.isNaN(parsed)) {

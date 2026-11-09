@@ -18,6 +18,7 @@ import {
 } from "./masterEngineService.js";
 import { getIntegrationTokens } from "./vaultService.js";
 import { logPmaActivity } from "./pmaLogger.js";
+import { invalidateClientActivityCache } from "./activityService.js";
 import { autoReconcileClientBankTransactions } from "./bankTransactionsService.js";
 import { createGasEnvironment } from "./gasRuntime/gasEnvironment.js";
 import { createMasterGasInstance } from "./gasRuntime/compiledMasterGas.js";
@@ -119,7 +120,7 @@ export async function recomputeClientComparisonsInSupabase(sheets, clientName = 
     sheets,
     autoReconcileFn: autoReconcileClientBankTransactions,
   });
-  await env.finalizeExecution();
+  await env.finalizeExecution({ recordExecution: false });
 
   return summarizeComparisonsFromMasterSS_(env.masterSS, ctx.clientName);
 }
@@ -143,7 +144,7 @@ export async function recomputeCrmComparisonInSupabase(sheets, clientName, reque
     crmCompSheet.getRange("B2").setValue(requestedMode);
   }
   env.recomputeMasterFormulasSync();
-  await env.finalizeExecution();
+  await env.finalizeExecution({ recordExecution: false });
 
   const crmCompGrid = crmCompSheet?.valuesGrid || [];
   const mode = String(crmCompGrid[1]?.[1] || requestedMode || "Pipeline").trim();
@@ -171,10 +172,15 @@ export async function processPartPaidInvoicesNative(sheets, ctxOrName) {
       : ctxOrName;
   if (!ctx) return { count: 0 };
 
-  const env = await createGasEnvironment({ ctx, sheets, autoReconcileFn: autoReconcileClientBankTransactions });
+  const env = await createGasEnvironment({
+    ctx,
+    sheets,
+    autoReconcileFn: autoReconcileClientBankTransactions,
+    executionMeta: { functionName: "processPartPaidInvoices", triggerSource: "Manual (PMA)" },
+  });
   const gas = createMasterGasInstance(env);
   const res = await gas.processPartPaidInvoices(env.masterSS, env.masterSS.getSheetByName("DataChgAlert"));
-  await env.finalizeExecution();
+  await env.finalizeExecution({ summary: `Part-paid invoices: ${res?.count || 0} update(s)` });
   return res || { count: 0 };
 }
 
@@ -188,10 +194,15 @@ export async function pushMatchedInvoicesToConfirmedNative(sheets, ctxOrName) {
       : ctxOrName;
   if (!ctx) return { updatedCount: 0 };
 
-  const env = await createGasEnvironment({ ctx, sheets, autoReconcileFn: autoReconcileClientBankTransactions });
+  const env = await createGasEnvironment({
+    ctx,
+    sheets,
+    autoReconcileFn: autoReconcileClientBankTransactions,
+    executionMeta: { functionName: "PushInvDetailsToConfirmed", triggerSource: "Manual (PMA)" },
+  });
   const gas = createMasterGasInstance(env);
   const res = await gas.PushInvDetailsToConfirmed(true);
-  await env.finalizeExecution();
+  await env.finalizeExecution({ summary: `Pushed ${res?.count || res?.updatedCount || 0} invoice(s)` });
   return res || { updatedCount: 0 };
 }
 
@@ -205,10 +216,15 @@ export async function updateStaleUnsentInvoicesNative(sheets, ctxOrName) {
       : ctxOrName;
   if (!ctx) return { count: 0 };
 
-  const env = await createGasEnvironment({ ctx, sheets, autoReconcileFn: autoReconcileClientBankTransactions });
+  const env = await createGasEnvironment({
+    ctx,
+    sheets,
+    autoReconcileFn: autoReconcileClientBankTransactions,
+    executionMeta: { functionName: "updateStaleUnsentInvoices", triggerSource: "Manual (PMA)" },
+  });
   const gas = createMasterGasInstance(env);
   const res = await gas.updateStaleUnsentInvoices(env.masterSS);
-  await env.finalizeExecution();
+  await env.finalizeExecution({ summary: `Updated ${res?.count || 0} stale invoice(s)` });
   return res || { count: 0 };
 }
 
@@ -222,10 +238,15 @@ export async function updateOverdueInvoicesInConfirmedNative(sheets, ctxOrName) 
       : ctxOrName;
   if (!ctx) return { count: 0 };
 
-  const env = await createGasEnvironment({ ctx, sheets, autoReconcileFn: autoReconcileClientBankTransactions });
+  const env = await createGasEnvironment({
+    ctx,
+    sheets,
+    autoReconcileFn: autoReconcileClientBankTransactions,
+    executionMeta: { functionName: "updateOverdueInvoicesInConfirmed", triggerSource: "Manual (PMA)" },
+  });
   const gas = createMasterGasInstance(env);
   const res = await gas.updateOverdueInvoicesInConfirmed(env.masterSS, env.masterSS.getSheetByName("DataChgAlert"));
-  await env.finalizeExecution();
+  await env.finalizeExecution({ summary: `Updated ${res?.count || 0} overdue invoice(s)` });
   return res || { count: 0 };
 }
 
@@ -239,10 +260,15 @@ export async function pushMatchedDirectCostsNative(sheets, ctxOrName) {
       : ctxOrName;
   if (!ctx) return { updatedCount: 0 };
 
-  const env = await createGasEnvironment({ ctx, sheets, autoReconcileFn: autoReconcileClientBankTransactions });
+  const env = await createGasEnvironment({
+    ctx,
+    sheets,
+    autoReconcileFn: autoReconcileClientBankTransactions,
+    executionMeta: { functionName: "syncDirectCostsToClientSheet", triggerSource: "Manual (PMA)" },
+  });
   const gas = createMasterGasInstance(env);
   const res = await gas.syncDirectCostsToClientSheet(true);
-  await env.finalizeExecution();
+  await env.finalizeExecution({ summary: `Pushed ${res?.count || res?.updatedCount || 0} direct cost(s)` });
   return res || { updatedCount: 0 };
 }
 
@@ -253,10 +279,15 @@ export async function refreshNativeChartOfAccounts(sheets, clientName) {
   const ctx = await resolveSupabaseSheetContext({ clientName });
   if (!ctx) throw new Error(`Client "${clientName}" not found.`);
 
-  const env = await createGasEnvironment({ ctx, sheets, autoReconcileFn: autoReconcileClientBankTransactions });
+  const env = await createGasEnvironment({
+    ctx,
+    sheets,
+    autoReconcileFn: autoReconcileClientBankTransactions,
+    executionMeta: { functionName: "refreshAccountingToolChartOfAccounts", triggerSource: "Manual (PMA)" },
+  });
   const gas = createMasterGasInstance(env);
   const res = await gas.refreshAccountingToolChartOfAccounts(true);
-  await env.finalizeExecution();
+  await env.finalizeExecution({ summary: "Refreshed Chart of Accounts" });
 
   // Mirror KeyInfo!AW2:AW500 to Client Sheet if sheets is available
   const kiGrid = env.masterSS.getSheetByName("KeyInfo")?.valuesGrid || [];
@@ -291,10 +322,15 @@ export async function pullLivePLToSupabaseNative(sheets, clientName) {
   const ctx = await resolveSupabaseSheetContext({ clientName });
   if (!ctx) throw new Error(`Client "${clientName}" not found.`);
 
-  const env = await createGasEnvironment({ ctx, sheets, autoReconcileFn: autoReconcileClientBankTransactions });
+  const env = await createGasEnvironment({
+    ctx,
+    sheets,
+    autoReconcileFn: autoReconcileClientBankTransactions,
+    executionMeta: { functionName: "PullPLBasedOn", triggerSource: "Manual (PMA)" },
+  });
   const gas = createMasterGasInstance(env);
   await gas.PullPLBasedOn(true);
-  await env.finalizeExecution();
+  await env.finalizeExecution({ summary: "Pulled Profit & Loss report" });
 
   const plGrid = env.masterSS.getSheetByName("PLFromApp")?.valuesGrid || [];
   const categories = plGrid
@@ -324,14 +360,21 @@ export async function pushOutgoingsToClientSheetNative(
   const ctx = await resolveSupabaseSheetContext({ clientName });
   if (!ctx) throw new Error(`Client "${clientName}" not found.`);
 
-  const env = await createGasEnvironment({ ctx, sheets, autoReconcileFn: autoReconcileClientBankTransactions });
+  const fnName = includeUnreconciled ? "pushOutgoingsWithPLAddsToClientSheet" : "pushOutgoingsToClientSheet";
+  const env = await createGasEnvironment({
+    ctx,
+    sheets,
+    autoReconcileFn: autoReconcileClientBankTransactions,
+    executionMeta: { functionName: fnName, triggerSource: "Manual (PMA)" },
+  });
   const gas = createMasterGasInstance(env);
 
   const res = includeUnreconciled
     ? await gas.pushOutgoingsWithPLAddsToClientSheet(true)
     : await gas.pushOutgoingsToClientSheet(true);
 
-  await env.finalizeExecution();
+  await env.finalizeExecution({ summary: res?.message || "Pushed Outgoings to Client Sheet" });
+  await invalidateClientActivityCache(ctx.clientName);
   return res || { success: true };
 }
 
@@ -346,10 +389,11 @@ export async function syncExpenseBreakdownToClientSheetNative(sheets, clientName
     ctx,
     sheets,
     autoReconcileFn: autoReconcileClientBankTransactions,
+    executionMeta: { functionName: "syncExpenseTransactionBreakdownToClientSheet_", triggerSource: "Manual (PMA)" },
   });
   const gas = createMasterGasInstance(env);
   const res = await gas.syncExpenseTransactionBreakdownToClientSheet_(env.masterSS, true);
-  await env.finalizeExecution();
+  await env.finalizeExecution({ summary: "Synced expense breakdown to Client Sheet" });
   return res || { success: true };
 }
 
@@ -363,10 +407,15 @@ export async function pullLiveCrmDealsToSupabaseNative(sheets, ctxOrName) {
       : ctxOrName;
   if (!ctx) throw new Error("Client context not found.");
 
-  const env = await createGasEnvironment({ ctx, sheets, autoReconcileFn: autoReconcileClientBankTransactions });
+  const env = await createGasEnvironment({
+    ctx,
+    sheets,
+    autoReconcileFn: autoReconcileClientBankTransactions,
+    executionMeta: { functionName: "PullCRMBasedOn", triggerSource: "Manual (PMA)" },
+  });
   const gas = createMasterGasInstance(env);
   await gas.PullCRMBasedOn(true);
-  await env.finalizeExecution();
+  await env.finalizeExecution({ summary: "Pulled CRM deals" });
 
   const dfcGrid = env.masterSS.getSheetByName("DataFromCRM")?.valuesGrid || [];
   const kiGrid = env.masterSS.getSheetByName("KeyInfo")?.valuesGrid || [];
@@ -385,10 +434,15 @@ export async function runNativeRevenueComparison(sheets, clientName, customTarge
   const ctx = await resolveSupabaseSheetContext({ clientName });
   if (!ctx) throw new Error(`Client "${clientName}" not found.`);
 
-  const env = await createGasEnvironment({ ctx, sheets, autoReconcileFn: autoReconcileClientBankTransactions });
+  const env = await createGasEnvironment({
+    ctx,
+    sheets,
+    autoReconcileFn: autoReconcileClientBankTransactions,
+    executionMeta: { functionName: "runRevenueComparison", triggerSource: "Manual (PMA)" },
+  });
   const gas = createMasterGasInstance(env);
   const res = await gas.runRevenueComparison(true, customTargetMonth);
-  await env.finalizeExecution();
+  await env.finalizeExecution({ summary: `Revenue comparison (${res?.targetMonthLabel || customTargetMonth || "latest"})` });
 
   return (
     res || {
@@ -599,11 +653,24 @@ export async function runNativeMasterSync({
   const runCrm = typeSet.has("crm") || typeSet.has("all");
   const runExp = typeSet.has("expense") || typeSet.has("all");
 
+  const activeSeqs = [
+    runInv ? "Invoice" : null,
+    runCrm ? "CRM" : null,
+    runExp ? "Expense" : null,
+  ].filter(Boolean);
+  const fnLabel = `runAgencyAutomator (${activeSeqs.join(", ") || syncType})`;
+  const isAutomated = !userEmail || userEmail === "System" || userEmail === "system@cron";
+  const triggerLabel = isAutomated ? "Scheduled (30m clock)" : `Manual (${userEmail})`;
+
   const env = await createGasEnvironment({
     ctx,
     sheets,
     onProgress,
     autoReconcileFn: autoReconcileClientBankTransactions,
+    executionMeta: {
+      functionName: fnLabel,
+      triggerSource: triggerLabel,
+    },
   });
 
   if (runId) {
@@ -615,7 +682,21 @@ export async function runNativeMasterSync({
 
   // Execute the verbatim GAS `runAgencyAutomator`
   await gas.runAgencyAutomator(runInv, runCrm, runExp);
-  await env.finalizeExecution();
+
+  // Extract latest AutoLog summary written by runAgencyAutomator for the execution header
+  const autoLogGrid = env.masterSS.getSheetByName("AutoLog")?.valuesGrid || [];
+  const latestAutoSummary = autoLogGrid[1]
+    ? `${autoLogGrid[1][1] || ""}: ${autoLogGrid[1][2] || ""}`
+    : `Completed ${activeSeqs.join(", ")} sequence`;
+
+  await env.finalizeExecution({
+    functionName: fnLabel,
+    triggerSource: triggerLabel,
+    summary: latestAutoSummary,
+  });
+
+  // Invalidate Redis activity cache so AutoLog entries appear immediately in PMA > Activity
+  await invalidateClientActivityCache(ctx.clientName);
 
   const invGrid = env.masterSS.getSheetByName("InvFromApp")?.valuesGrid || [];
   const jnlGrid = env.masterSS.getSheetByName("JnlsFromApp")?.valuesGrid || [];
@@ -659,16 +740,19 @@ export async function runNativeMasterSync({
     directCostsPulled,
     crmDealsPulled,
     comparisons,
+    executionLogsCount: env.executionLogs?.length || 0,
   };
 
-  await logPmaActivity(sheets, {
-    clientName: ctx.clientName,
-    category: "SYNC",
-    action: `Supabase GAS runtime sync (${syncType})`,
-    summary: `Completed verbatim GAS runtime ${syncType} sequence for ${ctx.clientName} (${invoicesPulled} invoices, ${directCostsPulled} direct costs, ${crmDealsPulled} CRM deals)`,
-    details: results,
-    user: userEmail,
-  }).catch(() => {});
+  if (!isAutomated) {
+    await logPmaActivity(sheets, {
+      clientName: ctx.clientName,
+      category: "SYNC",
+      action: `Supabase GAS runtime sync (${syncType})`,
+      summary: `Completed verbatim GAS runtime ${syncType} sequence for ${ctx.clientName} (${invoicesPulled} invoices, ${directCostsPulled} direct costs, ${crmDealsPulled} CRM deals)`,
+      details: results,
+      user: userEmail,
+    }).catch(() => {});
+  }
 
   return results;
 }

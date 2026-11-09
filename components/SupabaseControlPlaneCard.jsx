@@ -34,6 +34,7 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
   const [copiedClockSql, setCopiedClockSql] = useState(false);
   const [clockWorking, setClockWorking] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [inspectorInitialRole, setInspectorInitialRole] = useState("master");
 
   const loadStage2Status = useCallback(async (targetClient = "APPTEST") => {
     setStage2Loading(true);
@@ -1053,7 +1054,10 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
 
                   <button
                     type="button"
-                    onClick={() => setInspectorOpen(true)}
+                    onClick={() => {
+                      setInspectorInitialRole("master");
+                      setInspectorOpen(true);
+                    }}
                     disabled={!s2Ready || !hasVirtualTabs}
                     style={{
                       padding: "7px 12px",
@@ -1067,6 +1071,27 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
                     }}
                   >
                     Open admin workbook inspector
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setInspectorInitialRole("executions");
+                      setInspectorOpen(true);
+                    }}
+                    disabled={!s2Ready || !hasVirtualTabs}
+                    style={{
+                      padding: "7px 12px",
+                      fontSize: "12px",
+                      fontWeight: "600",
+                      color: !s2Ready || !hasVirtualTabs ? "#9ca3af" : "#0f172a",
+                      background: !s2Ready || !hasVirtualTabs ? "#f3f4f6" : "#f8fafc",
+                      border: `1px solid ${!s2Ready || !hasVirtualTabs ? "#e5e7eb" : "#cbd5e1"}`,
+                      borderRadius: "6px",
+                      cursor: !s2Ready || !hasVirtualTabs ? "not-allowed" : "pointer",
+                    }}
+                  >
+                    View GAS execution logs
                   </button>
 
                   <button
@@ -1586,6 +1611,7 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
                 onClose={() => setInspectorOpen(false)}
                 clientName="APPTEST"
                 availableTabs={stage2Data?.availableTabs || { master: [], recon: [] }}
+                initialSheetRole={inspectorInitialRole}
               />
             </>
           );

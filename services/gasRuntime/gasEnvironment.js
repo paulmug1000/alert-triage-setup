@@ -130,6 +130,8 @@ const ACTIVE_GAS_MASTER_TABS = [
   "ProjectsFromTime",
   "NBtoFind",
   "Data",
+  "GasExecLogs",
+  "GasScriptProps",
 ];
 
 function cloneGrid2D(grid) {
@@ -1306,9 +1308,55 @@ export async function createGasEnvironment({
   sheets,
   onProgress = null,
   autoReconcileFn = null,
+  executionMeta = null,
 }) {
   const supabase = getSupabaseAdmin();
   if (!supabase) throw new Error("Supabase is not configured.");
+
+  const execStartedAtMs = Date.now();
+  const execStartedAtIso = new Date(execStartedAtMs).toISOString();
+  const executionLogs = [];
+
+  function formatLogArg_(arg) {
+    if (arg === null) return "null";
+    if (arg === undefined) return "undefined";
+    if (arg instanceof Error) return arg.stack || arg.message || String(arg);
+    if (typeof arg === "object") {
+      try {
+        return JSON.stringify(arg);
+      } catch {
+        return String(arg);
+      }
+    }
+    return String(arg);
+  }
+
+  function appendExecLog(level, args) {
+    if (executionLogs.length >= 1000) return;
+    const now = new Date();
+    const timeStr = now.toISOString().slice(11, 23); // HH:mm:ss.SSS UTC
+    const msg = args.map(formatLogArg_).join(" ");
+    executionLogs.push(`[${timeStr}] [${level}] ${msg}`);
+  }
+
+  const gasConsole = {
+    log: (...args) => {
+      appendExecLog("INFO", args);
+      globalThis.console.log(`[GAS:${ctx.clientName}]`, ...args);
+    },
+    info: (...args) => {
+      appendExecLog("INFO", args);
+      globalThis.console.info(`[GAS:${ctx.clientName}]`, ...args);
+    },
+    warn: (...args) => {
+      appendExecLog("WARN", args);
+      globalThis.console.warn(`[GAS:${ctx.clientName}]`, ...args);
+    },
+    error: (...args) => {
+      appendExecLog("ERROR", args);
+      globalThis.console.error(`[GAS:${ctx.clientName}]`, ...args);
+    },
+  };
 
   const envState = {
     ctx,
@@ -1318,6 +1366,7 @@ export async function createGasEnvironment({
     reconSS: null,
     remoteSpreadsheets: new Map(),
     scriptProperties: new Map(),
+    scriptPropertiesDirty: false,
     scriptCache: new Map(),
     recomputeMasterFormulasSync: () => { },
   };
@@ -1401,6 +1450,18 @@ export async function createGasEnvironment({
       Math.max(50, row.col_count || 0)
     );
     targetSS.sheetsByName.set(row.tab_name, vs);
+  }
+
+  // Hydrate persisted ScriptProperties from virtual `GasScriptProps` tab
+  const propsSheet = masterSS.getSheetByName("GasScriptProps");
+  if (propsSheet && Array.isArray(propsSheet.valuesGrid)) {
+    for (let r = 1; r < propsSheet.valuesGrid.length; r++) {
+      const k = String(propsSheet.valuesGrid[r]?.[0] ?? "").trim();
+      const v = propsSheet.valuesGrid[r]?.[1];
+      if (k && !envState.scriptProperties.has(k)) {
+        envState.scriptProperties.set(k, String(v ?? ""));
+      }
+    }
   }
 
   // Ensure KeyInfo!C1/D1/X28/X32 contain the canonical Client/Master/Recon IDs
@@ -1934,10 +1995,32 @@ export async function createGasEnvironment({
     getScriptProperties: () => ({
       getProperty: (k) => envState.scriptProperties.get(String(k)) ?? null,
       setProperty: (k, v) => {
-        envState.scriptProperties.set(String(k), String(v ?? ""));
+        const keyStr = String(k);
+        const valStr = String(v ?? "");
+        if (envState.scriptProperties.get(keyStr) !== valStr) {
+          envState.scriptProperties.set(keyStr, valStr);
+          envState.scriptPropertiesDirty = true;
+        }
+      },
+      setProperties: (obj, deleteAllOthers = false) => {
+        if (deleteAllOthers) {
+          envState.scriptProperties.clear();
+        }
+        if (obj && typeof obj === "object") {
+          for (const [k, v] of Object.entries(obj)) {
+            envState.scriptProperties.set(String(k), String(v ?? ""));
+          }
+          envState.scriptPropertiesDirty = true;
+        }
       },
       deleteProperty: (k) => {
-        envState.scriptProperties.delete(String(k));
+        if (envState.scriptProperties.delete(String(k))) {
+          envState.scriptPropertiesDirty = true;
+        }
+      },
+      deleteAllProperties: () => {
+        envState.scriptProperties.clear();
+        envState.scriptPropertiesDirty = true;
       },
       getProperties: () => Object.fromEntries(envState.scriptProperties.entries()),
     }),
@@ -2036,7 +2119,12 @@ export async function createGasEnvironment({
   };
 
   const Logger = {
-    log: (...args) => console.log(`[GAS:${ctx.clientName}]`, ...args),
+    log: (...args) => {
+      appendExecLog("INFO", args);
+      globalThis.console.log(`[GAS:${ctx.clientName}]`, ...args);
+    },
+    clear: () => { },
+    getLog: () => executionLogs.join("\n"),
   };
 
   const HtmlService = {
@@ -2110,10 +2198,12 @@ export async function createGasEnvironment({
     HtmlService,
     ScriptApp,
     ContentService,
+    console: gasConsole,
+    executionLogs,
     masterSS,
     reconSS,
     recomputeMasterFormulasSync: envState.recomputeMasterFormulasSync,
-    finalizeExecution: async () => {
+    finalizeExecution: async (finalMeta = {}) => {
       // Clear any B4:I4 GAS locks before final persistence
       const dca = masterSS.getSheetByName("DataChgAlert");
       if (dca && dca.valuesGrid[3]) {
@@ -2124,6 +2214,82 @@ export async function createGasEnvironment({
           }
         }
       }
+
+      // Persist GAS execution console transcript to virtual `GasExecLogs` tab if applicable
+      const fnName = finalMeta?.functionName || executionMeta?.functionName || "";
+      const shouldRecord =
+        finalMeta?.recordExecution !== false && (Boolean(fnName) || executionLogs.length > 0);
+      if (shouldRecord) {
+        const durationSec = ((Date.now() - execStartedAtMs) / 1000).toFixed(2) + "s";
+        const triggerSrc =
+          finalMeta?.triggerSource || executionMeta?.triggerSource || "Automated / API";
+        const hasErrLog = executionLogs.some((l) => l.includes("[ERROR]"));
+        const statusStr =
+          finalMeta?.status || (hasErrLog ? "Completed with warnings" : "Completed");
+        const summaryStr =
+          finalMeta?.summary ||
+          executionMeta?.summary ||
+          `${executionLogs.length} console log line(s)`;
+        const transcript =
+          executionLogs.length > 0
+            ? executionLogs.join("\n")
+            : `[${execStartedAtIso.slice(11, 23)}] [INFO] Execution completed (${fnName || "GAS runtime"}) with no console output.`;
+
+        let execLogSheet = masterSS.getSheetByName("GasExecLogs");
+        if (!execLogSheet) {
+          execLogSheet = masterSS.insertSheet("GasExecLogs");
+        }
+        const headerRow = [
+          "Timestamp",
+          "Function / Sequence",
+          "Trigger Source",
+          "Duration",
+          "Status",
+          "Summary",
+          "Console Transcript",
+        ];
+        const existingRows = Array.isArray(execLogSheet.valuesGrid)
+          ? execLogSheet.valuesGrid.slice(1).filter((r) => Array.isArray(r) && r.some(Boolean))
+          : [];
+        const newEntry = [
+          execStartedAtIso,
+          fnName || "runAgencyAutomator",
+          triggerSrc,
+          durationSec,
+          statusStr,
+          summaryStr,
+          transcript,
+        ];
+        const nextGrid = [headerRow, newEntry, ...existingRows.slice(0, 39)];
+        execLogSheet.valuesGrid = nextGrid;
+        execLogSheet.formulasGrid = cloneGrid2D(nextGrid);
+        execLogSheet.dirty = true;
+      }
+
+      if (envState.scriptPropertiesDirty) {
+        const EPHEMERAL_KEYS = new Set([
+          "PULSE_INTERNAL_SECRET",
+          "AGENT_TRIGGER_SECRET",
+          "CRON_SECRET",
+          "VERCEL_BYPASS_TOKEN",
+          "CURRENT_RUN_ID",
+          "CURRENT_RUN_CLIENT",
+        ]);
+        const propRows = [["Key", "Value"]];
+        for (const [k, v] of envState.scriptProperties.entries()) {
+          if (!EPHEMERAL_KEYS.has(k)) {
+            propRows.push([k, v]);
+          }
+        }
+        let pSheet = masterSS.getSheetByName("GasScriptProps");
+        if (!pSheet) {
+          pSheet = masterSS.insertSheet("GasScriptProps");
+        }
+        pSheet.valuesGrid = propRows;
+        pSheet.formulasGrid = cloneGrid2D(propRows);
+        pSheet.dirty = true;
+      }
+
       envState.masterFormulasDirty = true;
       await flushAll({ persistSupabase: true });
     },

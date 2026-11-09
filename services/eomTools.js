@@ -1564,7 +1564,7 @@ export async function handleEomGetPlCompData(req, res, sheets) {
       });
     }
 
-    const [c1Resp, dataResp, f87Resp, t87Resp] = await Promise.all([
+    const [c1Resp, dataResp, f87Resp, t87Resp, outgoingsResp, outgoingsHdrResp] = await Promise.all([
       withRetry(() => sheets.spreadsheets.values.get({
         spreadsheetId: masterSheetId,
         range: "PLComp!C1",
@@ -1584,11 +1584,93 @@ export async function handleEomGetPlCompData(req, res, sheets) {
         spreadsheetId: masterSheetId,
         range: "PLComp!T87:Y87",
         valueRenderOption: "FORMATTED_VALUE"
-      }))
+      })),
+      clientSheetId ? withRetry(() => sheets.spreadsheets.values.get({
+        spreadsheetId: clientSheetId,
+        range: "Outgoings!A1:AZ310",
+        valueRenderOption: "UNFORMATTED_VALUE"
+      })).catch(e => { console.warn("Could not read Outgoings tab values:", e?.message); return null; }) : Promise.resolve(null),
+      clientSheetId ? withRetry(() => sheets.spreadsheets.values.get({
+        spreadsheetId: clientSheetId,
+        range: "Outgoings!A1:AZ1",
+        valueRenderOption: "FORMATTED_VALUE"
+      })).catch(e => { console.warn("Could not read Outgoings tab headers:", e?.message); return null; }) : Promise.resolve(null),
     ]);
 
     const lastUpdated = c1Resp.data.values?.[0]?.[0] || "";
     const allData = dataResp.data.values || [];
+    const outgoingsData = outgoingsResp?.data?.values || [];
+    const outgoingsHdrs = (outgoingsHdrResp?.data?.values?.[0] || []).map(h => String(h || "").trim());
+
+    // Locate section total and depreciation rows in Outgoings tab
+    const outgoingsColA = outgoingsData.map(r => String(r[0] || "").trim());
+    const rDelivery = outgoingsColA.findIndex(v => v.includes("Total other expenses - delivery") || v === "Total other expenses");
+    const rNonDel = outgoingsColA.findIndex(v => v.includes("Total other expenses - non-del"));
+    const rNonOpInc = outgoingsColA.findIndex(v => v.includes("Total non-operating income"));
+    const rNonOpExp = outgoingsColA.findIndex(v => v.includes("Total non-operating expenses"));
+    const rDep = outgoingsColA.findIndex(v => v.toLowerCase().includes("depreciation"));
+    const depCategoryName = rDep !== -1 ? outgoingsColA[rDep] : "Depreciation expense";
+
+    // Locate Depreciation total row in PLComp (column E)
+    let plDepRow = -1;
+    for (let r = 0; r < allData.length; r++) {
+      const colE = String(allData[r]?.[1] || "").trim().toLowerCase();
+      if (colE === "depreciation total") {
+        plDepRow = r;
+        break;
+      }
+    }
+
+    const MONTH_NAMES_SHORT = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+    const parseMonthYearHdr = (label) => {
+      if (!label) return null;
+      if (typeof label === "number") {
+        const utcDays = Math.floor(label - 25569);
+        const date = new Date(utcDays * 86400 * 1000);
+        return { monthIdx: date.getUTCMonth(), year: date.getUTCFullYear() };
+      }
+      const match = String(label).trim().match(/^([A-Za-z]{3})[a-z]*[\s\-']?(\d{2,4})$/i);
+      if (!match) return null;
+      const mStr = match[1].toLowerCase();
+      const monthIdx = MONTH_NAMES_SHORT.indexOf(mStr);
+      if (monthIdx === -1) return null;
+      let year = parseInt(match[2], 10);
+      if (year < 100) year += 2000;
+      return { monthIdx, year };
+    };
+
+    const findOutgoingsCol = (monthHeader) => {
+      if (!monthHeader || outgoingsHdrs.length === 0) return -1;
+      const targetStr = String(monthHeader).trim().toLowerCase();
+      const exactIdx = outgoingsHdrs.findIndex(h => h.toLowerCase() === targetStr);
+      if (exactIdx !== -1) return exactIdx;
+      const targetParsed = parseMonthYearHdr(targetStr);
+      if (targetParsed) {
+        for (let c = 0; c < outgoingsHdrs.length; c++) {
+          const parsed = parseMonthYearHdr(outgoingsHdrs[c]);
+          if (parsed && parsed.monthIdx === targetParsed.monthIdx && parsed.year === targetParsed.year) {
+            return c;
+          }
+        }
+      }
+      return -1;
+    };
+
+    const parseNumber = (val) => {
+      if (val === null || val === undefined || val === "") return 0;
+      if (typeof val === "number") return isNaN(val) ? 0 : val;
+      const s = String(val).replace(/[£$€,\s]/g, "");
+      const n = parseFloat(s);
+      return isNaN(n) ? 0 : n;
+    };
+
+    const formatCurrencyNum = (num) => {
+      if (num === null || num === undefined || isNaN(num)) return "0.00";
+      const abs = Math.abs(num);
+      const formatted = abs.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      if (num < -0.005) return `-${formatted}`;
+      return formatted;
+    };
 
     const row1 = allData[0] || [];
     // Relative to Col D (index 0):
@@ -1666,44 +1748,120 @@ export async function handleEomGetPlCompData(req, res, sheets) {
       return result;
     };
 
-    const buildSections = (colIndices) => {
+    const buildSections = (colIndices, monthsList) => {
       const sections = [];
-      // 1. Costs of sale
-      if (cosStart !== -1 && cosEnd !== -1) {
-        const rows = extractRows(cosStart, cosEnd, colIndices);
-        if (rows.length > 0) {
-          sections.push({ title: "Costs of sale", rows });
-        }
-      }
+      const sectionDefs = [
+        { key: "delivery", title: "Costs of sale", totalLabel: "Total other expenses - delivery", start: cosStart, end: cosEnd, outRow: rDelivery },
+        { key: "nonDelivery", title: "Overhead expenses", totalLabel: "Total other expenses - non-del", start: overheadStart !== -1 ? overheadStart + 1 : -1, end: Math.min(allData.length, 595), outRow: rNonDel },
+        { key: "nonOpInc", title: "Non-operating income", totalLabel: "Total non-operating income", start: nonOpIncStart, end: nonOpIncEnd, outRow: rNonOpInc },
+        { key: "nonOpExp", title: "Non-operating expenses", totalLabel: "Total non-operating expenses", start: nonOpExpStart, end: nonOpExpEnd, outRow: rNonOpExp },
+      ];
 
-      // 2. Overhead expenses (actual expense accounts start after Overheads label down to row 595)
-      if (overheadStart !== -1) {
-        const rows = extractRows(overheadStart + 1, Math.min(allData.length, 595), colIndices);
-        if (rows.length > 0) {
-          sections.push({ title: "Overhead expenses", rows });
-        }
-      }
+      for (const def of sectionDefs) {
+        const rows = extractRows(def.start, def.end, colIndices);
+        if (rows.length === 0) continue;
 
-      // 3. Non-operating income
-      if (nonOpIncStart !== -1 && nonOpIncEnd !== -1) {
-        const rows = extractRows(nonOpIncStart, nonOpIncEnd, colIndices);
-        if (rows.length > 0) {
-          sections.push({ title: "Non-operating income", rows });
-        }
-      }
+        const plTotals = monthsList.map((m, mIdx) => {
+          let sum = 0;
+          rows.forEach(r => {
+            sum += parseNumber(r.values[mIdx]);
+          });
+          return Math.round(sum * 100) / 100;
+        });
 
-      // 4. Non-operating expenses
-      if (nonOpExpStart !== -1 && nonOpExpEnd !== -1) {
-        const rows = extractRows(nonOpExpStart, nonOpExpEnd, colIndices);
-        if (rows.length > 0) {
-          sections.push({ title: "Non-operating expenses", rows });
+        const outgoingsTotals = monthsList.map((m) => {
+          const outCol = findOutgoingsCol(m.header);
+          if (outCol !== -1 && def.outRow !== -1) {
+            const val = parseNumber(outgoingsData[def.outRow]?.[outCol]);
+            return Math.round(val * 100) / 100;
+          }
+          return 0;
+        });
+
+        const differences = plTotals.map((plt, idx) => Math.round((plt - outgoingsTotals[idx]) * 100) / 100);
+
+        const sectionObj = {
+          sectionKey: def.key,
+          title: def.title,
+          totalLabel: def.totalLabel,
+          rows,
+          plTotals: plTotals.map(v => formatCurrencyNum(v)),
+          plTotalsRaw: plTotals,
+          outgoingsTotals: outgoingsTotals.map(v => formatCurrencyNum(v)),
+          outgoingsTotalsRaw: outgoingsTotals,
+          differences: differences.map(v => formatCurrencyNum(v)),
+          differencesRaw: differences,
+        };
+
+        // For "Total other expenses - non-del", check for depreciation costs in Outgoings tab
+        if (def.key === "nonDelivery") {
+          const depValues = monthsList.map((m, mIdx) => {
+            const outCol = findOutgoingsCol(m.header);
+            const outDep = (outCol !== -1 && rDep !== -1) ? parseNumber(outgoingsData[rDep]?.[outCol]) : 0;
+            const plDep = (plDepRow !== -1) ? parseNumber(allData[plDepRow]?.[colIndices[mIdx]]) : 0;
+            return Math.round((outDep || plDep || 0) * 100) / 100;
+          });
+
+          const hasDep = depValues.some(v => v > 0);
+          if (hasDep) {
+            const perMonth = monthsList.map((m, idx) => {
+              const plT = plTotals[idx];
+              const outT = outgoingsTotals[idx];
+              const dep = depValues[idx];
+              const outExcl = Math.round((outT - dep) * 100) / 100;
+              const matchesIfExcluded = Math.abs(plT - outExcl) < 0.05;
+              const remainingDiff = Math.round((plT - outExcl) * 100) / 100;
+              return {
+                colLetter: m.colLetter,
+                monthHeader: m.header,
+                plTotal: plT,
+                plTotalFormatted: formatCurrencyNum(plT),
+                outgoingsTotal: outT,
+                outgoingsTotalFormatted: formatCurrencyNum(outT),
+                depreciation: dep,
+                depreciationFormatted: formatCurrencyNum(dep),
+                outgoingsExclDep: outExcl,
+                outgoingsExclDepFormatted: formatCurrencyNum(outExcl),
+                diff: differences[idx],
+                diffFormatted: formatCurrencyNum(differences[idx]),
+                matchesIfExcluded,
+                remainingDiff,
+                remainingDiffFormatted: formatCurrencyNum(remainingDiff)
+              };
+            });
+
+            const matchingMonths = perMonth.filter(pm => pm.matchesIfExcluded && pm.depreciation > 0);
+            const nonMatchingMonths = perMonth.filter(pm => !pm.matchesIfExcluded && pm.depreciation > 0);
+            const allMatchIfExcluded = matchingMonths.length > 0 && nonMatchingMonths.length === 0;
+
+            let summaryText = "";
+            const sampleDep = perMonth.find(pm => pm.depreciation > 0)?.depreciationFormatted || "0.00";
+            if (allMatchIfExcluded) {
+              summaryText = `Depreciation costs of £${sampleDep} (under "${depCategoryName}") are included in the Outgoings non-delivery total but not in the P&L overheads total shown above. Excluding this depreciation makes the totals match exactly across all displayed months.`;
+            } else if (matchingMonths.length > 0) {
+              const matchNames = matchingMonths.map(pm => pm.monthHeader).join(", ");
+              summaryText = `Depreciation costs of £${sampleDep} (under "${depCategoryName}") are included in the Outgoings non-delivery total but not in the P&L overheads total shown above. Excluding depreciation makes the totals match exactly for ${matchNames}. For unpushed months (${nonMatchingMonths.map(pm => pm.monthHeader).join(", ")}), remaining variances will resolve when outgoings are pushed.`;
+            } else {
+              summaryText = `Depreciation costs of £${sampleDep} (under "${depCategoryName}") are included in the Outgoings non-delivery total but not in the P&L overheads total shown above. Excluding depreciation from Outgoings reduces the difference, but does not completely eliminate the variance.`;
+            }
+
+            sectionObj.depreciationInfo = {
+              hasDepreciation: true,
+              depCategoryName,
+              perMonth,
+              allMatchIfExcluded,
+              summaryText
+            };
+          }
         }
+
+        sections.push(sectionObj);
       }
       return sections;
     };
 
-    const sectionsStandard = buildSections(monthIndicesStandard);
-    const sectionsWithAdds = buildSections(monthIndicesWithAdds);
+    const sectionsStandard = buildSections(monthIndicesStandard, monthsStandard);
+    const sectionsWithAdds = buildSections(monthIndicesWithAdds, monthsWithAdds);
 
     return res.status(200).json({
       success: true,

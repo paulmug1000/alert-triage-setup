@@ -31,18 +31,27 @@ export function parseLogDate(rawStr) {
   if (!rawStr) return null;
   const str = String(rawStr).trim();
 
-  // Format 1: dd-MMM-yy HH:mm (e.g., "24-Sep-26 12:21")
-  const m1 = str.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})\s+(\d{1,2}):(\d{2})/);
+  // Format 0: Google Sheets 5-digit serial date/timestamp (e.g., "46335" or "46335.2979")
+  if (/^\d{5}(\.\d+)?$/.test(str)) {
+    const serial = parseFloat(str);
+    if (serial >= 20000 && serial <= 75000) {
+      return new Date(Math.round((serial - 25569) * 86400000));
+    }
+  }
+
+  // Format 1: dd-MMM-yy HH:mm (e.g., "24-Sep-26 12:21") or date-only "24-Sep-26"
+  const m1 = str.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
   if (m1) {
     const day = parseInt(m1[1], 10);
-    const monthNames = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"];
+    const monthNames = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
     const month = monthNames.indexOf(m1[2].toLowerCase());
     let year = parseInt(m1[3], 10);
     if (year < 100) year += 2000;
-    const hours = parseInt(m1[4], 10);
-    const minutes = parseInt(m1[5], 10);
+    const hours = m1[4] !== undefined ? parseInt(m1[4], 10) : 0;
+    const minutes = m1[5] !== undefined ? parseInt(m1[5], 10) : 0;
+    const seconds = m1[6] !== undefined ? parseInt(m1[6], 10) : 0;
     if (month !== -1) {
-      return new Date(Date.UTC(year, month, day, hours, minutes));
+      return new Date(Date.UTC(year, month, day, hours, minutes, seconds));
     }
   }
 
@@ -106,8 +115,11 @@ export function formatRelativeTime(date, baseDate = new Date()) {
  */
 export function isWithin30Days(date) {
   if (!date) return false;
-  const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
-  return date.getTime() >= cutoff;
+  const ms = date.getTime();
+  const now = Date.now();
+  const cutoff = now - 30 * 24 * 60 * 60 * 1000;
+  const maxFuture = now + 7 * 24 * 60 * 60 * 1000;
+  return ms >= cutoff && ms <= maxFuture;
 }
 
 /**
@@ -194,8 +206,8 @@ export function parseAutoLogRow(row, clientName, rowIndex) {
           }
         } else {
           const amtMatch = rest.match(/Amount:\s*(£[\d,]+(?:\.\d{2})?(?:\s*\+VAT)?)/i) ||
-                           rest.match(/£([1-9][\d,]+(?:\.\d{2})?(?:\s*\+VAT)?)/) ||
-                           rest.match(/Amount:\s*£([\d,]+(?:\.\d{2})?)/i);
+            rest.match(/£([1-9][\d,]+(?:\.\d{2})?(?:\s*\+VAT)?)/) ||
+            rest.match(/Amount:\s*£([\d,]+(?:\.\d{2})?)/i);
           if (amtMatch) {
             const raw = amtMatch[1].trim();
             amount = raw.startsWith("£") ? raw : `£${raw}`;
@@ -522,10 +534,10 @@ export function parseAutoLogRow(row, clientName, rowIndex) {
           dates.push(dateMatch[2] ? `${dateMatch[1]} -> ${dateMatch[2]}` : dateMatch[1]);
         }
 
-        const actionText = actionVerb.toLowerCase() === "created" 
-          ? "Placeholder Gap Created" 
-          : actionVerb.toLowerCase() === "removed" 
-            ? "Placeholder Gap Removed" 
+        const actionText = actionVerb.toLowerCase() === "created"
+          ? "Placeholder Gap Created"
+          : actionVerb.toLowerCase() === "removed"
+            ? "Placeholder Gap Removed"
             : "Placeholder Gap Changed";
 
         const actionType = actionVerb.toLowerCase() === "created"
@@ -1168,7 +1180,7 @@ export async function fetchClientActivity(sheets, client, includeRoutine = false
         });
         try {
           await redisClient.set(autologCacheKey, JSON.stringify(autoLogEvents), { EX: CACHE_TTL_SECONDS });
-        } catch (e) {}
+        } catch (e) { }
       } catch (err) {
         console.warn(`⚠️ Could not read AutoLog for ${clientName}:`, err.message);
         autoLogEvents = [];
@@ -1379,12 +1391,12 @@ function sanitizeActivityEventsForUser(events, sessionUser) {
   const hideSalaries = !canViewSalariesAndDividends(sessionUser);
   const filtered = hideSalaries
     ? events.filter((e) => {
-        const cat = String(e?.category || "").toUpperCase();
-        if (cat === "SALARIES" || cat === "DIVIDENDS") return false;
-        const detailsText = typeof e?.details === "string" ? e.details : JSON.stringify(e?.details || "");
-        const text = `${e?.title || ""} ${e?.summary || ""} ${e?.action || ""} ${e?.rawSummary || ""} ${e?.rawDetails || ""} ${detailsText}`;
-        return !/salar|divid|payroll|wages|director|remuneration|net pay/i.test(text);
-      })
+      const cat = String(e?.category || "").toUpperCase();
+      if (cat === "SALARIES" || cat === "DIVIDENDS") return false;
+      const detailsText = typeof e?.details === "string" ? e.details : JSON.stringify(e?.details || "");
+      const text = `${e?.title || ""} ${e?.summary || ""} ${e?.action || ""} ${e?.rawSummary || ""} ${e?.rawDetails || ""} ${detailsText}`;
+      return !/salar|divid|payroll|wages|director|remuneration|net pay/i.test(text);
+    })
     : events;
   return filtered.map((e) => ({
     ...e,
@@ -1396,10 +1408,10 @@ function sanitizeActivityEventsForUser(events, sessionUser) {
     details: Array.isArray(e.details)
       ? e.details.map((d) => (typeof d === "string" ? sanitizeSpreadsheetTerms(d) : sanitizeActivityStructuredObject(d)))
       : e.details && typeof e.details === "object"
-      ? sanitizeActivityStructuredObject(e.details)
-      : typeof e.details === "string"
-      ? sanitizeSpreadsheetTerms(e.details)
-      : e.details,
+        ? sanitizeActivityStructuredObject(e.details)
+        : typeof e.details === "string"
+          ? sanitizeSpreadsheetTerms(e.details)
+          : e.details,
   }));
 }
 
@@ -1473,9 +1485,9 @@ export async function handleGetActivity(req, res, sheets) {
       const safeData =
         !sessionUser.isAdmin && data
           ? {
-              ...data,
-              events: sanitizeActivityEventsForUser(data.events, sessionUser),
-            }
+            ...data,
+            events: sanitizeActivityEventsForUser(data.events, sessionUser),
+          }
           : data;
       return res.status(200).json({ success: true, clientName, data: safeData });
     }
@@ -1548,7 +1560,7 @@ export async function appendLiveActivityToCache(newEvent, clientName = null) {
       if (parsed.allEvents) {
         const existingAll = parsed.allEvents || [];
         parsed.allEvents = deduplicateEvents([newEvent, ...existingAll]);
-        
+
         if (cleanClient && cleanClient.toLowerCase() !== "system") {
           if (!parsed.clients) parsed.clients = {};
           if (!parsed.clients[cleanClient]) {
@@ -1560,7 +1572,7 @@ export async function appendLiveActivityToCache(newEvent, clientName = null) {
         }
         parsed.cachedAt = new Date().toISOString();
         await redisClient.set(key, JSON.stringify(parsed), { EX: CACHE_TTL_SECONDS });
-      } 
+      }
       // 2. Single client cache structure ({ clientName, events: [], totalEvents })
       else if (parsed.events) {
         const existingClientEvents = parsed.events || [];
@@ -1572,5 +1584,31 @@ export async function appendLiveActivityToCache(newEvent, clientName = null) {
     }
   } catch (err) {
     console.warn("⚠️ Could not prepend live event to Redis activity cache:", err.message);
+  }
+}
+
+/**
+ * Invalidates Redis activity cache keys for a specific client (and global all-clients cache)
+ * after an automated AutoLog sequence completes.
+ */
+export async function invalidateClientActivityCache(clientName) {
+  if (!redisClient?.isOpen) return;
+  const cleanClient = String(clientName || "").trim();
+  const keys = [
+    `${REDIS_ACTIVITY_PREFIX}all:normal`,
+    `${REDIS_ACTIVITY_PREFIX}all:with_routine`,
+  ];
+  if (cleanClient) {
+    keys.push(
+      `${REDIS_ACTIVITY_PREFIX}client:${cleanClient}:normal`,
+      `${REDIS_ACTIVITY_PREFIX}client:${cleanClient}:with_routine`,
+      `${REDIS_ACTIVITY_PREFIX}autolog:${cleanClient}:normal`,
+      `${REDIS_ACTIVITY_PREFIX}autolog:${cleanClient}:with_routine`
+    );
+  }
+  try {
+    await redisClient.del(keys);
+  } catch (err) {
+    console.warn("⚠️ Could not invalidate Redis activity cache:", err.message);
   }
 }

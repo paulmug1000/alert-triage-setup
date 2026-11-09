@@ -1303,7 +1303,13 @@ export async function migrateClientMasterAndReconToSupabase(sheets, clientName =
       _bypassSupabaseVirtualSheet: true,
     });
     const existingMasterTabs = new Set((masterMeta.data.sheets || []).map((s) => s.properties.title));
-    const tabsToPull = CORE_MASTER_TABS.filter((t) => existingMasterTabs.has(t));
+    const orderedCore = CORE_MASTER_TABS.filter((t) => existingMasterTabs.has(t));
+    const extraTabs = [...existingMasterTabs].filter(
+      (t) => !CORE_MASTER_TABS.includes(t) && t !== "GasExecLogs" && t !== "GasScriptProps"
+    );
+    const tabsToPull = [...orderedCore, ...extraTabs];
+
+    let migratedInvMode = "Whole";
 
     for (let i = 0; i < tabsToPull.length; i += 6) {
       const chunk = tabsToPull.slice(i, i + 6);
@@ -1335,7 +1341,24 @@ export async function migrateClientMasterAndReconToSupabase(sheets, clientName =
         await saveVirtualTabGrid_(ctx, "master", tabName, vGrid, fGrid, {});
         summary.masterTabsSynced++;
 
-        if (tabName === "InvFromApp") {
+        if (tabName === "KeyInfo") {
+          const rawMode = String(vGrid[7]?.[6] || "Whole").trim();
+          if (rawMode) migratedInvMode = rawMode;
+        } else if (tabName === "DataChgAlert") {
+          const invFreq = String(vGrid[1]?.[24] || "").trim();
+          const crmFreq = String(vGrid[2]?.[24] || "").trim();
+          const expFreq = String(vGrid[3]?.[24] || "").trim();
+          await supabase
+            .from("sync_schedules")
+            .update({
+              inv_freq: invFreq || "Not Used",
+              crm_freq: crmFreq || "Not Used",
+              exp_freq: expFreq || "Not Used",
+              updated_at: new Date().toISOString(),
+            })
+            .eq("client_name", ctx.clientName)
+            .catch(() => {});
+        } else if (tabName === "InvFromApp") {
           summary.invoicesCount = await syncInvoicesTableFromGrid_(ctx, vGrid);
         } else if (tabName === "JnlsFromApp") {
           summary.directCostsCount = await syncDirectCostsTableFromGrid_(ctx, vGrid);
@@ -1348,6 +1371,24 @@ export async function migrateClientMasterAndReconToSupabase(sheets, clientName =
         }
       }
     }
+
+    // Seed GasScriptProps if not already initialized so the very first scheduled sync uses the Delta Update Engine cleanly
+    const { data: existingProps } = await supabase
+      .from("master_sheet_grids")
+      .select("values_grid")
+      .eq("client_id", ctx.clientId)
+      .eq("sheet_role", "master")
+      .eq("tab_name", "GasScriptProps")
+      .maybeSingle();
+
+    if (!existingProps?.values_grid || existingProps.values_grid.length < 2) {
+      const seedGrid = [
+        ["Key", "Value", "UpdatedAt"],
+        ["INV_LAST_IMPORT_MODE", migratedInvMode || "Whole", new Date().toISOString()],
+        ["EXP_LAST_IMPORT_MODE", "Whole", new Date().toISOString()],
+      ];
+      await saveVirtualTabGrid_(ctx, "master", "GasScriptProps", seedGrid, seedGrid, {});
+    }
   }
 
   // 2. Fetch Recon Sheet metadata & tabs
@@ -1359,7 +1400,7 @@ export async function migrateClientMasterAndReconToSupabase(sheets, clientName =
     });
     const allReconTabs = (reconMeta.data.sheets || [])
       .map((s) => s.properties.title)
-      .filter((t) => /^\d{4}$/.test(t) || ["Template", "KeyInfo", "PLAdds", "Data"].includes(t));
+      .filter((t) => Boolean(t));
 
     const learningPatterns = new Map();
 
@@ -1700,27 +1741,90 @@ export async function materializeClientSheetFromMaster(sheets, clientName = "APP
     throw new Error(`Client "${clientName}" is missing clientSheetId or masterSheetId.`);
   }
 
+  // Check which tabs actually exist on both the Client Sheet and Master Sheet
+  const [clientMeta, masterMeta, { data: existingKi }] = await Promise.all([
+    sheets.spreadsheets.get({
+      spreadsheetId: ctx.clientSheetId,
+      fields: "sheets.properties.title",
+      _bypassSupabaseVirtualSheet: true,
+    }),
+    sheets.spreadsheets.get({
+      spreadsheetId: ctx.masterSheetId,
+      fields: "sheets.properties.title",
+      _bypassSupabaseVirtualSheet: true,
+    }),
+    supabase
+      .from("tenant_key_info")
+      .select("client_importrange_backup")
+      .eq("client_id", ctx.clientId)
+      .maybeSingle(),
+  ]);
+
+  const clientTabs = new Set((clientMeta.data.sheets || []).map((s) => s.properties.title));
+  const masterTabs = new Set((masterMeta.data.sheets || []).map((s) => s.properties.title));
+
   // Known IMPORTRANGE locations on Client Sheets that pull from Master Sheet ($D$1 / $E$1)
-  const targets = [
-    {
-      id: "keyinfo_header",
-      clientRange: "KeyInfo!A1:B1",
-      masterRange: "KeyInfo!A1:B1",
-      mode: "VALUES_ONLY",
-    },
-    {
-      id: "keyinfo_body",
-      clientRange: "KeyInfo!A2:AZ150",
-      masterRange: "KeyInfo!A2:AZ150",
-      mode: "FORMULAS_NO_EXTERNAL",
-    },
-    {
+  const targets = [];
+  if (clientTabs.has("KeyInfo") && masterTabs.has("KeyInfo")) {
+    targets.push(
+      {
+        id: "keyinfo_header",
+        clientRange: "KeyInfo!A1:B1",
+        masterRange: "KeyInfo!A1:B1",
+        mode: "VALUES_ONLY",
+      },
+      {
+        id: "keyinfo_body",
+        clientRange: "KeyInfo!A2:AZ150",
+        masterRange: "KeyInfo!A2:AZ150",
+        mode: "FORMULAS_NO_EXTERNAL",
+      }
+    );
+  }
+
+  if (clientTabs.has("Welcome") && masterTabs.has("Welcome")) {
+    targets.push({
       id: "welcome_block",
       clientRange: "Welcome!B3:D26",
       masterRange: "Welcome!B3:D26",
       mode: "VALUES_ONLY",
-    },
-  ];
+    });
+  }
+
+  // Check if YrCalcs!A1 on Client Sheet has an IMPORTRANGE pointing to Master Sheet (e.g. OrinYrCalcs!A1:JH8)
+  if (clientTabs.has("YrCalcs")) {
+    let yrFormula = String(existingKi?.client_importrange_backup?.yrcalcs_block?.originalFormula || "");
+    if (!yrFormula) {
+      const yrAnchorResp = await sheets.spreadsheets.values
+        .get({
+          spreadsheetId: ctx.clientSheetId,
+          range: "YrCalcs!A1",
+          valueRenderOption: "FORMULA",
+          _bypassSupabaseVirtualSheet: true,
+        })
+        .catch(() => null);
+      yrFormula = String(yrAnchorResp?.data?.values?.[0]?.[0] || "");
+    }
+    if (/importrange/i.test(yrFormula)) {
+      const rangeMatch = yrFormula.match(/["']([^"'!]+)!([A-Za-z0-9:$]+)["']/);
+      if (rangeMatch) {
+        const srcTab = rangeMatch[1].replace(/^'|'$/g, "");
+        const srcCoords = rangeMatch[2].replace(/\$/g, "");
+        if (masterTabs.has(srcTab)) {
+          targets.push({
+            id: "yrcalcs_block",
+            clientRange: `YrCalcs!${srcCoords}`,
+            masterRange: `${srcTab}!${srcCoords}`,
+            mode: "FORMULAS_NO_EXTERNAL",
+          });
+        }
+      }
+    }
+  }
+
+  if (targets.length === 0) {
+    throw new Error(`No matching IMPORTRANGE target tabs found on ${clientName} Client Sheet.`);
+  }
 
   // 1. Read existing Client Sheet formulas at those target anchor cells for backup
   const anchorRanges = targets.map((t) => {
@@ -1747,20 +1851,15 @@ export async function materializeClientSheetFromMaster(sheets, clientName = "APP
     };
   });
 
-  // Preserve previous backup if already materialized so we never overwrite original IMPORTRANGE formulas with materialized values
-  const { data: existingKi } = await supabase
-    .from("tenant_key_info")
-    .select("client_importrange_backup")
-    .eq("client_id", ctx.clientId)
-    .maybeSingle();
-
   const hasExistingImportrangeBackup =
     existingKi?.client_importrange_backup &&
     Object.values(existingKi.client_importrange_backup).some((b) =>
       /importrange/i.test(String(b?.originalFormula || ""))
     );
 
-  const finalBackupToSave = hasExistingImportrangeBackup ? existingKi.client_importrange_backup : backupMap;
+  const finalBackupToSave = hasExistingImportrangeBackup
+    ? { ...backupMap, ...existingKi.client_importrange_backup }
+    : backupMap;
 
   // 2. Fetch both FORMATTED_VALUE and FORMULA from Master Sheet for all targets
   const masterRanges = targets.map((t) => t.masterRange);
@@ -1801,8 +1900,10 @@ export async function materializeClientSheetFromMaster(sheets, clientName = "APP
           // If formula contains IMPORTRANGE (e.g. KeyInfo $E$1 template lookups), fall back to evaluated value
           if (typeof fCell === "string" && /importrange/i.test(fCell)) {
             outRow.push(vCell);
+          } else if (typeof fCell === "string" && fCell.startsWith("=")) {
+            outRow.push(fCell);
           } else {
-            outRow.push(fCell !== undefined ? fCell : vCell);
+            outRow.push(vCell !== "" && vCell !== undefined ? vCell : fCell !== undefined ? fCell : "");
           }
         }
       }
@@ -1965,24 +2066,104 @@ export async function getStage2Status(targetClientName = "APPTEST") {
 
   let keyInfoMeta = null;
   let availableTabs = { master: [], recon: [] };
+  let enrichedClients = clientsData || [];
+
   if (schemaReady) {
-    const [{ data: ki }, { data: grids }] = await Promise.all([
-      supabase
-        .from("tenant_key_info")
-        .select("client_name, accounting_tool, crm_tool, crm_drives, client_materialized_at, updated_at")
-        .eq("client_name", targetClientName)
-        .maybeSingle(),
-      supabase
-        .from("master_sheet_grids")
-        .select("sheet_role, tab_name, row_count, col_count, updated_at")
-        .eq("client_name", targetClientName)
-        .order("tab_name", { ascending: true }),
-    ]);
-    keyInfoMeta = ki || null;
-    for (const g of grids || []) {
-      if (g.sheet_role === "recon") availableTabs.recon.push(g);
-      else availableTabs.master.push(g);
+    const [{ data: allKi }, { data: allGrids }, { data: allScheds }, { data: allInts }, { data: targetGrids }] =
+      await Promise.all([
+        supabase
+          .from("tenant_key_info")
+          .select("client_name, accounting_tool, crm_tool, crm_drives, client_materialized_at, updated_at"),
+        supabase
+          .from("master_sheet_grids")
+          .select("client_name, sheet_role, tab_name, updated_at"),
+        supabase
+          .from("sync_schedules")
+          .select("client_name, inv_freq, crm_freq, exp_freq, last_inv_run, last_crm_run, last_exp_run"),
+        supabase
+          .from("tenant_integrations")
+          .select("client_id, tool, status"),
+        supabase
+          .from("master_sheet_grids")
+          .select("sheet_role, tab_name, row_count, col_count, updated_at")
+          .eq("client_name", targetClientName)
+          .order("tab_name", { ascending: true }),
+      ]);
+
+    const kiByClient = new Map();
+    for (const k of allKi || []) {
+      kiByClient.set(String(k.client_name || "").trim().toUpperCase(), k);
     }
+
+    const schedByClient = new Map();
+    for (const s of allScheds || []) {
+      schedByClient.set(String(s.client_name || "").trim().toUpperCase(), s);
+    }
+
+    const intsByClientId = new Map();
+    for (const row of allInts || []) {
+      if (!row.client_id || row.status === "disconnected") continue;
+      if (!intsByClientId.has(row.client_id)) intsByClientId.set(row.client_id, []);
+      intsByClientId.get(row.client_id).push(String(row.tool || "").trim());
+    }
+
+    const gridStatsByClient = new Map();
+    for (const g of allGrids || []) {
+      const cKey = String(g.client_name || "").trim().toUpperCase();
+      if (!gridStatsByClient.has(cKey)) {
+        gridStatsByClient.set(cKey, { masterTabCount: 0, reconTabCount: 0, hasExecLogs: false, lastUpdatedAt: null });
+      }
+      const st = gridStatsByClient.get(cKey);
+      if (g.sheet_role === "recon") {
+        st.reconTabCount++;
+      } else if (g.tab_name === "GasExecLogs") {
+        st.hasExecLogs = true;
+      } else if (g.tab_name !== "GasScriptProps") {
+        st.masterTabCount++;
+      }
+      if (g.updated_at && (!st.lastUpdatedAt || g.updated_at > st.lastUpdatedAt)) {
+        st.lastUpdatedAt = g.updated_at;
+      }
+    }
+
+    keyInfoMeta = kiByClient.get(String(targetClientName || "").trim().toUpperCase()) || null;
+    for (const g of targetGrids || []) {
+      if (g.sheet_role === "recon") availableTabs.recon.push(g);
+      else if (g.tab_name !== "GasExecLogs" && g.tab_name !== "GasScriptProps") availableTabs.master.push(g);
+    }
+
+    enrichedClients = (clientsData || []).map((c) => {
+      const cKey = String(c.client_name || "").trim().toUpperCase();
+      const ki = kiByClient.get(cKey) || null;
+      const sc = schedByClient.get(cKey) || null;
+      const vaultTools = intsByClientId.get(c.id) || [];
+      const fallbackAcc = vaultTools.find((t) => /^(xero|quickbooks|qbo)$/i.test(t)) || "";
+      const fallbackCrm =
+        vaultTools.find((t) => /^(capsule|pipedrive|hubspot|monday|clickup|close)$/i.test(t)) || "";
+      const gs = gridStatsByClient.get(cKey) || {
+        masterTabCount: 0,
+        reconTabCount: 0,
+        hasExecLogs: false,
+        lastUpdatedAt: null,
+      };
+      return {
+        ...c,
+        masterTabCount: gs.masterTabCount,
+        reconTabCount: gs.reconTabCount,
+        hasExecLogs: gs.hasExecLogs,
+        lastGridUpdatedAt: gs.lastUpdatedAt,
+        materializedAt: ki?.client_materialized_at || null,
+        accountingTool: ki?.accounting_tool || fallbackAcc,
+        crmTool: ki?.crm_tool || fallbackCrm,
+        crmDrives: ki?.crm_drives || "",
+        invFreq: sc?.inv_freq || "",
+        crmFreq: sc?.crm_freq || "",
+        expFreq: sc?.exp_freq || "",
+        invLastRun: sc?.last_inv_run || null,
+        crmLastRun: sc?.last_crm_run || null,
+        expLastRun: sc?.last_exp_run || null,
+      };
+    });
   }
 
   let migrationSql = "";
@@ -2014,7 +2195,7 @@ export async function getStage2Status(targetClientName = "APPTEST") {
     tables: tableResults,
     keyInfoMeta,
     availableTabs,
-    clients: clientsData || [],
+    clients: enrichedClients,
     migrationSql,
     clockMigrationSql,
     clockStatus,

@@ -21,7 +21,9 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
   const [amManualHash, setAmManualHash] = useState("");
   const [amFlushing, setAmFlushing] = useState(false);
 
-  // Stage 2: Master & Recon engine state (APPTEST)
+  // Stage 2 & 3: Multi-client Master & Recon engine state
+  const [selectedStage2Client, setSelectedStage2Client] = useState("APPTEST");
+  const [showAllStage2Clients, setShowAllStage2Clients] = useState(false);
   const [stage2Data, setStage2Data] = useState(null);
   const [stage2Loading, setStage2Loading] = useState(false);
   const [stage2Migrating, setStage2Migrating] = useState(false);
@@ -36,13 +38,14 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [inspectorInitialRole, setInspectorInitialRole] = useState("master");
 
-  const loadStage2Status = useCallback(async (targetClient = "APPTEST") => {
+  const loadStage2Status = useCallback(async (targetClient) => {
+    const clientToLoad = targetClient || selectedStage2Client || "APPTEST";
     setStage2Loading(true);
     try {
       const res = await fetch("/api/pma/master-engine", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "status", clientName: targetClient, automationCommanderSheetId }),
+        body: JSON.stringify({ action: "status", clientName: clientToLoad, automationCommanderSheetId }),
       });
       const data = await res.json();
       if (data.success) {
@@ -52,7 +55,18 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
     } finally {
       setStage2Loading(false);
     }
-  }, [automationCommanderSheetId]);
+  }, [automationCommanderSheetId, selectedStage2Client]);
+
+  const handleSelectStage2Client = useCallback((clientName) => {
+    const clean = String(clientName || "APPTEST").trim();
+    setSelectedStage2Client(clean);
+    try {
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem("pma_stage2_selected_client", clean);
+      }
+    } catch (_) {}
+    loadStage2Status(clean);
+  }, [loadStage2Status]);
 
   const loadStatus = useCallback(async () => {
     setLoading(true);
@@ -76,11 +90,23 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
   }, [automationCommanderSheetId]);
 
   useEffect(() => {
+    let initialClient = "APPTEST";
+    try {
+      if (typeof window !== "undefined") {
+        const saved = window.localStorage.getItem("pma_stage2_selected_client");
+        if (saved && saved.trim()) {
+          initialClient = saved.trim();
+          setSelectedStage2Client(initialClient);
+        }
+      }
+    } catch (_) {}
     loadStatus();
-    loadStage2Status("APPTEST");
-  }, [loadStatus, loadStage2Status]);
+    loadStage2Status(initialClient);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadStatus]);
 
-  const handleStage2MigrateClient = async () => {
+  const handleStage2MigrateClient = async (clientOverride) => {
+    const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : selectedStage2Client;
     setStage2Migrating(true);
     setFeedbackMsg(null);
     try {
@@ -89,7 +115,7 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "migrate_client",
-          clientName: "APPTEST",
+          clientName: targetClient,
           automationCommanderSheetId,
         }),
       });
@@ -99,7 +125,7 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
         const s = data.summary || {};
         setFeedbackMsg({
           type: "success",
-          text: `Migrated APPTEST Master (${s.masterTabsSynced || 0} tabs, ${s.invoicesCount || 0} invoices, ${s.directCostsCount || 0} direct costs) & Recon (${s.reconTabsSynced || 0} tabs, ${s.reconItemsCount || 0} items) to Supabase.`,
+          text: `Migrated ${targetClient} Master (${s.masterTabsSynced || 0} tabs, ${s.invoicesCount || 0} invoices, ${s.directCostsCount || 0} direct costs) & Recon (${s.reconTabsSynced || 0} tabs, ${s.reconItemsCount || 0} items) to Supabase.`,
         });
       } else {
         setFeedbackMsg({ type: "error", text: data.error || "Stage 2 migration failed." });
@@ -111,7 +137,8 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
     }
   };
 
-  const handleStage2SetMasterMode = async (targetMode) => {
+  const handleStage2SetMasterMode = async (targetMode, clientOverride) => {
+    const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : selectedStage2Client;
     setStage2SwitchingMode(true);
     setFeedbackMsg(null);
     try {
@@ -120,7 +147,7 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "set_master_mode",
-          clientName: "APPTEST",
+          clientName: targetClient,
           masterMode: targetMode,
           automationCommanderSheetId,
         }),
@@ -130,7 +157,7 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
         if (data.status) setStage2Data(data.status);
         setFeedbackMsg({
           type: "success",
-          text: `Switched APPTEST master & recon engine to ${targetMode === "supabase" ? "Supabase PostgreSQL" : "Google Sheets (legacy)"}.`,
+          text: `Switched ${targetClient} master & recon engine to ${targetMode === "supabase" ? "Supabase PostgreSQL" : "Google Sheets (legacy)"}.`,
         });
       } else {
         setFeedbackMsg({ type: "error", text: data.error || "Could not switch master mode." });
@@ -142,7 +169,8 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
     }
   };
 
-  const handleStage2Materialize = async (restore = false) => {
+  const handleStage2Materialize = async (restore = false, clientOverride) => {
+    const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : selectedStage2Client;
     setStage2Materializing(true);
     setFeedbackMsg(null);
     try {
@@ -151,7 +179,7 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: restore ? "restore_client_importranges" : "materialize_client_sheet",
-          clientName: "APPTEST",
+          clientName: targetClient,
           automationCommanderSheetId,
         }),
       });
@@ -161,8 +189,8 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
         setFeedbackMsg({
           type: "success",
           text: restore
-            ? `Restored ${data.restoredRangesCount || 0} original IMPORTRANGE formulas on APPTEST Client Sheet.`
-            : `Materialized ${data.materializedRangesCount || 0} IMPORTRANGE ranges on APPTEST Client Sheet (original formulas backed up in Supabase).`,
+            ? `Restored ${data.restoredRangesCount || 0} original IMPORTRANGE formulas on ${targetClient} Client Sheet.`
+            : `Materialized ${data.materializedRangesCount || 0} IMPORTRANGE ranges on ${targetClient} Client Sheet (original formulas backed up in Supabase).`,
         });
       } else {
         setFeedbackMsg({ type: "error", text: data.error || "Operation failed." });
@@ -174,7 +202,8 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
     }
   };
 
-  const handleStage2NativeSync = async (syncType) => {
+  const handleStage2NativeSync = async (syncType, clientOverride) => {
+    const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : selectedStage2Client;
     setStage2SyncingType(syncType);
     setFeedbackMsg(null);
     try {
@@ -183,7 +212,7 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "run_native_sync",
-          clientName: "APPTEST",
+          clientName: targetClient,
           syncType,
           automationCommanderSheetId,
         }),
@@ -194,7 +223,7 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
         const comp = data.syncResult?.comparisons || {};
         setFeedbackMsg({
           type: "success",
-          text: `Completed native Supabase sync (${syncType}) on APPTEST: ${comp.invDiscrepancyCount ?? 0} invoice flags, ${comp.dirDiscrepancyCount ?? 0} direct cost flags.`,
+          text: `Completed native Supabase sync (${syncType}) on ${targetClient}: ${comp.invDiscrepancyCount ?? 0} invoice flags, ${comp.dirDiscrepancyCount ?? 0} direct cost flags.`,
         });
       } else {
         setFeedbackMsg({ type: "error", text: data.error || "Native sync failed." });
@@ -985,18 +1014,46 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
       )}
 
       {/* ====================================================================
-          STAGE 2: MASTER & RECON ENGINE REPLACEMENT (APPTEST)
+          STAGE 2 & 3: MULTI-CLIENT MASTER & RECON ENGINE REPLACEMENT
           ==================================================================== */}
       <div style={{ marginTop: "20px", paddingTop: "18px", borderTop: "2px solid #e2e8f0" }}>
         {(() => {
           const s2Ready = Boolean(stage2Data?.schemaReady);
-          const apptestClient = (stage2Data?.clients || []).find(
-            (c) => String(c.client_name || "").toUpperCase() === "APPTEST"
+          const allClients = stage2Data?.clients || [];
+          const activeClientObj =
+            allClients.find(
+              (c) =>
+                String(c.client_name || "").trim().toUpperCase() ===
+                String(selectedStage2Client || "").trim().toUpperCase()
+            ) || null;
+          const activeClientName = activeClientObj?.client_name || selectedStage2Client || "APPTEST";
+          const activeClientMode = activeClientObj?.master_mode || "sheet";
+          const isMaterialized = Boolean(
+            stage2Data?.keyInfoMeta?.client_materialized_at || activeClientObj?.materializedAt
           );
-          const apptestMode = apptestClient?.master_mode || "sheet";
-          const isMaterialized = Boolean(stage2Data?.keyInfoMeta?.client_materialized_at);
           const hasVirtualTabs =
             (stage2Data?.availableTabs?.master?.length || 0) + (stage2Data?.availableTabs?.recon?.length || 0) > 0;
+
+          const supabaseEngineClientsCount = allClients.filter((c) => c.master_mode === "supabase").length;
+          const migratedClientsCount = allClients.filter(
+            (c) => (c.masterTabCount || 0) + (c.reconTabCount || 0) > 0
+          ).length;
+
+          const visibleOverviewClients = showAllStage2Clients
+            ? allClients
+            : allClients.filter(
+                (c) =>
+                  c.master_mode === "supabase" ||
+                  (c.masterTabCount || 0) + (c.reconTabCount || 0) > 0 ||
+                  String(c.client_name || "").trim().toUpperCase() ===
+                    String(activeClientName || "").trim().toUpperCase()
+              );
+
+          const formatFreqLabel = (val) => {
+            const s = String(val || "").trim();
+            if (!s || /^not used$/i.test(s)) return "—";
+            return s;
+          };
 
           return (
             <>
@@ -1011,9 +1068,9 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
                 }}
               >
                 <div>
-                  <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "4px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "4px", flexWrap: "wrap" }}>
                     <h3 style={{ margin: 0, fontSize: "15px", fontWeight: "700", color: "#111827" }}>
-                      Master & recon engine replacement on APPTEST (stage 2)
+                      Master & recon engine replacement (stage 2 & 3 — multi-client)
                     </h3>
                     <span
                       style={{
@@ -1027,16 +1084,30 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
                     >
                       {s2Ready ? "Stage 2 schema ready" : "Run stage 2 SQL migration"}
                     </span>
+                    {s2Ready && (
+                      <span
+                        style={{
+                          fontSize: "11px",
+                          fontWeight: "600",
+                          padding: "2px 8px",
+                          borderRadius: "999px",
+                          background: "#f1f5f9",
+                          color: "#334155",
+                        }}
+                      >
+                        {supabaseEngineClientsCount} live on Supabase · {migratedClientsCount} synced
+                      </span>
+                    )}
                   </div>
                   <p style={{ margin: 0, fontSize: "12px", color: "#6b7280", lineHeight: "1.5" }}>
-                    Replaces APPTEST&apos;s Master Sheet and Recon Sheet with Supabase PostgreSQL and native Next.js comparison engines (<code>InvComp</code>, <code>DirComp</code>, <code>PLComp</code>, <code>BankRecon</code>), while keeping APPTEST&apos;s Client Sheet active with zero <code>IMPORTRANGE</code> links.
+                    Replaces any client&apos;s Master Sheet and Recon Sheet with Supabase PostgreSQL and native Next.js comparison & automation engines (<code>InvComp</code>, <code>DirComp</code>, <code>PLComp</code>, <code>CRMComp</code>, <code>BankRecon</code>), while keeping their Client Sheet active with zero <code>IMPORTRANGE</code> links.
                   </p>
                 </div>
 
                 <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
                   <button
                     type="button"
-                    onClick={() => loadStage2Status("APPTEST")}
+                    onClick={() => loadStage2Status(activeClientName)}
                     disabled={stage2Loading}
                     style={{
                       padding: "7px 12px",
@@ -1049,9 +1120,272 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
                       cursor: stage2Loading ? "default" : "pointer",
                     }}
                   >
-                    {stage2Loading ? "Refreshing..." : "Refresh stage 2"}
+                    {stage2Loading ? "Refreshing..." : "Refresh status"}
                   </button>
+                </div>
+              </div>
 
+              {/* Multi-client overview table */}
+              {s2Ready && allClients.length > 0 && (
+                <div
+                  style={{
+                    border: "1px solid #e2e8f0",
+                    borderRadius: "8px",
+                    background: "#ffffff",
+                    marginBottom: "14px",
+                    overflow: "hidden",
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      padding: "9px 12px",
+                      background: "#f8fafc",
+                      borderBottom: "1px solid #e2e8f0",
+                      flexWrap: "wrap",
+                      gap: "8px",
+                    }}
+                  >
+                    <div style={{ fontSize: "12px", fontWeight: "700", color: "#1e293b" }}>
+                      Multi-client Supabase engine overview ({visibleOverviewClients.length} of {allClients.length} clients shown)
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowAllStage2Clients((prev) => !prev)}
+                      style={{
+                        padding: "4px 10px",
+                        fontSize: "11px",
+                        fontWeight: "600",
+                        borderRadius: "5px",
+                        border: "1px solid #cbd5e1",
+                        background: "#ffffff",
+                        color: "#334155",
+                        cursor: "pointer",
+                      }}
+                    >
+                      {showAllStage2Clients
+                        ? "Show migrated & selected clients only"
+                        : `Show all ${allClients.length} clients`}
+                    </button>
+                  </div>
+
+                  <div style={{ maxHeight: "260px", overflowY: "auto" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "11px" }}>
+                      <thead>
+                        <tr style={{ background: "#f1f5f9", textAlign: "left", borderBottom: "1px solid #e2e8f0" }}>
+                          <th style={{ padding: "7px 10px", color: "#475569" }}>Client</th>
+                          <th style={{ padding: "7px 10px", color: "#475569" }}>Engine mode</th>
+                          <th style={{ padding: "7px 10px", color: "#475569" }}>Virtual workbook</th>
+                          <th style={{ padding: "7px 10px", color: "#475569" }}>Client sheet links</th>
+                          <th style={{ padding: "7px 10px", color: "#475569" }}>Integrations</th>
+                          <th style={{ padding: "7px 10px", color: "#475569" }}>Auto sync (Inv / CRM / Exp)</th>
+                          <th style={{ padding: "7px 10px", color: "#475569", textAlign: "right" }}>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {visibleOverviewClients.map((c) => {
+                          const isSelected =
+                            String(c.client_name || "").trim().toUpperCase() ===
+                            String(activeClientName || "").trim().toUpperCase();
+                          const isSupabase = c.master_mode === "supabase";
+                          const mTabs = c.masterTabCount || 0;
+                          const rTabs = c.reconTabCount || 0;
+                          const hasTabs = mTabs + rTabs > 0;
+                          const mat = Boolean(c.materializedAt);
+                          const tools = [c.accountingTool, c.crmTool].filter(Boolean).join(" · ") || "—";
+
+                          return (
+                            <tr
+                              key={c.id || c.client_name}
+                              style={{
+                                borderBottom: "1px solid #f1f5f9",
+                                background: isSelected ? "#eff6ff" : "#ffffff",
+                              }}
+                            >
+                              <td style={{ padding: "7px 10px", fontWeight: "700", color: "#0f172a" }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                  <span>{c.client_name}</span>
+                                  {isSelected && (
+                                    <span
+                                      style={{
+                                        fontSize: "10px",
+                                        fontWeight: "600",
+                                        padding: "1px 6px",
+                                        borderRadius: "4px",
+                                        background: "#dbeafe",
+                                        color: "#1e40af",
+                                      }}
+                                    >
+                                      Selected
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
+                              <td style={{ padding: "7px 10px" }}>
+                                <span
+                                  style={{
+                                    padding: "2px 7px",
+                                    borderRadius: "999px",
+                                    fontWeight: "600",
+                                    fontSize: "10px",
+                                    background: isSupabase ? "#dcfce7" : "#f1f5f9",
+                                    color: isSupabase ? "#166534" : "#475569",
+                                  }}
+                                >
+                                  {isSupabase ? "Supabase engine" : "Google Sheets"}
+                                </span>
+                              </td>
+                              <td style={{ padding: "7px 10px", color: hasTabs ? "#1e293b" : "#94a3b8" }}>
+                                {hasTabs ? `${mTabs} master / ${rTabs} recon tabs` : "Not migrated"}
+                              </td>
+                              <td style={{ padding: "7px 10px" }}>
+                                <span
+                                  style={{
+                                    padding: "2px 6px",
+                                    borderRadius: "4px",
+                                    fontWeight: "600",
+                                    fontSize: "10px",
+                                    background: mat ? "#dcfce7" : "#f8fafc",
+                                    color: mat ? "#166534" : "#64748b",
+                                    border: mat ? "none" : "1px solid #e2e8f0",
+                                  }}
+                                >
+                                  {mat ? "IMPORTRANGEs removed" : "Legacy IMPORTRANGE"}
+                                </span>
+                              </td>
+                              <td style={{ padding: "7px 10px", color: "#334155" }}>{tools}</td>
+                              <td style={{ padding: "7px 10px", color: "#334155", fontFamily: "monospace", fontSize: "10px" }}>
+                                {`${formatFreqLabel(c.invFreq)} / ${formatFreqLabel(c.crmFreq)} / ${formatFreqLabel(c.expFreq)}`}
+                              </td>
+                              <td style={{ padding: "7px 10px", textAlign: "right" }}>
+                                <div style={{ display: "inline-flex", gap: "5px", alignItems: "center" }}>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleSelectStage2Client(c.client_name)}
+                                    style={{
+                                      padding: "3px 8px",
+                                      fontSize: "10px",
+                                      fontWeight: "600",
+                                      borderRadius: "4px",
+                                      border: `1px solid ${isSelected ? "#93c5fd" : "#cbd5e1"}`,
+                                      background: isSelected ? "#dbeafe" : "#ffffff",
+                                      color: isSelected ? "#1e40af" : "#334155",
+                                      cursor: "pointer",
+                                    }}
+                                  >
+                                    {isSelected ? "Managing below" : "Select & manage"}
+                                  </button>
+                                  {hasTabs && (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          if (!isSelected) handleSelectStage2Client(c.client_name);
+                                          setInspectorInitialRole("master");
+                                          setInspectorOpen(true);
+                                        }}
+                                        style={{
+                                          padding: "3px 7px",
+                                          fontSize: "10px",
+                                          fontWeight: "600",
+                                          borderRadius: "4px",
+                                          border: "1px solid #cbd5e1",
+                                          background: "#f8fafc",
+                                          color: "#1e40af",
+                                          cursor: "pointer",
+                                        }}
+                                      >
+                                        Tabs
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          if (!isSelected) handleSelectStage2Client(c.client_name);
+                                          setInspectorInitialRole("executions");
+                                          setInspectorOpen(true);
+                                        }}
+                                        style={{
+                                          padding: "3px 7px",
+                                          fontSize: "10px",
+                                          fontWeight: "600",
+                                          borderRadius: "4px",
+                                          border: "1px solid #cbd5e1",
+                                          background: "#f8fafc",
+                                          color: "#0f172a",
+                                          cursor: "pointer",
+                                        }}
+                                      >
+                                        Logs
+                                      </button>
+                                    </>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* Target client selector & migration/management bar */}
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  flexWrap: "wrap",
+                  gap: "12px",
+                  background: "#eff6ff",
+                  border: "1px solid #bfdbfe",
+                  borderRadius: "8px",
+                  padding: "11px 14px",
+                  marginBottom: "12px",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                  <label
+                    htmlFor="stage2-client-select"
+                    style={{ fontSize: "12px", fontWeight: "700", color: "#1e3a8a" }}
+                  >
+                    Selected client workbench:
+                  </label>
+                  <select
+                    id="stage2-client-select"
+                    value={activeClientName}
+                    onChange={(e) => handleSelectStage2Client(e.target.value)}
+                    disabled={stage2Loading || stage2Migrating}
+                    style={{
+                      padding: "6px 10px",
+                      fontSize: "12px",
+                      fontWeight: "700",
+                      borderRadius: "6px",
+                      border: "1px solid #93c5fd",
+                      background: "#ffffff",
+                      color: "#0f172a",
+                      minWidth: "240px",
+                      cursor: "pointer",
+                    }}
+                  >
+                    {allClients.map((c) => {
+                      const modeTag = c.master_mode === "supabase" ? "Supabase engine" : "Google Sheets";
+                      const tabsCount = (c.masterTabCount || 0) + (c.reconTabCount || 0);
+                      const migTag = tabsCount > 0 ? ` · ${tabsCount} tabs` : "";
+                      return (
+                        <option key={c.id || c.client_name} value={c.client_name}>
+                          {`${c.client_name} (${modeTag}${migTag})`}
+                        </option>
+                      );
+                    })}
+                    {allClients.length === 0 && <option value="APPTEST">APPTEST</option>}
+                  </select>
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
                   <button
                     type="button"
                     onClick={() => {
@@ -1064,7 +1398,7 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
                       fontSize: "12px",
                       fontWeight: "600",
                       color: !s2Ready || !hasVirtualTabs ? "#9ca3af" : "#1e40af",
-                      background: !s2Ready || !hasVirtualTabs ? "#f3f4f6" : "#eff6ff",
+                      background: !s2Ready || !hasVirtualTabs ? "#f3f4f6" : "#ffffff",
                       border: `1px solid ${!s2Ready || !hasVirtualTabs ? "#e5e7eb" : "#93c5fd"}`,
                       borderRadius: "6px",
                       cursor: !s2Ready || !hasVirtualTabs ? "not-allowed" : "pointer",
@@ -1085,7 +1419,7 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
                       fontSize: "12px",
                       fontWeight: "600",
                       color: !s2Ready || !hasVirtualTabs ? "#9ca3af" : "#0f172a",
-                      background: !s2Ready || !hasVirtualTabs ? "#f3f4f6" : "#f8fafc",
+                      background: !s2Ready || !hasVirtualTabs ? "#f3f4f6" : "#ffffff",
                       border: `1px solid ${!s2Ready || !hasVirtualTabs ? "#e5e7eb" : "#cbd5e1"}`,
                       borderRadius: "6px",
                       cursor: !s2Ready || !hasVirtualTabs ? "not-allowed" : "pointer",
@@ -1096,7 +1430,7 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
 
                   <button
                     type="button"
-                    onClick={handleStage2MigrateClient}
+                    onClick={() => handleStage2MigrateClient(activeClientName)}
                     disabled={!s2Ready || stage2Migrating}
                     style={{
                       padding: "7px 14px",
@@ -1114,16 +1448,16 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
                   >
                     {stage2Migrating ? (
                       <>
-                        <Spinner size={12} color="#fff" /> Migrating APPTEST...
+                        <Spinner size={12} color="#fff" /> Migrating {activeClientName}...
                       </>
                     ) : (
-                      "Sync APPTEST master & recon to Supabase"
+                      `1. Sync ${activeClientName} master & recon to Supabase`
                     )}
                   </button>
                 </div>
               </div>
 
-              {/* APPTEST Master Engine Switcher & IMPORTRANGE Materializer */}
+              {/* Selected Client Master Engine Switcher & IMPORTRANGE Materializer */}
               <div
                 style={{
                   display: "grid",
@@ -1147,50 +1481,56 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
                 >
                   <div>
                     <div style={{ fontSize: "12px", fontWeight: "700", color: "#1e293b" }}>
-                      APPTEST master & recon engine mode
+                      2. {activeClientName} Client Sheet IMPORTRANGE links
                     </div>
                     <div style={{ fontSize: "11px", color: "#64748b", marginTop: "2px" }}>
-                      {apptestMode === "supabase"
-                        ? "Active: all APPTEST Master & Recon reads, writes, comparisons, and bank recon run on Supabase."
-                        : "Legacy: APPTEST is currently reading from its Google Master & Recon sheets."}
+                      {isMaterialized
+                        ? `Materialized: all Master Sheet IMPORTRANGE formulas on ${activeClientName} replaced with direct local values & formulas.`
+                        : `Replaces Master Sheet IMPORTRANGE wrappers on ${activeClientName} Client Sheet (with 1-click rollback backup).`}
                     </div>
                   </div>
 
-                  <div style={{ display: "inline-flex", background: "#e2e8f0", borderRadius: "6px", padding: "3px", gap: "3px" }}>
+                  <div style={{ display: "flex", gap: "6px" }}>
                     <button
                       type="button"
-                      disabled={stage2SwitchingMode}
-                      onClick={() => handleStage2SetMasterMode("sheet")}
+                      disabled={!s2Ready || stage2Materializing}
+                      onClick={() => handleStage2Materialize(false, activeClientName)}
                       style={{
-                        padding: "5px 10px",
-                        fontSize: "12px",
+                        padding: "6px 11px",
+                        fontSize: "11px",
                         fontWeight: "600",
-                        borderRadius: "5px",
-                        border: "none",
-                        cursor: stage2SwitchingMode ? "default" : "pointer",
-                        background: apptestMode === "sheet" ? "#fff" : "transparent",
-                        color: apptestMode === "sheet" ? "#0f172a" : "#475569",
+                        borderRadius: "6px",
+                        border: "1px solid #cbd5e1",
+                        background: isMaterialized ? "#dcfce7" : "#ffffff",
+                        color: isMaterialized ? "#166534" : "#1e293b",
+                        cursor: !s2Ready || stage2Materializing ? "not-allowed" : "pointer",
                       }}
                     >
-                      Google Sheets
+                      {stage2Materializing
+                        ? "Working..."
+                        : isMaterialized
+                        ? "Re-materialize Client Sheet"
+                        : `Remove IMPORTRANGEs on ${activeClientName}`}
                     </button>
-                    <button
-                      type="button"
-                      disabled={!s2Ready || !hasVirtualTabs || stage2SwitchingMode}
-                      onClick={() => handleStage2SetMasterMode("supabase")}
-                      style={{
-                        padding: "5px 10px",
-                        fontSize: "12px",
-                        fontWeight: "600",
-                        borderRadius: "5px",
-                        border: "none",
-                        cursor: !s2Ready || !hasVirtualTabs || stage2SwitchingMode ? "not-allowed" : "pointer",
-                        background: apptestMode === "supabase" ? "#166534" : "transparent",
-                        color: apptestMode === "supabase" ? "#fff" : "#475569",
-                      }}
-                    >
-                      Supabase engine
-                    </button>
+                    {isMaterialized && (
+                      <button
+                        type="button"
+                        disabled={stage2Materializing}
+                        onClick={() => handleStage2Materialize(true, activeClientName)}
+                        style={{
+                          padding: "6px 10px",
+                          fontSize: "11px",
+                          fontWeight: "600",
+                          borderRadius: "6px",
+                          border: "1px solid #cbd5e1",
+                          background: "#ffffff",
+                          color: "#475569",
+                          cursor: stage2Materializing ? "not-allowed" : "pointer",
+                        }}
+                      >
+                        Restore IMPORTRANGEs
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -1209,57 +1549,55 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
                 >
                   <div>
                     <div style={{ fontSize: "12px", fontWeight: "700", color: "#1e293b" }}>
-                      APPTEST Client Sheet IMPORTRANGE links
+                      3. {activeClientName} master & recon engine mode
                     </div>
                     <div style={{ fontSize: "11px", color: "#64748b", marginTop: "2px" }}>
-                      {isMaterialized
-                        ? "Materialized: all Master Sheet IMPORTRANGE formulas replaced with direct local values & formulas."
-                        : "Replaces Master Sheet IMPORTRANGE wrappers on APPTEST Client Sheet (with 1-click rollback backup)."}
+                      {activeClientMode === "supabase"
+                        ? `Active: all ${activeClientName} Master & Recon reads, writes, comparisons, and bank recon run on Supabase.`
+                        : `Legacy: ${activeClientName} is currently reading from its Google Master & Recon sheets.`}
                     </div>
                   </div>
 
-                  <div style={{ display: "flex", gap: "6px" }}>
+                  <div style={{ display: "inline-flex", background: "#e2e8f0", borderRadius: "6px", padding: "3px", gap: "3px" }}>
                     <button
                       type="button"
-                      disabled={!s2Ready || stage2Materializing}
-                      onClick={() => handleStage2Materialize(false)}
+                      disabled={stage2SwitchingMode}
+                      onClick={() => handleStage2SetMasterMode("sheet", activeClientName)}
                       style={{
-                        padding: "6px 11px",
-                        fontSize: "11px",
+                        padding: "5px 10px",
+                        fontSize: "12px",
                         fontWeight: "600",
-                        borderRadius: "6px",
-                        border: "1px solid #cbd5e1",
-                        background: isMaterialized ? "#dcfce7" : "#ffffff",
-                        color: isMaterialized ? "#166534" : "#1e293b",
-                        cursor: !s2Ready || stage2Materializing ? "not-allowed" : "pointer",
+                        borderRadius: "5px",
+                        border: "none",
+                        cursor: stage2SwitchingMode ? "default" : "pointer",
+                        background: activeClientMode === "sheet" ? "#fff" : "transparent",
+                        color: activeClientMode === "sheet" ? "#0f172a" : "#475569",
                       }}
                     >
-                      {stage2Materializing ? "Working..." : isMaterialized ? "Re-materialize Client Sheet" : "Remove IMPORTRANGEs on APPTEST"}
+                      Google Sheets
                     </button>
-                    {isMaterialized && (
-                      <button
-                        type="button"
-                        disabled={stage2Materializing}
-                        onClick={() => handleStage2Materialize(true)}
-                        style={{
-                          padding: "6px 10px",
-                          fontSize: "11px",
-                          fontWeight: "600",
-                          borderRadius: "6px",
-                          border: "1px solid #cbd5e1",
-                          background: "#ffffff",
-                          color: "#475569",
-                          cursor: stage2Materializing ? "not-allowed" : "pointer",
-                        }}
-                      >
-                        Restore IMPORTRANGEs
-                      </button>
-                    )}
+                    <button
+                      type="button"
+                      disabled={!s2Ready || !hasVirtualTabs || stage2SwitchingMode}
+                      onClick={() => handleStage2SetMasterMode("supabase", activeClientName)}
+                      style={{
+                        padding: "5px 10px",
+                        fontSize: "12px",
+                        fontWeight: "600",
+                        borderRadius: "5px",
+                        border: "none",
+                        cursor: !s2Ready || !hasVirtualTabs || stage2SwitchingMode ? "not-allowed" : "pointer",
+                        background: activeClientMode === "supabase" ? "#166534" : "transparent",
+                        color: activeClientMode === "supabase" ? "#fff" : "#475569",
+                      }}
+                    >
+                      Supabase engine
+                    </button>
                   </div>
                 </div>
               </div>
 
-              {/* Native Next.js comparison & sync triggers for APPTEST */}
+              {/* Native Next.js comparison & sync triggers for selected client */}
               {s2Ready && hasVirtualTabs && (
                 <div
                   style={{
@@ -1276,7 +1614,7 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
                   }}
                 >
                   <div style={{ fontSize: "12px", fontWeight: "600", color: "#334155" }}>
-                    Run native Next.js sync & comparison engine on APPTEST:
+                    4. Run native Next.js sync & comparison engine on {activeClientName}:
                   </div>
                   <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
                     {[
@@ -1290,7 +1628,7 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
                         key={btn.type}
                         type="button"
                         disabled={Boolean(stage2SyncingType)}
-                        onClick={() => handleStage2NativeSync(btn.type)}
+                        onClick={() => handleStage2NativeSync(btn.type, activeClientName)}
                         style={{
                           padding: "5px 11px",
                           fontSize: "11px",
@@ -1309,7 +1647,7 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
                 </div>
               )}
 
-              {/* Stage 2 tables grid */}
+              {/* Stage 2 tables grid for selected client */}
               {stage2Data?.tables && (
                 <div
                   style={{
@@ -1346,7 +1684,9 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
                           {t.exists ? `${(t.count ?? 0).toLocaleString()} rows` : "Not created"}
                         </span>
                       </div>
-                      <div style={{ fontSize: "11px", color: "#6b7280" }}>{t.label}</div>
+                      <div style={{ fontSize: "11px", color: "#6b7280" }}>
+                        {t.label} ({activeClientName})
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -1609,7 +1949,7 @@ export default function SupabaseControlPlaneCard({ automationCommanderSheetId })
               <AdminWorkbookInspectorModal
                 isOpen={inspectorOpen}
                 onClose={() => setInspectorOpen(false)}
-                clientName="APPTEST"
+                clientName={activeClientName}
                 availableTabs={stage2Data?.availableTabs || { master: [], recon: [] }}
                 initialSheetRole={inspectorInitialRole}
               />

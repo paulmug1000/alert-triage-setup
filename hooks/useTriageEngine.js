@@ -218,11 +218,13 @@ export function useTriageEngine({
     } catch { }
   }, [triageComplete, proactiveAlerts]);
 
-  const pollRefreshStatus = useCallback(async () => {
+  const pollRefreshStatus = useCallback(async (isBackground = false) => {
+    const isBg = isBackground === true;
     const pollStart = Date.now();
+    const pollInterval = isBg ? 5000 : 1500;
     // Safety timeout: max 5 minutes (300s) of polling
     while (isMountedRef.current && (Date.now() - pollStart < 300000)) {
-      await new Promise(r => setTimeout(r, 1500));
+      await new Promise(r => setTimeout(r, pollInterval));
       if (!isMountedRef.current) break;
 
       let statusResp;
@@ -240,14 +242,17 @@ export function useTriageEngine({
       if (!isMountedRef.current) break;
       const statusData = await statusResp.json();
       if (!statusResp.ok || !statusData.success) {
-        throw new Error(statusData.error || "Failed to check refresh status");
+        if (!isBg) throw new Error(statusData.error || "Failed to check refresh status");
+        break;
       }
 
       const st = statusData.status || {};
       if (st.status === "running") {
-        setRefreshStatus(st.progress || "Scanning clients...");
+        if (!isBg) {
+          setRefreshStatus(st.progress || "Scanning clients...");
+        }
       } else if (st.status === "completed") {
-        setRefreshStatus("Loading updated alerts...");
+        if (!isBg) setRefreshStatus("Loading updated alerts...");
         const preResp = await fetch("/api/triage", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -257,15 +262,18 @@ export function useTriageEngine({
         if (isMountedRef.current) {
           if (preResp.ok && preData.success && preData.available) {
             applyPrecomputedData(preData);
-          } else {
+          } else if (!isBg) {
             throw new Error(preData.error || "Failed to load precomputed alerts");
           }
         }
+        if (!isBg) setRefreshStatus("");
         break;
       } else if (st.status === "error") {
-        throw new Error(st.error || "Background refresh encountered an error");
+        if (!isBg) throw new Error(st.error || "Background refresh encountered an error");
+        break;
       } else {
         // idle or stalled
+        if (!isBg) setRefreshStatus("");
         break;
       }
     }
@@ -298,7 +306,7 @@ export function useTriageEngine({
         setRefreshStatus(triggerData.status?.progress || "Scanning clients...");
       }
 
-      await pollRefreshStatus();
+      await pollRefreshStatus(false);
     } catch (err) {
       if (isMountedRef.current) {
         setError(err.message);
@@ -335,18 +343,40 @@ export function useTriageEngine({
         console.log(`✅ Using precomputed data (${preResult.computedMinutesAgo} min old, ${preResult.totalAlerts} alerts)`);
         applyPrecomputedData(preResult);
         precomputedUsed = true;
+        setIsLoading(false);
       }
 
-      if (statusResult && statusResult.success && statusResult.status?.status === "running") {
-        console.log("Active background refresh detected - attaching to progress...");
-        setRefreshStatus(statusResult.status.progress || "Scanning clients...");
-        await pollRefreshStatus();
+      // If precomputed data is already available and displayed, NEVER block the user!
+      if (precomputedUsed) {
+        // If a background refresh is actively running on the server, monitor it silently
+        // in the background without showing any blocking skeleton or spinner.
+        if (statusResult && statusResult.success && statusResult.status?.status === "running") {
+          console.log("Active background refresh detected - monitoring silently in background...");
+          pollRefreshStatus(true);
+        }
         return;
       }
 
-      if (precomputedUsed) return;
-      console.log(`No fresh precomputed data available - triggering background refresh pipeline`);
-      await refreshTriage();
+      // Precomputed data is NOT available:
+      // If a background refresh is already running, wait for it to finish and show progress.
+      if (statusResult && statusResult.success && statusResult.status?.status === "running") {
+        console.log("No precomputed data and background refresh running - attaching to progress...");
+        setRefreshStatus(statusResult.status.progress || "Scanning clients...");
+        await pollRefreshStatus(false);
+        return;
+      }
+
+      // Neither precomputed data nor a running background refresh exists.
+      // Only internal Admin users should ever trigger an ecosystem-wide background refresh.
+      // Non-admins (e.g. ClientManager) do not have permissions and must never launch a sweep.
+      const isAdminUser = Boolean(user?.isAdmin || user?.role === "Admin");
+      if (isAdminUser) {
+        console.log(`No fresh precomputed data available - triggering background refresh pipeline (Admin)`);
+        await refreshTriage();
+      } else {
+        console.log(`No precomputed data available for non-admin user; not triggering background sweep`);
+        setError("No precomputed alert data available. Alerts will be updated on the next scheduled sync.");
+      }
     } catch (err) {
       if (isMountedRef.current) {
         setError(err.message);
@@ -417,7 +447,8 @@ export function useTriageEngine({
         }
         onRefreshTasks?.();
       } else if (!isBg) {
-        setError("Cache is empty or stale. Please use '↻ Refresh' to run a full sweep.");
+        const isAdminUser = Boolean(user?.isAdmin || user?.role === "Admin");
+        setError(isAdminUser ? "Cache is empty or stale. Please use '↻ Refresh' to run a full sweep." : "Alert data is currently updating. Please try reloading in a moment.");
       }
     } catch (err) {
       if (!isBg) {

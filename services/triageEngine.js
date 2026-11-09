@@ -1316,13 +1316,22 @@ export async function handleGetPrecomputed(req, res, sheets) {
     let tRedis = 0;
     if (!bustCache && _precomputedMemoryCache && (Date.now() - _precomputedCachedAt < 60000)) {
       raw = _precomputedMemoryCache;
-    } else if (redisClient?.isOpen) {
-      const t0 = Date.now();
-      raw = await redisClient.get(PRECOMPUTED_KEY);
-      tRedis = Date.now() - t0;
-      if (raw) {
-        _precomputedMemoryCache = raw;
-        _precomputedCachedAt = Date.now();
+    } else {
+      if (redisClient && !redisClient.isOpen) {
+        try {
+          await redisClient.connect();
+        } catch (connErr) {
+          console.warn("handleGetPrecomputed: redis connection attempt warning:", connErr?.message);
+        }
+      }
+      if (redisClient?.isOpen) {
+        const t0 = Date.now();
+        raw = await redisClient.get(PRECOMPUTED_KEY);
+        tRedis = Date.now() - t0;
+        if (raw) {
+          _precomputedMemoryCache = raw;
+          _precomputedCachedAt = Date.now();
+        }
       }
     }
     if (!raw) {
@@ -1516,6 +1525,9 @@ export async function handleGetPrecomputed(req, res, sheets) {
     }
 
     const sessionId = Math.random().toString(36).substring(2, 15);
+    if (redisClient && !redisClient.isOpen) {
+      try { await redisClient.connect(); } catch (_) { }
+    }
     if (redisClient?.isOpen) {
       redisClient.set(
         `triage_alerts:${sessionId}`,

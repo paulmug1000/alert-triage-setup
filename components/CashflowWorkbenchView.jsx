@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import Spinner from "./Spinner";
+import { performTransactionsUpdate } from "../services/reconTransactionsMerge";
 
 export const VALID_RECON_CATEGORIES = [
   "Revenue",
@@ -956,7 +957,7 @@ function AlignedBreakdownView({
   );
 }
 
-export { performTransactionsUpdate } from "../services/reconTransactionsMerge";
+export { performTransactionsUpdate };
 
 
 export default function CashflowWorkbenchView({
@@ -1070,7 +1071,7 @@ export default function CashflowWorkbenchView({
   const [applyingSalariesNote, setApplyingSalariesNote] = useState(false);
 
   const handleApplySalariesNote = async () => {
-    if (!reconData?.generatedSalariesNote || !currentClientInfo) return;
+    if (!reconData?.generatedSalariesNote || !clientInfo?.clientSheetId) return;
     const salariesRowObj = (reconData?.rows || []).find(r => r.mappedItemType === "salaries");
     const targetAdjRow = salariesRowObj?.targetAdjustmentRow || 9;
     if (!targetCol) return;
@@ -1082,7 +1083,7 @@ export default function CashflowWorkbenchView({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "update_cash_cell_note",
-          clientSheetId: currentClientInfo.clientSheetId,
+          clientSheetId: clientInfo.clientSheetId,
           cashTabSheetId: reconData.cashTabSheetId,
           sheetRow: targetAdjRow,
           colIdx: targetCol.colIdx,
@@ -1094,21 +1095,10 @@ export default function CashflowWorkbenchView({
       const res = await resp.json();
       if (!res.success) throw new Error(res.error || "Failed to save note");
 
-      setReconData(prev => {
-        if (!prev) return prev;
-        const newRows = prev.rows.map(r => {
-          if (r.sheetRow !== targetAdjRow) return r;
-          const newCells = r.cells.map(c => {
-            if (c.colIdx !== targetCol.colIdx) return c;
-            return { ...c, note: reconData.generatedSalariesNote };
-          });
-          return { ...r, cells: newCells };
-        });
-        return { ...prev, rows: newRows };
-      });
-      setSuccessMsg("Salaries explanation note saved to cashflow adjustment.");
+      setApiMsg("✓ Salaries explanation note saved to cashflow adjustment.");
+      if (onRefresh) onRefresh();
     } catch (err) {
-      setError(err.message || "Failed to save salaries note");
+      setApiMsg(`⚠️ ${err.message || "Failed to save salaries note"}`);
     } finally {
       setApplyingSalariesNote(false);
     }

@@ -28,6 +28,7 @@ import {
   getCRMMatchingMode, fetchJobRowsForDisplay
 } from "./sharedHelpers.js";
 import { redisClient } from "./redisClient.js";
+import { anthropic } from "./claudeClient.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { logPrecomputeRun, logFlagSweepRun, logBuildOptionsRun } from "./systemLogs.js";
 import { isPlaceholderInvoice, isPlaceholderExpense, parseYearMonth, parseStaleExpenseDetail, isPipelineJobSuppressed, toSheetDateFormat, hasActiveCrmIntegration, ADMIN_ONLY_ALERT_TYPES, isNoEndDateSentinel } from "../utils/helpers.js";
@@ -2284,9 +2285,42 @@ export async function handleRunFlagSweep(req, res, sheets) {
           });
           if (supaCtx && supaCtx.masterMode === "supabase") {
             const sb = getSupabaseAdmin();
-            const { data: sched } = sb
-              ? await sb.from("sync_schedules").select("*").eq("client_name", supaCtx.clientName).maybeSingle()
-              : { data: null };
+            const [{ data: sched }, { data: dcaRow }] = sb
+              ? await Promise.all([
+                  sb.from("sync_schedules").select("*").eq("client_name", supaCtx.clientName).maybeSingle(),
+                  sb
+                    .from("master_sheet_grids")
+                    .select("values_grid")
+                    .eq("client_name", supaCtx.clientName)
+                    .eq("sheet_role", "master")
+                    .eq("tab_name", "DataChgAlert")
+                    .maybeSingle(),
+                ])
+              : [{ data: null }, { data: null }];
+
+            // DataChgAlert!Y2:Y4 is the canonical source of truth edited in PMA Client Settings -> Main -> Automation frequencies
+            const dcaGrid = dcaRow?.values_grid || null;
+            const effectiveInvFreq = dcaGrid ? String(dcaGrid[1]?.[24] ?? "").trim() : String(sched?.inv_freq ?? "").trim();
+            const effectiveCrmFreq = dcaGrid ? String(dcaGrid[2]?.[24] ?? "").trim() : String(sched?.crm_freq ?? "").trim();
+            const effectiveExpFreq = dcaGrid ? String(dcaGrid[3]?.[24] ?? "").trim() : String(sched?.exp_freq ?? "").trim();
+
+            if (
+              sb &&
+              sched &&
+              (String(sched.inv_freq ?? "").trim() !== effectiveInvFreq ||
+                String(sched.crm_freq ?? "").trim() !== effectiveCrmFreq ||
+                String(sched.exp_freq ?? "").trim() !== effectiveExpFreq)
+            ) {
+              await sb
+                .from("sync_schedules")
+                .update({
+                  inv_freq: effectiveInvFreq,
+                  crm_freq: effectiveCrmFreq,
+                  exp_freq: effectiveExpFreq,
+                  updated_at: new Date().toISOString(),
+                })
+                .eq("client_name", supaCtx.clientName);
+            }
 
             const parseFreqMs = (freqStr) => {
               const s = String(freqStr || "").trim().toLowerCase();
@@ -2308,15 +2342,13 @@ export async function handleRunFlagSweep(req, res, sheets) {
               return isNaN(lastMs) || Date.now() - lastMs >= reqMs;
             };
 
-            if (sched) {
-              if (isValidFrequency(sched.inv_freq)) hasInvoice = true;
-              if (isValidFrequency(sched.crm_freq)) hasCRM = true;
-              if (isValidFrequency(sched.exp_freq)) hasExpense = true;
-            }
+            hasInvoice = isValidFrequency(effectiveInvFreq);
+            hasCRM = isValidFrequency(effectiveCrmFreq);
+            hasExpense = isValidFrequency(effectiveExpFreq);
 
-            const invDue = isSeqDue(sched?.inv_freq || freqRow[0], sched?.last_inv_run);
-            const crmDue = isSeqDue(sched?.crm_freq || freqRow[1], sched?.last_crm_run);
-            const expDue = isSeqDue(sched?.exp_freq || freqRow[2], sched?.last_exp_run);
+            const invDue = isSeqDue(effectiveInvFreq, sched?.last_inv_run);
+            const crmDue = isSeqDue(effectiveCrmFreq, sched?.last_crm_run);
+            const expDue = isSeqDue(effectiveExpFreq, sched?.last_exp_run);
 
             const dueTypes = [
               invDue ? "invoice" : null,

@@ -20,6 +20,7 @@ import {
   readBuildOptionsLog
 } from "../../services/systemLogs";
 import { fetchSecurityAuditLogs } from "../../services/pulseLogger";
+import { logPmaActivity } from "../../services/pmaLogger";
 import {
   handleBulkCreateTasks, handleCreateTask, handleGetTasks, handleAddTaskNote,
   handleSnoozeTask, handleRevertTaskToAlert, handleResolveTask, handleUpdateTask,

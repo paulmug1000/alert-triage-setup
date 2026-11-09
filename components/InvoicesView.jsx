@@ -114,7 +114,7 @@ export default function InvoicesView({
   const auth = useAuth();
   const isAdmin = propIsAdmin !== undefined ? propIsAdmin : (!auth.user?.isReadOnly && !!(auth.user?.isAdmin || auth.user?.role === "Admin"));
 
-  const { automationCommanderSheetId, assignedAppIds, setAssignedAppIds, outgoingsPullPendingRef, addAssignedAppId, invalidateCachedClientData } = useAppGlobals();
+  const { automationCommanderSheetId, allClientsMap, assignedAppIds, setAssignedAppIds, outgoingsPullPendingRef, addAssignedAppId, invalidateCachedClientData } = useAppGlobals();
   const { clientsWithFlags, setClientsWithFlags, setClientAlerts, sessionId } = useTriage();
 
   const removeAssignedInvoiceAlert = (invNo, refNo, clientName) => {

@@ -21,6 +21,7 @@ import { sanitizeFormulaInput } from "./userPermissions.js";
 import { clearAllClientsMemoryCache } from "./workspaces.js";
 import { clearSsrClientsMemoryCache } from "./ssrSession.js";
 import { resolveSupabaseSheetContext } from "./masterEngineService.js";
+import { getSupabaseAdmin } from "./supabaseClient.js";
 import {
   refreshNativeChartOfAccounts,
   pullLivePLToSupabaseNative,
@@ -1043,6 +1044,27 @@ export async function saveClientSettings({
         data: masterUpdates
       }
     }));
+  }
+
+  // Mirror Automation frequencies (DataChgAlert!Y2:Y4) to Supabase sync_schedules
+  if (settings.automation?.frequencies) {
+    try {
+      const sb = getSupabaseAdmin();
+      if (sb) {
+        const freq = settings.automation.frequencies;
+        await sb
+          .from("sync_schedules")
+          .update({
+            inv_freq: String(freq.invoices ?? "").trim(),
+            crm_freq: String(freq.crm ?? "").trim(),
+            exp_freq: String(freq.expenses ?? "").trim(),
+            updated_at: new Date().toISOString(),
+          })
+          .eq("client_name", clientName);
+      }
+    } catch (syncSchedErr) {
+      console.warn("⚠️ Failed to mirror automation frequencies to Supabase sync_schedules:", syncSchedErr.message);
+    }
   }
 
   // Execute Client batchUpdate

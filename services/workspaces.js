@@ -2249,7 +2249,8 @@ export async function resolveMasterSheetIdForClient_(sheets, sheetIdClean, clien
   } catch (e) { }
 
   try {
-    const clients = await loadClientsFromCommander(sheets);
+    const { clientsArray } = await getAllClients(sheets);
+    const clients = clientsArray || [];
     const found = clients.find(c =>
       (clientName && c.clientName && c.clientName.toLowerCase() === clientName.toLowerCase()) ||
       extractSheetIdFromUrl(c.clientSheetId) === cleanId ||
@@ -5827,7 +5828,8 @@ export async function handleUpdateOutgoingNote(req, res, sheets) {
     let targetMasterId = req.body.masterSheetId ? (extractSheetIdFromUrl(req.body.masterSheetId) || req.body.masterSheetId) : null;
     if (!targetMasterId) {
       try {
-        const clients = await loadClientsFromCommander(sheets);
+        const { clientsArray } = await getAllClients(sheets);
+        const clients = clientsArray || [];
         const found = clients.find(c =>
           (tenantClient && c.clientName && c.clientName.toLowerCase() === tenantClient.toLowerCase()) ||
           extractSheetIdFromUrl(c.clientSheetId) === sheetIdClean ||
@@ -5874,10 +5876,10 @@ export async function handleUpdateOutgoingNote(req, res, sheets) {
       }).catch(e => console.warn("Failed to write to Master OutgNotes:", e.message));
 
       // Trigger GAS refreshOutgoings or native Supabase comparison recompute asynchronously without blocking response
-      resolveSupabaseSheetContext({ clientName, spreadsheetId: targetMasterId })
+      resolveSupabaseSheetContext({ clientName: tenantClient, spreadsheetId: targetMasterId })
         .then((supaCtx) => {
           if (supaCtx && supaCtx.masterMode === "supabase") {
-            return recomputeClientComparisonsInSupabase(sheets, supaCtx.clientName || clientName);
+            return recomputeClientComparisonsInSupabase(sheets, supaCtx.clientName || tenantClient);
           }
           const cronSecret = process.env.CRON_SECRET || process.env.AGENT_TRIGGER_SECRET || "";
           if (cronSecret) {

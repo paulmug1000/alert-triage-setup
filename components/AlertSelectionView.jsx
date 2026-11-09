@@ -13,7 +13,7 @@ import { useTasks } from "../contexts/TaskContext";
 import { useTriage } from "../contexts/TriageContext";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useAuth } from "../hooks/useAuth";
-import { ADMIN_ONLY_ALERT_TYPES, stripRowInfo, parseRetroactiveOutgoingsDetail, parseUnreceivedExpensesDetail, parseStaleExpenseDetail, parseInfoAlertDetail, getInfoCardTitle, getProactiveCardTitle, filterAnalysisResultsForAlert, getCleanPLCategoryName, getAlertJobTarget, formatSeenTimestamp, formatLikelihood, parseRevenueMismatchDetail, parseDirectCostsMismatchDetail, toInputDateFormat, parseSheetDate, toSheetDateFormat, isNoEndDateSentinel, formatJobEndDateDisplay, isStaleInvoiceSuppressedByRetainerAlert } from "../utils/helpers";
+import { ADMIN_ONLY_ALERT_TYPES, stripRowInfo, sanitizeSpreadsheetTerms, parseRetroactiveOutgoingsDetail, parseUnreceivedExpensesDetail, parseStaleExpenseDetail, parseInfoAlertDetail, getInfoCardTitle, getProactiveCardTitle, filterAnalysisResultsForAlert, getCleanPLCategoryName, getAlertJobTarget, formatSeenTimestamp, formatLikelihood, parseRevenueMismatchDetail, parseDirectCostsMismatchDetail, toInputDateFormat, parseSheetDate, toSheetDateFormat, isNoEndDateSentinel, formatJobEndDateDisplay, isStaleInvoiceSuppressedByRetainerAlert } from "../utils/helpers";
 
 const RICH_NOACTION_FLAG_GROUP = {
   crmCopiedConfChecked: "crm",

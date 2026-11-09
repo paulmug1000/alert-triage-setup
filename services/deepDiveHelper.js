@@ -2871,6 +2871,7 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
 
     if (!isTotalCol) {
       let exactPipeRevDeduction = 0, exactAssumedConfRev = 0, exactDCDeduction = 0, exactAssumedConfDCAdd = 0;
+      let remainingActivePipeRev = 0;
 
       jobsList.forEach((job) => {
         const pId = Number(job.parentId !== undefined ? job.parentId : (job.rowNumber - 2));
@@ -2884,6 +2885,8 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
 
         if (isConfirmed || isUnchecked) {
           exactPipeRevDeduction += jobRevMonthWeighted;
+        } else if (jobRevMonthWeighted > 0) {
+          remainingActivePipeRev += jobRevMonthWeighted;
         }
 
         if (isConfirmed) {
@@ -2902,7 +2905,10 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
       const exactNewConfRev = exactOldConfRev + exactAssumedConfRev + (adjs.rev[m] || 0);
 
       const exactOldPipeRev = getOldVal(4);
-      const exactNewPipeRev = Math.max(0, exactOldPipeRev - exactPipeRevDeduction);
+      let exactNewPipeRev = Math.max(0, exactOldPipeRev - exactPipeRevDeduction);
+      if (remainingActivePipeRev < 0.001 || exactNewPipeRev < 0.001) {
+        exactNewPipeRev = 0;
+      }
 
       const exactOldNB = getOldVal(5);
       const exactNewNB = adjs.nbChecked[m] ? exactOldNB : 0;
@@ -2923,6 +2929,7 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
           : getOldVal(12);
         const exactNbDCDeduction = nbDCDeduction[m] || 0;
         exactNewDC = Math.max(0, exactOldDC - exactDCDeduction - exactNbDCDeduction + exactAssumedConfDCAdd);
+        if (exactNewDC < 0.001) exactNewDC = 0;
         deltaDC = Math.round(exactNewDC) - Math.round(exactOldDC);
       } else {
         deltaDC = 0;
@@ -3059,7 +3066,14 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
     const applyDelta = (rIdx, delta) => {
       if (rows[rIdx] && rows[rIdx].label !== "Hide") {
         const visualBaseline = getVisualVal(rIdx);
-        const newVal = formatCurrency(visualBaseline + delta);
+        let valToFormat = visualBaseline + delta;
+        if (rIdx === 4) {
+          const hasAnyMonthlyPipe = rows[rIdx].monthlyValues.some((v) => parseMoney(v) > 0);
+          if (!hasAnyMonthlyPipe || valToFormat < 0) {
+            valToFormat = 0;
+          }
+        }
+        const newVal = formatCurrency(valToFormat);
         if (isTotalCol) {
           rows[rIdx].totalVal = newVal;
         } else {

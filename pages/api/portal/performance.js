@@ -64,27 +64,37 @@ export default async function handler(req, res) {
       l1TtlSecs: PERF_CACHE_TTL_SECS,
       redisTtlSecs: PERF_REDIS_TTL_SECS,
       fetchFreshFn: async () => {
-        const formattedResp = await withRetry(() =>
-      sheets.spreadsheets.values.batchGet({
-        spreadsheetId: clientSheetId,
-        ranges: [
-          "AppData!A1:CR35",
-          "AppData!Z42:Z59",
-          "AppData!W40:W44",
-          "KeyInfo!C4:D5",
-          "KeyInfo!B15",
-          "KeyInfo!D8",
-        ],
-        valueRenderOption: "FORMATTED_VALUE",
-      })
-    );
+        const [formattedResp, mathResp] = await Promise.all([
+          withRetry(() =>
+            sheets.spreadsheets.values.batchGet({
+              spreadsheetId: clientSheetId,
+              ranges: [
+                "AppData!A1:CR35",
+                "AppData!Z42:Z59",
+                "AppData!W40:W44",
+                "KeyInfo!C4:D5",
+                "KeyInfo!B15",
+                "KeyInfo!D8",
+              ],
+              valueRenderOption: "FORMATTED_VALUE",
+            })
+          ),
+          withRetry(() =>
+            sheets.spreadsheets.values.get({
+              spreadsheetId: clientSheetId,
+              range: "AppData!A1:CR35",
+              valueRenderOption: "UNFORMATTED_VALUE",
+            })
+          ),
+        ]);
 
-    const appDataDisp = formattedResp.data.valueRanges?.[0]?.values || [];
-    const thresholdsRaw = (formattedResp.data.valueRanges?.[1]?.values || []).map((r) => r[0] || "");
-    const toggles = formattedResp.data.valueRanges?.[2]?.values || [];
-    const keyInfoRows = formattedResp.data.valueRanges?.[3]?.values || [];
-    const modeRows = formattedResp.data.valueRanges?.[4]?.values || [];
-    const directCostsModeRows = formattedResp.data.valueRanges?.[5]?.values || [];
+        const appDataDisp = formattedResp.data.valueRanges?.[0]?.values || [];
+        const appDataMath = mathResp.data?.values || [];
+        const thresholdsRaw = (formattedResp.data.valueRanges?.[1]?.values || []).map((r) => r[0] || "");
+        const toggles = formattedResp.data.valueRanges?.[2]?.values || [];
+        const keyInfoRows = formattedResp.data.valueRanges?.[3]?.values || [];
+        const modeRows = formattedResp.data.valueRanges?.[4]?.values || [];
+        const directCostsModeRows = formattedResp.data.valueRanges?.[5]?.values || [];
 
     const mode = String(modeRows[0]?.[0] || "Revenue").trim();
     const rawDirectCostsMode = String(directCostsModeRows[0]?.[0] || "Contractors").trim();
@@ -191,14 +201,16 @@ export default async function handler(req, res) {
         for (let j = 0; j < 12; j++) {
           const colIdx = blk.start + j;
           const valDisp = appDataDisp[i]?.[colIdx] !== undefined ? String(appDataDisp[i][colIdx]).trim() : "";
-          const valMath = valDisp ? parseMoney(valDisp, thousandsSeparator) : null;
+          const rawMath = appDataMath[i]?.[colIdx];
+          const valMath = typeof rawMath === "number" ? rawMath : (valDisp ? parseMoney(valDisp, thousandsSeparator) : null);
           monthlyValues.push(formatCurrencyString(valDisp, null, currencySymbol, thousandsSeparator));
           monthlyMath.push(valMath);
         }
 
         const rawTotalVal = appDataDisp[i]?.[blk.start + 13] !== undefined ? String(appDataDisp[i][blk.start + 13]).trim() : "";
+        const rawTotalMath = appDataMath[i]?.[blk.start + 13];
         const totalVal = formatCurrencyString(rawTotalVal, null, currencySymbol, thousandsSeparator);
-        const totalMath = rawTotalVal ? parseMoney(rawTotalVal, thousandsSeparator) : null;
+        const totalMath = typeof rawTotalMath === "number" ? rawTotalMath : (rawTotalVal ? parseMoney(rawTotalVal, thousandsSeparator) : null);
 
         rows.push({
           rowIndex: i + 1,
